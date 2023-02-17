@@ -45,11 +45,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         <td><img src="./images/ginzburg-landau.gif"  width="240"></td>
         <td><img src="./images/allen-cahn.gif"  width="240"></td>
     </tr> 
-    <tr>
+<!--     <tr>
         <td style="text-align:center; border-style : hidden!important;">Shallow Water Eqns.</td>
         <td style="text-align:center; border-style : hidden!important;">Ginzburg-Landau Eqn.</td>
         <td style="text-align:center; border-style : hidden!important;">Allen-Cahn Eqn.</td>
-    </tr> 
+    </tr>  -->
 </table>
 
 
