@@ -140,3 +140,14 @@ sht = harmonics.RealSHT(nlat, nlon, grid="equiangular").to(device).float()
 
 coeffs = sht(signal)
 ```
+
+## References
+
+<a id="1">[1]</a> 
+Schaeffer, N.;
+Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations;
+G3: Geochemistry, Geophysics, Geosystems.
+<a id="1">[2]</a> 
+Wang, B., Wang, L., Xie, Z.;
+Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids;
+Adv Comput Math.
