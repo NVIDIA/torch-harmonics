@@ -29,16 +29,20 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import os
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.fft
+import torch.nn.functional as F
 
-from .quadrature import *
-from .legendre import *
+from torch_harmonics.quadrature import *
+from torch_harmonics.legendre import *
+from torch_harmonics.distributed import polar_group_size, azimuth_group_size, distributed_transpose_azimuth, distributed_transpose_polar
+from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
 
 
-class RealSHT(nn.Module):
+class DistributedRealSHT(nn.Module):
     """
     Defines a module for computing the forward (real-valued) SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
@@ -82,19 +86,38 @@ class RealSHT(nn.Module):
         else:
             raise(ValueError("Unknown quadrature mode"))
 
+        # get the comms grid:
+        self.comm_size_polar = polar_group_size()
+        self.comm_size_azimuth = azimuth_group_size()
+        self.comm_rank_azimuth = azimuth_group_rank()
+
         # apply cosine transform and flip them
         tq = np.flip(np.arccos(cost))
 
         # determine the dimensions 
         self.mmax = mmax or self.nlon // 2 + 1
 
+        # compute padding sizes for lon and lat
+        # we have the following relation:
+        # (size + pad) % comm_size == 0
+        # spatial padding
+        #self.pad_lat = self.comm_size_polar - (self.nlat % self.comm_size_polar)
+        #self.pad_lon = self.comm_size_azimuth - (self.nlon % self.comm_size_azimuth)
+        
+        # frequency paddings
+        ldist = (self.lmax + self.comm_size_polar - 1) // self.comm_size_polar
+        self.lpad = ldist * self.comm_size_polar - self.lmax
+        mdist = (self.mmax + self.comm_size_azimuth - 1) // self.comm_size_azimuth
+        self.mpad = mdist * self.comm_size_azimuth - self.mmax
+
         # combine quadrature weights with the legendre weights
         weights = torch.from_numpy(w)
         pct = precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
         weights = torch.einsum('mlk,k->mlk', pct, weights)
 
-        # shard the weights along n, because we want to be distributed in spectral space:
-        self.lmax_local = weights.shape[1]
+        # we need to split in m, pad before:
+        weights = F.pad(weights, [0, 0, 0, 0, 0, self.mpad], mode="constant")
+        weights = torch.split(weights, (self.mmax+self.mpad) // self.comm_size_azimuth, dim=0)[self.comm_rank_azimuth]
 
         # remember quadrature weights
         self.register_buffer('weights', weights, persistent=False)
@@ -107,29 +130,60 @@ class RealSHT(nn.Module):
 
     def forward(self, x: torch.Tensor):
 
-        assert(x.shape[-2] == self.nlat)
-        assert(x.shape[-1] == self.nlon)
+        # we need to ensure that we can split the channels evenly
+        assert(x.shape[1] % self.comm_size_polar == 0)
+        assert(x.shape[1] % self.comm_size_azimuth == 0)
+        
+        # h and w is split. First we make w local by transposing into channel dim
+        if self.comm_size_azimuth > 1:
+            xt = distributed_transpose_azimuth.apply(x, (1, -1))
+        else:
+            xt = x
+            
+        # apply real fft in the longitudinal direction: make sure to truncate to nlon
+        xtf = 2.0 * torch.pi * torch.fft.rfft(xt, n=self.nlon, dim=-1, norm="forward")
 
-        # apply real fft in the longitudinal direction
-        x = 2.0 * torch.pi * torch.fft.rfft(x, dim=-1, norm="forward")
+        # truncate
+        xtft = xtf[..., :self.mmax]
+        
+        # pad the dim to allow for splitting
+        xtfp = F.pad(xtft, [0, self.mpad], mode="constant")
+
+        # transpose: after this, m is split and c is local
+        if self.comm_size_azimuth > 1:
+            y = distributed_transpose_azimuth.apply(xtfp, (-1, 1))
+        else:
+            y = xtfp
+            
+        # transpose: after this, c is split and h is local
+        if self.comm_size_polar > 1:
+            yt = distributed_transpose_polar.apply(y, (1, -2))
+        else:
+            yt = y
+
+        # the input data might be padded, make sure to truncate to nlat:
+        ytt = yt[..., :self.nlat, :]
         
         # do the Legendre-Gauss quadrature
-        x = torch.view_as_real(x)
-        
-        # distributed contraction: fork
-        out_shape = list(x.size())
-        out_shape[-3] = self.lmax_local
-        out_shape[-2] = self.mmax
-        xout = torch.zeros(out_shape, dtype=x.dtype, device=x.device)
+        yttr = torch.view_as_real(ytt)
         
         # contraction
-        xout[..., 0] = torch.einsum('...km,mlk->...lm', x[..., :self.mmax, 0], self.weights.to(x.dtype) )
-        xout[..., 1] = torch.einsum('...km,mlk->...lm', x[..., :self.mmax, 1], self.weights.to(x.dtype) )
-        x = torch.view_as_complex(xout)
+        yor = torch.einsum('...kmr,mlk->...lmr', yttr, self.weights.to(yttr.dtype)).contiguous()
         
-        return x
+        # pad if required, truncation is implicit
+        yopr = F.pad(yor, [0, 0, 0, 0, 0, self.lpad], mode="constant")
+        yop = torch.view_as_complex(yopr)
+        
+        # transpose: after this, l is split and c is local
+        if self.comm_size_polar	> 1:
+            y = distributed_transpose_polar.apply(yop, (-2, 1))
+        else:
+            y = yop
+        
+        return y
 
-class InverseRealSHT(nn.Module):
+    
+class DistributedInverseRealSHT(nn.Module):
     """
     Defines a module for computing the inverse (real-valued) SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
@@ -163,17 +217,37 @@ class InverseRealSHT(nn.Module):
         else:
             raise(ValueError("Unknown quadrature mode"))
 
-        # apply cosine transform and flip them
-        t = np.flip(np.arccos(cost))
+        # get the comms grid:
+	self.comm_size_polar = polar_group_size()
+	self.comm_size_azimuth = azimuth_group_size()
+        self.comm_rank_azimuth = azimuth_group_rank()
 
-        # determine the dimensions 
+        # apply cosine transform and flip them
+        tq = np.flip(np.arccos(cost))
+
+        # determine the dimensions
         self.mmax = mmax or self.nlon // 2 + 1
 
+        # spatial paddings
+        latdist = (self.nlat + self.comm_size_polar - 1) // self.comm_size_polar
+        self.latpad = latdist * self.comm_size_polar - self.nlat
+        londist = (self.nlon + self.comm_size_azimuth - 1) // self.comm_size_azimuth
+        self.lonpad = londist * self.comm_size_azimuth - self.nlon
+        
+        # frequency paddings
+        ldist = (self.lmax + self.comm_size_polar - 1) // self.comm_size_polar
+        self.lpad = ldist * self.comm_size_polar - self.lmax
+        mdist = (self.mmax + self.comm_size_azimuth - 1) // self.comm_size_azimuth
+	self.mpad = mdist * self.comm_size_azimuth - self.mmax
+
+        # compute legende polynomials
         pct = precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
 
-        # shard the pct along the n dim
-        self.lmax_local = pct.shape[1]
+        # split in m
+        pct = F.pad(weights, [0, 0, 0, 0, 0, self.mpad], mode="constant")
+        pct = torch.split(pct, (self.mmax+self.mpad) // self.comm_size_azimuth, dim=0)[self.comm_rank_azimuth]
 
+        # register
         self.register_buffer('pct', pct, persistent=False)
 
     def extra_repr(self):
@@ -184,24 +258,56 @@ class InverseRealSHT(nn.Module):
 
     def forward(self, x: torch.Tensor):
 
-        assert(x.shape[-2] == self.lmax_local)
-        assert(x.shape[-1] == self.mmax)
+        # we need to ensure that we can split the channels evenly
+        assert(x.shape[1] % self.comm_size_polar == 0)
+	assert(x.shape[1] % self.comm_size_azimuth == 0)
+
+        # transpose: after that, channels are split, l is local:
+        if self.comm_size_polar > 1:
+            xt = distributed_transpose_polar.apply(x, (1, -2))
+        else:
+            xt = x
+
+        # remove padding in l:
+        xtt = xt[..., :self.lmax, :]
         
         # Evaluate associated Legendre functions on the output nodes
-        x = torch.view_as_real(x)
-        
-        rl = torch.einsum('...lm, mlk->...km', x[..., 0], self.pct )
-        im = torch.einsum('...lm, mlk->...km', x[..., 1], self.pct )
-        xs = torch.stack((rl, im), -1)
+        xttr = torch.view_as_real(xtt)
 
-        # distributed contraction: join
-        xs = reduce_from_parallel_region(xs)
-
-        # apply the inverse (real) FFT
+        # einsum
+        xs = torch.einsum('...lmr, mlk->...kmr', xttr, self.pct.to(xttr.dtype)).contiguous()
         x = torch.view_as_complex(xs)
-        x = torch.fft.irfft(x, n=self.nlon, dim=-1, norm="forward")
 
-        return x
+        # transpose: after this, l is split and channels are local
+        xp = F.pad(x, [0, 0, 0, self.latpad])
+
+        if self.comm_size_polar > 1:
+            y = distributed_transpose_polar.apply(xp, (-2, 1))
+        else:
+            y = xp
+
+        # transpose: after this, channels are split and m is local
+        if self.comm_size_azimuth > 1:
+            yt = distributed_transpose_azimuth.apply(y, (1, -1))
+        else:
+            yt = y
+
+        # truncate
+        ytt = yt[..., :self.mmax]
+            
+        # apply the inverse (real) FFT
+        x = torch.fft.irfft(ytt, n=self.nlon, dim=-1, norm="forward")
+
+        # pad before we transpose back
+        xp = F.pad(x, [0, self.lonpad])
+
+        # transpose: after this, m is split and channels are local
+        if self.comm_size_azimuth > 1:
+            out = distributed_transpose_azimuth.apply(xp, (-1, 1))
+        else:
+            out = xp
+
+        return out
 
 
 class RealVectorSHT(nn.Module):
@@ -264,6 +370,7 @@ class RealVectorSHT(nn.Module):
         weights[1] = -1 * weights[1]
 
         # shard the weights along n, because we want to be distributed in spectral space:
+        weights = scatter_to_parallel_region(weights, dim=2)
         self.lmax_local = weights.shape[2]
 
         # remember quadrature weights
@@ -286,6 +393,7 @@ class RealVectorSHT(nn.Module):
         x = torch.view_as_real(x)
         
         # distributed contraction: fork
+        x = copy_to_parallel_region(x)
         out_shape = list(x.size())
         out_shape[-3] = self.lmax_local
         out_shape[-2] = self.mmax
@@ -351,6 +459,7 @@ class InverseRealVectorSHT(nn.Module):
         dpct = precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
 
         # shard the pct along the n dim
+        dpct = scatter_to_parallel_region(dpct, dim=2)
         self.lmax_local = dpct.shape[2]
         
         self.register_buffer('dpct', dpct, persistent=False)
