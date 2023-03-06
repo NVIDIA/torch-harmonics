@@ -218,12 +218,12 @@ class DistributedInverseRealSHT(nn.Module):
             raise(ValueError("Unknown quadrature mode"))
 
         # get the comms grid:
-	self.comm_size_polar = polar_group_size()
-	self.comm_size_azimuth = azimuth_group_size()
+        self.comm_size_polar = polar_group_size()
+        self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
         # apply cosine transform and flip them
-        tq = np.flip(np.arccos(cost))
+        t = np.flip(np.arccos(cost))
 
         # determine the dimensions
         self.mmax = mmax or self.nlon // 2 + 1
@@ -238,13 +238,13 @@ class DistributedInverseRealSHT(nn.Module):
         ldist = (self.lmax + self.comm_size_polar - 1) // self.comm_size_polar
         self.lpad = ldist * self.comm_size_polar - self.lmax
         mdist = (self.mmax + self.comm_size_azimuth - 1) // self.comm_size_azimuth
-	self.mpad = mdist * self.comm_size_azimuth - self.mmax
+        self.mpad = mdist * self.comm_size_azimuth - self.mmax
 
         # compute legende polynomials
         pct = precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
 
         # split in m
-        pct = F.pad(weights, [0, 0, 0, 0, 0, self.mpad], mode="constant")
+        pct = F.pad(pct, [0, 0, 0, 0, 0, self.mpad], mode="constant")
         pct = torch.split(pct, (self.mmax+self.mpad) // self.comm_size_azimuth, dim=0)[self.comm_rank_azimuth]
 
         # register
@@ -260,7 +260,7 @@ class DistributedInverseRealSHT(nn.Module):
 
         # we need to ensure that we can split the channels evenly
         assert(x.shape[1] % self.comm_size_polar == 0)
-	assert(x.shape[1] % self.comm_size_azimuth == 0)
+        assert(x.shape[1] % self.comm_size_azimuth == 0)
 
         # transpose: after that, channels are split, l is local:
         if self.comm_size_polar > 1:

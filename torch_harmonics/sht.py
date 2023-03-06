@@ -190,12 +190,9 @@ class InverseRealSHT(nn.Module):
         # Evaluate associated Legendre functions on the output nodes
         x = torch.view_as_real(x)
         
-        rl = torch.einsum('...lm, mlk->...km', x[..., 0], self.pct )
-        im = torch.einsum('...lm, mlk->...km', x[..., 1], self.pct )
+        rl = torch.einsum('...lm, mlk->...km', x[..., 0], self.pct.to(x.dtype) )
+        im = torch.einsum('...lm, mlk->...km', x[..., 1], self.pct.to(x.dtype) )
         xs = torch.stack((rl, im), -1)
-
-        # distributed contraction: join
-        xs = reduce_from_parallel_region(xs)
 
         # apply the inverse (real) FFT
         x = torch.view_as_complex(xs)

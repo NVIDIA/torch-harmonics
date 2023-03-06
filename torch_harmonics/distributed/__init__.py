@@ -35,4 +35,4 @@ from .utils import polar_group_size, azimuth_group_size, polar_group_rank, azimu
 from .primitives import distributed_transpose_azimuth, distributed_transpose_polar
 
 # import the sht stuff
-from .distributed_sht import DistributedRealSHT
+from .distributed_sht import DistributedRealSHT, DistributedInverseRealSHT

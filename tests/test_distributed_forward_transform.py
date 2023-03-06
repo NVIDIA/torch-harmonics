@@ -134,8 +134,6 @@ with torch.no_grad():
 out_full = forward_transform_local(inp_full)
 out_local = forward_transform_dist(inp_local)
 
-print(wrank, out_local.shape)
-
 # gather the local data
 # gather in W
 if grid_size_w > 1:
