@@ -96,13 +96,6 @@ class DistributedRealSHT(nn.Module):
 
         # determine the dimensions 
         self.mmax = mmax or self.nlon // 2 + 1
-
-        # compute padding sizes for lon and lat
-        # we have the following relation:
-        # (size + pad) % comm_size == 0
-        # spatial padding
-        #self.pad_lat = self.comm_size_polar - (self.nlat % self.comm_size_polar)
-        #self.pad_lon = self.comm_size_azimuth - (self.nlon % self.comm_size_azimuth)
         
         # frequency paddings
         ldist = (self.lmax + self.comm_size_polar - 1) // self.comm_size_polar
@@ -310,7 +303,7 @@ class DistributedInverseRealSHT(nn.Module):
         return out
 
 
-class RealVectorSHT(nn.Module):
+class DistributedRealVectorSHT(nn.Module):
     """
     Defines a module for computing the forward (real) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
@@ -352,11 +345,22 @@ class RealVectorSHT(nn.Module):
         else:
             raise(ValueError("Unknown quadrature mode"))
 
+        # get the comms grid:
+        self.comm_size_polar = polar_group_size()
+        self.comm_size_azimuth = azimuth_group_size()
+        self.comm_rank_azimuth = azimuth_group_rank()
+
         # apply cosine transform and flip them
         tq = np.flip(np.arccos(cost))
 
         # determine the dimensions 
         self.mmax = mmax or self.nlon // 2 + 1
+
+        # frequency paddings
+        ldist = (self.lmax + self.comm_size_polar - 1) // self.comm_size_polar
+        self.lpad = ldist * self.comm_size_polar - self.lmax
+        mdist = (self.mmax + self.comm_size_azimuth - 1) // self.comm_size_azimuth
+        self.mpad = mdist * self.comm_size_azimuth - self.mmax
 
         weights = torch.from_numpy(w)
         dpct = precompute_dlegpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
@@ -369,9 +373,9 @@ class RealVectorSHT(nn.Module):
         # since the second component is imaginary, we need to take complex conjugation into account
         weights[1] = -1 * weights[1]
 
-        # shard the weights along n, because we want to be distributed in spectral space:
-        weights = scatter_to_parallel_region(weights, dim=2)
-        self.lmax_local = weights.shape[2]
+        # we need to split in m, pad before:
+        weights = F.pad(weights, [0, 0, 0, 0, 0, self.mpad], mode="constant")
+        weights = torch.split(weights, (self.mmax+self.mpad) // self.comm_size_azimuth, dim=1)[self.comm_rank_azimuth]
 
         # remember quadrature weights
         self.register_buffer('weights', weights, persistent=False)
@@ -385,41 +389,75 @@ class RealVectorSHT(nn.Module):
     def forward(self, x: torch.Tensor):
 
         assert(len(x.shape) >= 3)
+        assert(x.shape[1] % self.comm_size_polar == 0)
+        assert(x.shape[1] % self.comm_size_azimuth == 0)
 
-        # apply real fft in the longitudinal direction
-        x = 2.0 * torch.pi * torch.fft.rfft(x, dim=-1, norm="forward")
-        
+        # h and w is split. First we make w local by transposing into channel dim
+        if self.comm_size_azimuth > 1:
+            xt = distributed_transpose_azimuth.apply(x, (1, -1))
+        else:
+            xt = x
+
+        # apply real fft in the longitudinal direction: make sure to truncate to nlon  
+        xtf = 2.0 * torch.pi * torch.fft.rfft(xt, n=self.nlon, dim=-1, norm="forward")
+
+        # truncate
+        xtft = xtf[..., :self.mmax]
+
+        # pad the dim to allow for splitting
+        xtfp = F.pad(xtft, [0, self.mpad], mode="constant")
+
+        # transpose: after this, m is split and c is local
+        if self.comm_size_azimuth > 1:
+            y = distributed_transpose_azimuth.apply(xtfp, (-1, 1))
+        else:
+            y = xtfp
+
+        # transpose: after this, c is split and h is local
+        if self.comm_size_polar > 1:
+            yt = distributed_transpose_polar.apply(y, (1, -2))
+        else:
+            yt = y
+
+        # the input data might be padded, make sure to truncate to nlat:
+        ytt = yt[..., :self.nlat, :]
+            
         # do the Legendre-Gauss quadrature
-        x = torch.view_as_real(x)
+        yttr = torch.view_as_real(ytt)
         
-        # distributed contraction: fork
-        x = copy_to_parallel_region(x)
-        out_shape = list(x.size())
-        out_shape[-3] = self.lmax_local
-        out_shape[-2] = self.mmax
-        xout = torch.zeros(out_shape, dtype=x.dtype, device=x.device)
+        # create output array
+        yor = torch.zeros_like(yttr, dtype=yttr.dtype, device=yttr.device)
 
         # contraction - spheroidal component
         # real component
-        xout[..., 0, :, :, 0] =   torch.einsum('...km,mlk->...lm', x[..., 0, :, :self.mmax, 0], self.weights[0]) \
-                                - torch.einsum('...km,mlk->...lm', x[..., 1, :, :self.mmax, 1], self.weights[1]) 
-
+        yor[..., 0, :, :, 0] =   torch.einsum('...km,mlk->...lm', yttr[..., 0, :, :, 0], self.weights[0].to(yttr.dtype)) \
+                               - torch.einsum('...km,mlk->...lm', yttr[..., 1, :, :, 1], self.weights[1].to(yttr.dtype)) 
         # iamg component
-        xout[..., 0, :, :, 1] =   torch.einsum('...km,mlk->...lm', x[..., 0, :, :self.mmax, 1], self.weights[0]) \
-                                + torch.einsum('...km,mlk->...lm', x[..., 1, :, :self.mmax, 0], self.weights[1]) 
+        yor[..., 0, :, :, 1] =   torch.einsum('...km,mlk->...lm', yttr[..., 0, :, :, 1], self.weights[0].to(yttr.dtype)) \
+                               + torch.einsum('...km,mlk->...lm', yttr[..., 1, :, :, 0], self.weights[1].to(yttr.dtype)) 
 
         # contraction - toroidal component
         # real component
-        xout[..., 1, :, :, 0] = - torch.einsum('...km,mlk->...lm', x[..., 0, :, :self.mmax, 1], self.weights[1]) \
-                                - torch.einsum('...km,mlk->...lm', x[..., 1, :, :self.mmax, 0], self.weights[0]) 
+        yor[..., 1, :, :, 0] = - torch.einsum('...km,mlk->...lm', yttr[..., 0, :, :, 1], self.weights[1].to(yttr.dtype)) \
+                               - torch.einsum('...km,mlk->...lm', yttr[..., 1, :, :, 0], self.weights[0].to(yttr.dtype)) 
         # imag component
-        xout[..., 1, :, :, 1] =   torch.einsum('...km,mlk->...lm', x[..., 0, :, :self.mmax, 0], self.weights[1]) \
-                                - torch.einsum('...km,mlk->...lm', x[..., 1, :, :self.mmax, 1], self.weights[0]) 
+        yor[..., 1, :, :, 1] =   torch.einsum('...km,mlk->...lm', yttr[..., 0, :, :, 0], self.weights[1].to(yttr.dtype)) \
+                               - torch.einsum('...km,mlk->...lm', yttr[..., 1, :, :, 1], self.weights[0].to(yttr.dtype)) 
 
-        return torch.view_as_complex(xout)
+        # pad if required
+        yopr = F.pad(yor, [0, 0, 0, 0, 0, self.lpad], mode="constant")
+        yop = torch.view_as_complex(yopr)
+
+        # transpose: after this, l is split and c is local
+        if self.comm_size_polar > 1:
+            y = distributed_transpose_polar.apply(yop, (-2, 1))
+        else:
+            y = yop
+        
+        return y
 
 
-class InverseRealVectorSHT(nn.Module):
+class DistributedInverseRealVectorSHT(nn.Module):
     """
     Defines a module for computing the inverse (real-valued) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
@@ -450,18 +488,36 @@ class InverseRealVectorSHT(nn.Module):
         else:
             raise(ValueError("Unknown quadrature mode"))
 
+        self.comm_size_polar = polar_group_size()
+        self.comm_size_azimuth = azimuth_group_size()
+        self.comm_rank_azimuth = azimuth_group_rank()
+
         # apply cosine transform and flip them
         t = np.flip(np.arccos(cost))
 
         # determine the dimensions 
         self.mmax = mmax or self.nlon // 2 + 1
 
+        # spatial paddings
+        latdist = (self.nlat + self.comm_size_polar - 1) // self.comm_size_polar
+        self.latpad = latdist * self.comm_size_polar - self.nlat
+        londist = (self.nlon + self.comm_size_azimuth - 1) // self.comm_size_azimuth
+        self.lonpad = londist * self.comm_size_azimuth - self.nlon
+
+        # frequency paddings
+        ldist = (self.lmax + self.comm_size_polar - 1) // self.comm_size_polar
+        self.lpad = ldist * self.comm_size_polar - self.lmax
+        mdist = (self.mmax + self.comm_size_azimuth - 1) // self.comm_size_azimuth
+        self.mpad = mdist * self.comm_size_azimuth - self.mmax
+
+        # compute legende polynomials
         dpct = precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
 
-        # shard the pct along the n dim
-        dpct = scatter_to_parallel_region(dpct, dim=2)
-        self.lmax_local = dpct.shape[2]
-        
+        # split in m
+        pct = F.pad(pct, [0, 0, 0, 0, 0, self.mpad], mode="constant")
+        pct = torch.split(pct, (self.mmax+self.mpad) // self.comm_size_azimuth, dim=0)[self.comm_rank_azimuth]
+
+        # register buffer
         self.register_buffer('dpct', dpct, persistent=False)
 
     def extra_repr(self):
@@ -472,38 +528,72 @@ class InverseRealVectorSHT(nn.Module):
 
     def forward(self, x: torch.Tensor):
 
-        assert(x.shape[-2] == self.lmax_local)
-        assert(x.shape[-1] == self.mmax)
+        assert(x.shape[1] % self.comm_size_polar == 0)
+        assert(x.shape[1] % self.comm_size_azimuth == 0)
+
+        # transpose: after that, channels are split, l is local:
+        if self.comm_size_polar > 1:
+            xt = distributed_transpose_polar.apply(x, (1, -2))
+        else:
+            xt = x
+
+        # remove padding in l:
+        xtt = xt[..., :self.lmax, :]
         
         # Evaluate associated Legendre functions on the output nodes
-        x = torch.view_as_real(x)
+        xttr = torch.view_as_real(xtt)
 
         # contraction - spheroidal component
         # real component
-        srl =   torch.einsum('...lm,mlk->...km', x[..., 0, :, :, 0], self.dpct[0]) \
-              - torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 1], self.dpct[1]) 
-        # iamg component
-        sim =   torch.einsum('...lm,mlk->...km', x[..., 0, :, :, 1], self.dpct[0]) \
-              + torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 0], self.dpct[1]) 
+        srl =   torch.einsum('...lm,mlk->...km', xttr[..., 0, :, :, 0], self.dpct[0].to(xttr.dtype)) \
+              - torch.einsum('...lm,mlk->...km', xttr[..., 1, :, :, 1], self.dpct[1].to(xttr.dtype)) 
+        # imag component
+        sim =   torch.einsum('...lm,mlk->...km', xttr[..., 0, :, :, 1], self.dpct[0].to(xttr.dtype)) \
+              + torch.einsum('...lm,mlk->...km', xttr[..., 1, :, :, 0], self.dpct[1].to(xttr.dtype)) 
 
         # contraction - toroidal component
         # real component
-        trl = - torch.einsum('...lm,mlk->...km', x[..., 0, :, :, 1], self.dpct[1]) \
-              - torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 0], self.dpct[0]) 
+        trl = - torch.einsum('...lm,mlk->...km', xttr[..., 0, :, :, 1], self.dpct[1].to(xttr.dtype)) \
+              - torch.einsum('...lm,mlk->...km', xttr[..., 1, :, :, 0], self.dpct[0].to(xttr.dtype)) 
         # imag component
-        tim =   torch.einsum('...lm,mlk->...km', x[..., 0, :, :, 0], self.dpct[1]) \
-              - torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 1], self.dpct[0]) 
+        tim =   torch.einsum('...lm,mlk->...km', xttr[..., 0, :, :, 0], self.dpct[1].to(xttr.dtype)) \
+              - torch.einsum('...lm,mlk->...km', xttr[..., 1, :, :, 1], self.dpct[0].to(xttr.dtype)) 
         
         # reassemble
         s = torch.stack((srl, sim), -1)
         t = torch.stack((trl, tim), -1)
         xs = torch.stack((s, t), -4)
 
-        # distributed contraction: join
-        xs = reduce_from_parallel_region(xs)
+        # convert to complex
+        x = torch.view_as_complex(xs)
+
+        # transpose: after this, l is split and channels are local
+        xp = F.pad(x, [0, 0, 0, self.latpad])
+
+        if self.comm_size_polar > 1:
+            y = distributed_transpose_polar.apply(xp, (-2, 1))
+        else:
+            y = xp
+
+        # transpose: after this, channels are split and m is local
+        if self.comm_size_azimuth > 1:
+            yt = distributed_transpose_azimuth.apply(y, (1, -1))
+        else:
+            yt = y
+
+        # truncate
+        ytt = yt[..., :self.mmax]
 
         # apply the inverse (real) FFT
-        x = torch.view_as_complex(xs)
         x = torch.fft.irfft(x, n=self.nlon, dim=-1, norm="forward")
 
-        return x
+        # pad before we transpose back
+        xp = F.pad(x, [0, self.lonpad])
+
+        # transpose: after this, m is split and channels are local
+        if self.comm_size_azimuth > 1:
+            out = distributed_transpose_azimuth.apply(xp, (-1, 1))
+        else:
+            out = xp
+
+        return out

@@ -36,3 +36,4 @@ from .primitives import distributed_transpose_azimuth, distributed_transpose_pol
 
 # import the sht stuff
 from .distributed_sht import DistributedRealSHT, DistributedInverseRealSHT
+from .distributed_sht import DistributedRealVectorSHT, DistributedInverseRealVectorSHT

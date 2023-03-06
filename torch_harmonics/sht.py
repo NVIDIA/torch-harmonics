@@ -387,9 +387,6 @@ class InverseRealVectorSHT(nn.Module):
         t = torch.stack((trl, tim), -1)
         xs = torch.stack((s, t), -4)
 
-        # distributed contraction: join
-        xs = reduce_from_parallel_region(xs)
-
         # apply the inverse (real) FFT
         x = torch.view_as_complex(xs)
         x = torch.fft.irfft(x, n=self.nlon, dim=-1, norm="forward")
