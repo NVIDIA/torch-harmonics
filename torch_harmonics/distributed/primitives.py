@@ -60,7 +60,7 @@ def _transpose(tensor, dim0, dim1, group=None, async_op=False):
     # split and local transposition
     split_size = tensor.shape[dim0] // comm_size
     x_send = [y.contiguous(memory_format=input_format) for y in torch.split(tensor, split_size, dim=dim0)]
-    x_recv = [torch.empty_like(x_send[0]) for _ in range(comm_size)]
+    x_recv = [torch.empty_like(x_send[0]).contiguous(memory_format=input_format) for _ in range(comm_size)]
     
     # global transposition
     req = dist.all_to_all(x_recv, x_send, group=group, async_op=async_op)
@@ -72,7 +72,6 @@ class distributed_transpose_azimuth(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, dim):
-        x = x.contiguous()
         xlist, _ = _transpose(x, dim[0], dim[1], group=azimuth_group())
         x = torch.cat(xlist, dim=dim[1])
         ctx.dim = dim
@@ -81,7 +80,6 @@ class distributed_transpose_azimuth(torch.autograd.Function):
     @staticmethod
     def backward(ctx, go):
         dim = ctx.dim
-        go = go.contiguous()
         gilist, _ = _transpose(go, dim[1], dim[0], group=azimuth_group())
         gi = torch.cat(gilist, dim=dim[0])
         return gi, None
@@ -91,7 +89,6 @@ class distributed_transpose_polar(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, dim):
-        x = x.contiguous()
         xlist, _ = _transpose(x, dim[0], dim[1], group=polar_group())
         x = torch.cat(xlist, dim=dim[1])
         ctx.dim = dim
@@ -100,7 +97,6 @@ class distributed_transpose_polar(torch.autograd.Function):
     @staticmethod
     def backward(ctx, go):
         dim = ctx.dim
-        go = go.contiguous()
         gilist, _ = _transpose(go, dim[1], dim[0], group=polar_group())
         gi = torch.cat(gilist, dim=dim[0])
         return gi, None
