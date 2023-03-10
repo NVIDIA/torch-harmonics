@@ -36,7 +36,6 @@ import torch.fft
 
 from .quadrature import *
 from .legendre import *
-from .distributed import copy_to_parallel_region, scatter_to_parallel_region, reduce_from_parallel_region
 
 
 class RealSHT(nn.Module):
@@ -95,7 +94,6 @@ class RealSHT(nn.Module):
         weights = torch.einsum('mlk,k->mlk', pct, weights)
 
         # shard the weights along n, because we want to be distributed in spectral space:
-        weights = scatter_to_parallel_region(weights, dim=1)
         self.lmax_local = weights.shape[1]
 
         # remember quadrature weights
@@ -119,15 +117,14 @@ class RealSHT(nn.Module):
         x = torch.view_as_real(x)
         
         # distributed contraction: fork
-        x = copy_to_parallel_region(x)
         out_shape = list(x.size())
         out_shape[-3] = self.lmax_local
         out_shape[-2] = self.mmax
         xout = torch.zeros(out_shape, dtype=x.dtype, device=x.device)
         
         # contraction
-        xout[..., 0] = torch.einsum('...km,mlk->...lm', x[..., :self.mmax, 0], self.weights )
-        xout[..., 1] = torch.einsum('...km,mlk->...lm', x[..., :self.mmax, 1], self.weights )
+        xout[..., 0] = torch.einsum('...km,mlk->...lm', x[..., :self.mmax, 0], self.weights.to(x.dtype) )
+        xout[..., 1] = torch.einsum('...km,mlk->...lm', x[..., :self.mmax, 1], self.weights.to(x.dtype) )
         x = torch.view_as_complex(xout)
         
         return x
@@ -175,7 +172,6 @@ class InverseRealSHT(nn.Module):
         pct = precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
 
         # shard the pct along the n dim
-        pct = scatter_to_parallel_region(pct, dim=1)
         self.lmax_local = pct.shape[1]
 
         self.register_buffer('pct', pct, persistent=False)
@@ -194,12 +190,9 @@ class InverseRealSHT(nn.Module):
         # Evaluate associated Legendre functions on the output nodes
         x = torch.view_as_real(x)
         
-        rl = torch.einsum('...lm, mlk->...km', x[..., 0], self.pct )
-        im = torch.einsum('...lm, mlk->...km', x[..., 1], self.pct )
+        rl = torch.einsum('...lm, mlk->...km', x[..., 0], self.pct.to(x.dtype) )
+        im = torch.einsum('...lm, mlk->...km', x[..., 1], self.pct.to(x.dtype) )
         xs = torch.stack((rl, im), -1)
-
-        # distributed contraction: join
-        xs = reduce_from_parallel_region(xs)
 
         # apply the inverse (real) FFT
         x = torch.view_as_complex(xs)
@@ -268,7 +261,6 @@ class RealVectorSHT(nn.Module):
         weights[1] = -1 * weights[1]
 
         # shard the weights along n, because we want to be distributed in spectral space:
-        weights = scatter_to_parallel_region(weights, dim=2)
         self.lmax_local = weights.shape[2]
 
         # remember quadrature weights
@@ -291,7 +283,6 @@ class RealVectorSHT(nn.Module):
         x = torch.view_as_real(x)
         
         # distributed contraction: fork
-        x = copy_to_parallel_region(x)
         out_shape = list(x.size())
         out_shape[-3] = self.lmax_local
         out_shape[-2] = self.mmax
@@ -357,7 +348,6 @@ class InverseRealVectorSHT(nn.Module):
         dpct = precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
 
         # shard the pct along the n dim
-        dpct = scatter_to_parallel_region(dpct, dim=2)
         self.lmax_local = dpct.shape[2]
         
         self.register_buffer('dpct', dpct, persistent=False)
@@ -396,9 +386,6 @@ class InverseRealVectorSHT(nn.Module):
         s = torch.stack((srl, sim), -1)
         t = torch.stack((trl, tim), -1)
         xs = torch.stack((s, t), -4)
-
-        # distributed contraction: join
-        xs = reduce_from_parallel_region(xs)
 
         # apply the inverse (real) FFT
         x = torch.view_as_complex(xs)

@@ -36,9 +36,10 @@ sys.path.append("..")
 sys.path.append(".")
 
 import torch
+import torch.nn.functional as F
 import torch.distributed as dist
 import torch_harmonics as harmonics
-from torch_harmonics.distributed.primitives import gather_from_parallel_region, scatter_to_parallel_region
+import torch_harmonics.distributed as thd
 
 try:
     from tqdm import tqdm
@@ -46,69 +47,174 @@ except:
     tqdm = lambda x : x
 
 # set up distributed
-world_size = int(os.getenv('WORLD_SIZE', 1))
 world_rank = int(os.getenv('WORLD_RANK', 0))
+grid_size_h = int(os.getenv('GRID_H', 1))
+grid_size_w = int(os.getenv('GRID_W', 1))
 port = int(os.getenv('MASTER_PORT', 0))
 master_address = os.getenv('MASTER_ADDR', 'localhost')
+world_size = grid_size_h * grid_size_w
 dist.init_process_group(backend = 'nccl',
                         init_method = f"tcp://{master_address}:{port}",
                         rank = world_rank,
                         world_size = world_size)
 local_rank = world_rank % torch.cuda.device_count()
-mp_group = dist.new_group(ranks=list(range(world_size)))
-my_rank = dist.get_rank(mp_group)
-group_size = 1 if not dist.is_initialized() else dist.get_world_size(mp_group)
 device = torch.device(f"cuda:{local_rank}")
+# compute local ranks in h and w:
+# rank = wrank + grid_size_w * hrank
+wrank = world_rank % grid_size_w
+hrank = world_rank // grid_size_w
+w_group = None
+h_group = None
+
+# now set up the comm grid:
+wgroups = []
+for h in range(grid_size_h):
+    start = h
+    end = h + grid_size_w
+    wgroups.append(list(range(start, end)))
+
+print(wgroups)
+for grp in wgroups:
+    if len(grp) == 1:
+        continue
+    tmp_group = dist.new_group(ranks=grp)
+    if wrank in grp:
+        w_group = tmp_group
+
+# transpose:
+hgroups = [sorted(list(i)) for i in zip(*wgroups)]
+print(hgroups)
+for grp in hgroups:
+    if len(grp) == 1:
+        continue
+    tmp_group = dist.new_group(ranks=grp)
+    if hrank in	grp:
+        h_group = tmp_group
+        
+# set device
+torch.cuda.set_device(device.index)
 
 # set seed
 torch.manual_seed(333)
 torch.cuda.manual_seed(333)
 
-if my_rank == 0:
-    print(f"Running distributed test on {group_size} ranks.")
+if world_rank == 0:
+    print(f"Running distributed test on grid H x W = {grid_size_h} x {grid_size_w}")
+
+# initializing sht
+thd.init(h_group, w_group)
 
 # common parameters
-b, c, n_theta, n_lambda = 1, 21, 361, 720
+B, C, H, W = 1, 8, 721, 1440
+Hloc = (H + grid_size_h - 1) // grid_size_h
+Wloc = (W + grid_size_w - 1) // grid_size_w
+Hpad = grid_size_h * Hloc - H
+Wpad = grid_size_w * Wloc - W
 
 # do serial tests first:
-#forward_transform = harmonics.RealSHT(n_theta, n_lambda).to(device)
-inverse_transform = harmonics.InverseRealSHT(n_theta, n_lambda).to(device)
+forward_transform_local = harmonics.RealSHT(nlat=H, nlon=W).to(device)
+backward_transform_local = harmonics.InverseRealSHT(nlat=H, nlon=W).to(device)
+backward_transform_dist = thd.DistributedInverseRealSHT(nlat=H, nlon=W).to(device)
+Lpad = backward_transform_dist.lpad
+Mpad = backward_transform_dist.mpad
+Lloc = (Lpad + backward_transform_dist.lmax) // grid_size_h
+Mloc = (Mpad + backward_transform_dist.mmax) // grid_size_w
 
-# set up signal
+# create tensors
+dummy_full = torch.randn((B, C, H, W), dtype=torch.float32, device=device)
+inp_full = forward_transform_local(dummy_full)
+
+# pad
 with torch.no_grad():
-    signal_leggauss = torch.randn(b, c, inverse_transform.lmax, inverse_transform.mmax, device=device, dtype=torch.complex128)
-    signal_leggauss_dist = signal_leggauss.clone()
-signal_leggauss.requires_grad = True
+    inp_pad = F.pad(inp_full, (0, Mpad, 0, Lpad))
 
-# do a fwd and bwd pass:
-x_local = inverse_transform(signal_leggauss)
-loss = torch.sum(x_local)
-loss.backward()
-local_grad = torch.view_as_real(signal_leggauss.grad.clone())
+    # split in W
+    inp_local = torch.split(inp_pad, split_size_or_sections=Mloc, dim=-1)[wrank]
 
-# now the distributed test
-harmonics.distributed.init(mp_group)
-inverse_transform_dist = harmonics.InverseRealSHT(n_theta, n_lambda).to(device)
-with torch.no_grad():
-    signal_leggauss_dist = scatter_to_parallel_region(signal_leggauss_dist, dim=2)
-signal_leggauss_dist.requires_grad = True
+    # split in H
+    inp_local = torch.split(inp_local, split_size_or_sections=Lloc, dim=-2)[hrank]
 
-# do distributed sht
-x_dist = inverse_transform_dist(signal_leggauss_dist)
-loss = torch.sum(x_dist)
-loss.backward()
-dist_grad = signal_leggauss_dist.grad.clone()
+# do FWD transform
+out_full = backward_transform_local(inp_full)
+out_local = backward_transform_dist(inp_local)
 
-# gather the output
-dist_grad = torch.view_as_real(gather_from_parallel_region(dist_grad, dim=2))
+# gather the local data
+# gather in W
+if grid_size_w > 1:
+    olist = [torch.empty_like(out_local) for _ in range(grid_size_w)]
+    olist[wrank] = out_local
+    dist.all_gather(olist, out_local, group=w_group)
+    out_full_gather = torch.cat(olist, dim=-1)
+    out_full_gather = out_full_gather[..., :W]
+else:
+    out_full_gather = out_local
 
-if my_rank == 0:
-    print(f"Local Out: sum={x_local.abs().sum().item()}, max={x_local.max().item()}, min={x_local.min().item()}")
-    print(f"Dist Out: sum={x_dist.abs().sum().item()}, max={x_dist.max().item()}, min={x_dist.min().item()}")
-    diff = (x_local-x_dist).abs()
-    print(f"Out Difference: abs={diff.sum().item()}, rel={diff.sum().item() / (0.5*(x_local.abs().sum() + x_dist.abs().sum()))}, max={diff.max().item()}")
+# gather in h
+if grid_size_h > 1:
+    olist = [torch.empty_like(out_full_gather) for _ in range(grid_size_h)]
+    olist[hrank] = out_full_gather
+    dist.all_gather(olist, out_full_gather, group=h_group)
+    out_full_gather = torch.cat(olist, dim=-2)
+    out_full_gather = out_full_gather[..., :H, :]
+
+
+if world_rank == 0:
+    print(f"Local Out: sum={out_full.abs().sum().item()}, max={out_full.abs().max().item()}, min={out_full.abs().min().item()}")
+    print(f"Dist Out: sum={out_full_gather.abs().sum().item()}, max={out_full_gather.abs().max().item()}, min={out_full_gather.abs().min().item()}")
+    diff = (out_full-out_full_gather).abs()
+    print(f"Out Difference: abs={diff.sum().item()}, rel={diff.sum().item() / (0.5*(out_full.abs().sum() + out_full_gather.abs().sum()))}, max={diff.abs().max().item()}")
     print("")
-    print(f"Local Grad: sum={local_grad.abs().sum().item()}, max={local_grad.max().item()}, min={local_grad.min().item()}")
-    print(f"Dist Grad: sum={dist_grad.abs().sum().item()}, max={dist_grad.max().item()}, min={dist_grad.min().item()}")
-    diff = (local_grad-dist_grad).abs()
-    print(f"Grad Difference: abs={diff.sum().item()}, rel={diff.sum().item() / (0.5*(local_grad.abs().sum() + dist_grad.abs().sum()))}, max={diff.max().item()}")
+
+    
+# create split input grad
+with torch.no_grad():
+    # create full grad
+    ograd_full = torch.randn_like(out_full)
+
+    # pad
+    ograd_pad = F.pad(ograd_full, [0, Wpad, 0, Hpad])
+
+    # split in W
+    ograd_local = torch.split(ograd_pad, split_size_or_sections=Wloc, dim=-1)[wrank]
+
+    # split in H
+    ograd_local = torch.split(ograd_local, split_size_or_sections=Hloc, dim=-2)[hrank]
+
+
+# backward pass:
+# local
+inp_full.requires_grad = True
+out_full = backward_transform_local(inp_full)
+out_full.backward(ograd_full)
+igrad_full = inp_full.grad.clone()
+
+# distributed
+inp_local.requires_grad = True
+out_local = backward_transform_dist(inp_local)
+out_local.backward(ograd_local)
+igrad_local = inp_local.grad.clone()
+
+# gather
+# gather in W
+if grid_size_w > 1:
+    olist = [torch.empty_like(igrad_local) for _ in range(grid_size_w)]
+    olist[wrank] = igrad_local
+    dist.all_gather(olist, igrad_local, group=w_group)
+    igrad_full_gather = torch.cat(olist, dim=-1)
+    igrad_full_gather = igrad_full_gather[..., :backward_transform_dist.mmax]
+else:
+    igrad_full_gather = igrad_local
+
+# gather in h
+if grid_size_h > 1:
+    olist = [torch.empty_like(igrad_full_gather) for _ in range(grid_size_h)]
+    olist[hrank] = igrad_full_gather
+    dist.all_gather(olist, igrad_full_gather, group=h_group)
+    igrad_full_gather = torch.cat(olist, dim=-2)
+    igrad_full_gather = igrad_full_gather[..., :backward_transform_dist.lmax, :]
+
+if world_rank == 0:
+    print(f"Local Grad: sum={igrad_full.abs().sum().item()}, max={igrad_full.abs().max().item()}, min={igrad_full.abs().min().item()}")
+    print(f"Dist Grad: sum={igrad_full_gather.abs().sum().item()}, max={igrad_full_gather.abs().max().item()}, min={igrad_full_gather.abs().min().item()}")
+    diff = (igrad_full-igrad_full_gather).abs()
+    print(f"Grad Difference: abs={diff.sum().item()}, rel={diff.sum().item() / (0.5*(igrad_full.abs().sum() + igrad_full_gather.abs().sum()))}, max={diff.abs().max().item()}")
