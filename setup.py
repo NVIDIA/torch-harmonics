@@ -29,14 +29,14 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(
    name='torch_harmonics',
    version='0.4',
    author='Boris Bonev',
    author_email='bbonev@nvidia.com',
-   packages=['torch_harmonics',],
+   packages=find_packages(),
    scripts=[],
    url='https://github.com/NVIDIA/torch-harmonics',
    license='LICENSE.md',
