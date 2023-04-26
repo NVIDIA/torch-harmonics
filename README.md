@@ -36,7 +36,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 <!-- ## What is torch-harmonics? -->
 
-`torch_harmonics` is a differentiable implementation of the Spherical Harmonic transform in PyTorch. It uses quadrature to compute the projection onto the associated Legendre polynomials and FFTs for the projection onto the harmonic basis. This algorithm tends to outperform others with better asymptotic scaling for most practical purposes.
+Spherical Harmonic Transforms (SHTs) are the counterpart to Fourier transforms on the sphere. As such they are an invaluable tool for signal-processing on the sphere.
+
+`torch_harmonics` is a differentiable implementation of the SHT in PyTorch. It uses quadrature rules to compute the projection onto the associated Legendre polynomials and FFTs for the projection onto the harmonic basis. This algorithm tends to outperform others with better asymptotic scaling for most practical purposes.
+
+`torch_harmonics` uses PyTorch primitives to implement these operations, making it fully differentiable. Moreover, the quadrature can be distributed onto multiple ranks making it spatially distributed.
+
+`torch_harmonics` has been used to implement a variety of differentiable PDE solvers which generated the animations below.
 
 
 <table border="0" cellspacing="0" cellpadding="0">
@@ -76,6 +82,7 @@ docker run --gpus all -it --rm --ipc=host --ulimit memlock=-1 --ulimit stack=671
  - Boris Bonev (bbonev@nvidia.com)
  - Christian Hundt (chundt@nvidia.com)
  - Thorsten Kurth (tkurth@nvidia.com)
+ - Nikola Kovachki (nkovachki@nvidia.com)
 
 ## Implementation
 The implementation follows the paper "Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations", N. Schaeffer, G3: Geochemistry, Geophysics, Geosystems. 
@@ -126,7 +133,7 @@ The main functionality of `torch_harmonics` is provided in the form of `torch.nn
 
 ```python
 import torch
-import torch_harmonics as harmonics
+import torch_harmonics as th
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -136,10 +143,12 @@ batch_size = 32
 signal = torch.randn(batch_size, nlat, nlon)
 
 # transform data on an equiangular grid
-sht = harmonics.RealSHT(nlat, nlon, grid="equiangular").to(device).float()
+sht = th.RealSHT(nlat, nlon, grid="equiangular").to(device).float()
 
 coeffs = sht(signal)
 ```
+
+`torch_harmonics` also implements a distributed variant of the SHT located in `torch-harmonics.distributed`.
 
 ## References
 

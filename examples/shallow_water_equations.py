@@ -1,6 +1,6 @@
 # coding=utf-8
 
-# SPDX-FileCopyrightText: Copyright (c) 2022 The FourCastNet Authors. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 # 
 # Redistribution and use in source and binary forms, with or without
@@ -333,7 +333,7 @@ class ShallowWaterSolver(nn.Module):
         return out
 
 
-    def plot_griddata(self, data, fig, cmap='twilight_shifted', vmax=None, vmin=None, projection='3d', title=None, antialiased=True):
+    def plot_griddata(self, data, fig, cmap='twilight_shifted', vmax=None, vmin=None, projection='3d', title=None, antialiased=False):
         """
         plotting routine for data on the grid. Requires cartopy for 3d plots.
         """

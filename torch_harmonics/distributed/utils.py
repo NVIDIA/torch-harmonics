@@ -34,15 +34,52 @@ import torch
 import torch.distributed as dist
 
 # those need to be global
-_MODEL_PARALLEL_GROUP = None
+_POLAR_PARALLEL_GROUP = None
+_AZIMUTH_PARALLEL_GROUP = None
+_IS_INITIALIZED = False
 
-def get_model_parallel_group():
-    return _MODEL_PARALLEL_GROUP
+def polar_group():
+    return _POLAR_PARALLEL_GROUP
 
-def init(process_group):
-    global _MODEL_PARALLEL_GROUP
-    _MODEL_PARALLEL_GROUP = process_group
+def azimuth_group():
+    return _AZIMUTH_PARALLEL_GROUP
+
+def init(polar_process_group, azimuth_process_group):
+    global _POLAR_PARALLEL_GROUP
+    global _AZIMUTH_PARALLEL_GROUP
+    _POLAR_PARALLEL_GROUP = polar_process_group
+    _AZIMUTH_PARALLEL_GROUP = azimuth_process_group
+    _IS_INITIALIZED = True
 
 def is_initialized() -> bool:
-    return _MODEL_PARALLEL_GROUP is not None
+    return _IS_INITIALIZED
 
+def is_distributed_polar() -> bool:
+    return (_POLAR_PARALLEL_GROUP is not None)
+
+def is_distributed_azimuth() -> bool:
+    return (_AZIMUTH_PARALLEL_GROUP is not None)
+
+def polar_group_size() -> int:
+    if not is_distributed_polar():
+        return 1
+    else:
+        return dist.get_world_size(group = _POLAR_PARALLEL_GROUP)
+
+def azimuth_group_size() -> int:
+    if not is_distributed_azimuth():
+        return 1
+    else:
+        return dist.get_world_size(group = _AZIMUTH_PARALLEL_GROUP)
+
+def polar_group_rank() -> int:
+    if not is_distributed_polar():
+        return 0
+    else:
+        return dist.get_rank(group = _POLAR_PARALLEL_GROUP)
+
+def azimuth_group_rank() -> int:
+    if not is_distributed_azimuth():
+        return 0
+    else:
+        return dist.get_rank(group = _AZIMUTH_PARALLEL_GROUP)

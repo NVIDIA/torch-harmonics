@@ -53,7 +53,8 @@ def precompute_legpoly(mmax, lmax, t, norm="ortho", inverse=False, csphase=True)
     """
 
     # compute the tensor P^m_n:
-    pct = np.zeros((mmax, lmax, len(t)), dtype=np.float64)
+    nmax = max(mmax,lmax)
+    pct = np.zeros((nmax, nmax, len(t)), dtype=np.float64)
 
     sint = np.sin(t)
     cost = np.cos(t)
@@ -65,22 +66,24 @@ def precompute_legpoly(mmax, lmax, t, norm="ortho", inverse=False, csphase=True)
     pct[0,0,:] = norm_factor / np.sqrt(4 * np.pi)
 
     # fill the diagonal and the lower diagonal
-    for l in range(1, min(mmax,lmax)):
+    for l in range(1, nmax):
         pct[l-1, l, :] = np.sqrt(2*l + 1) * cost * pct[l-1, l-1, :]
         pct[l, l, :] = np.sqrt( (2*l + 1) * (1 + cost) * (1 - cost) / 2 / l ) * pct[l-1, l-1, :]
 
     # fill the remaining values on the upper triangle and multiply b
-    for l in range(2, lmax):
+    for l in range(2, nmax):
         for m in range(0, l-1):
             pct[m, l, :] = cost * np.sqrt((2*l - 1) / (l - m) * (2*l + 1) / (l + m)) * pct[m, l-1, :] \
                             - np.sqrt((l + m - 1) / (l - m) * (2*l + 1) / (2*l - 3) * (l - m - 1) / (l + m)) * pct[m, l-2, :]
 
     if norm == "schmidt":
-        for l in range(0, lmax):
+        for l in range(0, nmax):
             if inverse:
                 pct[:, l, : ] = pct[:, l, : ] * np.sqrt(2*l + 1)
             else:
                 pct[:, l, : ] = pct[:, l, : ] / np.sqrt(2*l + 1)
+
+    pct = pct[:mmax, :lmax]
 
     if csphase:
         for m in range(1, mmax, 2):
