@@ -36,7 +36,7 @@ setup(
    version='0.5',
    author='Boris Bonev',
    author_email='bbonev@nvidia.com',
-   packages=['torch_harmonics',],
+   packages=['torch_harmonics','torch_harmonics.distributed'],
    scripts=[],
    url='https://github.com/NVIDIA/torch-harmonics',
    license='LICENSE.md',
