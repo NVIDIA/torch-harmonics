@@ -31,3 +31,4 @@
 
 from .sht import RealSHT, InverseRealSHT, RealVectorSHT, InverseRealVectorSHT
 from . import quadrature
+from . import random_fields

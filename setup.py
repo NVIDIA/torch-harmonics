@@ -1,6 +1,6 @@
 # coding=utf-8
 
-# SPDX-FileCopyrightText: Copyright (c) 2022 The FourCastNet Authors. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 # 
 # Redistribution and use in source and binary forms, with or without
@@ -33,7 +33,7 @@ from setuptools import setup
 
 setup(
    name='torch_harmonics',
-   version='0.4',
+   version='0.5',
    author='Boris Bonev',
    author_email='bbonev@nvidia.com',
    packages=['torch_harmonics',],

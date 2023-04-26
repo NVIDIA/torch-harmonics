@@ -2,6 +2,11 @@
 
 ## Versioning
 
+### v0.5
+
+* Reworked distributed SHT
+* Module for sampling Gaussian Random Fields on the sphere
+
 ### v0.4
 
 * Computation of associated Legendre polynomials
@@ -33,12 +38,3 @@
 
 * Single GPU forward and backward transform
 * Minimal code example and notebook 
-
-<!-- ## Detailed logs
-
-### 23-11-2022
-
-* Initialized the library
-* Added `getting_started.ipynb` example
-* Added simple example to test the SHT
-* Logo -->
