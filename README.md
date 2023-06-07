@@ -45,6 +45,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 <table border="0" cellspacing="0" cellpadding="0">
     <tr>
+        <td><img src="./images/sfno.gif"  width="240"></td>
         <td><img src="./images/zonal_jet.gif"  width="240"></td>
         <td><img src="./images/ginzburg-landau.gif"  width="240"></td>
         <td><img src="./images/allen-cahn.gif"  width="240"></td>
