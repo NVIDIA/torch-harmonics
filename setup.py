@@ -88,6 +88,9 @@ config = {
         ],
     'version': VERSION,
     'install_requires': ['torch','numpy'],
+    'extras_require': {
+        'sfno':  ['tensorly', 'tensorly-torch'],
+    },
     'license': 'Modified BSD',
     'scripts': [],
     'include_package_data': True,
