@@ -35,7 +35,7 @@ from apex.normalization import FusedLayerNorm
 
 from torch_harmonics import *
 
-from models.layers import *
+from .layers import *
 
 class SpectralFilterLayer(nn.Module):
     """

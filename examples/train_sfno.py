@@ -45,14 +45,12 @@ import pandas as pd
 
 import matplotlib.pyplot as plt
 
+from torch_harmonics.examples.sfno import PdeDataset
+from torch_harmonics.examples.sfno import SphericalFourierNeuralOperatorNet as SFNO
+
 # wandb logging
 import wandb
 wandb.login()
-
-import sys
-sys.path.append(os.path.join(os.path.dirname( __file__), "../"))
-
-from pde_sphere import SphereSolver
 
 def l2loss_sphere(solver, prd, tar, relative=False, squared=False):
     loss = solver.integrate_grid((prd - tar)**2, dimensionless=True).sum(dim=-1)
@@ -165,9 +163,6 @@ def main(train=True, load_checkpoint=False, enable_amp=False):
     device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
     if torch.cuda.is_available():
         torch.cuda.set_device(device.index)
-
-    # dataset
-    from utils.pde_dataset import PdeDataset
 
     # 1 hour prediction steps
     dt = 1*3600
@@ -337,8 +332,6 @@ def main(train=True, load_checkpoint=False, enable_amp=False):
     # from models.unet import UNet
     # models['unet_baseline'] = partial(UNet)
 
-    # SFNO and FNO models
-    from models.sfno import SphericalFourierNeuralOperatorNet as SFNO
     # SFNO models
     models['sfno_sc3_layer4_edim256_linear']    = partial(SFNO, spectral_transform='sht', filter_type='linear', img_size=(nlat, nlon),
                                                      num_layers=4, scale_factor=3, embed_dim=256, operator_type='vector')
