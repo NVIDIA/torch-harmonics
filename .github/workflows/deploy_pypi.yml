@@ -33,8 +33,8 @@ jobs:
           user: __token__ 
           password: ${{ secrets.TEST_PYPI_PASSWORD }}
           repository_url: https://test.pypi.org/legacy/
-      # - name: Publish package to PyPI
-      #   uses: pypa/gh-action-pypi-publish@release/v1
-      #   with:
-      #     user: __token__ 
-      #     password: ${{ secrets.PYPI_PASSWORD }}
+      - name: Publish package to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__ 
+          password: ${{ secrets.PYPI_PASSWORD }}
