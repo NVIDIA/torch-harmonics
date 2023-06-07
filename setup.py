@@ -28,19 +28,74 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
+try:
+    from setuptools import setup, find_packages
+except ImportError:
+    from distutils.core import setup, find_packages
 
-from setuptools import setup
+import re
+from pathlib import Path
 
-setup(
-   name='torch_harmonics',
-   version='0.5',
-   author='Boris Bonev',
-   author_email='bbonev@nvidia.com',
-   packages=['torch_harmonics','torch_harmonics.distributed'],
-   scripts=[],
-   url='https://github.com/NVIDIA/torch-harmonics',
-   license='LICENSE.md',
-   description='a differentiable spherical harmonic transform for PyTorch',
-   long_description=open('README.md').read(),
-   install_requires=['torch','numpy']
-)
+
+def version(root_path):
+    """Returns the version taken from __init__.py
+
+    Parameters
+    ----------
+    root_path : pathlib.Path
+        path to the root of the package
+
+    Reference
+    ---------
+    https://packaging.python.org/guides/single-sourcing-package-version/
+    """
+    version_path = root_path.joinpath('neuralop', '__init__.py')
+    with version_path.open() as f:
+        version_file = f.read()
+    version_match = re.search(r"^__version__ = ['\"]([^'\"]*)['\"]",
+                              version_file, re.M)
+    if version_match:
+        return version_match.group(1)
+    raise RuntimeError("Unable to find version string.")
+
+
+def readme(root_path):
+    """Returns the text content of the README.md of the package
+
+    Parameters
+    ----------
+    root_path : pathlib.Path
+        path to the root of the package
+    """
+    with root_path.joinpath('README.md').open(encoding='UTF-8') as f:
+        return f.read()
+
+
+root_path = Path(__file__).parent
+README = readme(root_path)
+VERSION = version(root_path)
+
+
+config = {
+    'name': 'torch_harmonics',
+    'packages': find_packages(),
+    'description': 'A differentiable spherical harmonic transform for PyTorch.',
+    'long_description': README,
+    'long_description_content_type' : 'text/x-rst',
+    'url' : 'https://github.com/NVIDIA/torch-harmonics',
+    'authors': [
+        {'name': "Boris Bonev", 'email': "bbonev@nvidia.com"},
+        ],
+    'version': VERSION,
+    'install_requires': ['torch','numpy'],
+    'license': 'Modified BSD',
+    'scripts': [],
+    'include_package_data': True,
+    'classifiers': [
+        'Topic :: Scientific/Engineering',
+        'License :: OSI Approved :: BSD License',
+        'Programming Language :: Python :: 3'
+    ],
+}
+
+setup(**config)

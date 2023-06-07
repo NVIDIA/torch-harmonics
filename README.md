@@ -36,13 +36,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 <!-- ## What is torch-harmonics? -->
 
-Spherical Harmonic Transforms (SHTs) are the counterpart to Fourier transforms on the sphere. As such they are an invaluable tool for signal-processing on the sphere.
-
-`torch_harmonics` is a differentiable implementation of the SHT in PyTorch. It uses quadrature rules to compute the projection onto the associated Legendre polynomials and FFTs for the projection onto the harmonic basis. This algorithm tends to outperform others with better asymptotic scaling for most practical purposes.
+`torch_harmonics` is a differentiable implementation of the Spherical Harmonic transform in PyTorch. It uses quadrature rules to compute the projection onto the associated Legendre polynomials and FFTs for the projection onto the harmonic basis. This algorithm tends to outperform others with better asymptotic scaling for most practical purposes.
 
 `torch_harmonics` uses PyTorch primitives to implement these operations, making it fully differentiable. Moreover, the quadrature can be distributed onto multiple ranks making it spatially distributed.
 
-`torch_harmonics` has been used to implement a variety of differentiable PDE solvers which generated the animations below.
+`torch_harmonics` has been used to implement a variety of differentiable PDE solvers which generated the animations below. Moreover, it has enabled the development of spherical Fourier Neural Operators (SFNOs).
 
 
 <table border="0" cellspacing="0" cellpadding="0">
@@ -83,9 +81,10 @@ docker run --gpus all -it --rm --ipc=host --ulimit memlock=-1 --ulimit stack=671
  - Christian Hundt (chundt@nvidia.com)
  - Thorsten Kurth (tkurth@nvidia.com)
  - Nikola Kovachki (nkovachki@nvidia.com)
+ - Jean Kossaifi (jkossaifi@nvidia.com)
 
 ## Implementation
-The implementation follows the paper "Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations", N. Schaeffer, G3: Geochemistry, Geophysics, Geosystems. 
+The implementation follows the algorithm as presented in [2].
 
 ### Spherical harmonic transform
 
@@ -150,14 +149,34 @@ coeffs = sht(signal)
 
 `torch_harmonics` also implements a distributed variant of the SHT located in `torch-harmonics.distributed`.
 
+### Cite us
+
+If you use `torch-harmonics` in an academic paper, please cite [1]
+
+```
+@misc{bonev2023spherical,
+      title={Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere}, 
+      author={Boris Bonev and Thorsten Kurth and Christian Hundt and Jaideep Pathak and Maximilian Baust and Karthik Kashinath and Anima Anandkumar},
+      year={2023},
+      eprint={2306.03838},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG}
+}
+```
+
 ## References
 
 <a id="1">[1]</a> 
-Schaeffer, N.;
+Bonev B., Kurth T., Hundt C., Pathak, J., Baust M., Kashinath K., Anandkumar A.;
+Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere;
+arXiv 2306.0383, 2023.
+
+<a id="1">[2]</a> 
+Schaeffer N.;
 Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations;
 G3: Geochemistry, Geophysics, Geosystems, 2013.
 
-<a id="1">[2]</a> 
-Wang, B., Wang, L., Xie, Z.;
+<a id="1">[3]</a> 
+Wang B., Wang L., Xie Z.;
 Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids;
 Adv Comput Math, 2018.

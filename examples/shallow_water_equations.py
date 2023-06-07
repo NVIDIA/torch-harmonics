@@ -365,7 +365,7 @@ class ShallowWaterSolver(nn.Module):
             if ccrs is None:
                 raise ImportError("Couldn't import Cartopy")
 
-            proj = ccrs.Orthographic(central_longitude=0.0, central_latitude=45.0)
+            proj = ccrs.Orthographic(central_longitude=0.0, central_latitude=-45.0)
 
             #ax = plt.gca(projection=proj, frameon=True)
             ax = fig.add_subplot(projection=proj)
