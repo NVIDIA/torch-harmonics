@@ -40,8 +40,6 @@ import torch_harmonics as harmonics
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib import cm
-import matplotlib.tri as mtri
 
 try:
     import cartopy.crs as ccrs
@@ -170,7 +168,7 @@ class SphereSolver(nn.Module):
             if ccrs is None:
                 raise ImportError("Couldn't import Cartopy")
 
-            proj = ccrs.Orthographic(central_longitude=0.0, central_latitude=45.0)
+            proj = ccrs.Orthographic(central_longitude=0.0, central_latitude=25.0)
 
             #ax = plt.gca(projection=proj, frameon=True)
             ax = fig.add_subplot(projection=proj)

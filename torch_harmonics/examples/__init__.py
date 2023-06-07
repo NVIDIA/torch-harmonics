@@ -29,9 +29,5 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-__version__ = '0.6.0'
-
-from .sht import RealSHT, InverseRealSHT, RealVectorSHT, InverseRealVectorSHT
-from . import quadrature
-from . import random_fields
-import examples
+from .pde_sphere import SphereSolver
+from .shallow_water_equations import ShallowWaterSolver

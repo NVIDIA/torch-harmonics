@@ -47,10 +47,10 @@ from typing import Optional
 import math
 
 from torch_harmonics import *
-from models.contractions import *
-from models.activations import *
+from .contractions import *
+from .activations import *
 
-from models.factorizations import get_contract_fun
+from .factorizations import get_contract_fun
 
 # # import FactorizedTensor from tensorly for tensorized operations
 # import tensorly as tl
