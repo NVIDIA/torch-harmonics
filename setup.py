@@ -81,7 +81,7 @@ config = {
     'packages': find_packages(),
     'description': 'A differentiable spherical harmonic transform for PyTorch.',
     'long_description': README,
-    'long_description_content_type' : 'text/x-rst',
+    'long_description_content_type' : 'text/markdown',
     'url' : 'https://github.com/NVIDIA/torch-harmonics',
     'authors': [
         {'name': "Boris Bonev", 'email': "bbonev@nvidia.com"},
