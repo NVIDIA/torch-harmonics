@@ -36,11 +36,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 <!-- ## What is torch-harmonics? -->
 
-`torch_harmonics` is a differentiable implementation of the Spherical Harmonic transform in PyTorch. It uses quadrature rules to compute the projection onto the associated Legendre polynomials and FFTs for the projection onto the harmonic basis. This algorithm tends to outperform others with better asymptotic scaling for most practical purposes.
+`torch_harmonics` is a differentiable implementation of the Spherical Harmonic transform in PyTorch. It was originally implemented to enable Spherical Fourier Neural Operators (SFNO). It uses quadrature rules to compute the projection onto the associated Legendre polynomials and FFTs for the projection onto the harmonic basis. This algorithm tends to outperform others with better asymptotic scaling for most practical purposes.
 
 `torch_harmonics` uses PyTorch primitives to implement these operations, making it fully differentiable. Moreover, the quadrature can be distributed onto multiple ranks making it spatially distributed.
 
-`torch_harmonics` has been used to implement a variety of differentiable PDE solvers which generated the animations below. Moreover, it has enabled the development of spherical Fourier Neural Operators (SFNOs).
+`torch_harmonics` has been used to implement a variety of differentiable PDE solvers which generated the animations below. Moreover, it has enabled the development of Spherical Fourier Neural Operators (SFNOs) [1].
 
 
 <table border="0" cellspacing="0" cellpadding="0">
@@ -59,6 +59,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 ## Installation
+Download directyly from PyPI:
+
+```
+pip install torch-harmonics
+```
+
 Build in your environment using the Python package:
 
 ```
@@ -67,7 +73,6 @@ pip install ./torch_harmonics
 ```
 
 Alternatively, use the Dockerfile to build your custom container after cloning:
-
 
 ```
 git clone git@github.com:NVIDIA/torch-harmonics.git
