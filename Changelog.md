@@ -5,7 +5,9 @@
 ### v0.6.0
 
 * Added SFNO example
+* Added Shallow Water Equations Dataset for SFNO training
 * Cleanup of the repository and added PyPI
+* Updated Readme
 
 ### v0.5.0
 
