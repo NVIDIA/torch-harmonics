@@ -2,18 +2,23 @@
 
 ## Versioning
 
-### v0.5
+### v0.6.0
+
+* Added SFNO example
+* Cleanup of the repository and added PyPI
+
+### v0.5.0
 
 * Reworked distributed SHT
 * Module for sampling Gaussian Random Fields on the sphere
 
-### v0.4
+### v0.4.0
 
 * Computation of associated Legendre polynomials
     * changed algorithm to compute the associated Legendre polynomials for improved stability
 * Improved Readme
 
-### v0.3
+### v0.3.0
 
 * Vector Spherical Harmonic Transforms
     * projects vector-valued fields onto the vector Spherical Harmonics
@@ -28,13 +33,13 @@
 * Unit tests
 * Refactor of the API
 
-### v0.2
+### v0.2.0
 
 * Renaming from torch_sht to torch_harmonics
 * Adding distributed SHT support
 * New logo
 
-### v0.1
+### v0.1.0
 
 * Single GPU forward and backward transform
-* Minimal code example and notebook 
+* Minimal code example and notebook
