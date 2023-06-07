@@ -45,10 +45,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 <table border="0" cellspacing="0" cellpadding="0">
     <tr>
-        <td><img src="./images/sfno.gif"  width="240"></td>
-        <td><img src="./images/zonal_jet.gif"  width="240"></td>
-        <td><img src="./images/ginzburg-landau.gif"  width="240"></td>
-        <td><img src="./images/allen-cahn.gif"  width="240"></td>
+        <td><img src="./images/sfno.gif"  width="360"></td>
+        <td><img src="./images/zonal_jet.gif"  width="360"></td>
+    </tr> 
+    <tr>
+        <td><img src="./images/ginzburg-landau.gif"  width="360"></td>
+        <td><img src="./images/allen-cahn.gif"  width="360"></td>
     </tr> 
 <!--     <tr>
         <td style="text-align:center; border-style : hidden!important;">Shallow Water Eqns.</td>
@@ -84,8 +86,8 @@ docker run --gpus all -it --rm --ipc=host --ulimit memlock=-1 --ulimit stack=671
 ## Contributors
 
  - Boris Bonev (bbonev@nvidia.com)
- - Christian Hundt (chundt@nvidia.com)
  - Thorsten Kurth (tkurth@nvidia.com)
+ - Christian Hundt (chundt@nvidia.com)
  - Nikola Kovachki (nkovachki@nvidia.com)
  - Jean Kossaifi (jkossaifi@nvidia.com)
 
