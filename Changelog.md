@@ -4,7 +4,7 @@
 
 ### v0.6.1
 
-* Cleanup in SFNO code
+* Minor bugfixes to export SFNO code
 * Readme should now render correctly in PyPI
 
 ### v0.6.0
