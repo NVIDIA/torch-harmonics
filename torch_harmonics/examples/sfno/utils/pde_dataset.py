@@ -92,7 +92,7 @@ class PdeDataset(torch.utils.data.Dataset):
         inp = self.solver.spec2grid(inp)
         tar = self.solver.spec2grid(tar)        
 
-        return inp, tar
+        return {'x': inp, 'y': tar}
 
     def __getitem__(self, index):
 
@@ -118,4 +118,4 @@ class PdeDataset(torch.utils.data.Dataset):
                     inp = (inp - self.inp_mean) / torch.sqrt(self.inp_var)
                     tar = (tar - self.inp_mean) / torch.sqrt(self.inp_var)
 
-        return inp.clone(), tar.clone()
+        return {'x': inp.clone(), 'y':tar.clone()}
