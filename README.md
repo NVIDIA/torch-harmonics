@@ -29,7 +29,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 -->
 
 <p align="center">
-    <img src="https://github.com/NVIDIA/torch-harmonics/blob/main/images/logo/logo.png"  width="568">
+    <img src="https://raw.githubusercontent.com/NVIDIA/torch-harmonics/main/images/logo/logo.png"  width="568">
 </p>
 
 <!-- # torch-harmonics: differentiable harmonic transforms -->
@@ -45,9 +45,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 <table border="0" cellspacing="0" cellpadding="0">
     <tr>
-        <td><img src="https://github.com/NVIDIA/torch-harmonics/blob/main/images/sfno.gif"  width="240"></td>
-        <td><img src="https://github.com/NVIDIA/torch-harmonics/blob/main/images/zonal_jet.gif"  width="240"></td>
-        <td><img src="https://github.com/NVIDIA/torch-harmonics/blob/main/images/allen-cahn.gif"  width="240"></td>
+        <td><img src="https://media.githubusercontent.com/media/NVIDIA/torch-harmonics/main/images/sfno.gif"  width="240"></td>
+        <td><img src="https://media.githubusercontent.com/media/NVIDIA/torch-harmonics/main/images/zonal_jet.gif"  width="240"></td>
+        <td><img src="https://media.githubusercontent.com/media/NVIDIA/torch-harmonics/main/images/allen-cahn.gif"  width="240"></td>
     </tr>
 <!--     <tr>
         <td style="text-align:center; border-style : hidden!important;">Shallow Water Eqns.</td>
