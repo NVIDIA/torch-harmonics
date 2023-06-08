@@ -30,3 +30,4 @@
 #
 
 from .utils.pde_dataset import PdeDataset
+from .models.sfno import SphericalFourierNeuralOperatorNet
