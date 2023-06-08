@@ -34,12 +34,7 @@ import os
 
 from math import ceil
 
-import sys
-sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "torch_harmonics"))
-sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "examples"))
-
-
-from shallow_water_equations import ShallowWaterSolver
+from ...shallow_water_equations import ShallowWaterSolver
 
 class PdeDataset(torch.utils.data.Dataset):
     """Custom Dataset class for PDE training data"""
