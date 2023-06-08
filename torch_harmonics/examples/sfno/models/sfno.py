@@ -31,7 +31,6 @@
 
 import torch
 import torch.nn as nn
-from apex.normalization import FusedLayerNorm
 
 from torch_harmonics import *
 
@@ -478,9 +477,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             #nn.init.normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.LayerNorm) or isinstance(m, FusedLayerNorm):
-            nn.init.constant_(m.bias, 0)
-            nn.init.constant_(m.weight, 1.0)
 
     @torch.jit.ignore
     def no_weight_decay(self):
