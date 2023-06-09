@@ -24,7 +24,9 @@ jobs:
     #     python -m pip install -e .
     #     cd ../..
     - name: Install dependencies
-      run: python -m pip install --upgrade pip setuptools wheel
+      run: |
+        python -m pip install --upgrade pip setuptools wheel
+        python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cpu
     - name: Install package
       run: |
         python -m pip install -e .
