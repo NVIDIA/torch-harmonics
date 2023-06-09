@@ -2,6 +2,10 @@
 
 ## Versioning
 
+### v0.6.2
+
+* Adding github CI
+
 ### v0.6.1
 
 * Minor bugfixes to export SFNO code

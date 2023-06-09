@@ -87,7 +87,7 @@ config = {
         {'name': "Boris Bonev", 'email': "bbonev@nvidia.com"},
         ],
     'version': VERSION,
-    'install_requires': ['torch','numpy'],
+    'install_requires': ['torch', 'numpy'],
     'extras_require': {
         'sfno':  ['tensorly', 'tensorly-torch'],
     },
