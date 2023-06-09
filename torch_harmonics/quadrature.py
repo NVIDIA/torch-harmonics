@@ -32,7 +32,7 @@
 import numpy as np
 
 def legendre_gauss_weights(n, a=-1.0, b=1.0):
-    """
+    r"""
     Helper routine which returns the Legendre-Gauss nodes and weights
     on the interval [a, b]
     """
@@ -44,7 +44,7 @@ def legendre_gauss_weights(n, a=-1.0, b=1.0):
     return xlg, wlg
 
 def lobatto_weights(n, a=-1.0, b=1.0, tol=1e-16, maxiter=100):
-    """
+    r"""
     Helper routine which returns the Legendre-Gauss-Lobatto nodes and weights
     on the interval [a, b]
     """
@@ -86,7 +86,7 @@ def lobatto_weights(n, a=-1.0, b=1.0, tol=1e-16, maxiter=100):
 
 
 def clenshaw_curtiss_weights(n, a=-1.0, b=1.0):
-    """
+    r"""
     Computation of the Clenshaw-Curtis quadrature nodes and weights.
     This implementation follows
 
@@ -123,7 +123,7 @@ def clenshaw_curtiss_weights(n, a=-1.0, b=1.0):
     return tcc, wcc
 
 def fejer2_weights(n, a=-1.0, b=1.0):
-    """
+    r"""
     Computation of the Fejer quadrature nodes and weights.
     This implementation follows
 

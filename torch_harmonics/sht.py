@@ -39,7 +39,7 @@ from .legendre import *
 
 
 class RealSHT(nn.Module):
-    """
+    r"""
     Defines a module for computing the forward (real-valued) SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
     The SHT is applied to the last two dimensions of the input
@@ -49,7 +49,7 @@ class RealSHT(nn.Module):
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="lobatto", norm="ortho", csphase=True):
-        """
+        r"""
         Initializes the SHT Layer, precomputing the necessary quadrature weights
 
         Parameters:
@@ -97,7 +97,7 @@ class RealSHT(nn.Module):
         self.register_buffer('weights', weights, persistent=False)
 
     def extra_repr(self):
-        """
+        r"""
         Pretty print module
         """
         return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
@@ -127,7 +127,7 @@ class RealSHT(nn.Module):
         return x
 
 class InverseRealSHT(nn.Module):
-    """
+    r"""
     Defines a module for computing the inverse (real-valued) SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
     nlat, nlon: Output dimensions
@@ -172,7 +172,7 @@ class InverseRealSHT(nn.Module):
         self.register_buffer('pct', pct, persistent=False)
 
     def extra_repr(self):
-        """
+        r"""
         Pretty print module
         """
         return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
@@ -197,7 +197,7 @@ class InverseRealSHT(nn.Module):
 
 
 class RealVectorSHT(nn.Module):
-    """
+    r"""
     Defines a module for computing the forward (real) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
     The SHT is applied to the last three dimensions of the input.
@@ -207,7 +207,7 @@ class RealVectorSHT(nn.Module):
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="lobatto", norm="ortho", csphase=True):
-        """
+        r"""
         Initializes the vector SHT Layer, precomputing the necessary quadrature weights
 
         Parameters:
@@ -259,7 +259,7 @@ class RealVectorSHT(nn.Module):
         self.register_buffer('weights', weights, persistent=False)
 
     def extra_repr(self):
-        """
+        r"""
         Pretty print module
         """
         return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
@@ -301,7 +301,7 @@ class RealVectorSHT(nn.Module):
 
 
 class InverseRealVectorSHT(nn.Module):
-    """
+    r"""
     Defines a module for computing the inverse (real-valued) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
     
@@ -343,7 +343,7 @@ class InverseRealVectorSHT(nn.Module):
         self.register_buffer('dpct', dpct, persistent=False)
 
     def extra_repr(self):
-        """
+        r"""
         Pretty print module
         """
         return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'

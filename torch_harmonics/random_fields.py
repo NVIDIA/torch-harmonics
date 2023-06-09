@@ -35,7 +35,8 @@ from .sht import InverseRealSHT
 class GaussianRandomFieldS2(torch.nn.Module):
     def __init__(self, nlat, alpha=2.0, tau=3.0, sigma=None, radius=1.0, grid="equiangular", dtype=torch.float32):
         super().__init__()
-        """A mean-zero Gaussian Random Field on the sphere with Matern covariance:
+        r"""
+        A mean-zero Gaussian Random Field on the sphere with Matern covariance:
         C = sigma^2 (-Lap + tau^2 I)^(-alpha).
         
         Lap is the Laplacian on the sphere, I the identity operator,
@@ -93,7 +94,8 @@ class GaussianRandomFieldS2(torch.nn.Module):
         self.gaussian_noise = torch.distributions.normal.Normal(self.mean, self.var)
 
     def forward(self, N, xi=None):
-        """Sample random functions from a spherical GRF.
+        r"""
+        Sample random functions from a spherical GRF.
     
         Parameters
         ----------
