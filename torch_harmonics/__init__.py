@@ -34,4 +34,4 @@ __version__ = '0.6.2'
 from .sht import RealSHT, InverseRealSHT, RealVectorSHT, InverseRealVectorSHT
 from . import quadrature
 from . import random_fields
-import examples
+from . import examples
