@@ -30,22 +30,13 @@
 #
 
 
-import sys
-sys.path.append("..")
-sys.path.append(".")
-
 import torch
 import torch.nn as nn
 import torch_harmonics as harmonics
 from torch_harmonics.quadrature import *
 
 import numpy as np
-import matplotlib.pyplot as plt
 
-try:
-    import cartopy.crs as ccrs
-except ImportError:
-    ccrs = None
 
 class ShallowWaterSolver(nn.Module):
     """
@@ -337,6 +328,7 @@ class ShallowWaterSolver(nn.Module):
         """
         plotting routine for data on the grid. Requires cartopy for 3d plots.
         """
+        import matplotlib.pyplot as plt
 
         lons = self.lons.squeeze() - torch.pi
         lats = self.lats.squeeze()
@@ -362,8 +354,7 @@ class ShallowWaterSolver(nn.Module):
 
         elif projection == '3d':
 
-            if ccrs is None:
-                raise ImportError("Couldn't import Cartopy")
+            import cartopy.crs as ccrs
 
             proj = ccrs.Orthographic(central_longitude=0.0, central_latitude=25.0)
 
