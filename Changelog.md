@@ -5,6 +5,8 @@
 ### v0.6.2
 
 * Adding github CI
+* Changed SHT modules to convert dtype dynamically when computing the SHT/ISHT
+* Bugfixes to fix importing examples
 
 ### v0.6.1
 
