@@ -155,7 +155,7 @@ batch_size = 32
 signal = torch.randn(batch_size, nlat, nlon)
 
 # transform data on an equiangular grid
-sht = th.RealSHT(nlat, nlon, grid="equiangular").to(device).float()
+sht = th.RealSHT(nlat, nlon, grid="equiangular").to(device)
 
 coeffs = sht(signal)
 ```
