@@ -36,6 +36,8 @@ from torch_harmonics import *
 
 from .layers import *
 
+from functools import partial
+
 class SpectralFilterLayer(nn.Module):
     """
     Fourier layer. Contains the convolution part of the FNO/SFNO
