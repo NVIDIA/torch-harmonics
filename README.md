@@ -90,11 +90,11 @@ docker run --gpus all -it --rm --ipc=host --ulimit memlock=-1 --ulimit stack=671
 
 ## Contributors
 
- - Boris Bonev (bbonev@nvidia.com)
- - Thorsten Kurth (tkurth@nvidia.com)
- - Christian Hundt (chundt@nvidia.com)
- - Nikola Kovachki (nkovachki@nvidia.com)
- - Jean Kossaifi (jkossaifi@nvidia.com)
+ - [Boris Bonev](https://bonevbs.github.io) (bbonev@nvidia.com)
+ - [Thorsten Kurth](https://github.com/azrael417) (tkurth@nvidia.com)
+ - [Christian Hundt](https://github.com/gravitino) (chundt@nvidia.com)
+ - [Nikola Kovachki](https://kovachki.github.io) (nkovachki@nvidia.com)
+ - [Jean Kossaifi](http://jeankossaifi.com) (jkossaifi@nvidia.com)
 
 ## Implementation
 The implementation follows the algorithm as presented in [2].
