@@ -83,11 +83,14 @@ class TestLegendrePolynomials(unittest.TestCase):
 
 class TestSphericalHarmonicTransform(unittest.TestCase):
 
-    def __init__(self, testname, norm="ortho", grid="legendre-gauss", tol=1e-9):
+    def __init__(self, testname, nlat=256, nlon=512, batch_size=128, norm="ortho", grid="legendre-gauss", tol=1e-9):
         super(TestSphericalHarmonicTransform, self).__init__(testname)  # calling the super class init varies for different python versions.  This works for 2.7
         self.norm = norm
         self.grid = grid
         self.tol = tol
+        self.batch_size = batch_size
+        self.nlat = nlat
+        self.nlon = nlon
     
     def setUp(self):
 
@@ -97,10 +100,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         else:
             print("Running test on CPU")
             self.device = torch.device('cpu')
-
-        self.batch_size = 128
-        self.nlat = 256
-        self.nlon = 2*self.nlat
 
     def test_sht(self):
         print(f"Testing real-valued SHT on {self.nlat}x{self.nlon} {self.grid} grid with {self.norm} normalization")
@@ -151,19 +150,10 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             coeffs[:, :lmax, :mmax] = torch.randn(self.batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)
             signal = isht(coeffs)
         
-        # testing error accumulation
-        for iter in testiters:
-            with self.subTest(i = iter):
-                print(f"{iter} iterations of batchsize {self.batch_size}:")
-
-                base = signal
-
-                for _ in tqdm(range(iter)):
-                    base = isht(sht(base))
-            
-                err = torch.mean(torch.norm(base-signal, p='fro', dim=(-1,-2)) / torch.norm(signal, p='fro', dim=(-1,-2)) )
-                print(f"final relative error: {err.item()}")
-                self.assertTrue(err.item() <= self.tol)
+        input = torch.randn_like(signal, requires_grad=True)
+        err_handle = lambda x : torch.mean(torch.norm( isht(sht(x)) - signal , p='fro', dim=(-1,-2)) / torch.norm(signal, p='fro', dim=(-1,-2)) )
+        test_result = gradcheck(err_handle, input, eps=1e-6, atol=self.tol)
+        self.assertTrue(test_result)
 
 
 if __name__ == '__main__':
@@ -179,4 +169,14 @@ if __name__ == '__main__':
     sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="four-pi", grid="legendre-gauss", tol=1e-9))
     sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="schmidt", grid="equiangular",    tol=1e-1))
     sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="schmidt", grid="legendre-gauss", tol=1e-9))
+
+    # test error growth when computing repeatedly isht(sht(x))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="ortho",   grid="equiangular",    tol=1e-4, nlat=32, nlon=64, batch_size=2))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="ortho",   grid="legendre-gauss", tol=1e-4, nlat=32, nlon=64, batch_size=2))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="four-pi", grid="equiangular",    tol=1e-4, nlat=32, nlon=64, batch_size=2))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="four-pi", grid="legendre-gauss", tol=1e-4, nlat=32, nlon=64, batch_size=2))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="schmidt", grid="equiangular",    tol=1e-4, nlat=32, nlon=64, batch_size=2))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="schmidt", grid="legendre-gauss", tol=1e-4, nlat=32, nlon=64, batch_size=2))
+
+    # run the test suite
     unittest.TextTestRunner(verbosity=2).run(sht_test_suite)
