@@ -29,7 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import unittest, pytest
+import unittest, argparse
 import numpy as np
 import torch
 from torch.autograd import gradcheck
@@ -83,7 +83,7 @@ class TestLegendrePolynomials(unittest.TestCase):
 
 class TestSphericalHarmonicTransform(unittest.TestCase):
 
-    def __init__(self, testname, nlat=256, nlon=512, batch_size=32, norm="ortho", grid="legendre-gauss", tol=1e-9):
+    def __init__(self, testname, nlat=12, nlon=24, batch_size=32, norm="ortho", grid="legendre-gauss", tol=1e-9):
         super(TestSphericalHarmonicTransform, self).__init__(testname)  # calling the super class init varies for different python versions.  This works for 2.7
         self.norm = norm
         self.grid = grid
@@ -133,7 +133,7 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
                 print(f"final relative error: {err.item()}")
                 self.assertTrue(err.item() <= self.tol)
 
-    @pytest.mark.slow
+    # @unittest.skipIf(mylib.__version__ < (1, 3), "skipping slow tests")
     def test_sht_grad(self):
         print(f"Testing gradients of real-valued SHT on {self.nlat}x{self.nlon} {self.grid} grid with {self.norm} normalization")
 
@@ -158,6 +158,10 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
 
 
 if __name__ == '__main__':
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument("--run_slow", action='store_true', help="Run the slow tests.")
+    # args = parser.parse_args()
+
     sht_test_suite = unittest.TestSuite()
 
     # test computation of Legendre polynomials
