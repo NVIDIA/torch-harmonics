@@ -29,7 +29,8 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import unittest, argparse
+import unittest
+import math
 import numpy as np
 import torch
 from torch.autograd import gradcheck
@@ -49,7 +50,7 @@ class TestLegendrePolynomials(unittest.TestCase):
         self.tol = tol
 
     def setUp(self):
-        self.cml = lambda m, l : np.sqrt((2*l + 1) / 4 / np.pi) * np.sqrt(np.math.factorial(l-m) / np.math.factorial(l+m))
+        self.cml = lambda m, l : np.sqrt((2*l + 1) / 4 / np.pi) * np.sqrt(math.factorial(l-m) / math.factorial(l+m))
         self.pml = dict()
 
         # preparing associated Legendre Polynomials (These include the Condon-Shortley phase)
@@ -133,7 +134,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
                 print(f"final relative error: {err.item()}")
                 self.assertTrue(err.item() <= self.tol)
 
-    # @unittest.skipIf(mylib.__version__ < (1, 3), "skipping slow tests")
     def test_sht_grad(self):
         print(f"Testing gradients of real-valued SHT on {self.nlat}x{self.nlon} {self.grid} grid with {self.norm} normalization")
 
@@ -158,22 +158,18 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument("--run_slow", action='store_true', help="Run the slow tests.")
-    # args = parser.parse_args()
-
     sht_test_suite = unittest.TestSuite()
 
     # test computation of Legendre polynomials
     sht_test_suite.addTest(TestLegendrePolynomials('test_legendre', tol=1e-9))
 
     # test error growth when computing repeatedly isht(sht(x))
-    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="ortho",   grid="equiangular",    tol=1e-1))
-    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="ortho",   grid="legendre-gauss", tol=1e-9))
-    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="four-pi", grid="equiangular",    tol=1e-1))
-    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="four-pi", grid="legendre-gauss", tol=1e-9))
-    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="schmidt", grid="equiangular",    tol=1e-1))
-    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="schmidt", grid="legendre-gauss", tol=1e-9))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="ortho",   grid="equiangular",    tol=1e-1, nlat=256, nlon=512, batch_size=16))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="ortho",   grid="legendre-gauss", tol=1e-9, nlat=256, nlon=512, batch_size=16))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="four-pi", grid="equiangular",    tol=1e-1, nlat=256, nlon=512, batch_size=16))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="four-pi", grid="legendre-gauss", tol=1e-9, nlat=256, nlon=512, batch_size=16))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="schmidt", grid="equiangular",    tol=1e-1, nlat=256, nlon=512, batch_size=16))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="schmidt", grid="legendre-gauss", tol=1e-9, nlat=256, nlon=512, batch_size=16))
 
     # test error growth when computing repeatedly isht(sht(x))
     sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="ortho",   grid="equiangular",    tol=1e-4, nlat=12, nlon=24, batch_size=2))
