@@ -1,4 +1,4 @@
-name: Unit tests
+name: tests
 
 on: [push]
 
@@ -22,5 +22,5 @@ jobs:
         python -m pip install -e .
     - name: Test with pytest
       run: |
-        pip install pytest pytest-cov
-        pytest ./torch_harmonics/tests.py
+        python -m pip install pytest pytest-cov parameterized
+        python -m pytest ./torch_harmonics/tests.py
