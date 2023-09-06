@@ -32,6 +32,7 @@
 import unittest
 import numpy as np
 import torch
+from torch.autograd import gradcheck
 from torch_harmonics import *
 
 # try:
@@ -42,6 +43,10 @@ from torch_harmonics import *
 tqdm = lambda x : x
 
 class TestLegendrePolynomials(unittest.TestCase):
+
+    def __init__(self, testname, tol=1e-9):
+        super(TestLegendrePolynomials, self).__init__(testname)
+        self.tol = tol
 
     def setUp(self):
         self.cml = lambda m, l : np.sqrt((2*l + 1) / 4 / np.pi) * np.sqrt(np.math.factorial(l-m) / np.math.factorial(l+m))
@@ -66,23 +71,23 @@ class TestLegendrePolynomials(unittest.TestCase):
         print("Testing computation of associated Legendre polynomials")
         from torch_harmonics.legendre import precompute_legpoly
 
-        TOL = 1e-9
-
         t = np.linspace(0, np.pi, 100)
         pct = precompute_legpoly(self.mmax, self.lmax, t)
 
         for l in range(self.lmax):
             for m in range(l+1):
                 diff = pct[m, l].numpy() / self.cml(m,l) - self.pml[(m,l)](np.cos(t))
-                self.assertTrue(diff.max() <= TOL)
+                self.assertTrue(diff.max() <= self.tol)
         print("done.")
 
 
 class TestSphericalHarmonicTransform(unittest.TestCase):
 
-    def __init__(self, testname, norm="ortho"):
+    def __init__(self, testname, norm="ortho", grid="legendre-gauss", tol=1e-9):
         super(TestSphericalHarmonicTransform, self).__init__(testname)  # calling the super class init varies for different python versions.  This works for 2.7
         self.norm = norm
+        self.grid = grid
+        self.tol = tol
     
     def setUp(self):
 
@@ -97,21 +102,25 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         self.nlat = 256
         self.nlon = 2*self.nlat
 
-    def test_sht_leggauss(self):
-        print(f"Testing real-valued SHT on Legendre-Gauss grid with {self.norm} normalization")
+    def test_sht(self):
+        print(f"Testing real-valued SHT on {self.nlat}x{self.nlon} {self.grid} grid with {self.norm} normalization")
 
-        TOL = 1e-9
         testiters = [1, 2, 4, 8, 16]
-        mmax = self.nlat
+        if self.grid == "equiangular":
+            mmax = self.nlat // 2
+        else:
+            mmax = self.nlat
         lmax = mmax
 
-        sht = RealSHT(self.nlat, self.nlon, mmax=mmax, lmax=lmax, grid="legendre-gauss", norm=self.norm).to(self.device)
-        isht = InverseRealSHT(self.nlat, self.nlon, mmax=mmax, lmax=lmax, grid="legendre-gauss", norm=self.norm).to(self.device)
+        sht = RealSHT(self.nlat, self.nlon, mmax=mmax, lmax=lmax, grid=self.grid, norm=self.norm).to(self.device)
+        isht = InverseRealSHT(self.nlat, self.nlon, mmax=mmax, lmax=lmax, grid=self.grid, norm=self.norm).to(self.device)
 
-        coeffs = torch.zeros(self.batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)
-        coeffs[:, :lmax, :mmax] = torch.randn(self.batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)
-        signal = isht(coeffs)
+        with torch.no_grad():
+            coeffs = torch.zeros(self.batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)
+            coeffs[:, :lmax, :mmax] = torch.randn(self.batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)
+            signal = isht(coeffs)
         
+        # testing error accumulation
         for iter in testiters:
             with self.subTest(i = iter):
                 print(f"{iter} iterations of batchsize {self.batch_size}:")
@@ -121,26 +130,28 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
                 for _ in tqdm(range(iter)):
                     base = isht(sht(base))
             
-                # err = ( torch.norm(base-self.signal, p='fro') / torch.norm(self.signal, p='fro') ).item()
-                err = torch.mean(torch.norm(base-signal, p='fro', dim=(-1,-2)) / torch.norm(signal, p='fro', dim=(-1,-2)) ).item()
-                print(f"final relative error: {err}")
-                self.assertTrue(err <= TOL)
+                err = torch.mean(torch.norm(base-signal, p='fro', dim=(-1,-2)) / torch.norm(signal, p='fro', dim=(-1,-2)) )
+                print(f"final relative error: {err.item()}")
+                self.assertTrue(err.item() <= self.tol)
 
-    def test_sht_equiangular(self):
-        print(f"Testing real-valued SHT on equiangular grid with {self.norm} normalization")
+    def test_sht_grad(self):
+        print(f"Testing gradients of real-valued SHT on {self.nlat}x{self.nlon} {self.grid} grid with {self.norm} normalization")
 
-        TOL = 1e-1
-        testiters = [1, 2, 4, 8]
-        mmax = self.nlat // 2
+        if self.grid == "equiangular":
+            mmax = self.nlat // 2
+        else:
+            mmax = self.nlat
         lmax = mmax
 
-        sht = RealSHT(self.nlat, self.nlon, mmax=mmax, lmax=lmax, grid="equiangular", norm=self.norm).to(self.device)
-        isht = InverseRealSHT(self.nlat, self.nlon, mmax=mmax, lmax=lmax, grid="equiangular", norm=self.norm).to(self.device)
+        sht = RealSHT(self.nlat, self.nlon, mmax=mmax, lmax=lmax, grid=self.grid, norm=self.norm).to(self.device)
+        isht = InverseRealSHT(self.nlat, self.nlon, mmax=mmax, lmax=lmax, grid=self.grid, norm=self.norm).to(self.device)
 
-        coeffs = torch.zeros(self.batch_size, sht.lmax, sht.mmax, device=self.device, dtype=torch.complex128)
-        coeffs[:, :lmax, :mmax] = torch.randn(self.batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)
-        signal = isht(coeffs)
+        with torch.no_grad():
+            coeffs = torch.zeros(self.batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)
+            coeffs[:, :lmax, :mmax] = torch.randn(self.batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)
+            signal = isht(coeffs)
         
+        # testing error accumulation
         for iter in testiters:
             with self.subTest(i = iter):
                 print(f"{iter} iterations of batchsize {self.batch_size}:")
@@ -150,19 +161,22 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
                 for _ in tqdm(range(iter)):
                     base = isht(sht(base))
             
-                # err = ( torch.norm(base-self.signal, p='fro') / torch.norm(self.signal, p='fro') ).item()
-                err = torch.mean(torch.norm(base-signal, p='fro', dim=(-1,-2)) / torch.norm(signal, p='fro', dim=(-1,-2)) ).item()
-                print(f"final relative error: {err}")
-                self.assertTrue(err <= TOL)
+                err = torch.mean(torch.norm(base-signal, p='fro', dim=(-1,-2)) / torch.norm(signal, p='fro', dim=(-1,-2)) )
+                print(f"final relative error: {err.item()}")
+                self.assertTrue(err.item() <= self.tol)
 
 
 if __name__ == '__main__':
     sht_test_suite = unittest.TestSuite()
-    sht_test_suite.addTest(TestLegendrePolynomials('test_legendre'))
-    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_leggauss',    norm="ortho"))
-    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_equiangular', norm="ortho"))
-    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_leggauss',    norm="four-pi"))
-    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_equiangular', norm="four-pi"))
-    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_leggauss',    norm="schmidt"))
-    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_equiangular', norm="schmidt"))
+
+    # test computation of Legendre polynomials
+    sht_test_suite.addTest(TestLegendrePolynomials('test_legendre', tol=1e-9))
+
+    # test error growth when computing repeatedly isht(sht(x))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="ortho",   grid="equiangular",    tol=1e-1))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="ortho",   grid="legendre-gauss", tol=1e-9))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="four-pi", grid="equiangular",    tol=1e-1))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="four-pi", grid="legendre-gauss", tol=1e-9))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="schmidt", grid="equiangular",    tol=1e-1))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht', norm="schmidt", grid="legendre-gauss", tol=1e-9))
     unittest.TextTestRunner(verbosity=2).run(sht_test_suite)
