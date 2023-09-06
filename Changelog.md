@@ -2,6 +2,10 @@
 
 ## Versioning
 
+### v0.6.3
+
+* Adding gradient check in unit tests
+
 ### v0.6.2
 
 * Adding github CI
