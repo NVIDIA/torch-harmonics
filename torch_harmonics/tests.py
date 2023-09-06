@@ -29,7 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import unittest
+import unittest, pytest
 import numpy as np
 import torch
 from torch.autograd import gradcheck
@@ -133,6 +133,7 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
                 print(f"final relative error: {err.item()}")
                 self.assertTrue(err.item() <= self.tol)
 
+    @pytest.mark.slow
     def test_sht_grad(self):
         print(f"Testing gradients of real-valued SHT on {self.nlat}x{self.nlon} {self.grid} grid with {self.norm} normalization")
 
@@ -172,11 +173,11 @@ if __name__ == '__main__':
 
     # test error growth when computing repeatedly isht(sht(x))
     sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="ortho",   grid="equiangular",    tol=1e-4, nlat=12, nlon=24, batch_size=2))
-    # sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="ortho",   grid="legendre-gauss", tol=1e-4, nlat=12, nlon=24, batch_size=2))
-    # sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="four-pi", grid="equiangular",    tol=1e-4, nlat=12, nlon=24, batch_size=2))
-    # sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="four-pi", grid="legendre-gauss", tol=1e-4, nlat=12, nlon=24, batch_size=2))
-    # sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="schmidt", grid="equiangular",    tol=1e-4, nlat=12, nlon=24, batch_size=2))
-    # sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="schmidt", grid="legendre-gauss", tol=1e-4, nlat=12, nlon=24, batch_size=2))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="ortho",   grid="legendre-gauss", tol=1e-4, nlat=12, nlon=24, batch_size=2))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="four-pi", grid="equiangular",    tol=1e-4, nlat=12, nlon=24, batch_size=2))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="four-pi", grid="legendre-gauss", tol=1e-4, nlat=12, nlon=24, batch_size=2))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="schmidt", grid="equiangular",    tol=1e-4, nlat=12, nlon=24, batch_size=2))
+    sht_test_suite.addTest(TestSphericalHarmonicTransform('test_sht_grad', norm="schmidt", grid="legendre-gauss", tol=1e-4, nlat=12, nlon=24, batch_size=2))
 
     # run the test suite
     unittest.TextTestRunner(verbosity=2).run(sht_test_suite)
