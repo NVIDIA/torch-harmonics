@@ -40,8 +40,6 @@ from torch_harmonics import *
 from .contractions import *
 from .activations import *
 
-from .factorizations import get_contract_fun
-
 # # import FactorizedTensor from tensorly for tensorized operations
 # import tensorly as tl
 # from tensorly.plugins import use_opt_einsum
@@ -207,7 +205,7 @@ class InverseRealFFT2(nn.Module):
 
     def forward(self, x):
         return torch.fft.irfft2(x, dim=(-2, -1), s=(self.nlat, self.nlon), norm="ortho")
-
+    
 class SpectralConvS2(nn.Module):
     """
     Spectral Convolution according to Driscoll & Healy. Designed for convolutions on the two-sphere S2
@@ -221,7 +219,95 @@ class SpectralConvS2(nn.Module):
                  in_channels,
                  out_channels,
                  scale = 'auto',
-                 operator_type = 'diagonal',
+                 operator_type = 'driscoll-healy',
+                 lr_scale_exponent = 0,
+                 bias = False):
+        super(SpectralConvS2, self).__init__()
+
+        if scale == 'auto':
+            scale = (2 / in_channels)**0.5
+
+        self.forward_transform = forward_transform
+        self.inverse_transform = inverse_transform
+
+        self.modes_lat = self.inverse_transform.lmax
+        self.modes_lon = self.inverse_transform.mmax
+
+        self.scale_residual = (self.forward_transform.nlat != self.inverse_transform.nlat) \
+                        or (self.forward_transform.nlon != self.inverse_transform.nlon)
+
+        # remember factorization details
+        self.operator_type = operator_type
+
+        assert self.inverse_transform.lmax == self.modes_lat
+        assert self.inverse_transform.mmax == self.modes_lon
+
+        weight_shape = [in_channels, out_channels]
+
+        if self.operator_type == 'diagonal':
+            weight_shape += [self.modes_lat, self.modes_lon]
+            from .contractions import contract_diagonal as _contract
+        elif self.operator_type == 'block-diagonal':
+            weight_shape += [self.modes_lat, self.modes_lon, self.modes_lon]
+            from .contractions import contract_blockdiag as _contract
+        elif self.operator_type == 'driscoll-healy':
+            weight_shape += [self.modes_lat]
+            from .contractions import contract_dhconv as _contract
+        else:
+            raise NotImplementedError(f"Unkonw operator type f{self.operator_type}")
+
+        # form weight tensors
+        self.weight = nn.Parameter(scale * torch.randn(*weight_shape, 2))
+
+        # rescale the learning rate for better training of spectral parameters
+        lr_scale = (torch.arange(self.modes_lat)+1).reshape(-1, 1)**(lr_scale_exponent)
+        self.register_buffer("lr_scale", lr_scale)
+        # self.weight.register_hook(lambda grad: self.lr_scale*grad)
+
+        # get the right contraction function
+        self._contract = _contract
+   
+        if bias:
+            self.bias = nn.Parameter(scale * torch.randn(1, out_channels, 1, 1))
+
+        
+    def forward(self, x):
+
+        dtype = x.dtype
+        x = x.float()
+        residual = x
+
+        with amp.autocast(enabled=False):
+            x = self.forward_transform(x)
+            if self.scale_residual:
+                residual = self.inverse_transform(x)
+
+
+        x = torch.view_as_real(x)
+        x = self._contract(x, self.weight)
+        x = torch.view_as_complex(x)
+
+        with amp.autocast(enabled=False):
+            x = self.inverse_transform(x)
+            
+        if hasattr(self, 'bias'):
+            x = x + self.bias
+        x = x.type(dtype)
+    
+        return x, residual
+
+class FactorizedSpectralConvS2(nn.Module):
+    """
+    Factorized version of SpectralConvS2. Uses tensorly-torch to keep the weights factorized
+    """
+    
+    def __init__(self,
+                 forward_transform,
+                 inverse_transform,
+                 in_channels,
+                 out_channels,
+                 scale = 'auto',
+                 operator_type = 'driscoll-healy',
                  rank = 0.2,
                  factorization = None,
                  separable = False,
@@ -231,7 +317,7 @@ class SpectralConvS2(nn.Module):
         super(SpectralConvS2, self).__init__()
 
         if scale == 'auto':
-            scale = (1 / (in_channels * out_channels))
+            scale = (2 / in_channels)**0.5
 
         self.forward_transform = forward_transform
         self.inverse_transform = inverse_transform
@@ -266,7 +352,7 @@ class SpectralConvS2(nn.Module):
             weight_shape += [self.modes_lat, self.modes_lon]
         elif self.operator_type == 'block-diagonal':
             weight_shape += [self.modes_lat, self.modes_lon, self.modes_lon]
-        elif self.operator_type == 'vector':
+        elif self.operator_type == 'driscoll-healy':
             weight_shape += [self.modes_lat]
         else:
             raise NotImplementedError(f"Unkonw operator type f{self.operator_type}")
@@ -278,6 +364,8 @@ class SpectralConvS2(nn.Module):
         # initialization of weights
         self.weight.normal_(0, scale)
 
+        # get the right contraction function
+        from .factorizations import get_contract_fun
         self._contract = get_contract_fun(self.weight, implementation=implementation, separable=separable)
    
         if bias:
@@ -289,7 +377,6 @@ class SpectralConvS2(nn.Module):
         dtype = x.dtype
         x = x.float()
         residual = x
-        B, C, H, W = x.shape
 
         with amp.autocast(enabled=False):
             x = self.forward_transform(x)
@@ -467,7 +554,7 @@ class SpectralAttentionS2(nn.Module):
             for l in range(0, self.spectral_layers):
                 self.activations.append(ComplexReLU(mode=complex_activation, bias_shape=(hidden_size, 1, 1), scale=self.scale))
         
-        elif operator_type == 'vector':
+        elif operator_type == 'driscoll-healy':
 
             self.mul_add_handle = compl_exp_muladd2d_fwd
             self.mul_handle = compl_exp_mul2d_fwd

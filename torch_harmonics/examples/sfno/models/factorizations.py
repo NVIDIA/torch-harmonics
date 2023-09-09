@@ -59,7 +59,7 @@ def _contract_dense(x, weight, separable=False, operator_type='diagonal'):
     elif operator_type == 'block-diagonal':
         weight_syms.insert(-1, einsum_symbols[order+1])
         out_syms[-1] = weight_syms[-2]
-    elif operator_type == 'vector':
+    elif operator_type == 'driscoll-healy':
         weight_syms.pop()
     else:
         raise ValueError(f"Unkonw operator type {operator_type}")
@@ -92,7 +92,7 @@ def _contract_cp(x, cp_weight, separable=False, operator_type='diagonal'):
     elif operator_type == 'block-diagonal':
         out_syms[-1] = einsum_symbols[order+2]
         factor_syms += [out_syms[-1] + rank_sym]
-    elif operator_type == 'vector':
+    elif operator_type == 'driscoll-healy':
         factor_syms.pop()
     else:
         raise ValueError(f"Unkonw operator type {operator_type}")
@@ -148,7 +148,7 @@ def _contract_tt(x, tt_weight, separable=False, operator_type='diagonal'):
     elif operator_type == 'block-diagonal':
         weight_syms.insert(-1, einsum_symbols[order+1])
         out_syms[-1] = weight_syms[-2]
-    elif operator_type == 'vector':
+    elif operator_type == 'driscoll-healy':
         weight_syms.pop()
     else:
         raise ValueError(f"Unkonw operator type {operator_type}")

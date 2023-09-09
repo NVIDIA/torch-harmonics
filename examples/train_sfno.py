@@ -332,16 +332,21 @@ def main(train=True, load_checkpoint=False, enable_amp=False):
     # from models.unet import UNet
     # models['unet_baseline'] = partial(UNet)
 
-    # SFNO models
-    models['sfno_sc3_layer4_edim256_linear']    = partial(SFNO, spectral_transform='sht', filter_type='linear', img_size=(nlat, nlon),
-                                                     num_layers=4, scale_factor=3, embed_dim=256, operator_type='vector')
-    models['sfno_sc3_layer4_edim256_real']      = partial(SFNO, spectral_transform='sht', filter_type='non-linear', img_size=(nlat, nlon),
-                                                     num_layers=4, scale_factor=3, embed_dim=256, complex_activation = 'real', operator_type='diagonal')
-    # FNO models
-    models['fno_sc3_layer4_edim256_linear']     = partial(SFNO, spectral_transform='fft', filter_type='linear', img_size=(nlat, nlon),
-                                                     num_layers=4, scale_factor=3, embed_dim=256, operator_type='diagonal')
-    models['fno_sc3_layer4_edim256_real']       = partial(SFNO, spectral_transform='fft', filter_type='non-linear', img_size=(nlat, nlon),
-                                                     num_layers=4, scale_factor=3, embed_dim=256, complex_activation='real')
+    # SFNO with rescaled Learning Rate
+    models['sfno_sc3_layer4_edim256_linear_normaftermlp']    = partial(SFNO, spectral_transform='sht', filter_type='linear', img_size=(nlat, nlon),
+                                                                   num_layers=4, scale_factor=3, embed_dim=256, operator_type='driscoll-healy',
+                                                                   lr_scale_exponent=0.0)
+
+    # # SFNO models
+    # models['sfno_sc3_layer4_edim256_linear']    = partial(SFNO, spectral_transform='sht', filter_type='linear', img_size=(nlat, nlon),
+    #                                                  num_layers=4, scale_factor=3, embed_dim=256, operator_type='driscoll-healy')
+    # models['sfno_sc3_layer4_edim256_real']      = partial(SFNO, spectral_transform='sht', filter_type='non-linear', img_size=(nlat, nlon),
+    #                                                  num_layers=4, scale_factor=3, embed_dim=256, complex_activation = 'real', operator_type='diagonal')
+    # # FNO models
+    # models['fno_sc3_layer4_edim256_linear']     = partial(SFNO, spectral_transform='fft', filter_type='linear', img_size=(nlat, nlon),
+    #                                                  num_layers=4, scale_factor=3, embed_dim=256, operator_type='diagonal')
+    # models['fno_sc3_layer4_edim256_real']       = partial(SFNO, spectral_transform='fft', filter_type='non-linear', img_size=(nlat, nlon),
+    #                                                  num_layers=4, scale_factor=3, embed_dim=256, complex_activation='real')
 
     # iterate over models and train each model
     root_path = os.path.dirname(__file__)
