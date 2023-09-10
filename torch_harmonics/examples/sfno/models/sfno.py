@@ -175,12 +175,12 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
 
         if filter_type == "linear":
             self.act_layer = act_layer()
-        
-        # dropout
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
         # first normalisation layer
         self.norm0 = norm_layer()
+        
+        # dropout
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         
         if use_mlp == True:
             mlp_hidden_dim = int(embed_dim * mlp_ratio)
@@ -226,14 +226,14 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
 
         x = self.drop_path(x)
 
-        x = self.norm1(x)
-
         if hasattr(self, "outer_skip"):
             if self.concat_skip:
                 x = torch.cat((x, self.outer_skip(residual)), dim=1)
                 x = self.outer_skip_conv(x)
             else:
                 x = x + self.outer_skip(residual)
+
+        x = self.norm1(x)
 
         return x
 
@@ -333,7 +333,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             drop_rate = 0.,
             drop_path_rate = 0.,
             sparsity_threshold = 0.0,
-            normalization_layer = "instance_norm",
+            normalization_layer = "none",
             hard_thresholding_fraction = 1.0,
             use_complex_kernels = True,
             big_skip = True,
