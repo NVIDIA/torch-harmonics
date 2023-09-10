@@ -5,6 +5,7 @@
 ### v0.6.3
 
 * Adding gradient check in unit tests
+* Updated SFNO example
 
 ### v0.6.2
 
