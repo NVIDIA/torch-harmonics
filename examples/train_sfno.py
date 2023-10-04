@@ -334,7 +334,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False):
 
     # SFNO models
     models['sfno_sc3_layer4_edim256_linear']    = partial(SFNO, spectral_transform='sht', filter_type='linear', img_size=(nlat, nlon),
-                                                     num_layers=4, scale_factor=3, embed_dim=256, operator_type='vector')
+                                                     num_layers=4, scale_factor=3, embed_dim=256, operator_type='driscoll-healy')
     models['sfno_sc3_layer4_edim256_real']      = partial(SFNO, spectral_transform='sht', filter_type='non-linear', img_size=(nlat, nlon),
                                                      num_layers=4, scale_factor=3, embed_dim=256, complex_activation = 'real', operator_type='diagonal')
     # FNO models
