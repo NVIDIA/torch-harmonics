@@ -36,32 +36,27 @@ Contains complex contractions wrapped into jit for harmonic layers
 """
 
 @torch.jit.script
-def compl_contract2d_fwd(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    tmp = torch.einsum("bixys,kixr->srbkx", a, b)
-    res = torch.stack([tmp[0,0,...] - tmp[1,1,...], tmp[1,0,...] + tmp[0,1,...]], dim=-1)
-    return res
-
-@torch.jit.script
-def compl_contract2d_fwd_c(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+def contract_diagonal(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     ac = torch.view_as_complex(a)
     bc = torch.view_as_complex(b)
-    res = torch.einsum("bixy,kix->bkx", ac, bc)
+    res = torch.einsum("bixy,kixy->bkxy", ac, bc)
     return torch.view_as_real(res)
 
 @torch.jit.script
-def compl_contract_fwd(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    tmp = torch.einsum("bins,kinr->srbkn", a, b)
-    res = torch.stack([tmp[0,0,...] - tmp[1,1,...], tmp[1,0,...] + tmp[0,1,...]], dim=-1)
-    return res
-
-@torch.jit.script
-def compl_contract_fwd_c(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+def contract_dhconv(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     ac = torch.view_as_complex(a)
     bc = torch.view_as_complex(b)
-    res = torch.einsum("bin,kin->bkn", ac, bc)
+    res = torch.einsum("bixy,kix->bkxy", ac, bc)
     return torch.view_as_real(res)
 
-# Helper routines for spherical MLPs
+@torch.jit.script
+def contract_blockdiag(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    ac = torch.view_as_complex(a)
+    bc = torch.view_as_complex(b)
+    res = torch.einsum("bixy,kixyz->bkxz", ac, bc)
+    return torch.view_as_real(res)
+
+# Helper routines for the non-linear FNOs (Attention-like)
 @torch.jit.script
 def compl_mul1d_fwd(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     tmp = torch.einsum("bixs,ior->srbox", a, b)
@@ -123,19 +118,4 @@ def real_mul2d_fwd(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 @torch.jit.script
 def real_muladd2d_fwd(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
     return compl_mul2d_fwd_c(a, b) + c
-
-# for all the experimental layers
-# @torch.jit.script
-# def compl_exp_mul2d_fwd(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-#     ac = torch.view_as_complex(a)
-#     bc = torch.view_as_complex(b)
-#     resc = torch.einsum("bixy,xio->boxy", ac, bc)
-#     res = torch.view_as_real(resc)
-#     return res
-
-# @torch.jit.script
-# def compl_exp_muladd2d_fwd(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-#     tmpcc = torch.view_as_complex(compl_exp_mul2d_fwd(a, b))
-#     cc = torch.view_as_complex(c)
-#     return torch.view_as_real(tmpcc + cc)
 
