@@ -83,9 +83,8 @@ config = {
     'long_description': README,
     'long_description_content_type' : 'text/markdown',
     'url' : 'https://github.com/NVIDIA/torch-harmonics',
-    'authors': [
-        {'name': "Boris Bonev", 'email': "bbonev@nvidia.com"},
-        ],
+    'author': 'Boris Bonev',
+    'author_email': 'bbonev@nvidia.com',
     'version': VERSION,
     'install_requires': ['torch', 'numpy'],
     'extras_require': {
