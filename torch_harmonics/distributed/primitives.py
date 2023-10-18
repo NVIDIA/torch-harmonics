@@ -73,6 +73,7 @@ class distributed_transpose_azimuth(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, dim):
         input_format = get_memory_format(x)
+        # WAR for a potential contig check torch bug for channels last contig tensors
         x = x.contiguous()
         xlist, _ = _transpose(x, dim[0], dim[1], group=azimuth_group())
         x = torch.cat(xlist, dim=dim[1]).contiguous(memory_format=input_format)
@@ -83,6 +84,7 @@ class distributed_transpose_azimuth(torch.autograd.Function):
     def backward(ctx, go):
         input_format = get_memory_format(go)
         dim = ctx.dim
+        # WAR for a potential contig check torch bug for channels last contig tensors 
         go = go.contiguous()
         gilist, _ = _transpose(go, dim[1], dim[0], group=azimuth_group())
         gi = torch.cat(gilist, dim=dim[0]).contiguous(memory_format=input_format)
@@ -94,6 +96,7 @@ class distributed_transpose_polar(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, dim):
         input_format = get_memory_format(x)
+        # WAR for a potential contig check torch bug for channels last contig tensors 
         x = x.contiguous()
         xlist, _ = _transpose(x, dim[0], dim[1], group=polar_group())
         x = torch.cat(xlist, dim=dim[1]).contiguous(memory_format=input_format)
@@ -104,6 +107,7 @@ class distributed_transpose_polar(torch.autograd.Function):
     def backward(ctx, go):
         input_format = get_memory_format(go)
         dim = ctx.dim
+        # WAR for a potential contig check torch bug for channels last contig tensors 
         go = go.contiguous()
         gilist, _ = _transpose(go, dim[1], dim[0], group=polar_group())
         gi = torch.cat(gilist, dim=dim[0]).contiguous(memory_format=input_format)
