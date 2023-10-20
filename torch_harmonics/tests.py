@@ -76,7 +76,7 @@ class TestLegendrePolynomials(unittest.TestCase):
 
         for l in range(self.lmax):
             for m in range(l+1):
-                diff = pct[m, l].numpy() / self.cml(m,l) - self.pml[(m,l)](t)
+                diff = pct[m, l] / self.cml(m,l) - self.pml[(m,l)](t)
                 self.assertTrue(diff.max() <= self.tol)
 
 

@@ -30,7 +30,6 @@
 #
 
 import numpy as np
-import torch
 
 def clm(l, m):
     """
@@ -85,7 +84,7 @@ def legpoly(mmax, lmax, x, norm="ortho", inverse=False, csphase=True):
         for m in range(1, mmax, 2):
             vdm[m] *= -1
 
-    return torch.from_numpy(vdm)
+    return vdm
 
 def _precompute_legpoly(mmax, lmax, t, norm="ortho", inverse=False, csphase=True):
     r"""
@@ -115,7 +114,7 @@ def _precompute_dlegpoly(mmax, lmax, t, norm="ortho", inverse=False, csphase=Tru
 
     pct = _precompute_legpoly(mmax+1, lmax+1, t, norm=norm, inverse=inverse, csphase=False)
 
-    dpct = torch.zeros((2, mmax, lmax, len(t)), dtype=torch.float64)
+    dpct = np.zeros((2, mmax, lmax, len(t)), dtype=np.float64)
 
     # fill the derivative terms wrt theta
     for l in range(0, lmax):

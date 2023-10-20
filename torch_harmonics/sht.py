@@ -91,6 +91,7 @@ class RealSHT(nn.Module):
         # combine quadrature weights with the legendre weights
         weights = torch.from_numpy(w)
         pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
+        pct = torch.from_numpy(pct)
         weights = torch.einsum('mlk,k->mlk', pct, weights)
 
         # remember quadrature weights
@@ -167,6 +168,7 @@ class InverseRealSHT(nn.Module):
         self.mmax = mmax or self.nlon // 2 + 1
 
         pct = _precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        pct = torch.from_numpy(pct)
 
         # register buffer
         self.register_buffer('pct', pct, persistent=False)
@@ -246,6 +248,7 @@ class RealVectorSHT(nn.Module):
 
         weights = torch.from_numpy(w)
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
+        dpct = torch.from_numpy(dpct)
         
         # combine integration weights, normalization factor in to one:
         l = torch.arange(0, self.lmax)
@@ -338,6 +341,7 @@ class InverseRealVectorSHT(nn.Module):
         self.mmax = mmax or self.nlon // 2 + 1
 
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        dpct = torch.from_numpy(dpct)
 
         # register weights
         self.register_buffer('dpct', dpct, persistent=False)

@@ -113,6 +113,7 @@ class DistributedRealSHT(nn.Module):
         # combine quadrature weights with the legendre weights
         weights = torch.from_numpy(w)
         pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
+        pct = torch.from_numpy(pct)
         weights = torch.einsum('mlk,k->mlk', pct, weights)
 
         # we need to split in m, pad before:
@@ -256,6 +257,7 @@ class DistributedInverseRealSHT(nn.Module):
 
         # compute legende polynomials
         pct = _precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        pct = torch.from_numpy(pct)
 
         # split in m
         pct = F.pad(pct, [0, 0, 0, 0, 0, self.mpad], mode="constant")
@@ -405,6 +407,7 @@ class DistributedRealVectorSHT(nn.Module):
 
         weights = torch.from_numpy(w)
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
+        dpct = torch.from_numpy(dpct)
 
         # combine integration weights, normalization factor in to one:
         l = torch.arange(0, self.lmax)
@@ -567,10 +570,11 @@ class DistributedInverseRealVectorSHT(nn.Module):
 
         # compute legende polynomials
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        dpct = torch.from_numpy(dpct)
 
         # split in m
-        pct = F.pad(pct, [0, 0, 0, 0, 0, self.mpad], mode="constant")
-        pct = torch.split(pct, (self.mmax+self.mpad) // self.comm_size_azimuth, dim=0)[self.comm_rank_azimuth]
+        dpct = F.pad(dpct, [0, 0, 0, 0, 0, self.mpad], mode="constant")
+        dpct = torch.split(dpct, (self.mmax+self.mpad) // self.comm_size_azimuth, dim=0)[self.comm_rank_azimuth]
 
         # register buffer
         self.register_buffer('dpct', dpct, persistent=False)
