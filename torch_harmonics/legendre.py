@@ -113,7 +113,7 @@ def _precompute_dlegpoly(mmax, lmax, t, norm="ortho", inverse=False, csphase=Tru
     [2] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
     """
 
-    pct = precompute_legpoly(mmax+1, lmax+1, t, norm=norm, inverse=inverse, csphase=False)
+    pct = _precompute_legpoly(mmax+1, lmax+1, t, norm=norm, inverse=inverse, csphase=False)
 
     dpct = torch.zeros((2, mmax, lmax, len(t)), dtype=torch.float64)
 
