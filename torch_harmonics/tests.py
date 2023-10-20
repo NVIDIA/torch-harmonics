@@ -72,11 +72,11 @@ class TestLegendrePolynomials(unittest.TestCase):
         from torch_harmonics.legendre import legpoly
 
         t = np.linspace(0, 1, 100)
-        pct = legpoly(self.mmax, self.lmax, t)
+        vdm = legpoly(self.mmax, self.lmax, t)
 
         for l in range(self.lmax):
             for m in range(l+1):
-                diff = pct[m, l] / self.cml(m,l) - self.pml[(m,l)](t)
+                diff = vdm[m, l] / self.cml(m,l) - self.pml[(m,l)](t)
                 self.assertTrue(diff.max() <= self.tol)
 
 
