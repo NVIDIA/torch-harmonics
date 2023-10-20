@@ -36,8 +36,8 @@ import torch.nn as nn
 import torch.fft
 import torch.nn.functional as F
 
-from torch_harmonics.quadrature import *
-from torch_harmonics.legendre import *
+from torch_harmonics.quadrature import legendre_gauss_weights, lobatto_weights, clenshaw_curtiss_weights
+from torch_harmonics.legendre import _precompute_legpoly, _precompute_dlegpoly
 from torch_harmonics.distributed import polar_group_size, azimuth_group_size, distributed_transpose_azimuth, distributed_transpose_polar
 from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
 
@@ -112,7 +112,7 @@ class DistributedRealSHT(nn.Module):
 
         # combine quadrature weights with the legendre weights
         weights = torch.from_numpy(w)
-        pct = precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
+        pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
         weights = torch.einsum('mlk,k->mlk', pct, weights)
 
         # we need to split in m, pad before:
@@ -255,7 +255,7 @@ class DistributedInverseRealSHT(nn.Module):
         self.mpad = mdist * self.comm_size_azimuth - self.mmax
 
         # compute legende polynomials
-        pct = precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        pct = _precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
 
         # split in m
         pct = F.pad(pct, [0, 0, 0, 0, 0, self.mpad], mode="constant")
@@ -404,7 +404,7 @@ class DistributedRealVectorSHT(nn.Module):
         self.mpad = mdist * self.comm_size_azimuth - self.mmax
 
         weights = torch.from_numpy(w)
-        dpct = precompute_dlegpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
+        dpct = _precompute_dlegpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
 
         # combine integration weights, normalization factor in to one:
         l = torch.arange(0, self.lmax)
@@ -566,7 +566,7 @@ class DistributedInverseRealVectorSHT(nn.Module):
         self.mpad = mdist * self.comm_size_azimuth - self.mmax
 
         # compute legende polynomials
-        dpct = precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        dpct = _precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
 
         # split in m
         pct = F.pad(pct, [0, 0, 0, 0, 0, self.mpad], mode="constant")
