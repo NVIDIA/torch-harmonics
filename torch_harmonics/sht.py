@@ -34,8 +34,8 @@ import torch
 import torch.nn as nn
 import torch.fft
 
-from .quadrature import *
-from .legendre import *
+from torch_harmonics.quadrature import legendre_gauss_weights, lobatto_weights, clenshaw_curtiss_weights
+from torch_harmonics.legendre import _precompute_legpoly, _precompute_dlegpoly
 
 
 class RealSHT(nn.Module):
@@ -90,7 +90,8 @@ class RealSHT(nn.Module):
 
         # combine quadrature weights with the legendre weights
         weights = torch.from_numpy(w)
-        pct = precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
+        pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
+        pct = torch.from_numpy(pct)
         weights = torch.einsum('mlk,k->mlk', pct, weights)
 
         # remember quadrature weights
@@ -166,7 +167,8 @@ class InverseRealSHT(nn.Module):
         # determine the dimensions 
         self.mmax = mmax or self.nlon // 2 + 1
 
-        pct = precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        pct = _precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        pct = torch.from_numpy(pct)
 
         # register buffer
         self.register_buffer('pct', pct, persistent=False)
@@ -245,7 +247,8 @@ class RealVectorSHT(nn.Module):
         self.mmax = mmax or self.nlon // 2 + 1
 
         weights = torch.from_numpy(w)
-        dpct = precompute_dlegpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
+        dpct = _precompute_dlegpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
+        dpct = torch.from_numpy(dpct)
         
         # combine integration weights, normalization factor in to one:
         l = torch.arange(0, self.lmax)
@@ -337,7 +340,8 @@ class InverseRealVectorSHT(nn.Module):
         # determine the dimensions 
         self.mmax = mmax or self.nlon // 2 + 1
 
-        dpct = precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        dpct = _precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        dpct = torch.from_numpy(dpct)
 
         # register weights
         self.register_buffer('dpct', dpct, persistent=False)

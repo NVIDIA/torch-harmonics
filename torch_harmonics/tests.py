@@ -69,14 +69,14 @@ class TestLegendrePolynomials(unittest.TestCase):
 
     def test_legendre(self):
         print("Testing computation of associated Legendre polynomials")
-        from torch_harmonics.legendre import precompute_legpoly
+        from torch_harmonics.legendre import legpoly
 
-        t = np.linspace(0, np.pi, 100)
-        pct = precompute_legpoly(self.mmax, self.lmax, t)
+        t = np.linspace(0, 1, 100)
+        vdm = legpoly(self.mmax, self.lmax, t)
 
         for l in range(self.lmax):
             for m in range(l+1):
-                diff = pct[m, l].numpy() / self.cml(m,l) - self.pml[(m,l)](np.cos(t))
+                diff = vdm[m, l] / self.cml(m,l) - self.pml[(m,l)](t)
                 self.assertTrue(diff.max() <= self.tol)
 
 

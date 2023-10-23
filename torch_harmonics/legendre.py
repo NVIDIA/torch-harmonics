@@ -30,7 +30,6 @@
 #
 
 import numpy as np
-import torch
 
 def clm(l, m):
     """
@@ -38,12 +37,11 @@ def clm(l, m):
     """
     return np.sqrt((2*l + 1) / 4 / np.pi) * np.sqrt(np.math.factorial(l-m) / np.math.factorial(l+m))
 
-
-def precompute_legpoly(mmax, lmax, t, norm="ortho", inverse=False, csphase=True):
+def legpoly(mmax, lmax, x, norm="ortho", inverse=False, csphase=True):
     r"""
-    Computes the values of (-1)^m c^l_m P^l_m(\cos \theta) at the positions specified by x (theta)
-    The resulting tensor has shape (mmax, lmax, len(x)).
-    The Condon-Shortley Phase (-1)^m can be turned off optionally
+    Computes the values of (-1)^m c^l_m P^l_m(x) at the positions specified by x.
+    The resulting tensor has shape (mmax, lmax, len(x)). The Condon-Shortley Phase (-1)^m
+    can be turned off optionally.
 
     method of computation follows
     [1] Schaeffer, N.; Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
@@ -54,57 +52,69 @@ def precompute_legpoly(mmax, lmax, t, norm="ortho", inverse=False, csphase=True)
 
     # compute the tensor P^m_n:
     nmax = max(mmax,lmax)
-    pct = np.zeros((nmax, nmax, len(t)), dtype=np.float64)
-
-    sint = np.sin(t)
-    cost = np.cos(t)
+    vdm = np.zeros((nmax, nmax, len(x)), dtype=np.float64)
         
     norm_factor = 1. if norm == "ortho" else np.sqrt(4 * np.pi)
     norm_factor = 1. / norm_factor if inverse else norm_factor
 
     # initial values to start the recursion
-    pct[0,0,:] = norm_factor / np.sqrt(4 * np.pi)
+    vdm[0,0,:] = norm_factor / np.sqrt(4 * np.pi)
 
     # fill the diagonal and the lower diagonal
     for l in range(1, nmax):
-        pct[l-1, l, :] = np.sqrt(2*l + 1) * cost * pct[l-1, l-1, :]
-        pct[l, l, :] = np.sqrt( (2*l + 1) * (1 + cost) * (1 - cost) / 2 / l ) * pct[l-1, l-1, :]
+        vdm[l-1, l, :] = np.sqrt(2*l + 1) * x * vdm[l-1, l-1, :]
+        vdm[l, l, :] = np.sqrt( (2*l + 1) * (1 + x) * (1 - x) / 2 / l ) * vdm[l-1, l-1, :]
 
     # fill the remaining values on the upper triangle and multiply b
     for l in range(2, nmax):
         for m in range(0, l-1):
-            pct[m, l, :] = cost * np.sqrt((2*l - 1) / (l - m) * (2*l + 1) / (l + m)) * pct[m, l-1, :] \
-                            - np.sqrt((l + m - 1) / (l - m) * (2*l + 1) / (2*l - 3) * (l - m - 1) / (l + m)) * pct[m, l-2, :]
+            vdm[m, l, :] = x * np.sqrt((2*l - 1) / (l - m) * (2*l + 1) / (l + m)) * vdm[m, l-1, :] \
+                            - np.sqrt((l + m - 1) / (l - m) * (2*l + 1) / (2*l - 3) * (l - m - 1) / (l + m)) * vdm[m, l-2, :]
 
     if norm == "schmidt":
         for l in range(0, nmax):
             if inverse:
-                pct[:, l, : ] = pct[:, l, : ] * np.sqrt(2*l + 1)
+                vdm[:, l, : ] = vdm[:, l, : ] * np.sqrt(2*l + 1)
             else:
-                pct[:, l, : ] = pct[:, l, : ] / np.sqrt(2*l + 1)
+                vdm[:, l, : ] = vdm[:, l, : ] / np.sqrt(2*l + 1)
 
-    pct = pct[:mmax, :lmax]
+    vdm = vdm[:mmax, :lmax]
 
     if csphase:
         for m in range(1, mmax, 2):
-            pct[m] *= -1
+            vdm[m] *= -1
 
-    return torch.from_numpy(pct)
+    return vdm
 
-def precompute_dlegpoly(mmax, lmax, x, norm="ortho", inverse=False, csphase=True):
+def _precompute_legpoly(mmax, lmax, t, norm="ortho", inverse=False, csphase=True):
+    r"""
+    Computes the values of (-1)^m c^l_m P^l_m(\cos \theta) at the positions specified by t (theta).
+    The resulting tensor has shape (mmax, lmax, len(x)). The Condon-Shortley Phase (-1)^m
+    can be turned off optionally.
+
+    method of computation follows
+    [1] Schaeffer, N.; Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
+    [2] Rapp, R.H.; A Fortran Program for the Computation of Gravimetric Quantities from High Degree Spherical Harmonic Expansions, Ohio State University Columbus; report; 1982;
+        https://apps.dtic.mil/sti/citations/ADA123406
+    [3] Schrama, E.; Orbit integration based upon interpolated gravitational gradients
+    """
+
+    return legpoly(mmax, lmax, np.cos(t), norm=norm, inverse=inverse, csphase=csphase)
+
+def _precompute_dlegpoly(mmax, lmax, t, norm="ortho", inverse=False, csphase=True):
     r"""
     Computes the values of the derivatives $\frac{d}{d \theta} P^m_l(\cos \theta)$
-    at the positions specified by x (theta), as well as $\frac{1}{\sin \theta} P^m_l(\cos \theta)$,
+    at the positions specified by t (theta), as well as $\frac{1}{\sin \theta} P^m_l(\cos \theta)$,
     needed for the computation of the vector spherical harmonics. The resulting tensor has shape
-    (2, mmax, lmax, len(x)).
+    (2, mmax, lmax, len(t)).
 
     computation follows
     [2] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
     """
 
-    pct = precompute_legpoly(mmax+1, lmax+1, x, norm=norm, inverse=inverse, csphase=False)
+    pct = _precompute_legpoly(mmax+1, lmax+1, t, norm=norm, inverse=inverse, csphase=False)
 
-    dpct = torch.zeros((2, mmax, lmax, len(x)), dtype=torch.float64)
+    dpct = np.zeros((2, mmax, lmax, len(t)), dtype=np.float64)
 
     # fill the derivative terms wrt theta
     for l in range(0, lmax):
