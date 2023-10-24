@@ -33,7 +33,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 
-def plot_sphere(data, fig=None, cmap="RdBu", title=None, central_latitude=20, central_longitude=20, lon=None, lat=None):
+def plot_sphere(data,
+                fig=None,
+                cmap="RdBu",
+                title=None,
+                colorbar=False,
+                central_latitude=20,
+                central_longitude=20,
+                lon=None,
+                lat=None):
     if fig == None:
         fig = plt.figure()
 
@@ -55,12 +63,20 @@ def plot_sphere(data, fig=None, cmap="RdBu", title=None, central_latitude=20, ce
     # contour data over the map.
     im = ax.pcolormesh(Lon, Lat, data, cmap=cmap, transform=ccrs.PlateCarree(), antialiased=False)
     # ax.add_feature(cartopy.feature.COASTLINE, edgecolor='white', facecolor='none', linewidth=1.5)
-    # plt.colorbar(im)
+    if colorbar:
+        plt.colorbar(im)
     plt.title(title, y=1.05)
 
     return im
 
-def plot_data(data, fig=None, projection=None, cmap="RdBu", title=None, lon=None, lat=None):
+def plot_data(data,
+              fig=None,
+              projection=None,
+              cmap="RdBu",
+              title=None,
+              colorbar=False,
+              lon=None,
+              lat=None):
     if fig == None:
         fig = plt.figure()
     
@@ -75,7 +91,8 @@ def plot_data(data, fig=None, projection=None, cmap="RdBu", title=None, lon=None
     fig = plt.figure(figsize=(10, 5))
     ax = fig.add_subplot(1, 1, 1, projection=projection)
     im = ax.pcolormesh(Lon, Lat, data, cmap=cmap)
-    # plt.colorbar(im)
+    if colorbar:
+        plt.colorbar(im)
     plt.title(title, y=1.05)
 
     ax.grid(True)
