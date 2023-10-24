@@ -102,14 +102,16 @@ $$
 
 where $\theta$ and $\lambda$ are colatitude and longitude respectively, and $P_l^m$ the normalized, [associated Legendre polynomials](https://en.wikipedia.org/wiki/Associated_Legendre_polynomials).
 
-<center><img src="https://media.githubusercontent.com/media/NVIDIA/torch-harmonics/main/images/spherical_harmonics.gif" width="432"></center>
+<p align="center">
+<img src="https://media.githubusercontent.com/media/NVIDIA/torch-harmonics/main/images/spherical_harmonics.gif" width="432">
+</p>
 
 ### Spherical harmonic transform
 
 The spherical harmonic transform (SHT)
 
 $$
-\hat{f}_l^m = \int_{S^2}  \overline{Y_l^m}(\theta, \lambda) \, f(\theta, \lambda) \; \mathrm{d} \mu(\theta, \lambda)
+f_l^m = \int_{S^2}  \overline{Y_l^m}(\theta, \lambda) \, f(\theta, \lambda) \; \mathrm{d} \mu(\theta, \lambda)
 $$
 
 realizes the projection of a signal $f(\theta, \lambda)$ on $S^2$ onto the spherical harmonics basis. 
