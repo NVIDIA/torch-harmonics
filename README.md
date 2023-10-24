@@ -183,14 +183,16 @@ coeffs = sht(signal)
 
 To enable scalable model-parallelism, `torch-harmonics` implements a distributed variant of the SHT located in `torch_harmonics.distributed`.
 
-Detailed usage of torch-harmonics is demonstrated in a series of notebooks:
+Detailed usage of torch-harmonics, alongside helpful analysis provided in a series of notebooks:
 
 1. [Getting started](./notebooks/getting_started.ipynb)
 2. [Quadrature](./notebooks/quadrature.ipynb)
 3. [Visualizing the spherical harmonics](./notebooks/plot_spherical_harmonics.ipynb)
-4. [Solving the Helmholtz equation](./notebooks/helmholtz.ipynb)
-5. [Solving the shallow water equations](./notebooks/shallow_water_equations.ipynb)
-6. [Training Spherical Fourier Neural Operators](./notebooks/train_sfno.ipynb)
+4. [Spectral fitting vs. SHT](./notebooks/gradient_analysis.ipynb)
+5. [Conditioning of the Gramian](./notebooks/conditioning_sht.ipynb)
+6. [Solving the Helmholtz equation](./notebooks/helmholtz.ipynb)
+7. [Solving the shallow water equations](./notebooks/shallow_water_equations.ipynb)
+8. [Training Spherical Fourier Neural Operators](./notebooks/train_sfno.ipynb)
 
 ## Contributors
 
