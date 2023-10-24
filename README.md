@@ -109,7 +109,7 @@ where $\theta$ and $\lambda$ are colatitude and longitude respectively, and $P_l
 The spherical harmonic transform (SHT)
 
 $$
-\tilde{f}_l^m = \int_{S^2}  \overline{Y_l^m}(\theta, \lambda) \, f(\theta, \lambda) \; \mathrm{d} \mu(\theta, \lambda)
+\hat{f}_l^m = \int_{S^2}  \overline{Y_l^m}(\theta, \lambda) \, f(\theta, \lambda) \; \mathrm{d} \mu(\theta, \lambda)
 $$
 
 realizes the projection of a signal $f(\theta, \lambda)$ on $S^2$ onto the spherical harmonics basis. 
@@ -119,7 +119,7 @@ generalizes the Fourier transform on the sphere.
 The truncated series expansion of a function $f$ defined on the surface of a sphere can be written as
 
 $$
-f(\theta, \lambda) = \sum_{m=-M}^{M} \exp(im\lambda) \sum_{l=|m|}^{M} \tilde{f}_l^m \overline{P_l^m} (\cos \theta),
+f(\theta, \lambda) = \sum_{m=-M}^{M} \exp(im\lambda) \sum_{l=|m|}^{M} \hat{f}_l^m \overline{P_l^m} (\cos \theta),
 $$
 
 where $\theta$ is the colatitude, $\lambda$ the longitude, $\overline{P_l^m}$ the normalized, associated Legendre polynomials and $F_n^m$, the expansion coefficient associated to the mode $(m,n)$.
@@ -127,13 +127,13 @@ where $\theta$ is the colatitude, $\lambda$ the longitude, $\overline{P_l^m}$ th
 The implementation of the SHT follows the algorithm as presented in [2]. A direct spherical harmonic transform can be accomplished by a Fourier transform
 
 $$
-\tilde{f}^m(\theta) = \frac{1}{2 \pi} \int_{0}^{2\pi} f(\theta, \lambda) \, \exp(-im\lambda)  \; \mathrm{d}\lambda
+\hat{f}^m(\theta) = \frac{1}{2 \pi} \int_{0}^{2\pi} f(\theta, \lambda) \, \exp(-im\lambda)  \; \mathrm{d}\lambda
 $$
 
 in longitude and a Legendre transform
 
 $$
-\tilde{f}_l^m = \frac{1}{2} \int_{0}^\pi \tilde{f}^m(\theta) \, \overline{P_l^m} (\cos \theta) \, \sin \theta \;\mathrm{d} \theta
+\hat{f}_l^m = \frac{1}{2} \int_{0}^\pi \hat{f}^m(\theta) \, \overline{P_l^m} (\cos \theta) \, \sin \theta \;\mathrm{d} \theta
 $$
 
 in latitude.
@@ -143,13 +143,13 @@ in latitude.
 The second integral, which computed the projection onto the Legendre polynomials is realized with quadrature. On the Gaussian grid, we use Gaussian quadrature in the $\cos \theta$ domain. The integral
 
 $$
-\tilde{f}_l^m = \frac{1}{2} \int_{-1}^1 \tilde{f}^m(\arccos x) \, \overline{P_l^m} (x) \; \mathrm{d} x
+\hat{f}_l^m = \frac{1}{2} \int_{-1}^1 \hat{f}^m(\arccos x) \, \overline{P_l^m} (x) \; \mathrm{d} x
 $$
 
 is obtained with the substitution $x = \cos \theta$ and then approximated by the sum
 
 $$
-\tilde{f}_l^m = \sum_{j=1}^{N_\theta} \tilde{f}^m(\arccos x_j) \bar{P}_n^m(x_j) \, w_j.
+\hat{f}_l^m = \sum_{j=1}^{N_\theta} \hat{f}^m(\arccos x_j) \bar{P}_n^m(x_j) \, w_j.
 $$
 
 Here, $x_j \in [-1,1]$ are the quadrature nodes with the respective quadrature weights $w_j$.
