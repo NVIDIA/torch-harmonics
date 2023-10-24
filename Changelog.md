@@ -6,6 +6,7 @@
 
 * Adding gradient check in unit tests
 * Temporary work-around for NCCL contiguous issues with distributed SHT
+* Refactored examples and documentation
 * Updated SFNO example
 
 ### v0.6.2
