@@ -28,12 +28,13 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 -->
 
-<p align="center">
+<!-- <div align="center">
     <img src="https://raw.githubusercontent.com/NVIDIA/torch-harmonics/main/images/logo/logo.png"  width="568">
     <br>
     <a href="https://github.com/NVIDIA/torch-harmonics/actions/workflows/tests.yml"><img src="https://github.com/NVIDIA/torch-harmonics/actions/workflows/tests.yml/badge.svg"></a>
     <a href="https://pypi.org/project/torch_harmonics/"><img src="https://img.shields.io/pypi/v/torch_harmonics"></a>
-</p>
+</div> -->
+
 
 [**<p style="text-align: center;">Overview**](#overview) | [**Installation**](#installation) | [**More information**](#more-about-torch-harmonics) | [**Getting started**](#getting-started) | [**Contributors**](#contributors) | [**Cite us**](#cite-us) | [**References</p>**](#references)
 
@@ -41,7 +42,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 [![pypi](https://img.shields.io/pypi/v/torch_harmonics)](https://pypi.org/project/torch_harmonics/)
 -->
 
-<!-- # torch-harmonics: differentiable harmonic transforms -->
+<!-- # spherical harmonic transforms -->
+
+# torch-harmonics
+
+[**Overview**](#overview) | [**Installation**](#installation) | [**More information**](#more-about-torch-harmonics) | [**Getting started**](#getting-started) | [**Contributors**](#contributors) | [**Cite us**](#cite-us) | [**References**](#references)
+
+[![tests](https://github.com/NVIDIA/torch-harmonics/actions/workflows/tests.yml/badge.svg)](https://github.com/NVIDIA/torch-harmonics/actions/workflows/tests.yml)
+[![pypi](https://img.shields.io/pypi/v/torch_harmonics)](https://pypi.org/project/torch_harmonics/)
 
 ## Overview
 
@@ -51,7 +59,7 @@ torch-harmonics uses PyTorch primitives to implement these operations, making it
 
 torch-harmonics has been used to implement a variety of differentiable PDE solvers which generated the animations below. Moreover, it has enabled the development of Spherical Fourier Neural Operators (SFNOs) [1].
 
-
+<div align="center">
 <table border="0" cellspacing="0" cellpadding="0">
     <tr>
         <td><img src="https://media.githubusercontent.com/media/NVIDIA/torch-harmonics/main/images/sfno.gif"  width="240"></td>
@@ -64,6 +72,7 @@ torch-harmonics has been used to implement a variety of differentiable PDE solve
         <td style="text-align:center; border-style : hidden!important;">Allen-Cahn Eqn.</td>
     </tr>  -->
 </table>
+</div>
 
 
 ## Installation
@@ -94,46 +103,46 @@ docker run --gpus all -it --rm --ipc=host --ulimit memlock=-1 --ulimit stack=671
 
 ### Spherical harmonics
 
-The [spherical harmonics](https://en.wikipedia.org/wiki/Spherical_harmonics) are special functions defined on the two-dimensional sphere $S^2$ (embedded in three dimensions). They form an orthonormal basis of the space of square-integrable functions defined on the sphere ($L^2(S^2)$) and are comparable to the harmonic functions defined on a circle/torus. The spherical harmonics are defined as
+The [spherical harmonics](https://en.wikipedia.org/wiki/Spherical_harmonics) are special functions defined on the two-dimensional sphere $S^2$ (embedded in three dimensions). They form an orthonormal basis of the space of square-integrable functions defined on the sphere $L^2(S^2)$ and are comparable to the harmonic functions defined on a circle/torus. The spherical harmonics are defined as
 
 $$
-Y_l^m(\theta, \lambda) = \sqrt{\frac{(2l + 1)}{4 \pi} \frac{(l - m)!}{(l + m)!}} \, P_l^m(\cos \theta) \, \exp(im\lambda),
+Y_l^m(\theta, \lambda) = \sqrt{\frac{(2l + 1)}{4 \pi} \frac{(l - m)!}{(l + m)!}} P_l^m(\cos \theta)  \exp(im\lambda),
 $$
 
 where $\theta$ and $\lambda$ are colatitude and longitude respectively, and $P_l^m$ the normalized, [associated Legendre polynomials](https://en.wikipedia.org/wiki/Associated_Legendre_polynomials).
 
-<center><img src="https://media.githubusercontent.com/media/NVIDIA/torch-harmonics/main/images/spherical_harmonics.gif" width="432"></center>
+<div align="center">
+<img src="https://media.githubusercontent.com/media/NVIDIA/torch-harmonics/main/images/spherical_harmonics.gif" width="432">
+<br>
+Spherical harmonics up to degree 5
+</div>
 
 ### Spherical harmonic transform
 
 The spherical harmonic transform (SHT)
 
 $$
-\tilde{f}_l^m = \int_{S^2}  \overline{Y_l^m}(\theta, \lambda) \, f(\theta, \lambda) \; \mathrm{d} \mu(\theta, \lambda)
+f_l^m = \int_{S^2}  \overline{Y_{l}^{m}}(\theta, \lambda) f(\theta, \lambda) \mathrm{d} \mu(\theta, \lambda)
 $$
 
-realizes the projection of a signal $f(\theta, \lambda)$ on $S^2$ onto the spherical harmonics basis. 
-
-generalizes the Fourier transform on the sphere.
-
-The truncated series expansion of a function $f$ defined on the surface of a sphere can be written as
+realizes the projection of a signal $f(\theta, \lambda)$ on $S^2$ onto the spherical harmonics basis. The SHT generalizes the Fourier transform on the sphere. Conversely, a truncated series expansion of a function $f$ can be written in terms of spherical harmonics as
 
 $$
-f(\theta, \lambda) = \sum_{m=-M}^{M} \exp(im\lambda) \sum_{l=|m|}^{M} \tilde{f}_l^m \overline{P_l^m} (\cos \theta),
+f (\theta, \lambda) = \sum_{m=-M}^{M} \exp(im\lambda) \sum_{l=|m|}^{M} \hat f_l^m  P_l^m (\cos \theta),
 $$
 
-where $\theta$ is the colatitude, $\lambda$ the longitude, $\overline{P_l^m}$ the normalized, associated Legendre polynomials and $F_n^m$, the expansion coefficient associated to the mode $(m,n)$.
+where $\hat{f}_l^m$, are the expansion coefficients associated to the mode $m$, $n$.
 
 The implementation of the SHT follows the algorithm as presented in [2]. A direct spherical harmonic transform can be accomplished by a Fourier transform
 
 $$
-\tilde{f}^m(\theta) = \frac{1}{2 \pi} \int_{0}^{2\pi} f(\theta, \lambda) \, \exp(-im\lambda)  \; \mathrm{d}\lambda
+\hat f^m(\theta) = \frac{1}{2 \pi} \int_{0}^{2\pi} f(\theta, \lambda) \exp(-im\lambda) \mathrm{d} \lambda
 $$
 
 in longitude and a Legendre transform
 
 $$
-\tilde{f}_l^m = \frac{1}{2} \int_{0}^\pi \tilde{f}^m(\theta) \, \overline{P_l^m} (\cos \theta) \, \sin \theta \;\mathrm{d} \theta
+\hat f_l^m = \frac{1}{2} \int^{\pi}_0 \hat f^{m} (\theta) P_l^m (\cos \theta) \sin \theta \mathrm{d} \theta
 $$
 
 in latitude.
@@ -143,13 +152,13 @@ in latitude.
 The second integral, which computed the projection onto the Legendre polynomials is realized with quadrature. On the Gaussian grid, we use Gaussian quadrature in the $\cos \theta$ domain. The integral
 
 $$
-\tilde{f}_l^m = \frac{1}{2} \int_{-1}^1 \tilde{f}^m(\arccos x) \, \overline{P_l^m} (x) \; \mathrm{d} x
+\hat f_l^m = \frac{1}{2} \int_{-1}^1 \hat{f}^m(\arccos x) P_l^m (x) \mathrm{d} x
 $$
 
 is obtained with the substitution $x = \cos \theta$ and then approximated by the sum
 
 $$
-\tilde{f}_l^m = \sum_{j=1}^{N_\theta} \tilde{f}^m(\arccos x_j) \bar{P}_n^m(x_j) \, w_j.
+\hat f_l^m = \sum_{j=1}^{N_\theta}  \hat{f}^m(\arccos x_j) P_l^m(x_j) w_j.
 $$
 
 Here, $x_j \in [-1,1]$ are the quadrature nodes with the respective quadrature weights $w_j$.
