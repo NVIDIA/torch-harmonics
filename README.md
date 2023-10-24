@@ -35,7 +35,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     <a href="https://pypi.org/project/torch_harmonics/"><img src="https://img.shields.io/pypi/v/torch_harmonics"></a>
 </p>
 
-<!-- [**<p style="text-align: center;">Overview**](#overview) | [**Installation**](#installation) | [**More information**](#more-about-torch-harmonics) | [**Getting started**](#getting-started) | [**Contributors**](#contributors) | [**Cite us**](#cite-us) | [**References</p>**](#references) -->
+[**<p style="text-align: center;">Overview**](#overview) | [**Installation**](#installation) | [**More information**](#more-about-torch-harmonics) | [**Getting started**](#getting-started) | [**Contributors**](#contributors) | [**Cite us**](#cite-us) | [**References</p>**](#references)
 
 <!--
 [![pypi](https://img.shields.io/pypi/v/torch_harmonics)](https://pypi.org/project/torch_harmonics/)
@@ -51,7 +51,7 @@ torch-harmonics uses PyTorch primitives to implement these operations, making it
 
 torch-harmonics has been used to implement a variety of differentiable PDE solvers which generated the animations below. Moreover, it has enabled the development of Spherical Fourier Neural Operators (SFNOs) [1].
 
-
+<p align="center">
 <table border="0" cellspacing="0" cellpadding="0">
     <tr>
         <td><img src="https://media.githubusercontent.com/media/NVIDIA/torch-harmonics/main/images/sfno.gif"  width="240"></td>
@@ -64,6 +64,7 @@ torch-harmonics has been used to implement a variety of differentiable PDE solve
         <td style="text-align:center; border-style : hidden!important;">Allen-Cahn Eqn.</td>
     </tr>  -->
 </table>
+</p>
 
 
 ## Installation
@@ -149,7 +150,7 @@ $$
 is obtained with the substitution $x = \cos \theta$ and then approximated by the sum
 
 $$
-\hat{f}_{l}^{m} = \sum_{j}^{N_\theta}  \hat{f}^m(\arccos x_j) P_l^m(x_j) w_j.
+\hat{f}_{l}^{m} = \sum_{j=1}^{N_\theta}  \hat{f}^m(\arccos x_j) P_l^m(x_j) w_j.
 $$
 
 Here, $x_j \in [-1,1]$ are the quadrature nodes with the respective quadrature weights $w_j$.
