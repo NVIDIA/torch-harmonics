@@ -102,6 +102,8 @@ $$
 
 where $\theta$ and $\lambda$ are colatitude and longitude respectively, and $P_l^m$ the normalized, [associated Legendre polynomials](https://en.wikipedia.org/wiki/Associated_Legendre_polynomials).
 
+<center><img src="https://media.githubusercontent.com/media/NVIDIA/torch-harmonics/main/images/spherical_harmonics.gif" width="432"></center>
+
 ### Spherical harmonic transform
 
 The spherical harmonic transform (SHT)
