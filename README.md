@@ -119,21 +119,21 @@ $$
 realizes the projection of a signal $f(\theta, \lambda)$ on $S^2$ onto the spherical harmonics basis. The SHT generalizes the Fourier transform on the sphere. Conversely, a truncated series expansion of a function $f$ can be written in terms of spherical harmonics as
 
 $$
-f (\theta, \lambda) = \sum_{m=-M}^{M} \exp(im\lambda) \sum_{l=|m|}^{M} \hat{f}_l^m  \overline{P_l^m} (\cos \theta),
+f (\theta, \lambda) = \sum_{m=-M}^{M} \exp(im\lambda) \sum_{l=|m|}^{M} \hat{f}_l^m  P_l^m (\cos \theta),
 $$
 
-where $\hat{f}_l^m$, are the expansion coefficients associated to the mode $m,n$.
+where $\hat{f}_l^m$, are the expansion coefficients associated to the mode $m$, $n$.
 
 The implementation of the SHT follows the algorithm as presented in [2]. A direct spherical harmonic transform can be accomplished by a Fourier transform
 
 $$
-\hat{f}^m(\theta) = \frac{1}{2 \pi} \int_{0}^{2\pi} f(\theta, \lambda) \exp(-im\lambda) \, \mathrm{d} \lambda
+\hat{f}^m(\theta) = \frac{1}{2 \pi} \int_{0}^{2\pi} f(\theta, \lambda) \exp(-im\lambda) \mathrm{d} \lambda
 $$
 
 in longitude and a Legendre transform
 
 $$
-\hat{f}_{l}^{m} = \frac{1}{2} \int_{0}^{\pi} \hat{f}^m(\theta) \overline{P_{l}^{m}} (\cos \theta) \sin \theta \mathrm{d} \theta
+\hat{f}_l^m = \frac{1}{2} \int^{\pi}_0 \hat{f}^{m} (\theta) P_l^m (\cos \theta) \sin \theta \mathrm{d} \theta
 $$
 
 in latitude.
@@ -143,13 +143,13 @@ in latitude.
 The second integral, which computed the projection onto the Legendre polynomials is realized with quadrature. On the Gaussian grid, we use Gaussian quadrature in the $\cos \theta$ domain. The integral
 
 $$
-\hat{f}_l^m = \frac{1}{2} \int_{-1}^1 \hat{f}^m(\arccos x) \, \overline{P_l^m} (x) \; \mathrm{d} x
+\hat{f}_{l}^{m} = \frac{1}{2} \int_{-1}^1 \hat{f}^m(\arccos x) P_l^m (x) \mathrm{d} x
 $$
 
 is obtained with the substitution $x = \cos \theta$ and then approximated by the sum
 
 $$
-\hat{f}_l^m = \sum_{j=1}^{N_\theta} \hat{f}^m(\arccos x_j) \bar{P}_n^m(x_j) \, w_j.
+\hat{f}_{l}^{m} = \sum_{j}^{N_\theta}  \hat{f}^m(\arccos x_j) P_l^m(x_j) w_j.
 $$
 
 Here, $x_j \in [-1,1]$ are the quadrature nodes with the respective quadrature weights $w_j$.
