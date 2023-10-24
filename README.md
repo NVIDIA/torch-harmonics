@@ -35,13 +35,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     <a href="https://pypi.org/project/torch_harmonics/"><img src="https://img.shields.io/pypi/v/torch_harmonics"></a>
 </p>
 
+[**<p style="text-align: center;">Overview**](#overview) | [**Installation**](#installation) | [**More information**](#more-about-torch-harmonics) | [**Getting started**](#getting-started) | [**Contributors**](#contributors) | [**Cite us**](#cite-us) | [**References</p>**](#references)
+
 <!--
 [![pypi](https://img.shields.io/pypi/v/torch_harmonics)](https://pypi.org/project/torch_harmonics/)
 -->
 
 <!-- # torch-harmonics: differentiable harmonic transforms -->
 
-<!-- ## What is torch-harmonics? -->
+## Overview
 
 torch-harmonics is a differentiable implementation of the Spherical Harmonic transform in PyTorch. It was originally implemented to enable Spherical Fourier Neural Operators (SFNO). It uses quadrature rules to compute the projection onto the associated Legendre polynomials and FFTs for the projection onto the harmonic basis. This algorithm tends to outperform others with better asymptotic scaling for most practical purposes.
 
@@ -67,13 +69,13 @@ torch-harmonics has been used to implement a variety of differentiable PDE solve
 ## Installation
 Download directyly from PyPI:
 
-```
+```bash
 pip install torch-harmonics
 ```
 
 Build in your environment using the Python package:
 
-```
+```bash
 git clone git@github.com:NVIDIA/torch-harmonics.git
 cd torch-harmonics
 pip install -e .
@@ -81,65 +83,78 @@ pip install -e .
 
 Alternatively, use the Dockerfile to build your custom container after cloning:
 
-```
+```bash
 git clone git@github.com:NVIDIA/torch-harmonics.git
 cd torch-harmonics
 docker build . -t torch_harmonics
 docker run --gpus all -it --rm --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 torch_harmonics
 ```
 
-## Contributors
+## More about torch-harmonics
 
- - [Boris Bonev](https://bonevbs.github.io) (bbonev@nvidia.com)
- - [Thorsten Kurth](https://github.com/azrael417) (tkurth@nvidia.com)
- - [Christian Hundt](https://github.com/gravitino) (chundt@nvidia.com)
- - [Nikola Kovachki](https://kovachki.github.io) (nkovachki@nvidia.com)
- - [Jean Kossaifi](http://jeankossaifi.com) (jkossaifi@nvidia.com)
+### Spherical harmonics
 
-## Implementation
-The implementation follows the algorithm as presented in [2].
+The [spherical harmonics](https://en.wikipedia.org/wiki/Spherical_harmonics) are special functions defined on the two-dimensional sphere $S^2$ (embedded in three dimensions). They form an orthonormal basis of the space of square-integrable functions defined on the sphere ($L^2(S^2)$) and are comparable to the harmonic functions defined on a circle/torus. The spherical harmonics are defined as
+
+$$
+Y_l^m(\theta, \lambda) = \sqrt{\frac{(2l + 1)}{4 \pi} \frac{(l - m)!}{(l + m)!}} \, P_l^m(\cos \theta) \, \exp(im\lambda),
+$$
+
+where $\theta$ and $\lambda$ are colatitude and longitude respectively, and $P_l^m$ the normalized, [associated Legendre polynomials](https://en.wikipedia.org/wiki/Associated_Legendre_polynomials).
+
+<center><img src="https://media.githubusercontent.com/media/NVIDIA/torch-harmonics/main/images/spherical_harmonics.gif" width="432"></center>
 
 ### Spherical harmonic transform
+
+The spherical harmonic transform (SHT)
+
+$$
+\tilde{f}_l^m = \int_{S^2}  \overline{Y_l^m}(\theta, \lambda) \, f(\theta, \lambda) \; \mathrm{d} \mu(\theta, \lambda)
+$$
+
+realizes the projection of a signal $f(\theta, \lambda)$ on $S^2$ onto the spherical harmonics basis. 
+
+generalizes the Fourier transform on the sphere.
 
 The truncated series expansion of a function $f$ defined on the surface of a sphere can be written as
 
 $$
-f(\theta, \lambda) = \sum_{m=-M}^{M} \exp(im\lambda) \sum_{n=|m|}^{M} F_n^m \bar{P}_n^m (\cos \theta),
+f(\theta, \lambda) = \sum_{m=-M}^{M} \exp(im\lambda) \sum_{l=|m|}^{M} \tilde{f}_l^m \overline{P_l^m} (\cos \theta),
 $$
 
-where $\theta$ is the colatitude, $\lambda$ the longitude, $\bar{P}_n^m$ the normalized, associated Legendre polynomials and $F_n^m$, the expansion coefficient associated to the mode $(m,n)$.
+where $\theta$ is the colatitude, $\lambda$ the longitude, $\overline{P_l^m}$ the normalized, associated Legendre polynomials and $F_n^m$, the expansion coefficient associated to the mode $(m,n)$.
 
-A direct spherical harmonic transform can be accomplished by a Fourier transform
+The implementation of the SHT follows the algorithm as presented in [2]. A direct spherical harmonic transform can be accomplished by a Fourier transform
 
 $$
-F^m(\theta) = \frac{1}{2 \pi} \int_{0}^{2\pi} f(\theta, \lambda) \exp(-im\lambda)  \mathrm{d}\lambda
+\tilde{f}^m(\theta) = \frac{1}{2 \pi} \int_{0}^{2\pi} f(\theta, \lambda) \, \exp(-im\lambda)  \; \mathrm{d}\lambda
 $$
 
 in longitude and a Legendre transform
 
 $$
-F_n^m = \frac{1}{2} \int_{-1}^1 F^m(\theta) \bar{P}_n^m(\cos \theta)  \mathrm{d} \cos \theta
+\tilde{f}_l^m = \frac{1}{2} \int_{0}^\pi \tilde{f}^m(\theta) \, \overline{P_l^m} (\cos \theta) \, \sin \theta \;\mathrm{d} \theta
 $$
 
 in latitude.
 
 ### Discrete Legendre transform
 
-in order to apply the Legendre transfor, we shall use Gauss-Legendre points in the latitudinal direction. The integral
+The second integral, which computed the projection onto the Legendre polynomials is realized with quadrature. On the Gaussian grid, we use Gaussian quadrature in the $\cos \theta$ domain. The integral
 
 $$
-F_n^m = \int_{0}^\pi F^m(\theta) \bar{P}_n^m(\cos \theta) \sin \theta \mathrm{d} \theta
+\tilde{f}_l^m = \frac{1}{2} \int_{-1}^1 \tilde{f}^m(\arccos x) \, \overline{P_l^m} (x) \; \mathrm{d} x
 $$
 
-is approximated by the sum
+is obtained with the substitution $x = \cos \theta$ and then approximated by the sum
 
 $$
-F_n^m = \sum_{j=1}^{N_\theta} F^m(\theta_j) \bar{P}_n^m(\cos \theta_j) w_j
+\tilde{f}_l^m = \sum_{j=1}^{N_\theta} \tilde{f}^m(\arccos x_j) \bar{P}_n^m(x_j) \, w_j.
 $$
 
-## Usage
+Here, $x_j \in [-1,1]$ are the quadrature nodes with the respective quadrature weights $w_j$.
 
-### Getting started
+## Getting started
 
 The main functionality of `torch_harmonics` is provided in the form of `torch.nn.Modules` for composability. A minimum example is given by:
 
@@ -162,11 +177,24 @@ coeffs = sht(signal)
 
 To enable scalable model-parallelism, `torch-harmonics` implements a distributed variant of the SHT located in `torch_harmonics.distributed`.
 
-### Cite us
+Detailed usage of torch-harmonics is demonstrated in a series of notebooks:
+
+1. [Getting started](./notebooks/getting_started.ipynb)
+2. [Quadrature](./notebooks/quadrature.ipynb)
+3. [Visualizing the spherical harmonics](./notebooks/plot_spherical_harmonics.ipynb)
+4. [Solving the Helmholtz equation](./notebooks/helmholtz.ipynb)
+5. [Solving the shallow water equations](./notebooks/shallow_water_equations.ipynb)
+6. [Training Spherical Fourier Neural Operators](./notebooks/train_sfno.ipynb)
+
+## Contributors
+
+[Boris Bonev](https://bonevbs.github.io) (bbonev@nvidia.com), [Thorsten Kurth](https://github.com/azrael417) (tkurth@nvidia.com), [Christian Hundt](https://github.com/gravitino) (chundt@nvidia.com), [Nikola Kovachki](https://kovachki.github.io) (nkovachki@nvidia.com), [Jean Kossaifi](http://jeankossaifi.com) (jkossaifi@nvidia.com)  
+
+## Cite us
 
 If you use `torch-harmonics` in an academic paper, please cite [1]
 
-```
+```bibtex
 @misc{bonev2023spherical,
       title={Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere}, 
       author={Boris Bonev and Thorsten Kurth and Christian Hundt and Jaideep Pathak and Maximilian Baust and Karthik Kashinath and Anima Anandkumar},
