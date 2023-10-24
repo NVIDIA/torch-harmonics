@@ -119,7 +119,7 @@ $$
 realizes the projection of a signal $f(\theta, \lambda)$ on $S^2$ onto the spherical harmonics basis. The SHT generalizes the Fourier transform on the sphere. Conversely, a truncated series expansion of a function $f$ can be written in terms of spherical harmonics as
 
 $$
-f (\theta, \lambda) = \sum_{m=-M}^{M} \exp(im\lambda) \sum_{l=|m|}^{M} \hat{f}_l^m \overline{P_l^m} (\cos \theta),
+f (\theta, \lambda) = \sum_{m=-M}^{M} \exp(im\lambda) \sum_{l=|m|}^{M} \, \hat{f}_l^m \, \overline{P_l^m} (\cos \theta),
 $$
 
 where $\hat{f}_l^m$, are the expansion coefficients associated to the mode $m,n$.
@@ -127,13 +127,13 @@ where $\hat{f}_l^m$, are the expansion coefficients associated to the mode $m,n$
 The implementation of the SHT follows the algorithm as presented in [2]. A direct spherical harmonic transform can be accomplished by a Fourier transform
 
 $$
-\hat{f}^m(\theta) = \frac{1}{2 \pi} \int_{0}^{2\pi} f(\theta, \lambda) \exp(-im\lambda) \mathrm{d}\lambda
+\hat{f}^m(\theta) = \frac{1}{2 \pi} \int_{0}^{2\pi} f(\theta, \lambda) \exp(-im\lambda) \, \mathrm{d}\lambda
 $$
 
 in longitude and a Legendre transform
 
 $$
-\hat{f}_l^m = \frac{1}{2} \int_{0}^\pi \hat{f}^m(\theta) \, \overline{P_l^m} (\cos \theta) \, \sin \theta \; \mathrm{d} \theta
+\hat{f}_l^m = \frac{1}{2} \int_{0}^{\pi} \hat{f}^m(\theta) \, \overline{P_l^m} (\cos \theta) \, \sin \theta \; \mathrm{d} \theta
 $$
 
 in latitude.
