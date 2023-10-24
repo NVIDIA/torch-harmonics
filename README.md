@@ -104,6 +104,8 @@ where $\theta$ and $\lambda$ are colatitude and longitude respectively, and $P_l
 
 <p align="center">
 <img src="https://media.githubusercontent.com/media/NVIDIA/torch-harmonics/main/images/spherical_harmonics.gif" width="432">
+<br>
+Spherical harmonics up to degree 5
 </p>
 
 ### Spherical harmonic transform
@@ -121,7 +123,7 @@ generalizes the Fourier transform on the sphere.
 The truncated series expansion of a function $f$ defined on the surface of a sphere can be written as
 
 $$
-f(\theta, \lambda) = \sum_{m=-M}^{M} \exp(im\lambda) \sum_{l=|m|}^{M} \hat{f}_l^m \overline{P_l^m} (\cos \theta),
+\hat{f} (\theta, \lambda) = \sum_{m=-M}^{M} \exp(im\lambda) \sum_{l=|m|}^{M} \hat{f}_l^m \overline{P_l^m} (\cos \theta),
 $$
 
 where $\theta$ is the colatitude, $\lambda$ the longitude, $\overline{P_l^m}$ the normalized, associated Legendre polynomials and $F_n^m$, the expansion coefficient associated to the mode $(m,n)$.
