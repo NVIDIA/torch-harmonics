@@ -51,7 +51,8 @@ torch-harmonics uses PyTorch primitives to implement these operations, making it
 
 torch-harmonics has been used to implement a variety of differentiable PDE solvers which generated the animations below. Moreover, it has enabled the development of Spherical Fourier Neural Operators (SFNOs) [1].
 
-<table border="0" cellspacing="0" cellpadding="0" margin-left:auto margin-right:auto>
+<div align="center">
+<table border="0" cellspacing="0" cellpadding="0">
     <tr>
         <td><img src="https://media.githubusercontent.com/media/NVIDIA/torch-harmonics/main/images/sfno.gif"  width="240"></td>
         <td><img src="https://media.githubusercontent.com/media/NVIDIA/torch-harmonics/main/images/zonal_jet.gif"  width="240"></td>
@@ -63,6 +64,7 @@ torch-harmonics has been used to implement a variety of differentiable PDE solve
         <td style="text-align:center; border-style : hidden!important;">Allen-Cahn Eqn.</td>
     </tr>  -->
 </table>
+</div>
 
 
 ## Installation
