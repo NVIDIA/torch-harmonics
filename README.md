@@ -94,10 +94,10 @@ docker run --gpus all -it --rm --ipc=host --ulimit memlock=-1 --ulimit stack=671
 
 ### Spherical harmonics
 
-The [spherical harmonics](https://en.wikipedia.org/wiki/Spherical_harmonics) are special functions defined on the two-dimensional sphere $S^2$ (embedded in three dimensions). They form an orthonormal basis of the space of square-integrable functions defined on the sphere ($L^2(S^2)$) and are comparable to the harmonic functions defined on a circle/torus. The spherical harmonics are defined as
+The [spherical harmonics](https://en.wikipedia.org/wiki/Spherical_harmonics) are special functions defined on the two-dimensional sphere $S^2$ (embedded in three dimensions). They form an orthonormal basis of the space of square-integrable functions defined on the sphere $L^2(S^2)$ and are comparable to the harmonic functions defined on a circle/torus. The spherical harmonics are defined as
 
 $$
-Y_l^m(\theta, \lambda) = \sqrt{\frac{(2l + 1)}{4 \pi} \frac{(l - m)!}{(l + m)!}} \, P_l^m(\cos \theta) \, \exp(im\lambda),
+Y_l^m(\theta, \lambda) = \sqrt{\frac{(2l + 1)}{4 \pi} \frac{(l - m)!}{(l + m)!}} P_l^m(\cos \theta)  \exp(im\lambda),
 $$
 
 where $\theta$ and $\lambda$ are colatitude and longitude respectively, and $P_l^m$ the normalized, [associated Legendre polynomials](https://en.wikipedia.org/wiki/Associated_Legendre_polynomials).
@@ -133,7 +133,7 @@ $$
 in longitude and a Legendre transform
 
 $$
-\hat{f}_l^m = \frac{1}{2} \int_{0}^\pi \hat{f}^m(\theta) \, \overline{P_l^m} (\cos \theta) \, \sin \theta \;\mathrm{d} \theta
+\hat{f}_l^m = \frac{1}{2} \int_{0}^\pi \hat{f}^m(\theta) \, \overline{P_l^m} (\cos \theta) \, \sin \theta \; \mathrm{d} \theta
 $$
 
 in latitude.
