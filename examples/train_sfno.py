@@ -370,7 +370,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     models = {}
     metrics = {}
 
-    models['sfno_sc3_layer4_edim256_linear_noskip']    = partial(SFNO, spectral_transform='sht', filter_type='linear', img_size=(nlat, nlon),
+    models['sfno_sc3_layer4_edim256_linear_noskip_ecinit']    = partial(SFNO, spectral_transform='sht', filter_type='linear', img_size=(nlat, nlon),
                                                           num_layers=4, scale_factor=3, embed_dim=128, operator_type='driscoll-healy',
                                                           big_skip=False)
     # from torch_harmonics.examples.sfno.models.unet import UNet

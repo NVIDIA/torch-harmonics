@@ -43,8 +43,8 @@ from .activations import *
 # # import FactorizedTensor from tensorly for tensorized operations
 # import tensorly as tl
 # from tensorly.plugins import use_opt_einsum
-# tl.set_backend('pytorch')
-# use_opt_einsum('optimal')
+# tl.set_backend("pytorch")
+# use_opt_einsum("optimal")
 from tltorch.factorized_tensors.core import FactorizedTensor
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
@@ -218,13 +218,13 @@ class SpectralConvS2(nn.Module):
                  inverse_transform,
                  in_channels,
                  out_channels,
-                 scale = 'auto',
-                 operator_type = 'driscoll-healy',
+                 scale = "auto",
+                 operator_type = "driscoll-healy",
                  lr_scale_exponent = 0,
                  bias = False):
         super(SpectralConvS2, self).__init__()
 
-        if scale == 'auto':
+        if scale == "auto":
             scale = (2 / in_channels)**0.5
 
         self.forward_transform = forward_transform
@@ -244,13 +244,13 @@ class SpectralConvS2(nn.Module):
 
         weight_shape = [in_channels, out_channels]
 
-        if self.operator_type == 'diagonal':
+        if self.operator_type == "diagonal":
             weight_shape += [self.modes_lat, self.modes_lon]
             from .contractions import contract_diagonal as _contract
-        elif self.operator_type == 'block-diagonal':
+        elif self.operator_type == "block-diagonal":
             weight_shape += [self.modes_lat, self.modes_lon, self.modes_lon]
             from .contractions import contract_blockdiag as _contract
-        elif self.operator_type == 'driscoll-healy':
+        elif self.operator_type == "driscoll-healy":
             weight_shape += [self.modes_lat]
             from .contractions import contract_dhconv as _contract
         else:
@@ -290,7 +290,7 @@ class SpectralConvS2(nn.Module):
         with amp.autocast(enabled=False):
             x = self.inverse_transform(x)
             
-        if hasattr(self, 'bias'):
+        if hasattr(self, "bias"):
             x = x + self.bias
         x = x.type(dtype)
     
@@ -306,17 +306,17 @@ class FactorizedSpectralConvS2(nn.Module):
                  inverse_transform,
                  in_channels,
                  out_channels,
-                 scale = 'auto',
-                 operator_type = 'driscoll-healy',
+                 scale = "auto",
+                 operator_type = "driscoll-healy",
                  rank = 0.2,
                  factorization = None,
                  separable = False,
-                 implementation = 'factorized',
+                 implementation = "factorized",
                  decomposition_kwargs=dict(),
                  bias = False):
         super(SpectralConvS2, self).__init__()
 
-        if scale == 'auto':
+        if scale == "auto":
             scale = (2 / in_channels)**0.5
 
         self.forward_transform = forward_transform
@@ -330,9 +330,9 @@ class FactorizedSpectralConvS2(nn.Module):
 
         # Make sure we are using a Complex Factorized Tensor
         if factorization is None:
-            factorization = 'Dense' # No factorization
-        if not factorization.lower().startswith('complex'):
-            factorization = f'Complex{factorization}'
+            factorization = "Dense" # No factorization
+        if not factorization.lower().startswith("complex"):
+            factorization = f"Complex{factorization}"
 
         # remember factorization details
         self.operator_type = operator_type
@@ -348,11 +348,11 @@ class FactorizedSpectralConvS2(nn.Module):
         if not self.separable:
             weight_shape += [out_channels]
 
-        if self.operator_type == 'diagonal':
+        if self.operator_type == "diagonal":
             weight_shape += [self.modes_lat, self.modes_lon]
-        elif self.operator_type == 'block-diagonal':
+        elif self.operator_type == "block-diagonal":
             weight_shape += [self.modes_lat, self.modes_lon, self.modes_lon]
-        elif self.operator_type == 'driscoll-healy':
+        elif self.operator_type == "driscoll-healy":
             weight_shape += [self.modes_lat]
         else:
             raise NotImplementedError(f"Unkonw operator type f{self.operator_type}")
@@ -388,7 +388,7 @@ class FactorizedSpectralConvS2(nn.Module):
         with amp.autocast(enabled=False):
             x = self.inverse_transform(x)
             
-        if hasattr(self, 'bias'):
+        if hasattr(self, "bias"):
             x = x + self.bias
         x = x.type(dtype)
     
@@ -406,16 +406,18 @@ class SpectralAttention2d(nn.Module):
                  sparsity_threshold = 0.0,
                  hidden_size_factor = 2,
                  use_complex_kernels = False,
-                 complex_activation = 'real',
+                 complex_activation = "real",
                  bias = False,
                  spectral_layers = 1,
                  drop_rate = 0.):
         super(SpectralAttention2d, self).__init__()
+
+        if scale == "auto":
+            scale = (2 / in_channels)**0.5
         
         self.embed_dim = embed_dim
         self.sparsity_threshold = sparsity_threshold
         self.hidden_size = int(hidden_size_factor * self.embed_dim)
-        self.scale = 1 / embed_dim**2
         self.mul_add_handle = compl_muladd2d_fwd_c if use_complex_kernels else compl_muladd2d_fwd
         self.mul_handle = compl_mul2d_fwd_c if use_complex_kernels else compl_mul2d_fwd
         self.spectral_layers = spectral_layers
@@ -434,21 +436,21 @@ class SpectralAttention2d(nn.Module):
         assert inverse_transform.mmax == self.modes_lon
 
         # weights
-        w = [self.scale * torch.randn(self.embed_dim, self.hidden_size, 2)]
+        w = [scale * torch.randn(self.embed_dim, self.hidden_size, 2)]
         for l in range(1, self.spectral_layers):
-            w.append(self.scale * torch.randn(self.hidden_size, self.hidden_size, 2))
+            w.append(scale * torch.randn(self.hidden_size, self.hidden_size, 2))
         self.w = nn.ParameterList(w)
 
         if bias:
-            self.b = nn.ParameterList([self.scale * torch.randn(self.hidden_size, 1, 2) for _ in range(self.spectral_layers)])
+            self.b = nn.ParameterList([torch.zeros(self.hidden_size, 1, 2) for _ in range(self.spectral_layers)])
         
-        self.wout = nn.Parameter(self.scale * torch.randn(self.hidden_size, self.embed_dim, 2))
+        self.wout = nn.Parameter(scale * torch.randn(self.hidden_size, self.embed_dim, 2))
 
         self.drop = nn.Dropout(drop_rate) if drop_rate > 0. else nn.Identity()
 
         self.activations = nn.ModuleList([])
         for l in range(0, self.spectral_layers):
-            self.activations.append(ComplexReLU(mode=complex_activation, bias_shape=(self.hidden_size, 1, 1), scale=self.scale))
+            self.activations.append(ComplexReLU(mode=complex_activation, bias_shape=(self.hidden_size, 1, 1), scale=scale))
 
     def forward_mlp(self, x):
 
@@ -457,7 +459,7 @@ class SpectralAttention2d(nn.Module):
         xr = x
 
         for l in range(self.spectral_layers):
-            if hasattr(self, 'b'):
+            if hasattr(self, "b"):
                 xr = self.mul_add_handle(xr, self.w[l], self.b[l])
             else:
                 xr = self.mul_handle(xr, self.w[l])
@@ -502,11 +504,11 @@ class SpectralAttentionS2(nn.Module):
                  forward_transform,
                  inverse_transform,
                  embed_dim,
-                 operator_type = 'diagonal',
+                 operator_type = "diagonal",
                  sparsity_threshold = 0.0,
                  hidden_size_factor = 2,
-                 complex_activation = 'real',
-                 scale = 'auto',
+                 complex_activation = "real",
+                 scale = "auto",
                  bias = False,
                  spectral_layers = 1,
                  drop_rate = 0.):
@@ -517,7 +519,7 @@ class SpectralAttentionS2(nn.Module):
         self.operator_type = operator_type
         self.spectral_layers = spectral_layers
 
-        if scale == 'auto':
+        if scale == "auto":
             self.scale = (1 / (embed_dim * embed_dim))
 
         self.modes_lat = forward_transform.lmax
@@ -535,7 +537,7 @@ class SpectralAttentionS2(nn.Module):
 
         hidden_size = int(hidden_size_factor * self.embed_dim)
 
-        if operator_type == 'diagonal':
+        if operator_type == "diagonal":
             self.mul_add_handle = compl_muladd2d_fwd
             self.mul_handle = compl_mul2d_fwd
 
@@ -554,7 +556,7 @@ class SpectralAttentionS2(nn.Module):
             for l in range(0, self.spectral_layers):
                 self.activations.append(ComplexReLU(mode=complex_activation, bias_shape=(hidden_size, 1, 1), scale=self.scale))
         
-        elif operator_type == 'driscoll-healy':
+        elif operator_type == "driscoll-healy":
 
             self.mul_add_handle = compl_exp_muladd2d_fwd
             self.mul_handle = compl_exp_mul2d_fwd
@@ -575,7 +577,7 @@ class SpectralAttentionS2(nn.Module):
                 self.activations.append(ComplexReLU(mode=complex_activation, bias_shape=(hidden_size, 1, 1), scale=self.scale))
 
         else:
-            raise ValueError('Unknown operator type')
+            raise ValueError("Unknown operator type")
 
 
         self.drop = nn.Dropout(drop_rate) if drop_rate > 0. else nn.Identity()
@@ -588,7 +590,7 @@ class SpectralAttentionS2(nn.Module):
         xr = torch.view_as_real(x)
 
         for l in range(self.spectral_layers):
-            if hasattr(self, 'b'):
+            if hasattr(self, "b"):
                 xr = self.mul_add_handle(xr, self.w[l], self.b[l])
             else:
                 xr = self.mul_handle(xr, self.w[l])

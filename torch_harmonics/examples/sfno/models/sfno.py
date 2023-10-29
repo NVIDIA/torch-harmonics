@@ -48,6 +48,7 @@ class SpectralFilterLayer(nn.Module):
         forward_transform,
         inverse_transform,
         embed_dim,
+        scale = "auto",
         filter_type = "non-linear",
         operator_type = "diagonal",
         sparsity_threshold = 0.0,
@@ -66,6 +67,7 @@ class SpectralFilterLayer(nn.Module):
             self.filter = SpectralAttentionS2(forward_transform,
                                               inverse_transform,
                                               embed_dim,
+                                              scale = scale,
                                               operator_type = operator_type,
                                               sparsity_threshold = sparsity_threshold,
                                               hidden_size_factor = hidden_size_factor,
@@ -78,6 +80,7 @@ class SpectralFilterLayer(nn.Module):
             self.filter = SpectralAttention2d(forward_transform,
                                               inverse_transform,
                                               embed_dim,
+                                              scale = scale,
                                               sparsity_threshold = sparsity_threshold,
                                               use_complex_kernels = use_complex_kernels,
                                               hidden_size_factor = hidden_size_factor,
@@ -91,6 +94,7 @@ class SpectralFilterLayer(nn.Module):
                                          inverse_transform,
                                          embed_dim,
                                          embed_dim,
+                                         scale = scale,
                                          operator_type = operator_type,
                                          lr_scale_exponent = lr_scale_exponent,
                                          bias = True)
@@ -100,6 +104,7 @@ class SpectralFilterLayer(nn.Module):
                                                    inverse_transform,
                                                    embed_dim,
                                                    embed_dim,
+                                                   scale = scale,
                                                    operator_type = operator_type,
                                                    rank = rank,
                                                    factorization = factorization,
@@ -140,12 +145,18 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
             complex_activation = "real",
             spectral_layers = 3):
         super(SphericalFourierNeuralOperatorBlock, self).__init__()
+
+        gain_factor = 2.
+        if inner_skip == "linear":
+            gain_factor /= 2.
+        scale = (gain_factor / embed_dim)**2
         
         # convolution layer
         self.filter = SpectralFilterLayer(forward_transform,
                                           inverse_transform,
                                           embed_dim,
-                                          filter_type,
+                                          scale = scale,
+                                          filter_type = filter_type,
                                           operator_type = operator_type,
                                           sparsity_threshold = sparsity_threshold,
                                           use_complex_kernels = use_complex_kernels,
@@ -160,6 +171,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
 
         if inner_skip == "linear":
             self.inner_skip = nn.Conv2d(embed_dim, embed_dim, 1, 1)
+            torch.nn.init.normal_(self.inner_skip.weight, std=scale)
         elif inner_skip == "identity":
             self.inner_skip = nn.Identity()
         elif inner_skip == "none":
@@ -430,8 +442,8 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             forward_transform = self.trans_down if first_layer else self.trans
             inverse_transform = self.itrans_up if last_layer else self.itrans
 
-            inner_skip = 'linear'
-            outer_skip = 'identity'
+            inner_skip = "linear"
+            outer_skip = "none"
 
             if first_layer:
                 norm_layer = norm_layer1
