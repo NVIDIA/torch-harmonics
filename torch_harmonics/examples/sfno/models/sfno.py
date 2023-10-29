@@ -136,7 +136,6 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
             rank = 128,
             inner_skip = "linear",
             outer_skip = None,
-            concat_skip = False,
             use_mlp = True,
             complex_activation = "real",
             spectral_layers = 3):
@@ -168,11 +167,6 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         else:
             raise ValueError(f"Unknown skip connection type {inner_skip}")
 
-        self.concat_skip = concat_skip
-
-        if concat_skip and inner_skip is not None:
-            self.inner_skip_conv = nn.Conv2d(2*embed_dim, embed_dim, 1, bias=False)
-
         if filter_type == "linear":
             self.act_layer = act_layer()
 
@@ -199,9 +193,6 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         else:
             raise ValueError(f"Unknown skip connection type {outer_skip}")
 
-        if concat_skip and outer_skip is not None:
-            self.outer_skip_conv = nn.Conv2d(2*embed_dim, embed_dim, 1, bias=False)
-
         # second normalisation layer
         self.norm1 = norm_layer()
 
@@ -210,11 +201,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         x, residual = self.filter(x)
 
         if hasattr(self, "inner_skip"):
-            if self.concat_skip:
-                x = torch.cat((x, self.inner_skip(residual)), dim=1)
-                x = self.inner_skip_conv(x)
-            else:
-                x = x + self.inner_skip(residual)
+            x = x + self.inner_skip(residual)
 
         if hasattr(self, "act_layer"):
             x = self.act_layer(x)
@@ -227,11 +214,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         x = self.drop_path(x)
 
         if hasattr(self, "outer_skip"):
-            if self.concat_skip:
-                x = torch.cat((x, self.outer_skip(residual)), dim=1)
-                x = self.outer_skip_conv(x)
-            else:
-                x = x + self.outer_skip(residual)
+            x = x + self.outer_skip(residual)
 
         x = self.norm1(x)
 
