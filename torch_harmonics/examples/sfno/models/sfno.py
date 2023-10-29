@@ -326,7 +326,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             out_chans = 3,
             embed_dim = 256,
             num_layers = 4,
-            activation_function = "gelu",
+            activation_function = "relu",
             encoder_layers = 1,
             use_mlp = True,
             mlp_ratio = 2.,
@@ -491,14 +491,14 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
                            checkpointing = False)
 
         # trunc_normal_(self.pos_embed, std=.02)
-        self.apply(self._init_weights)
+        # self.apply(self._init_weights)
 
-    def _init_weights(self, m):
-        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
-            trunc_normal_(m.weight, std=.02)
-            #nn.init.normal_(m.weight, std=0.02)
-            if m.bias is not None:
-                nn.init.constant_(m.bias, 0)
+    # def _init_weights(self, m):
+    #     if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+    #         trunc_normal_(m.weight, std=math.sqrt(2/self.embed_dim))
+    #         #nn.init.normal_(m.weight, std=0.02)
+    #         if m.bias is not None:
+    #             nn.init.constant_(m.bias, 0)
 
     @torch.jit.ignore
     def no_weight_decay(self):

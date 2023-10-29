@@ -217,6 +217,22 @@ def autoregressive_inference(model,
 
     return losses, fno_times, nwp_times
 
+# convenience function for logging weights and gradients
+def log_weights_and_grads(model, iters=1):
+    """
+    Helper routine intended for debugging purposes
+    """
+    root_path = os.path.join(os.path.dirname(__file__), "weights_and_grads")
+
+    weights_and_grads_fname = os.path.join(root_path, f"weights_and_grads_step{iters:03d}.tar")
+    print(weights_and_grads_fname)
+
+    weights_dict = {k:v for k,v in model.named_parameters()}
+    grad_dict = {k:v.grad for k,v in model.named_parameters()}
+
+    store_dict = {'iteration': iters, 'grads': grad_dict, 'weights': weights_dict}
+    torch.save(store_dict, weights_and_grads_fname)
+
 # training function
 def train_model(model,
                 dataloader,
@@ -228,9 +244,13 @@ def train_model(model,
                 num_examples=256,
                 num_valid=8,
                 loss_fn='l2',
-                enable_amp=False):
+                enable_amp=False,
+                log_grads=0):
 
     train_start = time.time()
+
+    # count iterations
+    iters = 0
 
     for epoch in range(nepochs):
 
@@ -269,10 +289,15 @@ def train_model(model,
             acc_loss += loss.item() * inp.size(0)
 
             optimizer.zero_grad(set_to_none=True)
-            # gscaler.scale(loss).backward()
             gscaler.scale(loss).backward()
+
+            if log_grads and iters % log_grads == 0:
+                log_weights_and_grads(model, iters=iters)
+
             gscaler.step(optimizer)
             gscaler.update()
+
+            iters += 1
 
         acc_loss = acc_loss / len(dataloader.dataset)
 
@@ -315,7 +340,7 @@ def train_model(model,
     print(f'done. Training took {train_time}.')
     return valid_loss
 
-def main(train=True, load_checkpoint=False, enable_amp=False, debug_grads=False):
+def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
 
     # set seed
     torch.manual_seed(333)
@@ -345,26 +370,35 @@ def main(train=True, load_checkpoint=False, enable_amp=False, debug_grads=False)
     models = {}
     metrics = {}
 
+    models['sfno_sc3_layer4_edim256_linear_noskip']    = partial(SFNO, spectral_transform='sht', filter_type='linear', img_size=(nlat, nlon),
+                                                          num_layers=4, scale_factor=3, embed_dim=128, operator_type='driscoll-healy',
+                                                          big_skip=False)
+    # from torch_harmonics.examples.sfno.models.unet import UNet
+    # models['unet_baseline'] = partial(UNet)
+
+
     # # U-Net if installed
     # from models.unet import UNet
     # models['unet_baseline'] = partial(UNet)
 
     # SFNO models
-    models['sfno_sc3_layer4_edim256_linear']    = partial(SFNO, spectral_transform='sht', filter_type='linear', img_size=(nlat, nlon),
-                                                     num_layers=4, scale_factor=3, embed_dim=256, operator_type='driscoll-healy')
-    models['sfno_sc3_layer4_edim256_real']      = partial(SFNO, spectral_transform='sht', filter_type='non-linear', img_size=(nlat, nlon),
-                                                     num_layers=4, scale_factor=3, embed_dim=256, complex_activation = 'real', operator_type='diagonal')
-    # FNO models
-    models['fno_sc3_layer4_edim256_linear']     = partial(SFNO, spectral_transform='fft', filter_type='linear', img_size=(nlat, nlon),
-                                                     num_layers=4, scale_factor=3, embed_dim=256, operator_type='diagonal')
-    models['fno_sc3_layer4_edim256_real']       = partial(SFNO, spectral_transform='fft', filter_type='non-linear', img_size=(nlat, nlon),
-                                                     num_layers=4, scale_factor=3, embed_dim=256, complex_activation='real')
+    # models['sfno_sc3_layer4_edim256_linear']    = partial(SFNO, spectral_transform='sht', filter_type='linear', img_size=(nlat, nlon),
+    #                                                  num_layers=4, scale_factor=3, embed_dim=256, operator_type='driscoll-healy')
+    # models['sfno_sc3_layer4_edim256_real']      = partial(SFNO, spectral_transform='sht', filter_type='non-linear', img_size=(nlat, nlon),
+    #                                                  num_layers=4, scale_factor=3, embed_dim=256, complex_activation = 'real', operator_type='diagonal')
+    # # FNO models
+    # models['fno_sc3_layer4_edim256_linear']     = partial(SFNO, spectral_transform='fft', filter_type='linear', img_size=(nlat, nlon),
+    #                                                  num_layers=4, scale_factor=3, embed_dim=256, operator_type='diagonal')
+    # models['fno_sc3_layer4_edim256_real']       = partial(SFNO, spectral_transform='fft', filter_type='non-linear', img_size=(nlat, nlon),
+    #                                                  num_layers=4, scale_factor=3, embed_dim=256, complex_activation='real')
 
     # iterate over models and train each model
     root_path = os.path.dirname(__file__)
     for model_name, model_handle in models.items():
 
         model = model_handle().to(device)
+
+        print(model)
 
         metrics[model_name] = {}
 
@@ -387,16 +421,16 @@ def main(train=True, load_checkpoint=False, enable_amp=False, debug_grads=False)
             start_time = time.time()
 
             print(f'Training {model_name}, single step')
-            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=200, loss_fn='l2', enable_amp=enable_amp)
+            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=10, loss_fn='l2', enable_amp=enable_amp, log_grads=log_grads)
 
-            # multistep training
-            print(f'Training {model_name}, two step')
-            optimizer = torch.optim.Adam(model.parameters(), lr=5E-5)
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
-            gscaler = amp.GradScaler(enabled=enable_amp)
-            dataloader.dataset.nsteps = 2 * dt//dt_solver
-            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=20, nfuture=1, enable_amp=enable_amp)
-            dataloader.dataset.nsteps = 1 * dt//dt_solver
+            # # multistep training
+            # print(f'Training {model_name}, two step')
+            # optimizer = torch.optim.Adam(model.parameters(), lr=5E-5)
+            # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
+            # gscaler = amp.GradScaler(enabled=enable_amp)
+            # dataloader.dataset.nsteps = 2 * dt//dt_solver
+            # train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=20, nfuture=1, enable_amp=enable_amp)
+            # dataloader.dataset.nsteps = 1 * dt//dt_solver
 
             training_time = time.time() - start_time
 
@@ -409,7 +443,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, debug_grads=False)
         torch.cuda.manual_seed(333)
 
         with torch.inference_mode():
-            losses, fno_times, nwp_times = autoregressive_inference(model, dataset, os.path.join(root_path,'paper_figures/'+model_name), nsteps=nsteps, autoreg_steps=10)
+            losses, fno_times, nwp_times = autoregressive_inference(model, dataset, os.path.join(root_path,'figures/'+model_name), nsteps=nsteps, autoreg_steps=10)
             metrics[model_name]['loss_mean'] = np.mean(losses)
             metrics[model_name]['loss_std'] = np.std(losses)
             metrics[model_name]['fno_time_mean'] = np.mean(fno_times)
@@ -426,4 +460,4 @@ if __name__ == "__main__":
     import torch.multiprocessing as mp
     mp.set_start_method('forkserver', force=True)
 
-    main(train=True, load_checkpoint=False, enable_amp=False, debug_grads=True)
+    main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0)
