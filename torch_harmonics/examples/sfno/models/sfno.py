@@ -48,68 +48,37 @@ class SpectralFilterLayer(nn.Module):
         forward_transform,
         inverse_transform,
         embed_dim,
-        scale = "auto",
-        filter_type = "non-linear",
+        gain = 2.,
         operator_type = "diagonal",
-        sparsity_threshold = 0.0,
-        use_complex_kernels = True,
         hidden_size_factor = 2,
         lr_scale_exponent = 0,
         factorization = None,
         separable = False,
         rank = 1e-2,
-        complex_activation = "real",
-        spectral_layers = 1,
-        drop_rate = 0):
+        bias = True):
         super(SpectralFilterLayer, self).__init__() 
 
-        if filter_type == "non-linear" and isinstance(forward_transform, RealSHT):
-            self.filter = SpectralAttentionS2(forward_transform,
-                                              inverse_transform,
-                                              embed_dim,
-                                              scale = scale,
-                                              operator_type = operator_type,
-                                              sparsity_threshold = sparsity_threshold,
-                                              hidden_size_factor = hidden_size_factor,
-                                              complex_activation = complex_activation,
-                                              spectral_layers = spectral_layers,
-                                              drop_rate = drop_rate,
-                                              bias = False)
-
-        elif filter_type == "non-linear" and isinstance(forward_transform, RealFFT2):
-            self.filter = SpectralAttention2d(forward_transform,
-                                              inverse_transform,
-                                              embed_dim,
-                                              scale = scale,
-                                              sparsity_threshold = sparsity_threshold,
-                                              use_complex_kernels = use_complex_kernels,
-                                              hidden_size_factor = hidden_size_factor,
-                                              complex_activation = complex_activation,
-                                              spectral_layers = spectral_layers,
-                                              drop_rate = drop_rate,
-                                              bias = False)
-
-        elif filter_type == "linear" and factorization is None:
+        if factorization is None:
             self.filter = SpectralConvS2(forward_transform,
                                          inverse_transform,
                                          embed_dim,
                                          embed_dim,
-                                         scale = scale,
+                                         gain = gain,
                                          operator_type = operator_type,
                                          lr_scale_exponent = lr_scale_exponent,
-                                         bias = True)
+                                         bias = bias)
             
-        elif filter_type == "linear" and factorization is not None:
+        elif factorization is not None:
             self.filter = FactorizedSpectralConvS2(forward_transform,
                                                    inverse_transform,
                                                    embed_dim,
                                                    embed_dim,
-                                                   scale = scale,
+                                                   gain = gain,
                                                    operator_type = operator_type,
                                                    rank = rank,
                                                    factorization = factorization,
                                                    separable = separable,
-                                                   bias = True)
+                                                   bias = bias)
 
         else:
             raise(NotImplementedError)
@@ -126,52 +95,45 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
             forward_transform,
             inverse_transform,
             embed_dim,
-            filter_type = "non-linear",
             operator_type = "driscoll-healy",
             mlp_ratio = 2.,
             drop_rate = 0.,
             drop_path = 0.,
-            act_layer = nn.GELU,
+            act_layer = nn.ReLU,
             norm_layer = nn.Identity,
-            sparsity_threshold = 0.0,
-            use_complex_kernels = True,
             lr_scale_exponent = 0,
             factorization = None,
             separable = False,
             rank = 128,
             inner_skip = "linear",
             outer_skip = None,
-            use_mlp = True,
-            complex_activation = "real",
-            spectral_layers = 3):
+            use_mlp = True):
         super(SphericalFourierNeuralOperatorBlock, self).__init__()
 
-        gain_factor = 2.
+        if act_layer == nn.Identity:
+            gain_factor = 1.0
+        else:
+            gain_factor = 2.0
+
         if inner_skip == "linear":
             gain_factor /= 2.
-        scale = (gain_factor / embed_dim)**2
         
         # convolution layer
         self.filter = SpectralFilterLayer(forward_transform,
                                           inverse_transform,
                                           embed_dim,
-                                          scale = scale,
-                                          filter_type = filter_type,
+                                          gain = gain_factor,
                                           operator_type = operator_type,
-                                          sparsity_threshold = sparsity_threshold,
-                                          use_complex_kernels = use_complex_kernels,
                                           hidden_size_factor = mlp_ratio,
                                           lr_scale_exponent = lr_scale_exponent,
                                           factorization = factorization,
                                           separable = separable,
                                           rank = rank,
-                                          complex_activation = complex_activation,
-                                          spectral_layers = spectral_layers,
-                                          drop_rate = drop_rate)
+                                          bias = False)
 
         if inner_skip == "linear":
             self.inner_skip = nn.Conv2d(embed_dim, embed_dim, 1, 1)
-            torch.nn.init.normal_(self.inner_skip.weight, std=scale)
+            torch.nn.init.normal_(self.inner_skip.weight, std=math.sqrt(gain_factor/embed_dim))
         elif inner_skip == "identity":
             self.inner_skip = nn.Identity()
         elif inner_skip == "none":
@@ -179,8 +141,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         else:
             raise ValueError(f"Unknown skip connection type {inner_skip}")
 
-        if filter_type == "linear":
-            self.act_layer = act_layer()
+        self.act_layer = act_layer()
 
         # first normalisation layer
         self.norm0 = norm_layer()
@@ -207,6 +168,17 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
 
         # second normalisation layer
         self.norm1 = norm_layer()
+
+    # def init_weights(self, scale):
+    #     if hasattr(self, "inner_skip") and isinstance(self.inner_skip, nn.Conv2d):
+    #         gain_factor = 1.
+    #         scale = (gain_factor / embed_dim)**0.5
+    #         nn.init.normal_(self.inner_skip.weight, mean=0., std=scale)
+    #         self.filter.filter.init_weights(scale)
+    #     else:
+    #         gain_factor = 2.
+    #         scale = (gain_factor / embed_dim)**0.5
+    #         self.filter.filter.init_weights(scale)
 
     def forward(self, x):
 
@@ -239,8 +211,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
 
     Parameters
     ----------
-    filter_type : str, optional
-        Type of filter to use ('linear', 'non-linear'), by default "linear"
     spectral_transform : str, optional
         Type of spectral transformation to use, by default "sht"
     operator_type : str, optional
@@ -269,14 +239,10 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         Dropout rate, by default 0.0
     drop_path_rate : float, optional
         Dropout path rate, by default 0.0
-    sparsity_threshold : float, optional
-        Threshold for sparsity, by default 0.0
     normalization_layer : str, optional
         Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "instance_norm"
     hard_thresholding_fraction : float, optional
         Fraction of hard thresholding (frequency cutoff) to apply, by default 1.0
-    use_complex_kernels : bool, optional
-        Whether to use complex kernels, by default True
     big_skip : bool, optional
         Whether to add a single large skip connection, by default True
     rank : float, optional
@@ -289,10 +255,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         Whether to use separable convolutions, by default False
     rank : (int, Tuple[int]), optional
         If a factorization is used, which rank to use. Argument is passed to tensorly
-    complex_activation : str, optional
-        Type of complex activation function to use, by default "real"
-    spectral_layers : int, optional
-        Number of spectral layers, by default 3
     pos_embed : bool, optional
         Whether to use positional embedding, by default True
 
@@ -312,10 +274,10 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
 
     def __init__(
             self,
-            filter_type = "linear",
             spectral_transform = "sht",
             operator_type = "driscoll-healy",
             img_size = (128, 256),
+            grid = "equiangular",
             scale_factor = 3,
             in_chans = 3,
             out_chans = 3,
@@ -327,7 +289,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             mlp_ratio = 2.,
             drop_rate = 0.,
             drop_path_rate = 0.,
-            sparsity_threshold = 0.0,
             normalization_layer = "none",
             hard_thresholding_fraction = 1.0,
             use_complex_kernels = True,
@@ -336,16 +297,14 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             factorization = None,
             separable = False,
             rank = 128,
-            complex_activation = "real",
-            spectral_layers = 2,
-            pos_embed = True):
+            pos_embed = False):
 
         super(SphericalFourierNeuralOperatorNet, self).__init__()
 
-        self.filter_type = filter_type
         self.spectral_transform = spectral_transform
         self.operator_type = operator_type
         self.img_size = img_size
+        self.grid = grid
         self.scale_factor = scale_factor
         self.in_chans = in_chans
         self.out_chans = out_chans
@@ -361,14 +320,15 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         self.factorization = factorization
         self.separable = separable,
         self.rank = rank
-        self.complex_activation = complex_activation
-        self.spectral_layers = spectral_layers
 
         # activation function
         if activation_function == "relu":
             self.activation_function = nn.ReLU
         elif activation_function == "gelu":
             self.activation_function = nn.GELU
+        # for debugging purposes
+        elif activation_function == "identity":
+            self.activation_function = nn.Identity
         else:
             raise ValueError(f"Unknown activation function {activation_function}")
 
@@ -413,10 +373,11 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         if self.spectral_transform == "sht":
 
             modes_lat = int(self.h * self.hard_thresholding_fraction)
-            modes_lon = int((self.w // 2 + 1) * self.hard_thresholding_fraction)
+            modes_lon = int(self.w//2 * self.hard_thresholding_fraction)
+            modes_lat = modes_lon = min(modes_lat, modes_lon)
 
-            self.trans_down = RealSHT(*self.img_size, lmax=modes_lat, mmax=modes_lon, grid="equiangular").float()
-            self.itrans_up  = InverseRealSHT(*self.img_size, lmax=modes_lat, mmax=modes_lon, grid="equiangular").float()
+            self.trans_down = RealSHT(*self.img_size, lmax=modes_lat, mmax=modes_lon, grid=self.grid).float()
+            self.itrans_up  = InverseRealSHT(*self.img_size, lmax=modes_lat, mmax=modes_lon, grid=self.grid).float()
             self.trans      = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid="legendre-gauss").float()
             self.itrans     = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid="legendre-gauss").float()
 
@@ -442,7 +403,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             forward_transform = self.trans_down if first_layer else self.trans
             inverse_transform = self.itrans_up if last_layer else self.itrans
 
-            inner_skip = "linear"
+            inner_skip = "none"
             outer_skip = "none"
 
             if first_layer:
@@ -455,24 +416,19 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             block = SphericalFourierNeuralOperatorBlock(forward_transform,
                                                         inverse_transform,
                                                         self.embed_dim,
-                                                        filter_type = filter_type,
                                                         operator_type = self.operator_type,
                                                         mlp_ratio = mlp_ratio,
                                                         drop_rate = drop_rate,
                                                         drop_path = dpr[i],
                                                         act_layer = self.activation_function,
                                                         norm_layer = norm_layer,
-                                                        sparsity_threshold = sparsity_threshold,
-                                                        use_complex_kernels = use_complex_kernels,
                                                         inner_skip = inner_skip,
                                                         outer_skip = outer_skip,
                                                         use_mlp = use_mlp,
                                                         lr_scale_exponent = self.lr_scale_exponent,
                                                         factorization = self.factorization,
                                                         separable = self.separable,
-                                                        rank = self.rank,
-                                                        complex_activation = self.complex_activation,
-                                                        spectral_layers = self.spectral_layers)
+                                                        rank = self.rank)
 
             self.blocks.append(block)
 
