@@ -41,7 +41,8 @@ def plot_sphere(data,
                 central_latitude=20,
                 central_longitude=20,
                 lon=None,
-                lat=None):
+                lat=None,
+                **kwargs):
     if fig == None:
         fig = plt.figure()
 
@@ -61,7 +62,7 @@ def plot_sphere(data,
     Lat = Lat*180/np.pi
 
     # contour data over the map.
-    im = ax.pcolormesh(Lon, Lat, data, cmap=cmap, transform=ccrs.PlateCarree(), antialiased=False)
+    im = ax.pcolormesh(Lon, Lat, data, cmap=cmap, transform=ccrs.PlateCarree(), antialiased=False, **kwargs)
     # ax.add_feature(cartopy.feature.COASTLINE, edgecolor='white', facecolor='none', linewidth=1.5)
     if colorbar:
         plt.colorbar(im)
@@ -76,7 +77,8 @@ def plot_data(data,
               title=None,
               colorbar=False,
               lon=None,
-              lat=None):
+              lat=None,
+              **kwargs):
     if fig == None:
         fig = plt.figure()
     
@@ -90,7 +92,7 @@ def plot_data(data,
 
     fig = plt.figure(figsize=(10, 5))
     ax = fig.add_subplot(1, 1, 1, projection=projection)
-    im = ax.pcolormesh(Lon, Lat, data, cmap=cmap)
+    im = ax.pcolormesh(Lon, Lat, data, cmap=cmap, **kwargs)
     if colorbar:
         plt.colorbar(im)
     plt.title(title, y=1.05)

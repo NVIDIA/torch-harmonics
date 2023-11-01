@@ -138,43 +138,39 @@ class MLP(nn.Module):
                  hidden_features = None,
                  out_features = None,
                  act_layer = nn.ReLU,
-                 output_bias = True,
+                 output_bias = False,
                  drop_rate = 0.,
-                 checkpointing = False):
+                 checkpointing = False,
+                 gain = 1.0):
         super(MLP, self).__init__()
         self.checkpointing = checkpointing
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
 
-        self.fc1 = nn.Conv2d(in_features, hidden_features, 1, bias=True)
-        # ln1 = norm_layer(num_features=hidden_features)
+        # Fist dense layer
+        fc1 = nn.Conv2d(in_features, hidden_features, 1, bias=True)
+        # initialize the weights correctly
+        scale = math.sqrt(2. / in_features)
+        nn.init.normal_(fc1.weight, mean=0., std=scale)
+        if fc1.bias is not None:
+            nn.init.constant_(fc1.bias, 0.0)
+
+        # activation
         self.act = act_layer()
-        self.fc2 = nn.Conv2d(hidden_features, out_features, 1, bias = output_bias)
+
+        # output layer
+        fc2 = nn.Conv2d(hidden_features, out_features, 1, bias=output_bias)
+        # gain factor for the output determines the scaling of the output init
+        scale = math.sqrt(gain / hidden_features)
+        nn.init.normal_(fc2.weight, mean=0., std=scale)
+        if fc2.bias is not None:
+            nn.init.constant_(fc2.bias, 0.0)
+
         if drop_rate > 0.:
             self.drop = nn.Dropout(drop_rate)
-            self.fwd = nn.Sequential(self.fc1, self.act, self.drop, self.fc2, self.drop)
+            self.fwd = nn.Sequential(fc1, self.act, self.drop, fc2, self.drop)
         else:
-            self.fwd = nn.Sequential(self.fc1, self.act, self.fc2)
-
-        self.init_weights()
-
-    # def init_weights(self):
-    #     nn.init.kaiming_normal_(self.fc1.weight, nonlinearity="relu")
-    #     nn.init.constant_(self.fc1.bias, 0.0)
-    #     nn.init.kaiming_normal_(self.fc2.weight, nonlinearity="linear")
-    #     if hasattr(self.fc2, "bias"):
-    #         nn.init.constant_(self.fc2.bias, 0.0)
-
-    def init_weights(self):
-        scale = math.sqrt(2. / self.fc1.weight.shape[1])
-        nn.init.normal_(self.fc1.weight, mean=0., std=scale)
-        nn.init.constant_(self.fc1.bias, 0.0)
-
-        scale = math.sqrt(1. / self.fc2.weight.shape[1])
-        nn.init.normal_(self.fc2.weight, mean=0., std=scale)
-        if hasattr(self.fc2, "bias"):
-            nn.init.constant_(self.fc2.bias, 0.0)
-
+            self.fwd = nn.Sequential(fc1, self.act, fc2)
  
     @torch.jit.ignore
     def checkpoint_forward(self, x):
@@ -259,7 +255,7 @@ class SpectralConvS2(nn.Module):
         assert self.inverse_transform.lmax == self.modes_lat
         assert self.inverse_transform.mmax == self.modes_lon
 
-        weight_shape = [in_channels, out_channels]
+        weight_shape = [out_channels, in_channels]
 
         if self.operator_type == "diagonal":
             weight_shape += [self.modes_lat, self.modes_lon]
@@ -274,12 +270,15 @@ class SpectralConvS2(nn.Module):
             raise NotImplementedError(f"Unkonw operator type f{self.operator_type}")
 
         # form weight tensors
-        scale = math.sqrt(gain / in_channels)
-        self.weight = nn.Parameter(scale * torch.view_as_real(torch.randn(*weight_shape, dtype=torch.complex64)))
-        # self.weight = nn.Parameter(scale / math.sqrt(2.) * torch.randn(*weight_shape, 2))
+        scale = torch.ones(self.modes_lat, 2) / math.sqrt(2.0 * in_channels)
+        scale[0, :] *= math.sqrt(2*gain)
+        scale[1:, :] *= math.sqrt(gain)
+        # self.weight = nn.Parameter(scale * torch.view_as_real(torch.randn(*weight_shape, dtype=torch.complex64)))
+        self.weight = nn.Parameter(scale * torch.randn(*weight_shape, 2))
 
         # rescale the learning rate for better training of spectral parameters
         # lr_scale = (torch.arange(self.modes_lat)+1).reshape(-1, 1)**(lr_scale_exponent)
+        # lr_scale = 10.*torch.ones(self.modes_lat, 1)
         # self.register_buffer("lr_scale", lr_scale)
         # self.weight.register_hook(lambda grad: self.lr_scale*grad)
 
@@ -359,10 +358,10 @@ class FactorizedSpectralConvS2(nn.Module):
         assert self.inverse_transform.lmax == self.modes_lat
         assert self.inverse_transform.mmax == self.modes_lon
 
-        weight_shape = [in_channels]
+        weight_shape = [out_channels]
 
         if not self.separable:
-            weight_shape += [out_channels]
+            weight_shape += [in_channels]
 
         if self.operator_type == "diagonal":
             weight_shape += [self.modes_lat, self.modes_lon]

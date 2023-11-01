@@ -370,9 +370,9 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     models = {}
     metrics = {}
 
-    models['sfno_sc3_layer4_edim256_linear_corrected_init'] = partial(SFNO, spectral_transform='sht', img_size=(nlat, nlon),  grid="equiangular",
-                                                                     num_layers=4, scale_factor=3, embed_dim=128, operator_type='driscoll-healy',
-                                                                     big_skip=False)
+    models["sfno_sc3_layer4_e128_init_scheme"] = partial(SFNO, spectral_transform='sht', img_size=(nlat, nlon),  grid="equiangular",
+                                                         num_layers=4, scale_factor=3, embed_dim=128, operator_type='driscoll-healy',
+                                                         big_skip=False, pos_embed=False)
     # from torch_harmonics.examples.sfno.models.unet import UNet
     # models['unet_baseline'] = partial(UNet)
 
@@ -410,7 +410,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
             run = wandb.init(project="sfno spherical swe", group=model_name, name=model_name + '_' + str(time.time()), config=model_handle.keywords)
 
             # optimizer:
-            optimizer = torch.optim.Adam(model.parameters(), lr=1E-3)
+            optimizer = torch.optim.SGD(model.parameters(), lr=1E-3)
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
             gscaler = amp.GradScaler(enabled=enable_amp)
 
@@ -456,4 +456,4 @@ if __name__ == "__main__":
     import torch.multiprocessing as mp
     mp.set_start_method('forkserver', force=True)
 
-    main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0)
+    main(train=True, load_checkpoint=False, enable_amp=False, log_grads=100)

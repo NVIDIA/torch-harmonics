@@ -38,6 +38,7 @@ from .layers import *
 
 from functools import partial
 
+
 class SpectralFilterLayer(nn.Module):
     """
     Fourier layer. Contains the convolution part of the FNO/SFNO
@@ -47,7 +48,8 @@ class SpectralFilterLayer(nn.Module):
         self,
         forward_transform,
         inverse_transform,
-        embed_dim,
+        input_dim,
+        output_dim,
         gain = 2.,
         operator_type = "diagonal",
         hidden_size_factor = 2,
@@ -61,8 +63,8 @@ class SpectralFilterLayer(nn.Module):
         if factorization is None:
             self.filter = SpectralConvS2(forward_transform,
                                          inverse_transform,
-                                         embed_dim,
-                                         embed_dim,
+                                         input_dim,
+                                         output_dim,
                                          gain = gain,
                                          operator_type = operator_type,
                                          lr_scale_exponent = lr_scale_exponent,
@@ -71,8 +73,8 @@ class SpectralFilterLayer(nn.Module):
         elif factorization is not None:
             self.filter = FactorizedSpectralConvS2(forward_transform,
                                                    inverse_transform,
-                                                   embed_dim,
-                                                   embed_dim,
+                                                   input_dim,
+                                                   output_dim,
                                                    gain = gain,
                                                    operator_type = operator_type,
                                                    rank = rank,
@@ -94,7 +96,8 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
             self,
             forward_transform,
             inverse_transform,
-            embed_dim,
+            input_dim,
+            output_dim,
             operator_type = "driscoll-healy",
             mlp_ratio = 2.,
             drop_rate = 0.,
@@ -121,7 +124,8 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         # convolution layer
         self.filter = SpectralFilterLayer(forward_transform,
                                           inverse_transform,
-                                          embed_dim,
+                                          input_dim,
+                                          output_dim,
                                           gain = gain_factor,
                                           operator_type = operator_type,
                                           hidden_size_factor = mlp_ratio,
@@ -132,9 +136,10 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
                                           bias = False)
 
         if inner_skip == "linear":
-            self.inner_skip = nn.Conv2d(embed_dim, embed_dim, 1, 1)
-            torch.nn.init.normal_(self.inner_skip.weight, std=math.sqrt(gain_factor/embed_dim))
+            self.inner_skip = nn.Conv2d(input_dim, output_dim, 1, 1)
+            nn.init.normal_(self.inner_skip.weight, std=math.sqrt(gain_factor/input_dim))
         elif inner_skip == "identity":
+            assert input_dim == output_dim
             self.inner_skip = nn.Identity()
         elif inner_skip == "none":
             pass
@@ -148,18 +153,26 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         
         # dropout
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+
+        gain_factor = 1.0
+        if outer_skip == "linear":
+            gain_factor /= 2.
         
         if use_mlp == True:
-            mlp_hidden_dim = int(embed_dim * mlp_ratio)
-            self.mlp = MLP(in_features = embed_dim,
+            mlp_hidden_dim = int(output_dim * mlp_ratio)
+            self.mlp = MLP(in_features = output_dim,
+                           out_features = input_dim,
                            hidden_features = mlp_hidden_dim,
                            act_layer = act_layer,
                            drop_rate = drop_rate,
-                           checkpointing = False)
+                           checkpointing = False,
+                           gain = gain_factor)
 
         if outer_skip == "linear":
-            self.outer_skip = nn.Conv2d(embed_dim, embed_dim, 1, 1)
+            self.outer_skip = nn.Conv2d(input_dim, input_dim, 1, 1)
+            torch.nn.init.normal_(self.outer_skip.weight, std=math.sqrt(gain_factor/input_dim))
         elif outer_skip == "identity":
+            assert input_dim == output_dim
             self.outer_skip = nn.Identity()
         elif outer_skip == "none":
             pass
@@ -223,7 +236,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         Number of input channels, by default 3
     out_chans : int, optional
         Number of output channels, by default 3
-    embed_dim : int, optional
+    embed_dim : Union[int, List[int]], optional
         Dimension of the embeddings, by default 256
     num_layers : int, optional
         Number of layers in the network, by default 4
@@ -292,7 +305,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             normalization_layer = "none",
             hard_thresholding_fraction = 1.0,
             use_complex_kernels = True,
-            big_skip = True,
+            big_skip = False,
             lr_scale_exponent = 0,
             factorization = None,
             separable = False,
@@ -308,8 +321,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         self.scale_factor = scale_factor
         self.in_chans = in_chans
         self.out_chans = out_chans
-        self.embed_dim = self.num_features = embed_dim
-        self.pos_embed_dim = self.embed_dim
+        self.embed_dim = [embed_dim, embed_dim] if not isinstance(embed_dim, list) else embed_dim
         self.num_layers = num_layers
         self.hard_thresholding_fraction = hard_thresholding_fraction
         self.normalization_layer = normalization_layer
@@ -345,8 +357,8 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             norm_layer0 = partial(nn.LayerNorm, normalized_shape=(self.img_size[0], self.img_size[1]), eps=1e-6)
             norm_layer1 = partial(nn.LayerNorm, normalized_shape=(self.h, self.w), eps=1e-6)
         elif self.normalization_layer == "instance_norm":
-            norm_layer0 = partial(nn.InstanceNorm2d, num_features=self.embed_dim, eps=1e-6, affine=True, track_running_stats=False)
-            norm_layer1 = norm_layer0
+            norm_layer0 = partial(nn.InstanceNorm2d, num_features=self.embed_dim[1], eps=1e-6, affine=True, track_running_stats=False)
+            norm_layer1 = partial(nn.InstanceNorm2d, num_features=self.embed_dim[0], eps=1e-6, affine=True, track_running_stats=False)
         elif self.normalization_layer == "none":
             norm_layer0 = nn.Identity
             norm_layer1 = norm_layer0
@@ -354,14 +366,15 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             raise NotImplementedError(f"Error, normalization {self.normalization_layer} not implemented.") 
 
         if pos_embed:
-            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.img_size[0], self.img_size[1]))
+            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim[0], self.img_size[0], self.img_size[1]))
+            nn.init.constant_(self.pos_embed, 0.0)
         else:
             self.pos_embed = None
 
         # encoder
-        encoder_hidden_dim = int(self.embed_dim * mlp_ratio)
+        encoder_hidden_dim = int(self.embed_dim[0] * mlp_ratio)
         encoder = MLP(in_features = self.in_chans,
-                      out_features = self.embed_dim,
+                      out_features = self.embed_dim[0],
                       hidden_features = encoder_hidden_dim,
                       act_layer = self.activation_function,
                       drop_rate = drop_rate,
@@ -415,7 +428,8 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
 
             block = SphericalFourierNeuralOperatorBlock(forward_transform,
                                                         inverse_transform,
-                                                        self.embed_dim,
+                                                        self.embed_dim[0],
+                                                        self.embed_dim[1],
                                                         operator_type = self.operator_type,
                                                         mlp_ratio = mlp_ratio,
                                                         drop_rate = drop_rate,
@@ -433,23 +447,13 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             self.blocks.append(block)
 
         # decoder
-        encoder_hidden_dim = int(self.embed_dim * mlp_ratio)
-        self.decoder = MLP(in_features = self.embed_dim + self.big_skip*self.in_chans,
+        decoder_hidden_dim = int(self.embed_dim[0] * mlp_ratio)
+        self.decoder = MLP(in_features = self.embed_dim[0] + self.big_skip*self.in_chans,
                            out_features = self.out_chans,
-                           hidden_features = encoder_hidden_dim,
+                           hidden_features = decoder_hidden_dim,
                            act_layer = self.activation_function,
                            drop_rate = drop_rate,
                            checkpointing = False)
-
-        # trunc_normal_(self.pos_embed, std=.02)
-        # self.apply(self._init_weights)
-
-    # def _init_weights(self, m):
-    #     if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
-    #         trunc_normal_(m.weight, std=math.sqrt(2/self.embed_dim))
-    #         #nn.init.normal_(m.weight, std=0.02)
-    #         if m.bias is not None:
-    #             nn.init.constant_(m.bias, 0)
 
     @torch.jit.ignore
     def no_weight_decay(self):
