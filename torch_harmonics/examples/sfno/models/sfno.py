@@ -133,7 +133,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
                                           factorization = factorization,
                                           separable = separable,
                                           rank = rank,
-                                          bias = False)
+                                          bias = True)
 
         if inner_skip == "linear":
             self.inner_skip = nn.Conv2d(input_dim, output_dim, 1, 1)
@@ -236,7 +236,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         Number of input channels, by default 3
     out_chans : int, optional
         Number of output channels, by default 3
-    embed_dim : Union[int, List[int]], optional
+    embed_dim : int, optional
         Dimension of the embeddings, by default 256
     num_layers : int, optional
         Number of layers in the network, by default 4
@@ -321,7 +321,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         self.scale_factor = scale_factor
         self.in_chans = in_chans
         self.out_chans = out_chans
-        self.embed_dim = [embed_dim, embed_dim] if not isinstance(embed_dim, list) else embed_dim
+        self.embed_dim = embed_dim
         self.num_layers = num_layers
         self.hard_thresholding_fraction = hard_thresholding_fraction
         self.normalization_layer = normalization_layer
@@ -357,30 +357,59 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             norm_layer0 = partial(nn.LayerNorm, normalized_shape=(self.img_size[0], self.img_size[1]), eps=1e-6)
             norm_layer1 = partial(nn.LayerNorm, normalized_shape=(self.h, self.w), eps=1e-6)
         elif self.normalization_layer == "instance_norm":
-            norm_layer0 = partial(nn.InstanceNorm2d, num_features=self.embed_dim[1], eps=1e-6, affine=True, track_running_stats=False)
-            norm_layer1 = partial(nn.InstanceNorm2d, num_features=self.embed_dim[0], eps=1e-6, affine=True, track_running_stats=False)
+            norm_layer0 = partial(nn.InstanceNorm2d, num_features=self.embed_dim, eps=1e-6, affine=True, track_running_stats=False)
+            norm_layer1 = partial(nn.InstanceNorm2d, num_features=self.embed_dim, eps=1e-6, affine=True, track_running_stats=False)
         elif self.normalization_layer == "none":
             norm_layer0 = nn.Identity
             norm_layer1 = norm_layer0
         else:
             raise NotImplementedError(f"Error, normalization {self.normalization_layer} not implemented.") 
 
-        if pos_embed:
-            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim[0], self.img_size[0], self.img_size[1]))
+        if pos_embed == "latlon" or pos_embed==True:
+            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.img_size[0], self.img_size[1]))
+            nn.init.constant_(self.pos_embed, 0.0)
+        elif pos_embed == "lat":
+            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.img_size[0], 1))
+            nn.init.constant_(self.pos_embed, 0.0)
+        elif pos_embed == "const":
+            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, 1, 1))
             nn.init.constant_(self.pos_embed, 0.0)
         else:
             self.pos_embed = None
 
-        # encoder
-        encoder_hidden_dim = int(self.embed_dim[0] * mlp_ratio)
-        encoder = MLP(in_features = self.in_chans,
-                      out_features = self.embed_dim[0],
-                      hidden_features = encoder_hidden_dim,
-                      act_layer = self.activation_function,
-                      drop_rate = drop_rate,
-                      checkpointing = False)
-        self.encoder = encoder
-        # self.encoder = nn.Sequential(encoder, norm_layer0())
+        # # encoder
+        # encoder_hidden_dim = int(self.embed_dim * mlp_ratio)
+        # encoder = MLP(in_features = self.in_chans,
+        #               out_features = self.embed_dim,
+        #               hidden_features = encoder_hidden_dim,
+        #               act_layer = self.activation_function,
+        #               drop_rate = drop_rate,
+        #               checkpointing = False)
+        # self.encoder = encoder
+
+
+        # construct an encoder with num_encoder_layers
+        num_encoder_layers = 1
+        encoder_hidden_dim = int(self.embed_dim * mlp_ratio)
+        current_dim = self.in_chans
+        encoder_layers = []
+        for l in range(num_encoder_layers-1):
+            fc = nn.Conv2d(current_dim, encoder_hidden_dim, 1, bias=True)
+            # initialize the weights correctly
+            scale = math.sqrt(2. / current_dim)
+            nn.init.normal_(fc.weight, mean=0., std=scale)
+            if fc.bias is not None:
+                nn.init.constant_(fc.bias, 0.0)
+            encoder_layers.append(fc)
+            encoder_layers.append(self.activation_function())
+            current_dim = encoder_hidden_dim
+        fc = nn.Conv2d(current_dim, self.embed_dim, 1, bias=False)
+        scale = math.sqrt(1. / current_dim)
+        nn.init.normal_(fc.weight, mean=0., std=scale)
+        if fc.bias is not None:
+            nn.init.constant_(fc.bias, 0.0)
+        encoder_layers.append(fc)
+        self.encoder = nn.Sequential(*encoder_layers)
         
         # prepare the spectral transform
         if self.spectral_transform == "sht":
@@ -416,7 +445,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             forward_transform = self.trans_down if first_layer else self.trans
             inverse_transform = self.itrans_up if last_layer else self.itrans
 
-            inner_skip = "none"
+            inner_skip = "linear"
             outer_skip = "none"
 
             if first_layer:
@@ -428,8 +457,8 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
 
             block = SphericalFourierNeuralOperatorBlock(forward_transform,
                                                         inverse_transform,
-                                                        self.embed_dim[0],
-                                                        self.embed_dim[1],
+                                                        self.embed_dim,
+                                                        self.embed_dim,
                                                         operator_type = self.operator_type,
                                                         mlp_ratio = mlp_ratio,
                                                         drop_rate = drop_rate,
@@ -446,14 +475,37 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
 
             self.blocks.append(block)
 
-        # decoder
-        decoder_hidden_dim = int(self.embed_dim[0] * mlp_ratio)
-        self.decoder = MLP(in_features = self.embed_dim[0] + self.big_skip*self.in_chans,
-                           out_features = self.out_chans,
-                           hidden_features = decoder_hidden_dim,
-                           act_layer = self.activation_function,
-                           drop_rate = drop_rate,
-                           checkpointing = False)
+        # # decoder
+        # decoder_hidden_dim = int(self.embed_dim * mlp_ratio)
+        # self.decoder = MLP(in_features = self.embed_dim + self.big_skip*self.in_chans,
+        #                    out_features = self.out_chans,
+        #                    hidden_features = decoder_hidden_dim,
+        #                    act_layer = self.activation_function,
+        #                    drop_rate = drop_rate,
+        #                    checkpointing = False)
+
+        # construct an decoder with num_decoder_layers
+        num_decoder_layers = 1
+        decoder_hidden_dim = int(self.embed_dim * mlp_ratio)
+        current_dim = self.embed_dim + self.big_skip*self.in_chans
+        decoder_layers = []
+        for l in range(num_decoder_layers-1):
+            fc = nn.Conv2d(current_dim, decoder_hidden_dim, 1, bias=True)
+            # initialize the weights correctly
+            scale = math.sqrt(2. / current_dim)
+            nn.init.normal_(fc.weight, mean=0., std=scale)
+            if fc.bias is not None:
+                nn.init.constant_(fc.bias, 0.0)
+            decoder_layers.append(fc)
+            decoder_layers.append(self.activation_function())
+            current_dim = decoder_hidden_dim
+        fc = nn.Conv2d(current_dim, self.out_chans, 1, bias=False)
+        scale = math.sqrt(1. / current_dim)
+        nn.init.normal_(fc.weight, mean=0., std=scale)
+        if fc.bias is not None:
+            nn.init.constant_(fc.bias, 0.0)
+        decoder_layers.append(fc)
+        self.decoder = nn.Sequential(*decoder_layers)
 
     @torch.jit.ignore
     def no_weight_decay(self):

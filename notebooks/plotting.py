@@ -31,6 +31,7 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+import cartopy
 import cartopy.crs as ccrs
 
 def plot_sphere(data,
@@ -38,6 +39,7 @@ def plot_sphere(data,
                 cmap="RdBu",
                 title=None,
                 colorbar=False,
+                coastlines=False,
                 central_latitude=20,
                 central_longitude=20,
                 lon=None,
@@ -63,7 +65,8 @@ def plot_sphere(data,
 
     # contour data over the map.
     im = ax.pcolormesh(Lon, Lat, data, cmap=cmap, transform=ccrs.PlateCarree(), antialiased=False, **kwargs)
-    # ax.add_feature(cartopy.feature.COASTLINE, edgecolor='white', facecolor='none', linewidth=1.5)
+    if coastlines:
+        ax.add_feature(cartopy.feature.COASTLINE, edgecolor='white', facecolor='none', linewidth=1.5)
     if colorbar:
         plt.colorbar(im)
     plt.title(title, y=1.05)

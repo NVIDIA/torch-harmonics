@@ -46,13 +46,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from torch_harmonics.examples.sfno import PdeDataset
-from torch_harmonics.examples.sfno import SphericalFourierNeuralOperatorNet as SFNO
 
 # wandb logging
 import wandb
 wandb.login()
 
-def l2loss_sphere(solver, prd, tar, relative=False, squared=False):
+def l2loss_sphere(solver, prd, tar, relative=False, squared=True):
     loss = solver.integrate_grid((prd - tar)**2, dimensionless=True).sum(dim=-1)
     if relative:
         loss = loss / solver.integrate_grid(tar**2, dimensionless=True).sum(dim=-1)
@@ -63,7 +62,7 @@ def l2loss_sphere(solver, prd, tar, relative=False, squared=False):
 
     return loss
 
-def spectral_l2loss_sphere(solver, prd, tar, relative=False, squared=False):
+def spectral_l2loss_sphere(solver, prd, tar, relative=False, squared=True):
     # compute coefficients
     coeffs = torch.view_as_real(solver.sht(prd - tar))
     coeffs = coeffs[..., 0]**2 + coeffs[..., 1]**2
@@ -83,7 +82,7 @@ def spectral_l2loss_sphere(solver, prd, tar, relative=False, squared=False):
 
     return loss
 
-def spectral_loss_sphere(solver, prd, tar, relative=False, squared=False):
+def spectral_loss_sphere(solver, prd, tar, relative=False, squared=True):
     # gradient weighting factors
     lmax = solver.sht.lmax
     ls = torch.arange(lmax).float()
@@ -110,7 +109,7 @@ def spectral_loss_sphere(solver, prd, tar, relative=False, squared=False):
 
     return loss
 
-def h1loss_sphere(solver, prd, tar, relative=False, squared=False):
+def h1loss_sphere(solver, prd, tar, relative=False, squared=True):
     # gradient weighting factors
     lmax = solver.sht.lmax
     ls = torch.arange(lmax).float()
@@ -277,6 +276,8 @@ def train_model(model,
 
                 if loss_fn == 'l2':
                     loss = l2loss_sphere(solver, prd, tar, relative=False)
+                elif loss_fn == 'spectral l2':
+                    loss = spectral_l2loss_sphere(solver, prd, tar, relative=False)
                 elif loss_fn == 'h1':
                     loss = h1loss_sphere(solver, prd, tar, relative=False)
                 elif loss_fn == 'spectral':
@@ -370,9 +371,14 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     models = {}
     metrics = {}
 
-    models["sfno_sc3_layer4_e128_init_scheme"] = partial(SFNO, spectral_transform='sht', img_size=(nlat, nlon),  grid="equiangular",
-                                                         num_layers=4, scale_factor=3, embed_dim=128, operator_type='driscoll-healy',
-                                                         big_skip=False, pos_embed=False)
+    from torch_harmonics.examples.sfno import SphericalFourierNeuralOperatorNet as SFNO
+
+    models["sfno_sc3_layer4_e16_linskip_nomlp"] = partial(SFNO, spectral_transform='sht', img_size=(nlat, nlon),  grid="equiangular",
+                                                          num_layers=4, scale_factor=3, embed_dim=16, operator_type='driscoll-healy',
+                                                          big_skip=False, pos_embed=False, use_mlp=False, normalization_layer="none")
+    # models["sfno_sc3_layer4_e256_noskip_mlp"]   = partial(SFNO, spectral_transform='sht', img_size=(nlat, nlon),  grid="equiangular",
+    #                                                       num_layers=4, scale_factor=3, embed_dim=256, operator_type='driscoll-healy',
+    #                                                       big_skip=False, pos_embed=False, use_mlp=True, normalization_layer="none")
     # from torch_harmonics.examples.sfno.models.unet import UNet
     # models['unet_baseline'] = partial(UNet)
 
@@ -407,10 +413,10 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
 
         # run the training
         if train:
-            run = wandb.init(project="sfno spherical swe", group=model_name, name=model_name + '_' + str(time.time()), config=model_handle.keywords)
+            run = wandb.init(project="sfno ablations spherical swe", group=model_name, name=model_name + '_' + str(time.time()), config=model_handle.keywords)
 
             # optimizer:
-            optimizer = torch.optim.SGD(model.parameters(), lr=1E-3)
+            optimizer = torch.optim.Adam(model.parameters(), lr=3E-3)
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
             gscaler = amp.GradScaler(enabled=enable_amp)
 
@@ -456,4 +462,4 @@ if __name__ == "__main__":
     import torch.multiprocessing as mp
     mp.set_start_method('forkserver', force=True)
 
-    main(train=True, load_checkpoint=False, enable_amp=False, log_grads=100)
+    main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0)

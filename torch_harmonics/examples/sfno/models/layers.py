@@ -167,7 +167,7 @@ class MLP(nn.Module):
             nn.init.constant_(fc2.bias, 0.0)
 
         if drop_rate > 0.:
-            self.drop = nn.Dropout(drop_rate)
+            self.drop = nn.Dropout2d(drop_rate)
             self.fwd = nn.Sequential(fc1, self.act, self.drop, fc2, self.drop)
         else:
             self.fwd = nn.Sequential(fc1, self.act, fc2)
@@ -276,9 +276,9 @@ class SpectralConvS2(nn.Module):
         # self.weight = nn.Parameter(scale * torch.view_as_real(torch.randn(*weight_shape, dtype=torch.complex64)))
         self.weight = nn.Parameter(scale * torch.randn(*weight_shape, 2))
 
-        # rescale the learning rate for better training of spectral parameters
+        # # rescale the learning rate for better training of spectral parameters
         # lr_scale = (torch.arange(self.modes_lat)+1).reshape(-1, 1)**(lr_scale_exponent)
-        # lr_scale = 10.*torch.ones(self.modes_lat, 1)
+        # lr_scale = 1E+3*torch.ones(self.modes_lat, 1)
         # self.register_buffer("lr_scale", lr_scale)
         # self.weight.register_hook(lambda grad: self.lr_scale*grad)
 
