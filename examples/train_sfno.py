@@ -46,13 +46,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from torch_harmonics.examples.sfno import PdeDataset
-from torch_harmonics.examples.sfno import SphericalFourierNeuralOperatorNet as SFNO
 
 # wandb logging
 import wandb
 wandb.login()
 
-def l2loss_sphere(solver, prd, tar, relative=False, squared=False):
+def l2loss_sphere(solver, prd, tar, relative=False, squared=True):
     loss = solver.integrate_grid((prd - tar)**2, dimensionless=True).sum(dim=-1)
     if relative:
         loss = loss / solver.integrate_grid(tar**2, dimensionless=True).sum(dim=-1)
@@ -63,7 +62,7 @@ def l2loss_sphere(solver, prd, tar, relative=False, squared=False):
 
     return loss
 
-def spectral_l2loss_sphere(solver, prd, tar, relative=False, squared=False):
+def spectral_l2loss_sphere(solver, prd, tar, relative=False, squared=True):
     # compute coefficients
     coeffs = torch.view_as_real(solver.sht(prd - tar))
     coeffs = coeffs[..., 0]**2 + coeffs[..., 1]**2
@@ -83,7 +82,7 @@ def spectral_l2loss_sphere(solver, prd, tar, relative=False, squared=False):
 
     return loss
 
-def spectral_loss_sphere(solver, prd, tar, relative=False, squared=False):
+def spectral_loss_sphere(solver, prd, tar, relative=False, squared=True):
     # gradient weighting factors
     lmax = solver.sht.lmax
     ls = torch.arange(lmax).float()
@@ -110,7 +109,7 @@ def spectral_loss_sphere(solver, prd, tar, relative=False, squared=False):
 
     return loss
 
-def h1loss_sphere(solver, prd, tar, relative=False, squared=False):
+def h1loss_sphere(solver, prd, tar, relative=False, squared=True):
     # gradient weighting factors
     lmax = solver.sht.lmax
     ls = torch.arange(lmax).float()
@@ -139,7 +138,6 @@ def h1loss_sphere(solver, prd, tar, relative=False, squared=False):
 
     return loss
 
-
 def fluct_l2loss_sphere(solver, prd, tar, inp, relative=False, polar_opt=0):
     # compute the weighting factor first
     fluct = solver.integrate_grid((tar - inp)**2, dimensionless=True, polar_opt=polar_opt)
@@ -152,8 +150,198 @@ def fluct_l2loss_sphere(solver, prd, tar, inp, relative=False, polar_opt=0):
     loss = torch.mean(loss)
     return loss
 
+# rolls out the FNO and compares to the classical solver
+def autoregressive_inference(model,
+                             dataset,
+                             path_root,
+                             nsteps,
+                             autoreg_steps=10,
+                             nskip=1,
+                             plot_channel=0,
+                             nics=20):
 
-def main(train=True, load_checkpoint=False, enable_amp=False):
+    model.eval()
+
+    losses = np.zeros(nics)
+    fno_times = np.zeros(nics)
+    nwp_times = np.zeros(nics)
+
+    for iic in range(nics):
+        ic = dataset.solver.random_initial_condition(mach=0.2)
+        inp_mean = dataset.inp_mean
+        inp_var = dataset.inp_var
+
+        prd = (dataset.solver.spec2grid(ic) - inp_mean) / torch.sqrt(inp_var)
+        prd = prd.unsqueeze(0)
+        uspec = ic.clone()
+
+        # ML model
+        start_time = time.time()
+        for i in range(1, autoreg_steps+1):
+            # evaluate the ML model
+            prd = model(prd)
+
+            if iic == nics-1 and nskip > 0 and i % nskip == 0:
+
+                # do plotting
+                fig = plt.figure(figsize=(7.5, 6))
+                dataset.solver.plot_griddata(prd[0, plot_channel], fig, vmax=4, vmin=-4)
+                plt.savefig(path_root+'_pred_'+str(i//nskip)+'.png')
+                plt.clf()
+
+        fno_times[iic] = time.time() - start_time
+
+        # classical model
+        start_time = time.time()
+        for i in range(1, autoreg_steps+1):
+            
+            # advance classical model
+            uspec = dataset.solver.timestep(uspec, nsteps)
+
+            if iic == nics-1 and i % nskip == 0 and nskip > 0:
+                ref = (dataset.solver.spec2grid(uspec) - inp_mean) / torch.sqrt(inp_var)
+
+                fig = plt.figure(figsize=(7.5, 6))
+                dataset.solver.plot_griddata(ref[plot_channel], fig, vmax=4, vmin=-4)
+                plt.savefig(path_root+'_truth_'+str(i//nskip)+'.png')
+                plt.clf()
+
+        nwp_times[iic] = time.time() - start_time
+
+        # ref = (dataset.solver.spec2grid(uspec) - inp_mean) / torch.sqrt(inp_var)
+        ref = dataset.solver.spec2grid(uspec)
+        prd = prd * torch.sqrt(inp_var) + inp_mean
+        losses[iic] = l2loss_sphere(dataset.solver, prd, ref, relative=True).item()
+        
+
+    return losses, fno_times, nwp_times
+
+# convenience function for logging weights and gradients
+def log_weights_and_grads(model, iters=1):
+    """
+    Helper routine intended for debugging purposes
+    """
+    root_path = os.path.join(os.path.dirname(__file__), "weights_and_grads")
+
+    weights_and_grads_fname = os.path.join(root_path, f"weights_and_grads_step{iters:03d}.tar")
+    print(weights_and_grads_fname)
+
+    weights_dict = {k:v for k,v in model.named_parameters()}
+    grad_dict = {k:v.grad for k,v in model.named_parameters()}
+
+    store_dict = {'iteration': iters, 'grads': grad_dict, 'weights': weights_dict}
+    torch.save(store_dict, weights_and_grads_fname)
+
+# training function
+def train_model(model,
+                dataloader,
+                optimizer,
+                gscaler,
+                scheduler=None,
+                nepochs=20,
+                nfuture=0,
+                num_examples=256,
+                num_valid=8,
+                loss_fn='l2',
+                enable_amp=False,
+                log_grads=0):
+
+    train_start = time.time()
+
+    # count iterations
+    iters = 0
+
+    for epoch in range(nepochs):
+
+        # time each epoch
+        epoch_start = time.time()
+
+        dataloader.dataset.set_initial_condition('random')
+        dataloader.dataset.set_num_examples(num_examples)
+
+        # get the solver for its convenience functions
+        solver = dataloader.dataset.solver
+
+        # do the training
+        acc_loss = 0
+        model.train()
+
+        for inp, tar in dataloader:
+            
+            with amp.autocast(enabled=enable_amp):
+
+                prd = model(inp)
+                for _ in range(nfuture):
+                    prd = model(prd)
+
+                if loss_fn == 'l2':
+                    loss = l2loss_sphere(solver, prd, tar, relative=False)
+                elif loss_fn == 'spectral l2':
+                    loss = spectral_l2loss_sphere(solver, prd, tar, relative=False)
+                elif loss_fn == 'h1':
+                    loss = h1loss_sphere(solver, prd, tar, relative=False)
+                elif loss_fn == 'spectral':
+                    loss = spectral_loss_sphere(solver, prd, tar, relative=False)
+                elif loss_fn == 'fluct':
+                    loss = fluct_l2loss_sphere(solver, prd, tar, inp, relative=True)
+                else:
+                    raise NotImplementedError(f'Unknown loss function {loss_fn}')
+
+            acc_loss += loss.item() * inp.size(0)
+
+            optimizer.zero_grad(set_to_none=True)
+            gscaler.scale(loss).backward()
+
+            if log_grads and iters % log_grads == 0:
+                log_weights_and_grads(model, iters=iters)
+
+            gscaler.step(optimizer)
+            gscaler.update()
+
+            iters += 1
+
+        acc_loss = acc_loss / len(dataloader.dataset)
+
+        dataloader.dataset.set_initial_condition('random')
+        dataloader.dataset.set_num_examples(num_valid)
+
+        # perform validation
+        valid_loss = 0
+        model.eval()
+        with torch.no_grad():
+            for inp, tar in dataloader:
+                prd = model(inp)
+                for _ in range(nfuture):
+                    prd = model(prd)
+                loss = l2loss_sphere(solver, prd, tar, relative=True)
+
+                valid_loss += loss.item() * inp.size(0)
+
+        valid_loss = valid_loss / len(dataloader.dataset)
+
+        if scheduler is not None:
+            scheduler.step(valid_loss)
+
+        epoch_time = time.time() - epoch_start
+
+        print(f'--------------------------------------------------------------------------------')
+        print(f'Epoch {epoch} summary:')
+        print(f'time taken: {epoch_time}')
+        print(f'accumulated training loss: {acc_loss}')
+        print(f'relative validation loss: {valid_loss}')
+
+        if wandb.run is not None:
+            current_lr = optimizer.param_groups[0]['lr']
+            wandb.log({"loss": acc_loss, "validation loss": valid_loss, "learning rate": current_lr})
+
+
+    train_time = time.time() - train_start
+
+    print(f'--------------------------------------------------------------------------------')
+    print(f'done. Training took {train_time}.')
+    return valid_loss
+
+def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
 
     # set seed
     torch.manual_seed(333)
@@ -172,154 +360,9 @@ def main(train=True, load_checkpoint=False, enable_amp=False):
     # There is still an issue with parallel dataloading. Do NOT use it at the moment     
     # dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=4, persistent_workers=True)
     dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=0, persistent_workers=False)
-    solver = dataset.solver.to(device)
 
     nlat = dataset.nlat
     nlon = dataset.nlon
-
-    # training function
-    def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=20, nfuture=0, num_examples=256, num_valid=8, loss_fn='l2'):
-
-        train_start = time.time()
-
-        for epoch in range(nepochs):
-
-            # time each epoch
-            epoch_start = time.time()
-
-            dataloader.dataset.set_initial_condition('random')
-            dataloader.dataset.set_num_examples(num_examples)
-
-            # do the training
-            acc_loss = 0
-            model.train()
-
-            for inp, tar in dataloader:
-                
-                with amp.autocast(enabled=enable_amp):
-
-                    prd = model(inp)
-                    for _ in range(nfuture):
-                        prd = model(prd)
-
-                    if loss_fn == 'l2':
-                        loss = l2loss_sphere(solver, prd, tar, relative=False)
-                    elif loss_fn == 'h1':
-                        loss = h1loss_sphere(solver, prd, tar, relative=False)
-                    elif loss_fn == 'spectral':
-                        loss = spectral_loss_sphere(solver, prd, tar, relative=False)
-                    elif loss_fn == 'fluct':
-                        loss = fluct_l2loss_sphere(solver, prd, tar, inp, relative=True)
-                    else:
-                        raise NotImplementedError(f'Unknown loss function {loss_fn}')
-
-                acc_loss += loss.item() * inp.size(0)
-
-                optimizer.zero_grad(set_to_none=True)
-                # gscaler.scale(loss).backward()
-                gscaler.scale(loss).backward()
-                gscaler.step(optimizer)
-                gscaler.update()
-
-            acc_loss = acc_loss / len(dataloader.dataset)
-
-            dataloader.dataset.set_initial_condition('random')
-            dataloader.dataset.set_num_examples(num_valid)
-
-            # perform validation
-            valid_loss = 0
-            model.eval()
-            with torch.no_grad():
-                for inp, tar in dataloader:
-                    prd = model(inp)
-                    for _ in range(nfuture):
-                        prd = model(prd)
-                    loss = l2loss_sphere(solver, prd, tar, relative=True)
-
-                    valid_loss += loss.item() * inp.size(0)
-
-            valid_loss = valid_loss / len(dataloader.dataset)
-
-            if scheduler is not None:
-                scheduler.step(valid_loss)
-
-            epoch_time = time.time() - epoch_start
-
-            print(f'--------------------------------------------------------------------------------')
-            print(f'Epoch {epoch} summary:')
-            print(f'time taken: {epoch_time}')
-            print(f'accumulated training loss: {acc_loss}')
-            print(f'relative validation loss: {valid_loss}')
-
-            if wandb.run is not None:
-                current_lr = optimizer.param_groups[0]['lr']
-                wandb.log({"loss": acc_loss, "validation loss": valid_loss, "learning rate": current_lr})
-
-
-        train_time = time.time() - train_start
-
-        print(f'--------------------------------------------------------------------------------')
-        print(f'done. Training took {train_time}.')
-        return valid_loss
-
-    # rolls out the FNO and compares to the classical solver
-    def autoregressive_inference(model, dataset, path_root, nsteps, autoreg_steps=10, nskip=1, plot_channel=0, nics=20):
-
-        model.eval()
-
-        losses = np.zeros(nics)
-        fno_times = np.zeros(nics)
-        nwp_times = np.zeros(nics)
-
-        for iic in range(nics):
-            ic = dataset.solver.random_initial_condition(mach=0.2)
-            inp_mean = dataset.inp_mean
-            inp_var = dataset.inp_var
-
-            prd = (dataset.solver.spec2grid(ic) - inp_mean) / torch.sqrt(inp_var)
-            prd = prd.unsqueeze(0)
-            uspec = ic.clone()
-
-            # ML model
-            start_time = time.time()
-            for i in range(1, autoreg_steps+1):
-                # evaluate the ML model
-                prd = model(prd)
-
-                if iic == nics-1 and nskip > 0 and i % nskip == 0:
-
-                    # do plotting
-                    fig = plt.figure(figsize=(7.5, 6))
-                    dataset.solver.plot_griddata(prd[0, plot_channel], fig, vmax=4, vmin=-4)
-                    plt.savefig(path_root+'_pred_'+str(i//nskip)+'.png')
-                    plt.clf()
-
-            fno_times[iic] = time.time() - start_time
-
-            # classical model
-            start_time = time.time()
-            for i in range(1, autoreg_steps+1):
-                
-                # advance classical model
-                uspec = dataset.solver.timestep(uspec, nsteps)
-
-                if iic == nics-1 and i % nskip == 0 and nskip > 0:
-                    ref = (dataset.solver.spec2grid(uspec) - inp_mean) / torch.sqrt(inp_var)
-
-                    fig = plt.figure(figsize=(7.5, 6))
-                    dataset.solver.plot_griddata(ref[plot_channel], fig, vmax=4, vmin=-4)
-                    plt.savefig(path_root+'_truth_'+str(i//nskip)+'.png')
-                    plt.clf()
-
-            nwp_times[iic] = time.time() - start_time
-
-            # ref = (dataset.solver.spec2grid(uspec) - inp_mean) / torch.sqrt(inp_var)
-            ref = dataset.solver.spec2grid(uspec)
-            prd = prd * torch.sqrt(inp_var) + inp_mean
-            losses[iic] = l2loss_sphere(solver, prd, ref, relative=True).item()
-            
-
-        return losses, fno_times, nwp_times
 
     def count_parameters(model):
         return sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -328,26 +371,36 @@ def main(train=True, load_checkpoint=False, enable_amp=False):
     models = {}
     metrics = {}
 
+    from torch_harmonics.examples.sfno import SphericalFourierNeuralOperatorNet as SFNO
+
+    models["sfno_sc3_layer4_e16_linskip_nomlp"] = partial(SFNO, spectral_transform='sht', img_size=(nlat, nlon),  grid="equiangular",
+                                                          num_layers=4, scale_factor=3, embed_dim=16, operator_type='driscoll-healy',
+                                                          big_skip=False, pos_embed=False, use_mlp=False, normalization_layer="none")
+    # models["sfno_sc3_layer4_e256_noskip_mlp"]   = partial(SFNO, spectral_transform='sht', img_size=(nlat, nlon),  grid="equiangular",
+    #                                                       num_layers=4, scale_factor=3, embed_dim=256, operator_type='driscoll-healy',
+    #                                                       big_skip=False, pos_embed=False, use_mlp=True, normalization_layer="none")
+    # from torch_harmonics.examples.sfno.models.unet import UNet
+    # models['unet_baseline'] = partial(UNet)
+
+
     # # U-Net if installed
     # from models.unet import UNet
     # models['unet_baseline'] = partial(UNet)
 
     # SFNO models
-    models['sfno_sc3_layer4_edim256_linear']    = partial(SFNO, spectral_transform='sht', filter_type='linear', img_size=(nlat, nlon),
-                                                     num_layers=4, scale_factor=3, embed_dim=256, operator_type='driscoll-healy')
-    models['sfno_sc3_layer4_edim256_real']      = partial(SFNO, spectral_transform='sht', filter_type='non-linear', img_size=(nlat, nlon),
-                                                     num_layers=4, scale_factor=3, embed_dim=256, complex_activation = 'real', operator_type='diagonal')
-    # FNO models
-    models['fno_sc3_layer4_edim256_linear']     = partial(SFNO, spectral_transform='fft', filter_type='linear', img_size=(nlat, nlon),
-                                                     num_layers=4, scale_factor=3, embed_dim=256, operator_type='diagonal')
-    models['fno_sc3_layer4_edim256_real']       = partial(SFNO, spectral_transform='fft', filter_type='non-linear', img_size=(nlat, nlon),
-                                                     num_layers=4, scale_factor=3, embed_dim=256, complex_activation='real')
+    # models['sfno_sc3_layer4_edim256_linear']    = partial(SFNO, spectral_transform='sht', img_size=(nlat, nlon), grid="equiangular",
+    #                                                  num_layers=4, scale_factor=3, embed_dim=256, operator_type='driscoll-healy')
+    # # FNO models
+    # models['fno_sc3_layer4_edim256_linear']     = partial(SFNO, spectral_transform='fft', img_size=(nlat, nlon), grid="equiangular",
+    #                                                  num_layers=4, scale_factor=3, embed_dim=256, operator_type='diagonal')
 
     # iterate over models and train each model
     root_path = os.path.dirname(__file__)
     for model_name, model_handle in models.items():
 
         model = model_handle().to(device)
+
+        print(model)
 
         metrics[model_name] = {}
 
@@ -360,26 +413,26 @@ def main(train=True, load_checkpoint=False, enable_amp=False):
 
         # run the training
         if train:
-            run = wandb.init(project="sfno spherical swe", group=model_name, name=model_name + '_' + str(time.time()), config=model_handle.keywords)
+            run = wandb.init(project="sfno ablations spherical swe", group=model_name, name=model_name + '_' + str(time.time()), config=model_handle.keywords)
 
             # optimizer:
-            optimizer = torch.optim.Adam(model.parameters(), lr=1E-3)
+            optimizer = torch.optim.Adam(model.parameters(), lr=3E-3)
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
             gscaler = amp.GradScaler(enabled=enable_amp)
 
             start_time = time.time()
 
             print(f'Training {model_name}, single step')
-            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=200, loss_fn='l2')
+            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=10, loss_fn='l2', enable_amp=enable_amp, log_grads=log_grads)
 
-            # multistep training
-            print(f'Training {model_name}, two step')
-            optimizer = torch.optim.Adam(model.parameters(), lr=5E-5)
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
-            gscaler = amp.GradScaler(enabled=enable_amp)
-            dataloader.dataset.nsteps = 2 * dt//dt_solver
-            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=20, nfuture=1)
-            dataloader.dataset.nsteps = 1 * dt//dt_solver
+            # # multistep training
+            # print(f'Training {model_name}, two step')
+            # optimizer = torch.optim.Adam(model.parameters(), lr=5E-5)
+            # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
+            # gscaler = amp.GradScaler(enabled=enable_amp)
+            # dataloader.dataset.nsteps = 2 * dt//dt_solver
+            # train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=20, nfuture=1, enable_amp=enable_amp)
+            # dataloader.dataset.nsteps = 1 * dt//dt_solver
 
             training_time = time.time() - start_time
 
@@ -392,7 +445,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False):
         torch.cuda.manual_seed(333)
 
         with torch.inference_mode():
-            losses, fno_times, nwp_times = autoregressive_inference(model, dataset, os.path.join(root_path,'paper_figures/'+model_name), nsteps=nsteps, autoreg_steps=10)
+            losses, fno_times, nwp_times = autoregressive_inference(model, dataset, os.path.join(root_path,'figures/'+model_name), nsteps=nsteps, autoreg_steps=10)
             metrics[model_name]['loss_mean'] = np.mean(losses)
             metrics[model_name]['loss_std'] = np.std(losses)
             metrics[model_name]['fno_time_mean'] = np.mean(fno_times)
@@ -409,4 +462,4 @@ if __name__ == "__main__":
     import torch.multiprocessing as mp
     mp.set_start_method('forkserver', force=True)
 
-    main(train=True, load_checkpoint=False, enable_amp=False)
+    main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0)
