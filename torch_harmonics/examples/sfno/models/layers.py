@@ -150,13 +150,13 @@ class MLP(nn.Module):
         # Fist dense layer
         fc1 = nn.Conv2d(in_features, hidden_features, 1, bias=True)
         # initialize the weights correctly
-        scale = math.sqrt(2. / in_features)
+        scale = math.sqrt(2.0 / in_features)
         nn.init.normal_(fc1.weight, mean=0., std=scale)
         if fc1.bias is not None:
             nn.init.constant_(fc1.bias, 0.0)
 
         # activation
-        self.act = act_layer()
+        act = act_layer()
 
         # output layer
         fc2 = nn.Conv2d(hidden_features, out_features, 1, bias=output_bias)
@@ -167,10 +167,10 @@ class MLP(nn.Module):
             nn.init.constant_(fc2.bias, 0.0)
 
         if drop_rate > 0.:
-            self.drop = nn.Dropout2d(drop_rate)
-            self.fwd = nn.Sequential(fc1, self.act, self.drop, fc2, self.drop)
+            drop = nn.Dropout2d(drop_rate)
+            self.fwd = nn.Sequential(fc1, act, drop, fc2, drop)
         else:
-            self.fwd = nn.Sequential(fc1, self.act, fc2)
+            self.fwd = nn.Sequential(fc1, act, fc2)
  
     @torch.jit.ignore
     def checkpoint_forward(self, x):
@@ -270,17 +270,10 @@ class SpectralConvS2(nn.Module):
             raise NotImplementedError(f"Unkonw operator type f{self.operator_type}")
 
         # form weight tensors
-        scale = torch.ones(self.modes_lat, 2) / math.sqrt(2.0 * in_channels)
-        scale[0, :] *= math.sqrt(2*gain)
-        scale[1:, :] *= math.sqrt(gain)
-        # self.weight = nn.Parameter(scale * torch.view_as_real(torch.randn(*weight_shape, dtype=torch.complex64)))
-        self.weight = nn.Parameter(scale * torch.randn(*weight_shape, 2))
-
-        # # rescale the learning rate for better training of spectral parameters
-        # lr_scale = (torch.arange(self.modes_lat)+1).reshape(-1, 1)**(lr_scale_exponent)
-        # lr_scale = 1E+3*torch.ones(self.modes_lat, 1)
-        # self.register_buffer("lr_scale", lr_scale)
-        # self.weight.register_hook(lambda grad: self.lr_scale*grad)
+        scale = math.sqrt(gain / in_channels) * torch.ones(self.modes_lat, 2)
+        scale[0] *=  math.sqrt(2)
+        self.weight = nn.Parameter(scale * torch.view_as_real(torch.randn(*weight_shape, dtype=torch.complex64)))
+        # self.weight = nn.Parameter(scale * torch.randn(*weight_shape, 2))
 
         # get the right contraction function
         self._contract = _contract

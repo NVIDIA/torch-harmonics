@@ -53,7 +53,6 @@ class SpectralFilterLayer(nn.Module):
         gain = 2.,
         operator_type = "diagonal",
         hidden_size_factor = 2,
-        lr_scale_exponent = 0,
         factorization = None,
         separable = False,
         rank = 1e-2,
@@ -67,7 +66,6 @@ class SpectralFilterLayer(nn.Module):
                                          output_dim,
                                          gain = gain,
                                          operator_type = operator_type,
-                                         lr_scale_exponent = lr_scale_exponent,
                                          bias = bias)
             
         elif factorization is not None:
@@ -104,7 +102,6 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
             drop_path = 0.,
             act_layer = nn.ReLU,
             norm_layer = nn.Identity,
-            lr_scale_exponent = 0,
             factorization = None,
             separable = False,
             rank = 128,
@@ -118,8 +115,8 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         else:
             gain_factor = 2.0
 
-        if inner_skip == "linear":
-            gain_factor /= 2.
+        if inner_skip == "linear" or inner_skip == "identity":
+            gain_factor /= 2.0
         
         # convolution layer
         self.filter = SpectralFilterLayer(forward_transform,
@@ -129,7 +126,6 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
                                           gain = gain_factor,
                                           operator_type = operator_type,
                                           hidden_size_factor = mlp_ratio,
-                                          lr_scale_exponent = lr_scale_exponent,
                                           factorization = factorization,
                                           separable = separable,
                                           rank = rank,
@@ -155,7 +151,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
         gain_factor = 1.0
-        if outer_skip == "linear":
+        if outer_skip == "linear" or inner_skip == "identity":
             gain_factor /= 2.
         
         if use_mlp == True:
@@ -197,23 +193,23 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
 
         x, residual = self.filter(x)
 
+        x = self.norm0(x)
+
         if hasattr(self, "inner_skip"):
             x = x + self.inner_skip(residual)
 
         if hasattr(self, "act_layer"):
             x = self.act_layer(x)
 
-        x = self.norm0(x)
-
         if hasattr(self, "mlp"):
             x = self.mlp(x)
+
+        x = self.norm1(x)
 
         x = self.drop_path(x)
 
         if hasattr(self, "outer_skip"):
             x = x + self.outer_skip(residual)
-
-        x = self.norm1(x)
 
         return x
 
@@ -260,8 +256,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         Whether to add a single large skip connection, by default True
     rank : float, optional
         Rank of the approximation, by default 1.0
-    lr_scale_exponent : float, optional
-        exponential rescaling of spectral coefficients, by default 0.0 (no rescaling)
     factorization : Any, optional
         Type of factorization to use, by default None
     separable : bool, optional
@@ -306,7 +300,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             hard_thresholding_fraction = 1.0,
             use_complex_kernels = True,
             big_skip = False,
-            lr_scale_exponent = 0,
             factorization = None,
             separable = False,
             rank = 128,
@@ -328,7 +321,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         self.use_mlp = use_mlp
         self.encoder_layers = encoder_layers
         self.big_skip = big_skip
-        self.lr_scale_exponent = lr_scale_exponent
         self.factorization = factorization
         self.separable = separable,
         self.rank = rank
@@ -445,8 +437,8 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             forward_transform = self.trans_down if first_layer else self.trans
             inverse_transform = self.itrans_up if last_layer else self.itrans
 
-            inner_skip = "linear"
-            outer_skip = "none"
+            inner_skip = "none"
+            outer_skip = "identity"
 
             if first_layer:
                 norm_layer = norm_layer1
@@ -468,7 +460,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
                                                         inner_skip = inner_skip,
                                                         outer_skip = outer_skip,
                                                         use_mlp = use_mlp,
-                                                        lr_scale_exponent = self.lr_scale_exponent,
                                                         factorization = self.factorization,
                                                         separable = self.separable,
                                                         rank = self.rank)
