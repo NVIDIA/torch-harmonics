@@ -239,7 +239,7 @@ class ShallowWaterSolver(nn.Module):
         ctype = torch.complex128 if self.lap.dtype == torch.float64 else torch.complex64
 
         # mach number relative to wave speed
-        llimit = mlimit = 20
+        llimit = mlimit = 80
 
         # hgrid = self.havg + hamp * torch.randn(self.nlat, self.nlon, device=device, dtype=dtype)
         # ugrid = uamp * torch.randn(self.nlat, self.nlon, device=device, dtype=dtype)
