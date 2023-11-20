@@ -96,7 +96,7 @@ def plot_data(data,
     fig = plt.figure(figsize=(10, 5))
     ax = fig.add_subplot(1, 1, 1, projection=projection)
     im = ax.pcolormesh(Lon, Lat, data, cmap=cmap, **kwargs)
-
+    
     if colorbar:
         plt.colorbar(im)
     plt.title(title, y=1.05)
