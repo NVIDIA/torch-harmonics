@@ -216,7 +216,7 @@ with torch.cuda.amp.autocast(enabled = True):
       xt = sht(x)
 
    # continue operating on the transformed tensor
-   xt = some_more_math(xtt)
+   xt = some_more_math(xt)
 ```
 
 Depending on the problem, it might be beneficial to upcast data to `float64` instead of `float32` precision for numerical stability.
