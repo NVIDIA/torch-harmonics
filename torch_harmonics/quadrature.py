@@ -38,15 +38,16 @@ def _precompute_latitudes(nlat, grid="equiangular"):
 
     # compute coordinates
     if grid == "legendre-gauss":
-        xlg, _ = legendre_gauss_weights(nlat)
+        xlg, wlg = legendre_gauss_weights(nlat)
     elif grid == "equiangular":
-        xlg, _ = clenshaw_curtiss_weights(nlat)
+        xlg, wlg = clenshaw_curtiss_weights(nlat)
     else:
         raise ValueError("Unknown grid")
 
     lats = np.flip(np.arccos(xlg)).copy()
+    wlg = np.flip(wlg).copy()
 
-    return lats
+    return lats, wlg
 
 def legendre_gauss_weights(n, a=-1.0, b=1.0):
     r"""
