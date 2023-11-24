@@ -101,6 +101,10 @@ def _precompute_convolution_tensor(
     return out_idx, out_vals
 
 
+# TODO:
+# - weights
+# - bias
+# - add anisotropy and handle pre-computation via a lambda
 class DiscreteContinuousConvS2(nn.Module):
     """
     Discrete-continuous convolutions (DISCO) on the 2-Sphere as described in [1].
@@ -130,7 +134,7 @@ class DiscreteContinuousConvS2(nn.Module):
         # integration weights
         _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
         quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).reshape(-1, 1) / self.nlon_in
-        print(self.nlon_in * quad_weights.sum())
+        self.register_buffer("quad_weights", quad_weights)
 
         idx, vals = _precompute_convolution_tensor(
             in_shape, out_shape, kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
@@ -166,6 +170,10 @@ class DiscreteContinuousConvS2(nn.Module):
         return x_out
 
     def forward(self, x: torch.Tensor):
+
+        # pre-multiply x with the quadrature weights
+        x = self.quad_weights * x
+
         if x.is_cuda:
             out = _disco_s2_contraction(self.psi, x, self.nlon_out)
         else:
