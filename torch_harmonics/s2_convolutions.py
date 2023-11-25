@@ -34,8 +34,26 @@ import math
 import torch
 import torch.nn as nn
 
+from functools import partial
+
 from torch_harmonics.quadrature import _precompute_latitudes
 from torch_harmonics.disco_convolutions import _disco_s2_contraction
+
+def _compute_support_vals_isotropic(theta : torch.Tensor, phi : torch.Tensor, kernel_size : int, theta_cutoff : float):
+    """
+    Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
+    """
+
+    # compute the support
+    d_theta = (theta_cutoff - 0.0) / kernel_size
+    ikernel = torch.arange(kernel_size).reshape(-1, 1, 1)
+    itheta = ikernel * d_theta
+
+    # find the indices where the rotated position falls into the support of the kernel
+    iidx = torch.argwhere(((theta - itheta).abs() < d_theta) & (theta < theta_cutoff))
+    vals = 1 - (theta[iidx[:, 1], iidx[:, 2]] - itheta[iidx[:, 0], 0, 0]).abs() / d_theta
+
+    return iidx, vals
 
 
 def _precompute_convolution_tensor(
@@ -49,7 +67,11 @@ def _precompute_convolution_tensor(
 
     assert len(in_shape) == 2
     assert len(out_shape) == 2
-    assert len(kernel_shape) == 1
+
+    if len(kernel_shape) == 1:
+        kernel_handle = partial(_compute_support_vals_isotropic, kernel_size=kernel_shape[0], theta_cutoff=theta_cutoff)
+    else:
+        raise ValueError("Kernel shape should be either one- or two-dimensional.")
 
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
@@ -64,7 +86,7 @@ def _precompute_convolution_tensor(
     out_vals = torch.empty([0], dtype=torch.long)
 
     # compute the phi differences
-    phis = torch.linspace(-math.pi, math.pi, nlon_in)
+    phis = torch.linspace(0, 2*math.pi, nlon_in)
 
     for t in range(nlat_out):
         alpha = -lats_in.reshape(-1, 1)
@@ -80,23 +102,15 @@ def _precompute_convolution_tensor(
         y = torch.sin(beta) * torch.sin(gamma)
         phi = torch.arctan2(y, x)
 
-        # compute the support
-        d_theta = (theta_cutoff - 0.0) / kernel_shape[0]
-        ps = torch.arange(kernel_shape[0]).reshape(-1, 1, 1)
-        theta_i = ps * d_theta
-
         # find the indices where the rotated position falls into the support of the kernel
-        iidx = torch.argwhere(((theta - theta_i).abs() < d_theta) & (theta < theta_cutoff))
+        iidx, vals = kernel_handle(theta, phi)
 
-        # compute  the value of the kernel at these position
-        vals = 1 - (theta[iidx[:, 1], iidx[:, 2]] - theta_i[iidx[:, 0], 0, 0]).abs() / d_theta
-        # vals = torch.ones(iidx.shape[0])
-        out_vals = torch.cat([out_vals, vals], dim=-1)
-
-        # add the output latitude indices
-        # TODO: reshape them such that Psi is a sparse
+        # add the output latitude and reshape such that psi has dimensions kernel_shape x nlat_out x (nlat_in*nlon_in)
         idx = torch.stack([iidx[:, 0], t * torch.ones_like(iidx[:, 0]), iidx[:, 1] * nlon_in + iidx[:, 2]], dim=0)
+
+        # append indices and values to the COO datastructure
         out_idx = torch.cat([out_idx, idx], dim=-1)
+        out_vals = torch.cat([out_vals, vals], dim=-1)
 
     return out_idx, out_vals
 
@@ -163,14 +177,13 @@ class DiscreteContinuousConvS2(nn.Module):
 
         for p in range(self.nlon_out):
             x = torch.roll(x, scale_factor, dims=1)
-            x_out[p] = torch.bmm(psi, x.reshape(1, -1, B * C).expand(P, -1, -1))
+            x_out[p] = torch.bmm(self.psi, x.reshape(1, -1, B * C).expand(P, -1, -1))
 
         x_out = x_out.permute(3, 1, 2, 0).reshape(B, C, P, self.nlat_out, self.nlon_out)
 
         return x_out
 
     def forward(self, x: torch.Tensor):
-
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
 
