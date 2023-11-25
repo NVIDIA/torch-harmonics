@@ -94,8 +94,7 @@ def _disco_s2_contraction_kernel(
     vals_ptrs = vnz_ptr + iinz * vnz_stride
 
     # iterate in a blocked fashion over the non-zero entries
-    for offs_nz in range(0, nnz, step=BLOCK_SIZE_NZ):
-
+    for offs_nz in range(0, nnz, BLOCK_SIZE_NZ):
         # load input output latitude coordinate pairs
         fout = tl.load(fout_ptrs + offs_nz * inz_stride_nz, mask=(offs_nz + iinz < nnz), other=-1)
         tout = tl.load(tout_ptrs + offs_nz * inz_stride_nz, mask=(offs_nz + iinz < nnz), other=-1)
@@ -110,6 +109,7 @@ def _disco_s2_contraction_kernel(
 
         # make sure the value is not out of bounds
         tl.device_assert(fout < kernel_size)
+        tl.device_assert(tout < nlat_out)
         tl.device_assert(tnz < nlat_in)
         tl.device_assert(pnz < nlon_in)
 
@@ -130,7 +130,7 @@ def _disco_s2_contraction_kernel(
 
         # precompute the mask
         mask = ((b[:, None, None] < batch_size) and (offs_nz + iinz[None, :, None] < nnz)) and (
-            (tout[None, :, None] < nlat_out) and (pout[None, None, :] < nlon_out)
+            pout[None, None, :] < nlon_out
         )
 
         # do the actual computation
@@ -173,13 +173,13 @@ def _disco_s2_contraction(psi: torch.Tensor, x: torch.Tensor, nlon_out: int):
 
     # make sure that the grid-points of the output grid fall onto the grid points of the input grid
     assert nlon_in % nlon_out == 0
-    scale_factor = nlon_in // nlon_out
+    pscale = nlon_in // nlon_out
 
     # to simplify things, we merge batch and channel dimensions
     x = x.reshape(batch_size * n_chans, nlat_in, nlon_in)
 
     # prepare the output tensor
-    y = torch.empty(batch_size * n_chans, kernel_size, nlat_out, nlon_out, device=x.device, dtype=x.dtype)
+    y = torch.zeros(batch_size * n_chans, kernel_size, nlat_out, nlon_out, device=x.device, dtype=x.dtype)
 
     # determine the grid for the computation
     # TODO: assume that there are always enbough threads to do the output longitudes fully in parallel?
@@ -188,8 +188,6 @@ def _disco_s2_contraction(psi: torch.Tensor, x: torch.Tensor, nlon_out: int):
         1,
         triton.cdiv(nlon_out, BLOCK_SIZE_POUT),
     )
-
-    print(f"launching kernel with grid {grid}")
 
     # launch the kernel
     _disco_s2_contraction_kernel[grid](
@@ -214,13 +212,48 @@ def _disco_s2_contraction(psi: torch.Tensor, x: torch.Tensor, nlon_out: int):
         y.stride(1),
         y.stride(-2),
         y.stride(-1),
-        scale_factor,
+        pscale,
         BLOCK_SIZE_BATCH,
         BLOCK_SIZE_NZ,
         BLOCK_SIZE_POUT,
     )
 
-    # we reshape y back to expose the correct dimensions
+    # reshape y back to expose the correct dimensions
     y = y.reshape(batch_size, n_chans, kernel_size, nlat_out, nlon_out)
+
+    return y
+
+
+def _disco_s2_contraction_torch(psi: torch.Tensor, x: torch.Tensor, nlon_out: int):
+    """
+    Reference implementation of the custom contraction as described in [1]. This requires repeated
+    shifting of the input tensor, which can potentially be costly. For an efficient implementation
+    on GPU, make sure to use the custom kernel written in Triton.
+    """
+    assert len(psi.shape) == 3
+    assert len(x.shape) == 4
+    psi = psi.to(x.device)
+
+    batch_size, n_chans, nlat_in, nlon_in = x.shape
+    kernel_size, nlat_out, _ = psi.shape
+
+    assert psi.shape[-1] == nlat_in * nlon_in
+    assert nlon_in % nlon_out == 0
+
+    pscale = nlon_in // nlon_out
+
+    # add a dummy dimension for nkernel
+    x = x.reshape(1, batch_size * n_chans, nlat_in, nlon_in).permute(0, 2, 3, 1)
+    x = x.expand(kernel_size, -1, -1, -1)
+
+    y = torch.zeros(nlon_out, kernel_size, nlat_out, batch_size * n_chans, device=x.device, dtype=x.dtype)
+
+    for pout in range(nlon_out):
+        # we need to repeatedly roll the input tensor to faciliate the shifted multiplication
+        x = torch.roll(x, -pscale, dims=2)
+        y[pout] = torch.bmm(psi, x.reshape(kernel_size, nlat_in * nlon_in, -1))
+
+    # reshape y back to expose the correct dimensions
+    y = y.permute(3, 1, 2, 0).reshape(batch_size, n_chans, kernel_size, nlat_out, nlon_out)
 
     return y

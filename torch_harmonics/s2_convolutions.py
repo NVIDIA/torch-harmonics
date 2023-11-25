@@ -37,9 +37,10 @@ import torch.nn as nn
 from functools import partial
 
 from torch_harmonics.quadrature import _precompute_latitudes
-from torch_harmonics.disco_convolutions import _disco_s2_contraction
+from torch_harmonics.disco_convolutions import _disco_s2_contraction_torch, _disco_s2_contraction
 
-def _compute_support_vals_isotropic(theta : torch.Tensor, phi : torch.Tensor, kernel_size : int, theta_cutoff : float):
+
+def _compute_support_vals_isotropic(theta: torch.Tensor, phi: torch.Tensor, kernel_size: int, theta_cutoff: float):
     """
     Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
     """
@@ -86,7 +87,7 @@ def _precompute_convolution_tensor(
     out_vals = torch.empty([0], dtype=torch.long)
 
     # compute the phi differences
-    phis = torch.linspace(0, 2*math.pi, nlon_in)
+    phis = torch.linspace(0, 2 * math.pi, nlon_in)
 
     for t in range(nlat_out):
         alpha = -lats_in.reshape(-1, 1)
@@ -118,7 +119,7 @@ def _precompute_convolution_tensor(
 # TODO:
 # - weights
 # - bias
-# - add anisotropy and handle pre-computation via a lambda
+# - add anisotropy
 class DiscreteContinuousConvS2(nn.Module):
     """
     Discrete-continuous convolutions (DISCO) on the 2-Sphere as described in [1].
@@ -147,7 +148,7 @@ class DiscreteContinuousConvS2(nn.Module):
 
         # integration weights
         _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
-        quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).reshape(-1, 1) / self.nlon_in
+        quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).float().reshape(-1, 1) / self.nlon_in
         self.register_buffer("quad_weights", quad_weights)
 
         idx, vals = _precompute_convolution_tensor(
@@ -157,40 +158,14 @@ class DiscreteContinuousConvS2(nn.Module):
 
         self.register_buffer("psi", psi)
 
-    # TODO: Refactor this code for better readability
-    def _contract_disco_torch(self, x: torch.Tensor):
-        """
-        Reference implementation of the custom contraction as described in [1]. This requires repeated shifting of the input tensor,
-        which can potentially be costly
-        """
-        self.psi = self.psi.to(x.device)
-
-        B = x.shape[0]
-        C = x.shape[1]
-        P = self.psi.shape[0]
-
-        scale_factor = self.nlon_in // self.nlon_out
-
-        x = x.reshape(B * C, self.nlat_in, self.nlon_in).permute(1, 2, 0)
-
-        x_out = torch.empty(self.nlon_out, P, self.nlat_out, B * C, device=x.device, dtype=x.dtype)
-
-        for p in range(self.nlon_out):
-            x = torch.roll(x, scale_factor, dims=1)
-            x_out[p] = torch.bmm(self.psi, x.reshape(1, -1, B * C).expand(P, -1, -1))
-
-        x_out = x_out.permute(3, 1, 2, 0).reshape(B, C, P, self.nlat_out, self.nlon_out)
-
-        return x_out
-
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, use_triton_kernel : bool = False):
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
 
-        if x.is_cuda:
+        if x.is_cuda and use_triton_kernel:
             out = _disco_s2_contraction(self.psi, x, self.nlon_out)
         else:
-            out = self._contract_disco_torch(x)
+            out = _disco_s2_contraction_torch(self.psi, x, self.nlon_out)
 
         return out
 
