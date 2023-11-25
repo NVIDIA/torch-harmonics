@@ -39,6 +39,8 @@ def _precompute_latitudes(nlat, grid="equiangular"):
     # compute coordinates
     if grid == "legendre-gauss":
         xlg, wlg = legendre_gauss_weights(nlat)
+    elif grid == "lobatto":
+        xlg, wlg = lobatto_weights(nlat)
     elif grid == "equiangular":
         xlg, wlg = clenshaw_curtiss_weights(nlat)
     else:
