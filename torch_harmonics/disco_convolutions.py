@@ -65,6 +65,7 @@ def _disco_s2_contraction_fwd_kernel(
     y_stride_t,
     y_stride_p,
     pscale,
+    backward: tl.constexpr,
     BLOCK_SIZE_BATCH: tl.constexpr,
     BLOCK_SIZE_NZ: tl.constexpr,
     BLOCK_SIZE_POUT: tl.constexpr,
@@ -133,12 +134,20 @@ def _disco_s2_contraction_fwd_kernel(
             pout[None, None, :] < nlon_out
         )
 
-        # do the actual computation
-        x = tl.load(x_ptrs, mask=mask, other=0.0)
-        y = vals[None, :, None] * x
+        # do the actual computation. Backward is essentially just the same operation with swapped tensors.
+        if not backward:
+            x = tl.load(x_ptrs, mask=mask, other=0.0)
+            y = vals[None, :, None] * x
 
-        # store it to the output array
-        tl.atomic_add(y_ptrs, y, mask=mask)
+            # store it to the output array
+            tl.atomic_add(y_ptrs, y, mask=mask)
+        else:
+            y = tl.load(y_ptrs, mask=mask, other=0.0)
+            x = vals[None, :, None] * y
+
+            # store it to the output array
+            tl.atomic_add(x_ptrs, x, mask=mask)
+
 
 def _disco_s2_contraction_fwd(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
     """
@@ -210,6 +219,7 @@ def _disco_s2_contraction_fwd(x: torch.Tensor, psi: torch.Tensor, nlon_out: int)
         y.stride(-2),
         y.stride(-1),
         pscale,
+        False,
         BLOCK_SIZE_BATCH,
         BLOCK_SIZE_NZ,
         BLOCK_SIZE_POUT,
@@ -220,104 +230,6 @@ def _disco_s2_contraction_fwd(x: torch.Tensor, psi: torch.Tensor, nlon_out: int)
 
     return y
 
-@triton.jit
-def _disco_s2_contraction_bwd_kernel(
-    inz_ptr,
-    vnz_ptr,
-    nnz,
-    inz_stride_ii,
-    inz_stride_nz,
-    vnz_stride,
-    grad_y_ptr,
-    kernel_size,
-    nlat_out,
-    nlon_out,
-    grad_y_stride_b,
-    grad_y_stride_f,
-    grad_y_stride_t,
-    grad_y_stride_p,
-    grad_x_ptr,
-    batch_size,
-    nlat_in,
-    nlon_in,
-    grad_x_stride_b,
-    grad_x_stride_t,
-    grad_x_stride_p,
-    pscale,
-    BLOCK_SIZE_BATCH: tl.constexpr,
-    BLOCK_SIZE_NZ: tl.constexpr,
-    BLOCK_SIZE_POUT: tl.constexpr,
-):
-    """
-    Kernel for the backward pass of the custom DISCO contraction.
-    """
-
-    pid_batch = tl.program_id(0)
-    pid_pout = tl.program_id(2)
-
-    # pid_nz should always be 0 as we do not account for larger grids in this dimension
-    pid_nz = tl.program_id(1)  # should be always 0
-    tl.device_assert(pid_nz == 0)
-
-    # create the pointer block for pout
-    pout = pid_pout * BLOCK_SIZE_POUT + tl.arange(0, BLOCK_SIZE_POUT)
-    b = pid_batch * BLOCK_SIZE_BATCH + tl.arange(0, BLOCK_SIZE_BATCH)
-
-    # create pointer blocks for the psi datastructure
-    iinz = tl.arange(0, BLOCK_SIZE_NZ)
-
-    # get the initial pointers
-    fout_ptrs = inz_ptr + iinz * inz_stride_nz
-    tout_ptrs = inz_ptr + iinz * inz_stride_nz + inz_stride_ii
-    tpnz_ptrs = inz_ptr + iinz * inz_stride_nz + 2 * inz_stride_ii
-    vals_ptrs = vnz_ptr + iinz * vnz_stride
-
-    # iterate in a blocked fashion over the non-zero entries
-    for offs_nz in range(0, nnz, BLOCK_SIZE_NZ):
-        # load input output latitude coordinate pairs
-        fout = tl.load(fout_ptrs + offs_nz * inz_stride_nz, mask=(offs_nz + iinz < nnz), other=-1)
-        tout = tl.load(tout_ptrs + offs_nz * inz_stride_nz, mask=(offs_nz + iinz < nnz), other=-1)
-        tpnz = tl.load(tpnz_ptrs + offs_nz * inz_stride_nz, mask=(offs_nz + iinz < nnz), other=-1)
-
-        # load corresponding values
-        vals = tl.load(vals_ptrs + offs_nz * vnz_stride, mask=(offs_nz + iinz < nnz), other=0.0)
-
-        # compute the shifted longitude coordinates p+p' to read in a coalesced fashion
-        tnz = tpnz // nlon_in
-        pnz = tpnz % nlon_in
-
-        # make sure the value is not out of bounds
-        tl.device_assert(fout < kernel_size)
-        tl.device_assert(tout < nlat_out)
-        tl.device_assert(tnz < nlat_in)
-        tl.device_assert(pnz < nlon_in)
-
-        # load corresponding portion of the input array
-        grad_y_ptrs = (
-            grad_y_ptr
-            + fout[None, :, None] * grad_y_stride_f
-            + tout[None, :, None] * grad_y_stride_t
-            + (pout[None, None, :] % nlon_out) * grad_y_stride_p
-            + b[:, None, None] * grad_y_stride_b
-        )
-        grad_x_ptrs = (
-            grad_x_ptr
-            + tnz[None, :, None] * grad_x_stride_t
-            + ((pnz[None, :, None] + pout[None, None, :] * pscale) % nlon_in) * grad_x_stride_p
-            + b[:, None, None] * grad_x_stride_b
-        )
-
-        # precompute the mask
-        mask = ((b[:, None, None] < batch_size) and (offs_nz + iinz[None, :, None] < nnz)) and (
-            pout[None, None, :] < nlon_out
-        )
-
-        # do the actual computation
-        grad_y = tl.load(grad_y_ptrs, mask=mask, other=0.0)
-        grad_x = vals[None, :, None] * grad_y
-
-        # store it to the output array
-        tl.atomic_add(grad_x_ptrs, grad_x, mask=mask)
 
 def _disco_s2_contraction_bwd(grad_y: torch.Tensor, psi: torch.Tensor, nlon_in: int):
     """
@@ -367,13 +279,20 @@ def _disco_s2_contraction_bwd(grad_y: torch.Tensor, psi: torch.Tensor, nlon_in: 
     )
 
     # launch the kernel
-    _disco_s2_contraction_bwd_kernel[grid](
+    _disco_s2_contraction_fwd_kernel[grid](
         psi.indices(),
         psi.values(),
         nnz,
         psi.indices().stride(-2),
         psi.indices().stride(-1),
         psi.values().stride(-1),
+        grad_x,
+        batch_size * n_chans,
+        nlat_in,
+        nlon_in,
+        grad_x.stride(0),
+        grad_x.stride(-2),
+        grad_x.stride(-1),
         grad_y,
         kernel_size,
         nlat_out,
@@ -382,14 +301,8 @@ def _disco_s2_contraction_bwd(grad_y: torch.Tensor, psi: torch.Tensor, nlon_in: 
         grad_y.stride(1),
         grad_y.stride(-2),
         grad_y.stride(-1),
-        grad_x,
-        batch_size * n_chans,
-        nlat_in,
-        nlon_in,
-        grad_x.stride(0),
-        grad_x.stride(-2),
-        grad_x.stride(-1),
         pscale,
+        True,
         BLOCK_SIZE_BATCH,
         BLOCK_SIZE_NZ,
         BLOCK_SIZE_POUT,
@@ -399,6 +312,7 @@ def _disco_s2_contraction_bwd(grad_y: torch.Tensor, psi: torch.Tensor, nlon_in: 
     grad_x = grad_x.reshape(batch_size, n_chans, nlat_in, nlon_in)
 
     return grad_x
+
 
 class _DiscoS2Contraction(torch.autograd.Function):
     """
@@ -414,11 +328,12 @@ class _DiscoS2Contraction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        psi, = ctx.saved_tensors
-        grad_input =  _disco_s2_contraction_bwd(grad_output, psi, ctx.nlon_in)
+        (psi,) = ctx.saved_tensors
+        grad_input = _disco_s2_contraction_bwd(grad_output, psi, ctx.nlon_in)
         grad_x = grad_psi = None
 
         return grad_input, None, None, None
+
 
 def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
     """
