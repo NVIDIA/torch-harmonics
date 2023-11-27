@@ -37,7 +37,7 @@ import torch.nn as nn
 from functools import partial
 
 from torch_harmonics.quadrature import _precompute_latitudes
-from torch_harmonics.disco_convolutions import _disco_s2_contraction_torch, _DiscoS2Contraction
+from torch_harmonics.disco_convolutions import _disco_s2_contraction_torch, _disco_s2_contraction_triton
 
 
 def _compute_support_vals_isotropic(theta: torch.Tensor, phi: torch.Tensor, kernel_size: int, theta_cutoff: float):
@@ -163,7 +163,7 @@ class DiscreteContinuousConvS2(nn.Module):
         x = self.quad_weights * x
 
         if x.is_cuda and use_triton_kernel:
-            out = _DiscoS2Contraction.apply(x, self.psi, self.nlon_out)
+            out = _disco_s2_contraction_triton(x, self.psi, self.nlon_out)
         else:
             out = _disco_s2_contraction_torch(x, self.psi, self.nlon_out)
 

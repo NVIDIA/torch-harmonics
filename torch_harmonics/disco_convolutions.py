@@ -42,7 +42,7 @@ BLOCK_SIZE_POUT = 8
 
 
 @triton.jit
-def _disco_s2_contraction_fwd_kernel(
+def _disco_s2_contraction_kernel(
     inz_ptr,
     vnz_ptr,
     nnz,
@@ -196,7 +196,7 @@ def _disco_s2_contraction_fwd(x: torch.Tensor, psi: torch.Tensor, nlon_out: int)
     )
 
     # launch the kernel
-    _disco_s2_contraction_fwd_kernel[grid](
+    _disco_s2_contraction_kernel[grid](
         psi.indices(),
         psi.values(),
         nnz,
@@ -279,7 +279,7 @@ def _disco_s2_contraction_bwd(grad_y: torch.Tensor, psi: torch.Tensor, nlon_in: 
     )
 
     # launch the kernel
-    _disco_s2_contraction_fwd_kernel[grid](
+    _disco_s2_contraction_kernel[grid](
         psi.indices(),
         psi.values(),
         nnz,
@@ -314,7 +314,7 @@ def _disco_s2_contraction_bwd(grad_y: torch.Tensor, psi: torch.Tensor, nlon_in: 
     return grad_x
 
 
-class _DiscoS2Contraction(torch.autograd.Function):
+class _DiscoS2ContractionTriton(torch.autograd.Function):
     """
     Helper function to make the triton implementation work with PyTorch autograd functionality
     """
@@ -332,7 +332,11 @@ class _DiscoS2Contraction(torch.autograd.Function):
         grad_input = _disco_s2_contraction_bwd(grad_output, psi, ctx.nlon_in)
         grad_x = grad_psi = None
 
-        return grad_input, None, None, None
+        return grad_input, None, None
+
+
+def _disco_s2_contraction_triton(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
+    return _DiscoS2ContractionTrito.apply(x, psi, nlon_out)
 
 
 def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
