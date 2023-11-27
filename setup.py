@@ -88,6 +88,7 @@ config = {
     'version': VERSION,
     'install_requires': ['torch', 'numpy'],
     'extras_require': {
+        'disco': ['triton'],
         'sfno':  ['tensorly', 'tensorly-torch'],
     },
     'license': 'Modified BSD',
