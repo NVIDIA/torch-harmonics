@@ -336,7 +336,7 @@ class _DiscoS2ContractionTriton(torch.autograd.Function):
 
 
 def _disco_s2_contraction_triton(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
-    return _DiscoS2ContractionTrito.apply(x, psi, nlon_out)
+    return _DiscoS2ContractionTriton.apply(x, psi, nlon_out)
 
 
 def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
@@ -364,9 +364,9 @@ def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: in
     y = torch.zeros(nlon_out, kernel_size, nlat_out, batch_size * n_chans, device=x.device, dtype=x.dtype)
 
     for pout in range(nlon_out):
+        y[pout] = torch.bmm(psi, x.reshape(kernel_size, nlat_in * nlon_in, -1))
         # we need to repeatedly roll the input tensor to faciliate the shifted multiplication
         x = torch.roll(x, -pscale, dims=2)
-        y[pout] = torch.bmm(psi, x.reshape(kernel_size, nlat_in * nlon_in, -1))
 
     # reshape y back to expose the correct dimensions
     y = y.permute(3, 1, 2, 0).reshape(batch_size, n_chans, kernel_size, nlat_out, nlon_out)
