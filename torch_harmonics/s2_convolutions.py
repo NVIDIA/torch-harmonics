@@ -39,7 +39,7 @@ import torch.nn as nn
 from functools import partial
 
 from torch_harmonics.quadrature import _precompute_latitudes
-from torch_harmonics.disco_convolutions import _disco_s2_contraction_torch, _disco_s2_contraction_triton
+from torch_harmonics.disco_convolutions import _disco_s2_contraction_torch, _disco_s2_contraction_triton, _disco_s2_transpose_contraction_triton
 
 
 def _compute_support_vals_isotropic(theta: torch.Tensor, phi: torch.Tensor, kernel_size: int, theta_cutoff: float):
@@ -205,13 +205,87 @@ class DiscreteContinuousConvS2(nn.Module):
         return out
 
 
-# class SpectralConvS2(nn.Module):
-#     """
-#     Spectral Convolution on the sphere
-#     """
+class DiscreteContinuousTransposeConvS2(nn.Module):
+    """
+    Discrete-continuous transpose convolutions (DISCO) on the 2-Sphere as described in [1].
 
-#     def __init__(self, forward_transform, inverse_transform, in_channels, out_channels, bias=False):
-#         pass
+    [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
+    """
 
-#     def forward(self, x):
-#         pass
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        in_shape: Tuple[int],
+        out_shape: Tuple[int],
+        kernel_shape: Union[int, List[int]],
+        groups: Optional[int]=1,
+        grid_in: Optional[str]="equiangular",
+        grid_out: Optional[str]="equiangular",
+        bias: Optional[bool]=True,
+        theta_cutoff: Optional[float]=None,
+    ):
+        super().__init__()
+
+        self.nlat_in, self.nlon_in = in_shape
+        self.nlat_out, self.nlon_out = out_shape
+
+        if isinstance(kernel_shape, int):
+            kernel_shape = [kernel_shape]
+        
+        # bandlimit
+        if theta_cutoff is None:
+            theta_cutoff = kernel_shape[0] * torch.pi / float(self.nlat_in)
+
+        if theta_cutoff <= 0.:
+            raise ValueError("Error, theta_cutoff has to be positive.")
+
+        # integration weights
+        _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
+        quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).float().reshape(-1, 1) / self.nlon_in
+        self.register_buffer("quad_weights", quad_weights, persistent=False)
+
+        # switch in_shape and out_shape since we want transpose conv
+        idx, vals = _precompute_convolution_tensor(
+            out_shape, in_shape, kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff
+        )
+        psi = torch.sparse_coo_tensor(idx, vals).coalesce()
+        self.register_buffer("psi", psi, persistent=False)
+        
+        # groups
+        self.groups = groups
+        
+        # weight tensor
+        if in_channels % self.groups != 0:
+            raise ValueError("Error, the number of input channels has to be an integer multiple of the group size")
+        self.groupsize = in_channels // self.groups
+        weight = nn.Parameter(torch.ones(out_channels, self.groupsize, kernel_shape[0]))
+        self.register_buffer("weight", weight)
+        
+        if bias:
+            btens = nn.Parameter(torch.zeros(out_channels))
+            self.register_buffer("bias", btens)
+        else:
+            self.bias = None
+
+    def forward(self, x: torch.Tensor, use_triton_kernel: bool = False) -> torch.Tensor:
+        
+        # extract shape
+        B, F, H, W = x.shape
+        x = x.reshape(B, self.groups, self.groupsize, H, W)
+        
+        # do weight multiplication
+        x = torch.einsum("bgfxy,cfk->bckxy", x, self.weight)
+        
+        # pre-multiply x with the quadrature weights
+        x = self.quad_weights * x
+
+        #if x.is_cuda and use_triton_kernel:
+        out = _disco_s2_transpose_contraction_triton(x, self.psi, self.nlon_out)
+        #else:
+        #    out = _disco_s2_transpose_contraction_torch(x, self.psi, self.nlon_in)
+
+        if self.bias is not None:
+            out = out + self.bias.reshape(1, -1, 1, 1)
+        
+        return out

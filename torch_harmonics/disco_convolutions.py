@@ -334,9 +334,32 @@ class _DiscoS2ContractionTriton(torch.autograd.Function):
 
         return grad_input, None, None
 
+class _DiscoS2TransposeContractionTriton(torch.autograd.Function):
+    """
+    Helper function to make the triton implementation work with PyTorch autograd functionality
+    """
+    
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
+        ctx.save_for_backward(psi)
+        ctx.nlon_in = x.shape[-1]
+
+        return _disco_s2_contraction_bwd(x, psi, nlon_out)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (psi,) = ctx.saved_tensors
+        grad_input = _disco_s2_contraction_fwd(grad_output, psi, ctx.nlon_in)
+        grad_x = grad_psi = None
+
+        return grad_input, None, None
+
 
 def _disco_s2_contraction_triton(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
     return _DiscoS2ContractionTriton.apply(x, psi, nlon_out)
+
+def _disco_s2_transpose_contraction_triton(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
+    return _DiscoS2TransposeContractionTriton.apply(x, psi, nlon_out)
 
 
 def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
