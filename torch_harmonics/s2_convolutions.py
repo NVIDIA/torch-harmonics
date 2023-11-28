@@ -29,10 +29,13 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+from typing import List, Tuple, Union, Optional
+
 import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from functools import partial
 
@@ -72,7 +75,7 @@ def _precompute_convolution_tensor(
     if len(kernel_shape) == 1:
         kernel_handle = partial(_compute_support_vals_isotropic, kernel_size=kernel_shape[0], theta_cutoff=theta_cutoff)
     else:
-        raise ValueError("Kernel shape should be either one- or two-dimensional.")
+        raise ValueError("kernel_shape should be either one- or two-dimensional.")
 
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
@@ -117,8 +120,7 @@ def _precompute_convolution_tensor(
 
 
 # TODO:
-# - weights
-# - bias
+# - parameter initialization
 # - add anisotropy
 class DiscreteContinuousConvS2(nn.Module):
     """
@@ -129,44 +131,78 @@ class DiscreteContinuousConvS2(nn.Module):
 
     def __init__(
         self,
-        in_shape,
-        out_shape,
-        kernel_shape,
-        grid_in="equiangular",
-        grid_out="equiangular",
-        bias=True,
-        theta_cutoff=None,
+        in_channels: int,
+        out_channels: int,
+        in_shape: Tuple[int],
+        out_shape: Tuple[int],
+        kernel_shape: Union[int, List[int]],
+        groups: Optional[int]=1,
+        grid_in: Optional[str]="equiangular",
+        grid_out: Optional[str]="equiangular",
+        bias: Optional[bool]=True,
+        theta_cutoff: Optional[float]=None,
     ):
         super().__init__()
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
 
+        if isinstance(kernel_shape, int):
+            kernel_shape = [kernel_shape]
+        
         # bandlimit
         if theta_cutoff is None:
-            theta_cutoff = kernel_shape[0] * torch.pi / self.nlat_in
+            theta_cutoff = kernel_shape[0] * torch.pi / float(self.nlat_in)
+
+        if theta_cutoff <= 0.:
+            raise ValueError("Error, theta_cutoff has to be positive.")
 
         # integration weights
         _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
         quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).float().reshape(-1, 1) / self.nlon_in
-        self.register_buffer("quad_weights", quad_weights)
+        self.register_buffer("quad_weights", quad_weights, persistent=False)
 
         idx, vals = _precompute_convolution_tensor(
             in_shape, out_shape, kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
         )
         psi = torch.sparse_coo_tensor(idx, vals).coalesce()
+        self.register_buffer("psi", psi, persistent=False)
 
-        self.register_buffer("psi", psi)
+        # groups
+        self.groups = groups
+        
+        # weight tensor
+        if in_channels % self.groups != 0:
+            raise ValueError("Error, the number of input channels has to be an integer multiple of the group size")
+        self.groupsize = in_channels // self.groups
+        weight = nn.Parameter(torch.ones(out_channels, self.groupsize, kernel_shape[0]))
+        self.register_buffer("weight", weight)
+        
+        if bias:
+            btens = nn.Parameter(torch.zeros(out_channels))
+            self.register_buffer("bias", btens)
+        else:
+            self.bias = None
 
-    def forward(self, x: torch.Tensor, use_triton_kernel : bool = False):
+    def forward(self, x: torch.Tensor, use_triton_kernel: bool = False) -> torch.Tensor:
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
 
         if x.is_cuda and use_triton_kernel:
-            out = _disco_s2_contraction_triton(x, self.psi, self.nlon_out)
+            x = _disco_s2_contraction_triton(x, self.psi, self.nlon_out)
         else:
-            out = _disco_s2_contraction_torch(x, self.psi, self.nlon_out)
+            x = _disco_s2_contraction_torch(x, self.psi, self.nlon_out)
 
+        # extract shape
+        B, C, K, H, W = x.shape
+        x = x.reshape(B, self.groups, self.groupsize, K, H, W)
+            
+        # do weight multiplication
+        out = torch.einsum("bgckxy,fck->bfxy", x, self.weight)
+
+        if self.bias is not None:
+            out = out + self.bias.reshape(1, -1, 1, 1)
+        
         return out
 
 
