@@ -395,3 +395,49 @@ def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: in
     y = y.permute(3, 1, 2, 0).reshape(batch_size, n_chans, kernel_size, nlat_out, nlon_out)
 
     return y
+
+
+def _disco_s2_transpose_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
+    """
+    Reference implementation of the custom contraction as described in [1]. This requires repeated
+    shifting of the input tensor, which can potentially be costly. For an efficient implementation
+    on GPU, make sure to use the custom kernel written in Triton.
+    """
+    assert len(psi.shape) == 3
+    assert len(x.shape) == 5
+    psi = psi.to(x.device)
+
+    batch_size, n_chans, kernel_size, nlat_in, nlon_in = x.shape
+    kernel_size, _, n_out = psi.shape
+
+    assert psi.shape[-2] == nlat_in
+    assert n_out % nlon_out == 0
+    nlat_out = n_out // nlon_out
+
+    pscale = nlon_out // nlon_in
+
+    # we do a semi-transposition to faciliate the computation
+    inz = psi.indices()
+    tout = inz[2] // nlon_out
+    pout = inz[2] % nlon_out
+    tin = inz[1]
+    inz = torch.stack([inz[0], tout, tin*nlon_out + pout], dim=0)
+    psi_mod = torch.sparse_coo_tensor(inz, psi.values(), size=(kernel_size, nlat_out, nlat_in*nlon_out))
+
+    # interleave zeros along the longitude dimension to allow for fractional offsets to be considered
+    x_ext = torch.zeros(kernel_size, nlat_in, nlon_out, batch_size * n_chans, device=x.device, dtype=x.dtype)
+    x_ext[:, :, 0::pscale, :] = x.reshape(batch_size * n_chans, kernel_size, nlat_in, nlon_in).permute(1, 2, 3, 0).flip(2)
+    x_ext = x_ext.contiguous()
+
+    y = torch.zeros(kernel_size, nlon_out, nlat_out, batch_size * n_chans, device=x.device, dtype=x.dtype)
+
+    for pout in range(nlon_out):
+        y[:, pout, :, :] = torch.bmm(psi_mod, x_ext.reshape(kernel_size, nlat_in * nlon_out, -1))
+        # we need to repeatedly roll the input tensor to faciliate the shifted multiplication
+        x_ext = torch.roll(x_ext, 1, dims=2)
+
+    # sum over the kernel dimension and reshape to the correct output size
+    y = y.sum(dim=0).permute(2, 1, 0).reshape(batch_size, n_chans, nlat_out, nlon_out)
+
+    return y
+

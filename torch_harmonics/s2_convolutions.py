@@ -39,7 +39,12 @@ import torch.nn as nn
 from functools import partial
 
 from torch_harmonics.quadrature import _precompute_latitudes
-from torch_harmonics.disco_convolutions import _disco_s2_contraction_torch, _disco_s2_contraction_triton, _disco_s2_transpose_contraction_triton
+from torch_harmonics.disco_convolutions import (
+    _disco_s2_contraction_torch,
+    _disco_s2_transpose_contraction_torch,
+    _disco_s2_contraction_triton,
+    _disco_s2_transpose_contraction_triton,
+)
 
 
 def _compute_support_vals_isotropic(theta: torch.Tensor, phi: torch.Tensor, kernel_size: int, theta_cutoff: float):
@@ -48,14 +53,15 @@ def _compute_support_vals_isotropic(theta: torch.Tensor, phi: torch.Tensor, kern
     """
 
     # compute the support
-    d_theta = (theta_cutoff - 0.0) / kernel_size
+    dtheta = (theta_cutoff - 0.0) / kernel_size
     ikernel = torch.arange(kernel_size).reshape(-1, 1, 1)
-    itheta = ikernel * d_theta
+    itheta = ikernel * dtheta
+
+    norm_factor = 2 * math.pi * (1 - math.cos(theta_cutoff))
 
     # find the indices where the rotated position falls into the support of the kernel
-    iidx = torch.argwhere(((theta - itheta).abs() < d_theta) & (theta < theta_cutoff))
-    vals = 1 - (theta[iidx[:, 1], iidx[:, 2]] - itheta[iidx[:, 0], 0, 0]).abs() / d_theta
-
+    iidx = torch.argwhere(((theta - itheta).abs() < dtheta) & (theta < theta_cutoff))
+    vals = (1 - (theta[iidx[:, 1], iidx[:, 2]] - itheta[iidx[:, 0], 0, 0]).abs() / dtheta) / norm_factor
     return iidx, vals
 
 
@@ -135,11 +141,11 @@ class DiscreteContinuousConvS2(nn.Module):
         in_shape: Tuple[int],
         out_shape: Tuple[int],
         kernel_shape: Union[int, List[int]],
-        groups: Optional[int]=1,
-        grid_in: Optional[str]="equiangular",
-        grid_out: Optional[str]="equiangular",
-        bias: Optional[bool]=True,
-        theta_cutoff: Optional[float]=None,
+        groups: Optional[int] = 1,
+        grid_in: Optional[str] = "equiangular",
+        grid_out: Optional[str] = "equiangular",
+        bias: Optional[bool] = True,
+        theta_cutoff: Optional[float] = None,
     ):
         super().__init__()
 
@@ -148,12 +154,15 @@ class DiscreteContinuousConvS2(nn.Module):
 
         if isinstance(kernel_shape, int):
             kernel_shape = [kernel_shape]
-        
+        self.kernel_size = 1
+        for kdim in kernel_shape:
+            self.kernel_size *= kdim
+
         # bandlimit
         if theta_cutoff is None:
             theta_cutoff = kernel_shape[0] * torch.pi / float(self.nlat_in)
 
-        if theta_cutoff <= 0.:
+        if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
 
         # integration weights
@@ -164,19 +173,21 @@ class DiscreteContinuousConvS2(nn.Module):
         idx, vals = _precompute_convolution_tensor(
             in_shape, out_shape, kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
         )
-        psi = torch.sparse_coo_tensor(idx, vals).coalesce()
+        psi = torch.sparse_coo_tensor(
+            idx, vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_in)
+        ).coalesce()
         self.register_buffer("psi", psi, persistent=False)
 
         # groups
         self.groups = groups
-        
+
         # weight tensor
         if in_channels % self.groups != 0:
             raise ValueError("Error, the number of input channels has to be an integer multiple of the group size")
         self.groupsize = in_channels // self.groups
         weight = nn.Parameter(torch.ones(out_channels, self.groupsize, kernel_shape[0]))
         self.register_buffer("weight", weight)
-        
+
         if bias:
             btens = nn.Parameter(torch.zeros(out_channels))
             self.register_buffer("bias", btens)
@@ -195,17 +206,17 @@ class DiscreteContinuousConvS2(nn.Module):
         # extract shape
         B, C, K, H, W = x.shape
         x = x.reshape(B, self.groups, self.groupsize, K, H, W)
-            
+
         # do weight multiplication
         out = torch.einsum("bgckxy,fck->bfxy", x, self.weight)
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
-        
+
         return out
 
 
-class DiscreteContinuousTransposeConvS2(nn.Module):
+class DiscreteContinuousConvTransposeS2(nn.Module):
     """
     Discrete-continuous transpose convolutions (DISCO) on the 2-Sphere as described in [1].
 
@@ -219,11 +230,11 @@ class DiscreteContinuousTransposeConvS2(nn.Module):
         in_shape: Tuple[int],
         out_shape: Tuple[int],
         kernel_shape: Union[int, List[int]],
-        groups: Optional[int]=1,
-        grid_in: Optional[str]="equiangular",
-        grid_out: Optional[str]="equiangular",
-        bias: Optional[bool]=True,
-        theta_cutoff: Optional[float]=None,
+        groups: Optional[int] = 1,
+        grid_in: Optional[str] = "equiangular",
+        grid_out: Optional[str] = "equiangular",
+        bias: Optional[bool] = True,
+        theta_cutoff: Optional[float] = None,
     ):
         super().__init__()
 
@@ -232,12 +243,15 @@ class DiscreteContinuousTransposeConvS2(nn.Module):
 
         if isinstance(kernel_shape, int):
             kernel_shape = [kernel_shape]
-        
+        self.kernel_size = 1
+        for kdim in kernel_shape:
+            self.kernel_size *= kdim
+
         # bandlimit
         if theta_cutoff is None:
             theta_cutoff = kernel_shape[0] * torch.pi / float(self.nlat_in)
 
-        if theta_cutoff <= 0.:
+        if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
 
         # integration weights
@@ -249,43 +263,44 @@ class DiscreteContinuousTransposeConvS2(nn.Module):
         idx, vals = _precompute_convolution_tensor(
             out_shape, in_shape, kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff
         )
-        psi = torch.sparse_coo_tensor(idx, vals).coalesce()
+        psi = torch.sparse_coo_tensor(
+            idx, vals, size=(self.kernel_size, self.nlat_in, self.nlat_out * self.nlon_out)
+        ).coalesce()
         self.register_buffer("psi", psi, persistent=False)
-        
+
         # groups
         self.groups = groups
-        
+
         # weight tensor
         if in_channels % self.groups != 0:
             raise ValueError("Error, the number of input channels has to be an integer multiple of the group size")
         self.groupsize = in_channels // self.groups
         weight = nn.Parameter(torch.ones(out_channels, self.groupsize, kernel_shape[0]))
         self.register_buffer("weight", weight)
-        
+
         if bias:
             btens = nn.Parameter(torch.zeros(out_channels))
             self.register_buffer("bias", btens)
         else:
             self.bias = None
 
-    def forward(self, x: torch.Tensor, use_triton_kernel: bool = False) -> torch.Tensor:
-        
+    def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
         # extract shape
         B, F, H, W = x.shape
         x = x.reshape(B, self.groups, self.groupsize, H, W)
-        
+
         # do weight multiplication
         x = torch.einsum("bgfxy,cfk->bckxy", x, self.weight)
-        
+
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
 
-        #if x.is_cuda and use_triton_kernel:
-        out = _disco_s2_transpose_contraction_triton(x, self.psi, self.nlon_out)
-        #else:
-        #    out = _disco_s2_transpose_contraction_torch(x, self.psi, self.nlon_in)
+        if x.is_cuda and use_triton_kernel:
+            out = _disco_s2_transpose_contraction_triton(x, self.psi, self.nlon_out)
+        else:
+            out = _disco_s2_transpose_contraction_torch(x, self.psi, self.nlon_out)
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
-        
+
         return out
