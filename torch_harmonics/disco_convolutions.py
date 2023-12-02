@@ -387,6 +387,7 @@ def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: in
     y = torch.zeros(nlon_out, kernel_size, nlat_out, batch_size * n_chans, device=x.device, dtype=x.dtype)
 
     for pout in range(nlon_out):
+        # sparse contraction with psi
         y[pout] = torch.bmm(psi, x.reshape(kernel_size, nlat_in * nlon_in, -1))
         # we need to repeatedly roll the input tensor to faciliate the shifted multiplication
         x = torch.roll(x, -pscale, dims=2)
@@ -435,9 +436,11 @@ def _disco_s2_transpose_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nl
     y = torch.zeros(kernel_size, nlon_out, nlat_out, batch_size * n_chans, device=x.device, dtype=x.dtype)
 
     for pout in range(nlon_out):
-        y[:, pout, :, :] = torch.bmm(psi_mod, x_ext.reshape(kernel_size, nlat_in * nlon_out, -1))
         # we need to repeatedly roll the input tensor to faciliate the shifted multiplication
+        # TODO: double-check why this has to happen first
         x_ext = torch.roll(x_ext, -1, dims=2)
+        # sparse contraction with the modified psi
+        y[:, pout, :, :] = torch.bmm(psi_mod, x_ext.reshape(kernel_size, nlat_in * nlon_out, -1))
 
     # sum over the kernel dimension and reshape to the correct output size
     y = y.sum(dim=0).permute(2, 1, 0).reshape(batch_size, n_chans, nlat_out, nlon_out)
