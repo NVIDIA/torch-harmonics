@@ -31,6 +31,26 @@
 
 import numpy as np
 
+def _precompute_latitudes(nlat, grid="equiangular"):
+    r"""
+    Convenience routine to precompute latitudes
+    """
+
+    # compute coordinates
+    if grid == "legendre-gauss":
+        xlg, wlg = legendre_gauss_weights(nlat)
+    elif grid == "lobatto":
+        xlg, wlg = lobatto_weights(nlat)
+    elif grid == "equiangular":
+        xlg, wlg = clenshaw_curtiss_weights(nlat)
+    else:
+        raise ValueError("Unknown grid")
+
+    lats = np.flip(np.arccos(xlg)).copy()
+    wlg = np.flip(wlg).copy()
+
+    return lats, wlg
+
 def legendre_gauss_weights(n, a=-1.0, b=1.0):
     r"""
     Helper routine which returns the Legendre-Gauss nodes and weights
