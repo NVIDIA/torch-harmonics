@@ -420,13 +420,16 @@ def _disco_s2_transpose_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nl
     inz = psi.indices()
     tout = inz[2] // nlon_out
     pout = inz[2] % nlon_out
+    # flip the axis of longitudes
+    pout = nlon_out - 1 - pout
     tin = inz[1]
     inz = torch.stack([inz[0], tout, tin*nlon_out + pout], dim=0)
     psi_mod = torch.sparse_coo_tensor(inz, psi.values(), size=(kernel_size, nlat_out, nlat_in*nlon_out))
 
     # interleave zeros along the longitude dimension to allow for fractional offsets to be considered
     x_ext = torch.zeros(kernel_size, nlat_in, nlon_out, batch_size * n_chans, device=x.device, dtype=x.dtype)
-    x_ext[:, :, 0::pscale, :] = x.reshape(batch_size * n_chans, kernel_size, nlat_in, nlon_in).permute(1, 2, 3, 0).flip(2)
+    x_ext[:, :, (pscale-1)::pscale, :] = x.reshape(batch_size * n_chans, kernel_size, nlat_in, nlon_in).permute(1, 2, 3, 0)
+    # we need to go backwards through the vector, so we flip the axis
     x_ext = x_ext.contiguous()
 
     y = torch.zeros(kernel_size, nlon_out, nlat_out, batch_size * n_chans, device=x.device, dtype=x.dtype)
@@ -434,7 +437,7 @@ def _disco_s2_transpose_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nl
     for pout in range(nlon_out):
         y[:, pout, :, :] = torch.bmm(psi_mod, x_ext.reshape(kernel_size, nlat_in * nlon_out, -1))
         # we need to repeatedly roll the input tensor to faciliate the shifted multiplication
-        x_ext = torch.roll(x_ext, 1, dims=2)
+        x_ext = torch.roll(x_ext, -1, dims=2)
 
     # sum over the kernel dimension and reshape to the correct output size
     y = y.sum(dim=0).permute(2, 1, 0).reshape(batch_size, n_chans, nlat_out, nlon_out)

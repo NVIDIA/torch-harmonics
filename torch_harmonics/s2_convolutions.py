@@ -60,7 +60,7 @@ def _compute_support_vals_isotropic(theta: torch.Tensor, phi: torch.Tensor, kern
     norm_factor = 2 * math.pi * (1 - math.cos(theta_cutoff))
 
     # find the indices where the rotated position falls into the support of the kernel
-    iidx = torch.argwhere(((theta - itheta).abs() < dtheta) & (theta < theta_cutoff))
+    iidx = torch.argwhere(((theta - itheta).abs() <= dtheta) & (theta <= theta_cutoff))
     vals = (1 - (theta[iidx[:, 1], iidx[:, 2]] - itheta[iidx[:, 0], 0, 0]).abs() / dtheta) / norm_factor
     return iidx, vals
 
@@ -160,7 +160,7 @@ class DiscreteContinuousConvS2(nn.Module):
 
         # bandlimit
         if theta_cutoff is None:
-            theta_cutoff = kernel_shape[0] * torch.pi / float(self.nlat_in)
+            theta_cutoff = kernel_shape[0] * torch.pi / float(self.nlat_in - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -249,7 +249,7 @@ class DiscreteContinuousConvTransposeS2(nn.Module):
 
         # bandlimit
         if theta_cutoff is None:
-            theta_cutoff = kernel_shape[0] * torch.pi / float(self.nlat_in)
+            theta_cutoff = kernel_shape[0] * torch.pi / float(self.nlat_in - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
