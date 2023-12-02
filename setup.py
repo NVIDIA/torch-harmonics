@@ -86,9 +86,8 @@ config = {
     'author': 'Boris Bonev',
     'author_email': 'bbonev@nvidia.com',
     'version': VERSION,
-    'install_requires': ['torch', 'numpy'],
+    'install_requires': ['torch', 'numpy', 'triton'],
     'extras_require': {
-        'disco': ['triton'],
         'sfno':  ['tensorly', 'tensorly-torch'],
     },
     'license': 'Modified BSD',
