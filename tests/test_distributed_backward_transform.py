@@ -68,27 +68,30 @@ h_group = None
 
 # now set up the comm grid:
 wgroups = []
-for h in range(grid_size_h):
-    start = h
-    end = h + grid_size_w
+for w in range(0, world_size, grid_size_w):
+    start = w
+    end = w + grid_size_w
     wgroups.append(list(range(start, end)))
 
-print(wgroups)
+if world_rank == 0:
+    print("w-groups:", wgroups)
 for grp in wgroups:
     if len(grp) == 1:
         continue
     tmp_group = dist.new_group(ranks=grp)
-    if wrank in grp:
+    if world_rank in grp:
         w_group = tmp_group
 
 # transpose:
 hgroups = [sorted(list(i)) for i in zip(*wgroups)]
-print(hgroups)
+
+if world_rank == 0:
+    print("h-groups:", hgroups)
 for grp in hgroups:
     if len(grp) == 1:
         continue
     tmp_group = dist.new_group(ranks=grp)
-    if hrank in	grp:
+    if world_rank in grp:
         h_group = tmp_group
         
 # set device
@@ -105,58 +108,56 @@ if world_rank == 0:
 thd.init(h_group, w_group)
 
 # common parameters
-B, C, H, W = 1, 8, 721, 1440
-Hloc = (H + grid_size_h - 1) // grid_size_h
-Wloc = (W + grid_size_w - 1) // grid_size_w
-Hpad = grid_size_h * Hloc - H
-Wpad = grid_size_w * Wloc - W
+#B, C, H, W = 1, 8, 721, 1440
+B, C, H, W = 1, 1, 4, 8
 
 # do serial tests first:
 forward_transform_local = harmonics.RealSHT(nlat=H, nlon=W).to(device)
 backward_transform_local = harmonics.InverseRealSHT(nlat=H, nlon=W).to(device)
 backward_transform_dist = thd.DistributedInverseRealSHT(nlat=H, nlon=W).to(device)
-Lpad = backward_transform_dist.lpad
-Mpad = backward_transform_dist.mpad
-Lloc = (Lpad + backward_transform_dist.lmax) // grid_size_h
-Mloc = (Mpad + backward_transform_dist.mmax) // grid_size_w
 
 # create tensors
 dummy_full = torch.randn((B, C, H, W), dtype=torch.float32, device=device)
-inp_full = forward_transform_local(dummy_full)
+inp_full = forward_transform_local(dummy_full).detach().clone()
 
-# pad
+# split
 with torch.no_grad():
-    inp_pad = F.pad(inp_full, (0, Mpad, 0, Lpad))
-
     # split in W
-    inp_local = torch.split(inp_pad, split_size_or_sections=Mloc, dim=-1)[wrank]
+    inp_list_local = thd.split_tensor_along_dim(inp_full, dim=-1, num_chunks=grid_size_w)
+    shapes_w = [x.shape[-1] for x in inp_list_local]
+    inp_local = inp_list_local[wrank]
 
     # split in H
-    inp_local = torch.split(inp_local, split_size_or_sections=Lloc, dim=-2)[hrank]
+    inp_list_local = thd.split_tensor_along_dim(inp_local, dim=-2, num_chunks=grid_size_h)
+    shapes_h = [x.shape[-2] for x in inp_list_local]
+    inp_local = inp_list_local[hrank]
 
 # do FWD transform
 out_full = backward_transform_local(inp_full)
 out_local = backward_transform_dist(inp_local)
 
 # gather the local data
+# we need the shapes
+lat_shapes = backward_transform_dist.lat_shapes
+lon_shapes = backward_transform_dist.lon_shapes
+
 # gather in W
 if grid_size_w > 1:
-    olist = [torch.empty_like(out_local) for _ in range(grid_size_w)]
+    gather_shapes = [(B, C, lat_shapes[hrank], w) for w in lon_shapes]
+    olist = [torch.empty(shape, dtype=out_local.dtype, device=out_local.device) for shape in gather_shapes]
     olist[wrank] = out_local
     dist.all_gather(olist, out_local, group=w_group)
     out_full_gather = torch.cat(olist, dim=-1)
-    out_full_gather = out_full_gather[..., :W]
 else:
     out_full_gather = out_local
-
+    
 # gather in h
 if grid_size_h > 1:
-    olist = [torch.empty_like(out_full_gather) for _ in range(grid_size_h)]
+    gather_shapes = [(B, C, h, backward_transform_dist.nlon) for h in lat_shapes]
+    olist = [torch.empty(shape, dtype=out_full_gather.dtype, device=out_full_gather.device) for shape in gather_shapes]
     olist[hrank] = out_full_gather
     dist.all_gather(olist, out_full_gather, group=h_group)
     out_full_gather = torch.cat(olist, dim=-2)
-    out_full_gather = out_full_gather[..., :H, :]
-
 
 if world_rank == 0:
     print(f"Local Out: sum={out_full.abs().sum().item()}, max={out_full.abs().max().item()}, min={out_full.abs().min().item()}")
@@ -171,47 +172,61 @@ with torch.no_grad():
     # create full grad
     ograd_full = torch.randn_like(out_full)
 
-    # pad
-    ograd_pad = F.pad(ograd_full, [0, Wpad, 0, Hpad])
-
     # split in W
-    ograd_local = torch.split(ograd_pad, split_size_or_sections=Wloc, dim=-1)[wrank]
+    ograd_list_local = thd.split_tensor_along_dim(ograd_full, dim=-1, num_chunks=grid_size_w)
+    shapes_m = [x.shape[-1] for x in ograd_list_local]
+    ograd_local = ograd_list_local[wrank]
 
     # split in H
-    ograd_local = torch.split(ograd_local, split_size_or_sections=Hloc, dim=-2)[hrank]
+    ograd_list_local = thd.split_tensor_along_dim(ograd_local, dim=-2, num_chunks=grid_size_h)
+    shapes_l = [x.shape[-2] for x in ograd_list_local]
+    ograd_local = ograd_list_local[hrank]
 
 
 # backward pass:
 # local
+inp_local.requires_grad = True
 inp_full.requires_grad = True
-out_full = backward_transform_local(inp_full)
+out_full = backward_transform_local(inp_local) #(inp_full)
 out_full.backward(ograd_full)
-igrad_full = inp_full.grad.clone()
+igrad_full = inp_local.grad.clone()  #inp_full.grad.clone()
+
+print("out_full", out_full)
+print("igrad_full", igrad_full)
 
 # distributed
 inp_local.requires_grad = True
-out_local = backward_transform_dist(inp_local)
+out_local = backward_transform_dist(inp_full) #(inp_local)
 out_local.backward(ograd_local)
-igrad_local = inp_local.grad.clone()
+igrad_local = inp_full.grad.clone() #inp_local.grad.clone()
 
-# gather
-# gather in W
+print("out_local", out_local)
+print("igrad_local", igrad_local)
+sys.exit(1)
+
+# gather the local data
+# we need the shapes
+l_shapes = backward_transform_dist.l_shapes
+m_shapes = backward_transform_dist.m_shapes
+
+# gather in w
 if grid_size_w > 1:
-    olist = [torch.empty_like(igrad_local) for _ in range(grid_size_w)]
+    gather_shapes = [(B, C, l_shapes[hrank], m) for m in m_shapes]
+    olist = [torch.empty(shape, dtype=igrad_local.dtype, device=igrad_local.device) for shape in gather_shapes]
     olist[wrank] = igrad_local
     dist.all_gather(olist, igrad_local, group=w_group)
     igrad_full_gather = torch.cat(olist, dim=-1)
-    igrad_full_gather = igrad_full_gather[..., :backward_transform_dist.mmax]
 else:
     igrad_full_gather = igrad_local
 
 # gather in h
 if grid_size_h > 1:
-    olist = [torch.empty_like(igrad_full_gather) for _ in range(grid_size_h)]
+    gather_shapes = [(B, C, l, backward_transform_dist.mmax) for l in l_shapes]
+    olist = [torch.empty(shape, dtype=igrad_full_gather.dtype, device=igrad_full_gather.device) for shape in gather_shapes]
     olist[hrank] = igrad_full_gather
     dist.all_gather(olist, igrad_full_gather, group=h_group)
     igrad_full_gather = torch.cat(olist, dim=-2)
-    igrad_full_gather = igrad_full_gather[..., :backward_transform_dist.lmax, :]
+
 
 if world_rank == 0:
     print(f"Local Grad: sum={igrad_full.abs().sum().item()}, max={igrad_full.abs().max().item()}, min={igrad_full.abs().min().item()}")

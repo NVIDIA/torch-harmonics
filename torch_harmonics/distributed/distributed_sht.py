@@ -145,8 +145,8 @@ class DistributedRealSHT(nn.Module):
         xtft = xtf[..., :self.mmax]
 
         # transpose: after this, m is split and c is local
-        chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
         if self.comm_size_azimuth > 1:
+            chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
             y = distributed_transpose_azimuth.apply(xtft, (-1, 1), chan_shapes)
         else:
             y = xtft
@@ -171,8 +171,8 @@ class DistributedRealSHT(nn.Module):
         yop = torch.view_as_complex(yor)
 
         # transpose: after this, l is split and c is local
-        chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
         if self.comm_size_polar	> 1:
+            chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
             y = distributed_transpose_polar.apply(yop, (-2, 1), chan_shapes)
         else:
             y = yop
@@ -239,22 +239,7 @@ class DistributedInverseRealSHT(nn.Module):
         pct = torch.from_numpy(pct)
 
         # split in m
-        #pct = F.pad(pct, [0, 0, 0, 0, 0, self.mpad], mode="constant")
-        #pct = torch.split(pct, (self.mmax+self.mpad) // self.comm_size_azimuth, dim=0)[self.comm_rank_azimuth]
         pct = split_tensor_along_dim(pct, dim=0, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]
-
-        # compute the local pads and sizes
-        # spatial
-        #self.nlat_local = min(latdist, self.nlat - self.comm_rank_polar * latdist)
-        #self.nlatpad_local = latdist - self.nlat_local
-        #self.nlon_local = min(londist, self.nlon - self.comm_rank_azimuth * londist)
-        #self.nlonpad_local = londist - self.nlon_local
-
-        # frequency
-        #self.lmax_local = min(ldist, self.lmax - self.comm_rank_polar * ldist)
-        #self.lpad_local = ldist - self.lmax_local
-        #self.mmax_local = min(mdist, self.mmax - self.comm_rank_azimuth * mdist)
-        #self.mpad_local = mdist - self.mmax_local
 
         # register
         self.register_buffer('pct', pct, persistent=False)
@@ -271,14 +256,10 @@ class DistributedInverseRealSHT(nn.Module):
         num_chans = x.shape[1]
 
         # transpose: after that, channels are split, l is local:
-        chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
         if self.comm_size_polar > 1:
             xt = distributed_transpose_polar.apply(x, (1, -2), self.l_shapes)
         else:
             xt = x
-
-        # remove padding in l:
-        #xtt = xt[..., :self.lmax, :]
 
         # Evaluate associated Legendre functions on the output nodes
         xttr = torch.view_as_real(xt)
@@ -287,32 +268,24 @@ class DistributedInverseRealSHT(nn.Module):
         xs = torch.einsum('...lmr, mlk->...kmr', xttr, self.pct.to(xttr.dtype)).contiguous()
         x = torch.view_as_complex(xs)
 
-        # transpose: after this, l is split and channels are local
-        #xp = F.pad(x, [0, 0, 0, self.nlatpad])
-
         if self.comm_size_polar > 1:
+            chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
             y = distributed_transpose_polar.apply(x, (-2, 1), chan_shapes)
         else:
             y = x
 
         # transpose: after this, channels are split and m is local
-        chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
         if self.comm_size_azimuth > 1:
             yt = distributed_transpose_azimuth.apply(y, (1, -1), self.m_shapes)
         else:
             yt = y
 
-        # truncate
-        #ytt = yt[..., :self.mmax]
-
         # apply the inverse (real) FFT
         x = torch.fft.irfft(yt, n=self.nlon, dim=-1, norm="forward")
 
-        # pad before we transpose back
-        #xp = F.pad(x, [0, self.nlonpad])
-
         # transpose: after this, m is split and channels are local
         if self.comm_size_azimuth > 1:
+            chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
             out = distributed_transpose_azimuth.apply(x, (-1, 1), chan_shapes)
         else:
             out = x
