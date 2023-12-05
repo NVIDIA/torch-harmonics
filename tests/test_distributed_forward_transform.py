@@ -110,14 +110,36 @@ thd.init(h_group, w_group)
 # common parameters
 B, C, H, W = 1, 8, 721, 1440
 
+# grid
+grid_type="equiangular"
+
 # do serial tests first:
-forward_transform_local = harmonics.RealSHT(nlat=H, nlon=W).to(device)
-forward_transform_dist = thd.DistributedRealSHT(nlat=H, nlon=W).to(device)
+forward_transform_local = harmonics.RealSHT(nlat=H, nlon=W, grid=grid_type).to(device)
+forward_transform_dist = thd.DistributedRealSHT(nlat=H, nlon=W, grid=grid_type).to(device)
 
 # create tensors
 inp_full = torch.randn((B, C, H, W), dtype=torch.float32, device=device)
 
-# pad
+#############################################################
+# local transform
+#############################################################
+# FWD pass
+inp_full.requires_grad = True
+out_full = forward_transform_local(inp_full)
+
+# create grad for backward
+with torch.no_grad():
+    # create full grad
+    ograd_full = torch.randn_like(out_full)
+
+# BWD pass
+out_full.backward(ograd_full)
+igrad_full = inp_full.grad.clone()
+
+#############################################################
+# distributed transform
+#############################################################
+# split input
 with torch.no_grad():
     # split in W
     inp_list_local = thd.split_tensor_along_dim(inp_full, dim=-1, num_chunks=grid_size_w)
@@ -129,10 +151,32 @@ with torch.no_grad():
     shapes_h = [x.shape[-2] for x in inp_list_local]
     inp_local = inp_list_local[hrank]
     
-# do FWD transform
-out_full = forward_transform_local(inp_full)
+# FWD pass
+inp_local.requires_grad = True
 out_local = forward_transform_dist(inp_local)
 
+# split grad
+# create split input grad
+with torch.no_grad():
+    # split in M
+    ograd_list_local = thd.split_tensor_along_dim(ograd_full, dim=-1, num_chunks=grid_size_w)
+    shapes_m = [x.shape[-1] for x in ograd_list_local]
+    ograd_local = ograd_list_local[wrank]
+
+    # split in L
+    ograd_list_local = thd.split_tensor_along_dim(ograd_local, dim=-2, num_chunks=grid_size_h)
+    shapes_l = [x.shape[-2] for x in ograd_list_local]
+    ograd_local = ograd_list_local[hrank]
+
+# BWD pass
+out_local = forward_transform_dist(inp_local)
+out_local.backward(ograd_local)
+igrad_local = inp_local.grad.clone()
+
+
+#############################################################
+# evaluate FWD pass
+#############################################################
 # gather the local data
 # we need the shapes
 l_shapes = forward_transform_dist.l_shapes
@@ -148,7 +192,7 @@ if grid_size_w > 1:
 else:
     out_full_gather = out_local
     
-# gather in h
+# gather in H
 if grid_size_h > 1:
     gather_shapes = [(B, C, l, forward_transform_dist.mmax) for l in l_shapes]
     olist = [torch.empty(shape, dtype=out_full_gather.dtype, device=out_full_gather.device) for shape in gather_shapes]
@@ -164,34 +208,9 @@ if world_rank == 0:
     print(f"Out Difference: abs={diff.sum().item()}, rel={diff.sum().item() / (0.5*(out_full.abs().sum() + out_full_gather.abs().sum()))}, max={diff.abs().max().item()}")
     print("")
 
-# create split input grad
-with torch.no_grad():
-    # create full grad
-    ograd_full = torch.randn_like(out_full)
-
-    # split in M
-    ograd_list_local = thd.split_tensor_along_dim(ograd_full, dim=-1, num_chunks=grid_size_w)
-    shapes_m = [x.shape[-1] for x in ograd_list_local]
-    ograd_local = ograd_list_local[wrank]
-
-    # split in L
-    ograd_list_local = thd.split_tensor_along_dim(ograd_local, dim=-2, num_chunks=grid_size_h)
-    shapes_l = [x.shape[-2] for x in ograd_list_local]
-    ograd_local = ograd_list_local[hrank]
-
-# backward pass:
-# local
-inp_full.requires_grad = True
-out_full = forward_transform_local(inp_full)
-out_full.backward(ograd_full)
-igrad_full = inp_full.grad.clone()
-
-# distributed
-inp_local.requires_grad = True
-out_local = forward_transform_dist(inp_local)
-out_local.backward(ograd_local)
-igrad_local = inp_local.grad.clone()
-
+#############################################################
+# evaluate BWD pass
+#############################################################
 # gather
 # we need the shapes
 lat_shapes = forward_transform_dist.lat_shapes

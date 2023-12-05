@@ -108,19 +108,48 @@ if world_rank == 0:
 thd.init(h_group, w_group)
 
 # common parameters
-#B, C, H, W = 1, 8, 721, 1440
-B, C, H, W = 1, 1, 4, 8
+B, C, H, W = 1, 8, 721, 1440
+#B, C, H, W = 1, 1, 4, 8
+
+# grid
+grid_type="equiangular"
 
 # do serial tests first:
-forward_transform_local = harmonics.RealSHT(nlat=H, nlon=W).to(device)
-backward_transform_local = harmonics.InverseRealSHT(nlat=H, nlon=W).to(device)
-backward_transform_dist = thd.DistributedInverseRealSHT(nlat=H, nlon=W).to(device)
+forward_transform_local = harmonics.RealSHT(nlat=H, nlon=W, grid=grid_type).to(device)
+backward_transform_local = harmonics.InverseRealSHT(nlat=H, nlon=W, grid=grid_type).to(device)
+backward_transform_dist = thd.DistributedInverseRealSHT(nlat=H, nlon=W, grid=grid_type).to(device)
 
 # create tensors
-dummy_full = torch.randn((B, C, H, W), dtype=torch.float32, device=device)
-inp_full = forward_transform_local(dummy_full).detach().clone()
+with torch.no_grad():
+    dummy_full = torch.randn((B, C, H, W), dtype=torch.float32, device=device)
+    inp_full = forward_transform_local(dummy_full)
 
-# split
+#############################################################
+# local transform
+#############################################################
+# FWD pass
+inp_full.requires_grad = True
+out_full = backward_transform_local(inp_full).contiguous()
+
+# create grad for backward
+with torch.no_grad():
+    # create full grad
+    ograd_full = torch.randn_like(out_full)
+
+# BWD pass
+out_full.backward(ograd_full)
+igrad_full = inp_full.grad.clone()
+
+# run twice as workaround for irfft backward bug:
+inp_full.grad = None
+out_full = backward_transform_local(inp_full).contiguous()
+out_full.backward(ograd_full)
+igrad_full = inp_full.grad.clone()
+
+#############################################################
+# distributed transform
+#############################################################
+# split input
 with torch.no_grad():
     # split in W
     inp_list_local = thd.split_tensor_along_dim(inp_full, dim=-1, num_chunks=grid_size_w)
@@ -132,10 +161,29 @@ with torch.no_grad():
     shapes_h = [x.shape[-2] for x in inp_list_local]
     inp_local = inp_list_local[hrank]
 
-# do FWD transform
-out_full = backward_transform_local(inp_full)
-out_local = backward_transform_dist(inp_local)
+# FWD pass
+inp_local.requires_grad = True
+out_local = backward_transform_dist(inp_local).contiguous()
 
+# split grad
+with torch.no_grad():
+    # split in W
+    ograd_list_local = thd.split_tensor_along_dim(ograd_full, dim=-1, num_chunks=grid_size_w)
+    shapes_m = [x.shape[-1] for x in ograd_list_local]
+    ograd_local = ograd_list_local[wrank]
+
+    # split in H
+    ograd_list_local = thd.split_tensor_along_dim(ograd_local, dim=-2, num_chunks=grid_size_h)
+    shapes_l = [x.shape[-2] for x in ograd_list_local]
+    ograd_local = ograd_list_local[hrank]
+
+# BWD pass
+out_local.backward(ograd_local)
+igrad_local = inp_local.grad.clone()
+
+#############################################################
+# evaluate FWD pass
+#############################################################
 # gather the local data
 # we need the shapes
 lat_shapes = backward_transform_dist.lat_shapes
@@ -160,50 +208,16 @@ if grid_size_h > 1:
     out_full_gather = torch.cat(olist, dim=-2)
 
 if world_rank == 0:
-    print(f"Local Out: sum={out_full.abs().sum().item()}, max={out_full.abs().max().item()}, min={out_full.abs().min().item()}")
-    print(f"Dist Out: sum={out_full_gather.abs().sum().item()}, max={out_full_gather.abs().max().item()}, min={out_full_gather.abs().min().item()}")
-    diff = (out_full-out_full_gather).abs()
-    print(f"Out Difference: abs={diff.sum().item()}, rel={diff.sum().item() / (0.5*(out_full.abs().sum() + out_full_gather.abs().sum()))}, max={diff.abs().max().item()}")
-    print("")
+    with torch.no_grad():
+        print(f"Local Out: sum={out_full.abs().sum().item()}, max={out_full.abs().max().item()}, min={out_full.abs().min().item()}")
+        print(f"Dist Out: sum={out_full_gather.abs().sum().item()}, max={out_full_gather.abs().max().item()}, min={out_full_gather.abs().min().item()}")
+        diff = (out_full-out_full_gather).abs()
+        print(f"Out Difference: abs={diff.sum().item()}, rel={diff.sum().item() / (0.5*(out_full.abs().sum() + out_full_gather.abs().sum()))}, max={diff.abs().max().item()}")
+        print("")
 
-    
-# create split input grad
-with torch.no_grad():
-    # create full grad
-    ograd_full = torch.randn_like(out_full)
-
-    # split in W
-    ograd_list_local = thd.split_tensor_along_dim(ograd_full, dim=-1, num_chunks=grid_size_w)
-    shapes_m = [x.shape[-1] for x in ograd_list_local]
-    ograd_local = ograd_list_local[wrank]
-
-    # split in H
-    ograd_list_local = thd.split_tensor_along_dim(ograd_local, dim=-2, num_chunks=grid_size_h)
-    shapes_l = [x.shape[-2] for x in ograd_list_local]
-    ograd_local = ograd_list_local[hrank]
-
-
-# backward pass:
-# local
-inp_local.requires_grad = True
-inp_full.requires_grad = True
-out_full = backward_transform_local(inp_local) #(inp_full)
-out_full.backward(ograd_full)
-igrad_full = inp_local.grad.clone()  #inp_full.grad.clone()
-
-print("out_full", out_full)
-print("igrad_full", igrad_full)
-
-# distributed
-inp_local.requires_grad = True
-out_local = backward_transform_dist(inp_full) #(inp_local)
-out_local.backward(ograd_local)
-igrad_local = inp_full.grad.clone() #inp_local.grad.clone()
-
-print("out_local", out_local)
-print("igrad_local", igrad_local)
-sys.exit(1)
-
+#############################################################
+# evaluate BWD pass
+#############################################################
 # gather the local data
 # we need the shapes
 l_shapes = backward_transform_dist.l_shapes
@@ -229,7 +243,8 @@ if grid_size_h > 1:
 
 
 if world_rank == 0:
-    print(f"Local Grad: sum={igrad_full.abs().sum().item()}, max={igrad_full.abs().max().item()}, min={igrad_full.abs().min().item()}")
-    print(f"Dist Grad: sum={igrad_full_gather.abs().sum().item()}, max={igrad_full_gather.abs().max().item()}, min={igrad_full_gather.abs().min().item()}")
-    diff = (igrad_full-igrad_full_gather).abs()
-    print(f"Grad Difference: abs={diff.sum().item()}, rel={diff.sum().item() / (0.5*(igrad_full.abs().sum() + igrad_full_gather.abs().sum()))}, max={diff.abs().max().item()}")
+    with torch.no_grad():
+        print(f"Local Grad: sum={igrad_full.abs().sum().item()}, max={igrad_full.abs().max().item()}, min={igrad_full.abs().min().item()}")
+        print(f"Dist Grad: sum={igrad_full_gather.abs().sum().item()}, max={igrad_full_gather.abs().max().item()}, min={igrad_full_gather.abs().min().item()}")
+        diff = (igrad_full-igrad_full_gather).abs()
+        print(f"Grad Difference: abs={diff.sum().item()}, rel={diff.sum().item() / (0.5*(igrad_full.abs().sum() + igrad_full_gather.abs().sum()))}, max={diff.abs().max().item()}")
