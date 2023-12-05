@@ -108,20 +108,31 @@ if world_rank == 0:
 thd.init(h_group, w_group)
 
 # common parameters
-B, C, H, W = 1, 8, 721, 1440
-#B, C, H, W = 1, 1, 4, 8
+#B, C, H, W = 1, 8, 721, 1440
+B, C, H, W = 1, 8, 361, 720
+
+# vector:
+vector = True
 
 # grid
 grid_type="equiangular"
 
 # do serial tests first:
-forward_transform_local = harmonics.RealSHT(nlat=H, nlon=W, grid=grid_type).to(device)
-backward_transform_local = harmonics.InverseRealSHT(nlat=H, nlon=W, grid=grid_type).to(device)
-backward_transform_dist = thd.DistributedInverseRealSHT(nlat=H, nlon=W, grid=grid_type).to(device)
+if vector:
+    forward_transform_local = harmonics.RealVectorSHT(nlat=H, nlon=W, grid=grid_type).to(device)
+    backward_transform_local = harmonics.InverseRealVectorSHT(nlat=H, nlon=W, grid=grid_type).to(device)
+    backward_transform_dist = thd.DistributedInverseRealVectorSHT(nlat=H, nlon=W, grid=grid_type).to(device)
+else:    
+    forward_transform_local = harmonics.RealSHT(nlat=H, nlon=W, grid=grid_type).to(device)
+    backward_transform_local = harmonics.InverseRealSHT(nlat=H, nlon=W, grid=grid_type).to(device)
+    backward_transform_dist = thd.DistributedInverseRealSHT(nlat=H, nlon=W, grid=grid_type).to(device)
 
 # create tensors
 with torch.no_grad():
-    dummy_full = torch.randn((B, C, H, W), dtype=torch.float32, device=device)
+    if vector:
+        dummy_full = torch.randn((B, C, 2, H, W), dtype=torch.float32, device=device)
+    else:
+        dummy_full = torch.randn((B, C, H, W), dtype=torch.float32, device=device)
     inp_full = forward_transform_local(dummy_full)
 
 #############################################################
@@ -191,7 +202,10 @@ lon_shapes = backward_transform_dist.lon_shapes
 
 # gather in W
 if grid_size_w > 1:
-    gather_shapes = [(B, C, lat_shapes[hrank], w) for w in lon_shapes]
+    if vector:
+        gather_shapes = [(B, C, 2, lat_shapes[hrank], w) for w in lon_shapes]
+    else:
+        gather_shapes = [(B, C, lat_shapes[hrank], w) for w in lon_shapes]
     olist = [torch.empty(shape, dtype=out_local.dtype, device=out_local.device) for shape in gather_shapes]
     olist[wrank] = out_local
     dist.all_gather(olist, out_local, group=w_group)
@@ -201,7 +215,10 @@ else:
     
 # gather in h
 if grid_size_h > 1:
-    gather_shapes = [(B, C, h, backward_transform_dist.nlon) for h in lat_shapes]
+    if vector:
+        gather_shapes = [(B, C, 2, h, backward_transform_dist.nlon) for h in lat_shapes]
+    else:
+        gather_shapes = [(B, C, h, backward_transform_dist.nlon) for h in lat_shapes]
     olist = [torch.empty(shape, dtype=out_full_gather.dtype, device=out_full_gather.device) for shape in gather_shapes]
     olist[hrank] = out_full_gather
     dist.all_gather(olist, out_full_gather, group=h_group)
@@ -225,7 +242,10 @@ m_shapes = backward_transform_dist.m_shapes
 
 # gather in w
 if grid_size_w > 1:
-    gather_shapes = [(B, C, l_shapes[hrank], m) for m in m_shapes]
+    if vector:
+        gather_shapes = [(B, C, 2, l_shapes[hrank], m) for m in m_shapes]
+    else:
+        gather_shapes = [(B, C, l_shapes[hrank], m) for m in m_shapes]
     olist = [torch.empty(shape, dtype=igrad_local.dtype, device=igrad_local.device) for shape in gather_shapes]
     olist[wrank] = igrad_local
     dist.all_gather(olist, igrad_local, group=w_group)
@@ -235,7 +255,10 @@ else:
 
 # gather in h
 if grid_size_h > 1:
-    gather_shapes = [(B, C, l, backward_transform_dist.mmax) for l in l_shapes]
+    if vector:
+        gather_shapes = [(B, C, 2, l, backward_transform_dist.mmax) for l in l_shapes]
+    else:
+        gather_shapes = [(B, C, l, backward_transform_dist.mmax) for l in l_shapes]
     olist = [torch.empty(shape, dtype=igrad_full_gather.dtype, device=igrad_full_gather.device) for shape in gather_shapes]
     olist[hrank] = igrad_full_gather
     dist.all_gather(olist, igrad_full_gather, group=h_group)

@@ -34,5 +34,6 @@ FROM nvcr.io/nvidia/pytorch:23.11-py3
 
 COPY . /workspace/torch_harmonics
 
+RUN pip install parameterized
 RUN pip install /workspace/torch_harmonics
 
