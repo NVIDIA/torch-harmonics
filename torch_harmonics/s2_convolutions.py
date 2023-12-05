@@ -194,7 +194,7 @@ class DiscreteContinuousConvS2(nn.Module):
         else:
             self.bias = None
 
-    def forward(self, x: torch.Tensor, use_triton_kernel: bool = False) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
 
