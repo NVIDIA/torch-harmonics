@@ -184,6 +184,8 @@ class DiscreteContinuousConvS2(nn.Module):
         # weight tensor
         if in_channels % self.groups != 0:
             raise ValueError("Error, the number of input channels has to be an integer multiple of the group size")
+        if out_channels % self.groups != 0:
+            raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
         self.groupsize = in_channels // self.groups
         weight = nn.Parameter(torch.ones(out_channels, self.groupsize, kernel_shape[0]))
         self.register_buffer("weight", weight)
@@ -208,7 +210,8 @@ class DiscreteContinuousConvS2(nn.Module):
         x = x.reshape(B, self.groups, self.groupsize, K, H, W)
 
         # do weight multiplication
-        out = torch.einsum("bgckxy,fck->bfxy", x, self.weight)
+        out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2]))
+        out = out.reshape(out.shape[0], -1, out.shape[-2], out.shape[-1])
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
@@ -274,6 +277,8 @@ class DiscreteContinuousConvTransposeS2(nn.Module):
         # weight tensor
         if in_channels % self.groups != 0:
             raise ValueError("Error, the number of input channels has to be an integer multiple of the group size")
+        if out_channels % self.groups != 0:
+            raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
         self.groupsize = in_channels // self.groups
         weight = nn.Parameter(torch.ones(out_channels, self.groupsize, kernel_shape[0]))
         self.register_buffer("weight", weight)
@@ -290,7 +295,8 @@ class DiscreteContinuousConvTransposeS2(nn.Module):
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
-        x = torch.einsum("bgfxy,cfk->bckxy", x, self.weight)
+        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2]))
+        x = x.reshape(x.shape[0], -1, x.shape[-3], x.shape[-2], x.shape[-1])
 
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
