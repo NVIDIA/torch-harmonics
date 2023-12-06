@@ -66,7 +66,7 @@ def get_memory_format(tensor):
     
 def split_tensor_along_dim(tensor, dim, num_chunks):
     assert dim < tensor.dim(), f"Error, tensor dimension is {tensor.dim()} which cannot be split along {dim}"
-    assert (tensor.shape[dim] > num_chunks), f"Error, cannot split dim {dim} of size {tensor.shape[dim]} into \
+    assert (tensor.shape[dim] >= num_chunks), f"Error, cannot split dim {dim} of size {tensor.shape[dim]} into \
                                               {num_chunks} chunks. Empty slices are currently not supported."
     
     # get split
@@ -85,7 +85,6 @@ def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False)
     comm_rank = dist.get_rank(group=group)
 
     # split and local transposition
-    #split_size = tensor.shape[dim0] // comm_size
     tsplit = split_tensor_along_dim(tensor, num_chunks=comm_size, dim=dim0)
     x_send = [y.contiguous(memory_format=input_format) for y in tsplit]
     x_send_shapes = [x.shape for x in x_send]
@@ -94,7 +93,6 @@ def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False)
     for dim1_len in dim1_split_sizes:
         x_shape[dim1] = dim1_len
         x_recv.append(torch.empty(x_shape, dtype=tensor.dtype, device=tensor.device, memory_format=input_format))
-    #x_recv = [torch.empty(xshape).contiguous(memory_format=input_format) for size in range(comm_size)]
     
     # global transposition
     req = dist.all_to_all(x_recv, x_send, group=group, async_op=async_op)
