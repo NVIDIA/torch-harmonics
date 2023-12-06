@@ -104,6 +104,7 @@ def _precompute_convolution_tensor(
 
         # compute latitude of the rotated position
         z = torch.cos(alpha) * torch.cos(gamma) - torch.cos(beta) * torch.sin(alpha) * torch.sin(gamma)
+        z = torch.clamp(z, min=-1.0, max=1.0)
         theta = torch.arccos(z)
 
         # compute cartesian coordinates of the rotated position
