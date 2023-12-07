@@ -2,6 +2,11 @@
 
 ## Versioning
 
+### v0.6.4
+* reworking distributed to allow for uneven split tensors, effectively removing the necessity of padding the transformed tensors
+* distributed SHT tests are now using unittest. Test extended to vector SHT versions. Tests are defined in `torch_harmonics/distributed/distributed_tests.py`
+* base pytorch container version bumped up to 23.11 in Dockerfile
+
 ### v0.6.3
 
 * Adding gradient check in unit tests
