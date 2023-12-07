@@ -57,7 +57,7 @@ def _compute_support_vals_isotropic(theta: torch.Tensor, phi: torch.Tensor, kern
     ikernel = torch.arange(kernel_size).reshape(-1, 1, 1)
     itheta = ikernel * dtheta
 
-    norm_factor = 2 * math.pi * (1 - math.cos(theta_cutoff))
+    norm_factor = 2 * math.pi * (1 - math.cos(theta_cutoff - dtheta) + math.cos(theta_cutoff - dtheta) + (math.sin(theta_cutoff - dtheta) - math.sin(theta_cutoff)) / dtheta)
 
     # find the indices where the rotated position falls into the support of the kernel
     iidx = torch.argwhere(((theta - itheta).abs() <= dtheta) & (theta <= theta_cutoff))
@@ -188,12 +188,10 @@ class DiscreteContinuousConvS2(nn.Module):
         if out_channels % self.groups != 0:
             raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
         self.groupsize = in_channels // self.groups
-        weight = nn.Parameter(torch.ones(out_channels, self.groupsize, kernel_shape[0]))
-        self.register_buffer("weight", weight)
+        self.weight = nn.Parameter(torch.ones(out_channels, self.groupsize, kernel_shape[0]))
 
         if bias:
-            btens = nn.Parameter(torch.zeros(out_channels))
-            self.register_buffer("bias", btens)
+            self.bias = nn.Parameter(torch.zeros(out_channels))
         else:
             self.bias = None
 
@@ -281,12 +279,10 @@ class DiscreteContinuousConvTransposeS2(nn.Module):
         if out_channels % self.groups != 0:
             raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
         self.groupsize = in_channels // self.groups
-        weight = nn.Parameter(torch.ones(out_channels, self.groupsize, kernel_shape[0]))
-        self.register_buffer("weight", weight)
+        self.weight = nn.Parameter(torch.ones(out_channels, self.groupsize, kernel_shape[0]))
 
         if bias:
-            btens = nn.Parameter(torch.zeros(out_channels))
-            self.register_buffer("bias", btens)
+            self.bias = nn.Parameter(torch.zeros(out_channels))
         else:
             self.bias = None
 
