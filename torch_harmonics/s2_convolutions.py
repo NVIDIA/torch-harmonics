@@ -161,7 +161,7 @@ class DiscreteContinuousConvS2(nn.Module):
 
         # bandlimit
         if theta_cutoff is None:
-            theta_cutoff = kernel_shape[0] * torch.pi / float(self.nlat_in - 1)
+            theta_cutoff = (kernel_shape[0]+1) * torch.pi / float(self.nlat_in - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -253,7 +253,7 @@ class DiscreteContinuousConvTransposeS2(nn.Module):
 
         # bandlimit
         if theta_cutoff is None:
-            theta_cutoff = kernel_shape[0] * torch.pi / float(self.nlat_in - 1)
+            theta_cutoff = (kernel_shape[0]+1) * torch.pi / float(self.nlat_in - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
