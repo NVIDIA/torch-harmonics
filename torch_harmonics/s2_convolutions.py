@@ -104,12 +104,19 @@ def _precompute_convolution_tensor(
 
         # compute latitude of the rotated position
         z = torch.cos(alpha) * torch.cos(gamma) - torch.cos(beta) * torch.sin(alpha) * torch.sin(gamma)
-        z = torch.clamp(z, min=-1.0, max=1.0)
-        theta = torch.arccos(z)
 
         # compute cartesian coordinates of the rotated position
-        x = torch.cos(beta) * torch.sin(alpha) + torch.cos(alpha) * torch.cos(beta) * torch.sin(gamma)
+        x = torch.cos(gamma) * torch.sin(alpha) + torch.cos(alpha) * torch.cos(beta) * torch.sin(gamma)
         y = torch.sin(beta) * torch.sin(gamma)
+        
+        # normalize instead of clipping to ensure correct range
+        norm = np.sqrt(x*x + y*y + z*z)
+        x = x / norm
+        y = y / norm
+        z = z / norm
+
+        # compute spherical coordinates
+        theta = torch.arccos(z)
         phi = torch.arctan2(y, x)
 
         # find the indices where the rotated position falls into the support of the kernel
