@@ -380,7 +380,7 @@ def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: in
 
     pscale = nlon_in // nlon_out
 
-    # add a dummy dimension for nkernel
+    # add a dummy dimension for nkernel and move the batch and channel dims to the end
     x = x.reshape(1, batch_size * n_chans, nlat_in, nlon_in).permute(0, 2, 3, 1)
     x = x.expand(kernel_size, -1, -1, -1)
 
