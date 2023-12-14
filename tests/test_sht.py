@@ -37,13 +37,6 @@ import torch
 from torch.autograd import gradcheck
 from torch_harmonics import *
 
-# try:
-#     from tqdm import tqdm
-# except:
-#     tqdm = lambda x : x
-
-tqdm = lambda x : x
-
 class TestLegendrePolynomials(unittest.TestCase):
 
     def setUp(self):
@@ -124,7 +117,7 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
 
                 base = signal
 
-                for _ in tqdm(range(iter)):
+                for _ in range(iter):
                     base = isht(sht(base))
             
                 err = torch.mean(torch.norm(base-signal, p='fro', dim=(-1,-2)) / torch.norm(signal, p='fro', dim=(-1,-2)) )

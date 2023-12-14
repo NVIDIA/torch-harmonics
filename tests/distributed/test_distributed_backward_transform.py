@@ -41,10 +41,6 @@ import torch.distributed as dist
 import torch_harmonics as harmonics
 import torch_harmonics.distributed as thd
 
-try:
-    from tqdm import tqdm
-except:
-    tqdm = lambda x : x
 
 # set up distributed
 world_rank = int(os.getenv('WORLD_RANK', 0))
