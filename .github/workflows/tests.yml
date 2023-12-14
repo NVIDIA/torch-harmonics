@@ -23,4 +23,4 @@ jobs:
     - name: Test with pytest
       run: |
         python -m pip install pytest pytest-cov parameterized
-        python -m pytest --cov-report term --cov=torch_harmonics ./tests/test_sht.py
+        python -m pytest --cov-report term --cov=torch_harmonics/*.py ./tests/test_sht.py
