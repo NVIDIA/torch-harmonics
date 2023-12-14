@@ -109,6 +109,7 @@ def _precompute_convolution_tensor(
     lons_in = torch.linspace(0, 2*math.pi, nlon_in+1)[:-1]
 
     for t in range(nlat_out):
+        # the last angle has a negative sign as it is a passive rotation, which rotates the filter around the y-axis
         alpha = - lats_out[t]
         beta = lons_in
         gamma = lats_in.reshape(-1, 1)
