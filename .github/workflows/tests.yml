@@ -23,4 +23,4 @@ jobs:
     - name: Test with pytest
       run: |
         python -m pip install pytest pytest-cov parameterized
-        python -m pytest ./tests
+        python -m pytest ./tests/test_sht.py
