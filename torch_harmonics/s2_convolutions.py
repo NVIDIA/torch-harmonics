@@ -71,7 +71,17 @@ def _precompute_convolution_tensor(
     """
     Precomputes the rotated filters at positions $R^{-1}_j \omega_i = R^{-1}_j R_i \nu = Y(-\theta_j)Z(\phi_i - \phi_j)Y(\theta_j)\nu$.
     Assumes a tensorized grid on the sphere with an equidistant sampling in longitude as described in Ocampo et al.
-    The output tensor has shape kernel_shape x nlat_out x (nlat_in * nlon_in)
+    The output tensor has shape kernel_shape x nlat_out x (nlat_in * nlon_in).
+
+    The rotation of the Euler angles uses the YZY convention, which applied to the northpole $(0,0,1)^T$ yields
+    $$
+    Y(\alpha) Z(\beta) Y(\gamma) n =
+        {\begin{bmatrix} 
+            \cos(\gamma)\sin(\alpha) + \cos(\alpha)\cos(\beta)\sin(\gamma) \\
+            \sin(\beta)\sin(\gamma) \\
+            \cos(\alpha)\cos(\gamma)-\cos(\beta)\sin(\alpha)\sin(\gamma)
+        \end{bmatrix}}
+    $$
     """
 
     assert len(in_shape) == 2
