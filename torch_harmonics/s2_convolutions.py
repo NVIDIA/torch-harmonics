@@ -95,6 +95,7 @@ def _precompute_convolution_tensor(
     out_vals = torch.empty([0], dtype=torch.long)
 
     # compute the phi differences
+    # It's imporatant to not include the 2 pi point in the longitudes, as it is equivalent to lon=0
     lons_in = torch.linspace(0, 2*math.pi, nlon_in+1)[:-1]
 
     for t in range(nlat_out):
@@ -102,14 +103,15 @@ def _precompute_convolution_tensor(
         beta = lons_in
         gamma = lats_in.reshape(-1, 1)
 
-        # compute latitude of the rotated position
-        z = - torch.cos(beta) * torch.sin(alpha) * torch.sin(gamma) + torch.cos(alpha) * torch.cos(gamma)
-
         # compute cartesian coordinates of the rotated position
+        # This uses the YZY convention of Euler angles, where the last angle (alpha) is a passive rotation,
+        # and therefore applied with a negative sign
+        z = - torch.cos(beta) * torch.sin(alpha) * torch.sin(gamma) + torch.cos(alpha) * torch.cos(gamma)
         x = torch.cos(alpha) * torch.cos(beta) * torch.sin(gamma) + torch.cos(gamma) * torch.sin(alpha)
         y = torch.sin(beta) * torch.sin(gamma)
         
-        # normalize instead of clipping to ensure correct range
+        # normalization is emportant to avoid NaNs when arccos and atan are applied
+        # this can otherwise lead to spurious artifacts in the solution
         norm = torch.sqrt(x*x + y*y + z*z)
         x = x / norm
         y = y / norm
@@ -166,7 +168,7 @@ class DiscreteContinuousConvS2(nn.Module):
         for kdim in kernel_shape:
             self.kernel_size *= kdim
 
-        # bandlimit
+        # compute theta cutoff based on the bandlimit of the input field
         if theta_cutoff is None:
             theta_cutoff = (kernel_shape[0]+1) * torch.pi / float(self.nlat_in - 1)
 
