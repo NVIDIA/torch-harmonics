@@ -23,4 +23,17 @@ jobs:
     - name: Test with pytest
       run: |
         python -m pip install pytest pytest-cov parameterized
-        python -m pytest ./tests/test_sht.py
+        python -m pytest --cov-report xml:coverage.xml --cov=torch_harmonics ./tests/test_sht.py
+    - name: Code coverage summary
+      uses: irongut/CodeCoverageSummary@v1.3.0
+      with:
+        filename: coverage.xml
+        badge: true
+        fail_below_min: false
+        format: markdown
+        hide_branch_rate: false
+        hide_complexity: true
+        indicators: true
+        output: both
+        thresholds: '60 80'
+            
