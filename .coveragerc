@@ -1,4 +1,4 @@
 [run]
 omit =
-    torch-harmonics/distributed/*
-    torch-harmonics/examples/*
+    */distributed/*
+    */examples/*
