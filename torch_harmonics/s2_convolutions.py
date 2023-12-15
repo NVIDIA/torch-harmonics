@@ -208,7 +208,8 @@ class DiscreteContinuousConvS2(nn.Module):
         if out_channels % self.groups != 0:
             raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
         self.groupsize = in_channels // self.groups
-        self.weight = nn.Parameter(torch.ones(out_channels, self.groupsize, kernel_shape[0]))
+        scale = math.sqrt(1.0 / self.groupsize)
+        self.weight = nn.Parameter(scale * torch.randn(out_channels, self.groupsize, kernel_shape[0]))
 
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_channels))
@@ -299,7 +300,8 @@ class DiscreteContinuousConvTransposeS2(nn.Module):
         if out_channels % self.groups != 0:
             raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
         self.groupsize = in_channels // self.groups
-        self.weight = nn.Parameter(torch.ones(out_channels, self.groupsize, kernel_shape[0]))
+        scale = math.sqrt(1.0 / self.groupsize)
+        self.weight = nn.Parameter(scale * torch.randn(out_channels, self.groupsize, kernel_shape[0]))
 
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_channels))
