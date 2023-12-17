@@ -39,7 +39,7 @@ import torch.nn as nn
 from functools import partial
 
 from torch_harmonics.quadrature import _precompute_latitudes
-from torch_harmonics.disco_convolutions import (
+from torch_harmonics._disco_convolution import (
     _disco_s2_contraction_torch,
     _disco_s2_transpose_contraction_torch,
     _disco_s2_contraction_triton,

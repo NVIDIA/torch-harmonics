@@ -377,7 +377,7 @@ def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: in
 
     assert psi.shape[-1] == nlat_in * nlon_in
     assert nlon_in % nlon_out == 0
-
+    assert nlon_in >= nlat_out
     pscale = nlon_in // nlon_out
 
     # add a dummy dimension for nkernel and move the batch and channel dims to the end
@@ -414,7 +414,7 @@ def _disco_s2_transpose_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nl
     assert psi.shape[-2] == nlat_in
     assert n_out % nlon_out == 0
     nlat_out = n_out // nlon_out
-
+    assert nlon_out >= nlat_in
     pscale = nlon_out // nlon_in
 
     # we do a semi-transposition to faciliate the computation
