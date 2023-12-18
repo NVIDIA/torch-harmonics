@@ -133,6 +133,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         else:
             self.device = torch.device("cpu")
 
+        self.device = torch.device("cpu")
+
     @parameterized.expand(
         [
             # regular convolution
@@ -175,7 +177,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             grid_in=grid_in,
             grid_out=grid_out,
             bias=False,
-        )
+        ).to(self.device)
 
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
@@ -185,18 +187,18 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         if transpose:
             psi_dense = _precompute_convolution_tensor_dense(
                 out_shape, in_shape, kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff
-            )
+            ).to(self.device)
         else:
             psi_dense = _precompute_convolution_tensor_dense(
                 in_shape, out_shape, kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
-            )
+            ).to(self.device)
 
             self.assertTrue(
-                torch.allclose(conv.psi.to_dense().cpu(), psi_dense[:, :, 0].reshape(-1, nlat_out, nlat_in * nlon_in))
+                torch.allclose(conv.psi.to_dense(), psi_dense[:, :, 0].reshape(-1, nlat_out, nlat_in * nlon_in))
             )
 
-        x = torch.randn(batch_size, in_channels, *in_shape)
-
+        # create an input signal
+        x = torch.randn(batch_size, in_channels, *in_shape, requires_grad=True).to(self.device)
 
         # perform the reference computation
         x_ref = x.clone().detach()
@@ -211,15 +213,16 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # use the convolution module
         y = conv(x)
 
-        # # print
-        # print((y - y_ref).abs().max())
-
-        # compare result
+        # compare results
         self.assertTrue(torch.allclose(y, y_ref, rtol=tol, atol=tol))
 
         # compute gradients and compare results
-
-
+        grad_input = torch.randn_like(y)
+        y_ref.backward(grad_input)
+        y.backward(grad_input)
+        
+        # compare 
+        self.assertTrue(torch.allclose(x.grad, x_ref.grad, rtol=tol, atol=tol))
 
 if __name__ == "__main__":
     unittest.main()
