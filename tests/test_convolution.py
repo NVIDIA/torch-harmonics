@@ -138,15 +138,17 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             # regular convolution
             [8, 4, 2, (16, 32), (16, 32), [2], "equiangular", "equiangular", False, 1e-5],
             [8, 4, 2, (16, 32), (8, 16), [3], "equiangular", "equiangular", False, 1e-5],
-            [8, 4, 2, (16, 32), (16, 32), [2], "equiangular", "legendre-gauss", False, 1e-5],
-            [8, 4, 2, (16, 32), (16, 32), [2], "legendre-gauss", "equiangular", False, 1e-5],
-            [8, 4, 2, (16, 32), (16, 32), [2], "legendre-gauss", "legendre-gauss", False, 1e-5],
+            [8, 4, 2, (18, 36), (6, 12), [4], "equiangular", "equiangular", False, 1e-5],
+            [8, 4, 2, (16, 32), (8, 16), [3], "equiangular", "legendre-gauss", False, 1e-5],
+            [8, 4, 2, (16, 32), (8, 16), [3], "legendre-gauss", "equiangular", False, 1e-5],
+            [8, 4, 2, (16, 32), (8, 16), [3], "legendre-gauss", "legendre-gauss", False, 1e-5],
             # transpose convolution
             [8, 4, 2, (16, 32), (16, 32), [2], "equiangular", "equiangular", True, 1e-5],
             [8, 4, 2, (8, 16), (16, 32), [3], "equiangular", "equiangular", True, 1e-5],
-            [8, 4, 2, (16, 32), (16, 32), [2], "equiangular", "legendre-gauss", True, 1e-5],
-            [8, 4, 2, (16, 32), (16, 32), [2], "legendre-gauss", "equiangular", True, 1e-5],
-            [8, 4, 2, (16, 32), (16, 32), [2], "legendre-gauss", "legendre-gauss", True, 1e-5],
+            [8, 4, 2, (6, 12), (18, 36), [4], "equiangular", "equiangular", True, 1e-5],
+            [8, 4, 2, (8, 16), (16, 32), [3], "equiangular", "legendre-gauss", True, 1e-5],
+            [8, 4, 2, (8, 16), (16, 32), [3], "legendre-gauss", "equiangular", True, 1e-5],
+            [8, 4, 2, (8, 16), (16, 32), [3], "legendre-gauss", "legendre-gauss", True, 1e-5],
         ]
     )
     def test_disco_convolution(
@@ -209,11 +211,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # use the convolution module
         y = conv(x)
 
-        # print
-        print((y - y_ref).abs().max())
+        # # print
+        # print((y - y_ref).abs().max())
 
         # compare result
         self.assertTrue(torch.allclose(y, y_ref, rtol=tol, atol=tol))
+
+        # compute gradients and compare results
+
 
 
 if __name__ == "__main__":

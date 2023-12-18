@@ -310,7 +310,7 @@ class DiscreteContinuousConvTransposeS2(nn.Module):
 
     def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
         # extract shape
-        B, F, H, W = x.shape
+        B, C, H, W = x.shape
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
