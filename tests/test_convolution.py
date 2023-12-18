@@ -197,6 +197,10 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
                 torch.allclose(conv.psi.to_dense(), psi_dense[:, :, 0].reshape(-1, nlat_out, nlat_in * nlon_in))
             )
 
+        # create a copy of the weight
+        w_ref = conv.weight.detach().clone()
+        w_ref.requires_grad_(True)
+
         # create an input signal
         x = torch.randn(batch_size, in_channels, *in_shape, requires_grad=True).to(self.device)
 
@@ -204,11 +208,11 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         x_ref = x.clone().detach()
         x_ref.requires_grad_(True)
         if transpose:
-            y_ref = torch.einsum("oif,biqr->bofqr", conv.weight, x_ref)
+            y_ref = torch.einsum("oif,biqr->bofqr", w_ref, x_ref)
             y_ref = torch.einsum("fqrtp,bofqr->botp", psi_dense, y_ref * conv.quad_weights)
         else:
             y_ref = torch.einsum("ftpqr,bcqr->bcftp", psi_dense, x_ref * conv.quad_weights)
-            y_ref = torch.einsum("oif,biftp->botp", conv.weight, y_ref)
+            y_ref = torch.einsum("oif,biftp->botp", w_ref, y_ref)
 
         # use the convolution module
         y = conv(x)
@@ -220,9 +224,10 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         grad_input = torch.randn_like(y)
         y_ref.backward(grad_input)
         y.backward(grad_input)
-        
+
         # compare 
         self.assertTrue(torch.allclose(x.grad, x_ref.grad, rtol=tol, atol=tol))
+        self.assertTrue(torch.allclose(conv.weight.grad, w_ref.grad, rtol=tol, atol=tol))
 
 if __name__ == "__main__":
     unittest.main()
