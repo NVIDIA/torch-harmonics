@@ -149,9 +149,9 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             coeffs[:, :lmax, :mmax] = torch.randn(batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)
             signal = isht(coeffs)
         
-        input = torch.randn_like(signal, requires_grad=True)
+        grad_input = torch.randn_like(signal, requires_grad=True)
         err_handle = lambda x : torch.mean(torch.norm( isht(sht(x)) - signal , p='fro', dim=(-1,-2)) / torch.norm(signal, p='fro', dim=(-1,-2)) )
-        test_result = gradcheck(err_handle, input, eps=1e-6, atol=tol)
+        test_result = gradcheck(err_handle, grad_input, eps=1e-6, atol=tol)
         self.assertTrue(test_result)
 
 

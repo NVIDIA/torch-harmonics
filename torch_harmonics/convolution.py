@@ -39,7 +39,7 @@ import torch.nn as nn
 from functools import partial
 
 from torch_harmonics.quadrature import _precompute_latitudes
-from torch_harmonics.disco_convolutions import (
+from torch_harmonics._disco_convolution import (
     _disco_s2_contraction_torch,
     _disco_s2_transpose_contraction_torch,
     _disco_s2_contraction_triton,
@@ -47,14 +47,14 @@ from torch_harmonics.disco_convolutions import (
 )
 
 
-def _compute_support_vals_isotropic(theta: torch.Tensor, phi: torch.Tensor, kernel_size: int, theta_cutoff: float):
+def _compute_support_vals_isotropic(theta: torch.Tensor, phi: torch.Tensor, ntheta: int, theta_cutoff: float):
     """
     Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
     """
 
     # compute the support
-    dtheta = (theta_cutoff - 0.0) / kernel_size
-    ikernel = torch.arange(kernel_size).reshape(-1, 1, 1)
+    dtheta = (theta_cutoff - 0.0) / ntheta
+    ikernel = torch.arange(ntheta).reshape(-1, 1, 1)
     itheta = ikernel * dtheta
 
     norm_factor = 2 * math.pi * (1 - math.cos(theta_cutoff - dtheta) + math.cos(theta_cutoff - dtheta) + (math.sin(theta_cutoff - dtheta) - math.sin(theta_cutoff)) / dtheta)
@@ -62,6 +62,29 @@ def _compute_support_vals_isotropic(theta: torch.Tensor, phi: torch.Tensor, kern
     # find the indices where the rotated position falls into the support of the kernel
     iidx = torch.argwhere(((theta - itheta).abs() <= dtheta) & (theta <= theta_cutoff))
     vals = (1 - (theta[iidx[:, 1], iidx[:, 2]] - itheta[iidx[:, 0], 0, 0]).abs() / dtheta) / norm_factor
+    return iidx, vals
+
+def _compute_support_vals_anisotropic(theta: torch.Tensor, phi: torch.Tensor, ntheta: int, nphi: int, theta_cutoff: float):
+    """
+    Computes the index set that falls into the anisotropic kernel's support and returns both indices and values.
+    """
+
+    # compute the support
+    dtheta = (theta_cutoff - 0.0) / ntheta
+    dphi = 2.0 * math.pi / nphi
+    kernel_size = (ntheta-1)*nphi + 1
+    ikernel = torch.arange(kernel_size).reshape(-1, 1, 1)
+    itheta = ((ikernel - 1) // nphi + 1) * dtheta
+    iphi = ((ikernel - 1) % nphi) * dphi
+
+    norm_factor = 2 * math.pi * (1 - math.cos(theta_cutoff - dtheta) + math.cos(theta_cutoff - dtheta) + (math.sin(theta_cutoff - dtheta) - math.sin(theta_cutoff)) / dtheta)
+
+    # find the indices where the rotated position falls into the support of the kernel
+    cond_theta = ((theta - itheta).abs() <= dtheta) & (theta <= theta_cutoff)
+    cond_phi = (ikernel == 0) | ((phi - iphi).abs() <= dphi) | ((2*math.pi - (phi - iphi).abs()) <= dphi)
+    iidx = torch.argwhere(cond_theta & cond_phi)
+    vals = (1 - (theta[iidx[:, 1], iidx[:, 2]] - itheta[iidx[:, 0], 0, 0]).abs() / dtheta) / norm_factor
+    vals *= torch.where(iidx[:, 0] > 0, (1 - torch.minimum((phi[iidx[:, 1], iidx[:, 2]] - iphi[iidx[:, 0], 0, 0]).abs(), (2*math.pi - (phi[iidx[:, 1], iidx[:, 2]] - iphi[iidx[:, 0], 0, 0]).abs()) ) / dphi ), 1.0)
     return iidx, vals
 
 
@@ -88,7 +111,9 @@ def _precompute_convolution_tensor(
     assert len(out_shape) == 2
 
     if len(kernel_shape) == 1:
-        kernel_handle = partial(_compute_support_vals_isotropic, kernel_size=kernel_shape[0], theta_cutoff=theta_cutoff)
+        kernel_handle = partial(_compute_support_vals_isotropic, ntheta=kernel_shape[0], theta_cutoff=theta_cutoff)
+    elif len(kernel_shape) == 2:
+        kernel_handle = partial(_compute_support_vals_anisotropic, ntheta=kernel_shape[0], nphi=kernel_shape[1], theta_cutoff=theta_cutoff)
     else:
         raise ValueError("kernel_shape should be either one- or two-dimensional.")
 
@@ -128,9 +153,9 @@ def _precompute_convolution_tensor(
         y = y / norm
         z = z / norm
 
-        # compute spherical coordinates
+        # compute spherical coordinates, where phi needs to fall into the [0, 2pi) range
         theta = torch.arccos(z)
-        phi = torch.arctan2(y, x)
+        phi = torch.arctan2(y, x) + torch.pi
 
         # find the indices where the rotated position falls into the support of the kernel
         iidx, vals = kernel_handle(theta, phi)
@@ -146,8 +171,7 @@ def _precompute_convolution_tensor(
 
 
 # TODO:
-# - parameter initialization
-# - add anisotropy
+# - derive conv and conv transpose from single module
 class DiscreteContinuousConvS2(nn.Module):
     """
     Discrete-continuous convolutions (DISCO) on the 2-Sphere as described in [1].
@@ -175,9 +199,13 @@ class DiscreteContinuousConvS2(nn.Module):
 
         if isinstance(kernel_shape, int):
             kernel_shape = [kernel_shape]
-        self.kernel_size = 1
-        for kdim in kernel_shape:
-            self.kernel_size *= kdim
+        if len(kernel_shape) == 1:
+            self.kernel_size = kernel_shape[0]
+        elif len(kernel_shape) == 2:
+            self.kernel_size = (kernel_shape[0]-1)*kernel_shape[1] + 1
+        else:
+            raise ValueError("kernel_shape should be either one- or two-dimensional.")
+
 
         # compute theta cutoff based on the bandlimit of the input field
         if theta_cutoff is None:
@@ -209,7 +237,7 @@ class DiscreteContinuousConvS2(nn.Module):
             raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
         self.groupsize = in_channels // self.groups
         scale = math.sqrt(1.0 / self.groupsize)
-        self.weight = nn.Parameter(scale * torch.randn(out_channels, self.groupsize, kernel_shape[0]))
+        self.weight = nn.Parameter(scale * torch.randn(out_channels, self.groupsize, self.kernel_size))
 
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_channels))
@@ -266,9 +294,12 @@ class DiscreteContinuousConvTransposeS2(nn.Module):
 
         if isinstance(kernel_shape, int):
             kernel_shape = [kernel_shape]
-        self.kernel_size = 1
-        for kdim in kernel_shape:
-            self.kernel_size *= kdim
+        if len(kernel_shape) == 1:
+            self.kernel_size = kernel_shape[0]
+        elif len(kernel_shape) == 2:
+            self.kernel_size = (kernel_shape[0]-1)*kernel_shape[1] + 1
+        else:
+            raise ValueError("kernel_shape should be either one- or two-dimensional.")
 
         # bandlimit
         if theta_cutoff is None:
@@ -301,7 +332,7 @@ class DiscreteContinuousConvTransposeS2(nn.Module):
             raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
         self.groupsize = in_channels // self.groups
         scale = math.sqrt(1.0 / self.groupsize)
-        self.weight = nn.Parameter(scale * torch.randn(out_channels, self.groupsize, kernel_shape[0]))
+        self.weight = nn.Parameter(scale * torch.randn(out_channels, self.groupsize, self.kernel_size))
 
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_channels))
@@ -310,7 +341,7 @@ class DiscreteContinuousConvTransposeS2(nn.Module):
 
     def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
         # extract shape
-        B, F, H, W = x.shape
+        B, C, H, W = x.shape
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
