@@ -2,10 +2,19 @@
 
 ## Versioning
 
+### v0.6.5
+
+* Discrrete-continuous (DISCO) convolutions on the sphere
+* Isotropic and anisotropic DISCO convolutions
+* Accelerated DISCO convolutions on GPU via Triton implementation
+* Unittests for DISCO convolutions
+
 ### v0.6.4
-* reworking distributed to allow for uneven split tensors, effectively removing the necessity of padding the transformed tensors
-* distributed SHT tests are now using unittest. Test extended to vector SHT versions. Tests are defined in `torch_harmonics/distributed/distributed_tests.py`
-* base pytorch container version bumped up to 23.11 in Dockerfile
+
+* Reworking distributed to allow for uneven split tensors, effectively removing the necessity of padding the transformed tensors
+* Distributed SHT tests are now using unittest. Test extended to vector SHT versions
+* Tests are defined in `torch_harmonics/distributed/distributed_tests.py`
+* Base pytorch container version bumped up to 23.11 in Dockerfile
 
 ### v0.6.3
 
