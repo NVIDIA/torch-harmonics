@@ -246,11 +246,15 @@ class DiscreteContinuousConvS2(nn.Module):
         else:
             self.bias = None
 
+    def get_psi(self):
+        psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_in)).coalesce()
+        return psi
+
     def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
 
-        psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_in)).coalesce()
+        psi = self.get_psi()
 
         if x.is_cuda and use_triton_kernel:
             x = _disco_s2_contraction_triton(x, psi, self.nlon_out)
@@ -345,6 +349,10 @@ class DiscreteContinuousConvTransposeS2(nn.Module):
         else:
             self.bias = None
 
+    def get_psi(self):
+        psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_in, self.nlat_out * self.nlon_out)).coalesce()
+        return psi
+
     def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
         # extract shape
         B, C, H, W = x.shape
@@ -357,7 +365,7 @@ class DiscreteContinuousConvTransposeS2(nn.Module):
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
 
-        psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_in, self.nlat_out * self.nlon_out)).coalesce()
+        psi = self.get_psi()
 
         if x.is_cuda and use_triton_kernel:
             out = _disco_s2_transpose_contraction_triton(x, psi, self.nlon_out)
