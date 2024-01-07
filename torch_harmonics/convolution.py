@@ -172,7 +172,7 @@ def _precompute_convolution_tensor_s2(
 
 
 def _precompute_convolution_tensor_2d(
-    in_grid, out_grid, kernel_shape, radius_cutoff=0.01
+    grid_in, grid_out, kernel_shape, radius_cutoff=0.01
 ):
     """
     Precomputes the translated filters at positions $T^{-1}_j \omega_i = T^{-1}_j T_i \nu$. Similar to the S2 routine,
@@ -180,13 +180,13 @@ def _precompute_convolution_tensor_2d(
     """
 
     # check that input arrays are valid point clouds in 2D
-    assert len(in_grid) == 2
-    assert len(out_grid) == 2
-    assert in_grid.shape[0] == 2
-    assert out_grid.shape[0] == 2
+    assert len(grid_in) == 2
+    assert len(grid_out) == 2
+    assert grid_in.shape[0] == 2
+    assert grid_out.shape[0] == 2
 
-    n_in = in_grid.shape[-1]
-    n_out = out_grid.shape[-1]
+    n_in = grid_in.shape[-1]
+    n_out = grid_out.shape[-1]
 
     if len(kernel_shape) == 1:
         kernel_handle = partial(_compute_support_vals_isotropic, ntheta=kernel_shape[0], theta_cutoff=radius_cutoff)
@@ -195,15 +195,15 @@ def _precompute_convolution_tensor_2d(
     else:
         raise ValueError("kernel_shape should be either one- or two-dimensional.")
 
-    in_grid = in_grid.reshape(2, 1, n_in)
-    out_grid = out_grid.reshape(2, n_out, 1)
+    grid_in = grid_in.reshape(2, 1, n_in)
+    grid_out = grid_out.reshape(2, n_out, 1)
 
-    diffs = in_grid - out_grid
+    diffs = grid_in - grid_out
     r = torch.sqrt(diffs[0]**2 + diffs[1]**2)
     phi = torch.arctan2(diffs[1], diffs[0]) + torch.pi
 
-    idx, vals = kernel_handle(r, diffs)
-    idx.permute(1, 0)
+    idx, vals = kernel_handle(r, phi)
+    idx = idx.permute(1, 0)
 
     return idx, vals
 
@@ -252,8 +252,6 @@ class DiscreteContinuousConv(nn.Module, abc.ABC):
         raise NotImplementedError
 
 
-# TODO:
-# - derive conv and conv transpose from single module
 class DiscreteContinuousConvS2(DiscreteContinuousConv):
     """
     Discrete-continuous convolutions (DISCO) on the 2-Sphere as described in [1].
@@ -294,12 +292,9 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         idx, vals = _precompute_convolution_tensor_s2(
             in_shape, out_shape, kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
         )
-        # psi = torch.sparse_coo_tensor(
-        #     idx, vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_in)
-        # ).coalesce()
+
         self.register_buffer("psi_idx", idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
-        # self.register_buffer("psi", psi, persistent=False)
 
     def get_psi(self):
         psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_in)).coalesce()
@@ -370,12 +365,9 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         idx, vals = _precompute_convolution_tensor_s2(
             out_shape, in_shape, kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff
         )
-        # psi = torch.sparse_coo_tensor(
-        #     idx, vals, size=(self.kernel_size, self.nlat_in, self.nlat_out * self.nlon_out)
-        # ).coalesce()
+
         self.register_buffer("psi_idx", idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
-        # self.register_buffer("psi", psi, persistent=False)
 
     def get_psi(self):
         psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_in, self.nlat_out * self.nlon_out)).coalesce()
@@ -402,5 +394,87 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
+
+        return out
+
+# TODO:
+# - may need another wrapper class to conveniently handle both structured and unstructured grids
+# - also implement the transpose convolution
+class DiscreteContinuousConv2d(DiscreteContinuousConv):
+    """
+    Discrete-continuous convolutions (DISCO) on arbitrary 2d grids.
+
+    [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        grid_in: torch.Tensor,
+        quad_weights: torch.Tensor,
+        grid_out: torch.Tensor,
+        kernel_shape: Union[int, List[int]],
+        groups: Optional[int] = 1,
+        bias: Optional[bool] = True,
+        radius_cutoff: Optional[float] = None,
+    ):
+        super().__init__(in_channels, out_channels, kernel_shape, groups, bias)
+
+        # check that input arrays are valid point clouds in 2D
+        assert len(grid_in.shape) == 2
+        assert len(grid_out.shape) == 2
+        assert len(quad_weights.shape) == 1
+        assert grid_in.shape[0] == 2
+        assert grid_out.shape[0] == 2
+        assert quad_weights.shape[0] == grid_in.shape[-1]
+
+        self.n_in = grid_in.shape[-1]
+        self.n_out = grid_out.shape[-1]
+
+        # compute the cutoff radius based on the bandlimit of the input field
+        # TODO: this heuristic is ad-hoc! Verify that we do the right one
+        if radius_cutoff is None:
+            radius_cutoff = 2*(kernel_shape[0]+1) / float(math.sqrt(self.n_in) - 1)
+
+        if radius_cutoff <= 0.0:
+            raise ValueError("Error, radius_cutoff has to be positive.")
+
+        # integration weights
+        self.register_buffer("quad_weights", quad_weights, persistent=False)
+
+        idx, vals = _precompute_convolution_tensor_2d(
+            grid_in, grid_out, kernel_shape, radius_cutoff=radius_cutoff
+        )
+
+        self.register_buffer("psi_idx", idx, persistent=False)
+        self.register_buffer("psi_vals", vals, persistent=False)
+
+    def get_psi(self):
+        psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.n_out, self.n_in)).coalesce()
+        return psi
+
+    def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
+        # pre-multiply x with the quadrature weights
+        x = self.quad_weights * x
+
+        psi = self.get_psi()
+
+        # extract shape
+        B, C, _ = x.shape
+
+        # bring into the right shape for the bmm and perform it
+        x = x.reshape(1, B*C, self.n_in).permute(0, 2, 1)
+        x = x.expand(self.kernel_size, -1, -1)
+        x = torch.bmm(psi, x)
+        x = x.permute(2, 0, 1).reshape(B, C, self.kernel_size, self.n_out)
+        x = x.reshape(B, self.groups, self.groupsize, self.kernel_size, self.n_out)
+
+        # do weight multiplication
+        out = torch.einsum("bgckx,gock->bgox", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2]))
+        out = out.reshape(out.shape[0], -1, out.shape[-1])
+
+        if self.bias is not None:
+            out = out + self.bias.reshape(1, -1, 1)
 
         return out
