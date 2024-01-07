@@ -48,7 +48,7 @@ from torch_harmonics._disco_convolution import (
 )
 
 
-def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, r_cutoff: float):
+def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, r_cutoff: float, norm: str = "s2"):
     """
     Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
     """
@@ -58,7 +58,14 @@ def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int,
     ikernel = torch.arange(nr).reshape(-1, 1, 1)
     ir = ikernel * dr
 
-    norm_factor = 2 * math.pi * (1 - math.cos(r_cutoff - dr) + math.cos(r_cutoff - dr) + (math.sin(r_cutoff - dr) - math.sin(r_cutoff)) / dr)
+    if norm == "none":
+        norm_factor = 1.0
+    elif norm == "2d":
+        norm_factor = math.pi * (r_cutoff * nr / (nr + 1))**2 + math.pi * r_cutoff**2 * (2 * nr / (nr + 1) + 1) / (nr + 1) / 3
+    elif norm == "s2":
+        norm_factor = 2 * math.pi * (1 - math.cos(r_cutoff - dr) + math.cos(r_cutoff - dr) + (math.sin(r_cutoff - dr) - math.sin(r_cutoff)) / dr)
+    else:
+        raise ValueError(f"Unknown normalization mode {norm}.")
 
     # find the indices where the rotated position falls into the support of the kernel
     iidx = torch.argwhere(((r - ir).abs() <= dr) & (r <= r_cutoff))
@@ -66,7 +73,7 @@ def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int,
     return iidx, vals
 
 
-def _compute_support_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, nphi: int, r_cutoff: float):
+def _compute_support_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, nphi: int, r_cutoff: float, norm: str = "s2"):
     """
     Computes the index set that falls into the anisotropic kernel's support and returns both indices and values.
     """
@@ -79,7 +86,14 @@ def _compute_support_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, nr: in
     ir = ((ikernel - 1) // nphi + 1) * dr
     iphi = ((ikernel - 1) % nphi) * dphi
 
-    norm_factor = 2 * math.pi * (1 - math.cos(r_cutoff - dr) + math.cos(r_cutoff - dr) + (math.sin(r_cutoff - dr) - math.sin(r_cutoff)) / dr)
+    if norm == "none":
+        norm_factor = 1.0
+    elif norm == "2d":
+        norm_factor = math.pi * (r_cutoff * nr / (nr + 1))**2 + math.pi * r_cutoff**2 * (2 * nr / (nr + 1) + 1) / (nr + 1) / 3
+    elif norm == "s2":
+        norm_factor = 2 * math.pi * (1 - math.cos(r_cutoff - dr) + math.cos(r_cutoff - dr) + (math.sin(r_cutoff - dr) - math.sin(r_cutoff)) / dr)
+    else:
+        raise ValueError(f"Unknown normalization mode {norm}.")
 
     # find the indices where the rotated position falls into the support of the kernel
     cond_r = ((r - ir).abs() <= dr) & (r <= r_cutoff)
@@ -115,9 +129,9 @@ def _precompute_convolution_tensor_s2(in_shape, out_shape, kernel_shape, grid_in
     assert len(out_shape) == 2
 
     if len(kernel_shape) == 1:
-        kernel_handle = partial(_compute_support_vals_isotropic, nr=kernel_shape[0], r_cutoff=theta_cutoff)
+        kernel_handle = partial(_compute_support_vals_isotropic, nr=kernel_shape[0], r_cutoff=theta_cutoff, norm="s2")
     elif len(kernel_shape) == 2:
-        kernel_handle = partial(_compute_support_vals_anisotropic, nr=kernel_shape[0], nphi=kernel_shape[1], r_cutoff=theta_cutoff)
+        kernel_handle = partial(_compute_support_vals_anisotropic, nr=kernel_shape[0], nphi=kernel_shape[1], r_cutoff=theta_cutoff, norm="s2")
     else:
         raise ValueError("kernel_shape should be either one- or two-dimensional.")
 
@@ -190,9 +204,9 @@ def _precompute_convolution_tensor_2d(grid_in, grid_out, kernel_shape, radius_cu
     n_out = grid_out.shape[-1]
 
     if len(kernel_shape) == 1:
-        kernel_handle = partial(_compute_support_vals_isotropic, nr=kernel_shape[0], r_cutoff=radius_cutoff)
+        kernel_handle = partial(_compute_support_vals_isotropic, nr=kernel_shape[0], r_cutoff=radius_cutoff, norm="2d")
     elif len(kernel_shape) == 2:
-        kernel_handle = partial(_compute_support_vals_anisotropic, nr=kernel_shape[0], nphi=kernel_shape[1], r_cutoff=radius_cutoff)
+        kernel_handle = partial(_compute_support_vals_anisotropic, nr=kernel_shape[0], nphi=kernel_shape[1], r_cutoff=radius_cutoff, norm="2d")
     else:
         raise ValueError("kernel_shape should be either one- or two-dimensional.")
 
@@ -225,11 +239,14 @@ class DiscreteContinuousConv(nn.Module, abc.ABC):
         super().__init__()
 
         if isinstance(kernel_shape, int):
-            kernel_shape = [kernel_shape]
-        if len(kernel_shape) == 1:
-            self.kernel_size = kernel_shape[0]
-        elif len(kernel_shape) == 2:
-            self.kernel_size = (kernel_shape[0] - 1) * kernel_shape[1] + 1
+            self.kernel_shape = [kernel_shape]
+        else:
+            self.kernel_shape = kernel_shape
+
+        if len(self.kernel_shape) == 1:
+            self.kernel_size = self.kernel_shape[0]
+        elif len(self.kernel_shape) == 2:
+            self.kernel_size = (self.kernel_shape[0] - 1) * self.kernel_shape[1] + 1
         else:
             raise ValueError("kernel_shape should be either one- or two-dimensional.")
 
@@ -282,7 +299,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # compute theta cutoff based on the bandlimit of the input field
         if theta_cutoff is None:
-            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(self.nlat_in - 1)
+            theta_cutoff = (self.kernel_shape[0] + 1) * torch.pi / float(self.nlat_in - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -292,7 +309,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).float().reshape(-1, 1) / self.nlon_in
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
-        idx, vals = _precompute_convolution_tensor_s2(in_shape, out_shape, kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff)
+        idx, vals = _precompute_convolution_tensor_s2(in_shape, out_shape, self.kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff)
 
         self.register_buffer("psi_idx", idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
@@ -353,7 +370,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # bandlimit
         if theta_cutoff is None:
-            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(self.nlat_in - 1)
+            theta_cutoff = (self.kernel_shape[0] + 1) * torch.pi / float(self.nlat_in - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -364,7 +381,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
         # switch in_shape and out_shape since we want transpose conv
-        idx, vals = _precompute_convolution_tensor_s2(out_shape, in_shape, kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff)
+        idx, vals = _precompute_convolution_tensor_s2(out_shape, in_shape, self.kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff)
 
         self.register_buffer("psi_idx", idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
@@ -436,7 +453,7 @@ class DiscreteContinuousConv2d(DiscreteContinuousConv):
         # compute the cutoff radius based on the bandlimit of the input field
         # TODO: this heuristic is ad-hoc! Verify that we do the right one
         if radius_cutoff is None:
-            radius_cutoff = 2 * (kernel_shape[0] + 1) / float(math.sqrt(self.n_in) - 1)
+            radius_cutoff = 2 * (self.kernel_shape[0] + 1) / float(math.sqrt(self.n_in) - 1)
 
         if radius_cutoff <= 0.0:
             raise ValueError("Error, radius_cutoff has to be positive.")
@@ -444,7 +461,7 @@ class DiscreteContinuousConv2d(DiscreteContinuousConv):
         # integration weights
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
-        idx, vals = _precompute_convolution_tensor_2d(grid_in, grid_out, kernel_shape, radius_cutoff=radius_cutoff)
+        idx, vals = _precompute_convolution_tensor_2d(grid_in, grid_out, self.kernel_shape, radius_cutoff=radius_cutoff)
 
         self.register_buffer("psi_idx", idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
