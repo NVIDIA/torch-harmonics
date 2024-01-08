@@ -31,25 +31,48 @@
 
 import numpy as np
 
+def _precompute_grid(n, grid="equidistant"):
+
+    # compute coordinates
+    if grid == "equidistant":
+        xlg, wlg = trapezoidal_weights(n)
+    elif grid == "legendre-gauss":
+        xlg, wlg = legendre_gauss_weights(n)
+    elif grid == "lobatto":
+        xlg, wlg = lobatto_weights(n)
+    elif grid == "equiangular":
+        xlg, wlg = clenshaw_curtiss_weights(n)
+    else:
+        raise ValueError("Unknown grid")
+
+    return xlg, wlg
+
 def _precompute_latitudes(nlat, grid="equiangular"):
     r"""
     Convenience routine to precompute latitudes
     """
 
     # compute coordinates
-    if grid == "legendre-gauss":
-        xlg, wlg = legendre_gauss_weights(nlat)
-    elif grid == "lobatto":
-        xlg, wlg = lobatto_weights(nlat)
-    elif grid == "equiangular":
-        xlg, wlg = clenshaw_curtiss_weights(nlat)
-    else:
-        raise ValueError("Unknown grid")
+    xlg, wlg = _precompute_grid(nlat, grid=grid)
 
     lats = np.flip(np.arccos(xlg)).copy()
     wlg = np.flip(wlg).copy()
 
     return lats, wlg
+
+def trapezoidal_weights(n, a=-1.0, b=1.0):
+    r"""
+    Helper routine which returns equidistant nodes with trapezoidal weights
+    on the interval [a, b]
+    """
+
+    xlg = np.linspace(a, b, n)
+    wlg = (b - a) / (n - 1) * np.ones(n)
+
+    wlg[0] *= 0.5
+    wlg[-1] *= 0.5
+
+    return xlg, wlg
 
 def legendre_gauss_weights(n, a=-1.0, b=1.0):
     r"""

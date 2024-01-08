@@ -39,7 +39,7 @@ import torch.nn as nn
 
 from functools import partial
 
-from torch_harmonics.quadrature import _precompute_latitudes
+from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes
 from torch_harmonics._disco_convolution import (
     _disco_s2_contraction_torch,
     _disco_s2_transpose_contraction_torch,
@@ -430,14 +430,43 @@ class DiscreteContinuousConv2d(DiscreteContinuousConv):
         in_channels: int,
         out_channels: int,
         grid_in: torch.Tensor,
-        quad_weights: torch.Tensor,
         grid_out: torch.Tensor,
         kernel_shape: Union[int, List[int]],
+        n_in: Optional[Tuple[int]] = None,
+        n_out: Optional[Tuple[int]] = None,
+        quad_weights: Optional[torch.Tensor] = None,
         groups: Optional[int] = 1,
         bias: Optional[bool] = True,
         radius_cutoff: Optional[float] = None,
     ):
         super().__init__(in_channels, out_channels, kernel_shape, groups, bias)
+
+        # the instantiator supports convenience constructors for the input and output grids
+        if isinstance(grid_in, torch.Tensor):
+            assert isinstance(quad_weights, torch.Tensor)
+        elif isinstance(grid_in, str):
+            assert n_in is not None
+            assert len(n_in) == 2
+            x, wx = _precompute_grid(n_in[0], grid=grid_in)
+            y, wy = _precompute_grid(n_in[1], grid=grid_in)
+            x, y = torch.meshgrid(torch.from_numpy(x), torch.from_numpy(y))
+            wx, wy = torch.meshgrid(torch.from_numpy(wx), torch.from_numpy(wy))
+            grid_in = torch.stack([x.reshape(-1), y.reshape(-1)])
+            quad_weights = (wx * wy).reshape(-1)
+        else:
+            raise ValueError(f"Unknown grid input type of type {type(grid_in)}")
+        
+        if isinstance(grid_out, torch.Tensor):
+            pass
+        elif isinstance(grid_out, str):
+            assert n_out is not None
+            assert len(n_out) == 2
+            x, wx = _precompute_grid(n_out[0], grid=grid_out)
+            y, wy = _precompute_grid(n_out[1], grid=grid_out)
+            x, y = torch.meshgrid(torch.from_numpy(x), torch.from_numpy(y))
+            grid_out = torch.stack([x.reshape(-1), y.reshape(-1)])
+        else:
+            raise ValueError(f"Unknown grid output type of type {type(grid_out)}")
 
         # check that input arrays are valid point clouds in 2D
         assert len(grid_in.shape) == 2
@@ -494,3 +523,80 @@ class DiscreteContinuousConv2d(DiscreteContinuousConv):
             out = out + self.bias.reshape(1, -1, 1)
 
         return out
+
+# class DiscreteContinuousConvTranspose2d(DiscreteContinuousConv):
+#     """
+#     Discrete-continuous convolutions (DISCO) on arbitrary 2d grids.
+
+#     [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
+#     """
+
+#     def __init__(
+#         self,
+#         in_channels: int,
+#         out_channels: int,
+#         grid_in: torch.Tensor,
+#         quad_weights: torch.Tensor,
+#         grid_out: torch.Tensor,
+#         kernel_shape: Union[int, List[int]],
+#         groups: Optional[int] = 1,
+#         bias: Optional[bool] = True,
+#         radius_cutoff: Optional[float] = None,
+#     ):
+#         super().__init__(in_channels, out_channels, kernel_shape, groups, bias)
+
+#         # check that input arrays are valid point clouds in 2D
+#         assert len(grid_in.shape) == 2
+#         assert len(grid_out.shape) == 2
+#         assert len(quad_weights.shape) == 1
+#         assert grid_in.shape[0] == 2
+#         assert grid_out.shape[0] == 2
+#         assert quad_weights.shape[0] == grid_in.shape[-1]
+
+#         self.n_in = grid_in.shape[-1]
+#         self.n_out = grid_out.shape[-1]
+
+#         # compute the cutoff radius based on the bandlimit of the input field
+#         # TODO: this heuristic is ad-hoc! Verify that we do the right one
+#         if radius_cutoff is None:
+#             radius_cutoff = 2 * (self.kernel_shape[0] + 1) / float(math.sqrt(self.n_in) - 1)
+
+#         if radius_cutoff <= 0.0:
+#             raise ValueError("Error, radius_cutoff has to be positive.")
+
+#         # integration weights
+#         self.register_buffer("quad_weights", quad_weights, persistent=False)
+
+#         idx, vals = _precompute_convolution_tensor_2d(grid_in, grid_out, self.kernel_shape, radius_cutoff=radius_cutoff)
+
+#         self.register_buffer("psi_idx", idx, persistent=False)
+#         self.register_buffer("psi_vals", vals, persistent=False)
+
+#     def get_psi(self):
+#         psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.n_out, self.n_in)).coalesce()
+#         return psi
+
+#     def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
+#         # pre-multiply x with the quadrature weights
+#         x = self.quad_weights * x
+
+#         psi = self.get_psi()
+
+#         # extract shape
+#         B, C, _ = x.shape
+
+#         # bring into the right shape for the bmm and perform it
+#         x = x.reshape(1, B * C, self.n_in).permute(0, 2, 1)
+#         x = x.expand(self.kernel_size, -1, -1)
+#         x = torch.bmm(psi, x)
+#         x = x.permute(2, 0, 1).reshape(B, C, self.kernel_size, self.n_out)
+#         x = x.reshape(B, self.groups, self.groupsize, self.kernel_size, self.n_out)
+
+#         # do weight multiplication
+#         out = torch.einsum("bgckx,gock->bgox", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2]))
+#         out = out.reshape(out.shape[0], -1, out.shape[-1])
+
+#         if self.bias is not None:
+#             out = out + self.bias.reshape(1, -1, 1)
+
+#         return out
