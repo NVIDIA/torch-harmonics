@@ -188,7 +188,7 @@ def _precompute_convolution_tensor_s2(in_shape, out_shape, kernel_shape, grid_in
     return out_idx, out_vals
 
 
-def _precompute_convolution_tensor_2d(grid_in, grid_out, kernel_shape, radius_cutoff=0.01):
+def _precompute_convolution_tensor_2d(grid_in, grid_out, kernel_shape, radius_cutoff=0.01, periodic=False):
     """
     Precomputes the translated filters at positions $T^{-1}_j \omega_i = T^{-1}_j T_i \nu$. Similar to the S2 routine,
     only that it assumes a non-periodic subset of the euclidean plane
@@ -214,6 +214,11 @@ def _precompute_convolution_tensor_2d(grid_in, grid_out, kernel_shape, radius_cu
     grid_out = grid_out.reshape(2, n_out, 1)
 
     diffs = grid_in - grid_out
+    if periodic:
+        periodic_diffs = torch.where(diffs > 0.0, diffs-1, diffs+1)
+        diffs = torch.where(diffs.abs() < periodic_diffs.abs(), diffs, periodic_diffs)
+
+
     r = torch.sqrt(diffs[0] ** 2 + diffs[1] ** 2)
     phi = torch.arctan2(diffs[1], diffs[0]) + torch.pi
 
@@ -435,6 +440,7 @@ class DiscreteContinuousConv2d(DiscreteContinuousConv):
         n_in: Optional[Tuple[int]] = None,
         n_out: Optional[Tuple[int]] = None,
         quad_weights: Optional[torch.Tensor] = None,
+        periodic: Optional[bool] = False,
         groups: Optional[int] = 1,
         bias: Optional[bool] = True,
         radius_cutoff: Optional[float] = None,
@@ -444,11 +450,12 @@ class DiscreteContinuousConv2d(DiscreteContinuousConv):
         # the instantiator supports convenience constructors for the input and output grids
         if isinstance(grid_in, torch.Tensor):
             assert isinstance(quad_weights, torch.Tensor)
+            assert not periodic
         elif isinstance(grid_in, str):
             assert n_in is not None
             assert len(n_in) == 2
-            x, wx = _precompute_grid(n_in[0], grid=grid_in)
-            y, wy = _precompute_grid(n_in[1], grid=grid_in)
+            x, wx = _precompute_grid(n_in[0], grid=grid_in, periodic=periodic)
+            y, wy = _precompute_grid(n_in[1], grid=grid_in, periodic=periodic)
             x, y = torch.meshgrid(torch.from_numpy(x), torch.from_numpy(y))
             wx, wy = torch.meshgrid(torch.from_numpy(wx), torch.from_numpy(wy))
             grid_in = torch.stack([x.reshape(-1), y.reshape(-1)])
@@ -461,8 +468,8 @@ class DiscreteContinuousConv2d(DiscreteContinuousConv):
         elif isinstance(grid_out, str):
             assert n_out is not None
             assert len(n_out) == 2
-            x, wx = _precompute_grid(n_out[0], grid=grid_out)
-            y, wy = _precompute_grid(n_out[1], grid=grid_out)
+            x, wx = _precompute_grid(n_out[0], grid=grid_out, periodic=periodic)
+            y, wy = _precompute_grid(n_out[1], grid=grid_out, periodic=periodic)
             x, y = torch.meshgrid(torch.from_numpy(x), torch.from_numpy(y))
             grid_out = torch.stack([x.reshape(-1), y.reshape(-1)])
         else:
@@ -490,7 +497,7 @@ class DiscreteContinuousConv2d(DiscreteContinuousConv):
         # integration weights
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
-        idx, vals = _precompute_convolution_tensor_2d(grid_in, grid_out, self.kernel_shape, radius_cutoff=radius_cutoff)
+        idx, vals = _precompute_convolution_tensor_2d(grid_in, grid_out, self.kernel_shape, radius_cutoff=radius_cutoff, periodic=periodic)
 
         self.register_buffer("psi_idx", idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
