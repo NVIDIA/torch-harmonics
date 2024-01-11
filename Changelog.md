@@ -4,10 +4,11 @@
 
 ### v0.6.5
 
-* Discrrete-continuous (DISCO) convolutions on the sphere
-* Isotropic and anisotropic DISCO convolutions
-* Accelerated DISCO convolutions on GPU via Triton implementation
-* Unittests for DISCO convolutions
+* Discrete-continuous (DISCO) convolutions on the sphere and in two dimensions
+* DISCO supports isotropic and anisotropic kernel functions parameterized as hat functions
+* Supports regular and transpose convolutions
+* Accelerated spherical DISCO convolutions on GPU via Triton implementation
+* Unittests for DISCO convolutions in `tests/test_convolution.py`
 
 ### v0.6.4
 
