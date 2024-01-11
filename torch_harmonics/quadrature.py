@@ -33,17 +33,17 @@ import numpy as np
 
 def _precompute_grid(n, grid="equidistant", a=0.0, b=1.0, periodic=False):
 
-    if (grid is not "equidistant") and periodic:
+    if (grid != "equidistant") and periodic:
         raise ValueError(f"Periodic grid is only supported on equidistant grids.")
 
     # compute coordinates
-    if grid is "equidistant":
+    if grid == "equidistant":
         xlg, wlg = trapezoidal_weights(n, a=a, b=b, periodic=periodic)
-    elif grid is "legendre-gauss":
+    elif grid == "legendre-gauss":
         xlg, wlg = legendre_gauss_weights(n, a=a, b=b)
-    elif grid is "lobatto":
+    elif grid == "lobatto":
         xlg, wlg = lobatto_weights(n, a=a, b=b)
-    elif grid is "equiangular":
+    elif grid == "equiangular":
         xlg, wlg = clenshaw_curtiss_weights(n, a=a, b=b)
     else:
         raise ValueError(f"Unknown grid type {grid}")
