@@ -495,11 +495,15 @@ class DiscreteContinuousConv2d(DiscreteContinuousConv):
 
         idx, vals = _precompute_convolution_tensor_2d(grid_in, grid_out, self.kernel_shape, radius_cutoff=radius_cutoff, periodic=periodic)
 
-        self.register_buffer("psi_idx", idx, persistent=False)
-        self.register_buffer("psi_vals", vals, persistent=False)
+        # to improve performance, we make psi a matrix by merging the first two dimensions
+        # This has to be accounted for in the forward pass
+        idx = torch.stack([idx[0]*self.n_out + idx[1], idx[2]], dim=0)
+
+        self.register_buffer("psi_idx", idx.contiguous(), persistent=False)
+        self.register_buffer("psi_vals", vals.contiguous(), persistent=False)
 
     def get_psi(self):
-        psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.n_out, self.n_in)).coalesce()
+        psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size*self.n_out, self.n_in))
         return psi
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -512,10 +516,9 @@ class DiscreteContinuousConv2d(DiscreteContinuousConv):
         B, C, _ = x.shape
 
         # bring into the right shape for the bmm and perform it
-        x = x.reshape(1, B * C, self.n_in).permute(0, 2, 1)
-        x = x.expand(self.kernel_size, -1, -1)
-        x = torch.bmm(psi, x)
-        x = x.permute(2, 0, 1).reshape(B, C, self.kernel_size, self.n_out)
+        x = x.reshape(B * C, self.n_in).permute(1, 0).contiguous()
+        x = torch.mm(psi, x)
+        x = x.permute(1, 0).reshape(B, C, self.kernel_size, self.n_out)
         x = x.reshape(B, self.groups, self.groupsize, self.kernel_size, self.n_out)
 
         # do weight multiplication
