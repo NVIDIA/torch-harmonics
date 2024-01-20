@@ -33,6 +33,7 @@ import math
 
 import torch
 
+# triton will only be avaiable on cuda installations of pytorch
 import triton
 import triton.language as tl
 

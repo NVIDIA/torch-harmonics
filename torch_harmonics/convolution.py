@@ -40,12 +40,8 @@ import torch.nn as nn
 from functools import partial
 
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes
-from torch_harmonics._disco_convolution import (
-    _disco_s2_contraction_torch,
-    _disco_s2_transpose_contraction_torch,
-    _disco_s2_contraction_triton,
-    _disco_s2_transpose_contraction_triton,
-)
+if torch.cuda.is_available():
+    from torch_harmonics._disco_convolution import _disco_s2_contraction_triton, _disco_s2_transpose_contraction_triton
 
 
 def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, r_cutoff: float, norm: str = "s2"):
@@ -276,6 +272,91 @@ class DiscreteContinuousConv(nn.Module, abc.ABC):
     def forward(self, x: torch.Tensor):
         raise NotImplementedError
 
+
+def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
+    """
+    Reference implementation of the custom contraction as described in [1]. This requires repeated
+    shifting of the input tensor, which can potentially be costly. For an efficient implementation
+    on GPU, make sure to use the custom kernel written in Triton.
+    """
+    assert len(psi.shape) == 3
+    assert len(x.shape) == 4
+    psi = psi.to(x.device)
+
+    batch_size, n_chans, nlat_in, nlon_in = x.shape
+    kernel_size, nlat_out, _ = psi.shape
+
+    assert psi.shape[-1] == nlat_in * nlon_in
+    assert nlon_in % nlon_out == 0
+    assert nlon_in >= nlat_out
+    pscale = nlon_in // nlon_out
+
+    # add a dummy dimension for nkernel and move the batch and channel dims to the end
+    x = x.reshape(1, batch_size * n_chans, nlat_in, nlon_in).permute(0, 2, 3, 1)
+    x = x.expand(kernel_size, -1, -1, -1)
+
+    y = torch.zeros(nlon_out, kernel_size, nlat_out, batch_size * n_chans, device=x.device, dtype=x.dtype)
+
+    for pout in range(nlon_out):
+        # sparse contraction with psi
+        y[pout] = torch.bmm(psi, x.reshape(kernel_size, nlat_in * nlon_in, -1))
+        # we need to repeatedly roll the input tensor to faciliate the shifted multiplication
+        x = torch.roll(x, -pscale, dims=2)
+
+    # reshape y back to expose the correct dimensions
+    y = y.permute(3, 1, 2, 0).reshape(batch_size, n_chans, kernel_size, nlat_out, nlon_out)
+
+    return y
+
+
+def _disco_s2_transpose_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
+    """
+    Reference implementation of the custom contraction as described in [1]. This requires repeated
+    shifting of the input tensor, which can potentially be costly. For an efficient implementation
+    on GPU, make sure to use the custom kernel written in Triton.
+    """
+    assert len(psi.shape) == 3
+    assert len(x.shape) == 5
+    psi = psi.to(x.device)
+
+    batch_size, n_chans, kernel_size, nlat_in, nlon_in = x.shape
+    kernel_size, _, n_out = psi.shape
+
+    assert psi.shape[-2] == nlat_in
+    assert n_out % nlon_out == 0
+    nlat_out = n_out // nlon_out
+    assert nlon_out >= nlat_in
+    pscale = nlon_out // nlon_in
+
+    # we do a semi-transposition to faciliate the computation
+    inz = psi.indices()
+    tout = inz[2] // nlon_out
+    pout = inz[2] % nlon_out
+    # flip the axis of longitudes
+    pout = nlon_out - 1 - pout
+    tin = inz[1]
+    inz = torch.stack([inz[0], tout, tin*nlon_out + pout], dim=0)
+    psi_mod = torch.sparse_coo_tensor(inz, psi.values(), size=(kernel_size, nlat_out, nlat_in*nlon_out))
+
+    # interleave zeros along the longitude dimension to allow for fractional offsets to be considered
+    x_ext = torch.zeros(kernel_size, nlat_in, nlon_out, batch_size * n_chans, device=x.device, dtype=x.dtype)
+    x_ext[:, :, ::pscale, :] = x.reshape(batch_size * n_chans, kernel_size, nlat_in, nlon_in).permute(1, 2, 3, 0)
+    # we need to go backwards through the vector, so we flip the axis
+    x_ext = x_ext.contiguous()
+
+    y = torch.zeros(kernel_size, nlon_out, nlat_out, batch_size * n_chans, device=x.device, dtype=x.dtype)
+
+    for pout in range(nlon_out):
+        # we need to repeatedly roll the input tensor to faciliate the shifted multiplication
+        # TODO: double-check why this has to happen first
+        x_ext = torch.roll(x_ext, -1, dims=2)
+        # sparse contraction with the modified psi
+        y[:, pout, :, :] = torch.bmm(psi_mod, x_ext.reshape(kernel_size, nlat_in * nlon_out, -1))
+
+    # sum over the kernel dimension and reshape to the correct output size
+    y = y.sum(dim=0).permute(2, 1, 0).reshape(batch_size, n_chans, nlat_out, nlon_out)
+
+    return y
 
 class DiscreteContinuousConvS2(DiscreteContinuousConv):
     """
