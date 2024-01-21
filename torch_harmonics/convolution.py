@@ -36,6 +36,7 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from functools import partial
 
@@ -669,3 +670,62 @@ class DiscreteContinuousConvTranspose2d(DiscreteContinuousConv2d):
         psi_idx = self.psi_idx[l]
         self.register_buffer("psi_idx", psi_idx, persistent=False)
 
+
+class EquidistantDiscreteContinuousConv2d(DiscreteContinuousConv):
+    """
+    Discrete-continuous convolutions (DISCO) on arbitrary 2d grids.
+
+    [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_shape: Union[int, List[int]],
+        in_shape: Tuple[int],
+        out_shape: Tuple[int],
+        groups: Optional[int] = 1,
+        bias: Optional[bool] = True,
+        radius_cutoff: Optional[float] = None,
+    ):
+        super().__init__(in_channels, out_channels, kernel_shape, groups, bias)
+
+        # compute the cutoff radius based on the assumption that the grid is [-1, 1]^2
+        # this still assumes a quadratic domain
+        if radius_cutoff is None:
+            radius_cutoff = 2 * (self.kernel_shape[0] + 1) / float(max(*in_shape))
+        self.psi_local_size = math.ceil(2 * radius_cutoff * max(*in_shape) / 2) + 1
+
+        # psi_local is essentially the support of the hat functions evaluated locally
+        x = torch.linspace(-radius_cutoff, radius_cutoff, self.psi_local_size)
+        x, y = torch.meshgrid(x, x)
+        grid_in = torch.stack([x.reshape(-1), y.reshape(-1)])
+        grid_out = torch.Tensor([[0.0], [0.0]])
+
+        idx, vals = _precompute_convolution_tensor_2d(grid_in, grid_out, self.kernel_shape, radius_cutoff=radius_cutoff, periodic=False)
+
+        psi_loc = torch.zeros(self.kernel_size, self.psi_local_size*self.psi_local_size)
+        for ie in range(len(vals)):
+            f = idx[0, ie]; j = idx[2, ie]; v = vals[ie]
+            psi_loc[f, j] = v
+
+        # compute local version of the filter matrix
+        psi_loc = psi_loc.reshape(self.kernel_size, self.psi_local_size, self.psi_local_size)
+        # normalization by the quadrature weights
+        psi_loc = 4.0 * psi_loc / float(in_shape[0]*in_shape[1])
+
+        self.register_buffer("psi_loc", psi_loc, persistent=False)
+
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        kernel = torch.einsum("kxy,ogk->ogxy", self.psi_loc, self.weight)
+
+        left_pad = self.psi_local_size // 2
+        right_pad = (self.psi_local_size+1) // 2 - 1
+        x = F.pad(x, (left_pad, right_pad, left_pad, right_pad), mode="circular")
+        print(x.shape)
+        out = F.conv2d(x, kernel, self.bias, stride=1, dilation=1, padding=0, groups=self.groups)
+
+        return out
