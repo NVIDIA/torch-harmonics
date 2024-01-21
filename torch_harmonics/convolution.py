@@ -688,14 +688,18 @@ class EquidistantDiscreteContinuousConv2d(DiscreteContinuousConv):
         groups: Optional[int] = 1,
         bias: Optional[bool] = True,
         radius_cutoff: Optional[float] = None,
+        padding_mode: str = "circular",
+        **kwargs
     ):
         super().__init__(in_channels, out_channels, kernel_shape, groups, bias)
+
+        self.padding_mode = padding_mode
 
         # compute the cutoff radius based on the assumption that the grid is [-1, 1]^2
         # this still assumes a quadratic domain
         if radius_cutoff is None:
-            radius_cutoff = 2 * (self.kernel_shape[0] + 1) / float(max(*in_shape))
-        self.psi_local_size = math.ceil(2 * radius_cutoff * max(*in_shape) / 2) + 1
+            radius_cutoff = 2 * (self.kernel_shape[0]) / float(max(*in_shape))
+        self.psi_local_size = math.floor(2*radius_cutoff * max(*in_shape) / 2) + 1
 
         # psi_local is essentially the support of the hat functions evaluated locally
         x = torch.linspace(-radius_cutoff, radius_cutoff, self.psi_local_size)
@@ -724,8 +728,7 @@ class EquidistantDiscreteContinuousConv2d(DiscreteContinuousConv):
 
         left_pad = self.psi_local_size // 2
         right_pad = (self.psi_local_size+1) // 2 - 1
-        x = F.pad(x, (left_pad, right_pad, left_pad, right_pad), mode="circular")
-        print(x.shape)
+        x = F.pad(x, (left_pad, right_pad, left_pad, right_pad), mode=self.padding_mode)
         out = F.conv2d(x, kernel, self.bias, stride=1, dilation=1, padding=0, groups=self.groups)
 
         return out
