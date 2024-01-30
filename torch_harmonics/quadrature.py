@@ -31,25 +31,52 @@
 
 import numpy as np
 
+def _precompute_grid(n, grid="equidistant", a=0.0, b=1.0, periodic=False):
+
+    if (grid != "equidistant") and periodic:
+        raise ValueError(f"Periodic grid is only supported on equidistant grids.")
+
+    # compute coordinates
+    if grid == "equidistant":
+        xlg, wlg = trapezoidal_weights(n, a=a, b=b, periodic=periodic)
+    elif grid == "legendre-gauss":
+        xlg, wlg = legendre_gauss_weights(n, a=a, b=b)
+    elif grid == "lobatto":
+        xlg, wlg = lobatto_weights(n, a=a, b=b)
+    elif grid == "equiangular":
+        xlg, wlg = clenshaw_curtiss_weights(n, a=a, b=b)
+    else:
+        raise ValueError(f"Unknown grid type {grid}")
+
+    return xlg, wlg
+
 def _precompute_latitudes(nlat, grid="equiangular"):
     r"""
     Convenience routine to precompute latitudes
     """
 
     # compute coordinates
-    if grid == "legendre-gauss":
-        xlg, wlg = legendre_gauss_weights(nlat)
-    elif grid == "lobatto":
-        xlg, wlg = lobatto_weights(nlat)
-    elif grid == "equiangular":
-        xlg, wlg = clenshaw_curtiss_weights(nlat)
-    else:
-        raise ValueError("Unknown grid")
+    xlg, wlg = _precompute_grid(nlat, grid=grid, a=-1.0, b=1.0, periodic=False)
 
     lats = np.flip(np.arccos(xlg)).copy()
     wlg = np.flip(wlg).copy()
 
     return lats, wlg
+
+def trapezoidal_weights(n, a=-1.0, b=1.0, periodic=False):
+    r"""
+    Helper routine which returns equidistant nodes with trapezoidal weights
+    on the interval [a, b]
+    """
+
+    xlg = np.linspace(a, b, n)
+    wlg = (b - a) / (n - 1) * np.ones(n)
+
+    if not periodic:
+        wlg[0] *= 0.5
+        wlg[-1] *= 0.5
+
+    return xlg, wlg
 
 def legendre_gauss_weights(n, a=-1.0, b=1.0):
     r"""
