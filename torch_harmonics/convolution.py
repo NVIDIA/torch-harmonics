@@ -228,7 +228,7 @@ def _precompute_convolution_tensor_2d(grid_in, grid_out, kernel_shape, radius_cu
     return idx, vals
 
 
-class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
+class DiscreteContinuousConv(nn.Module, metaclass=ABCMeta):
     """
     Abstract base class for DISCO convolutions
     """
