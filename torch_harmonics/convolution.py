@@ -29,7 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from abc import ABCMeta
+import abc
 from typing import List, Tuple, Union, Optional
 
 import math
@@ -228,7 +228,7 @@ def _precompute_convolution_tensor_2d(grid_in, grid_out, kernel_shape, radius_cu
     return idx, vals
 
 
-class DiscreteContinuousConv(nn.Module, metaclass=ABCMeta):
+class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
     """
     Abstract base class for DISCO convolutions
     """
