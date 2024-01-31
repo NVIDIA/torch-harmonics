@@ -152,3 +152,125 @@ class distributed_transpose_polar(torch.autograd.Function):
         gi = torch.cat(gilist, dim=dim[0]).contiguous(memory_format=input_format)
         return gi, None, None
 
+    
+# we need those additional primitives for distributed matrix multiplications
+def _reduce(input_, use_fp32=True, group=None):
+    """All-reduce the input tensor across model parallel group."""
+
+    # Bypass the function if we are using only 1 GPU.
+    if dist.get_world_size(group=group) == 1:
+        return input_
+    
+    # All-reduce.
+    if use_fp32:
+        dtype = input_.dtype
+        inputf_ = input_.float()
+        dist.all_reduce(inputf_, group=group)
+        input_ = inputf_.to(dtype)
+    else:
+        dist.all_reduce(input_, group=group)
+        
+    return input_
+
+
+def _split(input_, dim_, group=None):
+    """Split the tensor along its last dimension and keep the corresponding slice."""
+    # Bypass the function if we are using only 1 GPU.
+    comm_size = dist.get_world_size(group=group)
+    if comm_size == 1:
+        return input_
+    
+    # Split along last dimension.
+    input_list = split_tensor_along_dim(input_, dim_, comm_size)
+    
+    # Note: torch.split does not create contiguous tensors by default.
+    rank = dist.get_rank(group=group)
+    output = input_list[rank].contiguous()
+    
+    return output
+
+
+def _gather(input_, dim_, shapes_, group=None):
+    """Gather unevenly split tensors across ranks"""
+    
+    comm_size = dist.get_world_size(group=group)
+
+    if (shapes_ is not None) and (len(shapes_) != comm_size):
+        raise ValueError()
+    if dim_ >= input_.dim():
+        raise ValueError()
+
+    if comm_size == 1:
+        return input_
+
+    input_shape = list(input_.shape)
+
+    if shapes_ is not None:
+        input_list = [None] * comm_size
+
+        for src in range(comm_size):
+            input_shape[dim_] = shapes_[src]
+            input_list[src] = torch.empty(
+                input_shape,
+                dtype=input_.dtype,
+                device=input_.device,
+            )
+    else:
+        # assume equal shape on all ranks
+        input_list = [torch.empty_like(input_) for _ in range(comm_size)]
+
+    dist.all_gather(input_list, input_ group=group)
+
+    output = torch.cat(input_list, dim=dim_).contiguous()
+
+    return output
+    
+    
+class _ScatterToPolarRegion(torch.autograd.Function):
+    """Split the input and keep only the corresponding chunk to the rank."""
+
+    @staticmethod
+    def symbolic(graph, input_, dim_):
+        return _split(input_, dim_, group=polar_group())
+
+    @staticmethod
+    def forward(ctx, input_, dim_):
+        ctx.dim = dim_
+        ctx.split_shapes = compute_split_shapes(
+            input_.shape[dim_], polar_group_size()
+        )
+        return _split(input_, dim_, group=polar_group())
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return _gather(grad_output, ctx.dim, ctx.split_shapes), None
+
+    
+class _ReduceFromPolarRegion(torch.autograd.Function):
+    """All-reduce the input from the polar region."""
+    
+    @staticmethod
+    def symbolic(graph, input_):
+        if is_distributed_polar():
+            return _reduce(input_, group=polar_group())
+        else:
+            return input_
+
+    @staticmethod
+    def forward(ctx, input_):
+        if is_distributed_polar():
+            return _reduce(input_, group=polar_group())
+        else:
+            return input_
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output
+
+    
+def reduce_from_polar_region(input_):
+    return _ReduceFromPolarRegion.apply(input_)
+
+
+def scatter_to_polar_region(input_, dim_):
+    return _ScatterToPolarRegion.apply(input_, dim_)
