@@ -184,8 +184,8 @@ def _precompute_convolution_tensor_s2(in_shape, out_shape, kernel_shape, grid_in
         out_vals.append(vals)
 
     # concatenate the indices and values
-    out_idx = torch.cat(out_idx, dim=-1)
-    out_vals = torch.cat(out_vals, dim=-1)
+    out_idx = torch.cat(out_idx, dim=-1).to(torch.long).contiguous()
+    out_vals = torch.cat(out_vals, dim=-1).to(torch.float32).contiguous()
 
     return out_idx, out_vals
 
@@ -330,7 +330,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         x = self.quad_weights * x
 
         psi = self.get_psi()
-
+        
         if x.is_cuda and use_triton_kernel:
             x = _disco_s2_contraction_triton(x, psi, self.nlon_out)
         else:
@@ -341,7 +341,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         x = x.reshape(B, self.groups, self.groupsize, K, H, W)
 
         # do weight multiplication
-        out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2]))
+        out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
         out = out.reshape(out.shape[0], -1, out.shape[-2], out.shape[-1])
 
         if self.bias is not None:
@@ -403,7 +403,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2]))
+        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
         x = x.reshape(x.shape[0], -1, x.shape[-3], x.shape[-2], x.shape[-1])
 
         # pre-multiply x with the quadrature weights

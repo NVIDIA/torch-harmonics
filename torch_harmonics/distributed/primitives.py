@@ -33,7 +33,8 @@ from typing import List
 import torch
 import torch.distributed as dist
 
-from .utils import polar_group, azimuth_group, is_initialized
+from .utils import polar_group, azimuth_group, polar_group_size
+from .utils import is_initialized, is_distributed_polar
 
 # helper routine to compute uneven splitting in balanced way:
 def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
@@ -160,6 +161,9 @@ def _reduce(input_, use_fp32=True, group=None):
     # Bypass the function if we are using only 1 GPU.
     if dist.get_world_size(group=group) == 1:
         return input_
+
+    # make input contiguous
+    input_ = input_.contiguous()
     
     # All-reduce.
     if use_fp32:
@@ -203,6 +207,8 @@ def _gather(input_, dim_, shapes_, group=None):
     if comm_size == 1:
         return input_
 
+    # make contiguous:
+    input_ = input_.contiguous()
     input_shape = list(input_.shape)
 
     if shapes_ is not None:
@@ -219,7 +225,7 @@ def _gather(input_, dim_, shapes_, group=None):
         # assume equal shape on all ranks
         input_list = [torch.empty_like(input_) for _ in range(comm_size)]
 
-    dist.all_gather(input_list, input_ group=group)
+    dist.all_gather(input_list, input_, group=group)
 
     output = torch.cat(input_list, dim=dim_).contiguous()
 
@@ -235,15 +241,21 @@ class _ScatterToPolarRegion(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, input_, dim_):
-        ctx.dim = dim_
-        ctx.split_shapes = compute_split_shapes(
-            input_.shape[dim_], polar_group_size()
-        )
-        return _split(input_, dim_, group=polar_group())
+        if is_distributed_polar():
+            ctx.dim = dim_
+            ctx.split_shapes = compute_split_shapes(
+                input_.shape[dim_], polar_group_size()
+            )
+            return _split(input_, dim_, group=polar_group())
+        else:
+            return input_
 
     @staticmethod
     def backward(ctx, grad_output):
-        return _gather(grad_output, ctx.dim, ctx.split_shapes), None
+        if is_distributed_polar():
+            return _gather(grad_output, ctx.dim, ctx.split_shapes, polar_group()), None
+        else:
+            return grad_output, None
 
     
 class _ReduceFromPolarRegion(torch.autograd.Function):

@@ -193,7 +193,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.lat_in_shapes = compute_split_shapes(self.nlat_in, self.comm_size_polar)
         self.lon_in_shapes = compute_split_shapes(self.nlon_in, self.comm_size_azimuth)
         self.lat_out_shapes = compute_split_shapes(self.nlat_out, self.comm_size_polar)
-	self.lon_out_shapes = compute_split_shapes(self.nlon_out, self.comm_size_azimuth)
+        self.lon_out_shapes = compute_split_shapes(self.nlon_out, self.comm_size_azimuth)
 
         # compute theta cutoff based on the bandlimit of the input field
         if theta_cutoff is None:
@@ -236,38 +236,56 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         return psi
 
     def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
+
+        # store number of channels
+        num_chans = x.shape[1]
+        #print("input shape", x.shape)
         
         # h and w is split. First we make w local by transposing into channel dim
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth.apply(x, (1, -1), self.lon_in_shapes)
-        
+
+        #print("transposed shape", x.shape)
+            
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
 
+        #print("multiplied shape", x.shape)
+
         psi = self.get_psi()
+
+        #print("psi shape", psi.shape)
 
         if x.is_cuda and use_triton_kernel:
             x = _disco_s2_contraction_triton(x, psi, self.nlon_out)
         else:
             x = _disco_s2_contraction_torch(x, psi, self.nlon_out)
 
+        #print("psi * x shape", x.shape)
+
         # allreduce over latitudes: h is still local
         x = reduce_from_polar_region(x)
+
+        #print("reduced shape", x.shape)
 
         # split tensor along latitudes: h is split
         x = scatter_to_polar_region(x, -2)
 
+        #print("scattered shape", x.shape)
+
         # now we can transpose back the result, so that lon is split and channels are local
         if self.comm_size_azimuth > 1:
-            chan_shapes = compute_split_shapes(x.shape[1], self.comm_size_azimuth)
+            chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
             x = distributed_transpose_azimuth.apply(x, (-1, 1), chan_shapes)
+
+        #print("retransposed shape", x.shape)
 
         # extract shape
         B, C, K, H, W = x.shape
         x = x.reshape(B, self.groups, self.groupsize, K, H, W)
 
         # do weight multiplication
-        out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2]))
+        out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
         out = out.reshape(out.shape[0], -1, out.shape[-2], out.shape[-1])
 
         if self.bias is not None:
@@ -305,12 +323,12 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.comm_size_polar = polar_group_size()
         self.comm_rank_polar = polar_group_rank()
         self.comm_size_azimuth = azimuth_group_size()
-	self.comm_rank_azimuth = azimuth_group_rank()
+        self.comm_rank_azimuth = azimuth_group_rank()
 
         # we need those shapes:
-	self.lat_in_shapes = compute_split_shapes(self.nlat_in, self.comm_size_polar)
+        self.lat_in_shapes = compute_split_shapes(self.nlat_in, self.comm_size_polar)
         self.lon_in_shapes = compute_split_shapes(self.nlon_in, self.comm_size_azimuth)
-	self.lat_out_shapes = compute_split_shapes(self.nlat_out, self.comm_size_polar)
+        self.lat_out_shapes = compute_split_shapes(self.nlat_out, self.comm_size_polar)
         self.lon_out_shapes = compute_split_shapes(self.nlon_out, self.comm_size_azimuth)
 
         # bandlimit
@@ -355,15 +373,16 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     def get_psi(self):
         psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_in_local, self.nlat_out_local * self.nlon_out)).coalesce()
         return psi
-
+    
     def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
         # extract shape
         B, C, H, W = x.shape
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2]))
+        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
         x = x.reshape(x.shape[0], -1, x.shape[-3], x.shape[-2], x.shape[-1])
+        num_chans = x.shape[1]
 
         # transpose such that lon is local, channels are split
         if self.comm_size_azimuth > 1:
@@ -387,7 +406,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # now we can transpose back the result, so that lon is split and channels are local
         if self.comm_size_azimuth > 1:
-            chan_shapes = compute_split_shapes(out.shape[1], self.comm_size_azimuth)
+            chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
             out = distributed_transpose_azimuth.apply(out, (-1, 1), chan_shapes)
 
         if self.bias is not None:
