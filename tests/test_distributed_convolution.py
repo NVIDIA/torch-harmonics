@@ -185,105 +185,38 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         return tensor_gather
 
 
-    #@parameterized.expand([
-    #    [128, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular",  1e-6],
-    #    [128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular",  "equiangular",  1e-6],
-    #    [128, 256,  64, 128, 32, 8, [3   ], 1, "equiangular",  "equiangular",  1e-6],
-    #    [128, 256, 128, 256, 32, 8, [3   ], 2, "equiangular",  "equiangular",  1e-6],
-    #    [128, 256, 128, 256, 32, 5, [3   ], 1, "equiangular",  "equiangular",  1e-6],
-    #])
-    #def test_distributed_disco_conv(self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan,
-    #                                kernel_shape, groups, grid_in, grid_out, tol):
-    #    B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
-    #
-    #    disco_args = dict(in_channels=C, out_channels=C,
-    #        in_shape=(nlat_in, nlon_in), out_shape=(nlat_out, nlon_out),
-    #        kernel_shape=kernel_shape, groups=groups,
-    #        grid_in=grid_in, grid_out=grid_out,	bias=True)
-    #    
-    #    # set up handles
-    #    conv_local = harmonics.DiscreteContinuousConvS2(**disco_args).to(self.device)
-    #    conv_dist = thd.DistributedDiscreteContinuousConvS2(**disco_args).to(self.device)
-    #
-    #    # copy the weights from the local conv into the dist conv
-    #    with torch.no_grad():
-    #        conv_dist.weight.copy_(conv_local.weight)
-    #        conv_dist.bias.copy_(conv_local.bias)
-    #    
-    #    # create tensors
-    #    inp_full = torch.randn((B, C, H, W), dtype=torch.float32, device=self.device)
-    #
-    #    #############################################################
-    #    # local conv
-    #    #############################################################
-    #    # FWD pass
-    #    inp_full.requires_grad = True
-    #    out_full = conv_local(inp_full, use_triton_kernel=False)
-    #    
-    #    # create grad for backward
-    #    with torch.no_grad():
-    #        # create full grad
-    #        ograd_full = torch.randn_like(out_full)
-    #        
-    #    # BWD pass
-    #    out_full.backward(ograd_full)
-    #    igrad_full = inp_full.grad.clone()
-    #
-    #    #############################################################
-    #    # distributed conv
-    #    #############################################################
-    #    # FWD pass
-    #    inp_local = self._split_helper(inp_full)
-    #    inp_local.requires_grad = True
-    #    out_local = conv_dist(inp_local, use_triton_kernel=False)
-    #
-    #    # BWD pass
-    #    ograd_local = self._split_helper(ograd_full)
-    #    out_local = conv_dist(inp_local, use_triton_kernel=False)
-    #    out_local.backward(ograd_local)
-    #    igrad_local = inp_local.grad.clone()
-    #
-    #    #############################################################
-    #    # evaluate FWD pass
-    #    #############################################################
-    #    with torch.no_grad():
-    #        out_gather_full = self._gather_helper_fwd(out_local, B, C, conv_dist)
-    #        err = torch.mean(torch.norm(out_full-out_gather_full, p='fro', dim=(-1,-2)) / torch.norm(out_full, p='fro', dim=(-1,-2)) )
-    #        if self.world_rank == 0:
-    #            print(f"final relative error of output: {err.item()}")
-    #    self.assertTrue(err.item() <= tol)
-    #
-    #    #############################################################
-    #    # evaluate BWD pass
-    #    #############################################################
-    #    with torch.no_grad():
-    #        igrad_gather_full = self._gather_helper_bwd(igrad_local, B, C, conv_dist)
-    #        err = torch.mean(torch.norm(igrad_full-igrad_gather_full, p='fro', dim=(-1,-2)) / torch.norm(igrad_full, p='fro', dim=(-1,-2)) )
-    #        if self.world_rank == 0:
-    #            print(f"final relative error of gradients: {err.item()}")
-    #    self.assertTrue(err.item() <= tol)
-
-
     @parameterized.expand([
-        [128, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular",  1e-6],
-        [128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular",  "equiangular",  1e-6],
-        [ 64, 128, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular",  1e-6],
-        [128, 256, 128, 256, 32, 8, [3   ], 2, "equiangular",  "equiangular",  1e-6],
-        [128, 256, 128, 256, 32, 5, [3   ], 1, "equiangular",  "equiangular",  1e-6],
-    ])
-    def test_distributed_disco_conv_transpose(self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan,
-                                              kernel_shape, groups, grid_in, grid_out, tol):
-        B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
+        [128, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
+        [129, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
+        [128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular",  "equiangular", False, 1e-6],
+        [128, 256,  64, 128, 32, 8, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
+        [128, 256, 128, 256, 32, 8, [3   ], 2, "equiangular",  "equiangular", False, 1e-6],
+        [128, 256, 128, 256, 32, 5, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
 
+        [128, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
+        [129, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
+        [128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular",  "equiangular", True,  1e-6],
+        [ 64, 128, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
+        [128, 256, 128, 256, 32, 8, [3   ], 2, "equiangular",  "equiangular", True,  1e-6],
+        [128, 256, 128, 256, 32, 5, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
+    ])
+    def test_distributed_disco_conv(self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan,
+                                    kernel_shape, groups, grid_in, grid_out, transpose, tol):
+        B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
+    
         disco_args = dict(in_channels=C, out_channels=C,
             in_shape=(nlat_in, nlon_in), out_shape=(nlat_out, nlon_out),
             kernel_shape=kernel_shape, groups=groups,
-            grid_in=grid_in, grid_out=grid_out, bias=True)
-
+            grid_in=grid_in, grid_out=grid_out,	bias=True)
+        
         # set up handles
-        conv_local = harmonics.DiscreteContinuousConvTransposeS2(**disco_args).to(self.device)
-        conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args).to(self.device)
-
+        if transpose:
+            conv_local = harmonics.DiscreteContinuousConvTransposeS2(**disco_args).to(self.device)
+            conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args).to(self.device)
+        else:
+            conv_local = harmonics.DiscreteContinuousConvS2(**disco_args).to(self.device)
+            conv_dist = thd.DistributedDiscreteContinuousConvS2(**disco_args).to(self.device)
+            
         # copy the weights from the local conv into the dist conv
         with torch.no_grad():
             conv_dist.weight.copy_(conv_local.weight)
@@ -291,23 +224,23 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
         # create tensors
         inp_full = torch.randn((B, C, H, W), dtype=torch.float32, device=self.device)
-
+    
         #############################################################
         # local conv
         #############################################################
         # FWD pass
         inp_full.requires_grad = True
         out_full = conv_local(inp_full, use_triton_kernel=False)
-
+        
         # create grad for backward
         with torch.no_grad():
             # create full grad
             ograd_full = torch.randn_like(out_full)
-
+            
         # BWD pass
         out_full.backward(ograd_full)
         igrad_full = inp_full.grad.clone()
-
+    
         #############################################################
         # distributed conv
         #############################################################
@@ -315,13 +248,13 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         inp_local = self._split_helper(inp_full)
         inp_local.requires_grad = True
         out_local = conv_dist(inp_local, use_triton_kernel=False)
-
+    
         # BWD pass
         ograd_local = self._split_helper(ograd_full)
         out_local = conv_dist(inp_local, use_triton_kernel=False)
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
-
+    
         #############################################################
         # evaluate FWD pass
         #############################################################
@@ -331,7 +264,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             if self.world_rank == 0:
                 print(f"final relative error of output: {err.item()}")
         self.assertTrue(err.item() <= tol)
-
+    
         #############################################################
         # evaluate BWD pass
         #############################################################
