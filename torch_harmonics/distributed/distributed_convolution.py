@@ -278,8 +278,6 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
             x = distributed_transpose_azimuth.apply(x, (-1, 1), chan_shapes)
 
-        #print("retransposed shape", x.shape)
-
         # extract shape
         B, C, K, H, W = x.shape
         x = x.reshape(B, self.groups, self.groupsize, K, H, W)
@@ -359,17 +357,17 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # switch in_shape and out_shape since we want transpose conv
         # distributed mode here is swapped because of the transpose
-        iidx, vals = _precompute_distributed_convolution_tensor_s2(out_shape, in_shape, self.kernel_shape, grid_in=grid_out, grid_out=grid_in,
-                                                                   theta_cutoff=theta_cutoff, distributed_mode="rows" if distributed_mode else "columns")
+        idx, vals = _precompute_distributed_convolution_tensor_s2(out_shape, in_shape, self.kernel_shape, grid_in=grid_out, grid_out=grid_in,
+                                                                  theta_cutoff=theta_cutoff, distributed_mode="rows" if distributed_mode else "columns")
 
-        # do partial transpose
-        # we do a semi-transposition to faciliate the computation
-        tout = iidx[2] // self.nlon_out
-        pout = iidx[2] % self.nlon_out
-        # flip the axis of longitudes
-        pout = self.nlon_out - 1 - pout
-        tin = iidx[1]
-        idx = torch.stack([iidx[0], tout, tin*self.nlon_out + pout], dim=0)
+        ## do partial transpose
+        ## we do a semi-transposition to faciliate the computation
+        #tout = iidx[2] // self.nlon_out
+        #pout = iidx[2] % self.nlon_out
+        ## flip the axis of longitudes
+        #pout = self.nlon_out - 1 - pout
+        #tin = iidx[1]
+        #idx = torch.stack([iidx[0], tout, tin*self.nlon_out + pout], dim=0)
         
         # split the weight tensor as well
         if distributed_mode == "columns":
@@ -380,8 +378,19 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.register_buffer("psi_idx", idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
 
-    def get_psi(self):
-        psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out_local, self.nlat_in_local * self.nlon_out)).coalesce()
+    def get_psi(self, use_triton_kernel=True):
+        if not use_triton_kernel:
+            # do partial transpose
+            # we do a semi-transposition to faciliate the computation
+            tout = self.psi_idx[2] // self.nlon_out
+            pout = self.psi_idx[2] % self.nlon_out
+            # flip the axis of longitudes
+            pout = self.nlon_out - 1 - pout
+            tin = self.psi_idx[1]
+            idx = torch.stack([self.psi_idx[0], tout, tin*self.nlon_out + pout], dim=0)
+            psi = torch.sparse_coo_tensor(idx, self.psi_vals, size=(self.kernel_size, self.nlat_out_local, self.nlat_in_local * self.nlon_out)).coalesce()
+        else:
+            psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_in_local, self.nlat_out_local * self.nlon_out)).coalesce()
         return psi
     
     def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
@@ -400,13 +409,12 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
-
-        # get psi matrix
-        psi = self.get_psi()
         
         if x.is_cuda and use_triton_kernel:
+            psi = self.get_psi(True)
             out = _disco_s2_transpose_contraction_triton(x, psi, self.nlon_out)
         else:
+            psi = self.get_psi(False)
             out = _disco_s2_transpose_contraction_torch(x, psi, self.nlon_out)
             
         # allreduce over latitudes: h is still local

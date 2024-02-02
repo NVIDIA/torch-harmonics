@@ -264,7 +264,7 @@ def _disco_s2_contraction_bwd(grad_y: torch.Tensor, psi: torch.Tensor, nlon_in: 
     # make sure that the grid-points of the output grid fall onto the grid points of the input grid
     assert nlon_in % nlon_out == 0
     pscale = nlon_in // nlon_out
-
+    
     # to simplify things, we merge batch and channel dimensions
     grad_y = grad_y.reshape(batch_size * n_chans, kernel_size, nlat_out, nlon_out)
 

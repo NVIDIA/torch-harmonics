@@ -58,6 +58,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
                 print("Running test on GPU")
             local_rank = cls.world_rank % torch.cuda.device_count()
             cls.device = torch.device(f"cuda:{local_rank}")
+            torch.cuda.set_device(local_rank)
             torch.cuda.manual_seed(333)
             proc_backend = 'nccl'
         else:
@@ -202,6 +203,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
     ])
     def test_distributed_disco_conv(self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan,
                                     kernel_shape, groups, grid_in, grid_out, transpose, tol):
+        
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
     
         disco_args = dict(in_channels=C, out_channels=C,
@@ -230,7 +232,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         #############################################################
         # FWD pass
         inp_full.requires_grad = True
-        out_full = conv_local(inp_full, use_triton_kernel=False)
+        out_full = conv_local(inp_full, use_triton_kernel=True)
         
         # create grad for backward
         with torch.no_grad():
@@ -247,11 +249,11 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         # FWD pass
         inp_local = self._split_helper(inp_full)
         inp_local.requires_grad = True
-        out_local = conv_dist(inp_local, use_triton_kernel=False)
+        out_local = conv_dist(inp_local, use_triton_kernel=True)
     
         # BWD pass
         ograd_local = self._split_helper(ograd_full)
-        out_local = conv_dist(inp_local, use_triton_kernel=False)
+        out_local = conv_dist(inp_local, use_triton_kernel=True)
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
     

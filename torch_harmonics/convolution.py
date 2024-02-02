@@ -388,21 +388,23 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
         # switch in_shape and out_shape since we want transpose conv
-        iidx, vals = _precompute_convolution_tensor_s2(out_shape, in_shape, self.kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff)
-
-        # we do a semi-transposition to faciliate the computation
-        tout = iidx[2] // self.nlon_out
-        pout = iidx[2] % self.nlon_out
-        # flip the axis of longitudes
-        pout = self.nlon_out - 1 - pout
-        tin = iidx[1]
-        idx = torch.stack([iidx[0], tout, tin*self.nlon_out + pout], dim=0)
+        idx, vals = _precompute_convolution_tensor_s2(out_shape, in_shape, self.kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff)
 
         self.register_buffer("psi_idx", idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
 
-    def get_psi(self):
-        psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_out)).coalesce()
+    def get_psi(self, use_triton_kernel=True):
+        if not use_triton_kernel:
+            # we do a semi-transposition to faciliate the computation
+            tout = self.psi_idx[2] // self.nlon_out
+            pout = self.psi_idx[2] % self.nlon_out
+            # flip the axis of longitudes
+            pout = self.nlon_out - 1 - pout
+            tin = self.psi_idx[1]
+            idx = torch.stack([self.psi_idx[0], tout, tin*self.nlon_out + pout], dim=0)
+            psi = torch.sparse_coo_tensor(idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_out)).coalesce()
+        else:
+            psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_in, self.nlat_out * self.nlon_out)).coalesce()
         return psi
 
     def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
@@ -417,7 +419,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
 
-        psi = self.get_psi()
+        psi = self.get_psi(x.is_cuda and use_triton_kernel)
 
         if x.is_cuda and use_triton_kernel:
             out = _disco_s2_transpose_contraction_triton(x, psi, self.nlon_out)
