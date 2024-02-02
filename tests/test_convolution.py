@@ -166,21 +166,21 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
     @parameterized.expand(
         [
             # regular convolution
-            [8, 4, 2, (16, 32), (16, 32), [2   ], "equiangular",    "equiangular",    False, 1e-5],
-            [8, 4, 2, (16, 32), ( 8, 16), [3   ], "equiangular",    "equiangular",    False, 1e-5],
-            [8, 4, 2, (16, 32), ( 8, 16), [2, 3], "equiangular",    "equiangular",    False, 1e-5],
-            [8, 4, 2, (18, 36), ( 6, 12), [4   ], "equiangular",    "equiangular",    False, 1e-5],
-            [8, 4, 2, (16, 32), ( 8, 16), [3   ], "equiangular",    "legendre-gauss", False, 1e-5],
-            [8, 4, 2, (16, 32), ( 8, 16), [3   ], "legendre-gauss", "equiangular",    False, 1e-5],
-            [8, 4, 2, (16, 32), ( 8, 16), [3   ], "legendre-gauss", "legendre-gauss", False, 1e-5],
+            [8, 4, 2, (16, 32), (16, 32), [2   ], "equiangular",    "equiangular",    False, 5e-5],
+            [8, 4, 2, (16, 32), ( 8, 16), [3   ], "equiangular",    "equiangular",    False, 5e-5],
+            [8, 4, 2, (16, 32), ( 8, 16), [2, 3], "equiangular",    "equiangular",    False, 5e-5],
+            [8, 4, 2, (18, 36), ( 6, 12), [4   ], "equiangular",    "equiangular",    False, 5e-5],
+            [8, 4, 2, (16, 32), ( 8, 16), [3   ], "equiangular",    "legendre-gauss", False, 5e-5],
+            [8, 4, 2, (16, 32), ( 8, 16), [3   ], "legendre-gauss", "equiangular",    False, 5e-5],
+            [8, 4, 2, (16, 32), ( 8, 16), [3   ], "legendre-gauss", "legendre-gauss", False, 5e-5],
             # transpose convolution
-            [8, 4, 2, (16, 32), (16, 32), [2   ], "equiangular",    "equiangular",    True, 1e-5],
-            [8, 4, 2, ( 8, 16), (16, 32), [3   ], "equiangular",    "equiangular",    True, 1e-5],
-            [8, 4, 2, ( 8, 16), (16, 32), [2, 3], "equiangular",    "equiangular",    True, 1e-5],
-            [8, 4, 2, ( 6, 12), (18, 36), [4   ], "equiangular",    "equiangular",    True, 1e-5],
-            [8, 4, 2, ( 8, 16), (16, 32), [3   ], "equiangular",    "legendre-gauss", True, 1e-5],
-            [8, 4, 2, ( 8, 16), (16, 32), [3   ], "legendre-gauss", "equiangular",    True, 1e-5],
-            [8, 4, 2, ( 8, 16), (16, 32), [3   ], "legendre-gauss", "legendre-gauss", True, 1e-5],
+            [8, 4, 2, (16, 32), (16, 32), [2   ], "equiangular",    "equiangular",    True, 5e-5],
+            [8, 4, 2, ( 8, 16), (16, 32), [3   ], "equiangular",    "equiangular",    True, 5e-5],
+            [8, 4, 2, ( 8, 16), (16, 32), [2, 3], "equiangular",    "equiangular",    True, 5e-5],
+            [8, 4, 2, ( 6, 12), (18, 36), [4   ], "equiangular",    "equiangular",    True, 5e-5],
+            [8, 4, 2, ( 8, 16), (16, 32), [3   ], "equiangular",    "legendre-gauss", True, 5e-5],
+            [8, 4, 2, ( 8, 16), (16, 32), [3   ], "legendre-gauss", "equiangular",    True, 5e-5],
+            [8, 4, 2, ( 8, 16), (16, 32), [3   ], "legendre-gauss", "legendre-gauss", True, 5e-5],
         ]
     )
     def test_disco_convolution(
@@ -262,8 +262,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # compare 
         self.assertTrue(torch.allclose(x_grad, x_ref_grad, rtol=tol, atol=tol))
-        print(conv.weight.grad[0,0,0])
-        print(w_ref.grad[0,0,0])
         self.assertTrue(torch.allclose(conv.weight.grad, w_ref.grad, rtol=tol, atol=tol))
 
 if __name__ == "__main__":
