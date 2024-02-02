@@ -393,6 +393,8 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         psi = self.get_psi()
 
+        print(psi.shape, x.shape)
+        
         if x.is_cuda and use_triton_kernel:
             out = _disco_s2_transpose_contraction_triton(x, psi, self.nlon_out)
         else:
