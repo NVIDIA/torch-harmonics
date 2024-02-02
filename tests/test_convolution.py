@@ -262,6 +262,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # compare 
         self.assertTrue(torch.allclose(x_grad, x_ref_grad, rtol=tol, atol=tol))
+        print(conv.weight.grad[0,0,0])
+        print(w_ref.grad[0,0,0])
         self.assertTrue(torch.allclose(conv.weight.grad, w_ref.grad, rtol=tol, atol=tol))
 
 if __name__ == "__main__":
