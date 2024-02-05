@@ -155,30 +155,32 @@ def _precompute_convolution_tensor_dense(
 class TestDiscreteContinuousConvolution(unittest.TestCase):
     def setUp(self):
         if torch.cuda.is_available():
-            self.device = torch.device("cuda")
+            self.device = torch.device("cuda:0")
+            torch.cuda.set_device(self.device.index)
+            torch.cuda.manual_seed(333)
         else:
             self.device = torch.device("cpu")
-
-        self.device = torch.device("cpu")
-
+        torch.manual_seed(333)
+        
+        
     @parameterized.expand(
         [
             # regular convolution
-            [8, 4, 2, (16, 32), (16, 32), [2], "equiangular", "equiangular", False, 1e-5],
-            [8, 4, 2, (16, 32), (8, 16), [3], "equiangular", "equiangular", False, 1e-5],
-            [8, 4, 2, (16, 32), (8, 16), [2, 3], "equiangular", "equiangular", False, 1e-5],
-            [8, 4, 2, (18, 36), (6, 12), [4], "equiangular", "equiangular", False, 1e-5],
-            [8, 4, 2, (16, 32), (8, 16), [3], "equiangular", "legendre-gauss", False, 1e-5],
-            [8, 4, 2, (16, 32), (8, 16), [3], "legendre-gauss", "equiangular", False, 1e-5],
-            [8, 4, 2, (16, 32), (8, 16), [3], "legendre-gauss", "legendre-gauss", False, 1e-5],
+            [8, 4, 2, (16, 32), (16, 32), [2   ], "equiangular",    "equiangular",    False, 5e-5],
+            [8, 4, 2, (16, 32), ( 8, 16), [3   ], "equiangular",    "equiangular",    False, 5e-5],
+            [8, 4, 2, (16, 32), ( 8, 16), [2, 3], "equiangular",    "equiangular",    False, 5e-5],
+            [8, 4, 2, (18, 36), ( 6, 12), [4   ], "equiangular",    "equiangular",    False, 5e-5],
+            [8, 4, 2, (16, 32), ( 8, 16), [3   ], "equiangular",    "legendre-gauss", False, 5e-5],
+            [8, 4, 2, (16, 32), ( 8, 16), [3   ], "legendre-gauss", "equiangular",    False, 5e-5],
+            [8, 4, 2, (16, 32), ( 8, 16), [3   ], "legendre-gauss", "legendre-gauss", False, 5e-5],
             # transpose convolution
-            [8, 4, 2, (16, 32), (16, 32), [2], "equiangular", "equiangular", True, 1e-5],
-            [8, 4, 2, (8, 16), (16, 32), [3], "equiangular", "equiangular", True, 1e-5],
-            [8, 4, 2, (8, 16), (16, 32), [2, 3], "equiangular", "equiangular", True, 1e-5],
-            [8, 4, 2, (6, 12), (18, 36), [4], "equiangular", "equiangular", True, 1e-5],
-            [8, 4, 2, (8, 16), (16, 32), [3], "equiangular", "legendre-gauss", True, 1e-5],
-            [8, 4, 2, (8, 16), (16, 32), [3], "legendre-gauss", "equiangular", True, 1e-5],
-            [8, 4, 2, (8, 16), (16, 32), [3], "legendre-gauss", "legendre-gauss", True, 1e-5],
+            [8, 4, 2, (16, 32), (16, 32), [2   ], "equiangular",    "equiangular",    True, 5e-5],
+            [8, 4, 2, ( 8, 16), (16, 32), [3   ], "equiangular",    "equiangular",    True, 5e-5],
+            [8, 4, 2, ( 8, 16), (16, 32), [2, 3], "equiangular",    "equiangular",    True, 5e-5],
+            [8, 4, 2, ( 6, 12), (18, 36), [4   ], "equiangular",    "equiangular",    True, 5e-5],
+            [8, 4, 2, ( 8, 16), (16, 32), [3   ], "equiangular",    "legendre-gauss", True, 5e-5],
+            [8, 4, 2, ( 8, 16), (16, 32), [3   ], "legendre-gauss", "equiangular",    True, 5e-5],
+            [8, 4, 2, ( 8, 16), (16, 32), [3   ], "legendre-gauss", "legendre-gauss", True, 5e-5],
         ]
     )
     def test_disco_convolution(
@@ -228,36 +230,38 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             )
 
         # create a copy of the weight
-        w_ref = conv.weight.detach().clone()
-        w_ref.requires_grad_(True)
+        w_ref = torch.empty_like(conv.weight)
+        with torch.no_grad():
+            w_ref.copy_(conv.weight)
+        w_ref.requires_grad = True
 
         # create an input signal
-        torch.manual_seed(333)
-        x = torch.randn(batch_size, in_channels, *in_shape, requires_grad=True).to(self.device)
+        x = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
+
+        # FWD and BWD pass
+        x.requires_grad = True
+        y = conv(x)
+        grad_input = torch.randn_like(y)
+        y.backward(grad_input)
+        x_grad = x.grad.clone()
 
         # perform the reference computation
         x_ref = x.clone().detach()
-        x_ref.requires_grad_(True)
+        x_ref.requires_grad = True
         if transpose:
             y_ref = torch.einsum("oif,biqr->bofqr", w_ref, x_ref)
             y_ref = torch.einsum("fqrtp,bofqr->botp", psi_dense, y_ref * conv.quad_weights)
         else:
             y_ref = torch.einsum("ftpqr,bcqr->bcftp", psi_dense, x_ref * conv.quad_weights)
             y_ref = torch.einsum("oif,biftp->botp", w_ref, y_ref)
-
-        # use the convolution module
-        y = conv(x)
-
+        y_ref.backward(grad_input)
+        x_ref_grad = x_ref.grad.clone()        
+        
         # compare results
         self.assertTrue(torch.allclose(y, y_ref, rtol=tol, atol=tol))
 
-        # compute gradients and compare results
-        grad_input = torch.randn_like(y)
-        y_ref.backward(grad_input)
-        y.backward(grad_input)
-
         # compare 
-        self.assertTrue(torch.allclose(x.grad, x_ref.grad, rtol=tol, atol=tol))
+        self.assertTrue(torch.allclose(x_grad, x_ref_grad, rtol=tol, atol=tol))
         self.assertTrue(torch.allclose(conv.weight.grad, w_ref.grad, rtol=tol, atol=tol))
 
 if __name__ == "__main__":

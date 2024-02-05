@@ -264,7 +264,7 @@ def _disco_s2_contraction_bwd(grad_y: torch.Tensor, psi: torch.Tensor, nlon_in: 
     # make sure that the grid-points of the output grid fall onto the grid points of the input grid
     assert nlon_in % nlon_out == 0
     pscale = nlon_in // nlon_out
-
+    
     # to simplify things, we merge batch and channel dimensions
     grad_y = grad_y.reshape(batch_size * n_chans, kernel_size, nlat_out, nlon_out)
 
@@ -409,30 +409,21 @@ def _disco_s2_transpose_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nl
     psi = psi.to(x.device)
 
     batch_size, n_chans, kernel_size, nlat_in, nlon_in = x.shape
-    kernel_size, _, n_out = psi.shape
+    kernel_size, nlat_out, n_out = psi.shape
 
-    assert psi.shape[-2] == nlat_in
     assert n_out % nlon_out == 0
-    nlat_out = n_out // nlon_out
     assert nlon_out >= nlat_in
     pscale = nlon_out // nlon_in
 
-    # we do a semi-transposition to faciliate the computation
-    inz = psi.indices()
-    tout = inz[2] // nlon_out
-    pout = inz[2] % nlon_out
-    # flip the axis of longitudes
-    pout = nlon_out - 1 - pout
-    tin = inz[1]
-    inz = torch.stack([inz[0], tout, tin*nlon_out + pout], dim=0)
-    psi_mod = torch.sparse_coo_tensor(inz, psi.values(), size=(kernel_size, nlat_out, nlat_in*nlon_out))
-
     # interleave zeros along the longitude dimension to allow for fractional offsets to be considered
     x_ext = torch.zeros(kernel_size, nlat_in, nlon_out, batch_size * n_chans, device=x.device, dtype=x.dtype)
-    x_ext[:, :, ::pscale, :] = x.reshape(batch_size * n_chans, kernel_size, nlat_in, nlon_in).permute(1, 2, 3, 0)
-    # we need to go backwards through the vector, so we flip the axis
-    x_ext = x_ext.contiguous()
+    x = x.reshape(batch_size * n_chans, kernel_size, nlat_in, nlon_in).permute(1, 2, 3, 0)
+    
+    # x has shape kernel_size x nlat_in x nlon_in x batch_size * n_chans
+    # we only need to apoply the nlon stride here, since nlat stride is taken care of by the kernel
+    x_ext[:, :, ::pscale, :] = x[...]
 
+    # create output tensor
     y = torch.zeros(kernel_size, nlon_out, nlat_out, batch_size * n_chans, device=x.device, dtype=x.dtype)
 
     for pout in range(nlon_out):
@@ -440,10 +431,10 @@ def _disco_s2_transpose_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nl
         # TODO: double-check why this has to happen first
         x_ext = torch.roll(x_ext, -1, dims=2)
         # sparse contraction with the modified psi
-        y[:, pout, :, :] = torch.bmm(psi_mod, x_ext.reshape(kernel_size, nlat_in * nlon_out, -1))
+        y[:, pout, :, :] = torch.bmm(psi, x_ext.reshape(kernel_size, nlat_in * nlon_out, -1))
 
     # sum over the kernel dimension and reshape to the correct output size
-    y = y.sum(dim=0).permute(2, 1, 0).reshape(batch_size, n_chans, nlat_out, nlon_out)
+    y = y.sum(dim=0).permute(2, 1, 0).reshape(batch_size, n_chans, nlat_out, nlon_out).contiguous()
 
     return y
 
