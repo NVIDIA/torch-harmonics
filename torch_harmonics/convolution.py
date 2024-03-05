@@ -47,6 +47,9 @@ from torch_harmonics._disco_convolution import (
     _disco_s2_transpose_contraction_triton,
 )
 
+from disco_helpers import preprocess_psi
+import disco_cuda
+
 
 def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, r_cutoff: float, norm: str = "s2"):
     """
@@ -317,23 +320,39 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
         idx, vals = _precompute_convolution_tensor_s2(in_shape, out_shape, self.kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff)
+        self.kernel_size = ker_idx.max() + 1
 
-        self.register_buffer("psi_idx", idx, persistent=False)
+        # sort the values
+        ker_idx = idx[0, ...].contiguous()
+        row_idx = idx[1, ...].contiguous()
+        col_idx = idx[2, ...].contiguous()
+        roff_idx = preprocess_psi(self.kernel_size, out_shape[0], ker_idx, row_idx, col_idx, vals)
+
+        # GPU kernel
+        self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+        self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
+        self.register_buffer("psi_row_idx", row_idx, persistent=False)
+        self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
 
+        # cpu kernel
+        #self.register_buffer("psi_idx", idx, persistent=False)
+        #self.register_buffer("psi_vals", vals, persistent=False)
+
     def get_psi(self):
-        psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_in)).coalesce()
+        psi_idx = torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
+        psi = torch.sparse_coo_tensor(psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_in)).coalesce()
         return psi
 
     def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
-
-        psi = self.get_psi()
         
         if x.is_cuda and use_triton_kernel:
-            x = _disco_s2_contraction_triton(x, psi, self.nlon_out)
+            #x = _disco_s2_contraction_triton(x, psi, self.nlon_out)
+            x = disco_cuda.forward(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out)
         else:
+            psi = self.get_psi()
             x = _disco_s2_contraction_torch(x, psi, self.nlon_out)
 
         # extract shape

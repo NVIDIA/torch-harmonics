@@ -33,6 +33,7 @@ try:
 except ImportError:
     from distutils.core import setup, find_packages
 
+from torch.utils import cpp_extension
 import re
 from pathlib import Path
 
@@ -75,6 +76,15 @@ root_path = Path(__file__).parent
 README = readme(root_path)
 VERSION = version(root_path)
 
+# external modules
+ext_modules=[
+    cpp_extension.CUDAExtension('disco_cuda', [
+        'torch_harmonics/csrc/disco/disco_cuda.cu',
+    ]),
+    cpp_extension.CppExtension('disco_helpers', [
+        'torch_harmonics/csrc/disco/disco_helpers.cpp'
+    ]),
+]
 
 config = {
     'name': 'torch_harmonics',
@@ -98,6 +108,8 @@ config = {
         'License :: OSI Approved :: BSD License',
         'Programming Language :: Python :: 3'
     ],
+    'ext_modules': ext_modules,
+    'cmdclass': {'build_ext': cpp_extension.BuildExtension} if ext_modules else {}
 }
 
 setup(**config)
