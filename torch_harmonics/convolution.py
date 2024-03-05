@@ -320,7 +320,6 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
         idx, vals = _precompute_convolution_tensor_s2(in_shape, out_shape, self.kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff)
-        self.kernel_size = ker_idx.max() + 1
 
         # sort the values
         ker_idx = idx[0, ...].contiguous()
