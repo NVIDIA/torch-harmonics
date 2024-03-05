@@ -349,7 +349,6 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         
         if x.is_cuda and use_triton_kernel:
             #x = _disco_s2_contraction_triton(x, psi, self.nlon_out)
-            print("I am here")
             x = disco_cuda.forward(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out)
         else:
             psi = self.get_psi()
