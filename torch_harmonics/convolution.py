@@ -338,9 +338,13 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         #self.register_buffer("psi_idx", idx, persistent=False)
         #self.register_buffer("psi_vals", vals, persistent=False)
 
+    @property
+    def psi_idx(self):
+        return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
+
     def get_psi(self):
-        psi_idx = torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
-        psi = torch.sparse_coo_tensor(psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_in)).coalesce()
+        #psi_idx = torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
+        psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_in)).coalesce()
         return psi
 
     def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
