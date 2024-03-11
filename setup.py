@@ -79,7 +79,9 @@ VERSION = version(root_path)
 # external modules
 ext_modules=[
     cpp_extension.CUDAExtension('disco_cuda', [
-        'torch_harmonics/csrc/disco/disco_cuda.cu',
+        'torch_harmonics/csrc/disco/disco_interface.cu',
+        'torch_harmonics/csrc/disco/disco_cuda_fwd.cu',
+        'torch_harmonics/csrc/disco/disco_cuda_bwd.cu',
     ]),
     cpp_extension.CppExtension('disco_helpers', [
         'torch_harmonics/csrc/disco/disco_helpers.cpp'
