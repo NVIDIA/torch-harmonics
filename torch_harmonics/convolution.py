@@ -49,7 +49,10 @@ from torch_harmonics._disco_convolution import (
     _disco_s2_transpose_contraction_cuda,
 )
 
+# import custom C++/CUDA extensions
 from disco_helpers import preprocess_psi
+if torch.cuda.is_available():
+    import disco_cuda
 
 
 def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, r_cutoff: float, norm: str = "s2"):
@@ -121,7 +124,7 @@ def _precompute_convolution_tensor_s2(in_shape, out_shape, kernel_shape, grid_in
     The rotation of the Euler angles uses the YZY convention, which applied to the northpole $(0,0,1)^T$ yields
     $$
     Y(\alpha) Z(\beta) Y(\gamma) n =
-        {\begin{bmatrix} 
+        {\begin{bmatrix}
             \cos(\gamma)\sin(\alpha) + \cos(\alpha)\cos(\beta)\sin(\gamma) \\
             \sin(\beta)\sin(\gamma) \\
             \cos(\alpha)\cos(\gamma)-\cos(\beta)\sin(\alpha)\sin(\gamma)
@@ -348,11 +351,11 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_in)).coalesce()
         return psi
 
-    def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
-        
-        if x.is_cuda and use_triton_kernel:
+
+        if x.is_cuda:
             #x = _disco_s2_contraction_triton(x, psi, self.nlon_out)
             x = _disco_s2_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
                                            self.kernel_size, self.nlat_out, self.nlon_out)
