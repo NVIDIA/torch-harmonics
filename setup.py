@@ -2,7 +2,7 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -71,6 +71,16 @@ def readme(root_path):
     with root_path.joinpath('README.md').open(encoding='UTF-8') as f:
         return f.read()
 
+
+def _get_ext_modules():
+    import torch
+
+    ext_modules = [cpp_extension.CppExtension('disco_helpers', ['torch_harmonics/csrc/disco/disco_helpers.cpp']),]
+
+    if torch.cuda.is_available():
+        ext_modules.append(cpp_extension.CUDAExtension('disco_cuda', ['torch_harmonics/csrc/disco/disco_interface.cu', 'torch_harmonics/csrc/disco/disco_cuda_fwd.cu', 'torch_harmonics/csrc/disco/disco_cuda_bwd.cu',]) )
+
+    return ext_modules
 
 root_path = Path(__file__).parent
 README = readme(root_path)
