@@ -43,7 +43,7 @@
 #define MIN_THREADS (64)
 #define ELXTH_MAX   (32)
 
-# forward kernel
+// forward kernel
 torch::Tensor disco_cuda_fwd(torch::Tensor inp,
                              torch::Tensor roff_idx,
                              torch::Tensor ker_idx,
@@ -54,7 +54,7 @@ torch::Tensor disco_cuda_fwd(torch::Tensor inp,
                              int64_t Ho,
                              int64_t Wo);
 
-# backward kernel
+// backward kernel
 torch::Tensor disco_cuda_bwd(torch::Tensor inp,
                              torch::Tensor roff_idx,
                              torch::Tensor ker_idx,

@@ -45,10 +45,11 @@ from torch_harmonics._disco_convolution import (
     _disco_s2_transpose_contraction_torch,
     _disco_s2_contraction_triton,
     _disco_s2_transpose_contraction_triton,
+    _disco_s2_contraction_cuda,
+    _disco_s2_transpose_contraction_cuda,
 )
 
 from disco_helpers import preprocess_psi
-import disco_cuda
 
 
 def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, r_cutoff: float, norm: str = "s2"):
@@ -353,7 +354,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         
         if x.is_cuda and use_triton_kernel:
             #x = _disco_s2_contraction_triton(x, psi, self.nlon_out)
-            x = disco_cuda.forward(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out)
+            x = _disco_s2_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
+                                           self.kernel_size, self.nlat_out, self.nlon_out)
         else:
             psi = self.get_psi()
             x = _disco_s2_contraction_torch(x, psi, self.nlon_out)

@@ -177,13 +177,13 @@ void disco_dir_blk_k(const int Hi,
 template<int NTH,
          int ELXTH,
          typename REAL_T>
-static void launch_kernel(int BC,
-                          int Hi,
-                          int Wi,
-                          int K,
-                          int Ho,
-                          int Wo,
-                          int nrows,
+static void launch_kernel(int64_t BC,
+                          int64_t Hi,
+                          int64_t Wi,
+                          int64_t K,
+                          int64_t Ho,
+                          int64_t Wo,
+                          int64_t nrows,
                           int64_t *roff_d,
                           int64_t *ker_d, 
                           int64_t *row_d,
@@ -197,34 +197,50 @@ static void launch_kernel(int BC,
       if (NTH*ELXTH >= Wo) {
 	dim3 grid(nrows, BC);
         
-	const int pscale = Wi/Wo;
+	const int pscale = static_cast<int>(Wi/Wo);
 	size_t shmem = sizeof(*out_d)*(Wi*2 + pscale*(NTH*ELXTH-Wo));
 	
 	switch(Wi) {
 	case 360:
-	  disco_dir_blk_k<NTH, ELXTH, 360><<<grid, NTH, shmem, stream>>>(Hi, Wi,
-									 K, Ho, Wo, pscale,
+	  disco_dir_blk_k<NTH, ELXTH, 360><<<grid, NTH, shmem, stream>>>(static_cast<int>(Hi),
+									 static_cast<int>(Wi),
+									 static_cast<int>(K),
+									 static_cast<int>(Ho),
+									 static_cast<int>(Wo),
+									 pscale,
 									 roff_d,
 									 ker_d, row_d, col_d, val_d,
 									 inp_d, out_d);
 	  break;
 	case 720:
-	  disco_dir_blk_k<NTH, ELXTH, 720><<<grid, NTH, shmem, stream>>>(Hi, Wi,
-									 K, Ho, Wo, pscale,
+	  disco_dir_blk_k<NTH, ELXTH, 720><<<grid, NTH, shmem, stream>>>(static_cast<int>(Hi),
+									 static_cast<int>(Wi),
+									 static_cast<int>(K),
+									 static_cast<int>(Ho),
+									 static_cast<int>(Wo),
+									 pscale,
 									 roff_d,
 									 ker_d, row_d, col_d, val_d,
 									 inp_d, out_d);
 	  break;
 	case 1440:
-	  disco_dir_blk_k<NTH, ELXTH, 1440><<<grid, NTH, shmem, stream>>>(Hi, Wi,
-									  K, Ho, Wo, pscale,
+	  disco_dir_blk_k<NTH, ELXTH, 1440><<<grid, NTH, shmem, stream>>>(static_cast<int>(Hi),
+									  static_cast<int>(Wi),
+									  static_cast<int>(K),
+									  static_cast<int>(Ho),
+									  static_cast<int>(Wo),
+									  pscale,
 									  roff_d,
 									  ker_d, row_d, col_d, val_d,
 									  inp_d, out_d);
 	  break;
 	default:
-	  disco_dir_blk_k<NTH, ELXTH, 0><<<grid, NTH, shmem, stream>>>(Hi, Wi,
-								       K, Ho, Wo, pscale,
+	  disco_dir_blk_k<NTH, ELXTH, 0><<<grid, NTH, shmem, stream>>>(static_cast<int>(Hi),
+								       static_cast<int>(Wi),
+								       static_cast<int>(K),
+								       static_cast<int>(Ho),
+								       static_cast<int>(Wo),
+								       pscale,
 								       roff_d,
 								       ker_d, row_d, col_d, val_d,
 								       inp_d, out_d);
@@ -295,7 +311,7 @@ torch::Tensor disco_cuda_fwd(torch::Tensor inp,
   //float* out_d = out.data_ptr<float>();
 
   if      (Wo <=   64*ELXTH_MAX) {
-    AT_DISPATCH_FLOATING_TYPES(inp.type(), "disco_forward_cuda", ([&] {
+    AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
 	  launch_kernel<64, 1, scalar_t>(BC, Hi, Wi, K, Ho, Wo, nrows,
 					 roff_idx.data_ptr<int64_t>(),
 					 ker_idx.data_ptr<int64_t>(),
@@ -308,7 +324,7 @@ torch::Tensor disco_cuda_fwd(torch::Tensor inp,
 	    }));
   }
   else if (Wo <=  128*ELXTH_MAX) {
-    AT_DISPATCH_FLOATING_TYPES(inp.type(), "disco_forward_cuda", ([&] {
+    AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
 	  launch_kernel<128, (ELXTH_MAX/2)+1, scalar_t>(BC, Hi, Wi, K, Ho, Wo, nrows,
 							roff_idx.data_ptr<int64_t>(),
 							ker_idx.data_ptr<int64_t>(),
@@ -321,7 +337,7 @@ torch::Tensor disco_cuda_fwd(torch::Tensor inp,
 	    }));
   }
   else if (Wo <=  256*ELXTH_MAX) {
-    AT_DISPATCH_FLOATING_TYPES(inp.type(), "disco_forward_cuda", ([&] {
+    AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
           launch_kernel<256, (ELXTH_MAX/2)+1, scalar_t>(BC, Hi, Wi, K, Ho, Wo, nrows,
                                                         roff_idx.data_ptr<int64_t>(),
                                                         ker_idx.data_ptr<int64_t>(),
@@ -334,7 +350,7 @@ torch::Tensor disco_cuda_fwd(torch::Tensor inp,
 	    }));
   }
   else if (Wo <=  512*ELXTH_MAX) {
-    AT_DISPATCH_FLOATING_TYPES(inp.type(), "disco_forward_cuda", ([&] {
+    AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
           launch_kernel<512, (ELXTH_MAX/2)+1, scalar_t>(BC, Hi, Wi, K, Ho, Wo, nrows,
                                                         roff_idx.data_ptr<int64_t>(),
                                                         ker_idx.data_ptr<int64_t>(),
@@ -347,7 +363,7 @@ torch::Tensor disco_cuda_fwd(torch::Tensor inp,
             }));
   }
   else if (Wo <= 1024*ELXTH_MAX) {
-    AT_DISPATCH_FLOATING_TYPES(inp.type(), "disco_forward_cuda", ([&] {
+    AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
           launch_kernel<1024, (ELXTH_MAX/2)+1, scalar_t>(BC, Hi, Wi, K, Ho, Wo, nrows,
 							 roff_idx.data_ptr<int64_t>(),
 							 ker_idx.data_ptr<int64_t>(),
@@ -361,7 +377,7 @@ torch::Tensor disco_cuda_fwd(torch::Tensor inp,
   }
   else {
     fprintf(stderr,
-            "%s:%d: error, unsupported Wo value (%d), max supported is %d\n",
+            "%s:%d: error, unsupported Wo value (%ld), max supported is %d\n",
             __FILE__, __LINE__, Wo, 1024*ELXTH_MAX);
     exit(EXIT_FAILURE);
   }
@@ -371,8 +387,7 @@ torch::Tensor disco_cuda_fwd(torch::Tensor inp,
 }
 
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("forward", &disco_cuda_fwd, "DISCO forward (CUDA)");
-  //m.def("backward", &disco_cuda_bwd, "DISCO backward (CUDA)");
-}
+//PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+//  m.def("forward", &disco_cuda_fwd, "DISCO forward (CUDA)");
+//}
 
