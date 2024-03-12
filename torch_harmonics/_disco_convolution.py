@@ -36,6 +36,8 @@ import torch
 import triton
 import triton.language as tl
 
+import disco_cuda
+
 BLOCK_SIZE_BATCH = 4
 BLOCK_SIZE_NZ = 8
 BLOCK_SIZE_POUT = 8
@@ -354,12 +356,67 @@ class _DiscoS2TransposeContractionTriton(torch.autograd.Function):
 
         return grad_input, None, None
 
+    
+class _DiscoS2ContractionCuda(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
+                row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
+                kernel_size: int, nlat_out: int, nlon_out: int):
+        ctx.save_for_backward(roff_idx, ker_idx, row_idx, col_idx, vals)
+        ctx.kernel_size = kernel_size
+        ctx.nlat_in = x.shape[-2]
+        ctx.nlon_in = x.shape[-1]
 
-def _disco_s2_contraction_triton(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
+        return disco_cuda.forward(x, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
+        grad_input = disco_cuda.backward(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
+                                         ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
+        
+        return grad_input, None, None, None, None, None, None, None, None
+
+    
+class _DiscoS2TransposeContractionCuda(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
+                row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
+                kernel_size: int, nlat_out: int, nlon_out: int):
+        ctx.save_for_backward(roff_idx, ker_idx, row_idx, col_idx, vals)
+        ctx.kernel_size = kernel_size
+        ctx.nlat_in = x.shape[-2]
+        ctx.nlon_in = x.shape[-1]
+
+        return disco_cuda.backward(x, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
+        grad_input = disco_cuda.forward(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
+                                        ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
+
+        return grad_input, None, None, None, None, None, None, None, None
+
+# triton
+def _disco_s2_contraction_triton(x: torch.Tensor, psi: torch.Tensor, nlon_out: int) -> torch.Tensor:
     return _DiscoS2ContractionTriton.apply(x, psi, nlon_out)
 
-def _disco_s2_transpose_contraction_triton(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
+def _disco_s2_transpose_contraction_triton(x: torch.Tensor, psi: torch.Tensor, nlon_out: int) -> torch.Tensor:
     return _DiscoS2TransposeContractionTriton.apply(x, psi, nlon_out)
+
+# CUDA
+def _disco_s2_contraction_cuda(x: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
+                               row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
+                               kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+    return _DiscoS2ContractionCuda.apply(x, roff_idx, ker_idx, row_idx, col_idx, vals,
+                                         kernel_size, nlat_out, nlon_out)
+
+def _disco_s2_transpose_contraction_cuda(x: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
+                                         row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
+                                         kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+    return _DiscoS2TransposeContractionCuda.apply(x, roff_idx, ker_idx, row_idx, col_idx, vals,
+                                                  kernel_size, nlat_out, nlon_out)
 
 
 def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
