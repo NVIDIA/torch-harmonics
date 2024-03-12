@@ -2,6 +2,11 @@
 
 ## Versioning
 
+### v0.7.0
+
+* CUDA-accelerated DISCO convolutions
+* Updated unit tests
+
 ### v0.6.5
 
 * Discrete-continuous (DISCO) convolutions on the sphere and in two dimensions

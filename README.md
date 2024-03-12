@@ -1,8 +1,8 @@
-<!-- 
+<!--
 SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 
 SPDX-License-Identifier: BSD-3-Clause
- 
+
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
 
@@ -223,7 +223,7 @@ Depending on the problem, it might be beneficial to upcast data to `float64` ins
 
 ## Contributors
 
-[Boris Bonev](https://bonevbs.github.io) (bbonev@nvidia.com), [Thorsten Kurth](https://github.com/azrael417) (tkurth@nvidia.com), [Christian Hundt](https://github.com/gravitino) (chundt@nvidia.com), [Nikola Kovachki](https://kovachki.github.io) (nkovachki@nvidia.com), [Jean Kossaifi](http://jeankossaifi.com) (jkossaifi@nvidia.com)  
+[Boris Bonev](https://bonevbs.github.io) (bbonev@nvidia.com), [Thorsten Kurth](https://github.com/azrael417) (tkurth@nvidia.com), [Mauro Bisson](https://scholar.google.com/citations?hl=en&user=f0JE-0gAAAAJ) , [Massimiliano Fatica](https://scholar.google.com/citations?user=Deaq4uUAAAAJ&hl=en), [Nikola Kovachki](https://kovachki.github.io), [Jean Kossaifi](http://jeankossaifi.com), [Christian Hundt](https://github.com/gravitino)
 
 ## Cite us
 
@@ -231,7 +231,7 @@ If you use `torch-harmonics` in an academic paper, please cite [1]
 
 ```bibtex
 @misc{bonev2023spherical,
-      title={Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere}, 
+      title={Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere},
       author={Boris Bonev and Thorsten Kurth and Christian Hundt and Jaideep Pathak and Maximilian Baust and Karthik Kashinath and Anima Anandkumar},
       year={2023},
       eprint={2306.03838},
@@ -242,17 +242,17 @@ If you use `torch-harmonics` in an academic paper, please cite [1]
 
 ## References
 
-<a id="1">[1]</a> 
+<a id="1">[1]</a>
 Bonev B., Kurth T., Hundt C., Pathak, J., Baust M., Kashinath K., Anandkumar A.;
 Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere;
 arXiv 2306.0383, 2023.
 
-<a id="1">[2]</a> 
+<a id="1">[2]</a>
 Schaeffer N.;
 Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations;
 G3: Geochemistry, Geophysics, Geosystems, 2013.
 
-<a id="1">[3]</a> 
+<a id="1">[3]</a>
 Wang B., Wang L., Xie Z.;
 Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids;
 Adv Comput Math, 2018.
