@@ -81,7 +81,7 @@ def _get_ext_modules():
     if torch.cuda.is_available():
         ext_modules.append(
             cpp_extension.CUDAExtension(
-                "disco_cuda",
+                "disco_cuda_extension",
                 [
                     "torch_harmonics/csrc/disco/disco_interface.cu",
                     "torch_harmonics/csrc/disco/disco_cuda_fwd.cu",

@@ -52,7 +52,7 @@ from torch_harmonics._disco_convolution import (
 # import custom C++/CUDA extensions
 from disco_helpers import preprocess_psi
 if torch.cuda.is_available():
-    import disco_cuda
+    import disco_cuda_extension
 
 
 def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, r_cutoff: float, norm: str = "s2"):

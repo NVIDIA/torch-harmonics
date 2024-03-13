@@ -37,7 +37,7 @@ import triton
 import triton.language as tl
 
 if torch.cuda.is_available():
-    import disco_cuda
+    import disco_cuda_extension
 
 BLOCK_SIZE_BATCH = 4
 BLOCK_SIZE_NZ = 8
