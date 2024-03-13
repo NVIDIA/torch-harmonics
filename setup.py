@@ -97,6 +97,9 @@ root_path = Path(__file__).parent
 README = readme(root_path)
 VERSION = version(root_path)
 
+# external modules
+ext_modules = get_ext_modules()
+
 config = {
     "name": "torch_harmonics",
     "packages": find_packages(),
@@ -115,7 +118,7 @@ config = {
     "scripts": [],
     "include_package_data": True,
     "classifiers": ["Topic :: Scientific/Engineering", "License :: OSI Approved :: BSD License", "Programming Language :: Python :: 3"],
-    "ext_modules": get_ext_modules(),
+    "ext_modules": ext_modules,
     "cmdclass": {"build_ext": cpp_extension.BuildExtension} if ext_modules else {},
 }
 
