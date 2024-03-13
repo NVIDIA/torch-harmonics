@@ -161,8 +161,10 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         else:
             self.device = torch.device("cpu")
         torch.manual_seed(333)
-        
-        
+
+        # self.device = torch.device("cpu")
+
+
     @parameterized.expand(
         [
             # regular convolution
@@ -255,12 +257,12 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             y_ref = torch.einsum("ftpqr,bcqr->bcftp", psi_dense, x_ref * conv.quad_weights)
             y_ref = torch.einsum("oif,biftp->botp", w_ref, y_ref)
         y_ref.backward(grad_input)
-        x_ref_grad = x_ref.grad.clone()        
-        
+        x_ref_grad = x_ref.grad.clone()
+
         # compare results
         self.assertTrue(torch.allclose(y, y_ref, rtol=tol, atol=tol))
 
-        # compare 
+        # compare
         self.assertTrue(torch.allclose(x_grad, x_ref_grad, rtol=tol, atol=tol))
         self.assertTrue(torch.allclose(conv.weight.grad, w_ref.grad, rtol=tol, atol=tol))
 
