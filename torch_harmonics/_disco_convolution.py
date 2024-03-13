@@ -36,7 +36,8 @@ import torch
 import triton
 import triton.language as tl
 
-import disco_cuda
+if torch.cuda.is_available():
+    import disco_cuda
 
 BLOCK_SIZE_BATCH = 4
 BLOCK_SIZE_NZ = 8
@@ -266,7 +267,7 @@ def _disco_s2_contraction_bwd(grad_y: torch.Tensor, psi: torch.Tensor, nlon_in: 
     # make sure that the grid-points of the output grid fall onto the grid points of the input grid
     assert nlon_in % nlon_out == 0
     pscale = nlon_in // nlon_out
-    
+
     # to simplify things, we merge batch and channel dimensions
     grad_y = grad_y.reshape(batch_size * n_chans, kernel_size, nlat_out, nlon_out)
 
@@ -340,7 +341,7 @@ class _DiscoS2TransposeContractionTriton(torch.autograd.Function):
     """
     Helper function to make the triton implementation work with PyTorch autograd functionality
     """
-    
+
     @staticmethod
     def forward(ctx, x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
         ctx.save_for_backward(psi)
@@ -356,7 +357,7 @@ class _DiscoS2TransposeContractionTriton(torch.autograd.Function):
 
         return grad_input, None, None
 
-    
+
 class _DiscoS2ContractionCuda(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
@@ -374,10 +375,10 @@ class _DiscoS2ContractionCuda(torch.autograd.Function):
         roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
         grad_input = disco_cuda.backward(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
                                          ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
-        
+
         return grad_input, None, None, None, None, None, None, None, None
 
-    
+
 class _DiscoS2TransposeContractionCuda(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
@@ -475,7 +476,7 @@ def _disco_s2_transpose_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nl
     # interleave zeros along the longitude dimension to allow for fractional offsets to be considered
     x_ext = torch.zeros(kernel_size, nlat_in, nlon_out, batch_size * n_chans, device=x.device, dtype=x.dtype)
     x = x.reshape(batch_size * n_chans, kernel_size, nlat_in, nlon_in).permute(1, 2, 3, 0)
-    
+
     # x has shape kernel_size x nlat_in x nlon_in x batch_size * n_chans
     # we only need to apoply the nlon stride here, since nlat stride is taken care of by the kernel
     x_ext[:, :, ::pscale, :] = x[...]
