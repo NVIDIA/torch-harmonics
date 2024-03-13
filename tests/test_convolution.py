@@ -49,16 +49,7 @@ def _compute_vals_isotropic(theta: torch.Tensor, phi: torch.Tensor, ntheta: int,
     ikernel = torch.arange(ntheta).reshape(-1, 1, 1)
     itheta = ikernel * dtheta
 
-    norm_factor = (
-        2
-        * math.pi
-        * (
-            1
-            - math.cos(theta_cutoff - dtheta)
-            + math.cos(theta_cutoff - dtheta)
-            + (math.sin(theta_cutoff - dtheta) - math.sin(theta_cutoff)) / dtheta
-        )
-    )
+    norm_factor = 2 * math.pi * (1 - math.cos(theta_cutoff - dtheta) + math.cos(theta_cutoff - dtheta) + (math.sin(theta_cutoff - dtheta) - math.sin(theta_cutoff)) / dtheta)
 
     vals = torch.where(
         ((theta - itheta).abs() <= dtheta) & (theta <= theta_cutoff),
@@ -66,6 +57,7 @@ def _compute_vals_isotropic(theta: torch.Tensor, phi: torch.Tensor, ntheta: int,
         0,
     )
     return vals
+
 
 def _compute_vals_anisotropic(theta: torch.Tensor, phi: torch.Tensor, ntheta: int, nphi: int, theta_cutoff: float):
     """
@@ -75,7 +67,7 @@ def _compute_vals_anisotropic(theta: torch.Tensor, phi: torch.Tensor, ntheta: in
     # compute the support
     dtheta = (theta_cutoff - 0.0) / ntheta
     dphi = 2.0 * math.pi / nphi
-    kernel_size = (ntheta-1)*nphi + 1
+    kernel_size = (ntheta - 1) * nphi + 1
     ikernel = torch.arange(kernel_size).reshape(-1, 1, 1)
     itheta = ((ikernel - 1) // nphi + 1) * dtheta
     iphi = ((ikernel - 1) % nphi) * dphi
@@ -84,15 +76,14 @@ def _compute_vals_anisotropic(theta: torch.Tensor, phi: torch.Tensor, ntheta: in
 
     # find the indices where the rotated position falls into the support of the kernel
     cond_theta = ((theta - itheta).abs() <= dtheta) & (theta <= theta_cutoff)
-    cond_phi = ((phi - iphi).abs() <= dphi) | ((2*math.pi - (phi - iphi).abs()) <= dphi)
+    cond_phi = ((phi - iphi).abs() <= dphi) | ((2 * math.pi - (phi - iphi).abs()) <= dphi)
     theta_vals = torch.where(cond_theta, (1 - (theta - itheta).abs() / dtheta) / norm_factor, 0.0)
-    phi_vals = torch.where(cond_phi, (1 - torch.minimum((phi - iphi).abs(), (2*math.pi - (phi - iphi).abs()) ) / dphi ), 0.0)
+    phi_vals = torch.where(cond_phi, (1 - torch.minimum((phi - iphi).abs(), (2 * math.pi - (phi - iphi).abs())) / dphi), 0.0)
     vals = torch.where(ikernel > 0, theta_vals * phi_vals, theta_vals)
     return vals
 
-def _precompute_convolution_tensor_dense(
-    in_shape, out_shape, kernel_shape, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi
-):
+
+def _precompute_convolution_tensor_dense(in_shape, out_shape, kernel_shape, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi):
     """
     Helper routine to compute the convolution Tensor in a dense fashion
     """
@@ -105,7 +96,7 @@ def _precompute_convolution_tensor_dense(
         kernel_size = kernel_shape[0]
     elif len(kernel_shape) == 2:
         kernel_handle = partial(_compute_vals_anisotropic, ntheta=kernel_shape[0], nphi=kernel_shape[1], theta_cutoff=theta_cutoff)
-        kernel_size = (kernel_shape[0]-1)*kernel_shape[1] + 1
+        kernel_size = (kernel_shape[0] - 1) * kernel_shape[1] + 1
     else:
         raise ValueError("kernel_shape should be either one- or two-dimensional.")
 
@@ -161,26 +152,25 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         else:
             self.device = torch.device("cpu")
         torch.manual_seed(333)
-        
-        
+
     @parameterized.expand(
         [
             # regular convolution
-            [8, 4, 2, (16, 32), (16, 32), [2   ], "equiangular",    "equiangular",    False, 5e-5],
-            [8, 4, 2, (16, 32), ( 8, 16), [3   ], "equiangular",    "equiangular",    False, 5e-5],
-            [8, 4, 2, (16, 32), ( 8, 16), [2, 3], "equiangular",    "equiangular",    False, 5e-5],
-            [8, 4, 2, (18, 36), ( 6, 12), [4   ], "equiangular",    "equiangular",    False, 5e-5],
-            [8, 4, 2, (16, 32), ( 8, 16), [3   ], "equiangular",    "legendre-gauss", False, 5e-5],
-            [8, 4, 2, (16, 32), ( 8, 16), [3   ], "legendre-gauss", "equiangular",    False, 5e-5],
-            [8, 4, 2, (16, 32), ( 8, 16), [3   ], "legendre-gauss", "legendre-gauss", False, 5e-5],
+            [8, 4, 2, (16, 32), (16, 32), [2], "equiangular", "equiangular", False, 5e-5],
+            [8, 4, 2, (16, 32), (8, 16), [3], "equiangular", "equiangular", False, 5e-5],
+            [8, 4, 2, (16, 32), (8, 16), [2, 3], "equiangular", "equiangular", False, 5e-5],
+            [8, 4, 2, (18, 36), (6, 12), [4], "equiangular", "equiangular", False, 5e-5],
+            [8, 4, 2, (16, 32), (8, 16), [3], "equiangular", "legendre-gauss", False, 5e-5],
+            [8, 4, 2, (16, 32), (8, 16), [3], "legendre-gauss", "equiangular", False, 5e-5],
+            [8, 4, 2, (16, 32), (8, 16), [3], "legendre-gauss", "legendre-gauss", False, 5e-5],
             # transpose convolution
-            [8, 4, 2, (16, 32), (16, 32), [2   ], "equiangular",    "equiangular",    True, 5e-5],
-            [8, 4, 2, ( 8, 16), (16, 32), [3   ], "equiangular",    "equiangular",    True, 5e-5],
-            [8, 4, 2, ( 8, 16), (16, 32), [2, 3], "equiangular",    "equiangular",    True, 5e-5],
-            [8, 4, 2, ( 6, 12), (18, 36), [4   ], "equiangular",    "equiangular",    True, 5e-5],
-            [8, 4, 2, ( 8, 16), (16, 32), [3   ], "equiangular",    "legendre-gauss", True, 5e-5],
-            [8, 4, 2, ( 8, 16), (16, 32), [3   ], "legendre-gauss", "equiangular",    True, 5e-5],
-            [8, 4, 2, ( 8, 16), (16, 32), [3   ], "legendre-gauss", "legendre-gauss", True, 5e-5],
+            [8, 4, 2, (16, 32), (16, 32), [2], "equiangular", "equiangular", True, 5e-5],
+            [8, 4, 2, (8, 16), (16, 32), [3], "equiangular", "equiangular", True, 5e-5],
+            [8, 4, 2, (8, 16), (16, 32), [2, 3], "equiangular", "equiangular", True, 5e-5],
+            [8, 4, 2, (6, 12), (18, 36), [4], "equiangular", "equiangular", True, 5e-5],
+            [8, 4, 2, (8, 16), (16, 32), [3], "equiangular", "legendre-gauss", True, 5e-5],
+            [8, 4, 2, (8, 16), (16, 32), [3], "legendre-gauss", "equiangular", True, 5e-5],
+            [8, 4, 2, (8, 16), (16, 32), [3], "legendre-gauss", "legendre-gauss", True, 5e-5],
         ]
     )
     def test_disco_convolution(
@@ -215,19 +205,13 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
 
         if transpose:
-            psi_dense = _precompute_convolution_tensor_dense(
-                out_shape, in_shape, kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff
-            ).to(self.device)
+            psi_dense = _precompute_convolution_tensor_dense(out_shape, in_shape, kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff).to(self.device)
         else:
-            psi_dense = _precompute_convolution_tensor_dense(
-                in_shape, out_shape, kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
-            ).to(self.device)
+            psi_dense = _precompute_convolution_tensor_dense(in_shape, out_shape, kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff).to(self.device)
 
             psi = torch.sparse_coo_tensor(conv.psi_idx, conv.psi_vals, size=(conv.kernel_size, conv.nlat_out, conv.nlat_in * conv.nlon_in)).to_dense()
 
-            self.assertTrue(
-                torch.allclose(psi, psi_dense[:, :, 0].reshape(-1, nlat_out, nlat_in * nlon_in))
-            )
+            self.assertTrue(torch.allclose(psi, psi_dense[:, :, 0].reshape(-1, nlat_out, nlat_in * nlon_in)))
 
         # create a copy of the weight
         w_ref = torch.empty_like(conv.weight)
@@ -255,14 +239,15 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             y_ref = torch.einsum("ftpqr,bcqr->bcftp", psi_dense, x_ref * conv.quad_weights)
             y_ref = torch.einsum("oif,biftp->botp", w_ref, y_ref)
         y_ref.backward(grad_input)
-        x_ref_grad = x_ref.grad.clone()        
-        
+        x_ref_grad = x_ref.grad.clone()
+
         # compare results
         self.assertTrue(torch.allclose(y, y_ref, rtol=tol, atol=tol))
 
-        # compare 
+        # compare
         self.assertTrue(torch.allclose(x_grad, x_ref_grad, rtol=tol, atol=tol))
         self.assertTrue(torch.allclose(conv.weight.grad, w_ref.grad, rtol=tol, atol=tol))
+
 
 if __name__ == "__main__":
     unittest.main()

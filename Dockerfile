@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -39,5 +39,5 @@ RUN pip install parameterized
 
 # we need to remove old archs
 ENV TORCH_CUDA_ARCH_LIST "7.0 7.2 7.5 8.0 8.6 8.7 9.0+PTX"
-RUN pip install /workspace/torch_harmonics
+RUN pip install --cuda_ext /workspace/torch_harmonics
 
