@@ -28,15 +28,19 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
+
+import sys
+
 try:
     from setuptools import setup, find_packages
 except ImportError:
     from distutils.core import setup, find_packages
 
-from torch.utils import cpp_extension
 import re
 from pathlib import Path
 
+import torch
+from torch.utils import cpp_extension
 
 def version(root_path):
     """Returns the version taken from __init__.py
@@ -71,14 +75,19 @@ def readme(root_path):
         return f.read()
 
 
-def get_ext_modules():
-    import torch
+def get_ext_modules(argv):
+
+    compile_cuda_extension = False
+
+    if "--cuda_ext" in sys.argv:
+        sys.argv.remove("--cuda_ext")
+        compile_cuda_extension = True
 
     ext_modules = [
         cpp_extension.CppExtension("disco_helpers", ["torch_harmonics/csrc/disco/disco_helpers.cpp"]),
     ]
 
-    if torch.cuda.is_available():
+    if torch.cuda.is_available() or compile_cuda_extension:
         ext_modules.append(
             cpp_extension.CUDAExtension(
                 "disco_cuda_extension",
@@ -98,7 +107,7 @@ README = readme(root_path)
 VERSION = version(root_path)
 
 # external modules
-ext_modules = get_ext_modules()
+ext_modules = get_ext_modules(sys.argv)
 
 config = {
     "name": "torch_harmonics",
@@ -110,7 +119,7 @@ config = {
     "author": "Boris Bonev",
     "author_email": "bbonev@nvidia.com",
     "version": VERSION,
-    "install_requires": ["torch", "numpy", "triton"],
+    "install_requires": ["torch", "numpy"],
     "extras_require": {
         "sfno": ["tensorly", "tensorly-torch"],
     },
