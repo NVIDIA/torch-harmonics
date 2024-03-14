@@ -31,6 +31,7 @@
 
 import abc
 from typing import List, Tuple, Union, Optional
+from warnings import warn
 
 import math
 
@@ -40,19 +41,18 @@ import torch.nn as nn
 from functools import partial
 
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes
-from torch_harmonics._disco_convolution import (
-    _disco_s2_contraction_torch,
-    _disco_s2_transpose_contraction_torch,
-    _disco_s2_contraction_triton,
-    _disco_s2_transpose_contraction_triton,
-    _disco_s2_contraction_cuda,
-    _disco_s2_transpose_contraction_cuda,
-)
+from torch_harmonics._disco_convolution import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
+from torch_harmonics._disco_convolution import _disco_s2_contraction_cuda, _disco_s2_transpose_contraction_cuda
 
 # import custom C++/CUDA extensions
 from disco_helpers import preprocess_psi
-if torch.cuda.is_available():
+
+try:
     import disco_cuda_extension
+    _cuda_extension_available = True
+except ImportError as err:
+    disco_cuda_extension = None
+    _cuda_extension_available = False
 
 
 def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, r_cutoff: float, norm: str = "s2"):
@@ -331,23 +331,18 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         col_idx = idx[2, ...].contiguous()
         roff_idx = preprocess_psi(self.kernel_size, out_shape[0], ker_idx, row_idx, col_idx, vals)
 
-        # GPU kernel
+        # preprocessed data-structure for GPU kernel
         self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
 
-        # cpu kernel
-        #self.register_buffer("psi_idx", idx, persistent=False)
-        #self.register_buffer("psi_vals", vals, persistent=False)
-
     @property
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
     def get_psi(self):
-        #psi_idx = torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
         psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_in)).coalesce()
         return psi
 
@@ -355,11 +350,12 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
 
-        if x.is_cuda:
-            #x = _disco_s2_contraction_triton(x, psi, self.nlon_out)
+        if x.is_cuda and _cuda_extension_available:
             x = _disco_s2_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
                                            self.kernel_size, self.nlat_out, self.nlon_out)
         else:
+            if x.is_cuda:
+                warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
             psi = self.get_psi()
             x = _disco_s2_contraction_torch(x, psi, self.nlon_out)
 
@@ -417,11 +413,25 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         # switch in_shape and out_shape since we want transpose conv
         idx, vals = _precompute_convolution_tensor_s2(out_shape, in_shape, self.kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff)
 
-        self.register_buffer("psi_idx", idx, persistent=False)
+        # sort the values
+        ker_idx = idx[0, ...].contiguous()
+        row_idx = idx[1, ...].contiguous()
+        col_idx = idx[2, ...].contiguous()
+        roff_idx = preprocess_psi(self.kernel_size, out_shape[0], ker_idx, row_idx, col_idx, vals)
+
+        # preprocessed data-structure for GPU kernel
+        self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+        self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
+        self.register_buffer("psi_row_idx", row_idx, persistent=False)
+        self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
 
-    def get_psi(self, use_triton_kernel=True):
-        if not use_triton_kernel:
+    @property
+    def psi_idx(self):
+        return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
+
+    def get_psi(self, semi_transposed: bool=False):
+        if semi_transposed:
             # we do a semi-transposition to faciliate the computation
             tout = self.psi_idx[2] // self.nlon_out
             pout = self.psi_idx[2] % self.nlon_out
@@ -432,9 +442,10 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             psi = torch.sparse_coo_tensor(idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_out)).coalesce()
         else:
             psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_in, self.nlat_out * self.nlon_out)).coalesce()
+
         return psi
 
-    def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # extract shape
         B, C, H, W = x.shape
         x = x.reshape(B, self.groups, self.groupsize, H, W)
@@ -446,11 +457,13 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
 
-        psi = self.get_psi(x.is_cuda and use_triton_kernel)
-
-        if x.is_cuda and use_triton_kernel:
-            out = _disco_s2_transpose_contraction_triton(x, psi, self.nlon_out)
+        if x.is_cuda and _cuda_extension_available:
+            out = _disco_s2_transpose_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
+                                           self.kernel_size, self.nlat_out, self.nlon_out)
         else:
+            if x.is_cuda:
+                warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
+            psi = self.get_psi(semi_transposed=True)
             out = _disco_s2_transpose_contraction_torch(x, psi, self.nlon_out)
 
         if self.bias is not None:
