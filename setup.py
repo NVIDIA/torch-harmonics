@@ -83,9 +83,7 @@ def get_ext_modules(argv):
         sys.argv.remove("--cuda_ext")
         compile_cuda_extension = True
 
-    ext_modules = [
-        cpp_extension.CppExtension("disco_helpers", ["torch_harmonics/csrc/disco/disco_helpers.cpp"]),
-    ]
+    ext_modules = []
 
     if torch.cuda.is_available() or compile_cuda_extension:
         ext_modules.append(
