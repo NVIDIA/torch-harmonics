@@ -72,13 +72,15 @@ def readme(root_path):
 
 
 def get_ext_modules():
+    
     import torch
 
     ext_modules = [
         cpp_extension.CppExtension("disco_helpers", ["torch_harmonics/csrc/disco/disco_helpers.cpp"]),
     ]
 
-    if torch.cuda.is_available():
+    if True: #torch.cuda.is_available():
+        print("Building CUDA modules!")
         ext_modules.append(
             cpp_extension.CUDAExtension(
                 "disco_cuda_extension",

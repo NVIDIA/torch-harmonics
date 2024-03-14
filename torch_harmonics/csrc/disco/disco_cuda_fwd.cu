@@ -291,12 +291,8 @@ torch::Tensor disco_cuda_fwd(torch::Tensor inp,
   auto options = torch::TensorOptions().device(inp.device()).dtype(inp.dtype());
   torch::Tensor out = torch::zeros(out_dims, options);
 
-  // get handle
-  cudnnHandle_t handle_ = torch::native::getCudnnHandle();
-  
   // get stream
-  cudaStream_t stream;
-  cudnnGetStream(handle_, &stream);
+  auto stream = c10::cuda::getCurrentCUDAStream(inp.device().index);
   
   // assert
   static_assert(0 == (ELXTH_MAX%2));
