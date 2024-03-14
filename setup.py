@@ -82,7 +82,8 @@ def get_ext_modules(argv):
     if "--cuda_ext" in sys.argv:
         sys.argv.remove("--cuda_ext")
         compile_cuda_extension = True
-        
+
+    ext_modules = []
     if torch.cuda.is_available() or compile_cuda_extension:
         ext_modules.append(
             cpp_extension.CUDAExtension(

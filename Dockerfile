@@ -39,5 +39,5 @@ RUN pip install parameterized
 
 # we need to remove old archs
 ENV TORCH_CUDA_ARCH_LIST "7.0 7.2 7.5 8.0 8.6 8.7 9.0+PTX"
-RUN pip install /workspace/torch_harmonics --install-option="--cuda_ext"
+RUN pip install --global-option --cuda_ext /workspace/torch_harmonics
 
