@@ -256,3 +256,6 @@ G3: Geochemistry, Geophysics, Geosystems, 2013.
 Wang B., Wang L., Xie Z.;
 Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids;
 Adv Comput Math, 2018.
+
+<a id="1">[4]</a>
+Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603

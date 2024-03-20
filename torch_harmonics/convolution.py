@@ -313,7 +313,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # compute theta cutoff based on the bandlimit of the input field
         if theta_cutoff is None:
-            theta_cutoff = (self.kernel_shape[0] + 1) * torch.pi / float(self.nlat_in - 1)
+            theta_cutoff = (self.kernel_shape[0]) * torch.pi / float(self.nlat_in - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -351,8 +351,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         x = self.quad_weights * x
 
         if x.is_cuda and _cuda_extension_available:
-            x = _disco_s2_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
-                                           self.kernel_size, self.nlat_out, self.nlon_out)
+            x = _disco_s2_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out)
         else:
             if x.is_cuda:
                 warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
@@ -400,7 +399,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # bandlimit
         if theta_cutoff is None:
-            theta_cutoff = (self.kernel_shape[0] + 1) * torch.pi / float(self.nlat_in - 1)
+            theta_cutoff = (self.kernel_shape[0]) * torch.pi / float(self.nlat_in - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
