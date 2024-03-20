@@ -202,7 +202,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
-        theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
+        theta_cutoff = (kernel_shape[0]) * torch.pi / float(nlat_in - 1)
 
         if transpose:
             psi_dense = _precompute_convolution_tensor_dense(out_shape, in_shape, kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff).to(self.device)
