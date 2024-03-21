@@ -35,20 +35,20 @@
 template<int BDIM_X,
          int ELXTH,
          typename REAL_T>
-__device__ void disco_trans_d(const int Hi,
-			      const int Wi,
-			      const int K,
-			      const int Ho,
-			      const int Wo,
-			      const int pscale,
-			      const int64_t *__restrict__ roff,
-			      const int64_t *__restrict__ kers,
-			      const int64_t *__restrict__ rows,
-			      const int64_t *__restrict__ cols,
-			      const REAL_T   *__restrict__ vals,
-			      const REAL_T   *__restrict__ inp,
-			      REAL_T   *__restrict__ out) {
-  
+__device__ void disco_bwd_d(const int Hi,
+                            const int Wi,
+                            const int K,
+                            const int Ho,
+                            const int Wo,
+                            const int pscale,
+                            const int64_t *__restrict__ roff,
+                            const int64_t *__restrict__ kers,
+                            const int64_t *__restrict__ rows,
+                            const int64_t *__restrict__ cols,
+                            const REAL_T   *__restrict__ vals,
+                            const REAL_T   *__restrict__ inp,
+                                  REAL_T   *__restrict__ out) {
+
   const int tid = threadIdx.x;
   
   const int64_t bidx = blockIdx.x; // gloabl row
@@ -70,10 +70,10 @@ __device__ void disco_trans_d(const int Hi,
   
   // copy current inp row in regs
   REAL_T __reg[ELXTH];
- 
+  
   #pragma unroll
   for(int i = 0; i < ELXTH; i++) {
-    __reg[i] = (i*BDIM_X+tid < Wi) ? inp[i*BDIM_X+tid] : 0;
+    __reg[i] = (i*BDIM_X+tid < Wi) ? inp[i*BDIM_X +tid] : REAL_T(0);
   }
   
   // reset shared row up to Wo+2, remaining
@@ -87,8 +87,11 @@ __device__ void disco_trans_d(const int Hi,
     }
   }
   __syncthreads();
+
+  int col_prev = cols[soff];
   
-  int h_prev = cols[soff]/Wo;
+  int h_prev = col_prev / Wo;
+  int w_prev = col_prev % Wo;
   
   // loops along the colums of CTA's row
   for(int64_t nz = soff; nz < eoff; nz++) {
@@ -96,13 +99,12 @@ __device__ void disco_trans_d(const int Hi,
     const int    col = cols[nz];
     const REAL_T val = vals[nz];
     
-    const int h = col / Wo;
-    const int w = col % Wo;
-    
     // if we are processing a nz with a col value
     // leading to a new row of inp then copy it
-    // to shmem
-    if (h_prev != h) {
+    // to shmem;
+    // we read a col that points to a new output
+    // row if (col / Wo) > (col_prev / Wo)
+    if (col >= col_prev-w_prev+Wo) { 
       __syncthreads();
       for(int i = 0; i < pscale; i++) {
 	for(int j = tid; j < Wi; j += BDIM_X) {
@@ -113,13 +115,16 @@ __device__ void disco_trans_d(const int Hi,
 	  
 	  __sh[i][     j] = 0;
 	  __sh[i][Wi + j] = 0;
-                                }
+	}
       }
       __syncthreads();
       
-      h_prev = h;
+      col_prev = col;
+      h_prev = col / Wo;
+      w_prev = col % Wo;
     }
     
+    const int w = w_prev + (col-col_prev);
     const int w_mod_ps = w % pscale;
     const int w_div_ps = w / pscale;
     
@@ -150,39 +155,26 @@ __device__ void disco_trans_d(const int Hi,
 
 
 template<int BDIM_X,
-         int ELXTH,
-         int WO,
+	 int ELXTH,
+         int PSCALE,
          typename REAL_T>
 __global__ __launch_bounds__(BDIM_X)
-void disco_trans_blk_k(const int Hi,
-		       const int Wi,
-		       const int K,
-		       const int Ho,
-		       const int Wo,
-		       const int pscale,
-		       const int64_t *__restrict__ roff,
-		       const int64_t *__restrict__ kers,
-		       const int64_t *__restrict__ rows,
-		       const int64_t *__restrict__ cols,
-		       const REAL_T   *__restrict__ vals,
-		       const REAL_T   *__restrict__ inp,
-		       REAL_T   *__restrict__ out) {
-  
-  if constexpr(WO != 0) {
-      switch(pscale) {
-      case  1: disco_trans_d<BDIM_X, ELXTH>(Hi, Wi, K, Ho, WO,      1, roff, kers, rows, cols, vals, inp, out); break;
-      case  2: disco_trans_d<BDIM_X, ELXTH>(Hi, Wi, K, Ho, WO,      2, roff, kers, rows, cols, vals, inp, out); break;
-      case  3: disco_trans_d<BDIM_X, ELXTH>(Hi, Wi, K, Ho, WO,      3, roff, kers, rows, cols, vals, inp, out); break;
-      default: disco_trans_d<BDIM_X, ELXTH>(Hi, Wi, K, Ho, WO, pscale, roff, kers, rows, cols, vals, inp, out); break;
-      }
-    } else {
-    switch(pscale) {
-    case  1: disco_trans_d<BDIM_X, ELXTH>(Hi, Wi, K, Ho, Wo,      1, roff, kers, rows, cols, vals, inp, out); break;
-    case  2: disco_trans_d<BDIM_X, ELXTH>(Hi, Wi, K, Ho, Wo,      2, roff, kers, rows, cols, vals, inp, out); break;
-    case  3: disco_trans_d<BDIM_X, ELXTH>(Hi, Wi, K, Ho, Wo,      3, roff, kers, rows, cols, vals, inp, out); break;
-    default: disco_trans_d<BDIM_X, ELXTH>(Hi, Wi, K, Ho, Wo, pscale, roff, kers, rows, cols, vals, inp, out); break;
-    }
-  }
+void disco_bwd_blk_k(const int Hi,
+                     const int Wi,
+                     const int K,
+                     const int Ho,
+                     const int Wo,
+                     const int pscale,
+                     const int64_t *__restrict__ roff,
+                     const int64_t *__restrict__ kers,
+                     const int64_t *__restrict__ rows,
+                     const int64_t *__restrict__ cols,
+                     const REAL_T   *__restrict__ vals,
+                     const REAL_T   *__restrict__ inp,
+                           REAL_T   *__restrict__ out) {
+
+  if constexpr(PSCALE != 0) { disco_bwd_d<BDIM_X, ELXTH>(Hi, Wi, K, Ho, Wo, PSCALE, roff, kers, rows, cols, vals, inp, out); }
+  else                      { disco_bwd_d<BDIM_X, ELXTH>(Hi, Wi, K, Ho, Wo, pscale, roff, kers, rows, cols, vals, inp, out); }
   
   return;
 }
@@ -191,12 +183,12 @@ void disco_trans_blk_k(const int Hi,
 template<int NTH,
          int ELXTH,
          typename REAL_T>
-static void launch_kernel(int64_t BC,
-                          int64_t Hi,
-                          int64_t Wi,
-                          int64_t K,
-                          int64_t Ho,
-                          int64_t Wo,
+static void launch_kernel(int BC,
+                          int Hi,
+                          int Wi,
+                          int K,
+                          int Ho,
+                          int Wo,
                           int64_t nrows,
                           int64_t *roff_d,
                           int64_t *ker_d,
@@ -206,74 +198,60 @@ static void launch_kernel(int64_t BC,
                           REAL_T  *inp_d,
                           REAL_T  *out_d,
                           cudaStream_t stream) {
+
+  static_assert(sizeof(REAL_T) == 2 ||
+		sizeof(REAL_T) == 4 ||
+		sizeof(REAL_T) == 8);
   
   if constexpr(ELXTH <= ELXTH_MAX) {
       if (NTH*ELXTH >= Wi) {
 	dim3 grid(nrows, BC);
 	
-	const int pscale = static_cast<int>(Wo/Wi);
+	const int pscale = Wo/Wi;
 	size_t shmem = sizeof(*out_d)*(2 * (NTH*ELXTH)*pscale);
 	
-	switch(Wo) {
-	case 360:
-	  disco_trans_blk_k<NTH, ELXTH, 360><<<grid, NTH, shmem, stream>>>(static_cast<int>(Hi),
-									   static_cast<int>(Wi),
-									   static_cast<int>(K),
-									   static_cast<int>(Ho),
-									   static_cast<int>(Wo),
-									   pscale,
-									   roff_d,
-									   ker_d, row_d, col_d, val_d,
-									   inp_d, out_d);
+	switch(pscale) {
+	case 1:
+	  disco_bwd_blk_k<NTH, ELXTH, 1><<<grid, NTH, shmem, stream>>>(Hi, Wi,
+								       K, Ho, Wo, pscale,
+								       roff_d,
+								       ker_d, row_d, col_d, val_d,
+								       inp_d, out_d);
 	  break;
-	case 720:
-	  disco_trans_blk_k<NTH, ELXTH, 720><<<grid, NTH, shmem, stream>>>(static_cast<int>(Hi),
-									   static_cast<int>(Wi),
-									   static_cast<int>(K),
-									   static_cast<int>(Ho),
-									   static_cast<int>(Wo),
-									   pscale,
-									   roff_d,
-									   ker_d, row_d, col_d, val_d,
-									   inp_d, out_d);
+	case 2:
+	  disco_bwd_blk_k<NTH, ELXTH, 2><<<grid, NTH, shmem, stream>>>(Hi, Wi,
+								       K, Ho, Wo, pscale,
+								       roff_d,
+								       ker_d, row_d, col_d, val_d,
+								       inp_d, out_d);
 	  break;
-	case 1440:
-	  disco_trans_blk_k<NTH, ELXTH, 1440><<<grid, NTH, shmem, stream>>>(static_cast<int>(Hi),
-									    static_cast<int>(Wi),
-									    static_cast<int>(K),
-									    static_cast<int>(Ho),
-									    static_cast<int>(Wo),
-									    pscale,
-									    roff_d,
-									    ker_d, row_d, col_d, val_d,
-									    inp_d, out_d);
+	case 3:
+	  disco_bwd_blk_k<NTH, ELXTH, 3><<<grid, NTH, shmem, stream>>>(Hi, Wi,
+								       K, Ho, Wo, pscale,
+								       roff_d,
+								       ker_d, row_d, col_d, val_d,
+								       inp_d, out_d);
 	  break;
 	default:
-	  disco_trans_blk_k<NTH, ELXTH, 0><<<grid, NTH, shmem, stream>>>(static_cast<int>(Hi),
-									 static_cast<int>(Wi),
-									 static_cast<int>(K),
-									 static_cast<int>(Ho),
-									 static_cast<int>(Wo),
-									 pscale,
-									 roff_d,
-									 ker_d, row_d, col_d, val_d,
-									 inp_d, out_d);
+	  disco_bwd_blk_k<NTH, ELXTH, 0><<<grid, NTH, shmem, stream>>>(Hi, Wi,
+								       K, Ho, Wo, pscale,
+								       roff_d,
+								       ker_d, row_d, col_d, val_d,
+								       inp_d, out_d);
 	}
       } else {
 	launch_kernel<NTH, ELXTH+1>(BC,
 				    Hi, Wi,
-				    K,
-				    Ho, Wo,
+				    K, Ho, Wo,
 				    nrows,
 				    roff_d,
 				    ker_d, row_d, col_d, val_d,
-				    inp_d, out_d,
+                                                    inp_d, out_d,
 				    stream);
       }
     }
   return;
 }
-
 
 
 torch::Tensor disco_cuda_bwd(torch::Tensor inp,
