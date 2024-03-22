@@ -35,7 +35,7 @@
 template<int BDIM_X,
          int ELXTH,
          typename REAL_T>
-__device__ void disco_dir_d(const int Hi,
+__device__ void disco_fwd_d(const int Hi,
                             const int Wi,
                             const int K,
                             const int Ho,
@@ -69,7 +69,10 @@ __device__ void disco_dir_d(const int Hi,
   extern __shared__ __align__(sizeof(double)) unsigned char __sh_ptr[]; // REAL_T __sh[2*Wi + ppscale*(BDIM_X*ELXTH - Wo)]
   REAL_T *__sh = reinterpret_cast<REAL_T *>(__sh_ptr);
   
-  int h_prev = cols[soff]/Wi;
+  int col_prev = cols[soff];
+  
+  int h_prev = col_prev / Wi;
+  int w_prev = col_prev % Wi;
   
   // copy current inp row in shmem
   for(int i = tid; i < Wi; i += BDIM_X) {
@@ -77,7 +80,7 @@ __device__ void disco_dir_d(const int Hi,
     __sh[     i] = v;
     __sh[Wi + i] = v;
   }
-  // locations __sh[2*Wi : ppscale*(BDIM_X*ELXTH-Wo)] are useless
+  // locations __sh[2*Wi : ppscale*(BDIM_X*ELXTH-Wo)] are not used
   __syncthreads();
   
   // loops along the colums of CTA's row
@@ -86,23 +89,27 @@ __device__ void disco_dir_d(const int Hi,
     const int    col = cols[nz];
     const REAL_T val = vals[nz];
     
-    const int h = col / Wi;        
-    const int w = col % Wi;        
-    
     // if we are processing a nz with a col value
     // leading to a new row of inp then copy it
-    // to shmem
-    if (h_prev != h) {
+    // to shmem;
+    // checks whether (h_prev < h) with:
+    //  (col >= col_prev - (col_prev % Wi) + Wi)
+    if (col >= col_prev-w_prev+Wi) { 
+      
+      col_prev = col;
+      h_prev = col / Wi;
+      w_prev = col % Wi;
+      
       __syncthreads();
       for(int i = tid; i < Wi; i += BDIM_X) {
-	const REAL_T v = inp[h*Wi + i];
+	const REAL_T v = inp[h_prev*Wi + i];
 	__sh[     i] = v;
 	__sh[Wi + i] = v;
-                        }
+      }
       __syncthreads();
-      
-      h_prev = h;
     }
+    
+    const int w = w_prev + (col-col_prev);
     
     #pragma unroll
     for (int i = 0; i < ELXTH; i++) {
@@ -138,7 +145,7 @@ __device__ void disco_dir_d(const int Hi,
   
   #pragma unroll
   for (int i = 0; i < ELXTH; i++) {
-
+    
     const int pp = i*BDIM_X + tid;
     if (pp >= Wo) break;
     
@@ -149,12 +156,12 @@ __device__ void disco_dir_d(const int Hi,
 }
 
 
+
 template<int BDIM_X,
          int ELXTH,
-         int WI,
          typename REAL_T>
 __global__ __launch_bounds__(BDIM_X)
-void disco_dir_blk_k(const int Hi,
+void disco_fwd_blk_k(const int Hi,
                      const int Wi,
                      const int K,
                      const int Ho,
@@ -168,21 +175,21 @@ void disco_dir_blk_k(const int Hi,
                      const REAL_T  *__restrict__ inp, 
                            REAL_T  *__restrict__ out) {
 
-  if constexpr(WI != 0) { disco_dir_d<BDIM_X, ELXTH>(Hi, WI, K, Ho, Wo, pscale, roff, kers, rows, cols, vals, inp, out); } 
-  else                  { disco_dir_d<BDIM_X, ELXTH>(Hi, Wi, K, Ho, Wo, pscale, roff, kers, rows, cols, vals, inp, out); }
+  disco_fwd_d<BDIM_X, ELXTH>(Hi, Wi, K, Ho, Wo, pscale, roff, kers, rows, cols, vals, inp, out);
   
   return;
 }
 
+
 template<int NTH,
          int ELXTH,
          typename REAL_T>
-static void launch_kernel(int64_t BC,
-                          int64_t Hi,
-                          int64_t Wi,
-                          int64_t K,
-                          int64_t Ho,
-                          int64_t Wo,
+static void launch_kernel(int BC,
+                          int Hi,
+                          int Wi,
+                          int K,
+                          int Ho,
+                          int Wo,
                           int64_t nrows,
                           int64_t *roff_d,
                           int64_t *ker_d, 
@@ -193,58 +200,22 @@ static void launch_kernel(int64_t BC,
                           REAL_T   *out_d,
                           cudaStream_t stream) {
 
+  static_assert(sizeof(REAL_T) == 2 ||
+		sizeof(REAL_T) == 4 ||
+		sizeof(REAL_T) == 8);
+  
   if constexpr(ELXTH <= ELXTH_MAX) {
       if (NTH*ELXTH >= Wo) {
 	dim3 grid(nrows, BC);
         
-	const int pscale = static_cast<int>(Wi/Wo);
+	const int pscale = Wi/Wo;
 	size_t shmem = sizeof(*out_d)*(Wi*2 + pscale*(NTH*ELXTH-Wo));
 	
-	switch(Wi) {
-	case 360:
-	  disco_dir_blk_k<NTH, ELXTH, 360><<<grid, NTH, shmem, stream>>>(static_cast<int>(Hi),
-									 static_cast<int>(Wi),
-									 static_cast<int>(K),
-									 static_cast<int>(Ho),
-									 static_cast<int>(Wo),
-									 pscale,
-									 roff_d,
-									 ker_d, row_d, col_d, val_d,
-									 inp_d, out_d);
-	  break;
-	case 720:
-	  disco_dir_blk_k<NTH, ELXTH, 720><<<grid, NTH, shmem, stream>>>(static_cast<int>(Hi),
-									 static_cast<int>(Wi),
-									 static_cast<int>(K),
-									 static_cast<int>(Ho),
-									 static_cast<int>(Wo),
-									 pscale,
-									 roff_d,
-									 ker_d, row_d, col_d, val_d,
-									 inp_d, out_d);
-	  break;
-	case 1440:
-	  disco_dir_blk_k<NTH, ELXTH, 1440><<<grid, NTH, shmem, stream>>>(static_cast<int>(Hi),
-									  static_cast<int>(Wi),
-									  static_cast<int>(K),
-									  static_cast<int>(Ho),
-									  static_cast<int>(Wo),
-									  pscale,
-									  roff_d,
-									  ker_d, row_d, col_d, val_d,
-									  inp_d, out_d);
-	  break;
-	default:
-	  disco_dir_blk_k<NTH, ELXTH, 0><<<grid, NTH, shmem, stream>>>(static_cast<int>(Hi),
-								       static_cast<int>(Wi),
-								       static_cast<int>(K),
-								       static_cast<int>(Ho),
-								       static_cast<int>(Wo),
-								       pscale,
-								       roff_d,
-								       ker_d, row_d, col_d, val_d,
-								       inp_d, out_d);
-	}
+	disco_fwd_blk_k<NTH, ELXTH><<<grid, NTH, shmem, stream>>>(Hi, Wi,
+								  K, Ho, Wo, pscale,
+								  roff_d,
+								  ker_d, row_d, col_d, val_d,
+								  inp_d, out_d);
       } else {
 	launch_kernel<NTH, ELXTH+1>(BC,
 				    Hi, Wi, 
@@ -258,6 +229,7 @@ static void launch_kernel(int64_t BC,
     }
   return;
 }
+
 
 
 torch::Tensor disco_cuda_fwd(torch::Tensor inp,
@@ -297,15 +269,7 @@ torch::Tensor disco_cuda_fwd(torch::Tensor inp,
   // assert
   static_assert(0 == (ELXTH_MAX%2));
 
-  // extract data pointers
-  //int64_t* roff_d = roff_idx.data_ptr<int64_t>();
-  //int64_t* ker_d = ker_idx.data_ptr<int64_t>();
-  //int64_t* row_d = row_idx.data_ptr<int64_t>();
-  //int64_t* col_d = col_idx.data_ptr<int64_t>();
-  //float* val_d = val.data_ptr<float>();
-  //float* inp_d = inp.data_ptr<float>();
-  //float* out_d = out.data_ptr<float>();
-
+  // pick the correct launch config
   if      (Wo <=   64*ELXTH_MAX) {
     AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
 	  launch_kernel<64, 1, scalar_t>(BC, Hi, Wi, K, Ho, Wo, nrows,
@@ -381,9 +345,3 @@ torch::Tensor disco_cuda_fwd(torch::Tensor inp,
   
   return out;
 }
-
-
-//PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-//  m.def("forward", &disco_cuda_fwd, "DISCO forward (CUDA)");
-//}
-
