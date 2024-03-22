@@ -257,6 +257,29 @@ class _ScatterToPolarRegion(torch.autograd.Function):
         else:
             return grad_output, None
 
+
+class _GatherFromPolarRegion(torch.autograd.Function):
+    """Gather the input and keep it on the rank."""
+
+    @staticmethod
+    def symbolic(graph, input_, dim_, shapes_):
+	return _gather(input_, dim_, shapes_, polar_group())
+
+    @staticmethod
+    def forward(ctx, input_, dim_, shapes_):
+	if is_distributed_polar():
+            ctx.dim = dim_
+            return _gather(input_, dim_, shapes_, group=polar_group())
+        else:
+            return input_
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        if is_distributed_polar():
+            return _split(grad_output, ctx.dim, group=polar_group()), None, None
+        else:
+            return grad_output, None, None
+
     
 class _ReduceFromPolarRegion(torch.autograd.Function):
     """All-reduce the input from the polar region."""
@@ -286,3 +309,7 @@ def reduce_from_polar_region(input_):
 
 def scatter_to_polar_region(input_, dim_):
     return _ScatterToPolarRegion.apply(input_, dim_)
+
+
+def gather_from_polar_region(input_, dim_, shapes_):
+    return _GatherFromPolarRegion.apply(input_, dim_, shapes_)
