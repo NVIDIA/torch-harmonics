@@ -313,7 +313,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # compute theta cutoff based on the bandlimit of the input field
         if theta_cutoff is None:
-            theta_cutoff = (self.kernel_shape[0]) * torch.pi / float(self.nlat_in - 1)
+            theta_cutoff = self.kernel_shape[0] * torch.pi / float(self.nlat_in - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -364,7 +364,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # do weight multiplication
         out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
-        out = out.reshape(out.shape[0], -1, out.shape[-2], out.shape[-1])
+        out = out.reshape(B, -1, H, W)
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
@@ -399,7 +399,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # bandlimit
         if theta_cutoff is None:
-            theta_cutoff = (self.kernel_shape[0]) * torch.pi / float(self.nlat_in - 1)
+            theta_cutoff = self.kernel_shape[0] * torch.pi / float(self.nlat_in - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -416,7 +416,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         ker_idx = idx[0, ...].contiguous()
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()
-        roff_idx = preprocess_psi(self.kernel_size, out_shape[0], ker_idx, row_idx, col_idx, vals)
+        roff_idx = preprocess_psi(self.kernel_size, in_shape[0], ker_idx, row_idx, col_idx, vals)
 
         # preprocessed data-structure for GPU kernel
         self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
@@ -451,11 +451,11 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # do weight multiplication
         x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
-        x = x.reshape(x.shape[0], -1, x.shape[-3], x.shape[-2], x.shape[-1])
+        x = x.reshape(B, -1, x.shape[-3], H, W)
 
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
-
+        
         if x.is_cuda and _cuda_extension_available:
             out = _disco_s2_transpose_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
                                            self.kernel_size, self.nlat_out, self.nlon_out)
@@ -464,7 +464,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
                 warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
             psi = self.get_psi(semi_transposed=True)
             out = _disco_s2_transpose_contraction_torch(x, psi, self.nlon_out)
-
+            
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
 
