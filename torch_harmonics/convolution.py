@@ -455,10 +455,6 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
-
-        # DEBUG
-        #out = torch.sum(x, dim=2)
-        # DEBUG
         
         if x.is_cuda and _cuda_extension_available:
             out = _disco_s2_transpose_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,

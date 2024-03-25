@@ -183,19 +183,19 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
 
     @parameterized.expand([
-        #[128, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
-        #[129, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
-        #[128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular",  "equiangular", False, 1e-6],
-        #[128, 256,  64, 128, 32, 8, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
-        #[128, 256, 128, 256, 32, 8, [3   ], 2, "equiangular",  "equiangular", False, 1e-6],
-        #[128, 256, 128, 256, 32, 5, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
+        [128, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
+        [129, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
+        [128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular",  "equiangular", False, 1e-6],
+        [128, 256,  64, 128, 32, 8, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
+        [128, 256, 128, 256, 32, 8, [3   ], 2, "equiangular",  "equiangular", False, 1e-6],
+        [128, 256, 128, 256, 32, 5, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
 
         [128, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
-        #[129, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
-        #[128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular",  "equiangular", True,  1e-6],
-        #[ 64, 128, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
-        #[128, 256, 128, 256, 32, 8, [3   ], 2, "equiangular",  "equiangular", True,  1e-6],
-        #[128, 256, 128, 256, 32, 5, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
+        [129, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
+        [128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular",  "equiangular", True,  1e-6],
+        [ 64, 128, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
+        [128, 256, 128, 256, 32, 8, [3   ], 2, "equiangular",  "equiangular", True,  1e-6],
+        [128, 256, 128, 256, 32, 5, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
     ])
     def test_distributed_disco_conv(self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan,
                                     kernel_shape, groups, grid_in, grid_out, transpose, tol):
@@ -260,7 +260,6 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         with torch.no_grad():
             out_gather_full = self._gather_helper_fwd(out_local, B, C, conv_dist)
             err = torch.mean(torch.norm(out_full-out_gather_full, p='fro', dim=(-1,-2)) / torch.norm(out_full, p='fro', dim=(-1,-2)) )
-            #print("TEST FWD", out_full[0,0,:3,:3], out_gather_full[0,0,:3,:3])
             if self.world_rank == 0:
                 print(f"final relative error of output: {err.item()}")
         self.assertTrue(err.item() <= tol)
@@ -271,9 +270,6 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         with torch.no_grad():
             igrad_gather_full = self._gather_helper_bwd(igrad_local, B, C, conv_dist)
             err = torch.mean(torch.norm(igrad_full-igrad_gather_full, p='fro', dim=(-1,-2)) / torch.norm(igrad_full, p='fro', dim=(-1,-2)) )
-            #print("NUM", torch.norm(igrad_full-igrad_gather_full, p='fro', dim=(-1,-2)))
-            print("TEST BWD", igrad_full[0,0,:3,:3], igrad_gather_full[0,0,:3,:3])
-            #print("DENOM", torch.norm(igrad_full, p='fro', dim=(-1,-2)))
             if self.world_rank == 0:
                 print(f"final relative error of gradients: {err.item()}")
         self.assertTrue(err.item() <= tol)

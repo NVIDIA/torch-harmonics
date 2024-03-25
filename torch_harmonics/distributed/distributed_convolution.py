@@ -410,12 +410,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = gather_from_polar_region(x, -2, self.lat_in_shapes)
 
         # register allreduce for bwd pass
-        #x = copy_to_polar_region(x)
-
-        # DEBUG
-        #x = torch.sum(x, dim=2)
-        #out = scatter_to_polar_region(x, -2)
-        # DEBUG
+        x = copy_to_polar_region(x)
         
         if x.is_cuda and _cuda_extension_available:
             out = _disco_s2_transpose_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,

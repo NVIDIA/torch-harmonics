@@ -246,7 +246,7 @@ class _CopyToPolarRegion(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         if is_distributed_polar():
-            return _reduce(grad_output, polar_group())
+            return _reduce(grad_output, group=polar_group())
         else:
             return grad_output, None
         
