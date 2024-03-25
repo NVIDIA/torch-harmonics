@@ -243,7 +243,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out_local, self.nlat_in_local * self.nlon_in)).coalesce()
         return psi
 
-    def forward(self, x: torch.Tensor, use_cuda_kernel: bool = True) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         # store number of channels
         num_chans = x.shape[1]
@@ -388,7 +388,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_in_local, self.nlat_out_local * self.nlon_out)).coalesce()
         return psi
 
-    def forward(self, x: torch.Tensor, use_cuda_kernel: bool = True) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         
         # extract shape
         B, C, H, W = x.shape
