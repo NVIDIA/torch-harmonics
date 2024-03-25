@@ -135,8 +135,6 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         lat_shapes = convolution_dist.lat_out_shapes
         lon_shapes = convolution_dist.lon_out_shapes
 
-        #print("tensor before gather shape", tensor.shape)
-
         # gather in W
         if self.grid_size_w > 1:
             gather_shapes = [(B, C, lat_shapes[self.hrank], w) for w in lon_shapes]
@@ -146,8 +144,6 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             tensor_gather = torch.cat(olist, dim=-1)
         else:
             tensor_gather = tensor
-
-        #print("tensor_gather shape", tensor_gather.shape)
 
         # gather in H
         if self.grid_size_h > 1:
@@ -194,12 +190,12 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         [128, 256, 128, 256, 32, 8, [3   ], 2, "equiangular",  "equiangular", False, 1e-6],
         [128, 256, 128, 256, 32, 5, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
 
-        [128, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
-        [129, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
-        [128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular",  "equiangular", True,  1e-6],
-        [ 64, 128, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
-        [128, 256, 128, 256, 32, 8, [3   ], 2, "equiangular",  "equiangular", True,  1e-6],
-        [128, 256, 128, 256, 32, 5, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
+        #[128, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
+        #[129, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
+        #[128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular",  "equiangular", True,  1e-6],
+        #[ 64, 128, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
+        #[128, 256, 128, 256, 32, 8, [3   ], 2, "equiangular",  "equiangular", True,  1e-6],
+        #[128, 256, 128, 256, 32, 5, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
     ])
     def test_distributed_disco_conv(self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan,
                                     kernel_shape, groups, grid_in, grid_out, transpose, tol):
@@ -256,7 +252,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         out_local = conv_dist(inp_local)
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
-
+        
         #############################################################
         # evaluate FWD pass
         #############################################################

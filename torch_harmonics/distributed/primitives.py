@@ -263,11 +263,11 @@ class _GatherFromPolarRegion(torch.autograd.Function):
 
     @staticmethod
     def symbolic(graph, input_, dim_, shapes_):
-	return _gather(input_, dim_, shapes_, polar_group())
+        return _gather(input_, dim_, shapes_, polar_group())
 
     @staticmethod
     def forward(ctx, input_, dim_, shapes_):
-	if is_distributed_polar():
+        if is_distributed_polar():
             ctx.dim = dim_
             return _gather(input_, dim_, shapes_, group=polar_group())
         else:

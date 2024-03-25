@@ -100,7 +100,7 @@ def _precompute_distributed_convolution_tensor_s2(in_shape, out_shape, kernel_sh
 
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
-
+    
     lats_in, _ = _precompute_latitudes(nlat_in, grid=grid_in)
     lats_in = torch.from_numpy(lats_in).float()
     lats_out, _ = _precompute_latitudes(nlat_out, grid=grid_out)
@@ -152,10 +152,11 @@ def _precompute_distributed_convolution_tensor_s2(in_shape, out_shape, kernel_sh
         out_vals.append(vals)
 
     # concatenate the indices and values
-    out_idx = torch.cat(out_idx, dim=-1)
-    out_vals = torch.cat(out_vals, dim=-1)
+    out_idx = torch.cat(out_idx, dim=-1).to(torch.long).contiguous()
+    out_vals = torch.cat(out_vals, dim=-1).to(torch.float32).contiguous()
 
     return out_idx, out_vals
+
 
 class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
     """
@@ -198,7 +199,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # compute theta cutoff based on the bandlimit of the input field
         if theta_cutoff is None:
-            theta_cutoff = (self.kernel_shape[0] + 1) * torch.pi / float(self.nlat_in - 1)
+            theta_cutoff = self.kernel_shape[0] * torch.pi / float(self.nlat_in - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -216,6 +217,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.nlat_out_local = self.nlat_out
         idx, vals = _precompute_distributed_convolution_tensor_s2(in_shape, out_shape, self.kernel_shape, grid_in=grid_in, grid_out=grid_out,
                                                                   theta_cutoff=theta_cutoff)
+        
         # split the weight tensor as well
         quad_weights = split_tensor_along_dim(quad_weights, dim=0, num_chunks=self.comm_size_polar)[self.comm_rank_polar]
         self.register_buffer("quad_weights", quad_weights, persistent=False)
@@ -241,22 +243,17 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out_local, self.nlat_in_local * self.nlon_in)).coalesce()
         return psi
 
-    def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, use_cuda_kernel: bool = True) -> torch.Tensor:
 
         # store number of channels
         num_chans = x.shape[1]
-        #print("input shape", x.shape)
 
         # h and w is split. First we make w local by transposing into channel dim
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth.apply(x, (1, -1), self.lon_in_shapes)
 
-        #print("transposed shape", x.shape)
-
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
-
-        #print("multiplied shape", x.shape)
 
         if x.is_cuda and _cuda_extension_available:
             x = _disco_s2_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
@@ -269,17 +266,11 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
             x = _disco_s2_contraction_torch(x, psi, self.nlon_out)
 
-        #print("psi * x shape", x.shape)
-
         # allreduce over latitudes: h is still local
         x = reduce_from_polar_region(x)
 
-        #print("reduced shape", x.shape)
-
         # split tensor along latitudes: h is split
         x = scatter_to_polar_region(x, -2)
-
-        #print("scattered shape", x.shape)
 
         # now we can transpose back the result, so that lon is split and channels are local
         if self.comm_size_azimuth > 1:
@@ -396,7 +387,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_in_local, self.nlat_out_local * self.nlon_out)).coalesce()
         return psi
 
-    def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, use_cuda_kernel: bool = True) -> torch.Tensor:
         # extract shape
         B, C, H, W = x.shape
         x = x.reshape(B, self.groups, self.groupsize, H, W)
