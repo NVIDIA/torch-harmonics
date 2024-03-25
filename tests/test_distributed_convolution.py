@@ -135,8 +135,6 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         lat_shapes = convolution_dist.lat_out_shapes
         lon_shapes = convolution_dist.lon_out_shapes
 
-        #print("tensor before gather shape", tensor.shape)
-
         # gather in W
         if self.grid_size_w > 1:
             gather_shapes = [(B, C, lat_shapes[self.hrank], w) for w in lon_shapes]
@@ -146,8 +144,6 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             tensor_gather = torch.cat(olist, dim=-1)
         else:
             tensor_gather = tensor
-
-        #print("tensor_gather shape", tensor_gather.shape)
 
         # gather in H
         if self.grid_size_h > 1:
@@ -207,9 +203,9 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
 
         disco_args = dict(in_channels=C, out_channels=C,
-            in_shape=(nlat_in, nlon_in), out_shape=(nlat_out, nlon_out),
-            kernel_shape=kernel_shape, groups=groups,
-            grid_in=grid_in, grid_out=grid_out,	bias=True)
+                          in_shape=(nlat_in, nlon_in), out_shape=(nlat_out, nlon_out),
+                          kernel_shape=kernel_shape, groups=groups,
+                          grid_in=grid_in, grid_out=grid_out, bias=True)
 
         # set up handles
         if transpose:
@@ -222,7 +218,8 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         # copy the weights from the local conv into the dist conv
         with torch.no_grad():
             conv_dist.weight.copy_(conv_local.weight)
-            conv_dist.bias.copy_(conv_local.bias)
+            if disco_args["bias"]:
+                conv_dist.bias.copy_(conv_local.bias)
 
         # create tensors
         inp_full = torch.randn((B, C, H, W), dtype=torch.float32, device=self.device)
@@ -256,7 +253,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         out_local = conv_dist(inp_local)
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
-
+        
         #############################################################
         # evaluate FWD pass
         #############################################################

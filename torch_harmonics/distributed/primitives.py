@@ -230,7 +230,26 @@ def _gather(input_, dim_, shapes_, group=None):
     output = torch.cat(input_list, dim=dim_).contiguous()
 
     return output
+
+
+class _CopyToPolarRegion(torch.autograd.Function):
+    """Split the input and keep only the corresponding chunk to the rank."""
     
+    @staticmethod
+    def symbolic(graph, input_):
+        return input_
+    
+    @staticmethod
+    def forward(ctx, input_):
+        return input_
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        if is_distributed_polar():
+            return _reduce(grad_output, group=polar_group())
+        else:
+            return grad_output, None
+        
     
 class _ScatterToPolarRegion(torch.autograd.Function):
     """Split the input and keep only the corresponding chunk to the rank."""
@@ -257,6 +276,29 @@ class _ScatterToPolarRegion(torch.autograd.Function):
         else:
             return grad_output, None
 
+
+class _GatherFromPolarRegion(torch.autograd.Function):
+    """Gather the input and keep it on the rank."""
+
+    @staticmethod
+    def symbolic(graph, input_, dim_, shapes_):
+        return _gather(input_, dim_, shapes_, polar_group())
+
+    @staticmethod
+    def forward(ctx, input_, dim_, shapes_):
+        if is_distributed_polar():
+            ctx.dim = dim_
+            return _gather(input_, dim_, shapes_, group=polar_group())
+        else:
+            return input_
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        if is_distributed_polar():
+            return _split(grad_output, ctx.dim, group=polar_group()), None, None
+        else:
+            return grad_output, None, None
+
     
 class _ReduceFromPolarRegion(torch.autograd.Function):
     """All-reduce the input from the polar region."""
@@ -279,6 +321,10 @@ class _ReduceFromPolarRegion(torch.autograd.Function):
     def backward(ctx, grad_output):
         return grad_output
 
+
+def copy_to_polar_region(input_):
+    return _CopyToPolarRegion.apply(input_)
+    
     
 def reduce_from_polar_region(input_):
     return _ReduceFromPolarRegion.apply(input_)
@@ -286,3 +332,7 @@ def reduce_from_polar_region(input_):
 
 def scatter_to_polar_region(input_, dim_):
     return _ScatterToPolarRegion.apply(input_, dim_)
+
+
+def gather_from_polar_region(input_, dim_, shapes_):
+    return _GatherFromPolarRegion.apply(input_, dim_, shapes_)
