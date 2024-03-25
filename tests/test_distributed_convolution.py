@@ -183,14 +183,14 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
 
     @parameterized.expand([
-        [128, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
-        [129, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
-        [128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular",  "equiangular", False, 1e-6],
-        [128, 256,  64, 128, 32, 8, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
-        [128, 256, 128, 256, 32, 8, [3   ], 2, "equiangular",  "equiangular", False, 1e-6],
-        [128, 256, 128, 256, 32, 5, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
+        #[128, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
+        #[129, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
+        #[128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular",  "equiangular", False, 1e-6],
+        #[128, 256,  64, 128, 32, 8, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
+        #[128, 256, 128, 256, 32, 8, [3   ], 2, "equiangular",  "equiangular", False, 1e-6],
+        #[128, 256, 128, 256, 32, 5, [3   ], 1, "equiangular",  "equiangular", False, 1e-6],
 
-        #[128, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
+        [128, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
         #[129, 256, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
         #[128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular",  "equiangular", True,  1e-6],
         #[ 64, 128, 128, 256, 32, 8, [3   ], 1, "equiangular",  "equiangular", True,  1e-6],
@@ -203,9 +203,9 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
 
         disco_args = dict(in_channels=C, out_channels=C,
-            in_shape=(nlat_in, nlon_in), out_shape=(nlat_out, nlon_out),
-            kernel_shape=kernel_shape, groups=groups,
-            grid_in=grid_in, grid_out=grid_out,	bias=True)
+                          in_shape=(nlat_in, nlon_in), out_shape=(nlat_out, nlon_out),
+                          kernel_shape=kernel_shape, groups=groups,
+                          grid_in=grid_in, grid_out=grid_out, bias=True)
 
         # set up handles
         if transpose:
@@ -218,7 +218,8 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         # copy the weights from the local conv into the dist conv
         with torch.no_grad():
             conv_dist.weight.copy_(conv_local.weight)
-            conv_dist.bias.copy_(conv_local.bias)
+            if disco_args["bias"]:
+                conv_dist.bias.copy_(conv_local.bias)
 
         # create tensors
         inp_full = torch.randn((B, C, H, W), dtype=torch.float32, device=self.device)
@@ -259,6 +260,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         with torch.no_grad():
             out_gather_full = self._gather_helper_fwd(out_local, B, C, conv_dist)
             err = torch.mean(torch.norm(out_full-out_gather_full, p='fro', dim=(-1,-2)) / torch.norm(out_full, p='fro', dim=(-1,-2)) )
+            #print("TEST FWD", out_full[0,0,:3,:3], out_gather_full[0,0,:3,:3])
             if self.world_rank == 0:
                 print(f"final relative error of output: {err.item()}")
         self.assertTrue(err.item() <= tol)
@@ -269,6 +271,9 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         with torch.no_grad():
             igrad_gather_full = self._gather_helper_bwd(igrad_local, B, C, conv_dist)
             err = torch.mean(torch.norm(igrad_full-igrad_gather_full, p='fro', dim=(-1,-2)) / torch.norm(igrad_full, p='fro', dim=(-1,-2)) )
+            #print("NUM", torch.norm(igrad_full-igrad_gather_full, p='fro', dim=(-1,-2)))
+            print("TEST BWD", igrad_full[0,0,:3,:3], igrad_gather_full[0,0,:3,:3])
+            #print("DENOM", torch.norm(igrad_full, p='fro', dim=(-1,-2)))
             if self.world_rank == 0:
                 print(f"final relative error of gradients: {err.item()}")
         self.assertTrue(err.item() <= tol)

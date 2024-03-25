@@ -230,7 +230,26 @@ def _gather(input_, dim_, shapes_, group=None):
     output = torch.cat(input_list, dim=dim_).contiguous()
 
     return output
+
+
+class _CopyToPolarRegion(torch.autograd.Function):
+    """Split the input and keep only the corresponding chunk to the rank."""
     
+    @staticmethod
+    def symbolic(graph, input_):
+        return input_
+    
+    @staticmethod
+    def forward(ctx, input_):
+        return input_
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        if is_distributed_polar():
+            return _reduce(grad_output, polar_group())
+        else:
+            return grad_output, None
+        
     
 class _ScatterToPolarRegion(torch.autograd.Function):
     """Split the input and keep only the corresponding chunk to the rank."""
@@ -302,6 +321,10 @@ class _ReduceFromPolarRegion(torch.autograd.Function):
     def backward(ctx, grad_output):
         return grad_output
 
+
+def copy_to_polar_region(input_):
+    return _CopyToPolarRegion.apply(input_)
+    
     
 def reduce_from_polar_region(input_):
     return _ReduceFromPolarRegion.apply(input_)

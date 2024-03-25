@@ -53,7 +53,7 @@ from torch_harmonics.convolution import (
 
 from torch_harmonics.distributed import polar_group_size, azimuth_group_size
 from torch_harmonics.distributed import distributed_transpose_azimuth, distributed_transpose_polar
-from torch_harmonics.distributed import reduce_from_polar_region, scatter_to_polar_region, gather_from_polar_region
+from torch_harmonics.distributed import copy_to_polar_region, reduce_from_polar_region, scatter_to_polar_region, gather_from_polar_region
 from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
 from torch_harmonics.distributed import compute_split_shapes, split_tensor_along_dim
 
@@ -283,7 +283,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # do weight multiplication
         out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
-        out = out.reshape(out.shape[0], -1, out.shape[-2], out.shape[-1])
+        out = out.reshape(out.shape[0], -1, H, W)
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
@@ -330,7 +330,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # bandlimit
         if theta_cutoff is None:
-            theta_cutoff = (self.kernel_shape[0] + 1) * torch.pi / float(self.nlat_in - 1)
+            theta_cutoff = self.kernel_shape[0] * torch.pi / float(self.nlat_in - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -344,8 +344,8 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 	# of atomic reduction calls inside the actual kernel
 
         # set local shapes according to distributed mode:
-        self.nlat_in_local = self.lat_in_shapes[self.comm_rank_polar]
-        self.nlat_out_local = self.nlat_out
+        self.nlat_in_local = self.nlat_in
+        self.nlat_out_local = self.lat_out_shapes[self.comm_rank_polar]
 
         # switch in_shape and out_shape since we want transpose conv
         # distributed mode here is swapped because of the transpose
@@ -354,12 +354,13 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # split the weight tensor as well
         quad_weights = split_tensor_along_dim(quad_weights, dim=0, num_chunks=self.comm_size_polar)[self.comm_rank_polar]
+        self.register_buffer("quad_weights", quad_weights, persistent=False)
 
         # sort the values
         ker_idx = idx[0, ...].contiguous()
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()
-        roff_idx = preprocess_psi(self.kernel_size, self.nlat_out_local, ker_idx, row_idx, col_idx, vals)
+        roff_idx = preprocess_psi(self.kernel_size, self.nlat_in_local, ker_idx, row_idx, col_idx, vals)
 
         # preprocessed data-structure for GPU kernel
         self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
@@ -388,25 +389,34 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         return psi
 
     def forward(self, x: torch.Tensor, use_cuda_kernel: bool = True) -> torch.Tensor:
+        
         # extract shape
         B, C, H, W = x.shape
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
         x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
-        x = x.reshape(x.shape[0], -1, x.shape[-3], x.shape[-2], x.shape[-1])
+        x = x.reshape(B, -1, x.shape[-3], H, W)
         num_chans = x.shape[1]
 
         # transpose such that lon is local, channels are split
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth.apply(x, (1, -1), self.lon_in_shapes)
 
-        # pre-multiply x with the quadrature weights
+        # multiply weights
         x = self.quad_weights * x
 
         # we need to gather the input tensor
         x = gather_from_polar_region(x, -2, self.lat_in_shapes)
 
+        # register allreduce for bwd pass
+        #x = copy_to_polar_region(x)
+
+        # DEBUG
+        #x = torch.sum(x, dim=2)
+        #out = scatter_to_polar_region(x, -2)
+        # DEBUG
+        
         if x.is_cuda and _cuda_extension_available:
             out = _disco_s2_transpose_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
                                            self.kernel_size, self.nlat_out_local, self.nlon_out)
@@ -415,9 +425,6 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
                 warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
             psi = self.get_psi(semi_transposed=True)
             out = _disco_s2_transpose_contraction_torch(x, psi, self.nlon_out)
-
-        ## allreduce over latitudes: h is still local
-        #out = reduce_from_polar_region(out)
 
         # now we can transpose back the result, so that lon is split and channels are local
         if self.comm_size_azimuth > 1:
