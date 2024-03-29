@@ -114,7 +114,7 @@ def _precompute_convolution_tensor_s2(in_shape, out_shape, kernel_shape, grid_in
     The rotation of the Euler angles uses the YZY convention, which applied to the northpole $(0,0,1)^T$ yields
     $$
     Y(\alpha) Z(\beta) Y(\gamma) n =
-        {\begin{bmatrix} 
+        {\begin{bmatrix}
             \cos(\gamma)\sin(\alpha) + \cos(\alpha)\cos(\beta)\sin(\gamma) \\
             \sin(\beta)\sin(\gamma) \\
             \cos(\alpha)\cos(\gamma)-\cos(\beta)\sin(\alpha)\sin(\gamma)
@@ -541,7 +541,7 @@ class DiscreteContinuousConv2d(DiscreteContinuousConv):
             quad_weights = (wx * wy).reshape(-1)
         else:
             raise ValueError(f"Unknown grid input type of type {type(grid_in)}")
-        
+
         if isinstance(grid_out, torch.Tensor):
             pass
         elif isinstance(grid_out, str):
@@ -612,7 +612,7 @@ class DiscreteContinuousConv2d(DiscreteContinuousConv):
 
         return out
 
-class DiscreteContinuousConvTranspose2d(DiscreteContinuousConv2d):
+class DiscreteContinuousConvTranspose2d(DiscreteContinuousConv):
     """
     Discrete-continuous convolutions (DISCO) on arbitrary 2d grids.
 
@@ -634,6 +634,8 @@ class DiscreteContinuousConvTranspose2d(DiscreteContinuousConv2d):
         bias: Optional[bool] = True,
         radius_cutoff: Optional[float] = None,
     ):
+        super().__init__(in_channels, out_channels, kernel_shape, groups, bias)
+
         # the instantiator supports convenience constructors for the input and output grids
         if isinstance(grid_in, torch.Tensor):
             assert isinstance(quad_weights, torch.Tensor)
@@ -649,7 +651,7 @@ class DiscreteContinuousConvTranspose2d(DiscreteContinuousConv2d):
             quad_weights = (wx * wy).reshape(-1)
         else:
             raise ValueError(f"Unknown grid input type of type {type(grid_in)}")
-        
+
         if isinstance(grid_out, torch.Tensor):
             pass
         elif isinstance(grid_out, str):
@@ -662,14 +664,64 @@ class DiscreteContinuousConvTranspose2d(DiscreteContinuousConv2d):
         else:
             raise ValueError(f"Unknown grid output type of type {type(grid_out)}")
 
-        # just interchange grid_in and grid_out in the constructor
-        super().__init__(in_channels, out_channels, grid_out, grid_in, kernel_shape, n_out, n_in, quad_weights, periodic, groups, bias, radius_cutoff)
+        # check that input arrays are valid point clouds in 2D
+        assert len(grid_in.shape) == 2
+        assert len(grid_out.shape) == 2
+        assert len(quad_weights.shape) == 1
+        assert grid_in.shape[0] == 2
+        assert grid_out.shape[0] == 2
 
-        # permute the index vector and overwrite it, effectively overwriting the Psi tensor
-        l = torch.Tensor([0, 2, 1])
-        psi_idx = self.psi_idx[l]
-        self.register_buffer("psi_idx", psi_idx, persistent=False)
+        self.n_in = grid_in.shape[-1]
+        self.n_out = grid_out.shape[-1]
 
+        # compute the cutoff radius based on the bandlimit of the input field
+        # TODO: this heuristic is ad-hoc! Verify that we do the right one
+        if radius_cutoff is None:
+            radius_cutoff = 2 * (self.kernel_shape[0] + 1) / float(math.sqrt(self.n_in) - 1)
+
+        if radius_cutoff <= 0.0:
+            raise ValueError("Error, radius_cutoff has to be positive.")
+
+        # integration weights
+        self.register_buffer("quad_weights", quad_weights, persistent=False)
+
+        # precompute the transposed tensor
+        idx, vals = _precompute_convolution_tensor_2d(grid_out, grid_in, self.kernel_shape, radius_cutoff=radius_cutoff, periodic=periodic)
+
+        # to improve performance, we make psi a matrix by merging the first two dimensions
+        # This has to be accounted for in the forward pass
+        idx = torch.stack([idx[0]*self.n_out + idx[2], idx[1]], dim=0)
+
+        self.register_buffer("psi_idx", idx.contiguous(), persistent=False)
+        self.register_buffer("psi_vals", vals.contiguous(), persistent=False)
+
+    def get_psi(self):
+        psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size*self.n_out, self.n_in))
+        return psi
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # pre-multiply x with the quadrature weights
+        x = self.quad_weights * x
+
+        psi = self.get_psi()
+
+        # extract shape
+        B, C, _ = x.shape
+
+        # bring into the right shape for the bmm and perform it
+        x = x.reshape(B * C, self.n_in).permute(1, 0).contiguous()
+        x = torch.mm(psi, x)
+        x = x.permute(1, 0).reshape(B, C, self.kernel_size, self.n_out)
+        x = x.reshape(B, self.groups, self.groupsize, self.kernel_size, self.n_out)
+
+        # do weight multiplication
+        out = torch.einsum("bgckx,gock->bgox", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2]))
+        out = out.reshape(out.shape[0], -1, out.shape[-1])
+
+        if self.bias is not None:
+            out = out + self.bias.reshape(1, -1, 1)
+
+        return out
 
 class EquidistantDiscreteContinuousConv2d(DiscreteContinuousConv):
     """
