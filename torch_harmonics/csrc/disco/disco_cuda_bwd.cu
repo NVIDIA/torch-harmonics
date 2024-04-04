@@ -286,7 +286,7 @@ torch::Tensor disco_cuda_bwd(torch::Tensor inp,
   torch::Tensor out = torch::zeros(out_dims, options);
 
   // get stream
-  auto stream = at::cuda::getCurrentCUDAStream();
+  auto stream = at::cuda::getCurrentCUDAStream().stream();
   
   // assert
   static_assert(0 == (ELXTH_MAX%2));
