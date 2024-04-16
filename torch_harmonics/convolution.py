@@ -455,7 +455,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
-        
+
         if x.is_cuda and _cuda_extension_available:
             out = _disco_s2_transpose_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
                                            self.kernel_size, self.nlat_out, self.nlon_out)
@@ -464,7 +464,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
                 warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
             psi = self.get_psi(semi_transposed=True)
             out = _disco_s2_transpose_contraction_torch(x, psi, self.nlon_out)
-            
+
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
 
