@@ -274,7 +274,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         x_ref_grad = x_ref.grad.clone()
 
         # compare results
-        print((y- y_ref).abs().max())
         self.assertTrue(torch.allclose(y, y_ref, rtol=tol, atol=tol))
 
         # compare
