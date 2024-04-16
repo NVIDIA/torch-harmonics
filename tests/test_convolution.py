@@ -39,47 +39,77 @@ from torch.autograd import gradcheck
 from torch_harmonics import *
 
 
-def _compute_vals_isotropic(theta: torch.Tensor, phi: torch.Tensor, ntheta: int, theta_cutoff: float):
+def _compute_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, r_cutoff: float):
     """
     helper routine to compute the values of the isotropic kernel densely
     """
 
-    # compute the support
-    dtheta = (theta_cutoff - 0.0) / ntheta
-    ikernel = torch.arange(ntheta).reshape(-1, 1, 1)
-    itheta = ikernel * dtheta
+    kernel_size = (nr // 2) + nr % 2
+    ikernel = torch.arange(kernel_size).reshape(-1, 1, 1)
+    dr = 2 * r_cutoff  / (nr + 1)
 
-    norm_factor = 2 * math.pi * (1 - math.cos(theta_cutoff - dtheta) + math.cos(theta_cutoff - dtheta) + (math.sin(theta_cutoff - dtheta) - math.sin(theta_cutoff)) / dtheta)
+    # compute the support
+    if nr % 2 == 1:
+        ir = ikernel * dr
+    else:
+        ir = (ikernel + 0.5) * dr
+
+    norm_factor = 2 * math.pi * (1 - math.cos(r_cutoff - dr) + math.cos(r_cutoff - dr) + (math.sin(r_cutoff - dr) - math.sin(r_cutoff)) / dr)
 
     vals = torch.where(
-        ((theta - itheta).abs() <= dtheta) & (theta <= theta_cutoff),
-        (1 - (theta - itheta).abs() / dtheta) / norm_factor,
+        ((r - ir).abs() <= dr) & (r <= r_cutoff),
+        (1 - (r - ir).abs() / dr) / norm_factor,
         0,
     )
     return vals
 
 
-def _compute_vals_anisotropic(theta: torch.Tensor, phi: torch.Tensor, ntheta: int, nphi: int, theta_cutoff: float):
+def _compute_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, nphi: int, r_cutoff: float):
     """
     helper routine to compute the values of the anisotropic kernel densely
     """
 
-    # compute the support
-    dtheta = (theta_cutoff - 0.0) / ntheta
-    dphi = 2.0 * math.pi / nphi
-    kernel_size = (ntheta - 1) * nphi + 1
+    kernel_size = (nr // 2) * nphi + nr % 2
     ikernel = torch.arange(kernel_size).reshape(-1, 1, 1)
-    itheta = ((ikernel - 1) // nphi + 1) * dtheta
-    iphi = ((ikernel - 1) % nphi) * dphi
+    dr = 2 * r_cutoff  / (nr + 1)
+    dphi = 2.0 * math.pi / nphi
 
-    norm_factor = 2 * math.pi * (1 - math.cos(theta_cutoff - dtheta) + math.cos(theta_cutoff - dtheta) + (math.sin(theta_cutoff - dtheta) - math.sin(theta_cutoff)) / dtheta)
+    # disambiguate even and uneven cases and compute the support
+    if nr % 2 == 1:
+        ir = ((ikernel - 1) // nphi + 1) * dr
+        iphi = ((ikernel - 1) % nphi) * dphi
+    else:
+        ir = (ikernel // nphi + 0.5) * dr
+        iphi = (ikernel % nphi) * dphi
 
-    # find the indices where the rotated position falls into the support of the kernel
-    cond_theta = ((theta - itheta).abs() <= dtheta) & (theta <= theta_cutoff)
-    cond_phi = ((phi - iphi).abs() <= dphi) | ((2 * math.pi - (phi - iphi).abs()) <= dphi)
-    theta_vals = torch.where(cond_theta, (1 - (theta - itheta).abs() / dtheta) / norm_factor, 0.0)
-    phi_vals = torch.where(cond_phi, (1 - torch.minimum((phi - iphi).abs(), (2 * math.pi - (phi - iphi).abs())) / dphi), 0.0)
-    vals = torch.where(ikernel > 0, theta_vals * phi_vals, theta_vals)
+    norm_factor = 2 * math.pi * (1 - math.cos(r_cutoff - dr) + math.cos(r_cutoff - dr) + (math.sin(r_cutoff - dr) - math.sin(r_cutoff)) / dr)
+
+    # compute the value of the filter
+    if nr % 2 == 1:
+        # find the indices where the rotated position falls into the support of the kernel
+        cond_r = ((r - ir).abs() <= dr) & (r <= r_cutoff)
+        cond_phi = ((phi - iphi).abs() <= dphi) | ((2 * math.pi - (phi - iphi).abs()) <= dphi)
+        r_vals = torch.where(cond_r, (1 - (r - ir).abs() / dr) / norm_factor, 0.0)
+        phi_vals = torch.where(cond_phi, (1 - torch.minimum((phi - iphi).abs(), (2 * math.pi - (phi - iphi).abs())) / dphi), 0.0)
+        vals = torch.where(ikernel > 0, r_vals * phi_vals, r_vals)
+    else:
+        # find the indices where the rotated position falls into the support of the kernel
+        cond_r = ((r - ir).abs() <= dr) & (r <= r_cutoff)
+        cond_phi = ((phi - iphi).abs() <= dphi) | ((2 * math.pi - (phi - iphi).abs()) <= dphi)
+        r_vals = torch.where(cond_r, (1 - (r - ir).abs() / dr) / norm_factor, 0.0)
+        phi_vals = torch.where(cond_phi, (1 - torch.minimum((phi - iphi).abs(), (2 * math.pi - (phi - iphi).abs())) / dphi), 0.0)
+        vals = r_vals * phi_vals
+
+        # in the even case, the inner casis functions overlap into areas with a negative areas
+        rn = - r
+        phin = torch.where(phi + math.pi >= 2*math.pi, phi - math.pi, phi + math.pi)
+        cond_rn = ((rn - ir).abs() <= dr) & (rn <= r_cutoff)
+        cond_phin = ((phin - iphi).abs() <= dphi) | ((2 * math.pi - (phin - iphi).abs()) <= dphi)
+        rn_vals = torch.where(cond_rn, (1 - (rn - ir).abs() / dr) / norm_factor, 0.0)
+        phin_vals = torch.where(cond_phin, (1 - torch.minimum((phin - iphi).abs(), (2 * math.pi - (phin - iphi).abs())) / dphi), 0.0)
+        vals += rn_vals * phin_vals
+
+
     return vals
 
 
@@ -92,11 +122,11 @@ def _precompute_convolution_tensor_dense(in_shape, out_shape, kernel_shape, grid
     assert len(out_shape) == 2
 
     if len(kernel_shape) == 1:
-        kernel_handle = partial(_compute_vals_isotropic, ntheta=kernel_shape[0], theta_cutoff=theta_cutoff)
-        kernel_size = kernel_shape[0]
+        kernel_handle = partial(_compute_vals_isotropic, nr=kernel_shape[0], r_cutoff=theta_cutoff)
+        kernel_size = math.ceil( kernel_shape[0] / 2)
     elif len(kernel_shape) == 2:
-        kernel_handle = partial(_compute_vals_anisotropic, ntheta=kernel_shape[0], nphi=kernel_shape[1], theta_cutoff=theta_cutoff)
-        kernel_size = (kernel_shape[0] - 1) * kernel_shape[1] + 1
+        kernel_handle = partial(_compute_vals_anisotropic, nr=kernel_shape[0], nphi=kernel_shape[1], r_cutoff=theta_cutoff)
+        kernel_size = (kernel_shape[0] // 2) * kernel_shape[1] + kernel_shape[0] % 2
     else:
         raise ValueError("kernel_shape should be either one- or two-dimensional.")
 
@@ -156,21 +186,23 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
     @parameterized.expand(
         [
             # regular convolution
-            [8, 4, 2, (16, 32), (16, 32), [2], "equiangular", "equiangular", False, 5e-5],
-            [8, 4, 2, (16, 32), (8, 16), [3], "equiangular", "equiangular", False, 5e-5],
+            [8, 4, 2, (16, 32), (16, 32), [3], "equiangular", "equiangular", False, 5e-5],
+            [8, 4, 2, (16, 32), (8, 16), [5], "equiangular", "equiangular", False, 5e-5],
+            [8, 4, 2, (16, 32), (8, 16), [3, 3], "equiangular", "equiangular", False, 5e-5],
             [8, 4, 2, (16, 32), (8, 16), [2, 3], "equiangular", "equiangular", False, 5e-5],
-            [8, 4, 2, (18, 36), (6, 12), [4], "equiangular", "equiangular", False, 5e-5],
-            [8, 4, 2, (16, 32), (8, 16), [3], "equiangular", "legendre-gauss", False, 5e-5],
-            [8, 4, 2, (16, 32), (8, 16), [3], "legendre-gauss", "equiangular", False, 5e-5],
-            [8, 4, 2, (16, 32), (8, 16), [3], "legendre-gauss", "legendre-gauss", False, 5e-5],
+            [8, 4, 2, (18, 36), (6, 12), [7], "equiangular", "equiangular", False, 5e-5],
+            [8, 4, 2, (16, 32), (8, 16), [5], "equiangular", "legendre-gauss", False, 5e-5],
+            [8, 4, 2, (16, 32), (8, 16), [5], "legendre-gauss", "equiangular", False, 5e-5],
+            [8, 4, 2, (16, 32), (8, 16), [5], "legendre-gauss", "legendre-gauss", False, 5e-5],
             # transpose convolution
-            [8, 4, 2, (16, 32), (16, 32), [2], "equiangular", "equiangular", True, 5e-5],
-            [8, 4, 2, (8, 16), (16, 32), [3], "equiangular", "equiangular", True, 5e-5],
+            [8, 4, 2, (16, 32), (16, 32), [3], "equiangular", "equiangular", True, 5e-5],
+            [8, 4, 2, (8, 16), (16, 32), [5], "equiangular", "equiangular", True, 5e-5],
+            [8, 4, 2, (8, 16), (16, 32), [3, 3], "equiangular", "equiangular", True, 5e-5],
             [8, 4, 2, (8, 16), (16, 32), [2, 3], "equiangular", "equiangular", True, 5e-5],
-            [8, 4, 2, (6, 12), (18, 36), [4], "equiangular", "equiangular", True, 5e-5],
-            [8, 4, 2, (8, 16), (16, 32), [3], "equiangular", "legendre-gauss", True, 5e-5],
-            [8, 4, 2, (8, 16), (16, 32), [3], "legendre-gauss", "equiangular", True, 5e-5],
-            [8, 4, 2, (8, 16), (16, 32), [3], "legendre-gauss", "legendre-gauss", True, 5e-5],
+            [8, 4, 2, (6, 12), (18, 36), [7], "equiangular", "equiangular", True, 5e-5],
+            [8, 4, 2, (8, 16), (16, 32), [5], "equiangular", "legendre-gauss", True, 5e-5],
+            [8, 4, 2, (8, 16), (16, 32), [5], "legendre-gauss", "equiangular", True, 5e-5],
+            [8, 4, 2, (8, 16), (16, 32), [5], "legendre-gauss", "legendre-gauss", True, 5e-5],
         ]
     )
     def test_disco_convolution(
@@ -242,6 +274,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         x_ref_grad = x_ref.grad.clone()
 
         # compare results
+        print((y- y_ref).abs().max())
         self.assertTrue(torch.allclose(y, y_ref, rtol=tol, atol=tol))
 
         # compare
