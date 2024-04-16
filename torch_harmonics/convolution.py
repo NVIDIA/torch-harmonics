@@ -345,9 +345,9 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
 
-        # compute theta cutoff based on the bandlimit of the input field
+        # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
         if theta_cutoff is None:
-            theta_cutoff = self.kernel_shape[0] * torch.pi / float(self.nlat_in - 1)
+            theta_cutoff = (self.kernel_shape[0] + 1) / 2 * torch.pi / float(self.nlat_out - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -433,7 +433,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # bandlimit
         if theta_cutoff is None:
-            theta_cutoff = self.kernel_shape[0] * torch.pi / float(self.nlat_in - 1)
+            theta_cutoff = (self.kernel_shape[0] + 1) / 2 * torch.pi / float(self.nlat_in - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
