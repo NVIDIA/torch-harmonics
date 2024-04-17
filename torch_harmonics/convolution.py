@@ -60,10 +60,15 @@ def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int,
     Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
     """
 
+    kernel_size = (nr // 2) + nr % 2
+    ikernel = torch.arange(kernel_size).reshape(-1, 1, 1)
+    dr = 2 * r_cutoff  / (nr + 1)
+
     # compute the support
-    dr = (r_cutoff - 0.0) / nr
-    ikernel = torch.arange(nr).reshape(-1, 1, 1)
-    ir = ikernel * dr
+    if nr % 2 == 1:
+        ir = ikernel * dr
+    else:
+        ir = (ikernel + 0.5) * dr
 
     if norm == "none":
         norm_factor = 1.0
@@ -80,19 +85,27 @@ def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int,
     return iidx, vals
 
 
+
 def _compute_support_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, nphi: int, r_cutoff: float, norm: str = "s2"):
     """
-    Computes the index set that falls into the anisotropic kernel's support and returns both indices and values.
+    Computes the index set that falls into the anisotropic kernel's support and returns both indices and values. Handles the special case
+    when there is an uneven number of collocation points across the diameter of the kernel.
     """
 
-    # compute the support
-    dr = (r_cutoff - 0.0) / nr
-    dphi = 2.0 * math.pi / nphi
-    kernel_size = (nr - 1) * nphi + 1
+    kernel_size = (nr // 2) * nphi + nr % 2
     ikernel = torch.arange(kernel_size).reshape(-1, 1, 1)
-    ir = ((ikernel - 1) // nphi + 1) * dr
-    iphi = ((ikernel - 1) % nphi) * dphi
+    dr = 2 * r_cutoff  / (nr + 1)
+    dphi = 2.0 * math.pi / nphi
 
+    # disambiguate even and uneven cases and compute the support
+    if nr % 2 == 1:
+        ir = ((ikernel - 1) // nphi + 1) * dr
+        iphi = ((ikernel - 1) % nphi) * dphi
+    else:
+        ir = (ikernel // nphi + 0.5) * dr
+        iphi = (ikernel % nphi) * dphi
+
+    # TODO: this has been computed for the odd case. Still needs to be verified for the even case.
     if norm == "none":
         norm_factor = 1.0
     elif norm == "2d":
@@ -103,15 +116,44 @@ def _compute_support_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, nr: in
         raise ValueError(f"Unknown normalization mode {norm}.")
 
     # find the indices where the rotated position falls into the support of the kernel
-    cond_r = ((r - ir).abs() <= dr) & (r <= r_cutoff)
-    cond_phi = (ikernel == 0) | ((phi - iphi).abs() <= dphi) | ((2 * math.pi - (phi - iphi).abs()) <= dphi)
-    iidx = torch.argwhere(cond_r & cond_phi)
-    vals = (1 - (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs() / dr) / norm_factor
-    vals *= torch.where(
-        iidx[:, 0] > 0,
-        (1 - torch.minimum((phi[iidx[:, 1], iidx[:, 2]] - iphi[iidx[:, 0], 0, 0]).abs(), (2 * math.pi - (phi[iidx[:, 1], iidx[:, 2]] - iphi[iidx[:, 0], 0, 0]).abs())) / dphi),
-        1.0,
-    )
+    if nr % 2 == 1:
+        # find the support
+        cond_r = ((r - ir).abs() <= dr) & (r <= r_cutoff)
+        cond_phi = (ikernel == 0) | ((phi - iphi).abs() <= dphi) | ((2 * math.pi - (phi - iphi).abs()) <= dphi)
+        # find indices where conditions are met
+        iidx = torch.argwhere(cond_r & cond_phi)
+        # compute the distance to the collocation points
+        dist_r = (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs()
+        dist_phi = (phi[iidx[:, 1], iidx[:, 2]] - iphi[iidx[:, 0], 0, 0]).abs()
+        # compute the value of the basis functions
+        vals = (1 - dist_r / dr) / norm_factor
+        vals *= torch.where(
+            (iidx[:, 0] > 0),
+            (1 - torch.minimum(dist_phi, (2 * math.pi - dist_phi)) / dphi),
+            1.0,
+        )
+    else:
+        # in the even case, the inner casis functions overlap into areas with a negative areas
+        rn = - r
+        phin = torch.where(phi + math.pi >= 2*math.pi, phi - math.pi, phi + math.pi)
+        # find the support
+        cond_r = ((r - ir).abs() <= dr) & (r <= r_cutoff)
+        cond_phi = ((phi - iphi).abs() <= dphi) | ((2 * math.pi - (phi - iphi).abs()) <= dphi)
+        cond_rn = ((rn - ir).abs() <= dr) & (rn <= r_cutoff)
+        cond_phin = ((phin - iphi).abs() <= dphi) | ((2 * math.pi - (phin - iphi).abs()) <= dphi)
+        # find indices where conditions are met
+        iidx = torch.argwhere((cond_r & cond_phi) | (cond_rn & cond_phin))
+        dist_r = (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs()
+        dist_phi = (phi[iidx[:, 1], iidx[:, 2]] - iphi[iidx[:, 0], 0, 0]).abs()
+        dist_rn = (rn[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs()
+        dist_phin = (phin[iidx[:, 1], iidx[:, 2]] - iphi[iidx[:, 0], 0, 0]).abs()
+        # compute the value of the basis functions
+        vals = cond_r[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - dist_r / dr) / norm_factor
+        vals *= cond_phi[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - torch.minimum(dist_phi, (2 * math.pi - dist_phi)) / dphi)
+        valsn = cond_rn[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - dist_rn / dr) / norm_factor
+        valsn *= cond_phin[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - torch.minimum(dist_phin, (2 * math.pi - dist_phin)) / dphi)
+        vals += valsn
+
     return iidx, vals
 
 
@@ -258,10 +300,12 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
             self.kernel_shape = kernel_shape
 
         if len(self.kernel_shape) == 1:
-            self.kernel_size = self.kernel_shape[0]
+            self.kernel_size = math.ceil( self.kernel_shape[0] / 2)
+            if self.kernel_shape[0] % 2 == 0:
+                warn("Detected isotropic kernel with even number of collocation points in the radial direction. This feature is only supported out of consistency and may lead to unexpected behavior.")
         elif len(self.kernel_shape) == 2:
-            self.kernel_size = (self.kernel_shape[0] - 1) * self.kernel_shape[1] + 1
-        else:
+            self.kernel_size = (self.kernel_shape[0] // 2) * self.kernel_shape[1] + self.kernel_shape[0] % 2
+        if len(self.kernel_shape) > 2:
             raise ValueError("kernel_shape should be either one- or two-dimensional.")
 
         # groups
@@ -311,9 +355,9 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
 
-        # compute theta cutoff based on the bandlimit of the input field
+        # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
         if theta_cutoff is None:
-            theta_cutoff = self.kernel_shape[0] * torch.pi / float(self.nlat_in - 1)
+            theta_cutoff = (self.kernel_shape[0] + 1) / 2 * torch.pi / float(self.nlat_out - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -399,7 +443,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # bandlimit
         if theta_cutoff is None:
-            theta_cutoff = self.kernel_shape[0] * torch.pi / float(self.nlat_in - 1)
+            theta_cutoff = (self.kernel_shape[0] + 1) / 2 * torch.pi / float(self.nlat_in - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -455,7 +499,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
-        
+
         if x.is_cuda and _cuda_extension_available:
             out = _disco_s2_transpose_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
                                            self.kernel_size, self.nlat_out, self.nlon_out)
@@ -464,7 +508,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
                 warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
             psi = self.get_psi(semi_transposed=True)
             out = _disco_s2_transpose_contraction_torch(x, psi, self.nlon_out)
-            
+
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
 

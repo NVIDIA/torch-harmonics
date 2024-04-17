@@ -160,6 +160,10 @@ $$
 
 Here, $x_j \in [-1,1]$ are the quadrature nodes with the respective quadrature weights $w_j$.
 
+### Discrete-continuous convolutions
+
+torch-harmonics now provides local discrete-continuous (DISCO) convolutions as outlined in [4] on the sphere.
+
 ## Getting started
 
 The main functionality of `torch_harmonics` is provided in the form of `torch.nn.Modules` for composability. A minimum example is given by:
