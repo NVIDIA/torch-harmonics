@@ -100,7 +100,7 @@ def _precompute_distributed_convolution_tensor_s2(in_shape, out_shape, kernel_sh
 
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
-    
+
     lats_in, _ = _precompute_latitudes(nlat_in, grid=grid_in)
     lats_in = torch.from_numpy(lats_in).float()
     lats_out, _ = _precompute_latitudes(nlat_out, grid=grid_out)
@@ -217,7 +217,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.nlat_out_local = self.nlat_out
         idx, vals = _precompute_distributed_convolution_tensor_s2(in_shape, out_shape, self.kernel_shape, grid_in=grid_in, grid_out=grid_out,
                                                                   theta_cutoff=theta_cutoff)
-        
+
         # split the weight tensor as well
         quad_weights = split_tensor_along_dim(quad_weights, dim=0, num_chunks=self.comm_size_polar)[self.comm_rank_polar]
         self.register_buffer("quad_weights", quad_weights, persistent=False)
@@ -389,7 +389,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         return psi
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        
+
         # extract shape
         B, C, H, W = x.shape
         x = x.reshape(B, self.groups, self.groupsize, H, W)
@@ -411,7 +411,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # register allreduce for bwd pass
         x = copy_to_polar_region(x)
-        
+
         if x.is_cuda and _cuda_extension_available:
             out = _disco_s2_transpose_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
                                            self.kernel_size, self.nlat_out_local, self.nlon_out)
