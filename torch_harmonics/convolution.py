@@ -55,7 +55,7 @@ except ImportError as err:
     _cuda_extension_available = False
 
 
-def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, r_cutoff: float, norm: str = "s2"):
+def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, quad_weights: torch.Tensor, nr: int, r_cutoff: float):
     """
     Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
     """
@@ -70,23 +70,20 @@ def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int,
     else:
         ir = (ikernel + 0.5) * dr
 
-    if norm == "none":
-        norm_factor = 1.0
-    elif norm == "2d":
-        norm_factor = math.pi * (r_cutoff * nr / (nr + 1))**2 + math.pi * r_cutoff**2 * (2 * nr / (nr + 1) + 1) / (nr + 1) / 3
-    elif norm == "s2":
-        norm_factor = 2 * math.pi * (1 - math.cos(r_cutoff - dr) + math.cos(r_cutoff - dr) + (math.sin(r_cutoff - dr) - math.sin(r_cutoff)) / dr)
-    else:
-        raise ValueError(f"Unknown normalization mode {norm}.")
-
     # find the indices where the rotated position falls into the support of the kernel
     iidx = torch.argwhere(((r - ir).abs() <= dr) & (r <= r_cutoff))
-    vals = (1 - (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs() / dr) / norm_factor
+    vals = (1 - (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs() / dr)
+
+    # discretely normalize the filter basis functions
+    q = quad_weights[iidx[:, 1]].reshape(-1)
+    vnorm = torch.sum(torch.where(iidx[:, 0] == ikernel.reshape(-1, 1), vals.reshape(1, -1), 0.0) * q, dim=-1)
+    vals = vals / vnorm[iidx[:, 0]]
+
     return iidx, vals
 
 
 
-def _compute_support_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, nphi: int, r_cutoff: float, norm: str = "s2"):
+def _compute_support_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, quad_weights: torch.Tensor, nr: int, nphi: int, r_cutoff: float):
     """
     Computes the index set that falls into the anisotropic kernel's support and returns both indices and values. Handles the special case
     when there is an uneven number of collocation points across the diameter of the kernel.
@@ -105,16 +102,6 @@ def _compute_support_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, nr: in
         ir = (ikernel // nphi + 0.5) * dr
         iphi = (ikernel % nphi) * dphi
 
-    # TODO: this has been computed for the odd case. Still needs to be verified for the even case.
-    if norm == "none":
-        norm_factor = 1.0
-    elif norm == "2d":
-        norm_factor = math.pi * (r_cutoff * nr / (nr + 1))**2 + math.pi * r_cutoff**2 * (2 * nr / (nr + 1) + 1) / (nr + 1) / 3
-    elif norm == "s2":
-        norm_factor = 2 * math.pi * (1 - math.cos(r_cutoff - dr) + math.cos(r_cutoff - dr) + (math.sin(r_cutoff - dr) - math.sin(r_cutoff)) / dr)
-    else:
-        raise ValueError(f"Unknown normalization mode {norm}.")
-
     # find the indices where the rotated position falls into the support of the kernel
     if nr % 2 == 1:
         # find the support
@@ -126,12 +113,18 @@ def _compute_support_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, nr: in
         dist_r = (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs()
         dist_phi = (phi[iidx[:, 1], iidx[:, 2]] - iphi[iidx[:, 0], 0, 0]).abs()
         # compute the value of the basis functions
-        vals = (1 - dist_r / dr) / norm_factor
+        vals = (1 - dist_r / dr)
         vals *= torch.where(
             (iidx[:, 0] > 0),
             (1 - torch.minimum(dist_phi, (2 * math.pi - dist_phi)) / dphi),
             1.0,
         )
+
+        # discretely normalize the filter basis functions
+        q = quad_weights[iidx[:, 1]].reshape(-1)
+        vnorm = torch.sum(torch.where(iidx[:, 0] == ikernel.reshape(-1, 1), vals.reshape(1, -1), 0.0) * q, dim=-1)
+        vals = vals / vnorm[iidx[:, 0]]
+
     else:
         # in the even case, the inner casis functions overlap into areas with a negative areas
         rn = - r
@@ -148,16 +141,21 @@ def _compute_support_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, nr: in
         dist_rn = (rn[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs()
         dist_phin = (phin[iidx[:, 1], iidx[:, 2]] - iphi[iidx[:, 0], 0, 0]).abs()
         # compute the value of the basis functions
-        vals = cond_r[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - dist_r / dr) / norm_factor
+        vals = cond_r[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - dist_r / dr)
         vals *= cond_phi[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - torch.minimum(dist_phi, (2 * math.pi - dist_phi)) / dphi)
-        valsn = cond_rn[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - dist_rn / dr) / norm_factor
+        valsn = cond_rn[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - dist_rn / dr)
         valsn *= cond_phin[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - torch.minimum(dist_phin, (2 * math.pi - dist_phin)) / dphi)
         vals += valsn
+
+        # discretely normalize the filter basis functions
+        q = quad_weights[iidx[:, 1]].reshape(-1)
+        vnorm = torch.sum(torch.where(iidx[:, 0] == ikernel.reshape(-1, 1), vals.reshape(1, -1), 0.0) * q, dim=-1)
+        vals = vals / vnorm[iidx[:, 0]]
 
     return iidx, vals
 
 
-def _precompute_convolution_tensor_s2(in_shape, out_shape, kernel_shape, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi):
+def _precompute_convolution_tensor_s2(in_shape, out_shape, kernel_shape, quad_weights, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi):
     """
     Precomputes the rotated filters at positions $R^{-1}_j \omega_i = R^{-1}_j R_i \nu = Y(-\theta_j)Z(\phi_i - \phi_j)Y(\theta_j)\nu$.
     Assumes a tensorized grid on the sphere with an equidistant sampling in longitude as described in Ocampo et al.
@@ -178,9 +176,9 @@ def _precompute_convolution_tensor_s2(in_shape, out_shape, kernel_shape, grid_in
     assert len(out_shape) == 2
 
     if len(kernel_shape) == 1:
-        kernel_handle = partial(_compute_support_vals_isotropic, nr=kernel_shape[0], r_cutoff=theta_cutoff, norm="s2")
+        kernel_handle = partial(_compute_support_vals_isotropic, quad_weights=quad_weights, nr=kernel_shape[0], r_cutoff=theta_cutoff)
     elif len(kernel_shape) == 2:
-        kernel_handle = partial(_compute_support_vals_anisotropic, nr=kernel_shape[0], nphi=kernel_shape[1], r_cutoff=theta_cutoff, norm="s2")
+        kernel_handle = partial(_compute_support_vals_anisotropic, quad_weights=quad_weights, nr=kernel_shape[0], nphi=kernel_shape[1], r_cutoff=theta_cutoff)
     else:
         raise ValueError("kernel_shape should be either one- or two-dimensional.")
 
@@ -237,46 +235,6 @@ def _precompute_convolution_tensor_s2(in_shape, out_shape, kernel_shape, grid_in
     out_vals = torch.cat(out_vals, dim=-1).to(torch.float32).contiguous()
 
     return out_idx, out_vals
-
-
-def _precompute_convolution_tensor_2d(grid_in, grid_out, kernel_shape, radius_cutoff=0.01, periodic=False):
-    """
-    Precomputes the translated filters at positions $T^{-1}_j \omega_i = T^{-1}_j T_i \nu$. Similar to the S2 routine,
-    only that it assumes a non-periodic subset of the euclidean plane
-    """
-
-    # check that input arrays are valid point clouds in 2D
-    assert len(grid_in) == 2
-    assert len(grid_out) == 2
-    assert grid_in.shape[0] == 2
-    assert grid_out.shape[0] == 2
-
-    n_in = grid_in.shape[-1]
-    n_out = grid_out.shape[-1]
-
-    if len(kernel_shape) == 1:
-        kernel_handle = partial(_compute_support_vals_isotropic, nr=kernel_shape[0], r_cutoff=radius_cutoff, norm="2d")
-    elif len(kernel_shape) == 2:
-        kernel_handle = partial(_compute_support_vals_anisotropic, nr=kernel_shape[0], nphi=kernel_shape[1], r_cutoff=radius_cutoff, norm="2d")
-    else:
-        raise ValueError("kernel_shape should be either one- or two-dimensional.")
-
-    grid_in = grid_in.reshape(2, 1, n_in)
-    grid_out = grid_out.reshape(2, n_out, 1)
-
-    diffs = grid_in - grid_out
-    if periodic:
-        periodic_diffs = torch.where(diffs > 0.0, diffs-1, diffs+1)
-        diffs = torch.where(diffs.abs() < periodic_diffs.abs(), diffs, periodic_diffs)
-
-
-    r = torch.sqrt(diffs[0] ** 2 + diffs[1] ** 2)
-    phi = torch.arctan2(diffs[1], diffs[0]) + torch.pi
-
-    idx, vals = kernel_handle(r, phi)
-    idx = idx.permute(1, 0)
-
-    return idx, vals
 
 
 class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
@@ -367,7 +325,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).float().reshape(-1, 1) / self.nlon_in
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
-        idx, vals = _precompute_convolution_tensor_s2(in_shape, out_shape, self.kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff)
+        idx, vals = _precompute_convolution_tensor_s2(in_shape, out_shape, self.kernel_shape, self.quad_weights, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff)
 
         # sort the values
         ker_idx = idx[0, ...].contiguous()
@@ -453,8 +411,13 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).float().reshape(-1, 1) / self.nlon_in
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
+        # despite performing quadrature over the input grid, we keep normalization consistent with regular convolution
+        # this requires computation of the output quadrature rule
+        _, wgl_out = _precompute_latitudes(self.nlat_out, grid=grid_out)
+        quad_weights_out = 2.0 * torch.pi * torch.from_numpy(wgl_out).float().reshape(-1, 1) / self.nlon_out
+
         # switch in_shape and out_shape since we want transpose conv
-        idx, vals = _precompute_convolution_tensor_s2(out_shape, in_shape, self.kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff)
+        idx, vals = _precompute_convolution_tensor_s2(out_shape, in_shape, self.kernel_shape, quad_weights_out, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff)
 
         # sort the values
         ker_idx = idx[0, ...].contiguous()
