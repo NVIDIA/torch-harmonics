@@ -40,7 +40,7 @@ from torch_harmonics import *
 
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes
 
-def _compute_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, quad_weights: torch.Tensor, nr: int, r_cutoff: float):
+def _compute_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, r_cutoff: float):
     """
     helper routine to compute the values of the isotropic kernel densely
     """
@@ -61,14 +61,10 @@ def _compute_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, quad_weights: to
         0,
     )
 
-    # apply normalization
-    vnorm = torch.sum(vals * quad_weights, dim=(-1, -2), keepdim=True)
-    vals = vals / vnorm
-
     return vals
 
 
-def _compute_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, quad_weights: torch.Tensor, nr: int, nphi: int, r_cutoff: float):
+def _compute_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, nphi: int, r_cutoff: float):
     """
     helper routine to compute the values of the anisotropic kernel densely
     """
@@ -111,14 +107,27 @@ def _compute_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, quad_weights: 
         phin_vals = torch.where(cond_phin, (1 - torch.minimum((phin - iphi).abs(), (2 * math.pi - (phin - iphi).abs())) / dphi), 0.0)
         vals += rn_vals * phin_vals
 
-    # apply normalization
-    vnorm = torch.sum(vals * quad_weights, dim=(-1, -2), keepdim=True)
-    vals = vals / vnorm
-
     return vals
 
+def _normalize_convolution_tensor_dense(psi, quad_weights, transpose_normalization=False, eps=1e-9):
+    """
+    Discretely normalizes the convolution tensor.
+    """
 
-def _precompute_convolution_tensor_dense(in_shape, out_shape, kernel_shape, quad_weights, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi):
+    kernel_size, nlat_out, nlon_out, nlat_in, nlon_in = psi.shape
+    scale_factor = float(nlon_in // nlon_out)
+
+    if transpose_normalization:
+        # the normalization is not quite symmetric due to the compressed way psi is stored in the main code
+        # look at the normalization code in the actual implementation
+        psi_norm = torch.sum(quad_weights.reshape(1, -1, 1, 1, 1) * psi[:,:,:1], dim=(1, 4), keepdim=True) / scale_factor
+    else:
+        psi_norm = torch.sum(quad_weights.reshape(1, 1, 1, -1, 1) * psi, dim=(3, 4), keepdim=True)
+
+    return psi / (psi_norm + eps)
+
+
+def _precompute_convolution_tensor_dense(in_shape, out_shape, kernel_shape, quad_weights, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi, transpose_normalization=False):
     """
     Helper routine to compute the convolution Tensor in a dense fashion
     """
@@ -129,10 +138,10 @@ def _precompute_convolution_tensor_dense(in_shape, out_shape, kernel_shape, quad
     quad_weights = quad_weights.reshape(-1, 1)
 
     if len(kernel_shape) == 1:
-        kernel_handle = partial(_compute_vals_isotropic, quad_weights=quad_weights, nr=kernel_shape[0], r_cutoff=theta_cutoff)
+        kernel_handle = partial(_compute_vals_isotropic, nr=kernel_shape[0], r_cutoff=theta_cutoff)
         kernel_size = math.ceil( kernel_shape[0] / 2)
     elif len(kernel_shape) == 2:
-        kernel_handle = partial(_compute_vals_anisotropic, quad_weights=quad_weights, nr=kernel_shape[0], nphi=kernel_shape[1], r_cutoff=theta_cutoff)
+        kernel_handle = partial(_compute_vals_anisotropic, nr=kernel_shape[0], nphi=kernel_shape[1], r_cutoff=theta_cutoff)
         kernel_size = (kernel_shape[0] // 2) * kernel_shape[1] + kernel_shape[0] % 2
     else:
         raise ValueError("kernel_shape should be either one- or two-dimensional.")
@@ -177,6 +186,9 @@ def _precompute_convolution_tensor_dense(in_shape, out_shape, kernel_shape, quad
             # find the indices where the rotated position falls into the support of the kernel
             out[:, t, p, :, :] = kernel_handle(theta, phi)
 
+    # take care of normalization
+    out = _normalize_convolution_tensor_dense(out, quad_weights=quad_weights, transpose_normalization=transpose_normalization)
+
     return out
 
 
@@ -188,6 +200,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             torch.cuda.manual_seed(333)
         else:
             self.device = torch.device("cpu")
+
         torch.manual_seed(333)
 
     @parameterized.expand(
@@ -244,16 +257,17 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             theta_cutoff=theta_cutoff
         ).to(self.device)
 
+        _, wgl = _precompute_latitudes(nlat_in, grid=grid_in)
+        quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).float().reshape(-1, 1) / nlon_in
+
         if transpose:
-            _, wgl = _precompute_latitudes(nlat_out, grid=grid_out)
-            quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).float().reshape(-1, 1) / nlon_out
+            psi_dense = _precompute_convolution_tensor_dense(out_shape, in_shape, kernel_shape, quad_weights, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff, transpose_normalization=True).to(self.device)
 
-            psi_dense = _precompute_convolution_tensor_dense(out_shape, in_shape, kernel_shape, quad_weights, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff).to(self.device)
+            psi = torch.sparse_coo_tensor(conv.psi_idx, conv.psi_vals, size=(conv.kernel_size, conv.nlat_in, conv.nlat_out * conv.nlon_out)).to_dense()
+
+            self.assertTrue(torch.allclose(psi, psi_dense[:, :, 0].reshape(-1, nlat_in, nlat_out * nlon_out)))
         else:
-            _, wgl = _precompute_latitudes(nlat_in, grid=grid_in)
-            quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).float().reshape(-1, 1) / nlon_in
-
-            psi_dense = _precompute_convolution_tensor_dense(in_shape, out_shape, kernel_shape, quad_weights, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff).to(self.device)
+            psi_dense = _precompute_convolution_tensor_dense(in_shape, out_shape, kernel_shape, quad_weights, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff, transpose_normalization=False).to(self.device)
 
             psi = torch.sparse_coo_tensor(conv.psi_idx, conv.psi_vals, size=(conv.kernel_size, conv.nlat_out, conv.nlat_in * conv.nlon_in)).to_dense()
 
