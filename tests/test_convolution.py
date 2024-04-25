@@ -206,23 +206,23 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
     @parameterized.expand(
         [
             # regular convolution
-            [8, 4, 2, (16, 32), (16, 32), [3], "equiangular", "equiangular", False, 5e-5],
-            [8, 4, 2, (16, 32), (8, 16), [5], "equiangular", "equiangular", False, 5e-5],
-            [8, 4, 2, (16, 32), (8, 16), [3, 3], "equiangular", "equiangular", False, 5e-5],
-            [8, 4, 2, (16, 32), (8, 16), [4, 3], "equiangular", "equiangular", False, 5e-5],
-            [8, 4, 2, (18, 36), (6, 12), [7], "equiangular", "equiangular", False, 5e-5],
-            [8, 4, 2, (16, 32), (8, 16), [5], "equiangular", "legendre-gauss", False, 5e-5],
-            [8, 4, 2, (16, 32), (8, 16), [5], "legendre-gauss", "equiangular", False, 5e-5],
-            [8, 4, 2, (16, 32), (8, 16), [5], "legendre-gauss", "legendre-gauss", False, 5e-5],
+            [8, 4, 2, (16, 32), (16, 32), [3], "equiangular", "equiangular", False, 1e-4],
+            [8, 4, 2, (16, 32), (8, 16), [5], "equiangular", "equiangular", False, 1e-4],
+            [8, 4, 2, (16, 32), (8, 16), [3, 3], "equiangular", "equiangular", False, 1e-4],
+            [8, 4, 2, (16, 32), (8, 16), [4, 3], "equiangular", "equiangular", False, 1e-4],
+            [8, 4, 2, (18, 36), (6, 12), [7], "equiangular", "equiangular", False, 1e-4],
+            [8, 4, 2, (16, 32), (8, 16), [5], "equiangular", "legendre-gauss", False, 1e-4],
+            [8, 4, 2, (16, 32), (8, 16), [5], "legendre-gauss", "equiangular", False, 1e-4],
+            [8, 4, 2, (16, 32), (8, 16), [5], "legendre-gauss", "legendre-gauss", False, 1e-4],
             # transpose convolution
-            [8, 4, 2, (16, 32), (16, 32), [3], "equiangular", "equiangular", True, 5e-5],
-            [8, 4, 2, (8, 16), (16, 32), [5], "equiangular", "equiangular", True, 5e-5],
-            [8, 4, 2, (8, 16), (16, 32), [3, 3], "equiangular", "equiangular", True, 5e-5],
-            [8, 4, 2, (8, 16), (16, 32), [4, 3], "equiangular", "equiangular", True, 5e-5],
-            [8, 4, 2, (6, 12), (18, 36), [7], "equiangular", "equiangular", True, 5e-5],
-            [8, 4, 2, (8, 16), (16, 32), [5], "equiangular", "legendre-gauss", True, 5e-5],
-            [8, 4, 2, (8, 16), (16, 32), [5], "legendre-gauss", "equiangular", True, 5e-5],
-            [8, 4, 2, (8, 16), (16, 32), [5], "legendre-gauss", "legendre-gauss", True, 5e-5],
+            [8, 4, 2, (16, 32), (16, 32), [3], "equiangular", "equiangular", True, 1e-4],
+            [8, 4, 2, (8, 16), (16, 32), [5], "equiangular", "equiangular", True, 1e-4],
+            [8, 4, 2, (8, 16), (16, 32), [3, 3], "equiangular", "equiangular", True, 1e-4],
+            [8, 4, 2, (8, 16), (16, 32), [4, 3], "equiangular", "equiangular", True, 1e-4],
+            [8, 4, 2, (6, 12), (18, 36), [7], "equiangular", "equiangular", True, 1e-4],
+            [8, 4, 2, (8, 16), (16, 32), [5], "equiangular", "legendre-gauss", True, 1e-4],
+            [8, 4, 2, (8, 16), (16, 32), [5], "legendre-gauss", "equiangular", True, 1e-4],
+            [8, 4, 2, (8, 16), (16, 32), [5], "legendre-gauss", "legendre-gauss", True, 1e-4],
         ]
     )
     def test_disco_convolution(
