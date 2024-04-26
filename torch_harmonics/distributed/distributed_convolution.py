@@ -47,7 +47,6 @@ from torch_harmonics._disco_convolution import _disco_s2_contraction_cuda, _disc
 from torch_harmonics.convolution import (
     _compute_support_vals_isotropic,
     _compute_support_vals_anisotropic,
-    _precompute_convolution_tensor_2d,
     DiscreteContinuousConv,
 )
 
@@ -256,8 +255,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         x = self.quad_weights * x
 
         if x.is_cuda and _cuda_extension_available:
-            x = _disco_s2_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
-                                           self.kernel_size, self.nlat_out_local, self.nlon_out)
+            x = _disco_s2_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out_local, self.nlon_out)
         else:
             if x.is_cuda:
                 warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
