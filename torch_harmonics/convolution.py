@@ -55,8 +55,6 @@ except ImportError as err:
     disco_cuda_extension = None
     _cuda_extension_available = False
 
-# _cuda_extension_available = False
-
 
 def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, r_cutoff: float):
     """

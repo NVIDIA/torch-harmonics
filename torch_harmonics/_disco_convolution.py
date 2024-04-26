@@ -146,7 +146,7 @@ def _disco_s2_transpose_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nl
     kernel_size, nlat_out, n_out = psi.shape
 
     assert n_out % nlon_out == 0
-    assert nlon_out >= nlat_in
+    assert nlon_out >= nlon_in
     pscale = nlon_out // nlon_in
 
     # interleave zeros along the longitude dimension to allow for fractional offsets to be considered
