@@ -61,13 +61,14 @@ from disco_helpers import preprocess_psi
 
 try:
     import disco_cuda_extension
+
     _cuda_extension_available = True
 except ImportError as err:
     disco_cuda_extension = None
     _cuda_extension_available = False
 
-def _precompute_distributed_convolution_tensor_s2(in_shape, out_shape, kernel_shape, grid_in="equiangular", grid_out="equiangular",
-                                                  theta_cutoff=0.01 * math.pi):
+
+def _precompute_distributed_convolution_tensor_s2(in_shape, out_shape, kernel_shape, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi):
     """
     Precomputes the rotated filters at positions $R^{-1}_j \omega_i = R^{-1}_j R_i \nu = Y(-\theta_j)Z(\phi_i - \phi_j)Y(\theta_j)\nu$.
     Assumes a tensorized grid on the sphere with an equidistant sampling in longitude as described in Ocampo et al.
@@ -214,8 +215,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         # set local shapes according to distributed mode:
         self.nlat_in_local = self.lat_in_shapes[self.comm_rank_polar]
         self.nlat_out_local = self.nlat_out
-        idx, vals = _precompute_distributed_convolution_tensor_s2(in_shape, out_shape, self.kernel_shape, grid_in=grid_in, grid_out=grid_out,
-                                                                  theta_cutoff=theta_cutoff)
+        idx, vals = _precompute_distributed_convolution_tensor_s2(in_shape, out_shape, self.kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff)
 
         # split the weight tensor as well
         quad_weights = split_tensor_along_dim(quad_weights, dim=0, num_chunks=self.comm_size_polar)[self.comm_rank_polar]
@@ -255,7 +255,9 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         x = self.quad_weights * x
 
         if x.is_cuda and _cuda_extension_available:
-            x = _disco_s2_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out_local, self.nlon_out)
+            x = _disco_s2_contraction_cuda(
+                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out_local, self.nlon_out
+            )
         else:
             if x.is_cuda:
                 warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
@@ -339,7 +341,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # Note that the psi matrix is of shape nlat_out x nlat_in * nlon_in. Since the contraction in nlon direction is a convolution,
         # we will keep local to all nodes and split the computation up along nlat. We further split the input dim because this reduces the number
-	# of atomic reduction calls inside the actual kernel
+        # of atomic reduction calls inside the actual kernel
 
         # set local shapes according to distributed mode:
         self.nlat_in_local = self.nlat_in
@@ -347,8 +349,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # switch in_shape and out_shape since we want transpose conv
         # distributed mode here is swapped because of the transpose
-        idx, vals = _precompute_distributed_convolution_tensor_s2(out_shape, in_shape, self.kernel_shape, grid_in=grid_out, grid_out=grid_in,
-                                                                  theta_cutoff=theta_cutoff)
+        idx, vals = _precompute_distributed_convolution_tensor_s2(out_shape, in_shape, self.kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff)
 
         # split the weight tensor as well
         quad_weights = split_tensor_along_dim(quad_weights, dim=0, num_chunks=self.comm_size_polar)[self.comm_rank_polar]
@@ -371,7 +372,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
-    def get_psi(self, semi_transposed: bool=False):
+    def get_psi(self, semi_transposed: bool = False):
         if semi_transposed:
             # do partial transpose
             # we do a semi-transposition to faciliate the computation
@@ -380,7 +381,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             # flip the axis of longitudes
             pout = self.nlon_out - 1 - pout
             tin = self.psi_idx[1]
-            idx = torch.stack([self.psi_idx[0], tout, tin*self.nlon_out + pout], dim=0)
+            idx = torch.stack([self.psi_idx[0], tout, tin * self.nlon_out + pout], dim=0)
             psi = torch.sparse_coo_tensor(idx, self.psi_vals, size=(self.kernel_size, self.nlat_out_local, self.nlat_in_local * self.nlon_out)).coalesce()
         else:
             psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_in_local, self.nlat_out_local * self.nlon_out)).coalesce()
@@ -411,8 +412,9 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = copy_to_polar_region(x)
 
         if x.is_cuda and _cuda_extension_available:
-            out = _disco_s2_transpose_contraction_cuda(x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
-                                           self.kernel_size, self.nlat_out_local, self.nlon_out)
+            out = _disco_s2_transpose_contraction_cuda(
+                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out_local, self.nlon_out
+            )
         else:
             if x.is_cuda:
                 warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
@@ -428,4 +430,3 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             out = out + self.bias.reshape(1, -1, 1, 1)
 
         return out
-
