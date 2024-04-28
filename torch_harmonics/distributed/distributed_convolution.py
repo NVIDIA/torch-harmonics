@@ -92,9 +92,9 @@ def _precompute_distributed_convolution_tensor_s2(in_shape, out_shape, kernel_sh
     assert len(out_shape) == 2
 
     if len(kernel_shape) == 1:
-        kernel_handle = partial(_compute_support_vals_isotropic, nr=kernel_shape[0], r_cutoff=theta_cutoff, norm="s2")
+        kernel_handle = partial(_compute_support_vals_isotropic, nr=kernel_shape[0], r_cutoff=theta_cutoff)
     elif len(kernel_shape) == 2:
-        kernel_handle = partial(_compute_support_vals_anisotropic, nr=kernel_shape[0], nphi=kernel_shape[1], r_cutoff=theta_cutoff, norm="s2")
+        kernel_handle = partial(_compute_support_vals_anisotropic, nr=kernel_shape[0], nphi=kernel_shape[1], r_cutoff=theta_cutoff)
     else:
         raise ValueError("kernel_shape should be either one- or two-dimensional.")
 
