@@ -160,16 +160,13 @@ def _normalize_onvolution_tensor_s2(psi_idx, psi_vals, in_shape, out_shape, kern
         # pre-compute the quadrature weights
         q = quad_weights[idx[1]].reshape(-1)
 
-        # compute scale factor
-        scale_factor = float(nlon_in // nlon_out)
-
         # loop through dimensions which require normalization
         for ik in range(kernel_size):
             for ilat in range(nlat_in):
                 # get relevant entries
                 iidx = torch.argwhere((idx[0] == ik) & (idx[2] == ilat))
                 # normalize, while summing also over the input longitude dimension here as this is not available for the output
-                vnorm = torch.sum(psi_vals[iidx] * q[iidx]) / scale_factor
+                vnorm = torch.sum(psi_vals[iidx] * q[iidx])
                 psi_vals[iidx] = psi_vals[iidx] / (vnorm + eps)
     else:
         # pre-compute the quadrature weights
@@ -188,7 +185,7 @@ def _normalize_onvolution_tensor_s2(psi_idx, psi_vals, in_shape, out_shape, kern
 
 
 def _precompute_convolution_tensor_s2(
-    in_shape, out_shape, kernel_shape, quad_weights, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi, transpose_normalization=False
+    in_shape, out_shape, kernel_shape, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi, transpose_normalization=False
 ):
     """
     Precomputes the rotated filters at positions $R^{-1}_j \omega_i = R^{-1}_j R_i \nu = Y(-\theta_j)Z(\phi_i - \phi_j)Y(\theta_j)\nu$.
@@ -219,9 +216,9 @@ def _precompute_convolution_tensor_s2(
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
 
-    lats_in, _ = _precompute_latitudes(nlat_in, grid=grid_in)
+    lats_in, win = _precompute_latitudes(nlat_in, grid=grid_in)
     lats_in = torch.from_numpy(lats_in).float()
-    lats_out, _ = _precompute_latitudes(nlat_out, grid=grid_out)
+    lats_out, wout = _precompute_latitudes(nlat_out, grid=grid_out)
     lats_out = torch.from_numpy(lats_out).float()
 
     # compute the phi differences
@@ -268,6 +265,10 @@ def _precompute_convolution_tensor_s2(
     out_idx = torch.cat(out_idx, dim=-1).to(torch.long).contiguous()
     out_vals = torch.cat(out_vals, dim=-1).to(torch.float32).contiguous()
 
+    if transpose_normalization:
+        quad_weights = 2.0 * torch.pi * torch.from_numpy(wout).float().reshape(-1, 1) / nlon_in
+    else:
+        quad_weights = 2.0 * torch.pi * torch.from_numpy(win).float().reshape(-1, 1) / nlon_in
     out_vals = _normalize_onvolution_tensor_s2(out_idx, out_vals, in_shape, out_shape, kernel_shape, quad_weights, transpose_normalization=transpose_normalization)
 
     return out_idx, out_vals
@@ -364,7 +365,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
         idx, vals = _precompute_convolution_tensor_s2(
-            in_shape, out_shape, self.kernel_shape, self.quad_weights, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff, transpose_normalization=False
+            in_shape, out_shape, self.kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff, transpose_normalization=False
         )
 
         # sort the values
@@ -455,7 +456,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # switch in_shape and out_shape since we want transpose conv
         idx, vals = _precompute_convolution_tensor_s2(
-            out_shape, in_shape, self.kernel_shape, quad_weights, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff, transpose_normalization=True
+            out_shape, in_shape, self.kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff, transpose_normalization=True
         )
 
         # sort the values
