@@ -166,6 +166,8 @@ def _precompute_distributed_convolution_tensor_s2(
     start_idx = ([0] + list(accumulate(split_shapes)))[comm_rank_polar]
     end_idx = start_idx + split_shapes[comm_rank_polar]
 
+    print(f"polar rank: {comm_rank_polar}, start {start_idx}, end {end_idx}")
+
     # once normalization is done we can throw away the entries which correspond to input latitudes we do not care about
     lats = out_idx[2] // nlon_in
     lons = out_idx[2] % nlon_in
