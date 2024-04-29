@@ -262,6 +262,8 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             if self.world_rank == 0:
                 print(f"final relative error of output: {err.item()}")
 
+        print(torch.argmax(torch.norm(out_full - out_gather_full, p="fro", dim=(-1, -2)) / torch.norm(out_full, p="fro", dim=(-1, -2))))
+
         self.assertTrue(err.item() <= tol)
 
         #############################################################
