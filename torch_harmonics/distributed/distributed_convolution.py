@@ -167,16 +167,12 @@ def _precompute_distributed_convolution_tensor_s2(
     start_idx = offsets[comm_rank_polar]
     end_idx = offsets[comm_rank_polar+1]
 
-    print(f"polar rank: {comm_rank_polar}, start {start_idx}, end {end_idx}")
-
     # once normalization is done we can throw away the entries which correspond to input latitudes we do not care about
     lats = out_idx[2] // nlon_in
     lons = out_idx[2] % nlon_in
     ilats = torch.argwhere((lats < end_idx) & (lats >= start_idx)).squeeze()
     out_vals = out_vals[ilats]
-    # for the indices we need to recompute them to fit the
-    # out_idx = out_idx[:, ilats]
-
+    # for the indices we need to recompute them to refer to local indices of the input tenor
     out_idx = torch.stack([out_idx[0, ilats], out_idx[1, ilats], (lats[ilats]-start_idx) * nlon_in + lons[ilats]], dim=0)
 
     return out_idx, out_vals
