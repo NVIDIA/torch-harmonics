@@ -181,13 +181,13 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             # [128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular", "equiangular", False, 1e-5],
             # [128, 256, 64, 128, 32, 8, [3], 1, "equiangular", "equiangular", False, 1e-5],
             # [128, 256, 128, 256, 32, 8, [3], 2, "equiangular", "equiangular", False, 1e-5],
-            [128, 256, 128, 256, 32, 5, [3], 1, "equiangular", "equiangular", False, 1e-5],
+            [128, 256, 128, 256, 32, 6, [3], 1, "equiangular", "equiangular", False, 1e-5],
             # [128, 256, 128, 256, 32, 8, [3], 1, "equiangular", "equiangular", True, 1e-5],
             # [129, 256, 128, 256, 32, 8, [3], 1, "equiangular", "equiangular", True, 1e-5],
             # [128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular", "equiangular", True, 1e-5],
             # [64, 128, 128, 256, 32, 8, [3], 1, "equiangular", "equiangular", True, 1e-5],
             # [128, 256, 128, 256, 32, 8, [3], 2, "equiangular", "equiangular", True, 1e-5],
-            [128, 256, 128, 256, 32, 5, [3], 1, "equiangular", "equiangular", True, 1e-5],
+            [128, 256, 128, 256, 32, 6, [3], 1, "equiangular", "equiangular", True, 1e-5],
         ]
     )
     def test_distributed_disco_conv(self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, kernel_shape, groups, grid_in, grid_out, transpose, tol):
