@@ -163,8 +163,9 @@ def _precompute_distributed_convolution_tensor_s2(
     comm_size_polar = polar_group_size()
     comm_rank_polar = polar_group_rank()
     split_shapes = compute_split_shapes(nlat_in, num_chunks=comm_size_polar)
-    start_idx = ([0] + list(accumulate(split_shapes)))[comm_rank_polar]
-    end_idx = start_idx + split_shapes[comm_rank_polar]
+    offsets = [0] + list(accumulate(split_shapes))
+    start_idx = offsets[comm_rank_polar]
+    end_idx = offsets[comm_rank_polar+1]
 
     print(f"polar rank: {comm_rank_polar}, start {start_idx}, end {end_idx}")
 
