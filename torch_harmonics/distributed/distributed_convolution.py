@@ -31,6 +31,7 @@
 
 import abc
 from typing import List, Tuple, Union, Optional
+from itertools import accumulate
 from warnings import warn
 
 import math
@@ -157,17 +158,23 @@ def _precompute_distributed_convolution_tensor_s2(
         quad_weights = 2.0 * torch.pi * torch.from_numpy(win).float().reshape(-1, 1) / nlon_in
     out_vals = _normalize_onvolution_tensor_s2(out_idx, out_vals, in_shape, out_shape, kernel_shape, quad_weights, transpose_normalization=transpose_normalization)
 
+    # TODO: this part can be split off into it's own function
     # split the latitude indices:
     comm_size_polar = polar_group_size()
     comm_rank_polar = polar_group_rank()
-    ilat_in = torch.arange(lats_in.shape[0])
-    ilat_in = split_tensor_along_dim(ilat_in, dim=0, num_chunks=comm_size_polar)[comm_rank_polar]
+    split_shapes = compute_split_shapes(nlat_in, num_chunks=comm_size_polar)
+    start_idx = ([0] + list(accumulate(split_shapes)))[comm_rank_polar]
+    end_idx = start_idx + split_shapes[comm_rank_polar]
 
     # once normalization is done we can throw away the entries which correspond to input latitudes we do not care about
     lats = out_idx[2] // nlon_in
-    ilats = torch.argwhere((lats < ilat_in[-1] + 1) & (lats >= ilat_in[0])).squeeze()
-    out_idx = out_idx[:, ilats]
+    lons = out_idx[2] % nlon_in
+    ilats = torch.argwhere((lats < end_idx) & (lats >= start_idx)).squeeze()
     out_vals = out_vals[ilats]
+    # for the indices we need to recompute them to fit the
+    # out_idx = out_idx[:, ilats]
+
+    out_idx = torch.stack([out_idx[0, ilats], out_idx[1, ilats], (lats[ilats]-start_idx) * nlon_in + lons[ilats]], dim=0)
 
     return out_idx, out_vals
 
