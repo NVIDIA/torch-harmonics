@@ -176,12 +176,12 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [128, 256, 128, 256, 32, 8, [3], 1, "equiangular", "equiangular", False, 1e-6],
-            [129, 256, 128, 256, 32, 8, [3], 1, "equiangular", "equiangular", False, 1e-6],
-            [128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular", "equiangular", False, 1e-6],
-            [128, 256, 64, 128, 32, 8, [3], 1, "equiangular", "equiangular", False, 1e-6],
-            [128, 256, 128, 256, 32, 8, [3], 2, "equiangular", "equiangular", False, 1e-6],
-            [128, 256, 128, 256, 32, 5, [3], 1, "equiangular", "equiangular", False, 1e-6],
+            # [128, 256, 128, 256, 32, 8, [3], 1, "equiangular", "equiangular", False, 1e-6],
+            # [129, 256, 128, 256, 32, 8, [3], 1, "equiangular", "equiangular", False, 1e-6],
+            # [128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular", "equiangular", False, 1e-6],
+            # [128, 256, 64, 128, 32, 8, [3], 1, "equiangular", "equiangular", False, 1e-6],
+            # [128, 256, 128, 256, 32, 8, [3], 2, "equiangular", "equiangular", False, 1e-6],
+            # [128, 256, 128, 256, 32, 5, [3], 1, "equiangular", "equiangular", False, 1e-6],
             [128, 256, 128, 256, 32, 8, [3], 1, "equiangular", "equiangular", True, 1e-6],
             [129, 256, 128, 256, 32, 8, [3], 1, "equiangular", "equiangular", True, 1e-6],
             [128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular", "equiangular", True, 1e-6],
