@@ -2,7 +2,7 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -84,7 +84,7 @@ def plot_data(data,
               **kwargs):
     if fig == None:
         fig = plt.figure()
-    
+
     nlat = data.shape[-2]
     nlon = data.shape[-1]
     if lon is None:
@@ -96,7 +96,7 @@ def plot_data(data,
     fig = plt.figure(figsize=(10, 5))
     ax = fig.add_subplot(1, 1, 1, projection=projection)
     im = ax.pcolormesh(Lon, Lat, data, cmap=cmap, **kwargs)
-    
+
     if colorbar:
         plt.colorbar(im)
     plt.title(title, y=1.05)

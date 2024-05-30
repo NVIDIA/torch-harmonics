@@ -48,7 +48,7 @@ from torch_harmonics._disco_convolution import _disco_s2_contraction_cuda, _disc
 from torch_harmonics.convolution import (
     _compute_support_vals_isotropic,
     _compute_support_vals_anisotropic,
-    _normalize_onvolution_tensor_s2,
+    _normalize_convolution_tensor_s2,
     DiscreteContinuousConv,
 )
 
@@ -156,7 +156,7 @@ def _precompute_distributed_convolution_tensor_s2(
         quad_weights = 2.0 * torch.pi * torch.from_numpy(wout).float().reshape(-1, 1) / nlon_in
     else:
         quad_weights = 2.0 * torch.pi * torch.from_numpy(win).float().reshape(-1, 1) / nlon_in
-    out_vals = _normalize_onvolution_tensor_s2(out_idx, out_vals, in_shape, out_shape, kernel_shape, quad_weights, transpose_normalization=transpose_normalization)
+    out_vals = _normalize_convolution_tensor_s2(out_idx, out_vals, in_shape, out_shape, kernel_shape, quad_weights, transpose_normalization=transpose_normalization)
 
     # TODO: this part can be split off into it's own function
     # split the latitude indices:
