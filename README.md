@@ -50,7 +50,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Overview
 
-torch-harmonics is a differentiable implementation of the Spherical Harmonic transform in PyTorch. It was originally implemented to enable Spherical Fourier Neural Operators (SFNO). It uses quadrature rules to compute the projection onto the associated Legendre polynomials and FFTs for the projection onto the harmonic basis. This algorithm tends to outperform others with better asymptotic scaling for most practical purposes.
+torch-harmonics implements differentiable signal processing on the sphere. This includes differentiable implementations of the spherical harmonic transforms, vector spherical harmonic transforms and discrete-continuous convolutions on the sphere. The package was originally implemented to enable Spherical Fourier Neural Operators (SFNO) [1].
+
+The SHT algorithm uses quadrature rules to compute the projection onto the associated Legendre polynomials and FFTs for the projection onto the harmonic basis. This algorithm tends to outperform others with better asymptotic scaling for most practical purposes [2].
 
 torch-harmonics uses PyTorch primitives to implement these operations, making it fully differentiable. Moreover, the quadrature can be distributed onto multiple ranks making it spatially distributed.
 
@@ -73,13 +75,18 @@ torch-harmonics has been used to implement a variety of differentiable PDE solve
 
 
 ## Installation
-Download directyly from PyPI:
+Download directly from PyPI:
 
 ```bash
 pip install torch-harmonics
 ```
+If you would like to have accelerated CUDA extensions for the discrete-continuous convolutions, please use the '--cuda_ext' flag:
+```bash
+pip install --global-option --cuda_ext torch-harmonics
+```
+:warning: Please note that the custom CUDA extensions currently only support CUDA architectures >= 7.0.
 
-Build in your environment using the Python package:
+If you want to actively develop torch-harmonics, we recommend building it in your environment from github:
 
 ```bash
 git clone git@github.com:NVIDIA/torch-harmonics.git
