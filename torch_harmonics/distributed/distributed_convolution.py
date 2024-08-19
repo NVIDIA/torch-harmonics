@@ -268,7 +268,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # store number of channels
         num_chans = x.shape[1]
-
+        
         # h and w is split. First we make w local by transposing into channel dim
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth.apply(x, (1, -1), self.lon_in_shapes)
