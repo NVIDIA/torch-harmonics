@@ -31,6 +31,7 @@
 
 import abc
 from typing import List, Tuple, Union, Optional
+from warnings import warn
 
 import math
 
@@ -40,75 +41,152 @@ import torch.nn as nn
 from functools import partial
 
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes
-from torch_harmonics._disco_convolution import (
-    _disco_s2_contraction_torch,
-    _disco_s2_transpose_contraction_torch,
-    _disco_s2_contraction_triton,
-    _disco_s2_transpose_contraction_triton,
-)
+from torch_harmonics._disco_convolution import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
+from torch_harmonics._disco_convolution import _disco_s2_contraction_cuda, _disco_s2_transpose_contraction_cuda
+
+# import custom C++/CUDA extensions
+from disco_helpers import preprocess_psi
+
+try:
+    import disco_cuda_extension
+
+    _cuda_extension_available = True
+except ImportError as err:
+    disco_cuda_extension = None
+    _cuda_extension_available = False
 
 
-def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, r_cutoff: float, norm: str = "s2"):
+def _compute_support_vals_isotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, r_cutoff: float):
     """
     Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
     """
 
-    # compute the support
-    dr = (r_cutoff - 0.0) / nr
-    ikernel = torch.arange(nr).reshape(-1, 1, 1)
-    ir = ikernel * dr
+    kernel_size = (nr // 2) + nr % 2
+    ikernel = torch.arange(kernel_size).reshape(-1, 1, 1)
+    dr = 2 * r_cutoff / (nr + 1)
 
-    if norm == "none":
-        norm_factor = 1.0
-    elif norm == "2d":
-        norm_factor = math.pi * (r_cutoff * nr / (nr + 1))**2 + math.pi * r_cutoff**2 * (2 * nr / (nr + 1) + 1) / (nr + 1) / 3
-    elif norm == "s2":
-        norm_factor = 2 * math.pi * (1 - math.cos(r_cutoff - dr) + math.cos(r_cutoff - dr) + (math.sin(r_cutoff - dr) - math.sin(r_cutoff)) / dr)
+    # compute the support
+    if nr % 2 == 1:
+        ir = ikernel * dr
     else:
-        raise ValueError(f"Unknown normalization mode {norm}.")
+        ir = (ikernel + 0.5) * dr
 
     # find the indices where the rotated position falls into the support of the kernel
     iidx = torch.argwhere(((r - ir).abs() <= dr) & (r <= r_cutoff))
-    vals = (1 - (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs() / dr) / norm_factor
+    vals = 1 - (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs() / dr
+
     return iidx, vals
 
 
-def _compute_support_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, nphi: int, r_cutoff: float, norm: str = "s2"):
+def _compute_support_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, nphi: int, r_cutoff: float):
     """
-    Computes the index set that falls into the anisotropic kernel's support and returns both indices and values.
+    Computes the index set that falls into the anisotropic kernel's support and returns both indices and values. Handles the special case
+    when there is an uneven number of collocation points across the diameter of the kernel.
     """
 
-    # compute the support
-    dr = (r_cutoff - 0.0) / nr
-    dphi = 2.0 * math.pi / nphi
-    kernel_size = (nr - 1) * nphi + 1
+    kernel_size = (nr // 2) * nphi + nr % 2
     ikernel = torch.arange(kernel_size).reshape(-1, 1, 1)
-    ir = ((ikernel - 1) // nphi + 1) * dr
-    iphi = ((ikernel - 1) % nphi) * dphi
+    dr = 2 * r_cutoff / (nr + 1)
+    dphi = 2.0 * math.pi / nphi
 
-    if norm == "none":
-        norm_factor = 1.0
-    elif norm == "2d":
-        norm_factor = math.pi * (r_cutoff * nr / (nr + 1))**2 + math.pi * r_cutoff**2 * (2 * nr / (nr + 1) + 1) / (nr + 1) / 3
-    elif norm == "s2":
-        norm_factor = 2 * math.pi * (1 - math.cos(r_cutoff - dr) + math.cos(r_cutoff - dr) + (math.sin(r_cutoff - dr) - math.sin(r_cutoff)) / dr)
+    # disambiguate even and uneven cases and compute the support
+    if nr % 2 == 1:
+        ir = ((ikernel - 1) // nphi + 1) * dr
+        iphi = ((ikernel - 1) % nphi) * dphi
     else:
-        raise ValueError(f"Unknown normalization mode {norm}.")
+        ir = (ikernel // nphi + 0.5) * dr
+        iphi = (ikernel % nphi) * dphi
 
     # find the indices where the rotated position falls into the support of the kernel
-    cond_r = ((r - ir).abs() <= dr) & (r <= r_cutoff)
-    cond_phi = (ikernel == 0) | ((phi - iphi).abs() <= dphi) | ((2 * math.pi - (phi - iphi).abs()) <= dphi)
-    iidx = torch.argwhere(cond_r & cond_phi)
-    vals = (1 - (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs() / dr) / norm_factor
-    vals *= torch.where(
-        iidx[:, 0] > 0,
-        (1 - torch.minimum((phi[iidx[:, 1], iidx[:, 2]] - iphi[iidx[:, 0], 0, 0]).abs(), (2 * math.pi - (phi[iidx[:, 1], iidx[:, 2]] - iphi[iidx[:, 0], 0, 0]).abs())) / dphi),
-        1.0,
-    )
+    if nr % 2 == 1:
+        # find the support
+        cond_r = ((r - ir).abs() <= dr) & (r <= r_cutoff)
+        cond_phi = (ikernel == 0) | ((phi - iphi).abs() <= dphi) | ((2 * math.pi - (phi - iphi).abs()) <= dphi)
+        # find indices where conditions are met
+        iidx = torch.argwhere(cond_r & cond_phi)
+        # compute the distance to the collocation points
+        dist_r = (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs()
+        dist_phi = (phi[iidx[:, 1], iidx[:, 2]] - iphi[iidx[:, 0], 0, 0]).abs()
+        # compute the value of the basis functions
+        vals = 1 - dist_r / dr
+        vals *= torch.where(
+            (iidx[:, 0] > 0),
+            (1 - torch.minimum(dist_phi, (2 * math.pi - dist_phi)) / dphi),
+            1.0,
+        )
+
+    else:
+        # in the even case, the inner casis functions overlap into areas with a negative areas
+        rn = -r
+        phin = torch.where(phi + math.pi >= 2 * math.pi, phi - math.pi, phi + math.pi)
+        # find the support
+        cond_r = ((r - ir).abs() <= dr) & (r <= r_cutoff)
+        cond_phi = ((phi - iphi).abs() <= dphi) | ((2 * math.pi - (phi - iphi).abs()) <= dphi)
+        cond_rn = ((rn - ir).abs() <= dr) & (rn <= r_cutoff)
+        cond_phin = ((phin - iphi).abs() <= dphi) | ((2 * math.pi - (phin - iphi).abs()) <= dphi)
+        # find indices where conditions are met
+        iidx = torch.argwhere((cond_r & cond_phi) | (cond_rn & cond_phin))
+        dist_r = (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs()
+        dist_phi = (phi[iidx[:, 1], iidx[:, 2]] - iphi[iidx[:, 0], 0, 0]).abs()
+        dist_rn = (rn[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs()
+        dist_phin = (phin[iidx[:, 1], iidx[:, 2]] - iphi[iidx[:, 0], 0, 0]).abs()
+        # compute the value of the basis functions
+        vals = cond_r[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - dist_r / dr)
+        vals *= cond_phi[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - torch.minimum(dist_phi, (2 * math.pi - dist_phi)) / dphi)
+        valsn = cond_rn[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - dist_rn / dr)
+        valsn *= cond_phin[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - torch.minimum(dist_phin, (2 * math.pi - dist_phin)) / dphi)
+        vals += valsn
+
     return iidx, vals
 
 
-def _precompute_convolution_tensor_s2(in_shape, out_shape, kernel_shape, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi):
+def _normalize_convolution_tensor_s2(psi_idx, psi_vals, in_shape, out_shape, kernel_shape, quad_weights, transpose_normalization=False, eps=1e-9):
+    """
+    Discretely normalizes the convolution tensor.
+    """
+
+    nlat_in, nlon_in = in_shape
+    nlat_out, nlon_out = out_shape
+
+    if len(kernel_shape) == 1:
+        kernel_size = math.ceil(kernel_shape[0] / 2)
+    elif len(kernel_shape) == 2:
+        kernel_size = (kernel_shape[0] // 2) * kernel_shape[1] + kernel_shape[0] % 2
+
+    # reshape the indices implicitly to be ikernel, lat_out, lat_in, lon_in
+    idx = torch.stack([psi_idx[0], psi_idx[1], psi_idx[2] // nlon_in, psi_idx[2] % nlon_in], dim=0)
+
+    if transpose_normalization:
+        # pre-compute the quadrature weights
+        q = quad_weights[idx[1]].reshape(-1)
+
+        # loop through dimensions which require normalization
+        for ik in range(kernel_size):
+            for ilat in range(nlat_in):
+                # get relevant entries
+                iidx = torch.argwhere((idx[0] == ik) & (idx[2] == ilat))
+                # normalize, while summing also over the input longitude dimension here as this is not available for the output
+                vnorm = torch.sum(psi_vals[iidx] * q[iidx])
+                psi_vals[iidx] = psi_vals[iidx] / (vnorm + eps)
+    else:
+        # pre-compute the quadrature weights
+        q = quad_weights[idx[2]].reshape(-1)
+
+        # loop through dimensions which require normalization
+        for ik in range(kernel_size):
+            for ilat in range(nlat_out):
+                # get relevant entries
+                iidx = torch.argwhere((idx[0] == ik) & (idx[1] == ilat))
+                # normalize
+                vnorm = torch.sum(psi_vals[iidx] * q[iidx])
+                psi_vals[iidx] = psi_vals[iidx] / (vnorm + eps)
+
+    return psi_vals
+
+
+def _precompute_convolution_tensor_s2(
+    in_shape, out_shape, kernel_shape, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi, transpose_normalization=False
+):
     """
     Precomputes the rotated filters at positions $R^{-1}_j \omega_i = R^{-1}_j R_i \nu = Y(-\theta_j)Z(\phi_i - \phi_j)Y(\theta_j)\nu$.
     Assumes a tensorized grid on the sphere with an equidistant sampling in longitude as described in Ocampo et al.
@@ -117,7 +195,7 @@ def _precompute_convolution_tensor_s2(in_shape, out_shape, kernel_shape, grid_in
     The rotation of the Euler angles uses the YZY convention, which applied to the northpole $(0,0,1)^T$ yields
     $$
     Y(\alpha) Z(\beta) Y(\gamma) n =
-        {\begin{bmatrix} 
+        {\begin{bmatrix}
             \cos(\gamma)\sin(\alpha) + \cos(\alpha)\cos(\beta)\sin(\gamma) \\
             \sin(\beta)\sin(\gamma) \\
             \cos(\alpha)\cos(\gamma)-\cos(\beta)\sin(\alpha)\sin(\gamma)
@@ -129,18 +207,18 @@ def _precompute_convolution_tensor_s2(in_shape, out_shape, kernel_shape, grid_in
     assert len(out_shape) == 2
 
     if len(kernel_shape) == 1:
-        kernel_handle = partial(_compute_support_vals_isotropic, nr=kernel_shape[0], r_cutoff=theta_cutoff, norm="s2")
+        kernel_handle = partial(_compute_support_vals_isotropic, nr=kernel_shape[0], r_cutoff=theta_cutoff)
     elif len(kernel_shape) == 2:
-        kernel_handle = partial(_compute_support_vals_anisotropic, nr=kernel_shape[0], nphi=kernel_shape[1], r_cutoff=theta_cutoff, norm="s2")
+        kernel_handle = partial(_compute_support_vals_anisotropic, nr=kernel_shape[0], nphi=kernel_shape[1], r_cutoff=theta_cutoff)
     else:
         raise ValueError("kernel_shape should be either one- or two-dimensional.")
 
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
 
-    lats_in, _ = _precompute_latitudes(nlat_in, grid=grid_in)
+    lats_in, win = _precompute_latitudes(nlat_in, grid=grid_in)
     lats_in = torch.from_numpy(lats_in).float()
-    lats_out, _ = _precompute_latitudes(nlat_out, grid=grid_out)
+    lats_out, wout = _precompute_latitudes(nlat_out, grid=grid_out)
     lats_out = torch.from_numpy(lats_out).float()
 
     # compute the phi differences
@@ -187,47 +265,13 @@ def _precompute_convolution_tensor_s2(in_shape, out_shape, kernel_shape, grid_in
     out_idx = torch.cat(out_idx, dim=-1).to(torch.long).contiguous()
     out_vals = torch.cat(out_vals, dim=-1).to(torch.float32).contiguous()
 
-    return out_idx, out_vals
-
-
-def _precompute_convolution_tensor_2d(grid_in, grid_out, kernel_shape, radius_cutoff=0.01, periodic=False):
-    """
-    Precomputes the translated filters at positions $T^{-1}_j \omega_i = T^{-1}_j T_i \nu$. Similar to the S2 routine,
-    only that it assumes a non-periodic subset of the euclidean plane
-    """
-
-    # check that input arrays are valid point clouds in 2D
-    assert len(grid_in) == 2
-    assert len(grid_out) == 2
-    assert grid_in.shape[0] == 2
-    assert grid_out.shape[0] == 2
-
-    n_in = grid_in.shape[-1]
-    n_out = grid_out.shape[-1]
-
-    if len(kernel_shape) == 1:
-        kernel_handle = partial(_compute_support_vals_isotropic, nr=kernel_shape[0], r_cutoff=radius_cutoff, norm="2d")
-    elif len(kernel_shape) == 2:
-        kernel_handle = partial(_compute_support_vals_anisotropic, nr=kernel_shape[0], nphi=kernel_shape[1], r_cutoff=radius_cutoff, norm="2d")
+    if transpose_normalization:
+        quad_weights = 2.0 * torch.pi * torch.from_numpy(wout).float().reshape(-1, 1) / nlon_in
     else:
-        raise ValueError("kernel_shape should be either one- or two-dimensional.")
+        quad_weights = 2.0 * torch.pi * torch.from_numpy(win).float().reshape(-1, 1) / nlon_in
+    out_vals = _normalize_convolution_tensor_s2(out_idx, out_vals, in_shape, out_shape, kernel_shape, quad_weights, transpose_normalization=transpose_normalization)
 
-    grid_in = grid_in.reshape(2, 1, n_in)
-    grid_out = grid_out.reshape(2, n_out, 1)
-
-    diffs = grid_in - grid_out
-    if periodic:
-        periodic_diffs = torch.where(diffs > 0.0, diffs-1, diffs+1)
-        diffs = torch.where(diffs.abs() < periodic_diffs.abs(), diffs, periodic_diffs)
-
-
-    r = torch.sqrt(diffs[0] ** 2 + diffs[1] ** 2)
-    phi = torch.arctan2(diffs[1], diffs[0]) + torch.pi
-
-    idx, vals = kernel_handle(r, phi)
-    idx = idx.permute(1, 0)
-
-    return idx, vals
+    return out_idx, out_vals
 
 
 class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
@@ -251,10 +295,14 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
             self.kernel_shape = kernel_shape
 
         if len(self.kernel_shape) == 1:
-            self.kernel_size = self.kernel_shape[0]
+            self.kernel_size = math.ceil(self.kernel_shape[0] / 2)
+            if self.kernel_shape[0] % 2 == 0:
+                warn(
+                    "Detected isotropic kernel with even number of collocation points in the radial direction. This feature is only supported out of consistency and may lead to unexpected behavior."
+                )
         elif len(self.kernel_shape) == 2:
-            self.kernel_size = (self.kernel_shape[0] - 1) * self.kernel_shape[1] + 1
-        else:
+            self.kernel_size = (self.kernel_shape[0] // 2) * self.kernel_shape[1] + self.kernel_shape[0] % 2
+        if len(self.kernel_shape) > 2:
             raise ValueError("kernel_shape should be either one- or two-dimensional.")
 
         # groups
@@ -266,7 +314,7 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
         if out_channels % self.groups != 0:
             raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
         self.groupsize = in_channels // self.groups
-        scale = math.sqrt(1.0 / self.groupsize)
+        scale = math.sqrt(1.0 / self.groupsize / self.kernel_size)
         self.weight = nn.Parameter(scale * torch.randn(out_channels, self.groupsize, self.kernel_size))
 
         if bias:
@@ -304,9 +352,9 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
 
-        # compute theta cutoff based on the bandlimit of the input field
+        # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
         if theta_cutoff is None:
-            theta_cutoff = (self.kernel_shape[0] + 1) * torch.pi / float(self.nlat_in - 1)
+            theta_cutoff = torch.pi / float(self.nlat_out - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -316,24 +364,43 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).float().reshape(-1, 1) / self.nlon_in
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
-        idx, vals = _precompute_convolution_tensor_s2(in_shape, out_shape, self.kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff)
+        idx, vals = _precompute_convolution_tensor_s2(
+            in_shape, out_shape, self.kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff, transpose_normalization=False
+        )
 
-        self.register_buffer("psi_idx", idx, persistent=False)
+        # sort the values
+        ker_idx = idx[0, ...].contiguous()
+        row_idx = idx[1, ...].contiguous()
+        col_idx = idx[2, ...].contiguous()
+        roff_idx = preprocess_psi(self.kernel_size, out_shape[0], ker_idx, row_idx, col_idx, vals)
+
+        # preprocessed data-structure for GPU kernel
+        self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+        self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
+        self.register_buffer("psi_row_idx", row_idx, persistent=False)
+        self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
+
+    @property
+    def psi_idx(self):
+        return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
     def get_psi(self):
         psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_in)).coalesce()
         return psi
 
-    def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
 
-        psi = self.get_psi()
-        
-        if x.is_cuda and use_triton_kernel:
-            x = _disco_s2_contraction_triton(x, psi, self.nlon_out)
+        if x.is_cuda and _cuda_extension_available:
+            x = _disco_s2_contraction_cuda(
+                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
+            )
         else:
+            if x.is_cuda:
+                warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
+            psi = self.get_psi()
             x = _disco_s2_contraction_torch(x, psi, self.nlon_out)
 
         # extract shape
@@ -342,7 +409,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # do weight multiplication
         out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
-        out = out.reshape(out.shape[0], -1, out.shape[-2], out.shape[-1])
+        out = out.reshape(B, -1, H, W)
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
@@ -377,7 +444,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # bandlimit
         if theta_cutoff is None:
-            theta_cutoff = (self.kernel_shape[0] + 1) * torch.pi / float(self.nlat_in - 1)
+            theta_cutoff = torch.pi / float(self.nlat_in - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -388,46 +455,65 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
         # switch in_shape and out_shape since we want transpose conv
-        idx, vals = _precompute_convolution_tensor_s2(out_shape, in_shape, self.kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff)
+        idx, vals = _precompute_convolution_tensor_s2(
+            out_shape, in_shape, self.kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff, transpose_normalization=True
+        )
 
-        self.register_buffer("psi_idx", idx, persistent=False)
+        # sort the values
+        ker_idx = idx[0, ...].contiguous()
+        row_idx = idx[1, ...].contiguous()
+        col_idx = idx[2, ...].contiguous()
+        roff_idx = preprocess_psi(self.kernel_size, in_shape[0], ker_idx, row_idx, col_idx, vals)
+
+        # preprocessed data-structure for GPU kernel
+        self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+        self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
+        self.register_buffer("psi_row_idx", row_idx, persistent=False)
+        self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
 
-    def get_psi(self, use_triton_kernel=True):
-        if not use_triton_kernel:
+    @property
+    def psi_idx(self):
+        return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
+
+    def get_psi(self, semi_transposed: bool = False):
+        if semi_transposed:
             # we do a semi-transposition to faciliate the computation
             tout = self.psi_idx[2] // self.nlon_out
             pout = self.psi_idx[2] % self.nlon_out
             # flip the axis of longitudes
             pout = self.nlon_out - 1 - pout
             tin = self.psi_idx[1]
-            idx = torch.stack([self.psi_idx[0], tout, tin*self.nlon_out + pout], dim=0)
+            idx = torch.stack([self.psi_idx[0], tout, tin * self.nlon_out + pout], dim=0)
             psi = torch.sparse_coo_tensor(idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_out)).coalesce()
         else:
             psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_in, self.nlat_out * self.nlon_out)).coalesce()
+
         return psi
 
-    def forward(self, x: torch.Tensor, use_triton_kernel: bool = True) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # extract shape
         B, C, H, W = x.shape
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
         x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
-        x = x.reshape(x.shape[0], -1, x.shape[-3], x.shape[-2], x.shape[-1])
+        x = x.reshape(B, -1, x.shape[-3], H, W)
 
         # pre-multiply x with the quadrature weights
         x = self.quad_weights * x
 
-        psi = self.get_psi(x.is_cuda and use_triton_kernel)
-
-        if x.is_cuda and use_triton_kernel:
-            out = _disco_s2_transpose_contraction_triton(x, psi, self.nlon_out)
+        if x.is_cuda and _cuda_extension_available:
+            out = _disco_s2_transpose_contraction_cuda(
+                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
+            )
         else:
+            if x.is_cuda:
+                warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
+            psi = self.get_psi(semi_transposed=True)
             out = _disco_s2_transpose_contraction_torch(x, psi, self.nlon_out)
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
 
         return out
-
