@@ -175,7 +175,7 @@ def _reduce(input_, use_fp32=True, group=None):
         dist.all_reduce(input_, group=group)
         
     return input_
-
+    
 
 def _split(input_, dim_, group=None):
     """Split the tensor along its last dimension and keep the corresponding slice."""
@@ -228,6 +228,33 @@ def _gather(input_, dim_, shapes_, group=None):
     dist.all_gather(input_list, input_, group=group)
 
     output = torch.cat(input_list, dim=dim_).contiguous()
+
+    return output
+
+
+def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
+    """All-reduce the input tensor across model parallel group and scatter it back."""
+
+    # Bypass the function if we are using only 1 GPU.
+    if dist.get_world_size(group=group) == 1:
+        return input_
+
+    # make input contiguous
+    comm_size = dist.get_world_size(group=group)
+    comm_rank = dist.get_rank(group=group)
+    input_list = [x.contiguous() for x in split_tensor_along_dim(input_, dim_, comm_size)]
+
+    dtype = input_.dtype
+    if (use_fp32 and (dtype != torch.float32)):
+        input_list = [x.to(torch.float32) for x in input_list]
+
+    # perform reduce_scatter
+    output = torch.empty_like(input_list[comm_rank])
+    dist.reduce_scatter(output, input_list, group=group)
+
+    # convert dtype if necessary
+    if use_fp32:
+        output = output.to(dtype=dtype)
 
     return output
 
@@ -322,6 +349,62 @@ class _ReduceFromPolarRegion(torch.autograd.Function):
         return grad_output
 
 
+class _ReduceFromScatterToPolarRegion(torch.autograd.Function):
+    """All-reduce the input from the polar region and scatter back to polar region."""
+
+    @staticmethod
+    def symbolic(graph, input_, dim_):
+        if is_distributed_polar():
+            return _reduce_scatter(input_, dim_, group=polar_group())
+        else:
+            return input_
+
+    @staticmethod
+    def forward(ctx, input_, dim_):
+        if is_distributed_polar():
+            ctx.dim = dim_
+            ctx.split_shapes = compute_split_shapes(
+                input_.shape[dim_], polar_group_size()
+            )
+            return _reduce_scatter(input_, dim_, group=polar_group())
+        else:
+            return input_
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        if is_distributed_polar():
+            return _gather(grad_output, ctx.dim, ctx.split_shapes, polar_group()), None
+        else:
+            return grad_output, None
+
+
+class _GatherFromCopyToPolarRegion(torch.autograd.Function):
+    """Gather the input from the polar region and register BWD AR, basically the inverse of reduce-scatter"""
+
+    @staticmethod
+    def symbolic(graph, input_, dim_, shapes_):
+        if is_distributed_polar():
+            return _gather(input_, dim_, shapes_, polar_group())
+        else:
+            return input_
+
+    @staticmethod
+    def forward(ctx, input_, dim_, shapes_):
+        if is_distributed_polar():
+            ctx.dim = dim_
+            return _gather(input_, dim_, shapes_, group=polar_group())
+        else:
+            return input_
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        if is_distributed_polar():
+            return _reduce_scatter(grad_output, ctx.dim, use_fp32=True, group=polar_group()), None, None
+        else:
+            return grad_output, None, None
+        
+
+        
 def copy_to_polar_region(input_):
     return _CopyToPolarRegion.apply(input_)
     
@@ -336,3 +419,11 @@ def scatter_to_polar_region(input_, dim_):
 
 def gather_from_polar_region(input_, dim_, shapes_):
     return _GatherFromPolarRegion.apply(input_, dim_, shapes_)
+
+
+def reduce_from_scatter_to_polar_region(input_, dim_):
+    return _ReduceFromScatterToPolarRegion.apply(input_, dim_)
+
+
+def gather_from_copy_to_polar_region(input_, dim_, shapes_):
+    return _GatherFromCopyToPolarRegion.apply(input_, dim_, shapes_)
