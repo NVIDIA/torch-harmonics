@@ -2,6 +2,14 @@
 
 ## Versioning
 
+### v0.7.0
+
+* CUDA-accelerated DISCO convolutions
+* Updated DISCO convolutions to support even number of collocation points across the diameter
+* Distributed DISCO convolutions
+* Removed DISCO convolution in the plane to focus on the sphere
+* Updated unit tests which now include tests for the distributed convolutions
+
 ### v0.6.5
 
 * Discrete-continuous (DISCO) convolutions on the sphere and in two dimensions

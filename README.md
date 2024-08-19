@@ -1,8 +1,8 @@
-<!-- 
+<!--
 SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 
 SPDX-License-Identifier: BSD-3-Clause
- 
+
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
 
@@ -50,7 +50,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Overview
 
-torch-harmonics is a differentiable implementation of the Spherical Harmonic transform in PyTorch. It was originally implemented to enable Spherical Fourier Neural Operators (SFNO). It uses quadrature rules to compute the projection onto the associated Legendre polynomials and FFTs for the projection onto the harmonic basis. This algorithm tends to outperform others with better asymptotic scaling for most practical purposes.
+torch-harmonics implements differentiable signal processing on the sphere. This includes differentiable implementations of the spherical harmonic transforms, vector spherical harmonic transforms and discrete-continuous convolutions on the sphere. The package was originally implemented to enable Spherical Fourier Neural Operators (SFNO) [1].
+
+The SHT algorithm uses quadrature rules to compute the projection onto the associated Legendre polynomials and FFTs for the projection onto the harmonic basis. This algorithm tends to outperform others with better asymptotic scaling for most practical purposes [2].
 
 torch-harmonics uses PyTorch primitives to implement these operations, making it fully differentiable. Moreover, the quadrature can be distributed onto multiple ranks making it spatially distributed.
 
@@ -73,13 +75,18 @@ torch-harmonics has been used to implement a variety of differentiable PDE solve
 
 
 ## Installation
-Download directyly from PyPI:
+Download directly from PyPI:
 
 ```bash
 pip install torch-harmonics
 ```
+If you would like to have accelerated CUDA extensions for the discrete-continuous convolutions, please use the '--cuda_ext' flag:
+```bash
+pip install --global-option --cuda_ext torch-harmonics
+```
+:warning: Please note that the custom CUDA extensions currently only support CUDA architectures >= 7.0.
 
-Build in your environment using the Python package:
+If you want to actively develop torch-harmonics, we recommend building it in your environment from github:
 
 ```bash
 git clone git@github.com:NVIDIA/torch-harmonics.git
@@ -160,6 +167,10 @@ $$
 
 Here, $x_j \in [-1,1]$ are the quadrature nodes with the respective quadrature weights $w_j$.
 
+### Discrete-continuous convolutions
+
+torch-harmonics now provides local discrete-continuous (DISCO) convolutions as outlined in [4] on the sphere.
+
 ## Getting started
 
 The main functionality of `torch_harmonics` is provided in the form of `torch.nn.Modules` for composability. A minimum example is given by:
@@ -223,7 +234,7 @@ Depending on the problem, it might be beneficial to upcast data to `float64` ins
 
 ## Contributors
 
-[Boris Bonev](https://bonevbs.github.io) (bbonev@nvidia.com), [Thorsten Kurth](https://github.com/azrael417) (tkurth@nvidia.com), [Christian Hundt](https://github.com/gravitino) (chundt@nvidia.com), [Nikola Kovachki](https://kovachki.github.io) (nkovachki@nvidia.com), [Jean Kossaifi](http://jeankossaifi.com) (jkossaifi@nvidia.com)  
+[Boris Bonev](https://bonevbs.github.io) (bbonev@nvidia.com), [Thorsten Kurth](https://github.com/azrael417) (tkurth@nvidia.com), [Mauro Bisson](https://scholar.google.com/citations?hl=en&user=f0JE-0gAAAAJ) , [Massimiliano Fatica](https://scholar.google.com/citations?user=Deaq4uUAAAAJ&hl=en), [Nikola Kovachki](https://kovachki.github.io), [Jean Kossaifi](http://jeankossaifi.com), [Christian Hundt](https://github.com/gravitino)
 
 ## Cite us
 
@@ -231,7 +242,7 @@ If you use `torch-harmonics` in an academic paper, please cite [1]
 
 ```bibtex
 @misc{bonev2023spherical,
-      title={Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere}, 
+      title={Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere},
       author={Boris Bonev and Thorsten Kurth and Christian Hundt and Jaideep Pathak and Maximilian Baust and Karthik Kashinath and Anima Anandkumar},
       year={2023},
       eprint={2306.03838},
@@ -242,17 +253,20 @@ If you use `torch-harmonics` in an academic paper, please cite [1]
 
 ## References
 
-<a id="1">[1]</a> 
+<a id="1">[1]</a>
 Bonev B., Kurth T., Hundt C., Pathak, J., Baust M., Kashinath K., Anandkumar A.;
 Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere;
 arXiv 2306.0383, 2023.
 
-<a id="1">[2]</a> 
+<a id="1">[2]</a>
 Schaeffer N.;
 Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations;
 G3: Geochemistry, Geophysics, Geosystems, 2013.
 
-<a id="1">[3]</a> 
+<a id="1">[3]</a>
 Wang B., Wang L., Xie Z.;
 Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids;
 Adv Comput Math, 2018.
+
+<a id="1">[4]</a>
+Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603

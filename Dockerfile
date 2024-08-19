@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -34,6 +34,10 @@ FROM nvcr.io/nvidia/pytorch:23.11-py3
 
 COPY . /workspace/torch_harmonics
 
+# we need this for tests
 RUN pip install parameterized
-RUN pip install /workspace/torch_harmonics
+
+# The custom CUDA extension does not suppport architerctures < 7.0
+ENV TORCH_CUDA_ARCH_LIST "7.0 7.2 7.5 8.0 8.6 8.7 9.0+PTX"
+RUN pip install --global-option --cuda_ext /workspace/torch_harmonics
 
