@@ -130,6 +130,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         lon_shapes = convolution_dist.lon_out_shapes
 
         # gather in W
+        tensor = tensor.contiguous()
         if self.grid_size_w > 1:
             gather_shapes = [(B, C, lat_shapes[self.hrank], w) for w in lon_shapes]
             olist = [torch.empty(shape, dtype=tensor.dtype, device=tensor.device) for shape in gather_shapes]
@@ -140,6 +141,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             tensor_gather = tensor
 
         # gather in H
+        tensor_gather = tensor_gather.contiguous()
         if self.grid_size_h > 1:
             gather_shapes = [(B, C, h, convolution_dist.nlon_out) for h in lat_shapes]
             olist = [torch.empty(shape, dtype=tensor_gather.dtype, device=tensor_gather.device) for shape in gather_shapes]
@@ -268,6 +270,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         #############################################################
         with torch.no_grad():
             igrad_gather_full = self._gather_helper_bwd(igrad_local, B, C, conv_dist)
+
             err = torch.mean(torch.norm(igrad_full - igrad_gather_full, p="fro", dim=(-1, -2)) / torch.norm(igrad_full, p="fro", dim=(-1, -2)))
             if self.world_rank == 0:
                 print(f"final relative error of gradients: {err.item()}")
