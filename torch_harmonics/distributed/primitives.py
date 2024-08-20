@@ -56,14 +56,6 @@ def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
 
     return sections
 
-
-# general helpers
-def get_memory_format(tensor):
-    if tensor.is_contiguous(memory_format=torch.channels_last):
-        return torch.channels_last
-    else:
-        return torch.contiguous_format
-
     
 def split_tensor_along_dim(tensor, dim, num_chunks):
     assert dim < tensor.dim(), f"Error, tensor dimension is {tensor.dim()} which cannot be split along {dim}"
@@ -78,23 +70,20 @@ def split_tensor_along_dim(tensor, dim, num_chunks):
 
 
 def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False):
-    # get input format
-    input_format = get_memory_format(tensor)
-    
     # get comm params
     comm_size = dist.get_world_size(group=group)
     comm_rank = dist.get_rank(group=group)
 
     # split and local transposition
     tsplit = split_tensor_along_dim(tensor, num_chunks=comm_size, dim=dim0)
-    x_send = [y.contiguous(memory_format=input_format) for y in tsplit]
+    x_send = [y.contiguous() for y in tsplit]
     x_send_shapes = [x.shape for x in x_send]
     x_recv = []
     x_shape = list(x_send_shapes[comm_rank])
     for dim1_len in dim1_split_sizes:
         x_shape[dim1] = dim1_len
-        x_recv.append(torch.empty(x_shape, dtype=tensor.dtype, device=tensor.device, memory_format=input_format))
-    
+        x_recv.append(torch.empty(x_shape, dtype=tensor.dtype, device=tensor.device))
+        
     # global transposition
     req = dist.all_to_all(x_recv, x_send, group=group, async_op=async_op)
 
@@ -108,24 +97,24 @@ class distributed_transpose_azimuth(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, dims, dim1_split_sizes):
-        input_format = get_memory_format(x)
         # WAR for a potential contig check torch bug for channels last contig tensors
         x = x.contiguous()
         xlist, dim0_split_sizes, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=azimuth_group())
-        x = torch.cat(xlist, dim=dims[1]).contiguous(memory_format=input_format)
+        x = torch.cat(xlist, dim=dims[1]).contiguous()
         ctx.dims = dims
         ctx.dim0_split_sizes = dim0_split_sizes
+        
         return x
 
     @staticmethod
     def backward(ctx, go):
-        input_format = get_memory_format(go)
         dims = ctx.dims
         dim0_split_sizes = ctx.dim0_split_sizes
         # WAR for a potential contig check torch bug for channels last contig tensors 
         go = go.contiguous()
         gilist, _, _ = _transpose(go, dims[1], dims[0], dim0_split_sizes, group=azimuth_group())
-        gi = torch.cat(gilist, dim=dims[0]).contiguous(memory_format=input_format)
+        gi = torch.cat(gilist, dim=dims[0]).contiguous()
+        
         return gi, None, None
 
     
@@ -133,24 +122,22 @@ class distributed_transpose_polar(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, dim, dim1_split_sizes):
-        input_format = get_memory_format(x)
         # WAR for a potential contig check torch bug for channels last contig tensors 
         x = x.contiguous()
         xlist, dim0_split_sizes, _ = _transpose(x, dim[0], dim[1], dim1_split_sizes, group=polar_group())
-        x = torch.cat(xlist, dim=dim[1]).contiguous(memory_format=input_format)
+        x = torch.cat(xlist, dim=dim[1]).contiguous()
         ctx.dim = dim
         ctx.dim0_split_sizes = dim0_split_sizes
         return x
 
     @staticmethod
     def backward(ctx, go):
-        input_format = get_memory_format(go)
         dim = ctx.dim
         dim0_split_sizes = ctx.dim0_split_sizes
         # WAR for a potential contig check torch bug for channels last contig tensors 
         go = go.contiguous()
         gilist, _, _ = _transpose(go, dim[1], dim[0], dim0_split_sizes, group=polar_group())
-        gi = torch.cat(gilist, dim=dim[0]).contiguous(memory_format=input_format)
+        gi = torch.cat(gilist, dim=dim[0]).contiguous()
         return gi, None, None
 
     
@@ -175,7 +162,7 @@ def _reduce(input_, use_fp32=True, group=None):
         dist.all_reduce(input_, group=group)
         
     return input_
-
+    
 
 def _split(input_, dim_, group=None):
     """Split the tensor along its last dimension and keep the corresponding slice."""
@@ -228,6 +215,33 @@ def _gather(input_, dim_, shapes_, group=None):
     dist.all_gather(input_list, input_, group=group)
 
     output = torch.cat(input_list, dim=dim_).contiguous()
+
+    return output
+
+
+def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
+    """All-reduce the input tensor across model parallel group and scatter it back."""
+
+    # Bypass the function if we are using only 1 GPU.
+    if dist.get_world_size(group=group) == 1:
+        return input_
+
+    # make input contiguous
+    comm_size = dist.get_world_size(group=group)
+    comm_rank = dist.get_rank(group=group)
+    input_list = [x.contiguous() for x in split_tensor_along_dim(input_, dim_, comm_size)]
+
+    dtype = input_.dtype
+    if (use_fp32 and (dtype != torch.float32)):
+        input_list = [x.to(torch.float32) for x in input_list]
+
+    # perform reduce_scatter
+    output = torch.empty_like(input_list[comm_rank])
+    dist.reduce_scatter(output, input_list, group=group)
+
+    # convert dtype if necessary
+    if use_fp32:
+        output = output.to(dtype=dtype)
 
     return output
 
@@ -322,6 +336,62 @@ class _ReduceFromPolarRegion(torch.autograd.Function):
         return grad_output
 
 
+class _ReduceFromScatterToPolarRegion(torch.autograd.Function):
+    """All-reduce the input from the polar region and scatter back to polar region."""
+
+    @staticmethod
+    def symbolic(graph, input_, dim_):
+        if is_distributed_polar():
+            return _reduce_scatter(input_, dim_, group=polar_group())
+        else:
+            return input_
+
+    @staticmethod
+    def forward(ctx, input_, dim_):
+        if is_distributed_polar():
+            ctx.dim = dim_
+            ctx.split_shapes = compute_split_shapes(
+                input_.shape[dim_], polar_group_size()
+            )
+            return _reduce_scatter(input_, dim_, group=polar_group())
+        else:
+            return input_
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        if is_distributed_polar():
+            return _gather(grad_output, ctx.dim, ctx.split_shapes, polar_group()), None
+        else:
+            return grad_output, None
+
+
+class _GatherFromCopyToPolarRegion(torch.autograd.Function):
+    """Gather the input from the polar region and register BWD AR, basically the inverse of reduce-scatter"""
+
+    @staticmethod
+    def symbolic(graph, input_, dim_, shapes_):
+        if is_distributed_polar():
+            return _gather(input_, dim_, shapes_, polar_group())
+        else:
+            return input_
+
+    @staticmethod
+    def forward(ctx, input_, dim_, shapes_):
+        if is_distributed_polar():
+            ctx.dim = dim_
+            return _gather(input_, dim_, shapes_, group=polar_group())
+        else:
+            return input_
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        if is_distributed_polar():
+            return _reduce_scatter(grad_output, ctx.dim, use_fp32=True, group=polar_group()), None, None
+        else:
+            return grad_output, None, None
+        
+
+        
 def copy_to_polar_region(input_):
     return _CopyToPolarRegion.apply(input_)
     
@@ -336,3 +406,11 @@ def scatter_to_polar_region(input_, dim_):
 
 def gather_from_polar_region(input_, dim_, shapes_):
     return _GatherFromPolarRegion.apply(input_, dim_, shapes_)
+
+
+def reduce_from_scatter_to_polar_region(input_, dim_):
+    return _ReduceFromScatterToPolarRegion.apply(input_, dim_)
+
+
+def gather_from_copy_to_polar_region(input_, dim_, shapes_):
+    return _GatherFromCopyToPolarRegion.apply(input_, dim_, shapes_)

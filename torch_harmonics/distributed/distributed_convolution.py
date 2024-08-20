@@ -54,7 +54,7 @@ from torch_harmonics.convolution import (
 
 from torch_harmonics.distributed import polar_group_size, azimuth_group_size
 from torch_harmonics.distributed import distributed_transpose_azimuth, distributed_transpose_polar
-from torch_harmonics.distributed import copy_to_polar_region, reduce_from_polar_region, scatter_to_polar_region, gather_from_polar_region
+from torch_harmonics.distributed import reduce_from_scatter_to_polar_region, gather_from_copy_to_polar_region
 from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
 from torch_harmonics.distributed import compute_split_shapes, split_tensor_along_dim
 
@@ -219,7 +219,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # compute theta cutoff based on the bandlimit of the input field
         if theta_cutoff is None:
-            theta_cutoff = (self.kernel_shape[0] + 1) / 2 * torch.pi / float(self.nlat_out - 1)
+            theta_cutoff = torch.pi / float(self.nlat_out - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -268,7 +268,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # store number of channels
         num_chans = x.shape[1]
-
+        
         # h and w is split. First we make w local by transposing into channel dim
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth.apply(x, (1, -1), self.lon_in_shapes)
@@ -288,11 +288,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
             x = _disco_s2_contraction_torch(x, psi, self.nlon_out)
 
-        # allreduce over latitudes: h is still local
-        x = reduce_from_polar_region(x)
-
-        # split tensor along latitudes: h is split
-        x = scatter_to_polar_region(x, -2)
+        # perform reduce scatter in polar region
+        x = reduce_from_scatter_to_polar_region(x, -2)
 
         # now we can transpose back the result, so that lon is split and channels are local
         if self.comm_size_azimuth > 1:
@@ -352,7 +349,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # bandlimit
         if theta_cutoff is None:
-            theta_cutoff = (self.kernel_shape[0] + 1) / 2 * torch.pi / float(self.nlat_in - 1)
+            theta_cutoff = torch.pi / float(self.nlat_in - 1)
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -429,11 +426,8 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         # multiply weights
         x = self.quad_weights * x
 
-        # we need to gather the input tensor
-        x = gather_from_polar_region(x, -2, self.lat_in_shapes)
-
-        # register allreduce for bwd pass
-        x = copy_to_polar_region(x)
+        # gather input tensor and set up backward reduction hooks
+        x = gather_from_copy_to_polar_region(x, -2, self.lat_in_shapes)
 
         if x.is_cuda and _cuda_extension_available:
             out = _disco_s2_transpose_contraction_cuda(

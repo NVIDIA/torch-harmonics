@@ -39,7 +39,9 @@ from .primitives import (
     reduce_from_polar_region,
     scatter_to_polar_region,
     gather_from_polar_region,
-    copy_to_polar_region
+    copy_to_polar_region,
+    reduce_from_scatter_to_polar_region,
+    gather_from_copy_to_polar_region
 )
 
 # import the sht
