@@ -98,9 +98,8 @@ class distributed_transpose_azimuth(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, dims, dim1_split_sizes):
         # WAR for a potential contig check torch bug for channels last contig tensors
-        x = x.contiguous()
         xlist, dim0_split_sizes, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=azimuth_group())
-        x = torch.cat(xlist, dim=dims[1]).contiguous()
+        x = torch.cat(xlist, dim=dims[1])
         ctx.dims = dims
         ctx.dim0_split_sizes = dim0_split_sizes
         
@@ -111,9 +110,8 @@ class distributed_transpose_azimuth(torch.autograd.Function):
         dims = ctx.dims
         dim0_split_sizes = ctx.dim0_split_sizes
         # WAR for a potential contig check torch bug for channels last contig tensors 
-        go = go.contiguous()
         gilist, _, _ = _transpose(go, dims[1], dims[0], dim0_split_sizes, group=azimuth_group())
-        gi = torch.cat(gilist, dim=dims[0]).contiguous()
+        gi = torch.cat(gilist, dim=dims[0])
         
         return gi, None, None
 
@@ -123,9 +121,8 @@ class distributed_transpose_polar(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, dim, dim1_split_sizes):
         # WAR for a potential contig check torch bug for channels last contig tensors 
-        x = x.contiguous()
         xlist, dim0_split_sizes, _ = _transpose(x, dim[0], dim[1], dim1_split_sizes, group=polar_group())
-        x = torch.cat(xlist, dim=dim[1]).contiguous()
+        x = torch.cat(xlist, dim=dim[1])
         ctx.dim = dim
         ctx.dim0_split_sizes = dim0_split_sizes
         return x
@@ -135,9 +132,8 @@ class distributed_transpose_polar(torch.autograd.Function):
         dim = ctx.dim
         dim0_split_sizes = ctx.dim0_split_sizes
         # WAR for a potential contig check torch bug for channels last contig tensors 
-        go = go.contiguous()
         gilist, _, _ = _transpose(go, dim[1], dim[0], dim0_split_sizes, group=polar_group())
-        gi = torch.cat(gilist, dim=dim[0]).contiguous()
+        gi = torch.cat(gilist, dim=dim[0])
         return gi, None, None
 
     
@@ -148,17 +144,16 @@ def _reduce(input_, use_fp32=True, group=None):
     # Bypass the function if we are using only 1 GPU.
     if dist.get_world_size(group=group) == 1:
         return input_
-
-    # make input contiguous
-    input_ = input_.contiguous()
     
     # All-reduce.
     if use_fp32:
         dtype = input_.dtype
         inputf_ = input_.float()
+        inputf_ = inputf_.contiguous()
         dist.all_reduce(inputf_, group=group)
         input_ = inputf_.to(dtype)
     else:
+        input_ = input_.contiguous()
         dist.all_reduce(input_, group=group)
         
     return input_
@@ -176,7 +171,7 @@ def _split(input_, dim_, group=None):
     
     # Note: torch.split does not create contiguous tensors by default.
     rank = dist.get_rank(group=group)
-    output = input_list[rank].contiguous()
+    output = input_list[rank]
     
     return output
 
@@ -214,7 +209,7 @@ def _gather(input_, dim_, shapes_, group=None):
 
     dist.all_gather(input_list, input_, group=group)
 
-    output = torch.cat(input_list, dim=dim_).contiguous()
+    output = torch.cat(input_list, dim=dim_)
 
     return output
 
@@ -229,11 +224,13 @@ def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
     # make input contiguous
     comm_size = dist.get_world_size(group=group)
     comm_rank = dist.get_rank(group=group)
-    input_list = [x.contiguous() for x in split_tensor_along_dim(input_, dim_, comm_size)]
+    input_list = split_tensor_along_dim(input_, dim_, comm_size)
 
     dtype = input_.dtype
     if (use_fp32 and (dtype != torch.float32)):
         input_list = [x.to(torch.float32) for x in input_list]
+
+    input_list = [x.contiguous() for x in input_list]
 
     # perform reduce_scatter
     output = torch.empty_like(input_list[comm_rank])
