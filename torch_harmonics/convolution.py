@@ -368,11 +368,6 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
 
-        # integration weights
-        _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
-        quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).float().reshape(-1, 1) / self.nlon_in
-        self.register_buffer("quad_weights", quad_weights, persistent=False)
-
         idx, vals = _precompute_convolution_tensor_s2(
             in_shape, out_shape, self.kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff, transpose_normalization=False, merge_quadrature=True
         )
@@ -455,11 +450,6 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
-
-        # integration weights
-        _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
-        quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).float().reshape(-1, 1) / self.nlon_in
-        self.register_buffer("quad_weights", quad_weights, persistent=False)
 
         # switch in_shape and out_shape since we want transpose conv
         idx, vals = _precompute_convolution_tensor_s2(
