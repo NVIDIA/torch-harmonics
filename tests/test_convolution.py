@@ -109,7 +109,7 @@ def _compute_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, nphi:
 
     return vals
 
-def _normalize_convolution_tensor_dense(psi, quad_weights, transpose_normalization=False, merge_quadrature=True, eps=1e-9):
+def _normalize_convolution_tensor_dense(psi, quad_weights, transpose_normalization=False, merge_quadrature=False, eps=1e-9):
     """
     Discretely normalizes the convolution tensor.
     """
