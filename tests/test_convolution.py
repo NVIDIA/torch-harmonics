@@ -109,7 +109,7 @@ def _compute_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, nr: int, nphi:
 
     return vals
 
-def _normalize_convolution_tensor_dense(psi, quad_weights, transpose_normalization=False, eps=1e-9):
+def _normalize_convolution_tensor_dense(psi, quad_weights, transpose_normalization=False, merge_quadrature=True, eps=1e-9):
     """
     Discretely normalizes the convolution tensor.
     """
@@ -121,13 +121,17 @@ def _normalize_convolution_tensor_dense(psi, quad_weights, transpose_normalizati
         # the normalization is not quite symmetric due to the compressed way psi is stored in the main code
         # look at the normalization code in the actual implementation
         psi_norm = torch.sum(quad_weights.reshape(1, -1, 1, 1, 1) * psi[:,:,:1], dim=(1, 4), keepdim=True) / scale_factor
+        if merge_quadrature:
+            psi = quad_weights.reshape(1, -1, 1, 1, 1) * psi
     else:
         psi_norm = torch.sum(quad_weights.reshape(1, 1, 1, -1, 1) * psi, dim=(3, 4), keepdim=True)
+        if merge_quadrature:
+            psi = quad_weights.reshape(1, 1, 1, -1, 1) * psi
 
     return psi / (psi_norm + eps)
 
 
-def _precompute_convolution_tensor_dense(in_shape, out_shape, kernel_shape, quad_weights, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi, transpose_normalization=False):
+def _precompute_convolution_tensor_dense(in_shape, out_shape, kernel_shape, quad_weights, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi, transpose_normalization=False, merge_quadrature=False):
     """
     Helper routine to compute the convolution Tensor in a dense fashion
     """
@@ -187,7 +191,7 @@ def _precompute_convolution_tensor_dense(in_shape, out_shape, kernel_shape, quad
             out[:, t, p, :, :] = kernel_handle(theta, phi)
 
     # take care of normalization
-    out = _normalize_convolution_tensor_dense(out, quad_weights=quad_weights, transpose_normalization=transpose_normalization)
+    out = _normalize_convolution_tensor_dense(out, quad_weights=quad_weights, transpose_normalization=transpose_normalization, merge_quadrature=merge_quadrature)
 
     return out
 
@@ -263,13 +267,13 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).float().reshape(-1, 1) / nlon_in
 
         if transpose:
-            psi_dense = _precompute_convolution_tensor_dense(out_shape, in_shape, kernel_shape, quad_weights, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff, transpose_normalization=True).to(self.device)
+            psi_dense = _precompute_convolution_tensor_dense(out_shape, in_shape, kernel_shape, quad_weights, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff, transpose_normalization=True, merge_quadrature=True).to(self.device)
 
             psi = torch.sparse_coo_tensor(conv.psi_idx, conv.psi_vals, size=(conv.kernel_size, conv.nlat_in, conv.nlat_out * conv.nlon_out)).to_dense()
 
             self.assertTrue(torch.allclose(psi, psi_dense[:, :, 0].reshape(-1, nlat_in, nlat_out * nlon_out)))
         else:
-            psi_dense = _precompute_convolution_tensor_dense(in_shape, out_shape, kernel_shape, quad_weights, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff, transpose_normalization=False).to(self.device)
+            psi_dense = _precompute_convolution_tensor_dense(in_shape, out_shape, kernel_shape, quad_weights, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff, transpose_normalization=False, merge_quadrature=True).to(self.device)
 
             psi = torch.sparse_coo_tensor(conv.psi_idx, conv.psi_vals, size=(conv.kernel_size, conv.nlat_out, conv.nlat_in * conv.nlon_in)).to_dense()
 
@@ -296,9 +300,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         x_ref.requires_grad = True
         if transpose:
             y_ref = torch.einsum("oif,biqr->bofqr", w_ref, x_ref)
-            y_ref = torch.einsum("fqrtp,bofqr->botp", psi_dense, y_ref * conv.quad_weights)
+            y_ref = torch.einsum("fqrtp,bofqr->botp", psi_dense, y_ref)
         else:
-            y_ref = torch.einsum("ftpqr,bcqr->bcftp", psi_dense, x_ref * conv.quad_weights)
+            y_ref = torch.einsum("ftpqr,bcqr->bcftp", psi_dense, x_ref)
             y_ref = torch.einsum("oif,biftp->botp", w_ref, y_ref)
         y_ref.backward(grad_input)
         x_ref_grad = x_ref.grad.clone()

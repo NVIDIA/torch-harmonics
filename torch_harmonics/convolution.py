@@ -140,7 +140,7 @@ def _compute_support_vals_anisotropic(r: torch.Tensor, phi: torch.Tensor, nr: in
     return iidx, vals
 
 
-def _normalize_convolution_tensor_s2(psi_idx, psi_vals, in_shape, out_shape, kernel_shape, quad_weights, transpose_normalization=False, eps=1e-9):
+def _normalize_convolution_tensor_s2(psi_idx, psi_vals, in_shape, out_shape, kernel_shape, quad_weights, transpose_normalization=False, merge_quadrature=False, eps=1e-9):
     """
     Discretely normalizes the convolution tensor.
     """
@@ -167,7 +167,11 @@ def _normalize_convolution_tensor_s2(psi_idx, psi_vals, in_shape, out_shape, ker
                 iidx = torch.argwhere((idx[0] == ik) & (idx[2] == ilat))
                 # normalize, while summing also over the input longitude dimension here as this is not available for the output
                 vnorm = torch.sum(psi_vals[iidx] * q[iidx])
-                psi_vals[iidx] = psi_vals[iidx] / (vnorm + eps)
+                if merge_quadrature:
+                    # the correction factor accounts for the difference in longitudinal grid points when the input vector is upscaled
+                    psi_vals[iidx] = psi_vals[iidx] * q[iidx] * nlon_in / nlon_out / (vnorm + eps)
+                else:
+                    psi_vals[iidx] = psi_vals[iidx] / (vnorm + eps)
     else:
         # pre-compute the quadrature weights
         q = quad_weights[idx[2]].reshape(-1)
@@ -179,13 +183,16 @@ def _normalize_convolution_tensor_s2(psi_idx, psi_vals, in_shape, out_shape, ker
                 iidx = torch.argwhere((idx[0] == ik) & (idx[1] == ilat))
                 # normalize
                 vnorm = torch.sum(psi_vals[iidx] * q[iidx])
-                psi_vals[iidx] = psi_vals[iidx] / (vnorm + eps)
+                if merge_quadrature:
+                    psi_vals[iidx] = psi_vals[iidx] * q[iidx] / (vnorm + eps)
+                else:
+                    psi_vals[iidx] = psi_vals[iidx] / (vnorm + eps)
 
     return psi_vals
 
 
 def _precompute_convolution_tensor_s2(
-    in_shape, out_shape, kernel_shape, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi, transpose_normalization=False
+    in_shape, out_shape, kernel_shape, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi, transpose_normalization=False, merge_quadrature=False
 ):
     """
     Precomputes the rotated filters at positions $R^{-1}_j \omega_i = R^{-1}_j R_i \nu = Y(-\theta_j)Z(\phi_i - \phi_j)Y(\theta_j)\nu$.
@@ -269,7 +276,9 @@ def _precompute_convolution_tensor_s2(
         quad_weights = 2.0 * torch.pi * torch.from_numpy(wout).float().reshape(-1, 1) / nlon_in
     else:
         quad_weights = 2.0 * torch.pi * torch.from_numpy(win).float().reshape(-1, 1) / nlon_in
-    out_vals = _normalize_convolution_tensor_s2(out_idx, out_vals, in_shape, out_shape, kernel_shape, quad_weights, transpose_normalization=transpose_normalization)
+    out_vals = _normalize_convolution_tensor_s2(
+        out_idx, out_vals, in_shape, out_shape, kernel_shape, quad_weights, transpose_normalization=transpose_normalization, merge_quadrature=merge_quadrature
+    )
 
     return out_idx, out_vals
 
@@ -365,7 +374,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
         idx, vals = _precompute_convolution_tensor_s2(
-            in_shape, out_shape, self.kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff, transpose_normalization=False
+            in_shape, out_shape, self.kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff, transpose_normalization=False, merge_quadrature=True
         )
 
         # sort the values
@@ -390,8 +399,6 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         return psi
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # pre-multiply x with the quadrature weights
-        x = self.quad_weights * x
 
         if x.is_cuda and _cuda_extension_available:
             x = _disco_s2_contraction_cuda(
@@ -408,7 +415,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         x = x.reshape(B, self.groups, self.groupsize, K, H, W)
 
         # do weight multiplication
-        out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
+        out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2]))
         out = out.reshape(B, -1, H, W)
 
         if self.bias is not None:
@@ -456,7 +463,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # switch in_shape and out_shape since we want transpose conv
         idx, vals = _precompute_convolution_tensor_s2(
-            out_shape, in_shape, self.kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff, transpose_normalization=True
+            out_shape, in_shape, self.kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff, transpose_normalization=True, merge_quadrature=True
         )
 
         # sort the values
@@ -497,11 +504,8 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
+        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2]))
         x = x.reshape(B, -1, x.shape[-3], H, W)
-
-        # pre-multiply x with the quadrature weights
-        x = self.quad_weights * x
 
         if x.is_cuda and _cuda_extension_available:
             out = _disco_s2_transpose_contraction_cuda(
