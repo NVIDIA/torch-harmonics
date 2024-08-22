@@ -285,7 +285,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             x = _disco_s2_contraction_torch(x, psi, self.nlon_out)
 
         # perform reduce scatter in polar region
-        if True:
+        if False:
             x = reduce_from_scatter_to_polar_region(x, -2)
         else:
             x = reduce_from_polar_region(x)
@@ -422,7 +422,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             x = distributed_transpose_azimuth.apply(x, (1, -1), self.lon_in_shapes)
 
         # gather input tensor and set up backward reduction hooks
-        if False:
+        if True:
             x = gather_from_copy_to_polar_region(x, -2, self.lat_in_shapes)
         else:
             x = gather_from_polar_region(x, -2, self.lat_in_shapes)
