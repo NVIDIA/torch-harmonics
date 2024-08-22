@@ -422,7 +422,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             x = distributed_transpose_azimuth.apply(x, (1, -1), self.lon_in_shapes)
 
         # gather input tensor and set up backward reduction hooks
-        if True:
+        if False:
             x = gather_from_copy_to_polar_region(x, -2, self.lat_in_shapes)
         else:
             x = gather_from_polar_region(x, -2, self.lat_in_shapes)
