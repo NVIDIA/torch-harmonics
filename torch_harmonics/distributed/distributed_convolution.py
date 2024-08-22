@@ -71,7 +71,7 @@ except ImportError as err:
 
 
 def _precompute_distributed_convolution_tensor_s2(
-    in_shape, out_shape, kernel_shape, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi, transpose_normalization=False
+    in_shape, out_shape, kernel_shape, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi, transpose_normalization=False, merge_quadrature=False
 ):
     """
     Precomputes the rotated filters at positions $R^{-1}_j \omega_i = R^{-1}_j R_i \nu = Y(-\theta_j)Z(\phi_i - \phi_j)Y(\theta_j)\nu$.
@@ -156,7 +156,7 @@ def _precompute_distributed_convolution_tensor_s2(
         quad_weights = 2.0 * torch.pi * torch.from_numpy(wout).float().reshape(-1, 1) / nlon_in
     else:
         quad_weights = 2.0 * torch.pi * torch.from_numpy(win).float().reshape(-1, 1) / nlon_in
-    out_vals = _normalize_convolution_tensor_s2(out_idx, out_vals, in_shape, out_shape, kernel_shape, quad_weights, transpose_normalization=transpose_normalization)
+    out_vals = _normalize_convolution_tensor_s2(out_idx, out_vals, in_shape, out_shape, kernel_shape, quad_weights, transpose_normalization=transpose_normalization, merge_quadrature=merge_quadrature)
 
     # TODO: this part can be split off into it's own function
     # split the latitude indices:
@@ -224,10 +224,6 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
 
-        # integration weights
-        _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
-        quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).float().reshape(-1, 1) / float(self.nlon_in)
-
         # Note that the psi matrix is of shape nlat_out x nlat_in * nlon_in. Since the contraction in nlon direction is a convolution,
         # we will keep local to all nodes and split the computation up along nlat. We further split the input dim because this reduces the number
         # of atomic reduction calls inside the actual kernel
@@ -236,12 +232,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.nlat_in_local = self.lat_in_shapes[self.comm_rank_polar]
         self.nlat_out_local = self.nlat_out
         idx, vals = _precompute_distributed_convolution_tensor_s2(
-            in_shape, out_shape, self.kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff, transpose_normalization=False
+            in_shape, out_shape, self.kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff, transpose_normalization=False, merge_quadrature=True
         )
-
-        # split the weight tensor as well
-        quad_weights = split_tensor_along_dim(quad_weights, dim=0, num_chunks=self.comm_size_polar)[self.comm_rank_polar]
-        self.register_buffer("quad_weights", quad_weights, persistent=False)
 
         # sort the values
         ker_idx = idx[0, ...].contiguous()
@@ -256,6 +248,12 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
 
+    def extra_repr(self):
+        r"""
+        Pretty print module
+        """
+        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, kernel_shape={self.kernel_shape}, groups={self.groups}"
+
     @property
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
@@ -268,13 +266,10 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # store number of channels
         num_chans = x.shape[1]
-        
+
         # h and w is split. First we make w local by transposing into channel dim
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth.apply(x, (1, -1), self.lon_in_shapes)
-
-        # pre-multiply x with the quadrature weights
-        x = self.quad_weights * x
 
         if x.is_cuda and _cuda_extension_available:
             x = _disco_s2_contraction_cuda(
@@ -355,10 +350,6 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
 
-        # integration weights
-        _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
-        quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).float().reshape(-1, 1) / self.nlon_in
-
         # Note that the psi matrix is of shape nlat_out x nlat_in * nlon_in. Since the contraction in nlon direction is a convolution,
         # we will keep local to all nodes and split the computation up along nlat. We further split the input dim because this reduces the number
         # of atomic reduction calls inside the actual kernel
@@ -370,12 +361,8 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         # switch in_shape and out_shape since we want transpose conv
         # distributed mode here is swapped because of the transpose
         idx, vals = _precompute_distributed_convolution_tensor_s2(
-            out_shape, in_shape, self.kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff, transpose_normalization=True
+            out_shape, in_shape, self.kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff, transpose_normalization=True, merge_quadrature=True
         )
-
-        # split the weight tensor as well
-        quad_weights = split_tensor_along_dim(quad_weights, dim=0, num_chunks=self.comm_size_polar)[self.comm_rank_polar]
-        self.register_buffer("quad_weights", quad_weights, persistent=False)
 
         # sort the values
         ker_idx = idx[0, ...].contiguous()
@@ -389,6 +376,12 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
+
+    def extra_repr(self):
+        r"""
+        Pretty print module
+        """
+        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, kernel_shape={self.kernel_shape}, groups={self.groups}"
 
     @property
     def psi_idx(self):
@@ -423,9 +416,6 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         # transpose such that lon is local, channels are split
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth.apply(x, (1, -1), self.lon_in_shapes)
-
-        # multiply weights
-        x = self.quad_weights * x
 
         # gather input tensor and set up backward reduction hooks
         x = gather_from_polar_region(x, -2, self.lat_in_shapes)
