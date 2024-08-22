@@ -7,6 +7,7 @@
 * CUDA-accelerated DISCO convolutions
 * Updated DISCO convolutions to support even number of collocation points across the diameter
 * Distributed DISCO convolutions
+* Fused quadrature into multiplication with the Psi tensor to lower memory footprint
 * Removed DISCO convolution in the plane to focus on the sphere
 * Updated unit tests which now include tests for the distributed convolutions
 
