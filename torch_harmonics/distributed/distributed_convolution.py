@@ -240,7 +240,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         ker_idx = idx[0, ...].contiguous()
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()
-        roff_idx = preprocess_psi(self.kernel_size, self.nlat_out_local, ker_idx, row_idx, col_idx, vals)
+        vals = vals.contiguous()
+        roff_idx = preprocess_psi(self.kernel_size, self.nlat_out_local, ker_idx, row_idx, col_idx, vals).contiguous()
 
         # preprocessed data-structure for GPU kernel
         self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
@@ -285,7 +286,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             x = _disco_s2_contraction_torch(x, psi, self.nlon_out)
 
         # perform reduce scatter in polar region
-        if False:
+        if True:
             x = reduce_from_scatter_to_polar_region(x, -2)
         else:
             x = reduce_from_polar_region(x)
@@ -372,7 +373,8 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         ker_idx = idx[0, ...].contiguous()
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()
-        roff_idx = preprocess_psi(self.kernel_size, self.nlat_in_local, ker_idx, row_idx, col_idx, vals)
+        vals = vals.contiguous()
+        roff_idx = preprocess_psi(self.kernel_size, self.nlat_in_local, ker_idx, row_idx, col_idx, vals).contiguous()
 
         # preprocessed data-structure for GPU kernel
         self.register_buffer("psi_roff_idx", roff_idx, persistent=False)

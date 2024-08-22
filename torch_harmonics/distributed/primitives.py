@@ -194,15 +194,10 @@ def _gather(input_, dim_, shapes_, group=None):
     input_shape = list(input_.shape)
 
     if shapes_ is not None:
-        input_list = [None] * comm_size
-
+        input_list = []
         for src in range(comm_size):
             input_shape[dim_] = shapes_[src]
-            input_list[src] = torch.empty(
-                input_shape,
-                dtype=input_.dtype,
-                device=input_.device,
-            )
+            input_list.append(torch.empty(input_shape, dtype=input_.dtype, device=input_.device))
     else:
         # assume equal shape on all ranks
         input_list = [torch.empty_like(input_) for _ in range(comm_size)]
