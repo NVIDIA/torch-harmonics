@@ -54,7 +54,7 @@ from torch_harmonics.convolution import (
 
 from torch_harmonics.distributed import polar_group_size, azimuth_group_size
 from torch_harmonics.distributed import distributed_transpose_azimuth, distributed_transpose_polar
-from torch_harmonics.distributed import reduce_from_polar_region, scatter_to_polar_region, gather_from_polar_region, copy_to_polar_region
+from torch_harmonics.distributed import gather_from_polar_region, copy_to_polar_region
 from torch_harmonics.distributed import reduce_from_scatter_to_polar_region, gather_from_copy_to_polar_region
 from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
 from torch_harmonics.distributed import compute_split_shapes, split_tensor_along_dim
@@ -286,11 +286,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             x = _disco_s2_contraction_torch(x, psi, self.nlon_out)
 
         # perform reduce scatter in polar region
-        if True:
-            x = reduce_from_scatter_to_polar_region(x, -2)
-        else:
-            x = reduce_from_polar_region(x)
-            x = scatter_to_polar_region(x, -2)
+        x = reduce_from_scatter_to_polar_region(x, -2)
 
         # now we can transpose back the result, so that lon is split and channels are local
         if self.comm_size_azimuth > 1:
@@ -424,11 +420,8 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             x = distributed_transpose_azimuth.apply(x, (1, -1), self.lon_in_shapes)
 
         # gather input tensor and set up backward reduction hooks
-        if False:
-            x = gather_from_copy_to_polar_region(x, -2, self.lat_in_shapes)
-        else:
-            x = gather_from_polar_region(x, -2, self.lat_in_shapes)
-            x = copy_to_polar_region(x)
+        x = gather_from_polar_region(x, -2, self.lat_in_shapes)
+        x = copy_to_polar_region(x)
 
         if x.is_cuda and _cuda_extension_available:
             out = _disco_s2_transpose_contraction_cuda(
