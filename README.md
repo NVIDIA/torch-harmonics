@@ -80,9 +80,11 @@ Download directly from PyPI:
 ```bash
 pip install torch-harmonics
 ```
-If you would like to have accelerated CUDA extensions for the discrete-continuous convolutions, please use the '--cuda_ext' flag:
+If you would like to enforce the compilation of CUDA extensions for the discrete-continuous convolutions, you can do so by setting the `FORCE_CUDA_EXTENSION` flag. You may also want to set appropriate architectures with the `TORCH_CUDA_ARCH_LIST` flag.
 ```bash
-pip install --global-option --cuda_ext torch-harmonics
+export FORCE_CUDA_EXTENSION=1
+export TORCH_CUDA_ARCH_LIST="7.0 7.2 7.5 8.0 8.6 8.7 9.0+PTX"
+pip install torch-harmonics
 ```
 :warning: Please note that the custom CUDA extensions currently only support CUDA architectures >= 7.0.
 
