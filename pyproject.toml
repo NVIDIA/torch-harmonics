@@ -27,8 +27,9 @@ description = "Differentiable signal processing on the sphere for PyTorch."
 requires-python = ">=3.9"
 
 classifiers = [
+    "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3.9",
-    "License :: OSI Approved :: Modified BSD",
+    "License :: OSI Approved :: BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)",
     "Operating System :: OS Independent",
 ]
 
