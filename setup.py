@@ -30,37 +30,23 @@
 #
 
 import sys
-from pathlib import Path
-import re
 
 try:
     from setuptools import setup, find_packages
 except ImportError:
     from distutils.core import setup, find_packages
 
-def version(root_path):
-    """Returns the version taken from __init__.py"""
-    version_path = root_path.joinpath("torch_harmonics", "__init__.py")
-    with version_path.open() as f:
-        version_file = f.read()
-    version_match = re.search(r"^__version__ = ['\"]([^'\"]*)['\"]", version_file, re.M)
-    if version_match:
-        return version_match.group(1)
-    raise RuntimeError("Unable to find version string.")
+import torch
+from torch.utils import cpp_extension
 
-def readme(root_path):
-    """Returns the text content of README.md"""
-    with root_path.joinpath("README.md").open(encoding="UTF-8") as f:
-        return f.read()
 
 def get_ext_modules(argv):
-    # Delay import of torch and cpp_extension
-    import torch
-    from torch.utils import cpp_extension
 
     compile_cuda_extension = "--cuda_ext" in argv
     if "--cuda_ext" in argv:
         argv.remove("--cuda_ext")
+
+    print(compile_cuda_extension)
 
     ext_modules = [
         cpp_extension.CppExtension("disco_helpers", ["torch_harmonics/csrc/disco/disco_helpers.cpp"]),
@@ -80,39 +66,12 @@ def get_ext_modules(argv):
 
     return ext_modules
 
-root_path = Path(__file__).parent
-README = readme(root_path)
-VERSION = version(root_path)
-
-config = {
-    "name": "torch_harmonics",
-    "packages": find_packages(),
-    "description": "A differentiable spherical harmonic transform for PyTorch.",
-    "long_description": README,
-    "long_description_content_type": "text/markdown",
-    "url": "https://github.com/NVIDIA/torch-harmonics",
-    "author": "Boris Bonev",
-    "author_email": "bbonev@nvidia.com",
-    "version": VERSION,
-    "install_requires": ["torch", "numpy"],
-    "extras_require": {
-        "sfno": ["tensorly", "tensorly-torch"],
-    },
-    "license": "Modified BSD",
-    "scripts": [],
-    "include_package_data": True,
-    "classifiers": ["Topic :: Scientific/Engineering", "License :: OSI Approved :: BSD License", "Programming Language :: Python :: 3"],
-}
-
-def setup_package():
-    # Delay the decision about ext_modules and cmdclass
-    ext_modules = get_ext_modules(sys.argv)
-    if ext_modules:
-        from torch.utils import cpp_extension
-        config["ext_modules"] = ext_modules
-        config["cmdclass"] = {"build_ext": cpp_extension.BuildExtension}
-
-    setup(**config)
-
 if __name__ == "__main__":
-    setup_package()
+
+    ext_modules = get_ext_modules(sys.argv)
+
+    setup(
+        packages=find_packages(),
+        ext_modules=ext_modules,
+        cmdclass={"build_ext": cpp_extension.BuildExtension},
+    )

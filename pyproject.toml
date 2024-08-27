@@ -1,0 +1,47 @@
+[build-system]
+requires = [ "setuptools", "setuptools-scm", "torch>=2.4.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torch_harmonics"
+authors = [
+    { name="Boris Bonev", email = "bbonev@nvidia.com" },
+    { name="Thorsten Kurth", email = "tkurth@nvidia.com" },
+    { name="Jean Kossaifi" },
+    { name="Nikola Kovachki" },
+    { name="Christian Hundt" },
+]
+
+maintainers = [
+    { name="Thorsten Kurth", email = "tkurth@nvidia.com" },
+    { name="Boris Bonev", email = "bbonev@nvidia.com" },
+]
+
+dynamic = ["version", "readme"]
+
+description = "Differentiable harmonics transforms and convolutions on the sphere for PyTorch."
+requires-python = ">=3.10"
+
+classifiers = [
+    "Programming Language :: Python :: 3.10",
+    "License :: OSI Approved :: Modified BSD",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "torch>=2.4.0",
+    "numpy>=1.22.4,<1.25",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "torch_harmonics.__version__"}
+readme = {file = ["README.md"]}
+
+[tool.setuptools.packages.find]
+    include = ["torch_harmonics*"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0.0",
+    "coverage>=6.5.0",
+]
