@@ -209,7 +209,7 @@ Detailed usage of torch-harmonics, alongside helpful analysis provided in a seri
 
 ## Remarks on automatic mixed precision (AMP) support
 
-Note that torch-harmonics uses Fourier transforms from `torch.fft` which in turn uses kernels from the optimized `cuFFT` library. This library supports fourier transforms of `float32` and `float64` (i.e. `single` and `double` precision) tensors for all input sizes. For `float16` (i.e. `half` precision) and `bfloat16` inputs however, the dimensions which are transformed are restricted to powers of two. Since data is converted to one of these reduced precision floating point formats when `torch.cuda.amp.autocast` is used, torch-harmonics will issue an error when the input shapes are not powers of two. For these cases, we recommend disabling autocast for the harmonics transform specifically:
+Note that torch-harmonics uses Fourier transforms from `torch.fft` which in turn uses kernels from the optimized `cuFFT` library. This library supports fourier transforms of `float32` and `float64` (i.e. `single` and `double` precision) tensors for all input sizes. For `float16` (i.e. `half` precision) and `bfloat16` inputs however, the dimensions which are transformed are restricted to powers of two. Since data is converted to one of these reduced precision floating point formats when `torch.autocast` is used, torch-harmonics will issue an error when the input shapes are not powers of two. For these cases, we recommend disabling autocast for the harmonics transform specifically:
 
 ```python
 import torch
@@ -217,7 +217,7 @@ import torch_harmonics as th
 
 sht = th.RealSHT(512, 1024, grid="equiangular").cuda()
 
-with torch.cuda.amp.autocast(enabled = True):
+with torch.autocast(device_type="cuda", enabled = True):
    # do some AMP converted math here
    x = some_math(x)
    # convert tensor to float32
@@ -225,7 +225,7 @@ with torch.cuda.amp.autocast(enabled = True):
    # now disable autocast specifically for the transform,
    # making sure that the tensors are not converted
    # back to reduced precision internally
-   with torch.cuda.amp.autocast(enabled = False):
+   with torch.autocast(device_type="cuda", enabled = False):
       xt = sht(x)
 
    # continue operating on the transformed tensor
