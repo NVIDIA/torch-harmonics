@@ -7,6 +7,8 @@ name = "torch_harmonics"
 authors = [
     { name="Boris Bonev", email = "bbonev@nvidia.com" },
     { name="Thorsten Kurth", email = "tkurth@nvidia.com" },
+    { name="Mauro Bisson" },
+    { name="Massimiliano Fatica" },
     { name="Jean Kossaifi" },
     { name="Nikola Kovachki" },
     { name="Christian Hundt" },
