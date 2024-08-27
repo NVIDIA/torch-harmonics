@@ -30,7 +30,7 @@
 # build after cloning in directoy torch_harmonics via
 # docker build . -t torch_harmonics
 
-FROM nvcr.io/nvidia/pytorch:24.05-py3
+FROM nvcr.io/nvidia/pytorch:24.07-py3
 
 COPY . /workspace/torch_harmonics
 
