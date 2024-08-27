@@ -21,8 +21,6 @@ maintainers = [
 
 readme = "README.md"
 
-license = "BSD-3-Clause"
-
 dynamic = ["version"]
 
 description = "Differentiable signal processing on the sphere for PyTorch."
