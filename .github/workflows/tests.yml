@@ -1,6 +1,8 @@
 name: Run local tests
 
-on: [push]
+on:
+  push:
+  workflow_dispatch:
 
 jobs:
   build:
