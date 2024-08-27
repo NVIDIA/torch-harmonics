@@ -2,10 +2,6 @@
 
 ## Versioning
 
-### v0.7.1
-
-* Hotfix to AMP in SFNO example
-
 ### v0.7.0
 
 * CUDA-accelerated DISCO convolutions

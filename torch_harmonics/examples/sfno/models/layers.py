@@ -33,7 +33,6 @@ import torch
 import torch.nn as nn
 import torch.fft
 from torch.utils.checkpoint import checkpoint
-from torch import amp
 import math
 
 from torch_harmonics import *
