@@ -19,11 +19,11 @@ maintainers = [
 
 dynamic = ["version", "readme"]
 
-description = "Differentiable harmonics transforms and convolutions on the sphere for PyTorch."
-requires-python = ">=3.10"
+description = "Differentiable signal processing on the sphere for PyTorch."
+requires-python = ">=3.9"
 
 classifiers = [
-    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.9",
     "License :: OSI Approved :: Modified BSD",
     "Operating System :: OS Independent",
 ]
