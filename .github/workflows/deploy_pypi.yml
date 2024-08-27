@@ -28,14 +28,6 @@ jobs:
           python3 -m pip install numpy
           python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
 
-      - name: Install cibuildwheel
-        run: |
-          python3 -m pip install cibuildwheel
-
-      - name: Build wheels
-        run: |
-          cibuildwheel --output-dir dist
-
       - name: Build distribution
         run: |
           python3 -m build --sdist
@@ -45,4 +37,3 @@ jobs:
         with:
           user: __token__
           password: ${{ secrets.PYPI_PASSWORD }}
-          packages_dir: dist/
