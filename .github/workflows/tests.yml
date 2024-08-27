@@ -9,17 +9,21 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+
     - name: Set up Python 3.9
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: "3.9"
+
     - name: Install dependencies
       run: |
         python3 -m pip install --upgrade pip setuptools wheel
-        python3 -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cpu
+        python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
+
     - name: Install package
       run: |
         python3 -m pip install -e .
+
     - name: Test with pytest
       run: |
         python3 -m pip install pytest pytest-cov parameterized
