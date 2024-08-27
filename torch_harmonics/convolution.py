@@ -376,6 +376,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         ker_idx = idx[0, ...].contiguous()
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()
+        vals = vals.contiguous()
         roff_idx = preprocess_psi(self.kernel_size, out_shape[0], ker_idx, row_idx, col_idx, vals)
 
         # preprocessed data-structure for GPU kernel
@@ -466,6 +467,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         ker_idx = idx[0, ...].contiguous()
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()
+        vals = vals.contiguous()
         roff_idx = preprocess_psi(self.kernel_size, in_shape[0], ker_idx, row_idx, col_idx, vals)
 
         # preprocessed data-structure for GPU kernel
