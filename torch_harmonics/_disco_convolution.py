@@ -84,10 +84,8 @@ class _DiscoS2TransposeContractionCuda(torch.autograd.Function):
     @custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
         roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
-        inp_type = grad_output.dtype
         grad_input = disco_cuda_extension.forward(grad_output.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals,
                                         ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
-        grad_input = grad_input.to(dtype=inp_type)
 
         return grad_input, None, None, None, None, None, None, None, None
 
