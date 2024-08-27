@@ -19,7 +19,9 @@ maintainers = [
     { name="Boris Bonev", email = "bbonev@nvidia.com" },
 ]
 
-dynamic = ["version", "readme"]
+readme = "README.md"
+
+dynamic = ["version"]
 
 description = "Differentiable signal processing on the sphere for PyTorch."
 requires-python = ">=3.9"
@@ -37,7 +39,6 @@ dependencies = [
 
 [tool.setuptools.dynamic]
 version = {attr = "torch_harmonics.__version__"}
-readme = {file = ["README.md"]}
 
 [tool.setuptools.packages.find]
     include = ["torch_harmonics*"]
