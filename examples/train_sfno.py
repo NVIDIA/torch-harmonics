@@ -2,7 +2,7 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -38,7 +38,6 @@ from functools import partial
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.cuda import amp
 
 import numpy as np
 import pandas as pd
@@ -55,7 +54,7 @@ def l2loss_sphere(solver, prd, tar, relative=False, squared=True):
     loss = solver.integrate_grid((prd - tar)**2, dimensionless=True).sum(dim=-1)
     if relative:
         loss = loss / solver.integrate_grid(tar**2, dimensionless=True).sum(dim=-1)
-    
+
     if not squared:
         loss = torch.sqrt(loss)
     loss = loss.mean()
@@ -124,7 +123,7 @@ def h1loss_sphere(solver, prd, tar, relative=False, squared=True):
     h1_loss = torch.sum(h1_norm2, dim=(-1,-2))
     l2_loss = torch.sum(l2_norm2, dim=(-1,-2))
 
-     # strictly speaking this is not exactly h1 loss 
+     # strictly speaking this is not exactly h1 loss
     if not squared:
         loss = torch.sqrt(h1_loss) + torch.sqrt(l2_loss)
     else:
@@ -143,7 +142,7 @@ def fluct_l2loss_sphere(solver, prd, tar, inp, relative=False, polar_opt=0):
     fluct = solver.integrate_grid((tar - inp)**2, dimensionless=True, polar_opt=polar_opt)
     weight = fluct / torch.sum(fluct, dim=-1, keepdim=True)
     # weight = weight.reshape(*weight.shape, 1, 1)
-    
+
     loss = weight * solver.integrate_grid((prd - tar)**2, dimensionless=True, polar_opt=polar_opt)
     if relative:
         loss = loss / (weight * solver.integrate_grid(tar**2, dimensionless=True, polar_opt=polar_opt))
@@ -194,7 +193,7 @@ def autoregressive_inference(model,
         # classical model
         start_time = time.time()
         for i in range(1, autoreg_steps+1):
-            
+
             # advance classical model
             uspec = dataset.solver.timestep(uspec, nsteps)
 
@@ -212,7 +211,7 @@ def autoregressive_inference(model,
         ref = dataset.solver.spec2grid(uspec)
         prd = prd * torch.sqrt(inp_var) + inp_mean
         losses[iic] = l2loss_sphere(dataset.solver, prd, ref, relative=True).item()
-        
+
 
     return losses, fno_times, nwp_times
 
@@ -267,8 +266,8 @@ def train_model(model,
         model.train()
 
         for inp, tar in dataloader:
-            
-            with amp.autocast(enabled=enable_amp):
+
+            with torch.autocast(device_type="cuda", enabled=enable_amp):
 
                 prd = model(inp)
                 for _ in range(nfuture):
@@ -357,7 +356,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     dt_solver = 150
     nsteps = dt//dt_solver
     dataset = PdeDataset(dt=dt, nsteps=nsteps, dims=(256, 512), device=device, normalize=True)
-    # There is still an issue with parallel dataloading. Do NOT use it at the moment     
+    # There is still an issue with parallel dataloading. Do NOT use it at the moment
     # dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=4, persistent_workers=True)
     dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=0, persistent_workers=False)
 
@@ -418,7 +417,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
             # optimizer:
             optimizer = torch.optim.Adam(model.parameters(), lr=3E-3)
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
-            gscaler = amp.GradScaler(enabled=enable_amp)
+            gscaler = torch.GradScaler("cuda", enabled=enable_amp)
 
             start_time = time.time()
 
