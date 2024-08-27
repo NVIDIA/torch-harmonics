@@ -32,6 +32,7 @@
 import math
 
 import torch
+from torch.amp import custom_fwd, custom_bwd
 
 try:
     import disco_cuda_extension
@@ -43,6 +44,7 @@ except ImportError as err:
 
 class _DiscoS2ContractionCuda(torch.autograd.Function):
     @staticmethod
+    @custom_fwd(device_type="cuda", cast_inputs=torch.float32)
     def forward(ctx, x: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
                 row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
                 kernel_size: int, nlat_out: int, nlon_out: int):
@@ -50,10 +52,12 @@ class _DiscoS2ContractionCuda(torch.autograd.Function):
         ctx.kernel_size = kernel_size
         ctx.nlat_in = x.shape[-2]
         ctx.nlon_in = x.shape[-1]
+        output = disco_cuda_extension.forward(x.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
 
-        return disco_cuda_extension.forward(x.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+        return output
 
     @staticmethod
+    @custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
         roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
         grad_input = disco_cuda_extension.backward(grad_output.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals,
@@ -64,6 +68,7 @@ class _DiscoS2ContractionCuda(torch.autograd.Function):
 
 class _DiscoS2TransposeContractionCuda(torch.autograd.Function):
     @staticmethod
+    @custom_fwd(device_type="cuda", cast_inputs=torch.float32)
     def forward(ctx, x: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
                 row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
                 kernel_size: int, nlat_out: int, nlon_out: int):
@@ -71,14 +76,18 @@ class _DiscoS2TransposeContractionCuda(torch.autograd.Function):
         ctx.kernel_size = kernel_size
         ctx.nlat_in = x.shape[-2]
         ctx.nlon_in = x.shape[-1]
+        output = disco_cuda_extension.backward(x.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
 
-        return disco_cuda_extension.backward(x.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+        return output
 
     @staticmethod
+    @custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
         roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
+        inp_type = grad_output.dtype
         grad_input = disco_cuda_extension.forward(grad_output.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals,
                                         ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
+        grad_input = grad_input.to(dtype=inp_type)
 
         return grad_input, None, None, None, None, None, None, None, None
 
