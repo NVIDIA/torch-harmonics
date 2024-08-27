@@ -28,12 +28,21 @@ jobs:
           python3 -m pip install numpy
           python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
 
+      - name: Install auditwheel
+        run: |
+          python3 -m pip install auditwheel
+
       - name: Build distribution
         run: |
-          python3 -m build
+          python3 -m build --wheel --sdist
+
+      - name: Repair Linux wheel with auditwheel
+        run: |
+          auditwheel repair dist/*.whl -w wheelhouse/
 
       - name: Publish package to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           user: __token__
           password: ${{ secrets.PYPI_PASSWORD }}
+          packages_dir: wheelhouse/
