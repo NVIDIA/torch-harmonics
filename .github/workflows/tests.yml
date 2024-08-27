@@ -1,4 +1,4 @@
-name: tests
+name: Run local tests
 
 on: [push]
 
