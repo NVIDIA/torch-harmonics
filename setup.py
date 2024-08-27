@@ -30,30 +30,16 @@
 #
 
 import sys
+from pathlib import Path
+import re
 
 try:
     from setuptools import setup, find_packages
 except ImportError:
     from distutils.core import setup, find_packages
 
-import re
-from pathlib import Path
-
-import torch
-from torch.utils import cpp_extension
-
 def version(root_path):
-    """Returns the version taken from __init__.py
-
-    Parameters
-    ----------
-    root_path : pathlib.Path
-        path to the root of the package
-
-    Reference
-    ---------
-    https://packaging.python.org/guides/single-sourcing-package-version/
-    """
+    """Returns the version taken from __init__.py"""
     version_path = root_path.joinpath("torch_harmonics", "__init__.py")
     with version_path.open() as f:
         version_file = f.read()
@@ -62,26 +48,19 @@ def version(root_path):
         return version_match.group(1)
     raise RuntimeError("Unable to find version string.")
 
-
 def readme(root_path):
-    """Returns the text content of the README.md of the package
-
-    Parameters
-    ----------
-    root_path : pathlib.Path
-        path to the root of the package
-    """
+    """Returns the text content of README.md"""
     with root_path.joinpath("README.md").open(encoding="UTF-8") as f:
         return f.read()
 
-
 def get_ext_modules(argv):
+    # Delay import of torch and cpp_extension
+    import torch
+    from torch.utils import cpp_extension
 
-    compile_cuda_extension = False
-
-    if "--cuda_ext" in sys.argv:
-        sys.argv.remove("--cuda_ext")
-        compile_cuda_extension = True
+    compile_cuda_extension = "--cuda_ext" in argv
+    if "--cuda_ext" in argv:
+        argv.remove("--cuda_ext")
 
     ext_modules = [
         cpp_extension.CppExtension("disco_helpers", ["torch_harmonics/csrc/disco/disco_helpers.cpp"]),
@@ -101,13 +80,9 @@ def get_ext_modules(argv):
 
     return ext_modules
 
-
 root_path = Path(__file__).parent
 README = readme(root_path)
 VERSION = version(root_path)
-
-# external modules
-ext_modules = get_ext_modules(sys.argv)
 
 config = {
     "name": "torch_harmonics",
@@ -127,8 +102,17 @@ config = {
     "scripts": [],
     "include_package_data": True,
     "classifiers": ["Topic :: Scientific/Engineering", "License :: OSI Approved :: BSD License", "Programming Language :: Python :: 3"],
-    "ext_modules": ext_modules,
-    "cmdclass": {"build_ext": cpp_extension.BuildExtension} if ext_modules else {},
 }
 
-setup(**config)
+def setup_package():
+    # Delay the decision about ext_modules and cmdclass
+    ext_modules = get_ext_modules(sys.argv)
+    if ext_modules:
+        from torch.utils import cpp_extension
+        config["ext_modules"] = ext_modules
+        config["cmdclass"] = {"build_ext": cpp_extension.BuildExtension}
+
+    setup(**config)
+
+if __name__ == "__main__":
+    setup_package()
