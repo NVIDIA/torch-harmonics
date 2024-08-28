@@ -39,6 +39,7 @@ from torch_harmonics.quadrature import _precompute_latitudes
 
 class UpsampleS2(nn.Module):
     def __init__(
+        self,
         nlat_in: int,
         nlon_in: int,
         nlat_out: int,
@@ -63,10 +64,12 @@ class UpsampleS2(nn.Module):
         self.lats_out, _ = _precompute_latitudes(nlat_out, grid=grid_out)
 
         # prepare the interpolation by computing indices to the left and right of each output latitude
-        lat_idx = np.searchsorted(self.lats_in, self.lats_out) - 1
+        lat_idx = np.searchsorted(self.lats_in, self.lats_out, side="right") - 1
+        # to guarantee everything stays in bounds
+        lat_idx = np.where(self.lats_out == self.lats_in[-1], lat_idx-1, lat_idx)
 
         # compute the interpolation weights along the latitude
-        lat_weights = torch.from_numpy( (self.lats_out - self.lats_in[j]) / np.diff(self.lats_in)[j] )
+        lat_weights = torch.from_numpy( (self.lats_out - self.lats_in[lat_idx]) / np.diff(self.lats_in)[lat_idx] ).float()
         lat_weights = lat_weights.unsqueeze(-1)
 
         # convert to tensor
@@ -92,6 +95,7 @@ class UpsampleS2(nn.Module):
         # for artifact-free upsampling in the longitudinal direction
         x = torch.repeat_interleave(x, self.lon_scale_factor, dim=-1)
         x = torch.roll(x, - self.lon_shift, dims=-1)
+        return x
 
     def _upscale_latitudes(self, x: torch.Tensor):
         # do the interpolation
