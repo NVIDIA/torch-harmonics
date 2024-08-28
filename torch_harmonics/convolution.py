@@ -417,7 +417,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         x = x.reshape(B, self.groups, self.groupsize, K, H, W)
 
         # do weight multiplication
-        out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2]))
+        out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
         out = out.reshape(B, -1, H, W)
 
         if self.bias is not None:
@@ -508,7 +508,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2]))
+        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
         x = x.reshape(B, -1, x.shape[-3], H, W)
 
         if x.is_cuda and _cuda_extension_available:
