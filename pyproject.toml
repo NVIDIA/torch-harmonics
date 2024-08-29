@@ -5,8 +5,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "torch_harmonics"
 authors = [
-    { name="Boris Bonev", email = "bbonev@nvidia.com" },
-    { name="Thorsten Kurth", email = "tkurth@nvidia.com" },
+    { name="Boris Bonev" },
+    { name="Thorsten Kurth" },
     { name="Mauro Bisson" },
     { name="Massimiliano Fatica" },
     { name="Jean Kossaifi" },
@@ -15,8 +15,8 @@ authors = [
 ]
 
 maintainers = [
-    { name="Thorsten Kurth", email = "tkurth@nvidia.com" },
     { name="Boris Bonev", email = "bbonev@nvidia.com" },
+    { name="Thorsten Kurth", email = "tkurth@nvidia.com" },
 ]
 
 readme = "README.md"
