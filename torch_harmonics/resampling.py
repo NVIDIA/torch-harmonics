@@ -48,12 +48,16 @@ class ResampleS2(nn.Module):
         nlon_out: int,
         grid_in: Optional[str] = "equiangular",
         grid_out: Optional[str] = "equiangular",
+        mode: Optional[str] = "bilinear",
     ):
 
-        assert nlat_in <= nlat_out
-        assert nlon_in <= nlon_out
-
         super().__init__()
+
+        # currently only bilinear is supported
+        if mode == "bilinear":
+            self.mode = mode
+        else:
+            raise NotImplementedError(f"unknown interpolation mode {mode}")
 
         self.nlat_in, self.nlon_in = nlat_in, nlon_in
         self.nlat_out, self.nlon_out = nlat_out, nlon_out
