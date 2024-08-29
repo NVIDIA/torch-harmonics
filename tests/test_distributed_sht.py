@@ -118,6 +118,11 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         # initializing sht
         thd.init(cls.h_group, cls.w_group)
 
+    @classmethod
+    def tearDownClass(cls):
+        thd.finalize()
+        dist.destroy_process_group(None)
+
         
     def _split_helper(self, tensor):
         with torch.no_grad():

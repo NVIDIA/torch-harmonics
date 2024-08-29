@@ -112,6 +112,11 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         # initializing sht
         thd.init(cls.h_group, cls.w_group)
 
+    @classmethod
+    def tearDownClass(cls):
+	thd.finalize()
+	dist.destroy_process_group(None)
+
     def _split_helper(self, tensor):
         with torch.no_grad():
             # split in W
@@ -185,7 +190,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             [128, 256, 128, 256, 32, 8, [3], 2, "equiangular", "equiangular", False, 1e-5],
             [128, 256, 128, 256, 32, 6, [3], 1, "equiangular", "equiangular", False, 1e-5],
             [128, 256, 128, 256, 32, 8, [3], 1, "equiangular", "equiangular", True, 1e-5],
-            [129, 256, 128, 256, 32, 8, [3], 1, "equiangular", "equiangular", True, 1e-5],
+            [129, 256, 129, 256, 32, 8, [3], 1, "equiangular", "equiangular", True, 1e-5],
             [128, 256, 128, 256, 32, 8, [3, 2], 1, "equiangular", "equiangular", True, 1e-5],
             [64, 128, 128, 256, 32, 8, [3], 1, "equiangular", "equiangular", True, 1e-5],
             [128, 256, 128, 256, 32, 8, [3], 2, "equiangular", "equiangular", True, 1e-5],
