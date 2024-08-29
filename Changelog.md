@@ -2,6 +2,10 @@
 
 ## Versioning
 
+### v0.7.2
+
+* Added resampling modules for convenience
+
 ### v0.7.1
 
 * Hotfix to AMP in SFNO example
