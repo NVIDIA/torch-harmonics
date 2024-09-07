@@ -347,7 +347,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     torch.cuda.manual_seed(333)
 
     # set device
-    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     if torch.cuda.is_available():
         torch.cuda.set_device(device.index)
 

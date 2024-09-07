@@ -108,9 +108,9 @@ class DistributedRealSHT(nn.Module):
         # combine quadrature weights with the legendre weights
         weights = torch.from_numpy(w)
         pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
-        pct = torch.from_numpy(pct)        
+        pct = torch.from_numpy(pct)
         weights = torch.einsum('mlk,k->mlk', pct, weights)
-        
+
         # split weights
         weights = split_tensor_along_dim(weights, dim=0, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]
 
@@ -125,12 +125,16 @@ class DistributedRealSHT(nn.Module):
 
     def forward(self, x: torch.Tensor):
 
+        # reshape x to contain only the last two dimensions. Prior dimensions are kept for batching
+        inshape = x.shape
+        x = x.reshape(-1, *inshape[-2:])
+
         # we need to ensure that we can split the channels evenly
-        num_chans = x.shape[1]
-        
+        num_chans = x.shape[0]
+
         # h and w is split. First we make w local by transposing into channel dim
         if self.comm_size_azimuth > 1:
-            x = distributed_transpose_azimuth.apply(x, (1, -1), self.lon_shapes)
+            x = distributed_transpose_azimuth.apply(x, (0, -1), self.lon_shapes)
 
         # apply real fft in the longitudinal direction: make sure to truncate to nlon
         x = 2.0 * torch.pi * torch.fft.rfft(x, n=self.nlon, dim=-1, norm="forward")
@@ -141,11 +145,11 @@ class DistributedRealSHT(nn.Module):
         # transpose: after this, m is split and c is local
         if self.comm_size_azimuth > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
-            x = distributed_transpose_azimuth.apply(x, (-1, 1), chan_shapes)
+            x = distributed_transpose_azimuth.apply(x, (-1, 0), chan_shapes)
 
         # transpose: after this, c is split and h is local
         if self.comm_size_polar > 1:
-            x = distributed_transpose_polar.apply(x, (1, -2), self.lat_shapes)
+            x = distributed_transpose_polar.apply(x, (0, -2), self.lat_shapes)
 
         # do the Legendre-Gauss quadrature
         x = torch.view_as_real(x)
@@ -159,8 +163,11 @@ class DistributedRealSHT(nn.Module):
         # transpose: after this, l is split and c is local
         if self.comm_size_polar	> 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
-            x = distributed_transpose_polar.apply(x, (-2, 1), chan_shapes)
-            
+            x = distributed_transpose_polar.apply(x, (-2, 0), chan_shapes)
+
+        # cast channel dimensions back to the original shape
+        x = x.reshape(*inshape[:-2], *x.shape[-2:])
+
         return x
 
 
@@ -210,7 +217,7 @@ class DistributedInverseRealSHT(nn.Module):
         # determine the dimensions
         self.mmax = mmax or self.nlon // 2 + 1
 
-        # compute splits 
+        # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
         self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
@@ -351,7 +358,7 @@ class DistributedRealVectorSHT(nn.Module):
         # remember quadrature weights
         self.register_buffer('weights', weights, persistent=False)
 
-        
+
     def extra_repr(self):
         """
         Pretty print module
@@ -361,7 +368,7 @@ class DistributedRealVectorSHT(nn.Module):
     def forward(self, x: torch.Tensor):
 
         assert(len(x.shape) >= 3)
-        
+
         # we need to ensure that we can split the channels evenly
         num_chans = x.shape[1]
 
@@ -459,7 +466,7 @@ class DistributedInverseRealVectorSHT(nn.Module):
         # determine the dimensions
         self.mmax = mmax or self.nlon // 2 + 1
 
-        # compute splits 
+        # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
         self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)

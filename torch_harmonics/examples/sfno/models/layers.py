@@ -272,7 +272,6 @@ class SpectralConvS2(nn.Module):
         scale = math.sqrt(gain / in_channels) * torch.ones(self.modes_lat, 2)
         scale[0] *=  math.sqrt(2)
         self.weight = nn.Parameter(scale * torch.view_as_real(torch.randn(*weight_shape, dtype=torch.complex64)))
-        # self.weight = nn.Parameter(scale * torch.randn(*weight_shape, 2))
 
         # get the right contraction function
         self._contract = _contract

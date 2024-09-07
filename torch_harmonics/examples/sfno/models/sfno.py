@@ -2,7 +2,7 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -57,7 +57,7 @@ class SpectralFilterLayer(nn.Module):
         separable = False,
         rank = 1e-2,
         bias = True):
-        super(SpectralFilterLayer, self).__init__() 
+        super(SpectralFilterLayer, self).__init__()
 
         if factorization is None:
             self.filter = SpectralConvS2(forward_transform,
@@ -67,7 +67,7 @@ class SpectralFilterLayer(nn.Module):
                                          gain = gain,
                                          operator_type = operator_type,
                                          bias = bias)
-            
+
         elif factorization is not None:
             self.filter = FactorizedSpectralConvS2(forward_transform,
                                                    inverse_transform,
@@ -117,7 +117,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
 
         if inner_skip == "linear" or inner_skip == "identity":
             gain_factor /= 2.0
-        
+
         # convolution layer
         self.filter = SpectralFilterLayer(forward_transform,
                                           inverse_transform,
@@ -146,14 +146,14 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
 
         # first normalisation layer
         self.norm0 = norm_layer()
-        
+
         # dropout
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
         gain_factor = 1.0
         if outer_skip == "linear" or inner_skip == "identity":
             gain_factor /= 2.
-        
+
         if use_mlp == True:
             mlp_hidden_dim = int(output_dim * mlp_ratio)
             self.mlp = MLP(in_features = output_dim,
@@ -355,7 +355,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             norm_layer0 = nn.Identity
             norm_layer1 = norm_layer0
         else:
-            raise NotImplementedError(f"Error, normalization {self.normalization_layer} not implemented.") 
+            raise NotImplementedError(f"Error, normalization {self.normalization_layer} not implemented.")
 
         if pos_embed == "latlon" or pos_embed==True:
             self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.img_size[0], self.img_size[1]))
@@ -402,7 +402,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             nn.init.constant_(fc.bias, 0.0)
         encoder_layers.append(fc)
         self.encoder = nn.Sequential(*encoder_layers)
-        
+
         # prepare the spectral transform
         if self.spectral_transform == "sht":
 
@@ -424,7 +424,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             self.itrans_up  = InverseRealFFT2(*self.img_size, lmax=modes_lat, mmax=modes_lon).float()
             self.trans      = RealFFT2(self.h, self.w, lmax=modes_lat, mmax=modes_lon).float()
             self.itrans     = InverseRealFFT2(self.h, self.w, lmax=modes_lat, mmax=modes_lon).float()
-            
+
         else:
             raise(ValueError("Unknown spectral transform"))
 
@@ -508,7 +508,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
 
         for blk in self.blocks:
             x = blk(x)
-            
+
         return x
 
     def forward(self, x):
@@ -529,5 +529,5 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         x = self.decoder(x)
 
         return x
-    
-    
+
+
