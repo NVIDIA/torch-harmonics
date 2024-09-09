@@ -55,7 +55,7 @@ class DistributedRealSHT(nn.Module):
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="lobatto", norm="ortho", csphase=True):
         """
-        Initializes the SHT Layer, precomputing the necessary quadrature weights
+        Distribtued SHT layer. Expects the last 3 dimensions of the input tensor to be channels, latitude, longitude.
 
         Parameters:
         nlat: input grid resolution in the latitudinal direction
