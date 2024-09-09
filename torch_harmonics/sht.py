@@ -105,8 +105,8 @@ class RealSHT(nn.Module):
 
     def forward(self, x: torch.Tensor):
 
-        if len(x.shape) < 2:
-            raise ValueError(f"Expected tensor with at least 2 dimensions but got {len(x.shape)} instead")
+        if x.dims() < 2:
+            raise ValueError(f"Expected tensor with at least 2 dimensions but got {x.dims()} instead")
 
         assert(x.shape[-2] == self.nlat)
         assert(x.shape[-1] == self.nlon)
@@ -275,8 +275,8 @@ class RealVectorSHT(nn.Module):
 
     def forward(self, x: torch.Tensor):
 
-        if len(x.shape) < 3:
-            raise ValueError(f"Expected tensor with at least 3 dimensions but got {len(x.shape)} instead")
+        if x.dims() < 3:
+            raise ValueError(f"Expected tensor with at least 3 dimensions but got {x.dims()} instead")
 
         assert(x.shape[-2] == self.nlat)
         assert(x.shape[-1] == self.nlon)
@@ -364,8 +364,8 @@ class InverseRealVectorSHT(nn.Module):
 
     def forward(self, x: torch.Tensor):
 
-        if len(x.shape) < 3:
-            raise ValueError(f"Expected tensor with at least 3 dimensions but got {len(x.shape)} instead")
+        if x.dims() < 3:
+            raise ValueError(f"Expected tensor with at least 3 dimensions but got {x.dims()} instead")
 
         assert(x.shape[-2] == self.lmax)
         assert(x.shape[-1] == self.mmax)
