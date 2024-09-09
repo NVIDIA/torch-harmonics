@@ -2,7 +2,7 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -85,7 +85,7 @@ class RealSHT(nn.Module):
         # apply cosine transform and flip them
         tq = np.flip(np.arccos(cost))
 
-        # determine the dimensions 
+        # determine the dimensions
         self.mmax = mmax or self.nlon // 2 + 1
 
         # combine quadrature weights with the legendre weights
@@ -105,26 +105,29 @@ class RealSHT(nn.Module):
 
     def forward(self, x: torch.Tensor):
 
+        if x.dim() < 2:
+            raise ValueError(f"Expected tensor with at least 2 dimensions but got {x.dim()} instead")
+
         assert(x.shape[-2] == self.nlat)
         assert(x.shape[-1] == self.nlon)
 
         # apply real fft in the longitudinal direction
         x = 2.0 * torch.pi * torch.fft.rfft(x, dim=-1, norm="forward")
-        
+
         # do the Legendre-Gauss quadrature
         x = torch.view_as_real(x)
-        
+
         # distributed contraction: fork
         out_shape = list(x.size())
         out_shape[-3] = self.lmax
         out_shape[-2] = self.mmax
         xout = torch.zeros(out_shape, dtype=x.dtype, device=x.device)
-        
+
         # contraction
         xout[..., 0] = torch.einsum('...km,mlk->...lm', x[..., :self.mmax, 0], self.weights.to(x.dtype) )
         xout[..., 1] = torch.einsum('...km,mlk->...lm', x[..., :self.mmax, 1], self.weights.to(x.dtype) )
         x = torch.view_as_complex(xout)
-        
+
         return x
 
 class InverseRealSHT(nn.Module):
@@ -164,7 +167,7 @@ class InverseRealSHT(nn.Module):
         # apply cosine transform and flip them
         t = np.flip(np.arccos(cost))
 
-        # determine the dimensions 
+        # determine the dimensions
         self.mmax = mmax or self.nlon // 2 + 1
 
         pct = _precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
@@ -181,12 +184,15 @@ class InverseRealSHT(nn.Module):
 
     def forward(self, x: torch.Tensor):
 
+        if len(x.shape) < 2:
+            raise ValueError(f"Expected tensor with at least 2 dimensions but got {len(x.shape)} instead")
+
         assert(x.shape[-2] == self.lmax)
         assert(x.shape[-1] == self.mmax)
-        
+
         # Evaluate associated Legendre functions on the output nodes
         x = torch.view_as_real(x)
-        
+
         rl = torch.einsum('...lm, mlk->...km', x[..., 0], self.pct.to(x.dtype) )
         im = torch.einsum('...lm, mlk->...km', x[..., 1], self.pct.to(x.dtype) )
         xs = torch.stack((rl, im), -1)
@@ -243,13 +249,13 @@ class RealVectorSHT(nn.Module):
         # apply cosine transform and flip them
         tq = np.flip(np.arccos(cost))
 
-        # determine the dimensions 
+        # determine the dimensions
         self.mmax = mmax or self.nlon // 2 + 1
 
         weights = torch.from_numpy(w)
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
         dpct = torch.from_numpy(dpct)
-        
+
         # combine integration weights, normalization factor in to one:
         l = torch.arange(0, self.lmax)
         norm_factor = 1. / l / (l+1)
@@ -269,14 +275,18 @@ class RealVectorSHT(nn.Module):
 
     def forward(self, x: torch.Tensor):
 
-        assert(len(x.shape) >= 3)
+        if x.dim() < 3:
+            raise ValueError(f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
+
+        assert(x.shape[-2] == self.nlat)
+        assert(x.shape[-1] == self.nlon)
 
         # apply real fft in the longitudinal direction
         x = 2.0 * torch.pi * torch.fft.rfft(x, dim=-1, norm="forward")
-        
+
         # do the Legendre-Gauss quadrature
         x = torch.view_as_real(x)
-        
+
         # distributed contraction: fork
         out_shape = list(x.size())
         out_shape[-3] = self.lmax
@@ -286,19 +296,19 @@ class RealVectorSHT(nn.Module):
         # contraction - spheroidal component
         # real component
         xout[..., 0, :, :, 0] =   torch.einsum('...km,mlk->...lm', x[..., 0, :, :self.mmax, 0], self.weights[0].to(x.dtype)) \
-                                - torch.einsum('...km,mlk->...lm', x[..., 1, :, :self.mmax, 1], self.weights[1].to(x.dtype)) 
+                                - torch.einsum('...km,mlk->...lm', x[..., 1, :, :self.mmax, 1], self.weights[1].to(x.dtype))
 
         # iamg component
         xout[..., 0, :, :, 1] =   torch.einsum('...km,mlk->...lm', x[..., 0, :, :self.mmax, 1], self.weights[0].to(x.dtype)) \
-                                + torch.einsum('...km,mlk->...lm', x[..., 1, :, :self.mmax, 0], self.weights[1].to(x.dtype)) 
+                                + torch.einsum('...km,mlk->...lm', x[..., 1, :, :self.mmax, 0], self.weights[1].to(x.dtype))
 
         # contraction - toroidal component
         # real component
         xout[..., 1, :, :, 0] = - torch.einsum('...km,mlk->...lm', x[..., 0, :, :self.mmax, 1], self.weights[1].to(x.dtype)) \
-                                - torch.einsum('...km,mlk->...lm', x[..., 1, :, :self.mmax, 0], self.weights[0].to(x.dtype)) 
+                                - torch.einsum('...km,mlk->...lm', x[..., 1, :, :self.mmax, 0], self.weights[0].to(x.dtype))
         # imag component
         xout[..., 1, :, :, 1] =   torch.einsum('...km,mlk->...lm', x[..., 0, :, :self.mmax, 0], self.weights[1].to(x.dtype)) \
-                                - torch.einsum('...km,mlk->...lm', x[..., 1, :, :self.mmax, 1], self.weights[0].to(x.dtype)) 
+                                - torch.einsum('...km,mlk->...lm', x[..., 1, :, :self.mmax, 1], self.weights[0].to(x.dtype))
 
         return torch.view_as_complex(xout)
 
@@ -307,7 +317,7 @@ class InverseRealVectorSHT(nn.Module):
     r"""
     Defines a module for computing the inverse (real-valued) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
-    
+
     [1] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
     [2] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
     """
@@ -337,7 +347,7 @@ class InverseRealVectorSHT(nn.Module):
         # apply cosine transform and flip them
         t = np.flip(np.arccos(cost))
 
-        # determine the dimensions 
+        # determine the dimensions
         self.mmax = mmax or self.nlon // 2 + 1
 
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
@@ -354,28 +364,31 @@ class InverseRealVectorSHT(nn.Module):
 
     def forward(self, x: torch.Tensor):
 
+        if x.dim() < 3:
+            raise ValueError(f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
+
         assert(x.shape[-2] == self.lmax)
         assert(x.shape[-1] == self.mmax)
-        
+
         # Evaluate associated Legendre functions on the output nodes
         x = torch.view_as_real(x)
 
         # contraction - spheroidal component
         # real component
         srl =   torch.einsum('...lm,mlk->...km', x[..., 0, :, :, 0], self.dpct[0].to(x.dtype)) \
-              - torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 1], self.dpct[1].to(x.dtype)) 
+              - torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 1], self.dpct[1].to(x.dtype))
         # iamg component
         sim =   torch.einsum('...lm,mlk->...km', x[..., 0, :, :, 1], self.dpct[0].to(x.dtype)) \
-              + torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 0], self.dpct[1].to(x.dtype)) 
+              + torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 0], self.dpct[1].to(x.dtype))
 
         # contraction - toroidal component
         # real component
         trl = - torch.einsum('...lm,mlk->...km', x[..., 0, :, :, 1], self.dpct[1].to(x.dtype)) \
-              - torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 0], self.dpct[0].to(x.dtype)) 
+              - torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 0], self.dpct[0].to(x.dtype))
         # imag component
         tim =   torch.einsum('...lm,mlk->...km', x[..., 0, :, :, 0], self.dpct[1].to(x.dtype)) \
-              - torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 1], self.dpct[0].to(x.dtype)) 
-        
+              - torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 1], self.dpct[0].to(x.dtype))
+
         # reassemble
         s = torch.stack((srl, sim), -1)
         t = torch.stack((trl, tim), -1)

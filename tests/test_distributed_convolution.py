@@ -114,8 +114,8 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-	thd.finalize()
-	dist.destroy_process_group(None)
+        thd.finalize()
+        dist.destroy_process_group(None)
 
     def _split_helper(self, tensor):
         with torch.no_grad():
