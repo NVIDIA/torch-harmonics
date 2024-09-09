@@ -5,6 +5,7 @@
 ### v0.7.2
 
 * Added resampling modules for convenience
+* Changing behavior of distributed SHT to use `dim=-3` as channel dimension
 
 ### v0.7.1
 
