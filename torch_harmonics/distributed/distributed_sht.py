@@ -125,6 +125,9 @@ class DistributedRealSHT(nn.Module):
 
     def forward(self, x: torch.Tensor):
 
+        if len(x.shape) < 3:
+            raise ValueError(f"Expected tensor with at least 3 dimensions but got {len(x.shape)} instead")
+
         # we need to ensure that we can split the channels evenly
         num_chans = x.shape[-3]
 
@@ -233,6 +236,9 @@ class DistributedInverseRealSHT(nn.Module):
         return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
 
     def forward(self, x: torch.Tensor):
+
+        if len(x.shape) < 3:
+            raise ValueError(f"Expected tensor with at least 3 dimensions but got {len(x.shape)} instead")
 
         # we need to ensure that we can split the channels evenly
         num_chans = x.shape[-3]
@@ -360,7 +366,8 @@ class DistributedRealVectorSHT(nn.Module):
 
     def forward(self, x: torch.Tensor):
 
-        assert(len(x.shape) >= 4)
+        if len(x.shape) < 4:
+            raise ValueError(f"Expected tensor with at least 4 dimensions but got {len(x.shape)} instead")
 
         # we need to ensure that we can split the channels evenly
         num_chans = x.shape[-4]
@@ -482,6 +489,9 @@ class DistributedInverseRealVectorSHT(nn.Module):
         return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
 
     def forward(self, x: torch.Tensor):
+
+        if len(x.shape) < 4:
+            raise ValueError(f"Expected tensor with at least 4 dimensions but got {len(x.shape)} instead")
 
         # store num channels
         num_chans = x.shape[-4]
