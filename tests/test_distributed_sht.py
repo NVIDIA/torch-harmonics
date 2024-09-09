@@ -2,7 +2,7 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -46,11 +46,11 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
     def setUpClass(cls):
 
         # set up distributed
-        cls.world_rank = int(os.getenv('WORLD_RANK', 0))
-        cls.grid_size_h = int(os.getenv('GRID_H', 1))
-        cls.grid_size_w = int(os.getenv('GRID_W', 1))
-        port = int(os.getenv('MASTER_PORT', '29501'))
-        master_address = os.getenv('MASTER_ADDR', 'localhost')
+        cls.world_rank = int(os.getenv("WORLD_RANK", 0))
+        cls.grid_size_h = int(os.getenv("GRID_H", 1))
+        cls.grid_size_w = int(os.getenv("GRID_W", 1))
+        port = int(os.getenv("MASTER_PORT", "29501"))
+        master_address = os.getenv("MASTER_ADDR", "localhost")
         cls.world_size = cls.grid_size_h * cls.grid_size_w
 
         if torch.cuda.is_available():
@@ -59,24 +59,21 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             local_rank = cls.world_rank % torch.cuda.device_count()
             cls.device = torch.device(f"cuda:{local_rank}")
             torch.cuda.manual_seed(333)
-            proc_backend = 'nccl'
+            proc_backend = "nccl"
         else:
             if cls.world_rank == 0:
                 print("Running test on CPU")
-            cls.device = torch.device('cpu')
-            proc_backend = 'gloo'
+            cls.device = torch.device("cpu")
+            proc_backend = "gloo"
         torch.manual_seed(333)
 
-        dist.init_process_group(backend = proc_backend,
-                                init_method = f"tcp://{master_address}:{port}",
-                                rank = cls.world_rank,
-				world_size = cls.world_size)
-            
+        dist.init_process_group(backend=proc_backend, init_method=f"tcp://{master_address}:{port}", rank=cls.world_rank, world_size=cls.world_size)
+
         cls.wrank = cls.world_rank % cls.grid_size_w
         cls.hrank = cls.world_rank // cls.grid_size_w
 
         # now set up the comm groups:
-        #set default
+        # set default
         cls.w_group = None
         cls.h_group = None
 
@@ -110,7 +107,6 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         # set seed
         torch.manual_seed(333)
-        
 
         if cls.world_rank == 0:
             print(f"Running distributed tests on grid H x W = {cls.grid_size_h} x {cls.grid_size_w}")
@@ -123,7 +119,6 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         thd.finalize()
         dist.destroy_process_group(None)
 
-        
     def _split_helper(self, tensor):
         with torch.no_grad():
             # split in W
@@ -135,8 +130,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             tensor_local = tensor_list_local[self.hrank]
 
         return tensor_local
-        
-        
+
     def _gather_helper_fwd(self, tensor, B, C, transform_dist, vector):
         # we need the shapes
         l_shapes = transform_dist.l_shapes
@@ -199,25 +193,26 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         return tensor_gather
 
-
-    @parameterized.expand([
-        [256, 512, 32,  8, "equiangular",    False, 1e-9],
-        [256, 512, 32,  8, "legendre-gauss", False, 1e-9],
-        [256, 512, 32,  8, "equiangular",    False, 1e-9],
-        [256, 512, 32,  8, "legendre-gauss", False, 1e-9],
-        [256, 512, 32,  8, "equiangular",    False, 1e-9],
-        [256, 512, 32,  8, "legendre-gauss", False, 1e-9],
-        [361, 720,  1, 10, "equiangular",    False, 1e-6],
-        [361, 720,  1, 10, "legendre-gauss", False, 1e-6],
-        [256, 512, 32,  8, "equiangular",    True,  1e-9],
-        [256, 512, 32,  8, "legendre-gauss", True,  1e-9],
-        [256, 512, 32,  8, "equiangular",    True,  1e-9],
-	[256, 512, 32,  8, "legendre-gauss", True,  1e-9],
-        [256, 512, 32,  8, "equiangular",    True,  1e-9],
-        [256, 512, 32,  8, "legendre-gauss", True,  1e-9],
-	[361, 720,  1, 10, "equiangular",    True,  1e-6],
-        [361, 720,  1, 10, "legendre-gauss", True,  1e-6],
-    ])
+    @parameterized.expand(
+        [
+            [256, 512, 32, 8, "equiangular", False, 1e-9],
+            [256, 512, 32, 8, "legendre-gauss", False, 1e-9],
+            [256, 512, 32, 8, "equiangular", False, 1e-9],
+            [256, 512, 32, 8, "legendre-gauss", False, 1e-9],
+            [256, 512, 32, 8, "equiangular", False, 1e-9],
+            [256, 512, 32, 8, "legendre-gauss", False, 1e-9],
+            [361, 720, 1, 10, "equiangular", False, 1e-6],
+            [361, 720, 1, 10, "legendre-gauss", False, 1e-6],
+            [256, 512, 32, 8, "equiangular", True, 1e-9],
+            [256, 512, 32, 8, "legendre-gauss", True, 1e-9],
+            [256, 512, 32, 8, "equiangular", True, 1e-9],
+            [256, 512, 32, 8, "legendre-gauss", True, 1e-9],
+            [256, 512, 32, 8, "equiangular", True, 1e-9],
+            [256, 512, 32, 8, "legendre-gauss", True, 1e-9],
+            [361, 720, 1, 10, "equiangular", True, 1e-6],
+            [361, 720, 1, 10, "legendre-gauss", True, 1e-6],
+        ]
+    )
     def test_distributed_sht(self, nlat, nlon, batch_size, num_chan, grid, vector, tol):
         B, C, H, W = batch_size, num_chan, nlat, nlon
 
@@ -246,7 +241,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         with torch.no_grad():
             # create full grad
             ograd_full = torch.randn_like(out_full)
-            
+
         # BWD pass
         out_full.backward(ograd_full)
         igrad_full = inp_full.grad.clone()
@@ -270,7 +265,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         #############################################################
         with torch.no_grad():
             out_gather_full = self._gather_helper_fwd(out_local, B, C, forward_transform_dist, vector)
-            err = torch.mean(torch.norm(out_full-out_gather_full, p='fro', dim=(-1,-2)) / torch.norm(out_full, p='fro', dim=(-1,-2)) )
+            err = torch.mean(torch.norm(out_full - out_gather_full, p="fro", dim=(-1, -2)) / torch.norm(out_full, p="fro", dim=(-1, -2)))
             if self.world_rank == 0:
                 print(f"final relative error of output: {err.item()}")
         self.assertTrue(err.item() <= tol)
@@ -280,30 +275,31 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         #############################################################
         with torch.no_grad():
             igrad_gather_full = self._gather_helper_bwd(igrad_local, B, C, forward_transform_dist, vector)
-            err = torch.mean(torch.norm(igrad_full-igrad_gather_full, p='fro', dim=(-1,-2)) / torch.norm(igrad_full, p='fro', dim=(-1,-2)) )
+            err = torch.mean(torch.norm(igrad_full - igrad_gather_full, p="fro", dim=(-1, -2)) / torch.norm(igrad_full, p="fro", dim=(-1, -2)))
             if self.world_rank == 0:
                 print(f"final relative error of gradients: {err.item()}")
         self.assertTrue(err.item() <= tol)
 
-
-    @parameterized.expand([
-        [256, 512, 32,  8, "equiangular",    False, 1e-9],
-        [256, 512, 32,  8, "legendre-gauss", False, 1e-9],
-        [256, 512, 32,  8, "equiangular",    False, 1e-9],
-        [256, 512, 32,  8, "legendre-gauss", False, 1e-9],
-        [256, 512, 32,  8, "equiangular",    False, 1e-9],
-        [256, 512, 32,  8, "legendre-gauss", False, 1e-9],
-        [361, 720,  1, 10, "equiangular",    False, 1e-6],
-        [361, 720,  1, 10, "legendre-gauss", False, 1e-6],
-        [256, 512, 32,  8, "equiangular",    True,  1e-9],
-	[256, 512, 32,  8, "legendre-gauss", True,  1e-9],
-        [256, 512, 32,  8, "equiangular",    True,  1e-9],
-	[256, 512, 32,  8, "legendre-gauss", True,  1e-9],
-        [256, 512, 32,  8, "equiangular",    True,  1e-9],
-	[256, 512, 32,  8, "legendre-gauss", True,  1e-9],
-        [361, 720,  1, 10, "equiangular",    True,  1e-6],
-	[361, 720,  1, 10, "legendre-gauss", True,  1e-6],
-    ])
+    @parameterized.expand(
+        [
+            [256, 512, 32, 8, "equiangular", False, 1e-9],
+            [256, 512, 32, 8, "legendre-gauss", False, 1e-9],
+            [256, 512, 32, 8, "equiangular", False, 1e-9],
+            [256, 512, 32, 8, "legendre-gauss", False, 1e-9],
+            [256, 512, 32, 8, "equiangular", False, 1e-9],
+            [256, 512, 32, 8, "legendre-gauss", False, 1e-9],
+            [361, 720, 1, 10, "equiangular", False, 1e-6],
+            [361, 720, 1, 10, "legendre-gauss", False, 1e-6],
+            [256, 512, 32, 8, "equiangular", True, 1e-9],
+            [256, 512, 32, 8, "legendre-gauss", True, 1e-9],
+            [256, 512, 32, 8, "equiangular", True, 1e-9],
+            [256, 512, 32, 8, "legendre-gauss", True, 1e-9],
+            [256, 512, 32, 8, "equiangular", True, 1e-9],
+            [256, 512, 32, 8, "legendre-gauss", True, 1e-9],
+            [361, 720, 1, 10, "equiangular", True, 1e-6],
+            [361, 720, 1, 10, "legendre-gauss", True, 1e-6],
+        ]
+    )
     def test_distributed_isht(self, nlat, nlon, batch_size, num_chan, grid, vector, tol):
         B, C, H, W = batch_size, num_chan, nlat, nlon
 
@@ -311,7 +307,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             forward_transform_local = harmonics.RealVectorSHT(nlat=H, nlon=W, grid=grid).to(self.device)
             backward_transform_local = harmonics.InverseRealVectorSHT(nlat=H, nlon=W, grid=grid).to(self.device)
             backward_transform_dist = thd.DistributedInverseRealVectorSHT(nlat=H, nlon=W, grid=grid).to(self.device)
-        else:    
+        else:
             forward_transform_local = harmonics.RealSHT(nlat=H, nlon=W, grid=grid).to(self.device)
             backward_transform_local = harmonics.InverseRealSHT(nlat=H, nlon=W, grid=grid).to(self.device)
             backward_transform_dist = thd.DistributedInverseRealSHT(nlat=H, nlon=W, grid=grid).to(self.device)
@@ -325,8 +321,8 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         #############################################################
         # local transform
-	#############################################################
-	# FWD pass
+        #############################################################
+        # FWD pass
         inp_full.requires_grad = True
         out_full = backward_transform_local(inp_full)
 
@@ -363,7 +359,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         #############################################################
         with torch.no_grad():
             out_gather_full = self._gather_helper_bwd(out_local, B, C, backward_transform_dist, vector)
-            err = torch.mean(torch.norm(out_full-out_gather_full, p='fro', dim=(-1,-2)) / torch.norm(out_full, p='fro', dim=(-1,-2)) )
+            err = torch.mean(torch.norm(out_full - out_gather_full, p="fro", dim=(-1, -2)) / torch.norm(out_full, p="fro", dim=(-1, -2)))
             if self.world_rank == 0:
                 print(f"final relative error of output: {err.item()}")
         self.assertTrue(err.item() <= tol)
@@ -373,10 +369,11 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         #############################################################
         with torch.no_grad():
             igrad_gather_full = self._gather_helper_fwd(igrad_local, B, C, backward_transform_dist, vector)
-            err = torch.mean(torch.norm(igrad_full-igrad_gather_full, p='fro', dim=(-1,-2)) / torch.norm(igrad_full, p='fro', dim=(-1,-2)) )
+            err = torch.mean(torch.norm(igrad_full - igrad_gather_full, p="fro", dim=(-1, -2)) / torch.norm(igrad_full, p="fro", dim=(-1, -2)))
             if self.world_rank == 0:
                 print(f"final relative error of gradients: {err.item()}")
         self.assertTrue(err.item() <= tol)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()

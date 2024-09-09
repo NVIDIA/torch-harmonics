@@ -235,11 +235,11 @@ class DistributedInverseRealSHT(nn.Module):
     def forward(self, x: torch.Tensor):
 
         # we need to ensure that we can split the channels evenly
-        num_chans = x.shape[1]
+        num_chans = x.shape[-3]
 
         # transpose: after that, channels are split, l is local:
         if self.comm_size_polar > 1:
-            x = distributed_transpose_polar.apply(x, (1, -2), self.l_shapes)
+            x = distributed_transpose_polar.apply(x, (-3, -2), self.l_shapes)
 
         # Evaluate associated Legendre functions on the output nodes
         x = torch.view_as_real(x)
@@ -255,11 +255,11 @@ class DistributedInverseRealSHT(nn.Module):
 
         if self.comm_size_polar > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
-            x = distributed_transpose_polar.apply(x, (-2, 1), chan_shapes)
+            x = distributed_transpose_polar.apply(x, (-2, -3), chan_shapes)
 
         # transpose: after this, channels are split and m is local
         if self.comm_size_azimuth > 1:
-            x = distributed_transpose_azimuth.apply(x, (1, -1), self.m_shapes)
+            x = distributed_transpose_azimuth.apply(x, (-3, -1), self.m_shapes)
 
         # apply the inverse (real) FFT
         x = torch.fft.irfft(x, n=self.nlon, dim=-1, norm="forward")
@@ -267,7 +267,7 @@ class DistributedInverseRealSHT(nn.Module):
         # transpose: after this, m is split and channels are local
         if self.comm_size_azimuth > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
-            x = distributed_transpose_azimuth.apply(x, (-1, 1), chan_shapes)
+            x = distributed_transpose_azimuth.apply(x, (-1, -3), chan_shapes)
 
         return x
 
