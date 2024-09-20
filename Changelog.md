@@ -6,6 +6,7 @@
 
 * Added resampling modules for convenience
 * Changing behavior of distributed SHT to use `dim=-3` as channel dimension
+* Fixing SHT unittests to test SHT and ISHT individually, rather than the roundtrip
 
 ### v0.7.1
 
