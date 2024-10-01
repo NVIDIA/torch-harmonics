@@ -58,12 +58,10 @@ from torch_harmonics.distributed import reduce_from_polar_region, scatter_to_pol
 from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
 from torch_harmonics.distributed import compute_split_shapes, split_tensor_along_dim
 
-# import custom C++/CUDA extensions
-from disco_helpers import preprocess_psi
-
+# import custom C++/CUDA extensions if available
 try:
+    from disco_helpers import preprocess_psi
     import disco_cuda_extension
-
     _cuda_extension_available = True
 except ImportError as err:
     disco_cuda_extension = None
@@ -240,10 +238,12 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()
         vals = vals.contiguous()
-        roff_idx = preprocess_psi(self.kernel_size, self.nlat_out_local, ker_idx, row_idx, col_idx, vals).contiguous()
 
-        # preprocessed data-structure for GPU kernel
-        self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+        if _cuda_extension_available:
+            # preprocessed data-structure for GPU kernel
+            roff_idx = preprocess_psi(self.kernel_size, self.nlat_out_local, ker_idx, row_idx, col_idx, vals).contiguous()
+            self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
@@ -370,10 +370,12 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()
         vals = vals.contiguous()
-        roff_idx = preprocess_psi(self.kernel_size, self.nlat_in_local, ker_idx, row_idx, col_idx, vals).contiguous()
 
-        # preprocessed data-structure for GPU kernel
-        self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+        if _cuda_extension_available:
+            # preprocessed data-structure for GPU kernel
+            roff_idx = preprocess_psi(self.kernel_size, self.nlat_in_local, ker_idx, row_idx, col_idx, vals).contiguous()
+            self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)

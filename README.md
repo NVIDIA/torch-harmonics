@@ -75,16 +75,16 @@ torch-harmonics has been used to implement a variety of differentiable PDE solve
 
 
 ## Installation
-Download directly from PyPI:
+A simple installation can be directly done from PyPI:
 
 ```bash
 pip install torch-harmonics
 ```
-If you would like to enforce the compilation of CUDA extensions for the discrete-continuous convolutions, you can do so by setting the `FORCE_CUDA_EXTENSION` flag. You may also want to set appropriate architectures with the `TORCH_CUDA_ARCH_LIST` flag.
+If you are planning to use spherical convolutions, we recommend building the corresponding custom CUDA kernels. To enforce this, you can set the `FORCE_CUDA_EXTENSION` flag. You may also want to set appropriate architectures with the `TORCH_CUDA_ARCH_LIST` flag. Finally, make sure to disable build isolation via the `--no-build-isolation` flag to ensure that the custom kernels are built with the existing torch installation.
 ```bash
 export FORCE_CUDA_EXTENSION=1
 export TORCH_CUDA_ARCH_LIST="7.0 7.2 7.5 8.0 8.6 8.7 9.0+PTX"
-pip install torch-harmonics
+pip install --no-build-isolation torch-harmonics
 ```
 :warning: Please note that the custom CUDA extensions currently only support CUDA architectures >= 7.0.
 
