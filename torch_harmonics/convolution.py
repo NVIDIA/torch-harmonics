@@ -44,12 +44,10 @@ from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes
 from torch_harmonics._disco_convolution import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from torch_harmonics._disco_convolution import _disco_s2_contraction_cuda, _disco_s2_transpose_contraction_cuda
 
-# import custom C++/CUDA extensions
-from disco_helpers import preprocess_psi
-
+# import custom C++/CUDA extensions if available
 try:
+    from disco_helpers import preprocess_psi
     import disco_cuda_extension
-
     _cuda_extension_available = True
 except ImportError as err:
     disco_cuda_extension = None
@@ -377,10 +375,13 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()
         vals = vals.contiguous()
-        roff_idx = preprocess_psi(self.kernel_size, out_shape[0], ker_idx, row_idx, col_idx, vals).contiguous()
 
-        # preprocessed data-structure for GPU kernel
-        self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+        if _cuda_extension_available:
+            # preprocessed data-structure for GPU kernel
+            roff_idx = preprocess_psi(self.kernel_size, out_shape[0], ker_idx, row_idx, col_idx, vals).contiguous()
+            self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+
+        # save all datastructures
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
@@ -468,10 +469,13 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()
         vals = vals.contiguous()
-        roff_idx = preprocess_psi(self.kernel_size, in_shape[0], ker_idx, row_idx, col_idx, vals).contiguous()
 
-        # preprocessed data-structure for GPU kernel
-        self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+        if _cuda_extension_available:
+            # preprocessed data-structure for GPU kernel
+            roff_idx = preprocess_psi(self.kernel_size, in_shape[0], ker_idx, row_idx, col_idx, vals).contiguous()
+            self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+
+        # save all datastructures
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
