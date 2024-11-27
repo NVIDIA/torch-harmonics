@@ -33,7 +33,8 @@ __version__ = "0.7.6"
 
 from .sht import RealSHT, InverseRealSHT, RealVectorSHT, InverseRealVectorSHT
 from .convolution import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
-from .resample import ResampleS2
+from .resampling import ResampleS2
+from .attention import NeighborhoodAttentionS2
 from . import quadrature
 from . import random_fields
 from . import examples
