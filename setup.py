@@ -53,6 +53,22 @@ try:
 except (ImportError, TypeError, AssertionError, AttributeError) as e:
     warnings.warn(f"building custom extensions skipped: {e}")
 
+def get_compile_args():
+    """If user runs build with DEBUG=1 set, it will use debugging flags to build"""
+    debug_mode = os.environ.get('DEBUG', '0') == '1'
+    if debug_mode:
+        print("WARNING: Compiling *.cu with debugging flags")
+        return {
+            'cxx': ['-g', '-O0', '-Wall'],
+            'nvcc': ['-g', '-G', '-O0']
+        }
+    else:
+        print("NOTE: Compiling *.cu with release flags")
+        return {
+            'cxx': ['-O3', "-DNDEBUG"],
+            'nvcc': ['-O3', "-DNDEBUG"]
+        }
+
 def get_ext_modules():
 
     ext_modules = []
@@ -77,13 +93,14 @@ def get_ext_modules():
         )
         ext_modules.append(
             CUDAExtension(
-                "attention_cuda_extension",
-                [
+                name="attention_cuda_extension",
+                sources=[
                     "torch_harmonics/csrc/attention/attention_fwd_cuda.cu",
                     "torch_harmonics/csrc/attention/attention_bwd_cuda.cu",
                     "torch_harmonics/csrc/attention/attention_interface.cu",
                     "torch_harmonics/csrc/attention/row_offset.cu"
                 ],
+                extra_compile_args=get_compile_args()
             )
         )
         cmdclass["build_ext"] = BuildExtension
