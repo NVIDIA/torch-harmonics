@@ -7,6 +7,7 @@ name = "torch_harmonics"
 authors = [
     { name="Boris Bonev" },
     { name="Thorsten Kurth" },
+    { name="Max Rietmann" },
     { name="Mauro Bisson" },
     { name="Massimiliano Fatica" },
     { name="Jean Kossaifi" },
