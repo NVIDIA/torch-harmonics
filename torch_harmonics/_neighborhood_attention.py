@@ -322,20 +322,74 @@ def _disco_att_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor
     return dqy
 
 
-#class _DiscoS2AttentionCuda(torch.autograd.Function):
-#
-#    @staticmethod
-#    @custom_fwd(device_type="cuda")
-#    def forward(ctx, kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor,
-#                quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-#                nlon_in: int, nlat_out: int, nlon_out: int):
-#
-#        ctx.save_for_backward(col_idx, row_off, quad_weights, kx, vx, qy)
-#
-#        kx = kx.to(torch.float32)
-#        vx = vx.to(torch.float32)
-#        qy = qy.to(torch.float32)
-#
-#        output =  _disco_att_fwd_torch(kx, vx, qy,
-#                                       quad_weights,
-#                                       col_idx, row_off, nlon_in, nlat_out, nlon_out)
+class _DiscoS2AttentionCuda(torch.autograd.Function):
+
+    @staticmethod
+    @custom_fwd(device_type="cuda")
+    def forward(ctx, kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor,
+                quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+                max_psi_nnz: int, nlon_in: int, nlat_out: int, nlon_out: int):
+
+        ctx.save_for_backward(col_idx, row_off, quad_weights, kx, vx, qy)
+        ctx.max_psi_nnz = max_psi_nnz
+        ctx.nlon_in = nlon_in
+        ctx.nlat_out = nlat_out
+        ctx.nlon_out = nlon_out
+
+        kx = kx.to(torch.float32)
+        vx = vx.to(torch.float32)
+        qy = qy.to(torch.float32)
+
+        output = torch.empty_like(qy)
+        
+        att_cuda.s2_attention_fwd(kx, vx, qy, quad_weights,
+                                  col_idx, row_off,
+                                  max_psi_nnz, nlon_in, nlat_out, nlon_out,
+                                  output)
+
+        return output
+
+    @staticmethod
+    @custom_bwd(device_type="cuda")
+    def backward(ctx, grad_output):
+        col_idx, row_off, quad_weights, kx, vx, qy = ctx.saved_tensors
+        max_psi_nnz = ctx.max_psi_nnz
+        nlon_in = ctx.nlon_in
+        nlat_out = ctx.nlat_out
+        nlon_out = ctx.nlon_out
+
+        dv = torch.empty_like(vx)
+        att_cuda.s2_attention_bwd_dv_cuda(kx, vx, qy, quad_weights,
+                                          col_idx, row_off,
+                                          max_psi_nnz,
+                                          grad_output,
+                                          nlon_in, nlat_out, nlon_out,
+                                          dv)
+
+        dk = torch.empty_like(kx)
+        att_cuda.s2_attention_bwd_dk_cuda(kx, vx, qy, quad_weights,
+                                          col_idx, row_off,
+                                          max_psi_nnz,
+                                          grad_output,
+                                          nlon_in, nlat_out, nlon_out,
+                                          dk)
+
+        dq = torch.empty_like(qy)
+        att_cuda.s2_attention_bwd_dq_cuda(kx, vx, qy, quad_weights,
+                                          col_idx, row_off,
+                                          max_psi_nnz,
+                                          grad_output,
+                                          nlon_in, nlat_out, nlon_out,
+                                          dq)
+
+        return dk, dv, dq, None, None, None, None, None, None, None
+
+
+def _neighborhood_attention_s2_cuda(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, quad_weights: torch.Tensor,
+                                    col_idx: torch.Tensor, row_off: torch.Tensor, max_psi_nnz: int,
+                                    nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+    return _DiscoS2AttentionCuda.apply(kx, vx, qy, quad_weights,
+                                       col_idx, row_off, max_psi_nnz,
+                                       nlon_in, nlat_out, nlon_out)
+
+                                    
