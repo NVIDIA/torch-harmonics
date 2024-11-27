@@ -35,17 +35,16 @@ import torch
 from torch.amp import custom_fwd, custom_bwd
 
 try:
-    import attention_cuda_extension as att_cuda
+    import attention_cuda_extension
     _cuda_extension_available = True
 except ImportError as err:
-    disco_cuda_extension = None
+    attention_cuda_extension = None
     _cuda_extension_available = False
 
 
-def _disco_att_fwd_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor,
-                         quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-                         nlon_in: int,
-                         nlat_out: int, nlon_out: int) -> torch.Tensor:
+def _neighborhood_attention_s2_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor,
+                                     quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+                                     nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
 
 
     # prepare result tensor
@@ -264,12 +263,12 @@ def _disco_att_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor
     
     dqy = torch.zeros_like(qy)
 
-     for ho in range(nlat_out):
-
-        # get number of nonzeros                                                                                                                              
+    for ho in range(nlat_out):
+        
+        # get number of nonzeros
         zstart = row_off[ho]
         zend = row_off[ho+1]
-
+    
         for wo in range(nlon_out):
 
             alpha = torch.zeros((dy.shape[0], zend-zstart), dtype=dy.dtype, device=dy.device)
@@ -322,7 +321,7 @@ def _disco_att_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor
     return dqy
 
 
-class _DiscoS2AttentionCuda(torch.autograd.Function):
+class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
 
     @staticmethod
     @custom_fwd(device_type="cuda")
@@ -342,10 +341,10 @@ class _DiscoS2AttentionCuda(torch.autograd.Function):
 
         output = torch.empty_like(qy)
         
-        att_cuda.s2_attention_fwd(kx, vx, qy, quad_weights,
-                                  col_idx, row_off,
-                                  max_psi_nnz, nlon_in, nlat_out, nlon_out,
-                                  output)
+        attention_cuda_extension.s2_attention_fwd(kx, vx, qy, quad_weights,
+                                                  col_idx, row_off,
+                                                  max_psi_nnz, nlon_in, nlat_out, nlon_out,
+                                                  output)
 
         return output
 
@@ -359,28 +358,28 @@ class _DiscoS2AttentionCuda(torch.autograd.Function):
         nlon_out = ctx.nlon_out
 
         dv = torch.empty_like(vx)
-        att_cuda.s2_attention_bwd_dv_cuda(kx, vx, qy, quad_weights,
-                                          col_idx, row_off,
-                                          max_psi_nnz,
-                                          grad_output,
-                                          nlon_in, nlat_out, nlon_out,
-                                          dv)
+        attention_cuda_extension.s2_attention_bwd_dv_cuda(kx, vx, qy, quad_weights,
+                                                          col_idx, row_off,
+                                                          max_psi_nnz,
+                                                          grad_output,
+                                                          nlon_in, nlat_out, nlon_out,
+                                                          dv)
 
         dk = torch.empty_like(kx)
-        att_cuda.s2_attention_bwd_dk_cuda(kx, vx, qy, quad_weights,
-                                          col_idx, row_off,
-                                          max_psi_nnz,
-                                          grad_output,
-                                          nlon_in, nlat_out, nlon_out,
-                                          dk)
+        attention_cuda_extension.s2_attention_bwd_dk_cuda(kx, vx, qy, quad_weights,
+                                                          col_idx, row_off,
+                                                          max_psi_nnz,
+                                                          grad_output,
+                                                          nlon_in, nlat_out, nlon_out,
+                                                          dk)
 
         dq = torch.empty_like(qy)
-        att_cuda.s2_attention_bwd_dq_cuda(kx, vx, qy, quad_weights,
-                                          col_idx, row_off,
-                                          max_psi_nnz,
-                                          grad_output,
-                                          nlon_in, nlat_out, nlon_out,
-                                          dq)
+        attention_cuda_extension.s2_attention_bwd_dq_cuda(kx, vx, qy, quad_weights,
+                                                          col_idx, row_off,
+                                                          max_psi_nnz,
+                                                          grad_output,
+                                                          nlon_in, nlat_out, nlon_out,
+                                                          dq)
 
         return dk, dv, dq, None, None, None, None, None, None, None
 
@@ -388,8 +387,7 @@ class _DiscoS2AttentionCuda(torch.autograd.Function):
 def _neighborhood_attention_s2_cuda(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, quad_weights: torch.Tensor,
                                     col_idx: torch.Tensor, row_off: torch.Tensor, max_psi_nnz: int,
                                     nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-    return _DiscoS2AttentionCuda.apply(kx, vx, qy, quad_weights,
-                                       col_idx, row_off, max_psi_nnz,
-                                       nlon_in, nlat_out, nlon_out)
-
-                                    
+    
+    return _NeighborhoodAttentionS2Cuda.apply(kx, vx, qy, quad_weights,
+                                              col_idx, row_off, max_psi_nnz,
+                                              nlon_in, nlat_out, nlon_out)

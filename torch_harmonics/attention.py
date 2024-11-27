@@ -39,11 +39,15 @@ import torch.nn.functional as F
 import numpy as np
 
 from torch_harmonics.quadrature import _precompute_latitudes
-from torch_harmonics._neighborhood_attention import _disco_att_fwd_torch
+from torch_harmonics._neighborhood_attention import _neighborhood_attention_s2_torch, _neighborhood_attention_s2_cuda
 
 # import custom C++/CUDA extensions
-from disco_helpers import preprocess_psi
-import attention_cuda_extension as att_cuda
+try:
+    import attention_cuda_extension
+    _cuda_extension_available = True
+except ImportError as err:
+    attention_cuda_extension = None
+    _cuda_extension_available = False
 
 # TODO: probably this can be merged with routines in convolution.py to reduce code duplication
 def _precompute_neighborhood_sparsity_s2(
@@ -192,11 +196,11 @@ class NeighborhoodAttentionS2(nn.Module):
         col_idx = idx[2, ...].contiguous()
         vals = vals.contiguous()
 
-        if torch.cuda.is_available():
+        if _cuda_extension_available:
             device = "cuda"
             row_offset = torch.zeros(self.nlat_out+1, dtype=torch.int64).to(device)
             _psi_row_count = torch.zeros(self.nlat_out+1, dtype=torch.int64).to(device)
-            self.max_psi_nnz = att_cuda.s2_row_offset(col_idx, row_idx, row_offset, _psi_row_count)
+            self.max_psi_nnz = attention_cuda_extension.s2_row_offset(col_idx, row_idx, row_offset, _psi_row_count)
         else:
             # compute row offsets for more structured traversal.
             # only works if rows are sorted but they are by construction
@@ -212,12 +216,6 @@ class NeighborhoodAttentionS2(nn.Module):
             row_offset[row+1] = idz+1
             row_offset = torch.from_numpy(row_offset)
 
-        # not sure we ned that
-        # roff_idx = preprocess_psi(1, out_shape[0], ker_idx, row_idx, col_idx, vals)
-
-        # register buffers as members of the module
-        # self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
-        # self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
@@ -255,9 +253,15 @@ class NeighborhoodAttentionS2(nn.Module):
         k = F.conv2d(ki, weight=self.k_weights, bias=None)
         q = F.conv2d(qo, weight=self.q_weights, bias=None)
         v = F.conv2d(vi, weight=self.v_weights, bias=None)
-        # call attention
-        out = _disco_att_fwd_torch(k, v, q, self.quad_weights,
-                                   self.psi_col_idx, self.psi_roff_idx,
-                                   self.nlon_in, self.nlat_out, self.nlon_out)
-        
+
+        if x.is_cuda and _cuda_extension_available:
+            out = _neighborhood_attention_s2_cuda(k, v, q, self.quad_weights,
+                                                  self.psi_col_idx, self.psi_roff_idx, self.max_psi_nnz,
+                                                  self.nlon_in, self.nlat_out, self.nlon_out)
+        else:
+            # call attention
+            out = _neighborhood_attention_s2_torch(k, v, q, self.quad_weights,
+                                                   self.psi_col_idx, self.psi_roff_idx,
+                                                   self.nlon_in, self.nlat_out, self.nlon_out)
+
         return out
