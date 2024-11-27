@@ -1,0 +1,548 @@
+# coding=utf-8
+
+# SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+# list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+# this list of conditions and the following disclaimer in the documentation
+# and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+# contributors may be used to endorse or promote products derived from
+# this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+from typing import List, Tuple, Union, Optional
+
+import math
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+
+from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes
+#from torch_harmonics.convolution import _normalize_convolution_tensor_s2
+
+# import custom C++/CUDA extensions
+from disco_helpers import preprocess_psi
+import attention_cuda_extension as att_cuda
+
+# TODO: probably this can be merged with routines in convolution.py to reduce code duplication
+def _precompute_neighborhood_sparsity_s2(
+    in_shape, out_shape, grid_in="equiangular", grid_out="equiangular", theta_cutoff=0.01 * math.pi, transpose_normalization=False
+):
+    """
+    This is a modified version of the Psi (rotated filter computation) for the DISCO kernel. Instead of computing the filters we use a
+    simple indicator function to check whether the points are contained within a certain radius from the origin (north-pole) at the pre-rotated positions $R^{-1}_j \omega_i = R^{-1}_j R_i \nu = Y(-\theta_j)Z(\phi_i - \phi_j)Y(\theta_j)\nu$.
+    The (sparse) output tensor has shape (nlat_out * nlon_out) x (nlat_in * nlon_in).
+
+    The rotation of the Euler angles uses the YZY convention, which applied to the northpole $(0,0,1)^T$ yields
+    $$
+    Y(\alpha) Z(\beta) Y(\gamma) n =
+        {\begin{bmatrix}
+            \cos(\gamma)\sin(\alpha) + \cos(\alpha)\cos(\beta)\sin(\gamma) \\
+            \sin(\beta)\sin(\gamma) \\
+            \cos(\alpha)\cos(\gamma)-\cos(\beta)\sin(\alpha)\sin(\gamma)
+        \end{bmatrix}}
+    $$
+    """
+
+    # the shaspe of the output tensor can still be adjusted depending on what is easier
+
+    assert len(in_shape) == 2
+    assert len(out_shape) == 2
+
+    # indicator function returns indicators within the cutoff region
+    indicator_handle = lambda theta : torch.argwhere(theta <= theta_cutoff)
+
+    nlat_in, nlon_in = in_shape
+    nlat_out, nlon_out = out_shape
+
+    lats_in, win = _precompute_latitudes(nlat_in, grid=grid_in)
+    lats_in = torch.from_numpy(lats_in).float()
+    lats_out, wout = _precompute_latitudes(nlat_out, grid=grid_out)
+    lats_out = torch.from_numpy(lats_out).float()
+
+    # compute the phi differences
+    # It's imporatant to not include the 2 pi point in the longitudes, as it is equivalent to lon=0
+    lons_in = torch.linspace(0, 2 * math.pi, nlon_in + 1)[:-1]
+    lons_out = torch.linspace(0, 2 * math.pi, nlon_out + 1)[:-1]
+
+    out_idx = []
+    out_vals = []
+    for t in range(nlat_out):
+        # the last angle has a negative sign as it is a passive rotation, which rotates the filter around the y-axis
+        alpha = -lats_out[t]
+        beta = lons_in
+        gamma = lats_in.reshape(-1, 1)
+
+        # compute cartesian coordinates of the rotated position
+        # This uses the YZY convention of Euler angles, where the last angle (alpha) is a passive rotation,
+        # and therefore applied with a negative sign
+        z = -torch.cos(beta) * torch.sin(alpha) * torch.sin(gamma) + torch.cos(alpha) * torch.cos(gamma)
+        x = torch.cos(alpha) * torch.cos(beta) * torch.sin(gamma) + torch.cos(gamma) * torch.sin(alpha)
+        y = torch.sin(beta) * torch.sin(gamma)
+
+        # normalization is emportant to avoid NaNs when arccos and atan are applied
+        # this can otherwise lead to spurious artifacts in the solution
+        norm = torch.sqrt(x * x + y * y + z * z)
+        x = x / norm
+        y = y / norm
+        z = z / norm
+
+        # compute spherical coordinates, where phi needs to fall into the [0, 2pi) range
+        theta = torch.arccos(z)
+        # potentially kee pthis if we want oto have angular dependency for some reason
+        # phi = torch.arctan2(y, x) + torch.pi
+
+        # find the indices where the rotated position falls into the support of the kernel
+        iidx = indicator_handle(theta)
+
+        # for simplicity emulate values
+        vals = torch.ones_like(iidx[:, 0])
+
+        # add the output latitude and reshape such that psi has dimensions nlat_out x (nlat_in*nlon_in)
+        idx = torch.stack([torch.zeros_like(iidx[:, 0]), t * torch.ones_like(iidx[:, 0]), iidx[:, 0] * nlon_in + iidx[:, 1]], dim=0)
+
+        # append indices and values to the COO datastructure
+        out_idx.append(idx)
+        out_vals.append(vals)
+
+    # concatenate the indices and values
+    out_idx = torch.cat(out_idx, dim=-1).to(torch.int64).contiguous()
+    out_vals = torch.cat(out_vals, dim=-1).to(torch.float32).contiguous()
+
+    return out_idx, out_vals
+
+
+def _disco_att_v3_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor,
+                        quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor, 
+                        nlon_in: int,
+                        nlat_out: int, nlon_out: int) -> torch.Tensor:
+
+
+    # prepare result tensor
+    y = torch.empty_like(qy)
+
+    for ho in range(nlat_out):
+
+        # get number of nonzeros
+        zstart = row_off[ho]
+        zend = row_off[ho+1]
+
+        for wo in range(nlon_out):
+
+            alpha_sum = torch.zeros((y.shape[0],), dtype=y.dtype, device=y.device)
+            qdotk_nz = torch.zeros((y.shape[0], zend-zstart,), dtype=y.dtype, device=y.device)
+
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hi = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wi = nz_col_idx % nlon_in
+                wip = (wi + wo) % nlon_in
+
+                # compute correlation & softmax numerator
+                q_ho_wo = qy[:, :, ho, wo]
+                k_hi_wip = kx[:, :, hi, wip]
+                qdotk_nz[:,idz-zstart] = torch.sum(q_ho_wo * k_hi_wip, dim=1)
+
+            qdotk_max,_ = qdotk_nz.max(dim=1)
+
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hi = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wi = nz_col_idx % nlon_in
+                wip = (wi + wo) % nlon_in
+                alpha = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max)
+                # softmax denominator
+                alpha_sum[:] += alpha[:]
+
+                y[:,:,ho,wo] += alpha[:, None] * vx[:,:,hi,wip] * quad_weights[hi]
+
+
+            y[:,:,ho,wo] = y[:,:,ho,wo] / alpha_sum[:, None]
+
+    return y
+
+
+class NeighborhoodAttentionS2(nn.Module):
+    """
+    Neighborhood attention on the sphere
+
+    Parameters:
+    =============
+
+    channels: int,
+        number of channels of the input signal (Self-attention)
+    kdim: int,
+        number of dimensions for interior inner product in the attention
+    vdim: int,
+        number of output channels of the attention
+    """
+
+    def __init__(
+        self,
+        channels: int, # embedding dim
+        in_shape: Tuple[int],
+        out_shape: Tuple[int],
+        groups: Optional[int] = 1, # stale argument for now - should probably govern number of attention heads in the future
+        grid_in: Optional[str] = "equiangular",
+        grid_out: Optional[str] = "equiangular",
+        bias: Optional[bool] = True,
+        theta_cutoff: Optional[float] = None,
+        kdim: Optional[int] = None,
+        vdim: Optional[int] = None,
+    ):
+        super().__init__()
+
+        self.nlat_in, self.nlon_in = in_shape
+        self.nlat_out, self.nlon_out = out_shape
+
+        self.channels = channels
+        self.kdim = channels if kdim is None else kdim
+        self.vdim = channels if vdim is None else vdim
+
+
+        # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
+        if theta_cutoff is None:
+            theta_cutoff = torch.pi / float(self.nlat_out - 1)
+
+        if theta_cutoff <= 0.0:
+            raise ValueError("Error, theta_cutoff has to be positive.")
+
+        # integration weights
+        _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
+        quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).float() / self.nlon_in
+        self.register_buffer("quad_weights", quad_weights, persistent=False)
+
+        # precompute the neighborhood sparsity pattern
+        idx, vals = _precompute_neighborhood_sparsity_s2(in_shape, out_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff)
+
+        # this is kept for legacy resons in case we want to resuse sorting of these entries
+        ker_idx = idx[0, ...].contiguous()
+        row_idx = idx[1, ...].contiguous()
+        col_idx = idx[2, ...].contiguous()
+        vals = vals.contiguous()
+
+        if torch.cuda.is_available():
+            device = "cuda"
+            row_offset = torch.zeros(self.nlat_out+1, dtype=torch.int64).to(device)
+            _psi_row_count = torch.zeros(self.nlat_out+1, dtype=torch.int64).to(device)
+            self.max_psi_nnz = att_cuda.s2_row_offset(col_idx, row_idx, row_offset, _psi_row_count)
+        else:
+            # compute row offsets for more structured traversal.
+            # only works if rows are sorted but they are by construction
+            row_offset = np.empty(self.nlat_out+1, dtype=np.int64)
+            row_offset[0] = 0
+            row = row_idx[0]
+            for idz, z in enumerate(range(col_idx.shape[0])):
+                if row_idx[z] != row:
+                    row_offset[row+1] = idz
+                    row = row_idx[z]
+
+            # set the last value
+            row_offset[row+1] = idz+1
+            row_offset = torch.from_numpy(row_offset)
+
+        # not sure we ned that
+        # roff_idx = preprocess_psi(1, out_shape[0], ker_idx, row_idx, col_idx, vals)
+
+        # register buffers as members of the module
+        # self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+        # self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
+        self.register_buffer("psi_row_idx", row_idx, persistent=False)
+        self.register_buffer("psi_col_idx", col_idx, persistent=False)
+        self.register_buffer("psi_vals", vals, persistent=False)
+        self.register_buffer("psi_roff_idx", row_offset, persistent=False)
+
+        # learnable parameters
+        self.q_weights = nn.Parameter(torch.randn(self.kdim, self.channels, 1, 1))
+        self.k_weights = nn.Parameter(torch.randn(self.kdim, self.channels, 1, 1))
+        self.v_weights = nn.Parameter(torch.randn(self.vdim, self.channels, 1, 1))
+
+    @property
+    def psi_idx(self):
+        return torch.stack([self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
+
+    def get_psi(self):
+        psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals,
+                                      size=(self.nlat_out, self.nlat_in * self.nlon_in)).coalesce()
+        return psi
+    
+    
+    # TODO: to be implemented. Maybe we should write th
+    def forward(self, qo: torch.Tensor, ki: torch.Tensor, vi: torch.Tensor) -> torch.Tensor:
+
+        # change this later to allow arbitrary number of batch dims
+        assert (qo.dim() == ki.dim()) and (ki.dim() == vi.dim()) and (vi.dim() == 4)
+
+        # TODO: insert dimension checks for input
+        # TODO: rename h and w to lat lon
+        # TODO: rename u to x
+        # TODO: rename i and o to _in and _out
+
+        # ui \in R^{..., num_channels, nlat, nlon}
+        # V \in R^{vdim, num_channels}
+        # compute v
+        k = F.conv2d(ki, weight=self.k_weights, bias=None)
+        q = F.conv2d(qo, weight=self.q_weights, bias=None)
+        v = F.conv2d(vi, weight=self.v_weights, bias=None)
+        # call attention
+        out = _disco_att_v3_torch(k, v, q, self.quad_weights,
+                                  self.psi_col_idx, self.psi_roff_idx,
+                                  self.nlon_in, self.nlat_out, self.nlon_out)
+
+        return out
+
+# Gradient w.r.t. vx: dM/dv
+# provided as a reference for CUDA & other hand-written gradients
+def _disco_att_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
+                           quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor, 
+                           nlat_in: int, nlon_in: int, nlat_out: int, nlon_out: int):
+
+    # shapes:
+    # input
+    # kx: B, C, Hi, Wi
+    # vx: B, C, Hi, Wi
+    # qy: B, C, Ho, Wo
+    # quad_weights: Hi
+    # output
+    # dvx: B, C, Hi, Wi
+
+    dvx = torch.zeros_like(vx)
+
+    for ho in range(nlat_out):
+
+        # get number of nonzeros
+        zstart = row_off[ho]
+        zend = row_off[ho+1]
+
+        for wo in range(nlon_out):
+
+            alpha_nz = torch.zeros((dy.shape[0], zend-zstart), dtype=dy.dtype, device=dy.device)
+            qdotk_nz = torch.zeros((dy.shape[0], zend-zstart), dtype=dy.dtype, device=dy.device)
+            alpha_sum = torch.zeros((dy.shape[0],), dtype=dy.dtype, device=dy.device)
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hi = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wi = nz_col_idx % nlon_in
+                wip = (wi+wo) % nlon_in
+
+                # compute correlation & softmax numerator
+                q_ho_wo = qy[:, :, ho, wo]
+                k_hi_wi = kx[:, :, hi, wip]
+                qdotk_nz[:,idz-zstart] = torch.sum(q_ho_wo * k_hi_wi, dim=1)
+
+            qdotk_max,_ = qdotk_nz.max(dim=1)
+
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hi = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wi = nz_col_idx % nlon_in
+                wip = (wi+wo) % nlon_in
+                alpha_nz[:,idz-zstart] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max)
+                alpha_sum[:] += alpha_nz[:,idz-zstart]
+
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hi = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wi = nz_col_idx % nlon_in
+                wip = (wi+wo) % nlon_in
+                dvx[:,:,hi, wip] += (alpha_nz[:, None, idz-zstart] / alpha_sum[:, None]) * dy[:,:,ho,wo] * quad_weights[hi]
+
+
+    return dvx
+
+# # Gradient w.r.t. kx: dM/dk
+# provided as a reference for CUDA & other hand-written gradients
+def _disco_att_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
+                           quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor, 
+                           nlat_in: int, nlon_in: int, nlat_out: int, nlon_out: int):
+
+    # shapes:
+    # input
+    # kx: B, C, Hi, Wi
+    # vx: B, C, Hi, Wi
+    # qy: B, C, Ho, Wo
+    # quad_weights: Hi
+    # output
+    # dkx: B, C, Hi, Wi
+
+    dkx = torch.zeros_like(kx)
+
+    for ho in range(nlat_out):
+
+        # get number of nonzeros
+        zstart = row_off[ho]
+        zend = row_off[ho+1]
+
+        for wo in range(nlon_out):
+
+            #alpha = torch.zeros((dy.shape[0], zend-zstart), dtype=dy.dtype, device=dy.device)
+            #alpha_sum = torch.zeros((dy.shape[0],), dtype=dy.dtype, device=dy.device)
+            qdotk_nz = torch.zeros((dy.shape[0], zend-zstart), dtype=dy.dtype, device=dy.device)
+            integral = torch.zeros((dy.shape[0],), dtype=dy.dtype, device=dy.device)
+            alpha = torch.zeros((dy.shape[0], zend-zstart), dtype=dy.dtype, device=dy.device)
+            alpha_sum = torch.zeros((dy.shape[0],), dtype=dy.dtype, device=dy.device)
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hj = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wj = nz_col_idx % nlon_in
+                wjp = (wj+wo) % nlon_in
+
+                # compute correlation & softmax numerator
+                q_ho_wo = qy[:, :, ho, wo]
+                k_hj_wjp = kx[:, :, hj, wjp]
+                qdotk_nz[:,idz-zstart] = torch.sum(q_ho_wo * k_hj_wjp, dim=1)
+
+            qdotk_max,_ = qdotk_nz.max(dim=1)
+
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hj = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wj = nz_col_idx % nlon_in
+                wjp = (wj+wo) % nlon_in
+
+                alpha[:, idz-zstart] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max)
+                alpha_sum[:] += alpha[:, idz-zstart]
+
+                # input dot
+                gdotv = torch.sum(dy[:,:,ho, wo] * vx[:,:,hj, wjp], dim=1)
+
+                # integral term
+                integral[:] += alpha[:, idz-zstart] * gdotv[:] * quad_weights[hj]
+
+            integral[:] = integral[:] / alpha_sum[:]
+
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hi = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wi = nz_col_idx % nlon_in
+                wip = (wi+wo) % nlon_in
+
+                # compute correlation & softmax numerator
+                gdotv = torch.sum(dy[:,:,ho, wo] * vx[:,:,hi, wip], dim=1)
+
+                dkx[:,:,hi,wip] += qy[:, :, ho, wo] * (alpha[:, None, idz-zstart] / alpha_sum[:, None]) * (quad_weights[hi] * gdotv[:, None] - integral[:, None])
+
+    return dkx
+
+
+# # Gradient w.r.t. qy: dM/dq
+# provided as a reference for CUDA & other hand-written gradients
+# Gradient w.r.t. vx: dM/dv
+# provided as a reference for CUDA & other hand-written gradients
+def _disco_att_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
+                           quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+                           nlat_in: int, nlon_in: int, nlat_out: int, nlon_out: int):
+
+    # shapes:
+    # input
+    # kx: B, C, Hi, Wi
+    # vx: B, C, Hi, Wi
+    # qy: B, C, Ho, Wo
+    # quad_weights: Hi
+    # output
+    # dvx: B, C, Hi, Wi
+
+    dqy = torch.zeros_like(qy)
+
+    for ho in range(nlat_out):
+
+        # get number of nonzeros
+        zstart = row_off[ho]
+        zend = row_off[ho+1]
+
+        for wo in range(nlon_out):
+
+            alpha = torch.zeros((dy.shape[0], zend-zstart), dtype=dy.dtype, device=dy.device)
+            qdotk_nz = torch.zeros((dy.shape[0], zend-zstart), dtype=dy.dtype, device=dy.device)
+            alpha_k = torch.zeros((dy.shape[0], dy.shape[1]), dtype=dy.dtype, device=dy.device)
+            alpha_vw = torch.zeros((dy.shape[0], dy.shape[1]), dtype=dy.dtype, device=dy.device)
+            alpha_kvw = torch.zeros((dy.shape[0], dy.shape[1]), dtype=dy.dtype, device=dy.device)
+            alpha_sum = torch.zeros((dy.shape[0],), dtype=dy.dtype, device=dy.device)
+            alpha_sum2 = torch.zeros((dy.shape[0],), dtype=dy.dtype, device=dy.device)
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hi = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wi = nz_col_idx % nlon_in
+                wip = (wi+wo) % nlon_in
+
+                idz_i = idz-zstart
+
+                # compute correlation & softmax numerator
+                q_ho_wo = qy[:, :, ho, wo]
+                k_hi_wi = kx[:, :, hi, wip]
+                qdotk_nz[:,idz-zstart] = torch.sum(q_ho_wo * k_hi_wi, dim=1)
+
+            qdotk_max,_ = qdotk_nz.max(dim=1)
+
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hi = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wi = nz_col_idx % nlon_in
+                wip = (wi+wo) % nlon_in
+
+                q_ho_wo = qy[:, :, ho, wo]
+                k_hi_wi = kx[:, :, hi, wip]
+                idz_i = idz-zstart
+                alpha[:, idz_i] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max)
+                alpha_sum[:] += alpha[:, idz_i]
+
+                gdotv = torch.sum(dy[:,:,ho, wo] * vx[:,:,hi, wip], dim=1)
+                alpha_k[:,:] += alpha[:, None, idz_i] * k_hi_wi
+                alpha_vw[:,:] += alpha[:, None, idz_i] * gdotv[:,None] * quad_weights[hi]
+                alpha_kvw[:,:] += alpha[:, None, idz_i] * k_hi_wi * gdotv[:,None] * quad_weights[hi]
+
+            dqy[:,:,ho,wo] = (alpha_kvw*alpha_sum[:,None] - alpha_vw*alpha_k) / (alpha_sum[:,None]*alpha_sum[:,None])
+
+
+    return dqy
