@@ -75,6 +75,15 @@ def get_ext_modules():
                 ],
             )
         )
+        ext_modules.append(
+            CUDAExtension(
+                "attention_cuda_extension",
+                [
+                    "torch_harmonics/csrc/attention/attention.cu",
+                    "torch_harmonics/csrc/attention/row_offset.cu"
+                ],
+            )
+        )
         cmdclass["build_ext"] = BuildExtension
 
     return ext_modules, cmdclass
