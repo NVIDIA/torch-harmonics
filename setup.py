@@ -53,17 +53,17 @@ try:
 except (ImportError, TypeError, AssertionError, AttributeError) as e:
     warnings.warn(f"building custom extensions skipped: {e}")
 
-def get_compile_args():
+def get_compile_args(module_name):
     """If user runs build with DEBUG=1 set, it will use debugging flags to build"""
     debug_mode = os.environ.get('DEBUG', '0') == '1'
     if debug_mode:
-        print("WARNING: Compiling *.cu with debugging flags")
+        print(f"WARNING: Compiling {module_name} with debugging flags")
         return {
             'cxx': ['-g', '-O0', '-Wall'],
             'nvcc': ['-g', '-G', '-O0']
         }
     else:
-        print("NOTE: Compiling *.cu with release flags")
+        print(f"NOTE: Compiling {module_name} with release flags")
         return {
             'cxx': ['-O3', "-DNDEBUG"],
             'nvcc': ['-O3', "-DNDEBUG"]
@@ -89,6 +89,7 @@ def get_ext_modules():
                     "torch_harmonics/csrc/disco/disco_cuda_fwd.cu",
                     "torch_harmonics/csrc/disco/disco_cuda_bwd.cu",
                 ],
+                extra_compile_args=get_compile_args("disco")
             )
         )
         ext_modules.append(
@@ -100,7 +101,7 @@ def get_ext_modules():
                     "torch_harmonics/csrc/attention/attention_interface.cu",
                     "torch_harmonics/csrc/attention/attention_row_offset.cu"
                 ],
-                extra_compile_args=get_compile_args()
+                extra_compile_args=get_compile_args("neighborhood_attention")
             )
         )
         cmdclass["build_ext"] = BuildExtension
