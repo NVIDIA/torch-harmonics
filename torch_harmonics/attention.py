@@ -198,7 +198,7 @@ class NeighborhoodAttentionS2(nn.Module):
         #    device = "cuda"
         #    row_offset = torch.zeros(self.nlat_out+1, dtype=torch.int64).to(device)
         #    _psi_row_count = torch.zeros(self.nlat_out+1, dtype=torch.int64).to(device)
-        #    self.max_psi_nnz = attention_cuda_extension.s2_row_offset(col_idx, row_idx, row_offset, _psi_row_count)
+        #    self.max_psi_nnz = attention_cuda_extension.compute_row_offset(col_idx, row_idx, row_offset, _psi_row_count)
         #else:
         # compute row offsets for more structured traversal.
         # only works if rows are sorted but they are by construction

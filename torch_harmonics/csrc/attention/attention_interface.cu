@@ -32,10 +32,10 @@
 #include <torch/extension.h>
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("s2_attention_fwd", &s2_attention_fwd_cuda, "(Local) Attention on S2");
-  m.def("s2_row_offset", &s2_idx_offset_cuda, "Row offset on S2");
-  m.def("s2_attention_bwd_dk_cuda", &s2_attention_bwd_dk_cuda, "(Local) Attention on S2 (bwd k)");
-  m.def("s2_attention_bwd_dv_cuda", &s2_attention_bwd_dv_cuda, "(Local) Attention on S2 (bwd v)");
-  m.def("s2_attention_bwd_dq_cuda", &s2_attention_bwd_dq_cuda, "(Local) Attention on S2 (bwd q)");
+  m.def("forward", &s2_attention_fwd_cuda, "(Local) Attention on S2");
+  m.def("compute_row_offset", &s2_idx_offset_cuda, "Row offset on S2");
+  m.def("backward_dk", &s2_attention_bwd_dk_cuda, "(Local) Attention on S2 (bwd k)");
+  m.def("backward_dv", &s2_attention_bwd_dv_cuda, "(Local) Attention on S2 (bwd v)");
+  m.def("backward_dq", &s2_attention_bwd_dq_cuda, "(Local) Attention on S2 (bwd q)");
 }
 
