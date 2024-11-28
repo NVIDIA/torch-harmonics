@@ -34,30 +34,43 @@
 #include <cstdint>
 #include <torch/torch.h>
 
-void s2_attention_fwd_cuda(const at::Tensor &kx, const at::Tensor &vx,
-                           const at::Tensor &qy, const at::Tensor &quad_weights,
-                           const at::Tensor &psi_col_idx,
-                           const at::Tensor &psi_row_off, const int max_nnz,
-                           int nlon_in, int nlat_out, int nlon_out,
-                           at::Tensor &y);
+#define CHECK_CUDA_TENSOR(x) TORCH_CHECK(x.device().is_cuda(), #x " must be a CUDA tensor")
 
-void s2_attention_bwd_dq_cuda(
-    const at::Tensor &kx, const at::Tensor &vx, const at::Tensor &qy,
-    const at::Tensor &quad_weights, const at::Tensor &psi_col_idx,
-    const at::Tensor &psi_row_off, const int max_psi_nnz, const at::Tensor &dy,
-    int nlon_in, int nlat_out, int nlon_out, at::Tensor &dydq);
+torch::Tensor s2_attention_fwd_cuda(at::Tensor kx, at::Tensor vx,
+                                    at::Tensor qy, at::Tensor quad_weights,
+                                    at::Tensor psi_col_idx,
+                                    at::Tensor psi_row_off, const int max_nnz,
+                                    int nlon_in, int nlat_out, int nlon_out);
 
-void s2_attention_bwd_dk_cuda(
-    const at::Tensor &kx, const at::Tensor &vx, const at::Tensor &qy,
-    const at::Tensor &quad_weights, const at::Tensor &psi_col_idx,
-    const at::Tensor &psi_row_off, const int max_psi_nnz, const at::Tensor &dy,
-    int nlon_in, int nlat_out, int nlon_out, at::Tensor &dydk);
+torch::Tensor s2_attention_bwd_dq_cuda(at::Tensor kx, 
+                                       at::Tensor vx, 
+                                       at::Tensor qy,
+                                       at::Tensor quad_weights, 
+                                       at::Tensor psi_col_idx,
+                                       at::Tensor psi_row_off, 
+                                       const int max_psi_nnz, 
+                                       at::Tensor dy,
+                                       int nlon_in, int nlat_out, int nlon_out);
 
-void s2_attention_bwd_dv_cuda(
-    const at::Tensor &kx, const at::Tensor &vx, const at::Tensor &qy,
-    const at::Tensor &quad_weights, const at::Tensor &psi_col_idx,
-    const at::Tensor &psi_row_off, const int max_psi_nnz, const at::Tensor &dy,
-    int nlon_in, int nlat_out, int nlon_out, at::Tensor &dydv);
+torch::Tensor s2_attention_bwd_dk_cuda(at::Tensor kx, 
+                                       at::Tensor vx, 
+                                       at::Tensor qy,
+                                       at::Tensor quad_weights, 
+                                       at::Tensor psi_col_idx,
+                                       at::Tensor psi_row_off, 
+                                       const int max_psi_nnz, 
+                                       at::Tensor dy,
+                                       int nlon_in, int nlat_out, int nlon_out);
+
+torch::Tensor s2_attention_bwd_dv_cuda(at::Tensor kx, 
+                                       at::Tensor vx, 
+                                       at::Tensor qy,
+                                       at::Tensor quad_weights, 
+                                       at::Tensor psi_col_idx,
+                                       at::Tensor psi_row_off, 
+                                       const int max_psi_nnz, 
+                                       at::Tensor dy,
+                                       int nlon_in, int nlat_out, int nlon_out);
 
 int s2_idx_offset_cuda(const at::Tensor &psi_col_idx,
                        const at::Tensor &psi_row_idx, at::Tensor &row_offset,
