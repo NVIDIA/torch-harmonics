@@ -75,7 +75,7 @@ def _neighborhood_attention_s2_torch(kx: torch.Tensor, vx: torch.Tensor, qy: tor
                 k_hi_wip = kx[:, :, hi, wip]
                 qdotk_nz[:,idz-zstart] = torch.sum(q_ho_wo * k_hi_wip, dim=1)
 
-            qdotk_max,_ = qdotk_nz.max(dim=1)
+            qdotk_max, _ = torch.max(qdotk_nz, dim=1)
 
             for idz in range(zstart, zend):
                 nz_col_idx = col_idx[idz]
@@ -99,9 +99,9 @@ def _neighborhood_attention_s2_torch(kx: torch.Tensor, vx: torch.Tensor, qy: tor
 
 # Explicit gradient w.r.t. vx: dM/dv
 # provided as a reference for CUDA & other hand-written gradients
-def _disco_att_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
-                           quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-                           nlat_in: int, nlon_in: int, nlat_out: int, nlon_out: int):
+def _neighborhood_attention_s2_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
+                                            quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+                                            nlon_in: int, nlat_out: int, nlon_out: int):
 
     # shapes:
     # input
@@ -135,7 +135,7 @@ def _disco_att_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor
                 wip = (wi+wo) % nlon_in
 
                 # compute correlation & softmax numerator
-		q_ho_wo = qy[:, :, ho, wo]
+                q_ho_wo = qy[:, :, ho, wo]
                 k_hi_wi = kx[:, :, hi, wip]
                 qdotk_nz[:,idz-zstart] = torch.sum(q_ho_wo * k_hi_wi, dim=1)
 
@@ -153,7 +153,7 @@ def _disco_att_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor
                 alpha_sum[:] += alpha_nz[:,idz-zstart]
 
             for idz in range(zstart, zend):
-		nz_col_idx = col_idx[idz]
+                nz_col_idx = col_idx[idz]
 
                 # compute input indices from psi datastructure
                 hi = nz_col_idx // nlon_in
@@ -167,9 +167,9 @@ def _disco_att_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor
 
 # Explicit gradient w.r.t. kx: dM/dk
 # provided as a reference for CUDA & other hand-written gradients
-def _disco_att_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
-                           quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-                           nlat_in: int, nlon_in: int, nlat_out: int, nlon_out: int):
+def _neighborhood_attention_s2_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
+                                            quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+                                            nlon_in: int, nlat_out: int, nlon_out: int):
 
     # shapes:
     # input
@@ -204,7 +204,7 @@ def _disco_att_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor
                 wjp = (wj+wo) % nlon_in
 
                 # compute correlation & softmax numerator
-		q_ho_wo = qy[:, :, ho, wo]
+                q_ho_wo = qy[:, :, ho, wo]
                 k_hj_wjp = kx[:, :, hj, wjp]
                 qdotk_nz[:,idz-zstart] = torch.sum(q_ho_wo * k_hj_wjp, dim=1)
 
@@ -216,10 +216,10 @@ def _disco_att_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor
                 # compute input indices from psi datastructure
                 hj = nz_col_idx // nlon_in
                 # account for output shift and ensure positive index due to circular condition
-		wj = nz_col_idx % nlon_in
-		wjp = (wj+wo) % nlon_in
+                wj = nz_col_idx % nlon_in
+                wjp = (wj+wo) % nlon_in
 
-		alpha[:, idz-zstart] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max)
+                alpha[:, idz-zstart] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max)
                 alpha_sum[:] += alpha[:, idz-zstart]
 
                 # input dot
@@ -242,15 +242,21 @@ def _disco_att_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor
                 # compute correlation & softmax numerator
                 gdotv = torch.sum(dy[:,:,ho, wo] * vx[:,:,hi, wip], dim=1)
 
-		dkx[:,:,hi,wip] += qy[:, :, ho, wo] * (alpha[:, None, idz-zstart] / alpha_sum[:, None]) * (quad_weights[hi] * gdotv[:, None] - integral[:, None])
+            dkx[:,:,hi,wip] += qy[:, :, ho, wo] * (alpha[:, None, idz-zstart] / alpha_sum[:, None]) * (quad_weights[hi] * gdotv[:, None] - integral[:, None])
 
     return dkx
 
 # Explicit gradient w.r.t. qy: dM/dq
 # provided as a reference for CUDA & other hand-written gradients
+<<<<<<< HEAD
 def _disco_att_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
                            quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
                            nlat_in: int, nlon_in: int, nlat_out: int, nlon_out: int):
+=======
+def _neighborhood_attention_s2_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
+                                            quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+                                            nlon_in: int, nlat_out: int, nlon_out: int):
+>>>>>>> starting to port the tests
 
     # shapes:
     # input

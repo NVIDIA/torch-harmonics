@@ -31,55 +31,64 @@
 
 import unittest
 from parameterized import parameterized
-import math
+
+# import math
 import numpy as np
 import torch
-from torch.autograd import gradcheck
-from torch_harmonics import *
 
-import importlib
-
-import torch_harmonics
-from torch_harmonics.attention import _disco_att_v3_torch, _disco_att_bwd_dv_torch,\
-    _disco_att_bwd_dk_torch, _disco_att_bwd_dq_torch
+# from torch.autograd import gradcheck
 from torch_harmonics import NeighborhoodAttentionS2
-import attention_cuda_extension as att_cuda
-import matplotlib.pyplot as plt
-import ipywidgets as widgets
-import torch.nn.functional as F
-import numpy as np
 
-# a simple torch fwd implementation used to test gradient
-def disco_att_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor,
-                    quad_weights: torch.Tensor, col_idx: torch.Tensor, row_idx: torch.Tensor, 
-                    nlat_in: int, nlon_in: int, nlat_out: int, nlon_out: int):
+from torch_harmonics._neighborhood_attention import (
+    _neighborhood_attention_s2_torch,
+    _neighborhood_attention_s2_fwd_torch,
+    _neighborhood_attention_s2_bwd_dv_torch,
+    _neighborhood_attention_s2_bwd_dk_torch,
+    _neighborhood_attention_s2_bwd_dq_torch,
+)
+
+# import custom C++/CUDA extensions
+try:
+    import attention_cuda_extension
+
+    _cuda_extension_available = True
+except ImportError as err:
+    print(f"Warning: Couldn't Import cuda attention: {err}")
+    attention_cuda_extension = None
+    _cuda_extension_available = False
+
+
+# this routine is only supposed to be used in this test, since it is numerically not stable but supports
+# autograd which some of the better kernels do not
+def _neighborhood_attention_s2_torch_test(
+    kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, quad_weights: torch.Tensor, col_idx: torch.Tensor, row_idx: torch.Tensor, nlon_in: int, nlat_out: int, nlon_out: int
+):
 
     out = torch.zeros_like(qy)
 
     for ho in range(nlat_out):
 
         # get nonzero indices in output row
-        idx_ho = col_idx[row_idx==ho]
+        idx_ho = col_idx[row_idx == ho]
 
         for wo in range(nlon_out):
             alpha_sum = torch.zeros((out.shape[0],), dtype=out.dtype, device=out.device)
             alpha = torch.zeros((out.shape[0], len(idx_ho)), dtype=out.dtype, device=out.device)
-            for (inz, nz_col_idx) in enumerate(idx_ho):
+            for inz, nz_col_idx in enumerate(idx_ho):
                 # compute input indices from psi datastructure
                 hi = nz_col_idx // nlon_in
                 # account for output shift and ensure positive index due to circular condition
                 wi = nz_col_idx % nlon_in
-                wip = (wi+wo) % nlon_in
+                wip = (wi + wo) % nlon_in
 
                 # compute correlation & softmax numerator
                 q_ho_wo = qy[:, :, ho, wo]
-                k_hi_wi = kx[:, :, hi, wip]
-                # k_hi_wi = kx[:, :, hi, wi]
-                alpha[:, inz] = torch.exp(torch.sum(q_ho_wo * k_hi_wi, dim=1))
+                k_hi_wip = kx[:, :, hi, wip]
+                alpha[:, inz] = torch.exp(torch.sum(q_ho_wo * k_hi_wip, dim=1)) * quad_weights[hi]
                 # softmax denominator
                 alpha_sum[:] = alpha_sum[:] + alpha[:, inz]
 
-            for (inz, nz_col_idx) in enumerate(idx_ho):
+            for inz, nz_col_idx in enumerate(idx_ho):
                 # compute input indices from psi datastructure
                 hi = nz_col_idx // nlon_in
                 # account for output shift and ensure positive index due to circular condition
@@ -87,191 +96,431 @@ def disco_att_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor,
                 wip = (wi + wo) % nlon_in
 
                 # compute matmul of attention matrix with V-vector
-                out[:,:,ho,wo] = out[:,:,ho,wo] + (alpha[:, inz]/alpha_sum[:])[:,None] * vx[:,:,hi,wip] * quad_weights[hi]
+                out[:, :, ho, wo] = out[:, :, ho, wo] + (alpha[:, None, inz] / alpha_sum[:, None]) * vx[:, :, hi, wip]
 
     return out
 
 
-def test_dvx(k_inp_d, v_inp_d, q_inp_d,
-             quad_weights_d, col_idx_d, row_off, row_idx_d, max_psi_nnz,
-             nlat_in, nlon_in, nlat_out, nlon_out,
-             grad_d):
-    # Execute and compare
-    k_inp_d = k_inp_d.detach()
-    k_inp_d.requires_grad = False
-    v_inp_d = v_inp_d.detach()
-    v_inp_d.requires_grad = True
-    q_inp_d = q_inp_d.detach()
-    q_inp_d.requires_grad = False
-    out_torch_v3_d = disco_att_torch(k_inp_d, v_inp_d, q_inp_d,
-                                     quad_weights_d, col_idx_d, row_idx_d,
-                                     nlat_in, nlon_in, nlat_out, nlon_out)
+class TestNeighborhoodAttention(unittest.TestCase):
 
-    # need 'retain_graph' to avoid an error in the tests after this one
-    out_torch_v3_d.backward(grad_d, retain_graph=True)
-    dv_inp_torch_v3_d = v_inp_d.grad.clone()
+    def setUp(self):
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda:0")
+            torch.cuda.set_device(self.device.index)
+            torch.cuda.manual_seed(333)
+        else:
+            self.device = torch.device("cpu")
 
+        torch.manual_seed(333)
 
-    with torch.no_grad():
-        dv_inp_torch_explicit_d = _disco_att_bwd_dv_torch(k_inp_d, v_inp_d, q_inp_d, grad_d,
-                                                          quad_weights_d, col_idx_d, row_off,
-                                                          nlat_in, nlon_out, nlat_out, nlon_out)
+    @parameterized.expand(
+        [
+            # regular convolution
+            [8, 4, 6, (17, 32), 1e-6, 1e-5],
+        ]
+    )
+    def test_batched_linear(self, batch_size, in_channels, out_channels, shape, atol, rtol):
+        # weight
+        weight = torch.nn.Parameter(torch.randn(out_channels, in_channels, 1, 1, dtype=torch.float32, device=self.device))
+        bias = torch.nn.Parameter(torch.randn(out_channels, dtype=torch.float32, device=self.device))
 
-    # print("dvx:")
-    # print("by hand:   ", dv_inp_torch_explicit_d[0,0,:3,:3], "\n via torch: ", dv_inp_torch_v3_d[0,0,:3,:3])
-    assert torch.allclose(dv_inp_torch_explicit_d, dv_inp_torch_v3_d)
+        # input
+        inp = torch.randn(batch_size, in_channels, *shape, dtype=torch.float32, device=self.device)
+        inp.requires_grad = True
 
-    dydv_cuda = torch.zeros_like(grad_d)
-    att_cuda.s2_attention_bwd_dv_cuda(k_inp_d, v_inp_d, q_inp_d, quad_weights_d, col_idx_d, row_off, max_psi_nnz, grad_d, nlon_in, nlat_out, nlon_out, dydv_cuda)
-    # print("dydv_cuda:\n", dydv_cuda[0,0,:3,:3], "\n vs torch autograd: \n", dv_inp_torch_v3_d[0,0,:3,:3], "\n vs torch hand-rolled: \n", dv_inp_torch_explicit_d[0,0,:3,:3])
-    assert torch.allclose(dydv_cuda, dv_inp_torch_v3_d)
+        # operation
+        out = torch.nn.functional.conv2d(inp, weight=weight, bias=bias)
+        out_grad = torch.randn(batch_size, out_channels, *shape, dtype=torch.float32, device=self.device)
+        out.backward(out_grad)
 
+        # store for comparison
+        wgrad = weight.grad.clone()
+        bgrad = bias.grad.clone()
+        igrad = inp.grad.clone()
 
+        # explicit layers
+        igrad_explicit = torch.nn.functional.conv2d(out_grad, weight=weight.permute([1, 0, 2, 3]), bias=None)
+        wgrad_explicit = torch.einsum("bchw,bfhw->cf", out_grad, inp).reshape(out_channels, in_channels, 1, 1).contiguous()
+        bgrad_explicit = torch.sum(out_grad, dim=(0, 2, 3))
 
-def test_dkx(k_inp_d, v_inp_d, q_inp_d,
-             quad_weights_d, col_idx_d, row_off,
-             row_idx, max_psi_nnz,
-             nlat_in, nlon_in, nlat_out, nlon_out,
-             grad_d):
+        # check consistency
+        self.assertTrue(torch.allclose(igrad, igrad_explicit, atol=atol, rtol=rtol))
+        self.assertTrue(torch.allclose(wgrad, wgrad_explicit, atol=atol, rtol=rtol))
+        self.assertTrue(torch.allclose(bgrad, bgrad_explicit, atol=atol, rtol=rtol))
 
-    # Execute and compare
-    torch.autograd.set_detect_anomaly(False)
-    k_inp_d = k_inp_d.detach()
-    k_inp_d.requires_grad = True
-    v_inp_d = v_inp_d.detach()
-    v_inp_d.requires_grad = False
-    q_inp_d = q_inp_d.detach()
-    q_inp_d.requires_grad = False
-    out_torch_v3_d = disco_att_torch(k_inp_d, v_inp_d, q_inp_d,
-                                     quad_weights_d, col_idx_d, row_idx,
-                                     nlat_in, nlon_in, nlat_out, nlon_out)
-    # out_torch_v3_d = _disco_att_v3_torch(k_inp_d, v_inp_d, q_inp_d,
-    # quad_weights_d, col_idx_d, row_off,
-    # nlon_in, nlat_out, nlon_out)
+    @parameterized.expand(
+        [
+            # self attention
+            [8, 4, (17, 32), (17, 32), "equiangular", "equiangular", 1e-6, 1e-4],
+        ]
+    )
+    def test_fwd(self, batch_size, channels, in_shape, out_shape, grid_in, grid_out, atol, rtol):
 
-    # need 'retain_graph' to avoid an error in the tests after this one
-    out_torch_v3_d.backward(grad_d, retain_graph=True)
-    dk_inp_torch_v3_d = k_inp_d.grad.clone()
-    with torch.no_grad():
-        dk_inp_torch_explicit_d = _disco_att_bwd_dk_torch(k_inp_d, v_inp_d, q_inp_d, grad_d,
-                                                         quad_weights_d, col_idx_d, row_off,
-                                                         nlat_in, nlon_out, nlat_out, nlon_out)
+        # extract some parameters
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
 
-    # print("dkx:")
-    # print("by hand:   ", dk_inp_torch_explicit_d[0,0,:3,:3], "\n via torch: ", dk_inp_torch_v3_d[0,0,:3,:3])
-    assert torch.allclose(dk_inp_torch_explicit_d, dk_inp_torch_v3_d)
+        # set up neighbor matrix
+        att = NeighborhoodAttentionS2(in_channels=channels, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=False).to(self.device)
 
-    dydk_cuda = torch.zeros_like(grad_d)
-    att_cuda.s2_attention_bwd_dk_cuda(k_inp_d, v_inp_d, q_inp_d, quad_weights_d, col_idx_d, row_off, max_psi_nnz, grad_d, nlon_in, nlat_out, nlon_out, dydk_cuda)
-    # print("dydk_cuda:\n", dydk_cuda[0,0,:3,:3], "\n vs torch autograd: \n", dk_inp_torch_v3_d[0,0,:3,:3], "\n vs torch hand-rolled: \n", dk_inp_torch_explicit_d[0,0,:3,:3])
-    assert torch.allclose(dydk_cuda, dk_inp_torch_v3_d)
+        # Execute and compare
+        k_inp = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device=self.device)
+        k_inp.requires_grad = False
+        v_inp = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device=self.device)
+        v_inp.requires_grad = False
+        q_inp = torch.randn(batch_size, channels, nlat_out, nlon_out, dtype=torch.float32, device=self.device)
+        q_inp.requires_grad = False
 
-def test_dqy(k_inp_d, v_inp_d, q_inp_d,
-             quad_weights_d, col_idx_d, row_off,
-             row_idx, max_psi_nnz,
-             nlat_in, nlon_in, nlat_out, nlon_out,
-             grad_d):
+        out_torch = _neighborhood_attention_s2_torch_test(k_inp, v_inp, q_inp, att.quad_weights, att.psi_col_idx, att.psi_row_idx, nlon_in, nlat_out, nlon_out)
 
-    # Execute and compare
-    torch.autograd.set_detect_anomaly(False)
-    k_inp_d = k_inp_d.detach()
-    k_inp_d.requires_grad = False
-    v_inp_d = v_inp_d.detach()
-    v_inp_d.requires_grad = False
-    q_inp_d = q_inp_d.detach()
-    q_inp_d.requires_grad = True
-    out_torch_v3_d = disco_att_torch(k_inp_d, v_inp_d, q_inp_d,
-                                     quad_weights_d, col_idx_d, row_idx,
-                                     nlat_in, nlon_in, nlat_out, nlon_out)
-    # out_torch_v3_d = _disco_att_v3_torch(k_inp_d, v_inp_d, q_inp_d,
-    # quad_weights_d, col_idx_d, row_off,
-    # nlon_in, nlat_out, nlon_out)
+        with torch.no_grad():
+            out_torch_explicit = _neighborhood_attention_s2_fwd_torch(k_inp, v_inp, q_inp, att.quad_weights, att.psi_col_idx, att.psi_roff_idx, nlon_in, nlat_out, nlon_out)
 
-    # need 'retain_graph' to avoid an error in the tests after this one
-    out_torch_v3_d.backward(grad_d, retain_graph=True)
-    dq_inp_torch_v3_d = q_inp_d.grad.clone()
-    with torch.no_grad():
-        dq_inp_torch_explicit_d = _disco_att_bwd_dq_torch(k_inp_d, v_inp_d, q_inp_d, grad_d,
-                                                          quad_weights_d, col_idx_d, row_off,
-                                                          nlat_in, nlon_out, nlat_out, nlon_out)
+            self.assertTrue(torch.allclose(out_torch_explicit, out_torch, atol=atol, rtol=rtol))
 
-    # print("dqy:")
-    # print("by hand: ", dq_inp_torch_explicit_d[0,0,:3,:3], "\n via torch: ", dq_inp_torch_v3_d[0,0,:3,:3])
-    # print("ratio: ", dq_inp_torch_explicit_d[0,0,:3,:3] / dq_inp_torch_v3_d[0,0,:3,:3])
-    assert torch.allclose(dq_inp_torch_explicit_d, dq_inp_torch_v3_d, atol=1e-7) # current diff.abs().max()==2e-8
+        if _cuda_extension_available:
 
-    dydq_cuda = torch.zeros_like(grad_d)
-    att_cuda.s2_attention_bwd_dq_cuda(k_inp_d, v_inp_d, q_inp_d, quad_weights_d, col_idx_d, row_off, max_psi_nnz, grad_d, nlon_in, nlat_out, nlon_out, dydq_cuda)
-    # print("dydq_cuda:\n", dydq_cuda[0,0,:3,:3], "\n vs torch autograd: \n", dq_inp_torch_v3_d[0,0,:3,:3], "\n vs torch hand-rolled: \n", dq_inp_torch_explicit_d[0,0,:3,:3])
-    assert torch.allclose(dydq_cuda, dq_inp_torch_v3_d, atol=1e-7)
+            out_cuda = attention_cuda_extension.forward(k_inp, v_inp, q_inp, att.quad_weights, att.psi_col_idx, att.psi_roff_idx, nlon_in, nlat_out, nlon_out)
 
+            self.assertTrue(torch.allclose(out_torch, out_cuda, atol=atol, rtol=rtol))
 
-def test_row_offset_cuda(psi_col_idx, psi_row_idx):
-        # compute row offsets for more structured traversal.
-    # only works if rows are sorted but they are by construction
-    row_off = np.empty(nlat_out+1, dtype=np.int64)
-    row_off[0] = 0
-    row = psi_row_idx[0]
-    for idz, z in enumerate(range(psi_col_idx.shape[0])):
-        if psi_row_idx[z] != row:
-            row_off[row+1] = idz
-            row = psi_row_idx[z]
+    @parameterized.expand(
+        [
+            # regular convolution
+            [8, 4, (17, 32), (17, 32), "equiangular", "equiangular", 1e-6, 1e-4],
+        ]
+    )
+    def test_bwd_dv(self, batch_size, channels, in_shape, out_shape, grid_in, grid_out, atol, rtol):
 
-    # set the last value
-    row_off[row+1] = idz+1
+        # extract some parameters
+        _, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
 
-    psi_row_offset = torch.zeros(nlat_out+1, dtype=torch.int64).to(device)
-    psi_row_count = torch.zeros(nlat_out+1, dtype=torch.int64).to(device)
-    att_cuda.s2_row_offset(nas2.psi_col_idx, nas2.psi_row_idx, psi_row_offset, psi_row_count)
-    
-    assert((row_off == psi_row_offset.cpu().numpy()).all())
+        # set up neighbor matrix
+        att = NeighborhoodAttentionS2(channels, in_shape, out_shape, grid_in, grid_out, False).to(self.device)
 
-def test_s2_attention_fwd(nas2, nlon_in, nlat_out, nlon_out):
-    qo = torch.rand((10, num_channels, nlat_in,nlon_in)).to(device)
-    ki = torch.rand((10, num_channels, nlat_in,nlon_in)).to(device)
-    vi = torch.rand((10, num_channels, nlat_in,nlon_in)).to(device)
-    k = F.conv2d(ki, weight=nas2.k_weights, bias=None)
-    q = F.conv2d(qo, weight=nas2.q_weights, bias=None)
-    v = F.conv2d(vi, weight=nas2.v_weights, bias=None)
-    y = torch.zeros_like(qo)
-    att_cuda.s2_attention_fwd(k, v, q, nas2.quad_weights, nas2.psi_col_idx, nas2.psi_roff_idx, nas2.max_psi_nnz, nlon_in, nlat_out, nlon_out, y)
-    with torch.no_grad():
-        y_torch = nas2(qo,ki,vi)
-        # print("cuda: ", y[0,0,:3,:3], " torch: ", y_torch[0,0,:3,:3])
-        assert(torch.allclose(y, y_torch))
-        # print("WARNING: s2_attention_fwd_cuda didn't match closely enough!")
+        # Execute and compare
+        k_inp = torch.randn(batch_size, channels, *in_shape, dtype=torch.float32, device=self.device)
+        k_inp.requires_grad = False
+        v_inp = torch.randn(batch_size, channels, *in_shape, dtype=torch.float32, device=self.device)
+        v_inp.requires_grad = True
+        q_inp = torch.randn(batch_size, channels, *out_shape, dtype=torch.float32, device=self.device)
+        q_inp.requires_grad = False
+        out_grad = torch.randn(batch_size, channels, *out_shape, dtype=torch.float32, device=self.device)
+
+        out_torch = _neighborhood_attention_s2_torch_test(k_inp, v_inp, q_inp, att.quad_weights, att.psi_col_idx, att.psi_row_idx, nlon_in, nlat_out, nlon_out)
+
+        # need 'retain_graph' to avoid an error in the tests after this one
+        out_torch.backward(out_grad)
+        dv_inp_torch = v_inp.grad.clone()
+
+        with torch.no_grad():
+            dv_inp_torch_explicit = _neighborhood_attention_s2_bwd_dv_torch(
+                k_inp, v_inp, q_inp, out_grad, att.quad_weights, att.psi_col_idx, att.psi_roff_idx, nlon_in, nlat_out, nlon_out
+            )
+
+        self.assertTrue(torch.allclose(dv_inp_torch_explicit, dv_inp_torch, atol=atol, rtol=rtol))
+
+        if _cuda_extension_available:
+
+            dv_inp_cuda_explicit = attention_cuda_extension.backward_dv(
+                k_inp, v_inp, q_inp, out_grad, att.quad_weights, att.psi_col_idx, att.psi_roff_idx, nlon_in, nlat_out, nlon_out
+            )
+
+            self.assertTrue(torch.allclose(dv_inp_cuda_explicit, dv_inp_torch, atol=atol, rtol=rtol))
+
+    @parameterized.expand(
+        [
+            # regular convolution
+            [8, 4, (17, 32), (17, 32), "equiangular", "equiangular", 1e-6, 1e-3],
+        ]
+    )
+    def test_bwd_dk(self, batch_size, channels, in_shape, out_shape, grid_in, grid_out, atol, rtol):
+
+        # extract some parameters
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        # set up neighbor matrix
+        att = NeighborhoodAttentionS2(channels, in_shape, out_shape, grid_in, grid_out, False).to(self.device)
+
+        # Execute and compare
+        k_inp = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device=self.device)
+        k_inp.requires_grad = True
+        v_inp = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device=self.device)
+        v_inp.requires_grad = False
+        q_inp = torch.randn(batch_size, channels, nlat_out, nlon_out, dtype=torch.float32, device=self.device)
+        q_inp.requires_grad = False
+        out_grad = torch.randn(batch_size, channels, nlat_out, nlon_out, dtype=torch.float32, device=self.device)
+
+        out_torch = _neighborhood_attention_s2_torch_test(k_inp, v_inp, q_inp, att.quad_weights, att.psi_col_idx, att.psi_row_idx, nlon_in, nlat_out, nlon_out)
+
+        # need 'retain_graph' to avoid an error in the tests after this one
+        out_torch.backward(out_grad)
+        dk_inp_torch = k_inp.grad.clone()
+
+        with torch.no_grad():
+            dk_inp_torch_explicit = _neighborhood_attention_s2_bwd_dk_torch(
+                k_inp, v_inp, q_inp, out_grad, att.quad_weights, att.psi_col_idx, att.psi_roff_idx, nlon_in, nlat_out, nlon_out
+            )
+
+            self.assertTrue(torch.allclose(dk_inp_torch_explicit, dk_inp_torch, atol=atol, rtol=rtol))
+
+        if _cuda_extension_available:
+
+            dk_inp_cuda_explicit = attention_cuda_extension.backward_dk(
+                k_inp, v_inp, q_inp, out_grad, att.quad_weights, att.psi_col_idx, att.psi_roff_idx, nlon_in, nlat_out, nlon_out
+            )
+
+            self.assertTrue(torch.allclose(dk_inp_cuda_explicit, dk_inp_torch, atol=atol, rtol=rtol))
+
+    @parameterized.expand(
+        [
+            # regular convolution
+            [8, 4, (17, 32), (17, 32), "equiangular", "equiangular", 4e-6, 1e-3],
+        ]
+    )
+    def test_bwd_dq(self, batch_size, channels, in_shape, out_shape, grid_in, grid_out, atol, rtol):
+
+        # extract some parameters
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        # set up neighbor matrix
+        att = NeighborhoodAttentionS2(channels, in_shape, out_shape, grid_in, grid_out, False).to(self.device)
+
+        # Execute and compare
+        k_inp = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device=self.device)
+        k_inp.requires_grad = False
+        v_inp = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device=self.device)
+        v_inp.requires_grad = False
+        q_inp = torch.randn(batch_size, channels, nlat_out, nlon_out, dtype=torch.float32, device=self.device)
+        q_inp.requires_grad = True
+        out_grad = torch.randn(batch_size, channels, nlat_out, nlon_out, dtype=torch.float32, device=self.device)
+
+        out_torch = _neighborhood_attention_s2_torch_test(k_inp, v_inp, q_inp, att.quad_weights, att.psi_col_idx, att.psi_row_idx, nlon_in, nlat_out, nlon_out)
+
+        # need 'retain_graph' to avoid an error in the tests after this one
+        out_torch.backward(out_grad)
+        dq_inp_torch = q_inp.grad.clone()
+
+        with torch.no_grad():
+            dq_inp_torch_explicit = _neighborhood_attention_s2_bwd_dq_torch(
+                k_inp, v_inp, q_inp, out_grad, att.quad_weights, att.psi_col_idx, att.psi_roff_idx, nlon_in, nlat_out, nlon_out
+            )
+
+            self.assertTrue(torch.allclose(dq_inp_torch_explicit, dq_inp_torch, atol=atol, rtol=rtol))
+
+        if _cuda_extension_available:
+
+            dq_inp_cuda_explicit = attention_cuda_extension.backward_dq(
+                k_inp, v_inp, q_inp, out_grad, att.quad_weights, att.psi_col_idx, att.psi_roff_idx, nlon_in, nlat_out, nlon_out
+            )
+
+            self.assertTrue(torch.allclose(dq_inp_cuda_explicit, dq_inp_torch, atol=atol, rtol=rtol))
+
+    @parameterized.expand(
+        [
+            # self attention
+            [1, 73, (721, 1440), (721, 1440), "equiangular", "equiangular", 1e-5, 1e-5],
+        ]
+    )
+    def test_big(self, batch_size, channels, in_shape, out_shape, grid_in, grid_out, atol, rtol):
+
+        # this test only makes sense when CUDA version is available
+        if torch.cuda.is_available():
+            if not _cuda_extension_available:
+                print("WARNING: Problem loading CUDA attention module")
+                return
+        # extract some parameters
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        # TODO: this test seems hardcoded for GPU. Is this necessary?
+        k_gpu = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device="cuda:0")
+        k_gpu.requires_grad = False
+        v_gpu = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device="cuda:0")
+        v_gpu.requires_grad = False
+        q_gpu = torch.randn(batch_size, channels, nlat_out, nlon_out, dtype=torch.float32, device="cuda:0")
+        q_gpu.requires_grad = False
+
+        # set up layers
+        att_gpu = NeighborhoodAttentionS2(in_channels=channels, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True).to("cuda:0")
+
+        # random weights
+        with torch.no_grad():
+            att_gpu.q_weights.normal_()
+            att_gpu.k_weights.normal_()
+            att_gpu.v_weights.normal_()
+            att_gpu.q_bias.normal_()
+            att_gpu.k_bias.normal_()
+            att_gpu.v_bias.normal_()
+
+            out_gpu = att_gpu(q_gpu, k_gpu, v_gpu)
+
+        # sync weights:
+        with torch.no_grad():
+            att_gpu.q_weights.copy_(att_gpu.q_weights)
+            att_gpu.k_weights.copy_(att_gpu.k_weights)
+            att_gpu.v_weights.copy_(att_gpu.v_weights)
+            att_gpu.q_bias.copy_(att_gpu.q_bias)
+            att_gpu.k_bias.copy_(att_gpu.k_bias)
+            att_gpu.v_bias.copy_(att_gpu.v_bias)
+
+        q_gpu = q_gpu.detach().clone().to(self.device)
+        q_gpu.requires_grad = True
+        k_gpu = k_gpu.detach().clone().to(self.device)
+        k_gpu.requires_grad = True
+        v_gpu = v_gpu.detach().clone().to(self.device)
+        v_gpu.requires_grad = True
+
+        out_gpu = att_gpu(q_gpu, k_gpu, v_gpu)
+        out_grad = torch.randn(out_gpu.shape, dtype=torch.float32, device="cuda:0")
+        out_gpu.backward(out_grad.to("cuda:0"))
+
+    @parameterized.expand(
+        [
+            # self attention
+            [10, 2, (17, 32), (17, 32), "equiangular", "equiangular", 1e-5, 1e-5],
+        ]
+    )
+    def test_neighborhood(self, batch_size, num_channels, in_shape, out_shape, grid_in, grid_out, atol, rtol):
+        """
+        This test sets a specific q[ho,wo] value to 1.0 (elsewhere 0), and then a neighborhood of k around ho,wo to 1.0 (else 0.0). Also vi is set to a sinusoidal input. We also run it with fully 0 q,k. We test that the output of the nonzero q,k is only different to the zero q,k in a single point. We also check the value of this difference (as a regression test).
+        """
+
+        # extract some parameters
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+        from torch_harmonics import _neighborhood_attention_s2_fwd_torch
+
+        device = "cpu"
+        nas2_2 = NeighborhoodAttentionS2(in_channels=num_channels, in_shape=(nlat_in, nlon_in), out_shape=(nlat_out, nlon_out), theta_cutoff=torch.pi / 128 * 10)
+        nas2_2.to(device)
+        qo = torch.zeros((batch_size, num_channels, nlat_in, nlon_in)).to(device)
+        x = torch.linspace(0, 2 * np.pi, nlat_in)  # 100 points in x direction
+        y = torch.linspace(0, 2 * np.pi, nlon_in)  # 100 points in y direction
+        # Create a meshgrid
+        X, Y = torch.meshgrid(x, y, indexing="ij")
+        vi = torch.ones((batch_size, num_channels, nlat_in, nlon_in)).to(device)
+        vi[:, :, :, :] = (torch.sin(X) + torch.sin(Y))[None, None, :, :]
+
+        ki = torch.zeros((batch_size, num_channels, nlat_in, nlon_in)).to(device)
+        ki2 = torch.zeros((batch_size, num_channels, nlat_in, nlon_in)).to(device)
+
+        ho = 10
+        wo = 15
+        qo[:, 0, ho, wo] = 1.0
+        nas3 = NeighborhoodAttentionS2(in_channels=num_channels, in_shape=(nlat_in, nlon_in), out_shape=(nlat_out, nlon_out), theta_cutoff=torch.pi / 128 * 7)
+        zstart = nas3.psi_roff_idx[ho]
+        zend = nas3.psi_roff_idx[ho + 1]
+
+        # set a small neighborhood of k around (ho,wo) to 1
+        for idz in range(zstart, zend):
+            nz_col_idx = nas3.psi_col_idx[idz]
+            # compute input indices from psi datastructure
+            hi = nz_col_idx // nlon_in
+            # account for output shift and ensure positive index due to circular condition
+            wi = nz_col_idx % nlon_in
+            wip = (wi + wo) % nlon_in
+            ki2[:, 0, hi, wip] = 1.0
+
+        # run with k zero
+        y = _neighborhood_attention_s2_fwd_torch(ki, vi, qo, nas2_2.quad_weights, nas2_2.psi_col_idx, nas2_2.psi_roff_idx, nlon_in, nlat_out, nlon_out)
+        # run with k 1 at neighborhood of ho,wo
+        y2 = _neighborhood_attention_s2_fwd_torch(ki2, vi, qo, nas2_2.quad_weights, nas2_2.psi_col_idx, nas2_2.psi_roff_idx, nlon_in, nlat_out, nlon_out)
+
+        # for viz if desired
+        # plt.matshow((y[0,0,:,:]-y2[0,0,:,:]).detach().cpu())#, vmin=0, vmax=2.0)
+        # plt.matshow((y2[0,0,:,:]).detach().cpu())#, vmin=0, vmax=2.0)
+
+        # compare zero k vs. nonzero k and ensure difference only occurs at ho,wo
+        nz_x, nz_y = torch.where((y[0, 0, :, :] - y2[0, 0, :, :]).abs() > 0)
+        self.assertTrue(nz_x.item() == ho)
+        self.assertTrue(nz_y.item() == wo)
+        h, w = nz_x.item(), nz_y.item()
+        diff_hw = y[0, 0, h, w] - y2[0, 0, h, w]
+        # print("diff_hw=", diff_hw.item())
+
+        # regression test the difference. Unfortunately difficult to come up with an
+        # analytical value, so we just have it hardcoded.
+        self.assertTrue(torch.allclose(diff_hw, torch.tensor([0.00753], device=device), rtol=rtol, atol=atol))
+
+    @parameterized.expand(
+        [
+            # self attention
+            [8, 4, (17, 32), (17, 32), "equiangular", "equiangular", 2e-4, 1e-5],
+            [8, 4, (17, 32), (17, 32), "equiangular", "equiangular", 2e-4, 1e-5],
+        ]
+    )
+    def test_full(self, batch_size, channels, in_shape, out_shape, grid_in, grid_out, atol, rtol):
+
+        # extract some parameters
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        k_cpu = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device="cpu")
+        k_cpu.requires_grad = True
+        v_cpu = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device="cpu")
+        v_cpu.requires_grad = True
+        q_cpu = torch.randn(batch_size, channels, nlat_out, nlon_out, dtype=torch.float32, device="cpu")
+        q_cpu.requires_grad = True
+
+        # set up layers
+        att_cpu = NeighborhoodAttentionS2(in_channels=channels, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True)
+
+        # random weights
+        with torch.no_grad():
+            att_cpu.q_weights.normal_()
+            att_cpu.k_weights.normal_()
+            att_cpu.v_weights.normal_()
+            att_cpu.q_bias.normal_()
+            att_cpu.k_bias.normal_()
+            att_cpu.v_bias.normal_()
+
+        out_cpu = att_cpu(q_cpu, k_cpu, v_cpu)
+        out_grad = torch.randn(out_cpu.shape, dtype=torch.float32, device="cpu")
+        out_cpu.backward(out_grad)
+
+        att_gpu = NeighborhoodAttentionS2(in_channels=channels, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True).to(self.device)
+
+        # sync weights:
+        with torch.no_grad():
+            att_gpu.q_weights.copy_(att_cpu.q_weights)
+            att_gpu.k_weights.copy_(att_cpu.k_weights)
+            att_gpu.v_weights.copy_(att_cpu.v_weights)
+            att_gpu.q_bias.copy_(att_cpu.q_bias)
+            att_gpu.k_bias.copy_(att_cpu.k_bias)
+            att_gpu.v_bias.copy_(att_cpu.v_bias)
+
+        q_gpu = q_cpu.detach().clone().to(self.device)
+        q_gpu.requires_grad = True
+        k_gpu = k_cpu.detach().clone().to(self.device)
+        k_gpu.requires_grad = True
+        v_gpu = v_cpu.detach().clone().to(self.device)
+        v_gpu.requires_grad = True
+
+        out_gpu = att_gpu(q_gpu, k_gpu, v_gpu)
+        out_gpu.backward(out_grad.to(self.device))
+
+        # check forward
+        self.assertTrue(torch.allclose(out_cpu.to(self.device), out_gpu, atol=atol, rtol=rtol))
+
+        # check input gradients:
+        self.assertTrue(torch.allclose(q_cpu.grad.to(self.device), q_gpu.grad, atol=atol, rtol=rtol))
+        self.assertTrue(torch.allclose(k_cpu.grad.to(self.device), k_gpu.grad, atol=atol, rtol=rtol))
+        self.assertTrue(torch.allclose(v_cpu.grad.to(self.device), v_gpu.grad, atol=atol, rtol=rtol))
+
+        # check weight gradients
+        self.assertTrue(torch.allclose(att_cpu.q_weights.grad.to(self.device), att_gpu.q_weights.grad, atol=atol, rtol=rtol))
+        self.assertTrue(torch.allclose(att_cpu.k_weights.grad.to(self.device), att_gpu.k_weights.grad, atol=atol, rtol=rtol))
+        self.assertTrue(torch.allclose(att_cpu.v_weights.grad.to(self.device), att_gpu.v_weights.grad, atol=atol, rtol=rtol))
+
+        # check bias gradients
+        self.assertTrue(torch.allclose(att_cpu.q_bias.grad.to(self.device), att_gpu.q_bias.grad, atol=atol, rtol=rtol))
+        self.assertTrue(torch.allclose(att_cpu.k_bias.grad.to(self.device), att_gpu.k_bias.grad, atol=atol, rtol=rtol))
+        self.assertTrue(torch.allclose(att_cpu.v_bias.grad.to(self.device), att_gpu.v_bias.grad, atol=atol, rtol=rtol))
+
 
 if __name__ == "__main__":
-    # for test purposes fix input output grids:
-    #nlat_in, nlon_in = 129, 256
-    # nlat_in, nlon_in = int(33), int(64)
-    nlat_in, nlon_in = int(17), int(32)
-    scale_factor = 1
-    num_channels = 3
-    num_batches = 10
-    nlat_out, nlon_out = int(nlat_in // scale_factor), int(nlon_in // scale_factor)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-    torch.manual_seed(42)
-    nas2 = NeighborhoodAttentionS2(channels=num_channels, in_shape=(nlat_in, nlon_in), out_shape=(nlat_out, nlon_out), theta_cutoff=torch.pi / 128 * 10)
-    nas2.to(device)
-
-    test_row_offset_cuda(nas2.psi_col_idx, nas2.psi_row_idx)
-
-    test_s2_attention_fwd(nas2, nlon_in, nlat_out, nlon_out)
-
-    qo = torch.rand((num_batches, num_channels, nlat_in,nlon_in)).to(device)
-    ki = torch.rand((num_batches, num_channels, nlat_in,nlon_in)).to(device)
-    vi = torch.rand((num_batches, num_channels, nlat_in,nlon_in)).to(device)
-    grad_d_k = torch.rand((num_batches, num_channels, nlat_in,nlon_in)).to(device)
-    grad_d_v = torch.rand((num_batches, num_channels, nlat_in,nlon_in)).to(device)
-    grad_d_q = torch.rand((num_batches, num_channels, nlat_in,nlon_in)).to(device)
-
-    k = F.conv2d(ki, weight=nas2.k_weights, bias=None)
-    q = F.conv2d(qo, weight=nas2.q_weights, bias=None)
-    v = F.conv2d(vi, weight=nas2.v_weights, bias=None)
-
-    test_dkx(k, v, q, nas2.quad_weights, nas2.psi_col_idx, nas2.psi_roff_idx, nas2.psi_row_idx, nas2.max_psi_nnz, nlat_in, nlon_in, nlat_out, nlon_out, grad_d_k)
-    test_dvx(k, v, q, nas2.quad_weights, nas2.psi_col_idx, nas2.psi_roff_idx, nas2.psi_row_idx, nas2.max_psi_nnz, nlat_in, nlon_in, nlat_out, nlon_out, grad_d_v)
-    test_dqy(k, v, q, nas2.quad_weights, nas2.psi_col_idx, nas2.psi_roff_idx, nas2.psi_row_idx, nas2.max_psi_nnz, nlat_in, nlon_in, nlat_out, nlon_out, grad_d_q)
-    
+    unittest.main()

@@ -157,7 +157,6 @@ class NeighborhoodAttentionS2(nn.Module):
         channels: int, # embedding dim
         in_shape: Tuple[int],
         out_shape: Tuple[int],
-        groups: Optional[int] = 1, # stale argument for now - should probably govern number of attention heads in the future
         grid_in: Optional[str] = "equiangular",
         grid_out: Optional[str] = "equiangular",
         bias: Optional[bool] = True,
@@ -173,7 +172,6 @@ class NeighborhoodAttentionS2(nn.Module):
         self.channels = channels
         self.kdim = channels if kdim is None else kdim
         self.vdim = channels if vdim is None else vdim
-
 
         # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
         if theta_cutoff is None:
@@ -191,30 +189,31 @@ class NeighborhoodAttentionS2(nn.Module):
         idx, vals = _precompute_neighborhood_sparsity_s2(in_shape, out_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff)
 
         # this is kept for legacy resons in case we want to resuse sorting of these entries
-        ker_idx = idx[0, ...].contiguous()
+        #ker_idx = idx[0, ...].contiguous()
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()
         vals = vals.contiguous()
 
-        if _cuda_extension_available:
-            device = "cuda"
-            row_offset = torch.zeros(self.nlat_out+1, dtype=torch.int64).to(device)
-            _psi_row_count = torch.zeros(self.nlat_out+1, dtype=torch.int64).to(device)
-            self.max_psi_nnz = attention_cuda_extension.s2_row_offset(col_idx, row_idx, row_offset, _psi_row_count)
-        else:
-            # compute row offsets for more structured traversal.
-            # only works if rows are sorted but they are by construction
-            row_offset = np.empty(self.nlat_out+1, dtype=np.int64)
-            row_offset[0] = 0
-            row = row_idx[0]
-            for idz, z in enumerate(range(col_idx.shape[0])):
-                if row_idx[z] != row:
-                    row_offset[row+1] = idz
-                    row = row_idx[z]
+        #if _cuda_extension_available:
+        #    device = "cuda"
+        #    row_offset = torch.zeros(self.nlat_out+1, dtype=torch.int64).to(device)
+        #    _psi_row_count = torch.zeros(self.nlat_out+1, dtype=torch.int64).to(device)
+        #    self.max_psi_nnz = attention_cuda_extension.s2_row_offset(col_idx, row_idx, row_offset, _psi_row_count)
+        #else:
+        # compute row offsets for more structured traversal.
+        # only works if rows are sorted but they are by construction
+        row_offset = np.empty(self.nlat_out+1, dtype=np.int64)
+        row_offset[0] = 0
+        row = row_idx[0]
+        for idz, z in enumerate(range(col_idx.shape[0])):
+            if row_idx[z] != row:
+                row_offset[row+1] = idz
+                row = row_idx[z]
 
-            # set the last value
-            row_offset[row+1] = idz+1
-            row_offset = torch.from_numpy(row_offset)
+        # set the last value
+        row_offset[row+1] = idz+1
+        row_offset = torch.from_numpy(row_offset)
+        self.max_psi_nnz = row_idx.max().item() + 1
 
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
@@ -225,6 +224,15 @@ class NeighborhoodAttentionS2(nn.Module):
         self.q_weights = nn.Parameter(torch.randn(self.kdim, self.channels, 1, 1))
         self.k_weights = nn.Parameter(torch.randn(self.kdim, self.channels, 1, 1))
         self.v_weights = nn.Parameter(torch.randn(self.vdim, self.channels, 1, 1))
+
+        if bias:
+            self.q_bias = nn.Parameter(torch.randn(self.kdim))
+            self.k_bias = nn.Parameter(torch.randn(self.kdim))
+            self.v_bias = nn.Parameter(torch.randn(self.vdim))
+        else:
+            self.q_bias = None
+            self.k_bias = None
+            self.v_bias = None
 
     @property
     def psi_idx(self):
@@ -250,9 +258,9 @@ class NeighborhoodAttentionS2(nn.Module):
         # ui \in R^{..., num_channels, nlat, nlon}
         # V \in R^{vdim, num_channels}
         # compute v
-        k = F.conv2d(ki, weight=self.k_weights, bias=None)
-        q = F.conv2d(qo, weight=self.q_weights, bias=None)
-        v = F.conv2d(vi, weight=self.v_weights, bias=None)
+        k = F.conv2d(ki, weight=self.k_weights, bias=self.k_bias)
+        q = F.conv2d(qo, weight=self.q_weights, bias=self.q_bias)
+        v = F.conv2d(vi, weight=self.v_weights, bias=self.v_bias)
 
         if x.is_cuda and _cuda_extension_available:
             out = _neighborhood_attention_s2_cuda(k, v, q, self.quad_weights,
