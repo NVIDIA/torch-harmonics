@@ -173,7 +173,8 @@ void s2_attention_bwd_dv_cuda(const at::Tensor &kx, const at::Tensor &vx,
                               const int max_psi_nnz,
                               const at::Tensor &dy, int nlon_in, int nlat_out,
                               int nlon_out, at::Tensor &dydv) {
-  auto stream = at::cuda::getCurrentCUDAStream();
+
+  auto stream = at::cuda::getCurrentCUDAStream().stream();
 
   size_t uo_num_channels = kx.size(1);
 
@@ -191,9 +192,7 @@ void s2_attention_bwd_dv_cuda(const at::Tensor &kx, const at::Tensor &vx,
   // threads compute "blocks" of neighborhood and also "blocks" of channels
   dim3 blockDim(256, 1, 1);
 
-  s2_attention_bwd_dv_kernel <<<gridDim, blockDim,
-    sharedMemSize,
-    stream.stream()>>>(
+  s2_attention_bwd_dv_kernel <<<gridDim, blockDim, sharedMemSize, stream>>>(
                        uo_num_channels, nlon_in, nlat_out, nlon_out, max_psi_nnz,
                        kx.packed_accessor32<float, 4>(), vx.packed_accessor32<float, 4>(),
                        qy.packed_accessor32<float, 4>(),
@@ -495,7 +494,8 @@ void s2_attention_bwd_dk_cuda(const at::Tensor &kx, const at::Tensor &vx,
                               const int max_psi_nnz,
                               const at::Tensor &dy, int nlon_in, int nlat_out,
                               int nlon_out, at::Tensor &dydk) {
-  auto stream = at::cuda::getCurrentCUDAStream();
+
+  auto stream = at::cuda::getCurrentCUDAStream().stream();
 
   size_t uo_num_channels = kx.size(1);
 
@@ -513,9 +513,7 @@ void s2_attention_bwd_dk_cuda(const at::Tensor &kx, const at::Tensor &vx,
   // threads compute "blocks" of neighborhood and also "blocks" of channels
   dim3 blockDim(256, 1, 1);
 
-  s2_attention_bwd_dk_kernel <<<gridDim, blockDim,
-    sharedMemSize,
-    stream.stream()>>>(
+  s2_attention_bwd_dk_kernel <<<gridDim, blockDim, sharedMemSize, stream>>>(
                        uo_num_channels, nlon_in, nlat_out, nlon_out, max_psi_nnz,
                        kx.packed_accessor32<float, 4>(), vx.packed_accessor32<float, 4>(),
                        qy.packed_accessor32<float, 4>(),
@@ -541,7 +539,8 @@ void s2_attention_bwd_dq_cuda(const at::Tensor &kx, const at::Tensor &vx,
                               const int max_psi_nnz,
                               const at::Tensor &dy, int nlon_in, int nlat_out,
                               int nlon_out, at::Tensor &dydq) {
-  auto stream = at::cuda::getCurrentCUDAStream();
+
+  auto stream = at::cuda::getCurrentCUDAStream().stream();
 
   size_t uo_num_channels = kx.size(1);
 
@@ -559,9 +558,7 @@ void s2_attention_bwd_dq_cuda(const at::Tensor &kx, const at::Tensor &vx,
   // threads compute "blocks" of neighborhood and also "blocks" of channels
   dim3 blockDim(256, 1, 1);
 
-  s2_attention_bwd_dq_kernel <<<gridDim, blockDim,
-    sharedMemSize,
-    stream.stream()>>>(
+  s2_attention_bwd_dq_kernel <<<gridDim, blockDim, sharedMemSize, stream>>>(
                        uo_num_channels, nlon_in, nlat_out, nlon_out, max_psi_nnz,
                        kx.packed_accessor32<float, 4>(), vx.packed_accessor32<float, 4>(),
                        qy.packed_accessor32<float, 4>(),
