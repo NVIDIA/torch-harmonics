@@ -165,16 +165,26 @@ s2_attention_bwd_dv_kernel(int num_channels, int nlon_in, int nlat_out,
   }
 }
 
-void s2_attention_bwd_dv_cuda(const at::Tensor &kx, const at::Tensor &vx,
-                              const at::Tensor &qy,
-                              const at::Tensor &quad_weights,
-                              const at::Tensor &psi_col_idx,
-                              const at::Tensor &psi_row_off,
-                              const int max_psi_nnz,
-                              const at::Tensor &dy, int nlon_in, int nlat_out,
-                              int nlon_out, at::Tensor &dydv) {
+at::Tensor s2_attention_bwd_dv_cuda(at::Tensor kx, at::Tensor vx,
+                                    at::Tensor qy,
+                                    at::Tensor quad_weights,
+                                    at::Tensor psi_col_idx,
+                                    at::Tensor psi_row_off,
+                                    const int max_psi_nnz,
+                                    at::Tensor dy, 
+                                    int nlon_in, int nlat_out, int nlon_out) {
+
+  CHECK_CUDA_TENSOR(kx);
+  CHECK_CUDA_TENSOR(vx);
+  CHECK_CUDA_TENSOR(qy);
+  CHECK_CUDA_TENSOR(quad_weights);
+  CHECK_CUDA_TENSOR(psi_col_idx);
+  CHECK_CUDA_TENSOR(psi_row_off);
+  CHECK_CUDA_TENSOR(dy);
 
   auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+  torch::Tensor dydv = torch::zeros_like(vx);
 
   size_t uo_num_channels = kx.size(1);
 
@@ -206,7 +216,9 @@ void s2_attention_bwd_dv_cuda(const at::Tensor &kx, const at::Tensor &vx,
 
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
+  return dydv;
 }
+
 __global__ void
 s2_attention_bwd_dk_kernel(int num_channels, int nlon_in, int nlat_out,
                            int nlon_out, int max_nnz,
@@ -486,16 +498,27 @@ s2_attention_bwd_dq_kernel(int num_channels, int nlon_in, int nlat_out,
 }
 
 
-void s2_attention_bwd_dk_cuda(const at::Tensor &kx, const at::Tensor &vx,
-                              const at::Tensor &qy,
-                              const at::Tensor &quad_weights,
-                              const at::Tensor &psi_col_idx,
-                              const at::Tensor &psi_row_off,
-                              const int max_psi_nnz,
-                              const at::Tensor &dy, int nlon_in, int nlat_out,
-                              int nlon_out, at::Tensor &dydk) {
+at::Tensor s2_attention_bwd_dk_cuda(at::Tensor kx, 
+                                    at::Tensor vx,
+                                    at::Tensor qy,
+                                    at::Tensor quad_weights,
+                                    at::Tensor psi_col_idx,
+                                    at::Tensor psi_row_off,
+                                    const int max_psi_nnz,
+                                    at::Tensor dy, 
+                                    int nlon_in, int nlat_out, int nlon_out) {
+
+  CHECK_CUDA_TENSOR(kx);
+  CHECK_CUDA_TENSOR(vx);
+  CHECK_CUDA_TENSOR(qy);
+  CHECK_CUDA_TENSOR(quad_weights);
+  CHECK_CUDA_TENSOR(psi_col_idx);
+  CHECK_CUDA_TENSOR(psi_row_off);
+  CHECK_CUDA_TENSOR(dy);
 
   auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+  torch::Tensor dydk = torch::zeros_like(kx);
 
   size_t uo_num_channels = kx.size(1);
 
@@ -527,20 +550,31 @@ void s2_attention_bwd_dk_cuda(const at::Tensor &kx, const at::Tensor &vx,
 
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
-
+  return dydk;
 }
 
 
-void s2_attention_bwd_dq_cuda(const at::Tensor &kx, const at::Tensor &vx,
-                              const at::Tensor &qy,
-                              const at::Tensor &quad_weights,
-                              const at::Tensor &psi_col_idx,
-                              const at::Tensor &psi_row_off,
-                              const int max_psi_nnz,
-                              const at::Tensor &dy, int nlon_in, int nlat_out,
-                              int nlon_out, at::Tensor &dydq) {
+at::Tensor s2_attention_bwd_dq_cuda(at::Tensor kx, 
+                                    at::Tensor vx,
+                                    at::Tensor qy,
+                                    at::Tensor quad_weights,
+                                    at::Tensor psi_col_idx,
+                                    at::Tensor psi_row_off,
+                                    const int max_psi_nnz,
+                                    at::Tensor dy, 
+                                    int nlon_in, int nlat_out, int nlon_out) {
+
+  CHECK_CUDA_TENSOR(kx);
+  CHECK_CUDA_TENSOR(vx);
+  CHECK_CUDA_TENSOR(qy);
+  CHECK_CUDA_TENSOR(quad_weights);
+  CHECK_CUDA_TENSOR(psi_col_idx);
+  CHECK_CUDA_TENSOR(psi_row_off);
+  CHECK_CUDA_TENSOR(dy);
 
   auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+  torch::Tensor dydq = torch::zeros_like(qy);
 
   size_t uo_num_channels = kx.size(1);
 
@@ -571,6 +605,6 @@ void s2_attention_bwd_dq_cuda(const at::Tensor &kx, const at::Tensor &vx,
 
 
   C10_CUDA_KERNEL_LAUNCH_CHECK();
-
-
+  
+  return dydq;
 }

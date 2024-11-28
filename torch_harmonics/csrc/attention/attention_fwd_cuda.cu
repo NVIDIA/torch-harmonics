@@ -163,20 +163,30 @@ __global__ void s2_attention_kernel(int num_channels, int nlon_in, int nlat_out,
 }
 
 
-void s2_attention_fwd_cuda(const at::Tensor &kx, const at::Tensor &vx,
-                           const at::Tensor &qy, const at::Tensor &quad_weights,
-                           const at::Tensor &psi_col_idx,
-                           const at::Tensor &psi_row_off,
-                           const int max_nnz,
-                           int nlon_in,
-                           int nlat_out,
-                           int nlon_out,
-                           at::Tensor& y
-                           ) {
+torch::Tensor s2_attention_fwd_cuda(at::Tensor kx, 
+                                    at::Tensor vx,
+                                    at::Tensor qy, 
+                                    at::Tensor quad_weights,
+                                    at::Tensor psi_col_idx,
+                                    at::Tensor psi_row_off,
+                                    const int max_nnz,
+                                    int nlon_in,
+                                    int nlat_out,
+                                    int nlon_out) {
+
+  CHECK_CUDA_TENSOR(kx);
+  CHECK_CUDA_TENSOR(vx);
+  CHECK_CUDA_TENSOR(qy);
+  CHECK_CUDA_TENSOR(quad_weights);
+  CHECK_CUDA_TENSOR(psi_col_idx);
+  CHECK_CUDA_TENSOR(psi_row_off);
 
   // TODO: check sizess
 
   auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+  // allocate output
+  torch::Tensor y = torch::zeros_like(qy);
 
   size_t uo_num_channels = kx.size(1);
 
@@ -205,5 +215,7 @@ void s2_attention_fwd_cuda(const at::Tensor &kx, const at::Tensor &vx,
                        );
 
   C10_CUDA_KERNEL_LAUNCH_CHECK();
+
+  return y;
 }
 

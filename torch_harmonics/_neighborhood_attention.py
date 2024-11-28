@@ -344,13 +344,10 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
         kx = kx.to(torch.float32)
         vx = vx.to(torch.float32)
         qy = qy.to(torch.float32)
-
-        output = torch.empty_like(qy)
         
-        attention_cuda_extension.s2_attention_fwd(kx, vx, qy, quad_weights,
-                                                  col_idx, row_off,
-                                                  max_psi_nnz, nlon_in, nlat_out, nlon_out,
-                                                  output)
+        output = attention_cuda_extension.s2_attention_fwd(kx, vx, qy, quad_weights,
+                                                           col_idx, row_off,
+                                                           max_psi_nnz, nlon_in, nlat_out, nlon_out)
 
         return output
 
@@ -363,29 +360,23 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
         nlat_out = ctx.nlat_out
         nlon_out = ctx.nlon_out
 
-        dv = torch.empty_like(vx)
-        attention_cuda_extension.s2_attention_bwd_dv_cuda(kx, vx, qy, quad_weights,
-                                                          col_idx, row_off,
-                                                          max_psi_nnz,
-                                                          grad_output,
-                                                          nlon_in, nlat_out, nlon_out,
-                                                          dv)
+        dv = attention_cuda_extension.s2_attention_bwd_dv_cuda(kx, vx, qy, quad_weights,
+                                                               col_idx, row_off,
+                                                               max_psi_nnz,
+                                                               grad_output,
+                                                               nlon_in, nlat_out, nlon_out)
 
-        dk = torch.empty_like(kx)
-        attention_cuda_extension.s2_attention_bwd_dk_cuda(kx, vx, qy, quad_weights,
-                                                          col_idx, row_off,
-                                                          max_psi_nnz,
-                                                          grad_output,
-                                                          nlon_in, nlat_out, nlon_out,
-                                                          dk)
+        dk = attention_cuda_extension.s2_attention_bwd_dk_cuda(kx, vx, qy, quad_weights,
+                                                               col_idx, row_off,
+                                                               max_psi_nnz,
+                                                               grad_output,
+                                                               nlon_in, nlat_out, nlon_out)
 
-        dq = torch.empty_like(qy)
-        attention_cuda_extension.s2_attention_bwd_dq_cuda(kx, vx, qy, quad_weights,
-                                                          col_idx, row_off,
-                                                          max_psi_nnz,
-                                                          grad_output,
-                                                          nlon_in, nlat_out, nlon_out,
-                                                          dq)
+        dq = attention_cuda_extension.s2_attention_bwd_dq_cuda(kx, vx, qy, quad_weights,
+                                                               col_idx, row_off,
+                                                               max_psi_nnz,
+                                                               grad_output,
+                                                               nlon_in, nlat_out, nlon_out)
 
         return dk, dv, dq, None, None, None, None, None, None, None
 
