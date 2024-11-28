@@ -176,7 +176,7 @@ void s2_attention_fwd_cuda(const at::Tensor &kx, const at::Tensor &vx,
 
   // TODO: check sizess
 
-  auto stream = at::cuda::getCurrentCUDAStream();
+  auto stream = at::cuda::getCurrentCUDAStream().stream();
 
   size_t uo_num_channels = kx.size(1);
 
@@ -195,8 +195,8 @@ void s2_attention_fwd_cuda(const at::Tensor &kx, const at::Tensor &vx,
   // note: blocksize of 512 runs into resource limits
   dim3 blockDim(256,1,1);
 
-  s2_attention_kernel<<<gridDim, blockDim, sharedMemSize,
-    stream.stream()>>>(uo_num_channels, nlon_in, nlat_out, nlon_out, max_nnz,
+  s2_attention_kernel<<<gridDim, blockDim, sharedMemSize,stream>>>(
+                       uo_num_channels, nlon_in, nlat_out, nlon_out, max_nnz,
                        kx.packed_accessor32<float, 4>(), vx.packed_accessor32<float, 4>(),
                        qy.packed_accessor32<float, 4>(), y.packed_accessor32<float, 4>(),
                        psi_col_idx.packed_accessor64<int64_t, 1>(),

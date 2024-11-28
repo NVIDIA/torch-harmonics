@@ -192,7 +192,6 @@ class NeighborhoodAttentionS2(nn.Module):
         #ker_idx = idx[0, ...].contiguous()
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()
-        vals = vals.contiguous()
 
         #if _cuda_extension_available:
         #    device = "cuda"
@@ -217,7 +216,6 @@ class NeighborhoodAttentionS2(nn.Module):
 
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
-        self.register_buffer("psi_vals", vals, persistent=False)
         self.register_buffer("psi_roff_idx", row_offset, persistent=False)
 
         # learnable parameters
