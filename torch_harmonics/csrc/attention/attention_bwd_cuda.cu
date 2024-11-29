@@ -165,13 +165,14 @@ s2_attention_bwd_dv_kernel(int num_channels, int nlon_in, int nlat_out,
   }
 }
 
-at::Tensor s2_attention_bwd_dv_cuda(at::Tensor kx, at::Tensor vx,
+at::Tensor s2_attention_bwd_dv_cuda(at::Tensor kx, 
+                                    at::Tensor vx,
                                     at::Tensor qy,
+                                    at::Tensor dy, 
                                     at::Tensor quad_weights,
                                     at::Tensor psi_col_idx,
                                     at::Tensor psi_row_off,
                                     const int max_psi_nnz,
-                                    at::Tensor dy, 
                                     int nlon_in, int nlat_out, int nlon_out) {
 
   CHECK_CUDA_TENSOR(kx);
@@ -501,11 +502,11 @@ s2_attention_bwd_dq_kernel(int num_channels, int nlon_in, int nlat_out,
 at::Tensor s2_attention_bwd_dk_cuda(at::Tensor kx, 
                                     at::Tensor vx,
                                     at::Tensor qy,
+                                    at::Tensor dy,
                                     at::Tensor quad_weights,
                                     at::Tensor psi_col_idx,
                                     at::Tensor psi_row_off,
                                     const int max_psi_nnz,
-                                    at::Tensor dy, 
                                     int nlon_in, int nlat_out, int nlon_out) {
 
   CHECK_CUDA_TENSOR(kx);
@@ -557,11 +558,11 @@ at::Tensor s2_attention_bwd_dk_cuda(at::Tensor kx,
 at::Tensor s2_attention_bwd_dq_cuda(at::Tensor kx, 
                                     at::Tensor vx,
                                     at::Tensor qy,
+                                    at::Tensor dy,
                                     at::Tensor quad_weights,
                                     at::Tensor psi_col_idx,
                                     at::Tensor psi_row_off,
                                     const int max_psi_nnz,
-                                    at::Tensor dy, 
                                     int nlon_in, int nlat_out, int nlon_out) {
 
   CHECK_CUDA_TENSOR(kx);

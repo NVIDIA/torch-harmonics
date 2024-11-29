@@ -181,7 +181,7 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
   CHECK_CUDA_TENSOR(psi_col_idx);
   CHECK_CUDA_TENSOR(psi_row_off);
 
-  // TODO: check sizess
+  // TODO: check sizes
 
   auto stream = at::cuda::getCurrentCUDAStream().stream();
 

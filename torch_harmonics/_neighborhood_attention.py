@@ -48,7 +48,7 @@ def _neighborhood_attention_s2_torch(kx: torch.Tensor, vx: torch.Tensor, qy: tor
 
 
     # prepare result tensor
-    y = torch.empty_like(qy)
+    y = torch.zeros_like(qy)
 
     for ho in range(nlat_out):
 
@@ -139,7 +139,7 @@ def _neighborhood_attention_s2_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 k_hi_wi = kx[:, :, hi, wip]
                 qdotk_nz[:,idz-zstart] = torch.sum(q_ho_wo * k_hi_wi, dim=1)
 
-            qdotk_max,_ = qdotk_nz.max(dim=1)
+            qdotk_max, _ = torch.max(qdotk_nz, dim=1)
 
             for idz in range(zstart, zend):
                 nz_col_idx = col_idx[idz]
@@ -208,7 +208,7 @@ def _neighborhood_attention_s2_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 k_hj_wjp = kx[:, :, hj, wjp]
                 qdotk_nz[:,idz-zstart] = torch.sum(q_ho_wo * k_hj_wjp, dim=1)
 
-            qdotk_max,_ = qdotk_nz.max(dim=1)
+            qdotk_max, _ = torch.max(qdotk_nz, dim=1)
 
             for idz in range(zstart, zend):
                 nz_col_idx = col_idx[idz]
@@ -242,7 +242,7 @@ def _neighborhood_attention_s2_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 # compute correlation & softmax numerator
                 gdotv = torch.sum(dy[:,:,ho, wo] * vx[:,:,hi, wip], dim=1)
 
-            dkx[:,:,hi,wip] += qy[:, :, ho, wo] * (alpha[:, None, idz-zstart] / alpha_sum[:, None]) * (quad_weights[hi] * gdotv[:, None] - integral[:, None])
+                dkx[:,:,hi,wip] += qy[:, :, ho, wo] * (alpha[:, None, idz-zstart] / alpha_sum[:, None]) * (quad_weights[hi] * gdotv[:, None] - integral[:, None])
 
     return dkx
 
@@ -326,6 +326,63 @@ def _neighborhood_attention_s2_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, 
 
     return dqy
 
+class _NeighborhoodAttentionS2(torch.autograd.Function):
+
+    @staticmethod
+    @custom_fwd(device_type="cpu")
+    def forward(ctx, kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor,
+                quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+                nlon_in: int, nlat_out: int, nlon_out: int):
+
+        ctx.save_for_backward(col_idx, row_off, quad_weights, kx, vx, qy)
+        ctx.nlon_in = nlon_in
+        ctx.nlat_out = nlat_out
+        ctx.nlon_out = nlon_out
+
+        kx = kx.to(torch.float32)
+        vx = vx.to(torch.float32)
+        qy = qy.to(torch.float32)
+        
+        output = _neighborhood_attention_s2_torch(kx, vx, qy, quad_weights,
+                                                  col_idx, row_off,
+                                                  nlon_in, nlat_out, nlon_out)
+
+        return output
+
+    @staticmethod
+    @custom_bwd(device_type="cpu")
+    def backward(ctx, grad_output):
+        col_idx, row_off, quad_weights, kx, vx, qy = ctx.saved_tensors
+        nlon_in = ctx.nlon_in
+        nlat_out = ctx.nlat_out
+        nlon_out = ctx.nlon_out
+
+        dv = _neighborhood_attention_s2_bwd_dv_torch(kx, vx, qy, quad_weights,
+                                                     grad_output,
+                                                     col_idx, row_off,
+                                                     nlon_in, nlat_out, nlon_out)
+
+        dk = _neighborhood_attention_s2_bwd_dk_torch(kx, vx, qy, quad_weights,
+                                                     grad_output,
+                                                     col_idx, row_off,
+                                                     nlon_in, nlat_out, nlon_out)
+
+        dq = _neighborhood_attention_s2_bwd_dq_torch(kx, vx, qy, quad_weights,
+                                                     grad_output,
+                                                     col_idx, row_off,
+                                                     nlon_in, nlat_out, nlon_out)
+
+        return dk, dv, dq, None, None, None, None, None, None
+
+
+def _neighborhood_attention_s2(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, quad_weights: torch.Tensor,
+                                    col_idx: torch.Tensor, row_off: torch.Tensor,
+                                    nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+    
+    return _NeighborhoodAttentionS2.apply(kx, vx, qy, quad_weights,
+                                          col_idx, row_off,
+                                          nlon_in, nlat_out, nlon_out)
+
 
 class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
 
@@ -345,9 +402,9 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
         vx = vx.to(torch.float32)
         qy = qy.to(torch.float32)
         
-        output = attention_cuda_extension.s2_attention_fwd(kx, vx, qy, quad_weights,
-                                                           col_idx, row_off,
-                                                           max_psi_nnz, nlon_in, nlat_out, nlon_out)
+        output = attention_cuda_extension.forward(kx, vx, qy, quad_weights,
+                                                  col_idx, row_off,
+                                                  max_psi_nnz, nlon_in, nlat_out, nlon_out)
 
         return output
 
@@ -360,23 +417,23 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
         nlat_out = ctx.nlat_out
         nlon_out = ctx.nlon_out
 
-        dv = attention_cuda_extension.s2_attention_bwd_dv_cuda(kx, vx, qy, quad_weights,
-                                                               col_idx, row_off,
-                                                               max_psi_nnz,
-                                                               grad_output,
-                                                               nlon_in, nlat_out, nlon_out)
+        dv = attention_cuda_extension.backward_dv(kx, vx, qy, grad_output,
+                                                  quad_weights,
+                                                  col_idx, row_off,
+                                                  max_psi_nnz,
+                                                  nlon_in, nlat_out, nlon_out)
 
-        dk = attention_cuda_extension.s2_attention_bwd_dk_cuda(kx, vx, qy, quad_weights,
-                                                               col_idx, row_off,
-                                                               max_psi_nnz,
-                                                               grad_output,
-                                                               nlon_in, nlat_out, nlon_out)
+        dk = attention_cuda_extension.backward_dk(kx, vx, qy, grad_output,
+                                                  quad_weights,
+                                                  col_idx, row_off,
+                                                  max_psi_nnz,
+                                                  nlon_in, nlat_out, nlon_out)
 
-        dq = attention_cuda_extension.s2_attention_bwd_dq_cuda(kx, vx, qy, quad_weights,
-                                                               col_idx, row_off,
-                                                               max_psi_nnz,
-                                                               grad_output,
-                                                               nlon_in, nlat_out, nlon_out)
+        dq = attention_cuda_extension.backward_dq(kx, vx, qy, grad_output,
+                                                  quad_weights,
+                                                  col_idx, row_off,
+                                                  max_psi_nnz,
+                                                  nlon_in, nlat_out, nlon_out)
 
         return dk, dv, dq, None, None, None, None, None, None, None
 
