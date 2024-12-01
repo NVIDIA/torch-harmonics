@@ -1,0 +1,68 @@
+
+Training sfno_sc3_layer4_e16_linskip_nomlp, single step
+--------------------------------------------------------------------------------
+Epoch 0 summary:
+time taken: 31.030004739761353
+accumulated training loss: 81.95110547542572
+relative validation loss: 0.3145350217819214
+--------------------------------------------------------------------------------
+Epoch 1 summary:
+time taken: 30.517558336257935
+accumulated training loss: 11.13519498705864
+relative validation loss: 0.17323198169469833
+Traceback (most recent call last):
+  File "/cluster/home/llingsch/torch-harmonics/examples/train_sfno.py", line 519, in <module>
+    main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0)
+  File "/cluster/home/llingsch/torch-harmonics/examples/train_sfno.py", line 480, in main
+    train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=10, loss_fn='l2', enable_amp=enable_amp, log_grads=log_grads)
+  File "/cluster/home/llingsch/torch-harmonics/examples/train_sfno.py", line 370, in train_model
+    plot_prediction_vs_target(prd[0].cpu(), tar[0].cpu())
+  File "/cluster/home/llingsch/torch-harmonics/examples/train_sfno.py", line 278, in plot_prediction_vs_target
+    plt.savefig("sfno_prediction.png")
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/pyplot.py", line 1228, in savefig
+    res = fig.savefig(*args, **kwargs)  # type: ignore[func-returns-value]
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/figure.py", line 3395, in savefig
+    self.canvas.print_figure(fname, **kwargs)
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/backend_bases.py", line 2204, in print_figure
+    result = print_method(
+             ^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/backend_bases.py", line 2054, in <lambda>
+    print_method = functools.wraps(meth)(lambda *args, **kwargs: meth(
+                                                                 ^^^^^
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/backends/backend_agg.py", line 496, in print_png
+    self._print_pil(filename_or_obj, "png", pil_kwargs, metadata)
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/backends/backend_agg.py", line 444, in _print_pil
+    FigureCanvasAgg.draw(self)
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/backends/backend_agg.py", line 387, in draw
+    self.figure.draw(self.renderer)
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/artist.py", line 95, in draw_wrapper
+    result = draw(artist, renderer, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/artist.py", line 72, in draw_wrapper
+    return draw(artist, renderer)
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/figure.py", line 3162, in draw
+    mimage._draw_list_compositing_images(
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/image.py", line 132, in _draw_list_compositing_images
+    a.draw(renderer)
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/artist.py", line 72, in draw_wrapper
+    return draw(artist, renderer)
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/axes/_base.py", line 3137, in draw
+    mimage._draw_list_compositing_images(
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/image.py", line 132, in _draw_list_compositing_images
+    a.draw(renderer)
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/artist.py", line 39, in draw_wrapper
+    return draw(artist, renderer, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/contour.py", line 1415, in draw
+    super().draw(renderer)
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/artist.py", line 72, in draw_wrapper
+    return draw(artist, renderer)
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/collections.py", line 426, in draw
+    renderer.draw_path_collection(
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/matplotlib/path.py", line 211, in vertices
+    @property
+KeyboardInterrupt

@@ -1,0 +1,11 @@
+
+Training sfno_sc3_layer4_e16_linskip_nomlp, single step
+Traceback (most recent call last):
+  File "/cluster/home/llingsch/torch-harmonics/examples/train_sfno.py", line 519, in <module>
+    main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0)
+  File "/cluster/home/llingsch/torch-harmonics/examples/train_sfno.py", line 480, in main
+    train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=10, loss_fn='l2', enable_amp=enable_amp, log_grads=log_grads)
+  File "/cluster/home/llingsch/torch-harmonics/examples/train_sfno.py", line 369, in train_model
+    if index == 0 and plot_results:
+                      ^^^^^^^^^^^^
+NameError: name 'plot_results' is not defined

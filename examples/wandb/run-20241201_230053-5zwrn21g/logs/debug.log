@@ -1,0 +1,35 @@
+2024-12-01 23:00:53,903 INFO    MainThread:4164564 [wandb_setup.py:_flush():76] Current SDK version is 0.17.1
+2024-12-01 23:00:53,903 INFO    MainThread:4164564 [wandb_setup.py:_flush():76] Configure stats pid to 4164564
+2024-12-01 23:00:53,903 INFO    MainThread:4164564 [wandb_setup.py:_flush():76] Loading settings from /cluster/home/llingsch/.config/wandb/settings
+2024-12-01 23:00:53,903 INFO    MainThread:4164564 [wandb_setup.py:_flush():76] Loading settings from /cluster/home/llingsch/torch-harmonics/examples/wandb/settings
+2024-12-01 23:00:53,903 INFO    MainThread:4164564 [wandb_setup.py:_flush():76] Loading settings from environment variables: {}
+2024-12-01 23:00:53,903 INFO    MainThread:4164564 [wandb_setup.py:_flush():76] Inferring run settings from compute environment: {'program_relpath': 'examples/train_sfno.py', 'program_abspath': '/cluster/home/llingsch/torch-harmonics/examples/train_sfno.py', 'program': '/cluster/home/llingsch/torch-harmonics/examples/train_sfno.py'}
+2024-12-01 23:00:53,903 INFO    MainThread:4164564 [wandb_setup.py:_flush():76] Applying login settings: {}
+2024-12-01 23:00:53,903 INFO    MainThread:4164564 [wandb_setup.py:_flush():76] Applying login settings: {}
+2024-12-01 23:00:53,903 INFO    MainThread:4164564 [wandb_init.py:_log_setup():520] Logging user logs to /cluster/home/llingsch/torch-harmonics/examples/wandb/run-20241201_230053-5zwrn21g/logs/debug.log
+2024-12-01 23:00:53,903 INFO    MainThread:4164564 [wandb_init.py:_log_setup():521] Logging internal logs to /cluster/home/llingsch/torch-harmonics/examples/wandb/run-20241201_230053-5zwrn21g/logs/debug-internal.log
+2024-12-01 23:00:53,903 INFO    MainThread:4164564 [wandb_init.py:init():560] calling init triggers
+2024-12-01 23:00:53,903 INFO    MainThread:4164564 [wandb_init.py:init():567] wandb.init called with sweep_config: {}
+config: {'spectral_transform': 'sht', 'img_size': (256, 512), 'grid': 'equiangular', 'num_layers': 4, 'scale_factor': 3, 'embed_dim': 16, 'operator_type': 'driscoll-healy', 'big_skip': False, 'pos_embed': False, 'use_mlp': False, 'normalization_layer': 'none'}
+2024-12-01 23:00:53,903 INFO    MainThread:4164564 [wandb_init.py:init():610] starting backend
+2024-12-01 23:00:53,903 INFO    MainThread:4164564 [wandb_init.py:init():614] setting up manager
+2024-12-01 23:00:53,905 INFO    MainThread:4164564 [backend.py:_multiprocessing_setup():105] multiprocessing start_methods=fork,spawn,forkserver, using: spawn
+2024-12-01 23:00:53,906 INFO    MainThread:4164564 [wandb_init.py:init():622] backend started and connected
+2024-12-01 23:00:53,908 INFO    MainThread:4164564 [wandb_init.py:init():711] updated telemetry
+2024-12-01 23:00:53,919 INFO    MainThread:4164564 [wandb_init.py:init():744] communicating run to backend with 90.0 second timeout
+2024-12-01 23:00:54,345 INFO    MainThread:4164564 [wandb_run.py:_on_init():2402] communicating current version
+2024-12-01 23:00:54,490 INFO    MainThread:4164564 [wandb_run.py:_on_init():2411] got version response upgrade_message: "wandb version 0.18.7 is available!  To upgrade, please run:\n $ pip install wandb --upgrade"
+
+2024-12-01 23:00:54,490 INFO    MainThread:4164564 [wandb_init.py:init():795] starting run threads in backend
+2024-12-01 23:00:54,885 INFO    MainThread:4164564 [wandb_run.py:_console_start():2380] atexit reg
+2024-12-01 23:00:54,885 INFO    MainThread:4164564 [wandb_run.py:_redirect():2235] redirect: wrap_raw
+2024-12-01 23:00:54,885 INFO    MainThread:4164564 [wandb_run.py:_redirect():2300] Wrapping output streams.
+2024-12-01 23:00:54,885 INFO    MainThread:4164564 [wandb_run.py:_redirect():2325] Redirects installed.
+2024-12-01 23:00:54,887 INFO    MainThread:4164564 [wandb_init.py:init():838] run started, returning control to user process
+2024-12-01 23:03:53,458 INFO    MainThread:4164564 [wandb_run.py:_finish():2109] finishing run lingsch/sfno ablations spherical swe/5zwrn21g
+2024-12-01 23:03:53,458 INFO    MainThread:4164564 [wandb_run.py:_atexit_cleanup():2349] got exitcode: 0
+2024-12-01 23:03:53,458 INFO    MainThread:4164564 [wandb_run.py:_restore():2332] restore
+2024-12-01 23:03:53,458 INFO    MainThread:4164564 [wandb_run.py:_restore():2338] restore done
+2024-12-01 23:04:00,319 INFO    MainThread:4164564 [wandb_run.py:_footer_history_summary_info():4008] rendering history
+2024-12-01 23:04:00,320 INFO    MainThread:4164564 [wandb_run.py:_footer_history_summary_info():4040] rendering summary
+2024-12-01 23:04:00,330 INFO    MainThread:4164564 [wandb_run.py:_footer_sync_info():3967] logging synced files

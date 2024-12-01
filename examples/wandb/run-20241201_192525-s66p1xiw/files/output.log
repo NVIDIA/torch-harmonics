@@ -1,0 +1,64 @@
+
+Training sfno_sc3_layer4_e16_linskip_nomlp, single step
+--------------------------------------------------------------------------------
+Epoch 0 summary:
+time taken: 35.968559980392456
+accumulated training loss: 81.95109421014786
+relative validation loss: 0.3164753820747137
+median relative error: 59.88404846191406
+--------------------------------------------------------------------------------
+Epoch 1 summary:
+time taken: 35.47340488433838
+accumulated training loss: 11.127677649259567
+relative validation loss: 0.17396195232868195
+median relative error: 44.691558837890625
+--------------------------------------------------------------------------------
+Epoch 2 summary:
+time taken: 35.1464946269989
+accumulated training loss: 6.735719688236713
+relative validation loss: 0.11414620652794838
+median relative error: 36.371700286865234
+--------------------------------------------------------------------------------
+Epoch 3 summary:
+time taken: 35.06242799758911
+accumulated training loss: 4.591515600681305
+relative validation loss: 0.08116589626297355
+median relative error: 30.77690887451172
+--------------------------------------------------------------------------------
+Epoch 4 summary:
+time taken: 34.95322370529175
+accumulated training loss: 3.3948951847851276
+relative validation loss: 0.0620445441454649
+median relative error: 26.96721839904785
+--------------------------------------------------------------------------------
+Epoch 5 summary:
+time taken: 35.35644555091858
+accumulated training loss: 2.6443863101303577
+relative validation loss: 0.049302222207188606
+median relative error: 24.167360305786133
+--------------------------------------------------------------------------------
+Epoch 6 summary:
+time taken: 34.62364840507507
+accumulated training loss: 2.1382698360830545
+relative validation loss: 0.040737600065767765
+median relative error: 22.059064865112305
+--------------------------------------------------------------------------------
+Epoch 7 summary:
+time taken: 35.18905782699585
+accumulated training loss: 1.7954883966594934
+relative validation loss: 0.03443107823841274
+median relative error: 20.29869270324707
+--------------------------------------------------------------------------------
+Epoch 8 summary:
+time taken: 34.359084367752075
+accumulated training loss: 1.5416668355464935
+relative validation loss: 0.029953003744594753
+median relative error: 19.037216186523438
+--------------------------------------------------------------------------------
+Epoch 9 summary:
+time taken: 34.418452739715576
+accumulated training loss: 1.3552678115665913
+relative validation loss: 0.026930679916404188
+median relative error: 18.058319091796875
+--------------------------------------------------------------------------------
+done. Training took 350.5628664493561.
