@@ -374,12 +374,12 @@ class _NeighborhoodAttentionS2(torch.autograd.Function):
                                                       col_idx, row_off,
                                                       nlon_in, nlat_out, nlon_out)
 
-        dkw = _neighborhood_attention_s2_bwd_dk_torch(kx, vx, qy, quad_weights,
+        dkw = _neighborhood_attention_s2_bwd_dk_torch(kw, vw, qw, quad_weights,
                                                       grad_output,
                                                       col_idx, row_off,
                                                       nlon_in, nlat_out, nlon_out)
 
-        dqw = _neighborhood_attention_s2_bwd_dq_torch(kx, vx, qy, quad_weights,
+        dqw = _neighborhood_attention_s2_bwd_dq_torch(kw, vw, qw, quad_weights,
                                                       grad_output,
                                                       col_idx, row_off,
                                                       nlon_in, nlat_out, nlon_out)
