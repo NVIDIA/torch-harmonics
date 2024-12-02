@@ -414,12 +414,15 @@ class _NeighborhoodAttentionS2(torch.autograd.Function):
                 None, None, None, None, None, None
 
 
-def _neighborhood_attention_s2(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, quad_weights: torch.Tensor,
-                                    col_idx: torch.Tensor, row_off: torch.Tensor,
-                                    nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+def _neighborhood_attention_s2(k: torch.Tensor, v: torch.Tensor, q: torch.Tensor, 
+                               wk: torch.Tensor, wv: torch.Tensor, wq: torch.Tensor,
+                               bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], 
+                               bq: Union[torch.Tensor, None], quad_weights: torch.Tensor,
+                               col_idx: torch.Tensor, row_off: torch.Tensor,
+                               nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
     
-    return _NeighborhoodAttentionS2.apply(kx, vx, qy, quad_weights,
-                                          col_idx, row_off,
+    return _NeighborhoodAttentionS2.apply(k, v, q, wk, wv, wq, bk, bv, bq,
+                                          quad_weights, col_idx, row_off,
                                           nlon_in, nlat_out, nlon_out)
 
 
