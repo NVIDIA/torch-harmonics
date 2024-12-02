@@ -369,18 +369,18 @@ class _NeighborhoodAttentionS2(torch.autograd.Function):
         vw = F.conv2d(v, weight=wv, bias=bv)
         qw = F.conv2d(q, weight=wq, bias=bq)
 
-        dvw = _neighborhood_attention_s2_bwd_dv_torch(kw, vw, qw, quad_weights,
-                                                      grad_output,
+        dvw = _neighborhood_attention_s2_bwd_dv_torch(kw, vw, qw, grad_output,
+                                                      quad_weights,
                                                       col_idx, row_off,
                                                       nlon_in, nlat_out, nlon_out)
 
-        dkw = _neighborhood_attention_s2_bwd_dk_torch(kw, vw, qw, quad_weights,
-                                                      grad_output,
+        dkw = _neighborhood_attention_s2_bwd_dk_torch(kw, vw, qw, grad_output,
+                                                      quad_weights,
                                                       col_idx, row_off,
                                                       nlon_in, nlat_out, nlon_out)
 
-        dqw = _neighborhood_attention_s2_bwd_dq_torch(kw, vw, qw, quad_weights,
-                                                      grad_output,
+        dqw = _neighborhood_attention_s2_bwd_dq_torch(kw, vw, qw, grad_output,
+                                                      quad_weights,
                                                       col_idx, row_off,
                                                       nlon_in, nlat_out, nlon_out)
         
