@@ -1,0 +1,67 @@
+
+Training sfno_sc3_layer4_e16_linskip_nomlp, single step
+--------------------------------------------------------------------------------
+Epoch 0 summary:
+time taken: 18.06917452812195
+accumulated training loss: 108.41098129749298
+relative validation loss: 0.375535249710083
+median relative error: 64.41744232177734
+--------------------------------------------------------------------------------
+Epoch 1 summary:
+time taken: 17.759498357772827
+accumulated training loss: 15.40161694586277
+relative validation loss: 0.20850252080708742
+median relative error: 49.0794677734375
+--------------------------------------------------------------------------------
+Epoch 2 summary:
+time taken: 17.644429206848145
+accumulated training loss: 9.656421571969986
+relative validation loss: 0.14473414048552513
+median relative error: 40.69490051269531
+Traceback (most recent call last):
+  File "/cluster/home/llingsch/torch-harmonics/examples/train_sfno.py", line 520, in <module>
+    main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0)
+  File "/cluster/home/llingsch/torch-harmonics/examples/train_sfno.py", line 481, in main
+    train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=10, loss_fn='l2', enable_amp=enable_amp, log_grads=log_grads)
+  File "/cluster/home/llingsch/torch-harmonics/examples/train_sfno.py", line 315, in train_model
+    for inp, tar in dataloader:
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/torch/utils/data/dataloader.py", line 701, in __next__
+    data = self._next_data()
+           ^^^^^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/torch/utils/data/dataloader.py", line 757, in _next_data
+    data = self._dataset_fetcher.fetch(index)  # may raise StopIteration
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/torch/utils/data/_utils/fetch.py", line 52, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/torch/utils/data/_utils/fetch.py", line 52, in <listcomp>
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+            ~~~~~~~~~~~~^^^^^
+  File "/cluster/home/llingsch/torch-harmonics/torch_harmonics/examples/sfno/utils/pde_dataset.py", line 109, in __getitem__
+    inp, tar = self._get_sample()
+               ^^^^^^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/torch-harmonics/torch_harmonics/examples/sfno/utils/pde_dataset.py", line 85, in _get_sample
+    tar = self.solver.timestep(inp, self.nsteps)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/torch-harmonics/torch_harmonics/examples/shallow_water_equations.py", line 297, in timestep
+    dudtspec[inew] = self.dudtspec(uspec)
+                     ^^^^^^^^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/torch-harmonics/torch_harmonics/examples/shallow_water_equations.py", line 173, in dudtspec
+    ugrid = self.spec2grid(uspec)
+            ^^^^^^^^^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/torch-harmonics/torch_harmonics/examples/shallow_water_equations.py", line 127, in spec2grid
+    return self.isht(uspec)
+           ^^^^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/torch-harmonics/torch_harmonics/sht.py", line 197, in forward
+    im = torch.einsum('...lm, mlk->...km', x[..., 1], self.pct.to(x.dtype) )
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cluster/home/llingsch/.local/lib/python3.11/site-packages/torch/functional.py", line 402, in einsum
+    return _VF.einsum(equation, operands)  # type: ignore[attr-defined]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt

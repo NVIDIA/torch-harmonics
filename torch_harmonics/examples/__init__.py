@@ -29,5 +29,5 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-# from .pde_sphere import SphereSolver
+from .pde_sphere import SphereSolver
 from .shallow_water_equations import ShallowWaterSolver

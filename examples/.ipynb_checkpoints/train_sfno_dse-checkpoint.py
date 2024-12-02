@@ -48,10 +48,9 @@ import matplotlib.pyplot as plt
 
 import sys
 
-sys.path.append("../torch_harmonics")
-from examples.sfno import PdeDataset
-from sht_dse import SHT_DSE, SFNO_dse_fp
-from random_sampling import RandomSphericalSampling
+from torch_harmonics import *
+from torch_harmonics.examples.sfno_dse import PdeDataset, SFNODSEFp, SFNODSEVp
+
 
 # trains with a standard L1 of MSE loss
 l1_loss = torch.nn.L1Loss()
@@ -146,18 +145,6 @@ def train_model_fp(model,
 
             with torch.autocast(device_type="cuda", enabled=enable_amp):
                 
-                # import pdb; pdb.set_trace()
-                # theta_index, phi_index, theta, phi = select_random_points.random_points_on_sphere(5000)
-                # sht_transform = SHT_DSE(phi, theta, 22)
-
-                # # Select a random set of points from the input and target grids
-                # inp = select_random_points.get_random_sphere_data(inp, theta_index, phi_index)
-                # tar = select_random_points.get_random_sphere_data(tar, theta_index, phi_index)
-
-                # inp_sht = sht_transform.inverse(sht_transform.forward(inp))
-                # plot_prediction_vs_target(phi, theta, inp[0].cpu(), inp_sht[0].cpu())
-
-                
                 # Select a random set of points from the input and target grids
                 inp = select_random_points.get_random_sphere_data(inp, theta_index, phi_index)
                 tar = select_random_points.get_random_sphere_data(tar, theta_index, phi_index)
@@ -175,10 +162,6 @@ def train_model_fp(model,
                     raise NotImplementedError(f'Unknown loss function {loss_fn}')
 
             acc_loss += loss.item() * inp.size(0)
-
-            # optimizer.zero_grad()
-            # loss.backward()
-            # optimizer.step()
 
             optimizer.zero_grad(set_to_none=True)
             gscaler.scale(loss).backward()
@@ -271,6 +254,8 @@ def train_model_vp(model,
 
     train_start = time.time()
 
+    degree = 22
+
     # count iterations
     iters = 0
 
@@ -292,16 +277,20 @@ def train_model_vp(model,
         for inp, tar in dataloader:
 
             # Select a random set of points
-            theta_index, phi_index, theta, phi = select_random_points.random_points_on_sphere
+            theta_index, phi_index, theta, phi = select_random_points.random_sets_on_sphere(5000, inp.shape[0])
+
 
             with torch.autocast(device_type="cuda", enabled=enable_amp):
-
                 # Select a random set of points from the input and target grids
-                inp = select_random_points.get_random_sphere_data(inp, theta, phi)
-                tar = select_random_points.get_random_sphere_data(tar, theta, phi)
-                sht_transform = SHT_DSE(phi, theta, degree)
+                inp = select_random_points.get_random_sphere_data(inp, theta_index, phi_index)
+                tar = select_random_points.get_random_sphere_data(tar, theta_index, phi_index)
 
-                prd = model(inp)
+                
+                sht_transform = BatchedRealSHTDSE(phi, theta, degree)
+
+                
+
+                prd = model(inp, sht_transform)
                 for _ in range(nfuture):
                     prd = model(prd)
                     
@@ -316,9 +305,6 @@ def train_model_vp(model,
 
             optimizer.zero_grad(set_to_none=True)
             gscaler.scale(loss).backward()
-            # optimizer.zero_grad()
-            # loss.backward()
-            # optimizer.step()
 
             if log_grads and iters % log_grads == 0:
                 log_weights_and_grads(model, iters=iters)
@@ -340,13 +326,18 @@ def train_model_vp(model,
         errors = torch.zeros((num_valid))
         with torch.no_grad():
             for index, (inp, tar) in enumerate(dataloader):
+
+                # Select a random set of points
+                theta_index, phi_index, theta, phi = select_random_points.random_sets_on_sphere(5000, inp.shape[0])
                 batch_size = inp.shape[0]
                 
                 # Select a random set of points from the input and target grids
-                inp = select_random_points.get_random_sphere_data(inp, theta, phi)
-                tar = select_random_points.get_random_sphere_data(tar, theta, phi)
+                inp = select_random_points.get_random_sphere_data(inp, theta_index, phi_index)
+                tar = select_random_points.get_random_sphere_data(tar, theta_index, phi_index)
+            
+                sht_transform = BatchedRealSHTDSE(phi, theta, degree)
                 
-                prd = model(inp)
+                prd = model(inp, sht_transform)
                 for _ in range(nfuture):
                     prd = model(prd)
 
@@ -418,8 +409,8 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     num_layers = 4
     in_channels = out_channels = 3
 
-    train_fixed = True
-    train_variable = False
+    train_fixed = False
+    train_variable = True
 
     ######################################################################
     # Training a model where collocation points are fixed between samples
@@ -430,10 +421,10 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         theta_index, phi_index, theta, phi = select_random_points.random_points_on_sphere(num_points)
         
         # Using Fixed Points: initialize the matrices for the SHT
-        sht_transform = SHT_DSE(phi, theta, degree)
+        sht_transform = RealSHTDSE(phi, theta, degree)
     
         # Initialize the SFNO using fixed, arbitrary points
-        model = SFNO_dse_fp(in_channels, out_channels, degree, width, sht_transform, num_layers).to(device)
+        model = SFNODSEFp(in_channels, out_channels, degree, width, sht_transform, num_layers).to(device)
     
         # Count the number of parameters
         num_params = count_parameters(model)
@@ -454,7 +445,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     
     if train_variable:
         # Initialize the SFNO using variable, arbitrary points
-        model = SFNO_dse_vp(in_channels, out_channels, degree, width, num_layers).to(device)
+        model = SFNODSEVp(in_channels, out_channels, degree, width, num_layers).to(device)
     
         # Count the number of parameters
         num_params = count_parameters(model)

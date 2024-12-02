@@ -35,7 +35,7 @@ import torch.nn.functional as F
 from scipy.special import lpmv
 import numpy as np
 
-class SHT_DSE():
+class RealSHTDSE():
     r"""
     Defines a module for computing the forward/backward SHT on arbitrary points.
     Requires the collocation points (locations of measurements on the surface of the sphere),
@@ -47,7 +47,7 @@ class SHT_DSE():
     """
     
     def __init__(self, phi, theta, degree):        
-        r"""
+        """
         Initializes the matrices to compute the forward/backward SHT on arbitrary points.
 
         Parameters:
@@ -65,7 +65,7 @@ class SHT_DSE():
         self.V_fwd, self.V_inv = self.make_matrix()
 
     def make_matrix(self):       
-        r"""
+        """
         Constructs the matrices to compute spherical harmonics transforms
 
         Inputs: 
@@ -93,7 +93,7 @@ class SHT_DSE():
         return V_forward.cuda(), torch.transpose(V_forward, 0, 1).cuda()
 
     def forward(self, data):
-        r"""
+        """
         Computes the spherical harmonics from the data
 
         Inputs: 
@@ -107,7 +107,7 @@ class SHT_DSE():
         return data_fwd
     
     def inverse(self, data):
-        r"""
+        """
         Computes the modified data from the spherical harmonics
         Note: This is not technically an inverse, as orthogonality is not preserved.
             Nonetheless, we refer to it as such.
@@ -123,275 +123,96 @@ class SHT_DSE():
         return data_inv
 
 
-##################################################
-# Classes for data with fixed collocation points
-##################################################
-
-class SHT_DSE_Conv_fp(nn.Module):
+class BatchedRealSHTDSE():
     r"""
-    Defines a module for computing the convolution in the Spherical Harmonic Domain. 
-    This is computed as a vector-vector multiplication between a vector of spherical harmonic
-    coefficients and a vector of learnable weights.
-
-    """
-    def __init__(self, in_channels, out_channels, degree, sht_transform):
-        r"""
-        Initializes the SHT Convolution Layer, 
-
-        Parameters:
-        in_channels: number of channels to be taken as input for the SH convolution
-        out_channels: number of channels produced by the spherical harmonics convolution
-        degree: degree of the spherical harmonics, total number of modes equal to degree^2
-        sht_transform: computes the SH transform itself
-        """
-        super(SHT_DSE_Conv_fp, self).__init__()
-
-
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.degree = degree 
-        
-        self.scale = (1 / (in_channels * out_channels))
-        self.weights1 = nn.Parameter(self.scale * torch.rand(in_channels, out_channels, self.degree**2, dtype=torch.float))
-
-        self.sht_transform = sht_transform
-
-    def compl_mul1d(self, input, weights):
-        r"""
-        Computes the SH via multiplication in SH domain
-
-        Inputs:
-        input; SH data
-        weights; trainable weights for convolution in SH domain
-        Outputs:
-        data convolved via multiplication in SH domain
-        """
-        # (batch, in_channel, x ), (in_channel, out_channel, x) -> (batch, out_channel, x)
-        return torch.einsum("bix,iox->box", input, weights)
-
-    def forward(self, x):
-        r"""
-        Computes the forward pass of the SH Convolution layer
-
-        Inputs:
-        x; data in spatial domain
-        Outputs:
-        x; data convolved in SH domain with learnable weights
-        """
-        # Calculate SH for given data
-        x_ft = self.sht_transform.forward(x)
-
-        # Multiply relevant SH modes
-        out_ft = self.compl_mul1d(x_ft, self.weights1)
-
-        # Return to physical space
-        x = self.sht_transform.inverse(out_ft)
-
-        return x
-
-
-class SFNO_dse_fp(nn.Module):    
-    r"""
-    Defines a module for training a SFNO on FIXED arbitrary collocation (measurement) points.
+    Defines a module for computing the forward/backward SHT on arbitrary points.
+    Requires the collocation points (locations of measurements on the surface of the sphere),
+    as defined by the polar (theta) and azimuthal (phi) angles.
+    The SHT is applied to the last two dimensions of the input. 
 
     [1] L. Lingsch, M. Michelis, E. de Bezenac, S. M. Perera, R. K. Katzschmann, S. Mishra; 
     Beyond Regular Grids: Fourier-Based Neural Operators on Arbitrary Domains; ICML 2024
     """
-    def __init__(self, in_channels, out_channels, degree, width, sht_transform, num_layers):
-        r"""
-        Initializes the class to learn the SFNO. 
+    
+    def __init__(self, phi, theta, degree):        
+        """
+        Initializes the matrices to compute the forward/backward SHT on arbitrary points.
 
         Parameters:
-        in_channels: number of channels of the input data
-        out_channels: number of channels for the output data (to be learned)
+        phi: input point locations as a azimuthal angle
+        theta: input grid locations as a polar angle
         degree: degree of the spherical harmonics, total number of modes equal to degree^2
-        sht_transform: computes the SH transform itself
-        num_layers: number of trainable SFNO layers (SH convolution + Pointwise convolution)
         """
-        super(SFNO_dse_fp, self).__init__()
-        
-        self.degree = degree
-        self.width = width
-        self.num_layers = num_layers
-        
-        # Input layer
-        self.fc0 = nn.Linear(in_channels, self.width)
-        
-        # Dynamically create convolutional and pointwise linear layers
-        self.conv_layers = nn.ModuleList([
-            SHT_DSE_Conv_fp(self.width, self.width, self.degree, sht_transform)
-            for _ in range(num_layers)
-        ])
-        
-        self.pointwise_layers = nn.ModuleList([
-            nn.Conv1d(self.width, self.width, 1)
-            for _ in range(num_layers)
-        ])
-        
-        # Output layers
-        self.fc1 = nn.Linear(self.width, 128)
-        self.fc2 = nn.Linear(128, out_channels)
+        self.theta = theta  # between 0 and pi
+        self.phi = phi      # between 0 and 2 pi
 
-    def forward(self, x):
-        r"""
-        Learns to predict an output as a function of the input data via SH
+        self.degree = degree
+        
+        self.batch_size = theta.shape[0]
+        self.num_points = theta.shape[1]
+
+        self.V_fwd, self.V_inv = self.make_matrix()
+
+    
+    def compute_legendre_matrix(self, l):
+        """
+        Compute all associated Legendre polynomials for degree `l` across the batch.
+        Uses scipy.special.lpmv to generate values in a vectorized way.
+        """
+        theta_cos = torch.cos(self.theta)
+        P_l_m = []
+        for m in range(-l, l + 1):
+            P_lm = lpmv(m, l, theta_cos.cpu().numpy())  # lpmv operates on numpy arrays
+            P_l_m.append(torch.tensor(P_lm, dtype=torch.float, device=self.theta.device))
+        return torch.stack(P_l_m, dim=0)  # Shape: (2l+1, num_points)
+
+    def make_matrix(self):
+        V_fwd = torch.zeros((self.batch_size, self.num_points, self.degree ** 2), dtype=torch.float, device=self.theta.device)
+
+        index = 0
+
+        for l in range(self.degree):
+            P_l_m = self.compute_legendre_matrix(l)  # Shape: (2l+1, num_points)
+            
+            for m in range(-l, l + 1):
+                trig_term = torch.sin(m * self.phi) if m < 0 else torch.cos(m * self.phi)
+                scale_factor = np.sqrt(2) if m != 0 else 1.0
+                
+                V_fwd[:, :, index] = scale_factor * P_l_m[m + l, :] * trig_term
+                V_fwd[:, :, index] /= torch.max(V_fwd[:, :, index]).clamp(min=1e-6)  # Avoid division by zero
+                index += 1
+                    
+
+
+        return V_fwd.cuda(), V_fwd.permute(0,2,1).cuda()
+
+    def forward(self, data):
+        """
+        Computes the spherical harmonics from the data
 
         Inputs: 
         class variables
-        x; vector of inputs in spatial domain with dimensions [batchsize, in_channels, N] 
+        data; vector of inputs in spatial domain
         Outputs:
-        x; vector of outputs in spatial domain with dimensions [batchsize, out_channels, N] 
+        data_fwd; data in spherical harmonic domain up to set degree
         """
-        x = x.permute(0, 2, 1)
-        x = self.fc0(x)
-        x = x.permute(0, 2, 1)
+        data_fwd = torch.matmul(data, self.V_fwd)
 
-        # Apply dynamically created layers
-        for i in range(self.num_layers):
-            x1 = self.conv_layers[i](x)
-            x2 = self.pointwise_layers[i](x)
-            x = x1 + x2
-            x = F.gelu(x)
-
-        x = x.permute(0, 2, 1)
-        x = self.fc1(x)
-        x = F.gelu(x)
-        x = self.fc2(x)
-        x = x.permute(0, 2, 1)
-        return x
-
-
-##################################################
-# Classes for data with varying collocation points
-##################################################
-
-class SHT_DSE_Conv_vp(nn.Module):
-    r"""
-    Defines a module for computing the convolution in the Spherical Harmonic Domain. 
-    This is computed as a vector-vector multiplication between a vector of spherical harmonic
-    coefficients and a vector of learnable weights.
-
-    """
-    def __init__(self, in_channels, out_channels, degree):
-        r"""
-        Initializes the SHT Convolution Layer, 
-
-        Parameters:
-        in_channels: number of channels to be taken as input for the SH convolution
-        out_channels: number of channels produced by the spherical harmonics convolution
-        degree: degree of the spherical harmonics, total number of modes equal to degree^2
-        sht_transform: computes the SH transform itself
+        return data_fwd
+    
+    def inverse(self, data):
         """
-        super(SHT_DSE_Conv_vp, self).__init__()
-
-
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.degree = degree 
-        
-        self.scale = (1 / (in_channels * out_channels))
-        self.weights1 = nn.Parameter(self.scale * torch.rand(in_channels, out_channels, self.degree**2, dtype=torch.float))
-
-
-    def compl_mul1d(self, input, weights):
-        r"""
-        Computes the SH via multiplication in SH domain
-
-        Inputs:
-        input; SH data
-        weights; trainable weights for convolution in SH domain
-        Outputs:
-        data convolved via multiplication in SH domain
-        """
-        # (batch, in_channel, x ), (in_channel, out_channel, x) -> (batch, out_channel, x)
-        return torch.einsum("bix,iox->box", input, weights)
-
-    def forward(self, x, sht_transform):
-        r"""
-        Computes the forward pass of the SH Convolution layer
-
-        Inputs:
-        x; data in spatial domain
-        Outputs:
-        x; data convolved in SH domain with learnable weights
-        """
-        # Calculate SH for given data
-        x_ft = sht_transform.forward(x)
-
-        # Multiply relevant SH modes
-        out_ft = self.compl_mul1d(x_ft, self.weights1)
-
-        # Return to physical space
-        x = sht_transform.inverse(out_ft)
-
-        return x
-        
-class SFNO_dse_vp(nn.Module):    
-    r"""
-    Defines a module for training a SFNO on VARIABLE arbitrary collocation (measurement) points.
-
-    [1] L. Lingsch, M. Michelis, E. de Bezenac, S. M. Perera, R. K. Katzschmann, S. Mishra; 
-    Beyond Regular Grids: Fourier-Based Neural Operators on Arbitrary Domains; ICML 2024
-    """
-    def __init__(self, in_channels, out_channels, degree, width, num_layers):
-        r"""
-        Initializes the class to learn the SFNO. 
-
-        Parameters:
-        in_channels: number of channels of the input data
-        out_channels: number of channels for the output data (to be learned)
-        degree: degree of the spherical harmonics, total number of modes equal to degree^2
-        sht_transform: computes the SH transform itself
-        num_layers: number of trainable SFNO layers (SH convolution + Pointwise convolution)
-        """
-        super(SFNO_dse_vp, self).__init__()
-        
-        self.degree = degree
-        self.width = width
-        self.num_layers = num_layers
-        
-        # Input layer
-        self.fc0 = nn.Linear(in_channels, self.width)
-        
-        # Dynamically create convolutional and pointwise linear layers
-        self.conv_layers = nn.ModuleList([
-            SHT_DSE_Conv_vp(self.width, self.width, self.degree)
-            for _ in range(num_layers)
-        ])
-        
-        self.pointwise_layers = nn.ModuleList([
-            nn.Conv1d(self.width, self.width, 1)
-            for _ in range(num_layers)
-        ])
-        
-        # Output layers
-        self.fc1 = nn.Linear(self.width, 128)
-        self.fc2 = nn.Linear(128, out_channels)
-
-    def forward(self, x, sht_transform):
-        r"""
-        Learns to predict an output as a function of the input data via SH
+        Computes the modified data from the spherical harmonics
+        Note: This is not technically an inverse, as orthogonality is not preserved.
+            Nonetheless, we refer to it as such.
 
         Inputs: 
         class variables
-        x; vector of inputs in spatial domain with dimensions [batchsize, in_channels, N] 
+        data; vector of inputs in spherical harmonics domain
         Outputs:
-        x; vector of outputs in spatial domain with dimensions [batchsize, out_channels, N] 
+        data_inv; data in spatial domain
         """
-        x = x.permute(0, 2, 1)
-        x = self.fc0(x)
-        x = x.permute(0, 2, 1)
+        data_inv = torch.matmul(data, self.V_inv) / self.num_points
+        
+        return data_inv
 
-        # Apply dynamically created layers
-        for i in range(self.num_layers):
-            x1 = self.conv_layers[i](x, sft_transform)
-            x2 = self.pointwise_layers[i](x)
-            x = x1 + x2
-            x = F.gelu(x)
-
-        x = x.permute(0, 2, 1)
-        x = self.fc1(x)
-        x = F.gelu(x)
-        x = self.fc2(x)
-        x = x.permute(0, 2, 1)
-        return x

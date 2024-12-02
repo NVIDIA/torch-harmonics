@@ -44,9 +44,6 @@ import pandas as pd
 
 import matplotlib.pyplot as plt
 
-import sys
-
-sys.path.append("../")
 from torch_harmonics.examples.sfno import PdeDataset
 
 # wandb logging
