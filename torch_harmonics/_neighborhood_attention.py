@@ -44,9 +44,9 @@ except ImportError as err:
     _cuda_extension_available = False
 
 
-def _neighborhood_attention_s2_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor,
-                                     quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-                                     nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+def _neighborhood_attention_s2_fwd_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor,
+                                         quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+                                         nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
 
 
     # prepare result tensor
@@ -351,9 +351,9 @@ class _NeighborhoodAttentionS2(torch.autograd.Function):
         vw = vw.to(torch.float32)
         qw = qw.to(torch.float32)
         
-        output = _neighborhood_attention_s2_torch(kw, vw, qw, quad_weights,
-                                                  col_idx, row_off,
-                                                  nlon_in, nlat_out, nlon_out)
+        output = _neighborhood_attention_s2_fwd_torch(kw, vw, qw, quad_weights,
+                                                      col_idx, row_off,
+                                                      nlon_in, nlat_out, nlon_out)
 
         return output
 
@@ -414,12 +414,12 @@ class _NeighborhoodAttentionS2(torch.autograd.Function):
                 None, None, None, None, None, None
 
 
-def _neighborhood_attention_s2(k: torch.Tensor, v: torch.Tensor, q: torch.Tensor, 
-                               wk: torch.Tensor, wv: torch.Tensor, wq: torch.Tensor,
-                               bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], 
-                               bq: Union[torch.Tensor, None], quad_weights: torch.Tensor,
-                               col_idx: torch.Tensor, row_off: torch.Tensor,
-                               nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+def _neighborhood_attention_s2_torch(k: torch.Tensor, v: torch.Tensor, q: torch.Tensor, 
+                                     wk: torch.Tensor, wv: torch.Tensor, wq: torch.Tensor,
+                                     bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], 
+                                     bq: Union[torch.Tensor, None], quad_weights: torch.Tensor,
+                                     col_idx: torch.Tensor, row_off: torch.Tensor,
+                                     nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
     
     return _NeighborhoodAttentionS2.apply(k, v, q, wk, wv, wq, bk, bv, bq,
                                           quad_weights, col_idx, row_off,
