@@ -46,6 +46,7 @@ try:
     import attention_cuda_extension
     _cuda_extension_available = True
 except ImportError as err:
+    print(f"WARNING: Couldn't import cuda attention {err}")
     attention_cuda_extension = None
     _cuda_extension_available = False
 
@@ -260,7 +261,7 @@ class NeighborhoodAttentionS2(nn.Module):
         q = F.conv2d(qo, weight=self.q_weights, bias=self.q_bias)
         v = F.conv2d(vi, weight=self.v_weights, bias=self.v_bias)
 
-        if x.is_cuda and _cuda_extension_available:
+        if qo.is_cuda and _cuda_extension_available:
             out = _neighborhood_attention_s2_cuda(k, v, q, self.quad_weights,
                                                   self.psi_col_idx, self.psi_roff_idx, self.max_psi_nnz,
                                                   self.nlon_in, self.nlat_out, self.nlon_out)
