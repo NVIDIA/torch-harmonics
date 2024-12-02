@@ -89,7 +89,7 @@ def _neighborhood_attention_s2_fwd_torch(kx: torch.Tensor, vx: torch.Tensor, qy:
                 wip = (wi + wo) % nlon_in
                 alpha = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max)
                 # softmax denominator
-                alpha_sum[:] += alpha[:]
+                alpha_sum[:] += alpha[:] * quad_weights[hi]
 
                 y[:,:,ho,wo] += alpha[:, None] * vx[:,:,hi,wip] * quad_weights[hi]
 
@@ -151,7 +151,7 @@ def _neighborhood_attention_s2_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 # account for output shift and ensure positive index due to circular condition
                 wi = nz_col_idx % nlon_in
                 wip = (wi+wo) % nlon_in
-                alpha_nz[:,idz-zstart] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max)
+                alpha_nz[:,idz-zstart] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max) * quad_weights[hi]
                 alpha_sum[:] += alpha_nz[:,idz-zstart]
 
             for idz in range(zstart, zend):
@@ -162,7 +162,7 @@ def _neighborhood_attention_s2_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 # account for output shift and ensure positive index due to circular condition
                 wi = nz_col_idx % nlon_in
                 wip = (wi+wo) % nlon_in
-                dvx[:,:,hi, wip] += (alpha_nz[:, None, idz-zstart] / alpha_sum[:, None]) * dy[:,:,ho,wo] * quad_weights[hi]
+                dvx[:,:,hi, wip] += (alpha_nz[:, None, idz-zstart] / alpha_sum[:, None]) * dy[:,:,ho,wo]
 
     return dvx
 
@@ -221,14 +221,14 @@ def _neighborhood_attention_s2_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 wj = nz_col_idx % nlon_in
                 wjp = (wj+wo) % nlon_in
 
-                alpha[:, idz-zstart] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max)
+                alpha[:, idz-zstart] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max) * quad_weights[hj]
                 alpha_sum[:] += alpha[:, idz-zstart]
 
                 # input dot
                 gdotv = torch.sum(dy[:,:,ho, wo] * vx[:,:,hj, wjp], dim=1)
 
                 # integral term
-                integral[:] += alpha[:, idz-zstart] * gdotv[:] * quad_weights[hj]
+                integral[:] += alpha[:, idz-zstart] * gdotv[:]
 
             integral[:] = integral[:] / alpha_sum[:]
 
@@ -244,21 +244,15 @@ def _neighborhood_attention_s2_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 # compute correlation & softmax numerator
                 gdotv = torch.sum(dy[:,:,ho, wo] * vx[:,:,hi, wip], dim=1)
 
-                dkx[:,:,hi,wip] += qy[:, :, ho, wo] * (alpha[:, None, idz-zstart] / alpha_sum[:, None]) * (quad_weights[hi] * gdotv[:, None] - integral[:, None])
+                dkx[:,:,hi,wip] += qy[:, :, ho, wo] * (alpha[:, None, idz-zstart] / alpha_sum[:, None]) * (gdotv[:, None] - integral[:, None])
 
     return dkx
 
 # Explicit gradient w.r.t. qy: dM/dq
 # provided as a reference for CUDA & other hand-written gradients
-<<<<<<< HEAD
-def _disco_att_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
-                           quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-                           nlat_in: int, nlon_in: int, nlat_out: int, nlon_out: int):
-=======
 def _neighborhood_attention_s2_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
                                             quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
                                             nlon_in: int, nlat_out: int, nlon_out: int):
->>>>>>> starting to port the tests
 
     # shapes:
     # input
@@ -316,13 +310,13 @@ def _neighborhood_attention_s2_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 q_ho_wo = qy[:, :, ho, wo]
                 k_hi_wi = kx[:, :, hi, wip]
                 idz_i = idz-zstart
-                alpha[:, idz_i] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max)
+                alpha[:, idz_i] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max) * quad_weights[hi]
                 alpha_sum[:] += alpha[:, idz_i]
 
                 gdotv = torch.sum(dy[:,:,ho, wo] * vx[:,:,hi, wip], dim=1)
                 alpha_k[:,:] += alpha[:, None, idz_i] * k_hi_wi
-                alpha_vw[:,:] += alpha[:, None, idz_i] * gdotv[:,None] * quad_weights[hi]
-                alpha_kvw[:,:] += alpha[:, None, idz_i] * k_hi_wi * gdotv[:,None] * quad_weights[hi]
+                alpha_vw[:,:] += alpha[:, None, idz_i] * gdotv[:,None]
+                alpha_kvw[:,:] += alpha[:, None, idz_i] * k_hi_wi * gdotv[:,None]
 
             dqy[:,:,ho,wo] = (alpha_kvw*alpha_sum[:,None] - alpha_vw*alpha_k) / (alpha_sum[:,None]*alpha_sum[:,None])
 
