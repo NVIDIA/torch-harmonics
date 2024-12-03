@@ -35,13 +35,25 @@
 #include <ATen/cuda/CUDAUtils.h>
 
 #include <cub/cub.cuh>
+#include <limits>
 
 using BlockReduceFloat256 = cub::BlockReduce<float, 256>;
 using BlockReduceFloat512 = cub::BlockReduce<float, 512>;
 
+__device__ static float atomicMax(float* address, float val)
+{
+  int* address_as_i = (int*) address;
+  int old = *address_as_i, assumed;
+  do {
+    assumed = old;
+    old = ::atomicCAS(address_as_i, assumed,
+                      __float_as_int(::fmaxf(val, __int_as_float(assumed))));
+  } while (assumed != old);
+  return __int_as_float(old);
+}
+
 __global__ void s2_attention_kernel(int num_channels, int nlon_in, int nlat_out,
                                     int nlon_out,
-                                    int max_nnz,
                                     torch::PackedTensorAccessor32<float, 4> kx,
                                     torch::PackedTensorAccessor32<float, 4> vx,
                                     torch::PackedTensorAccessor32<float, 4> qy,
@@ -56,8 +68,6 @@ __global__ void s2_attention_kernel(int num_channels, int nlon_in, int nlat_out,
   float *sh_alpha_sum = (float *)&sharedMem;
   float* sh_qdotk_max = (float*)&sharedMem[1];
   float* sh_qy_ho_wo = (float *)&sharedMem[2];
-  float* sh_qdotk_nz = (float*)&sharedMem[2+num_channels];
-  typename BlockReduceFloat256::TempStorage* max_reduce_temp_storage = (typename BlockReduceFloat256::TempStorage*)&sharedMem[2+num_channels+max_nnz];
 
   if(threadIdx.x == 0) sh_alpha_sum[0] = 0.0;
   __syncthreads();
@@ -77,7 +87,8 @@ __global__ void s2_attention_kernel(int num_channels, int nlon_in, int nlat_out,
 
 
   int psi_offset = psi_row_offset[ho];
-  int psi_nnz_ho = psi_row_offset[ho+1] - psi_offset;
+  int psi_nnz_ho = psi_row_offset[ho + 1] - psi_offset;
+  float qdotk_max = std::numeric_limits<float>::lowest();
   for(int psi_block=0; psi_block<(psi_nnz_ho/blockDim.x)+1; psi_block++) {
     int idz = psi_block*blockDim.x + threadIdx.x;
 
@@ -98,32 +109,16 @@ __global__ void s2_attention_kernel(int num_channels, int nlon_in, int nlat_out,
     for(int channel_idx = 0; channel_idx<num_channels; channel_idx++) {
       qdotk += sh_qy_ho_wo[channel_idx]*kx[batch_b][channel_idx][hi][wip];
     }
-    sh_qdotk_nz[idz] = qdotk;
-
+    qdotk_max = std::max(qdotk_max, qdotk);
   }
 
-  // max reduction qdotk
-  float qdotk_max = std::numeric_limits<float>::lowest();
-  for(int psi_block=0; psi_block<(psi_nnz_ho/blockDim.x)+1; psi_block++) {
-    int idz = psi_block * blockDim.x + threadIdx.x;
-
-    // handle case where idz > number of elements
-    float qdotk = (idz<psi_nnz_ho) ? sh_qdotk_nz[idz] : std::numeric_limits<float>::lowest();
-    // reduce
-    float block_max = BlockReduceFloat256(*max_reduce_temp_storage)
-                          .Reduce(qdotk, cub::Max());
-
-    // note: 'block_max' is only valid for thread 0
-    if(threadIdx.x == 0) qdotk_max = std::max(block_max, qdotk_max);
-  }
+  // collect thread-local qdotk max
+  atomicMax(&sh_qdotk_max[0], qdotk_max);
   __syncthreads();
-  // store full max-reduction into shared memory for all threads
-  if(threadIdx.x == 0) sh_qdotk_max[0] = qdotk_max;
-  __syncthreads();
-
   // "broadcast" qdotk_max back into all thread-local registers
   qdotk_max = sh_qdotk_max[0];
 
+  float alpha_sum = 0.0f;
   for(int psi_block=0; psi_block<(psi_nnz_ho/blockDim.x)+1; psi_block++) {
     int idz = psi_block*blockDim.x + threadIdx.x;
     float alpha_inz = 0.0;
@@ -139,11 +134,18 @@ __global__ void s2_attention_kernel(int num_channels, int nlon_in, int nlat_out,
       int wi = nz_col_idx % nlon_in;
       int wip = (wi + wo) % nlon_in;
 
-      // softmax numerator with minus qdotk_max to avoid numerical overflow. Because qdotk_max is in both numerator and denominator (due to alpha_sum), it doesn't effect the solution other than removing overflow
-      alpha_inz = expf(sh_qdotk_nz[idz] - qdotk_max);
+      // softmax numerator with minus qdotk_max to avoid numerical overflow.
+      // Because qdotk_max is in both numerator and denominator (due to
+      // alpha_sum), it doesn't effect the solution other than removing overflow
+      // correlation Q&K (dot-product Q.K)
+      float qdotk = 0.0;
+      for(int channel_idx = 0; channel_idx<num_channels; channel_idx++) {
+        qdotk += sh_qy_ho_wo[channel_idx]*kx[batch_b][channel_idx][hi][wip];
+      }
+      alpha_inz = expf(qdotk - qdotk_max);
 
-      // sum alpha
-      atomicAdd(&sh_alpha_sum[0], alpha_inz);
+      // thread-local sum alpha
+      alpha_sum += alpha_inz;
 
       // multiply alpha, vx, and quadrature weights
       for(int channel_idx = 0; channel_idx<num_channels; channel_idx++) {
@@ -151,13 +153,17 @@ __global__ void s2_attention_kernel(int num_channels, int nlon_in, int nlat_out,
       }
     }
   }
-  __syncthreads();
 
+  // collect all alpha_sum across threads
+  atomicAdd(&sh_alpha_sum[0], alpha_sum);
+  __syncthreads();
+  // rebroadcast sum to all threads
+  alpha_sum = sh_alpha_sum[0];
   // divide output by alpha_sum
   for(int channel_block_i = 0; channel_block_i<(num_channels/blockDim.x)+1; channel_block_i++) {
     int channel_idx = channel_block_i*blockDim.x + threadIdx.x;
     if(channel_idx >= num_channels) break;
-    y[batch_b][channel_idx][ho][wo] /= sh_alpha_sum[0];
+    y[batch_b][channel_idx][ho][wo] /= alpha_sum;
   }
 
 }
@@ -169,7 +175,6 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
                                     at::Tensor quad_weights,
                                     at::Tensor psi_col_idx,
                                     at::Tensor psi_row_off,
-                                    const int max_nnz,
                                     int nlon_in,
                                     int nlat_out,
                                     int nlon_out) {
@@ -190,7 +195,7 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
 
   size_t uo_num_channels = kx.size(1);
 
-  size_t sharedMemSize = (uo_num_channels+2+max_nnz)*sizeof(float)+sizeof(typename BlockReduceFloat256::TempStorage);
+  size_t sharedMemSize = (uo_num_channels+2)*sizeof(float);
 
   const int batch_size = kx.size(0);
 
@@ -206,7 +211,7 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
   dim3 blockDim(256,1,1);
 
   s2_attention_kernel<<<gridDim, blockDim, sharedMemSize,stream>>>(
-                       uo_num_channels, nlon_in, nlat_out, nlon_out, max_nnz,
+                       uo_num_channels, nlon_in, nlat_out, nlon_out,
                        kx.packed_accessor32<float, 4>(), vx.packed_accessor32<float, 4>(),
                        qy.packed_accessor32<float, 4>(), y.packed_accessor32<float, 4>(),
                        psi_col_idx.packed_accessor64<int64_t, 1>(),
