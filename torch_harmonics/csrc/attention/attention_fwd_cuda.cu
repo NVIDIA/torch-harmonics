@@ -69,7 +69,10 @@ __global__ void s2_attention_kernel(int num_channels, int nlon_in, int nlat_out,
   float* sh_qdotk_max = (float*)&sharedMem[1];
   float* sh_qy_ho_wo = (float *)&sharedMem[2];
 
-  if(threadIdx.x == 0) sh_alpha_sum[0] = 0.0;
+  if (threadIdx.x == 0) {
+      sh_qdotk_max[0] = std::numeric_limits<float>::lowest();
+      sh_alpha_sum[0] = 0.0;
+    }
   __syncthreads();
 
   int ho = blockIdx.x;
