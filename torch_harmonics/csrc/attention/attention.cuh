@@ -49,7 +49,6 @@ torch::Tensor s2_attention_bwd_dq_cuda(at::Tensor kx,
                                        at::Tensor quad_weights, 
                                        at::Tensor psi_col_idx,
                                        at::Tensor psi_row_off, 
-                                       const int max_psi_nnz, 
                                        int nlon_in, int nlat_out, int nlon_out);
 
 torch::Tensor s2_attention_bwd_dk_cuda(at::Tensor kx, 
