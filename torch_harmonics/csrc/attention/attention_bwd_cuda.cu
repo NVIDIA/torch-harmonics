@@ -37,13 +37,26 @@
 #include <ATen/cuda/CUDAUtils.h>
 
 #include <cub/cub.cuh>
+#include <limits>
 
 using BlockReduceFloat256 = cub::BlockReduce<float, 256>;
 using BlockReduceFloat512 = cub::BlockReduce<float, 512>;
 
+__device__ static float atomicMax(float* address, float val)
+{
+  int* address_as_i = (int*) address;
+  int old = *address_as_i, assumed;
+  do {
+    assumed = old;
+    old = ::atomicCAS(address_as_i, assumed,
+                      __float_as_int(::fmaxf(val, __int_as_float(assumed))));
+  } while (assumed != old);
+  return __int_as_float(old);
+}
+
 __global__ void
 s2_attention_bwd_dv_kernel(int num_channels, int nlon_in, int nlat_out,
-                           int nlon_out, int max_nnz,
+                           int nlon_out,
                            torch::PackedTensorAccessor32<float, 4> kx,
                            torch::PackedTensorAccessor32<float, 4> vx,
                            torch::PackedTensorAccessor32<float, 4> qy,
@@ -57,13 +70,13 @@ s2_attention_bwd_dv_kernel(int num_channels, int nlon_in, int nlat_out,
   extern __shared__ float sharedMem[];
 
   float* sh_alpha_sum = (float*)&sharedMem; // 1
-  float *sh_alpha_inz = (float *)&sharedMem[1]; // max_nnz
-  float *sh_qdotk_inz = (float *)&sharedMem[1 + max_nnz]; // max_nnz
-  float* sh_qdotk_max = (float*)&sharedMem[1 + 2*max_nnz]; // 1
-  float* sh_qy_ho_wo = (float*)&sharedMem[2+2*max_nnz]; // num_channels
-  typename BlockReduceFloat256::TempStorage* max_reduce_temp_storage = (typename BlockReduceFloat256::TempStorage*)&sharedMem[2+num_channels+2*max_nnz];
+  float* sh_qdotk_max = (float*)&sharedMem[1]; // 1
+  float* sh_qy_ho_wo = (float*)&sharedMem[2]; // num_channels
 
-  if(threadIdx.x == 0) sh_alpha_sum[0] = 0.0;
+  if (threadIdx.x == 0) {
+    sh_qdotk_max[0] = std::numeric_limits<float>::lowest();
+    sh_alpha_sum[0] = 0.0;
+  }
   __syncthreads();
 
   int ho = blockIdx.x;
@@ -79,7 +92,8 @@ s2_attention_bwd_dv_kernel(int num_channels, int nlon_in, int nlat_out,
   __syncthreads();
 
   int psi_offset = psi_row_offset[ho];
-  int psi_nnz_ho = psi_row_offset[ho+1] - psi_offset;
+  int psi_nnz_ho = psi_row_offset[ho + 1] - psi_offset;
+  float qdotk_max = std::numeric_limits<float>::lowest();
   for(int psi_block=0; psi_block<(psi_nnz_ho/blockDim.x)+1; psi_block++) {
     int idz = psi_block*blockDim.x + threadIdx.x;
 
@@ -100,47 +114,48 @@ s2_attention_bwd_dv_kernel(int num_channels, int nlon_in, int nlat_out,
     for(int channel_idx = 0; channel_idx<num_channels; channel_idx++) {
       qdotk += sh_qy_ho_wo[channel_idx]*kx[batch_b][channel_idx][hi][wip];
     }
-    sh_qdotk_inz[idz] = qdotk;
+    qdotk_max = std::max(qdotk, qdotk_max);
   }
-  __syncthreads();
-  // max reduction qdotk
-  float qdotk_max = std::numeric_limits<float>::lowest();
-  for(int psi_block=0; psi_block<(psi_nnz_ho/blockDim.x)+1; psi_block++) {
-    int idz = psi_block * blockDim.x + threadIdx.x;
 
-    // handle case when thread > number of elements
-    float qdotk = (idz<psi_nnz_ho) ? sh_qdotk_inz[idz] : std::numeric_limits<float>::lowest();
-    // reduce
-    float block_max = BlockReduceFloat256(*max_reduce_temp_storage)
-      .Reduce(qdotk, cub::Max());
-
-    // note: 'block_max' is only valid for thread 0
-    if(threadIdx.x == 0) qdotk_max = std::max(block_max, qdotk_max);
-  }
-  __syncthreads();
-  // store full max-reduction into shared memory for all threads
-  if(threadIdx.x == 0) sh_qdotk_max[0] = qdotk_max;
+  // collect thread-local qdotk max
+  atomicMax(&sh_qdotk_max[0], qdotk_max);
   __syncthreads();
 
   // "broadcast" qdotk_max back into all thread-local registers
   qdotk_max = sh_qdotk_max[0];
 
   // form alpha & sum alpha
+  float alpha_sum = 0.0;
   for(int psi_block=0; psi_block<(psi_nnz_ho/blockDim.x)+1; psi_block++) {
     int idz = psi_block*blockDim.x + threadIdx.x;
-    float alpha_inz = 0.0;
 
     // skip if index >= length of psi_idx because last loop iteration will have extra threads
     if(idz >= psi_nnz_ho) break;
 
-    // softmax numerator
-    alpha_inz = expf(sh_qdotk_inz[idz] - qdotk_max);
-    sh_alpha_inz[idz] = alpha_inz;
-    // sum alpha
-    atomicAdd(&sh_alpha_sum[0], alpha_inz);
+    int nz_col_idx = psi_col_idx[psi_offset+idz];
 
+    // compute input indices from psi datastructure
+    int hi = nz_col_idx / nlon_in;
+    // account for output shift and ensure positive index due to circular condition
+    // int wi = (nz_col_idx % nlon_in - wo) % nlon_in;
+    int wi = nz_col_idx % nlon_in;
+    int wip = (wi + wo) % nlon_in;
+
+    // softmax numerator
+    float qdotk = 0.0;
+    for(int channel_idx = 0; channel_idx<num_channels; channel_idx++) {
+      qdotk += sh_qy_ho_wo[channel_idx]*kx[batch_b][channel_idx][hi][wip];
+    }
+    float alpha_inz = expf(qdotk - qdotk_max);
+    // sum alpha
+    alpha_sum += alpha_inz;
   }
+  // collect thread-local alpha_sum
+  atomicAdd(&sh_alpha_sum[0], alpha_sum);
   __syncthreads();
+
+  // "broadcast" alpha sum back to thread-local registers
+  alpha_sum = sh_alpha_sum[0];
 
   // alpha * dy * omega / alpha_sum
   for(int psi_block=0; psi_block<(psi_nnz_ho/blockDim.x)+1; psi_block++) {
@@ -157,22 +172,27 @@ s2_attention_bwd_dv_kernel(int num_channels, int nlon_in, int nlat_out,
     int wi = nz_col_idx % nlon_in;
     int wip = (wi + wo) % nlon_in;
 
+    float qdotk = 0.0;
+    for(int channel_idx = 0; channel_idx<num_channels; channel_idx++) {
+      qdotk += sh_qy_ho_wo[channel_idx]*kx[batch_b][channel_idx][hi][wip];
+    }
+    float alpha_inz = expf(qdotk - qdotk_max);
+
     // multiply alpha/sum_alpha, dy, and quadrature weights
     for(int channel_idx = 0; channel_idx<num_channels; channel_idx++) {
-      atomicAdd(&dydv[batch_b][channel_idx][hi][wip], (sh_alpha_inz[idz]/sh_alpha_sum[0]) * dy[batch_b][channel_idx][ho][wo] * quad_weights[hi]);
+      atomicAdd(&dydv[batch_b][channel_idx][hi][wip], (alpha_inz/alpha_sum) * dy[batch_b][channel_idx][ho][wo] * quad_weights[hi]);
     }
 
   }
 }
 
-at::Tensor s2_attention_bwd_dv_cuda(at::Tensor kx, 
+at::Tensor s2_attention_bwd_dv_cuda(at::Tensor kx,
                                     at::Tensor vx,
                                     at::Tensor qy,
-                                    at::Tensor dy, 
+                                    at::Tensor dy,
                                     at::Tensor quad_weights,
                                     at::Tensor psi_col_idx,
                                     at::Tensor psi_row_off,
-                                    const int max_psi_nnz,
                                     int nlon_in, int nlat_out, int nlon_out) {
 
   CHECK_CUDA_TENSOR(kx);
@@ -189,7 +209,7 @@ at::Tensor s2_attention_bwd_dv_cuda(at::Tensor kx,
 
   size_t uo_num_channels = kx.size(1);
 
-  size_t sharedMemSize = (uo_num_channels+2*max_psi_nnz+2)*sizeof(float) + sizeof(typename BlockReduceFloat256::TempStorage);
+  size_t sharedMemSize = (uo_num_channels+2)*sizeof(float);
 
   const int batch_size = kx.size(0);
 
@@ -204,7 +224,7 @@ at::Tensor s2_attention_bwd_dv_cuda(at::Tensor kx,
   dim3 blockDim(256, 1, 1);
 
   s2_attention_bwd_dv_kernel <<<gridDim, blockDim, sharedMemSize, stream>>>(
-                       uo_num_channels, nlon_in, nlat_out, nlon_out, max_psi_nnz,
+                       uo_num_channels, nlon_in, nlat_out, nlon_out,
                        kx.packed_accessor32<float, 4>(), vx.packed_accessor32<float, 4>(),
                        qy.packed_accessor32<float, 4>(),
                        dy.packed_accessor32<float, 4>(),
