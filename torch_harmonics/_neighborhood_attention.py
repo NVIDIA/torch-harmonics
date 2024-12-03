@@ -477,7 +477,6 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
         dkw = attention_cuda_extension.backward_dk(kw, vw, qw, grad_output,
                                                    quad_weights,
                                                    col_idx, row_off,
-                                                   max_psi_nnz,
                                                    nlon_in, nlat_out, nlon_out)
 
         dqw = attention_cuda_extension.backward_dq(kw, vw, qw, grad_output,
