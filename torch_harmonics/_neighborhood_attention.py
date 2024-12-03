@@ -452,7 +452,7 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
         
         output = attention_cuda_extension.forward(kw, vw, qw, quad_weights,
                                                   col_idx, row_off,
-                                                  max_psi_nnz, nlon_in, nlat_out, nlon_out)
+                                                  nlon_in, nlat_out, nlon_out)
 
         return output
 
