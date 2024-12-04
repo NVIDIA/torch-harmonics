@@ -31,3 +31,4 @@
 
 from .sfno import SphericalFourierNeuralOperatorNet
 from .lsno import LocalSphericalNeuralOperatorNet
+from .stransformer import SphericalNeighborhoodTransformerNet

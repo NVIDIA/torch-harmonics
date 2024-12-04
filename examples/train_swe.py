@@ -413,6 +413,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
 
     from torch_harmonics.examples.models import SphericalFourierNeuralOperatorNet as SFNO
     from torch_harmonics.examples.models import LocalSphericalNeuralOperatorNet as LSNO
+    from torch_harmonics.examples.models import SphericalNeighborhoodTransformerNet as SNT
 
     models[f"sfno_sc2_layers4_e32"] = partial(
         SFNO,
@@ -423,7 +424,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         scale_factor=2,
         embed_dim=32,
         activation_function="gelu",
-        big_skip=True,
+        residual_prediction=True,
         pos_embed=False,
         use_mlp=True,
         normalization_layer="none",
@@ -437,31 +438,30 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         scale_factor=2,
         embed_dim=32,
         activation_function="gelu",
-        big_skip=True,
+        residual_prediction=False,
         pos_embed=False,
         use_mlp=True,
         normalization_layer="none",
-        kernel_shape=[2, 2],
-        encoder_kernel_shape=[2, 2],
+        kernel_shape=[4, 4],
+        encoder_kernel_shape=[4, 4],
         filter_basis_type="morlet",
         upsample_sht = True,
     )
 
-    models[f"lsno_sc2_layers4_e32_zernike"] = partial(
-        LSNO,
+    models[f"snt_sc2_layers4_e32"] = partial(
+        SNT,
         img_size=(nlat, nlon),
         grid=grid,
         num_layers=4,
         scale_factor=2,
         embed_dim=32,
         activation_function="gelu",
-        big_skip=True,
-        pos_embed=False,
+        residual_prediction=False,
+        pos_embed=True,
         use_mlp=True,
         normalization_layer="none",
-        kernel_shape=[4],
-        encoder_kernel_shape=[4],
-        filter_basis_type="zernike",
+        encoder_kernel_shape=[4, 4],
+        filter_basis_type="morlet",
         upsample_sht = True,
     )
 
@@ -483,6 +483,10 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         if not os.path.isdir(exp_dir):
             os.makedirs(exp_dir, exist_ok=True)
 
+        exp_dir = os.path.join(root_path, 'checkpoints', model_name)
+        if not os.path.isdir(exp_dir):
+            os.makedirs(exp_dir, exist_ok=True)
+
         if load_checkpoint:
             model.load_state_dict(torch.load(os.path.join(exp_dir, "checkpoint.pt")))
 
@@ -498,7 +502,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
             start_time = time.time()
 
             print(f"Training {model_name}, single step")
-            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=1, loss_fn="l2", enable_amp=enable_amp, log_grads=log_grads)
+            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=20, loss_fn="l2", enable_amp=enable_amp, log_grads=log_grads)
 
             if nfuture > 0:
                 print(f'Training {model_name}, {nfuture} step')
