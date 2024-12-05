@@ -54,13 +54,13 @@ __device__ static float atomicMax(float* address, float val)
 
 __global__ void s2_attention_kernel(int num_channels, int nlon_in, int nlat_out,
                                     int nlon_out,
-                                    torch::PackedTensorAccessor32<float, 4> kx,
-                                    torch::PackedTensorAccessor32<float, 4> vx,
-                                    torch::PackedTensorAccessor32<float, 4> qy,
-                                    torch::PackedTensorAccessor32<float, 4> y,
-                                    torch::PackedTensorAccessor64<int64_t, 1> psi_col_idx,
-                                    torch::PackedTensorAccessor64<int64_t, 1> psi_row_offset,
-                                    torch::PackedTensorAccessor32<float, 1> quad_weights)
+                                    const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> kx,
+                                    const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> vx,
+                                    const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> qy,
+                                    torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> y,
+                                    const torch::PackedTensorAccessor64<int64_t, 1, torch::RestrictPtrTraits> psi_col_idx,
+                                    const torch::PackedTensorAccessor64<int64_t, 1, torch::RestrictPtrTraits> psi_row_offset,
+                                    const torch::PackedTensorAccessor32<float, 1, torch::RestrictPtrTraits> quad_weights)
 {
 
   // shared memory
@@ -215,11 +215,13 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
 
   s2_attention_kernel<<<gridDim, blockDim, sharedMemSize,stream>>>(
                        uo_num_channels, nlon_in, nlat_out, nlon_out,
-                       kx.packed_accessor32<float, 4>(), vx.packed_accessor32<float, 4>(),
-                       qy.packed_accessor32<float, 4>(), y.packed_accessor32<float, 4>(),
-                       psi_col_idx.packed_accessor64<int64_t, 1>(),
-                       psi_row_off.packed_accessor64<int64_t, 1>(),
-                       quad_weights.packed_accessor32<float, 1>()
+                       kx.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+		       vx.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                       qy.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+		       y.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                       psi_col_idx.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
+                       psi_row_off.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
+                       quad_weights.packed_accessor32<float, 1, torch::RestrictPtrTraits>()
                        );
 
   C10_CUDA_KERNEL_LAUNCH_CHECK();

@@ -55,16 +55,15 @@ __device__ static float atomicMax(float* address, float val)
 }
 
 __global__ void
-s2_attention_bwd_dv_kernel(int num_channels, int nlon_in, int nlat_out,
-                           int nlon_out,
-                           torch::PackedTensorAccessor32<float, 4> kx,
-                           torch::PackedTensorAccessor32<float, 4> vx,
-                           torch::PackedTensorAccessor32<float, 4> qy,
-                           torch::PackedTensorAccessor32<float, 4> dy,
-                           torch::PackedTensorAccessor32<float, 4> dydv,
-                           torch::PackedTensorAccessor64<int64_t, 1> psi_col_idx,
-                           torch::PackedTensorAccessor64<int64_t, 1> psi_row_offset,
-                           torch::PackedTensorAccessor32<float, 1> quad_weights)
+s2_attention_bwd_dv_kernel(int num_channels, int nlon_in, int nlat_out, int nlon_out,
+                           const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> kx,
+                           const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> vx,
+                           const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> qy,
+                           const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dy,
+                           torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dydv,
+                           const torch::PackedTensorAccessor64<int64_t, 1, torch::RestrictPtrTraits> psi_col_idx,
+                           const torch::PackedTensorAccessor64<int64_t, 1, torch::RestrictPtrTraits> psi_row_offset,
+                           const torch::PackedTensorAccessor32<float, 1, torch::RestrictPtrTraits> quad_weights)
 {
     // shared memory
   extern __shared__ float sharedMem[];
@@ -225,13 +224,14 @@ at::Tensor s2_attention_bwd_dv_cuda(at::Tensor kx,
 
   s2_attention_bwd_dv_kernel <<<gridDim, blockDim, sharedMemSize, stream>>>(
                        uo_num_channels, nlon_in, nlat_out, nlon_out,
-                       kx.packed_accessor32<float, 4>(), vx.packed_accessor32<float, 4>(),
-                       qy.packed_accessor32<float, 4>(),
-                       dy.packed_accessor32<float, 4>(),
-                       dydv.packed_accessor32<float, 4>(),
-                       psi_col_idx.packed_accessor64<int64_t, 1>(),
-                       psi_row_off.packed_accessor64<int64_t, 1>(),
-                       quad_weights.packed_accessor32<float, 1>()
+                       kx.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+		       vx.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                       qy.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                       dy.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                       dydv.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                       psi_col_idx.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
+                       psi_row_off.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
+                       quad_weights.packed_accessor32<float, 1, torch::RestrictPtrTraits>()
                        );
 
 
@@ -241,16 +241,15 @@ at::Tensor s2_attention_bwd_dv_cuda(at::Tensor kx,
 }
 
 __global__ void
-s2_attention_bwd_dk_kernel(int num_channels, int nlon_in, int nlat_out,
-                           int nlon_out,
-                           torch::PackedTensorAccessor32<float, 4> kx,
-                           torch::PackedTensorAccessor32<float, 4> vx,
-                           torch::PackedTensorAccessor32<float, 4> qy,
-                           torch::PackedTensorAccessor32<float, 4> dy,
-                           torch::PackedTensorAccessor32<float, 4> dydk,
-                           torch::PackedTensorAccessor64<int64_t, 1> psi_col_idx,
-                           torch::PackedTensorAccessor64<int64_t, 1> psi_row_offset,
-                           torch::PackedTensorAccessor32<float, 1> quad_weights)
+s2_attention_bwd_dk_kernel(int num_channels, int nlon_in, int nlat_out, int nlon_out,
+                           const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> kx,
+                           const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> vx,
+                           const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> qy,
+                           const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dy,
+                           torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dydk,
+                           const torch::PackedTensorAccessor64<int64_t, 1, torch::RestrictPtrTraits> psi_col_idx,
+                           const torch::PackedTensorAccessor64<int64_t, 1, torch::RestrictPtrTraits> psi_row_offset,
+                           const torch::PackedTensorAccessor32<float, 1, torch::RestrictPtrTraits> quad_weights)
 {
     // shared memory
   extern __shared__ float sharedMem[];
@@ -386,16 +385,15 @@ s2_attention_bwd_dk_kernel(int num_channels, int nlon_in, int nlat_out,
 }
 
 __global__ void
-s2_attention_bwd_dq_kernel(int num_channels, int nlon_in, int nlat_out,
-                           int nlon_out,
-                           torch::PackedTensorAccessor32<float, 4> kx,
-                           torch::PackedTensorAccessor32<float, 4> vx,
-                           torch::PackedTensorAccessor32<float, 4> qy,
-                           torch::PackedTensorAccessor32<float, 4> dy,
-                           torch::PackedTensorAccessor32<float, 4> dydq,
-                           torch::PackedTensorAccessor64<int64_t, 1> psi_col_idx,
-                           torch::PackedTensorAccessor64<int64_t, 1> psi_row_offset,
-                           torch::PackedTensorAccessor32<float, 1> quad_weights)
+s2_attention_bwd_dq_kernel(int num_channels, int nlon_in, int nlat_out, int nlon_out,
+			   const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> kx,
+                           const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> vx,
+                           const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> qy,
+                           const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dy,
+                           torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dydq,
+                           const torch::PackedTensorAccessor64<int64_t, 1, torch::RestrictPtrTraits> psi_col_idx,
+                           const torch::PackedTensorAccessor64<int64_t, 1, torch::RestrictPtrTraits> psi_row_offset,
+                           const torch::PackedTensorAccessor32<float, 1, torch::RestrictPtrTraits> quad_weights)
 {
     // shared memory
   extern __shared__ float sharedMem[];
@@ -548,13 +546,14 @@ at::Tensor s2_attention_bwd_dk_cuda(at::Tensor kx,
 
   s2_attention_bwd_dk_kernel <<<gridDim, blockDim, sharedMemSize, stream>>>(
                        uo_num_channels, nlon_in, nlat_out, nlon_out,
-                       kx.packed_accessor32<float, 4>(), vx.packed_accessor32<float, 4>(),
-                       qy.packed_accessor32<float, 4>(),
-                       dy.packed_accessor32<float, 4>(),
-                       dydk.packed_accessor32<float, 4>(),
-                       psi_col_idx.packed_accessor64<int64_t, 1>(),
-                       psi_row_off.packed_accessor64<int64_t, 1>(),
-                       quad_weights.packed_accessor32<float, 1>()
+                       kx.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+		       vx.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                       qy.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                       dy.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                       dydk.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                       psi_col_idx.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
+                       psi_row_off.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
+                       quad_weights.packed_accessor32<float, 1, torch::RestrictPtrTraits>()
                        );
 
 
@@ -603,13 +602,14 @@ at::Tensor s2_attention_bwd_dq_cuda(at::Tensor kx,
 
   s2_attention_bwd_dq_kernel <<<gridDim, blockDim, sharedMemSize, stream>>>(
                        uo_num_channels, nlon_in, nlat_out, nlon_out,
-                       kx.packed_accessor32<float, 4>(), vx.packed_accessor32<float, 4>(),
-                       qy.packed_accessor32<float, 4>(),
-                       dy.packed_accessor32<float, 4>(),
-                       dydq.packed_accessor32<float, 4>(),
-                       psi_col_idx.packed_accessor64<int64_t, 1>(),
-                       psi_row_off.packed_accessor64<int64_t, 1>(),
-                       quad_weights.packed_accessor32<float, 1>()
+                       kx.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+		       vx.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                       qy.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                       dy.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                       dydq.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                       psi_col_idx.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
+                       psi_row_off.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
+                       quad_weights.packed_accessor32<float, 1, torch::RestrictPtrTraits>()
                        );
 
 
