@@ -5,6 +5,8 @@
 ### v0.7.3
 
 * Changing default grid in all SHT routines to `equiangular`
+* Reworked DISCO filter basis datastructure
+* Support for new filter basis types
 
 ### v0.7.2
 

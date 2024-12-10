@@ -44,10 +44,8 @@ from functools import partial
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes
 from torch_harmonics._disco_convolution import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from torch_harmonics._disco_convolution import _disco_s2_contraction_cuda, _disco_s2_transpose_contraction_cuda
-from torch_harmonics._filter_basis import compute_kernel_size
+from torch_harmonics.filter_basis import get_filter_basis
 from torch_harmonics.convolution import (
-    _compute_support_vals_isotropic,
-    _compute_support_vals_anisotropic,
     _normalize_convolution_tensor_s2,
     DiscreteContinuousConv,
 )
@@ -73,8 +71,7 @@ except ImportError as err:
 def _precompute_distributed_convolution_tensor_s2(
     in_shape,
     out_shape,
-    kernel_shape,
-    basis_type="piecewise linear",
+    filter_basis,
     grid_in="equiangular",
     grid_out="equiangular",
     theta_cutoff=0.01 * math.pi,
@@ -100,14 +97,7 @@ def _precompute_distributed_convolution_tensor_s2(
     assert len(in_shape) == 2
     assert len(out_shape) == 2
 
-    kernel_size = compute_kernel_size(kernel_shape=kernel_shape, basis_type=basis_type)
-
-    if len(kernel_shape) == 1:
-        kernel_handle = partial(_compute_support_vals_isotropic, nr=kernel_shape[0], r_cutoff=theta_cutoff)
-    elif len(kernel_shape) == 2:
-        kernel_handle = partial(_compute_support_vals_anisotropic, nr=kernel_shape[0], nphi=kernel_shape[1], r_cutoff=theta_cutoff)
-    else:
-        raise ValueError("kernel_shape should be either one- or two-dimensional.")
+    kernel_size = filter_basis.kernel_size
 
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
@@ -148,7 +138,7 @@ def _precompute_distributed_convolution_tensor_s2(
         phi = torch.arctan2(y, x) + torch.pi
 
         # find the indices where the rotated position falls into the support of the kernel
-        iidx, vals = kernel_handle(theta, phi)
+        iidx, vals = filter_basis.compute_support_vals(theta, phi, r_cutoff=theta_cutoff)
 
         # add the output latitude and reshape such that psi has dimensions kernel_shape x nlat_out x (nlat_in*nlon_in)
         idx = torch.stack([iidx[:, 0], t * torch.ones_like(iidx[:, 0]), iidx[:, 1] * nlon_in + iidx[:, 2]], dim=0)
@@ -243,8 +233,9 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         # set local shapes according to distributed mode:
         self.nlat_in_local = self.lat_in_shapes[self.comm_rank_polar]
         self.nlat_out_local = self.nlat_out
+
         idx, vals = _precompute_distributed_convolution_tensor_s2(
-            in_shape, out_shape, self.kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff, transpose_normalization=False, merge_quadrature=True
+            in_shape, out_shape, self.filter_basis, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff, transpose_normalization=False, merge_quadrature=True
         )
 
         # sort the values
@@ -267,7 +258,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         r"""
         Pretty print module
         """
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, kernel_shape={self.kernel_shape}, groups={self.groups}"
+        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
 
     @property
     def psi_idx(self):
@@ -376,7 +367,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         # switch in_shape and out_shape since we want transpose conv
         # distributed mode here is swapped because of the transpose
         idx, vals = _precompute_distributed_convolution_tensor_s2(
-            out_shape, in_shape, self.kernel_shape, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff, transpose_normalization=True, merge_quadrature=True
+            out_shape, in_shape, self.filter_basis, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff, transpose_normalization=True, merge_quadrature=True
         )
 
         # sort the values
@@ -399,7 +390,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         r"""
         Pretty print module
         """
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, kernel_shape={self.kernel_shape}, groups={self.groups}"
+        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
 
     @property
     def psi_idx(self):
