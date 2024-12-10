@@ -45,13 +45,16 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from torch_harmonics.examples.sfno import PdeDataset
+from torch_harmonics import RealSHT
 
 # wandb logging
 import wandb
+
 wandb.login()
 
+
 def l2loss_sphere(solver, prd, tar, relative=False, squared=True):
-    loss = solver.integrate_grid((prd - tar)**2, dimensionless=True).sum(dim=-1)
+    loss = solver.integrate_grid((prd - tar) ** 2, dimensionless=True).sum(dim=-1)
     if relative:
         loss = loss / solver.integrate_grid(tar**2, dimensionless=True).sum(dim=-1)
 
@@ -61,18 +64,19 @@ def l2loss_sphere(solver, prd, tar, relative=False, squared=True):
 
     return loss
 
+
 def spectral_l2loss_sphere(solver, prd, tar, relative=False, squared=True):
     # compute coefficients
     coeffs = torch.view_as_real(solver.sht(prd - tar))
-    coeffs = coeffs[..., 0]**2 + coeffs[..., 1]**2
+    coeffs = coeffs[..., 0] ** 2 + coeffs[..., 1] ** 2
     norm2 = coeffs[..., :, 0] + 2 * torch.sum(coeffs[..., :, 1:], dim=-1)
-    loss = torch.sum(norm2, dim=(-1,-2))
+    loss = torch.sum(norm2, dim=(-1, -2))
 
     if relative:
         tar_coeffs = torch.view_as_real(solver.sht(tar))
-        tar_coeffs = tar_coeffs[..., 0]**2 + tar_coeffs[..., 1]**2
+        tar_coeffs = tar_coeffs[..., 0] ** 2 + tar_coeffs[..., 1] ** 2
         tar_norm2 = tar_coeffs[..., :, 0] + 2 * torch.sum(tar_coeffs[..., :, 1:], dim=-1)
-        tar_norm2 = torch.sum(tar_norm2, dim=(-1,-2))
+        tar_norm2 = torch.sum(tar_norm2, dim=(-1, -2))
         loss = loss / tar_norm2
 
     if not squared:
@@ -80,26 +84,27 @@ def spectral_l2loss_sphere(solver, prd, tar, relative=False, squared=True):
     loss = loss.mean()
 
     return loss
+
 
 def spectral_loss_sphere(solver, prd, tar, relative=False, squared=True):
     # gradient weighting factors
     lmax = solver.sht.lmax
     ls = torch.arange(lmax).float()
-    spectral_weights = (ls*(ls + 1)).reshape(1, 1, -1, 1).to(prd.device)
+    spectral_weights = (ls * (ls + 1)).reshape(1, 1, -1, 1).to(prd.device)
 
     # compute coefficients
     coeffs = torch.view_as_real(solver.sht(prd - tar))
-    coeffs = coeffs[..., 0]**2 + coeffs[..., 1]**2
+    coeffs = coeffs[..., 0] ** 2 + coeffs[..., 1] ** 2
     coeffs = spectral_weights * coeffs
     norm2 = coeffs[..., :, 0] + 2 * torch.sum(coeffs[..., :, 1:], dim=-1)
-    loss = torch.sum(norm2, dim=(-1,-2))
+    loss = torch.sum(norm2, dim=(-1, -2))
 
     if relative:
         tar_coeffs = torch.view_as_real(solver.sht(tar))
-        tar_coeffs = tar_coeffs[..., 0]**2 + tar_coeffs[..., 1]**2
+        tar_coeffs = tar_coeffs[..., 0] ** 2 + tar_coeffs[..., 1] ** 2
         tar_coeffs = spectral_weights * tar_coeffs
         tar_norm2 = tar_coeffs[..., :, 0] + 2 * torch.sum(tar_coeffs[..., :, 1:], dim=-1)
-        tar_norm2 = torch.sum(tar_norm2, dim=(-1,-2))
+        tar_norm2 = torch.sum(tar_norm2, dim=(-1, -2))
         loss = loss / tar_norm2
 
     if not squared:
@@ -108,22 +113,23 @@ def spectral_loss_sphere(solver, prd, tar, relative=False, squared=True):
 
     return loss
 
+
 def h1loss_sphere(solver, prd, tar, relative=False, squared=True):
     # gradient weighting factors
     lmax = solver.sht.lmax
     ls = torch.arange(lmax).float()
-    spectral_weights = (ls*(ls + 1)).reshape(1, 1, -1, 1).to(prd.device)
+    spectral_weights = (ls * (ls + 1)).reshape(1, 1, -1, 1).to(prd.device)
 
     # compute coefficients
     coeffs = torch.view_as_real(solver.sht(prd - tar))
-    coeffs = coeffs[..., 0]**2 + coeffs[..., 1]**2
+    coeffs = coeffs[..., 0] ** 2 + coeffs[..., 1] ** 2
     h1_coeffs = spectral_weights * coeffs
     h1_norm2 = h1_coeffs[..., :, 0] + 2 * torch.sum(h1_coeffs[..., :, 1:], dim=-1)
     l2_norm2 = coeffs[..., :, 0] + 2 * torch.sum(coeffs[..., :, 1:], dim=-1)
-    h1_loss = torch.sum(h1_norm2, dim=(-1,-2))
-    l2_loss = torch.sum(l2_norm2, dim=(-1,-2))
+    h1_loss = torch.sum(h1_norm2, dim=(-1, -2))
+    l2_loss = torch.sum(l2_norm2, dim=(-1, -2))
 
-     # strictly speaking this is not exactly h1 loss
+    # strictly speaking this is not exactly h1 loss
     if not squared:
         loss = torch.sqrt(h1_loss) + torch.sqrt(l2_loss)
     else:
@@ -134,36 +140,34 @@ def h1loss_sphere(solver, prd, tar, relative=False, squared=True):
 
     loss = loss.mean()
 
-
     return loss
+
 
 def fluct_l2loss_sphere(solver, prd, tar, inp, relative=False, polar_opt=0):
     # compute the weighting factor first
-    fluct = solver.integrate_grid((tar - inp)**2, dimensionless=True, polar_opt=polar_opt)
+    fluct = solver.integrate_grid((tar - inp) ** 2, dimensionless=True, polar_opt=polar_opt)
     weight = fluct / torch.sum(fluct, dim=-1, keepdim=True)
     # weight = weight.reshape(*weight.shape, 1, 1)
 
-    loss = weight * solver.integrate_grid((prd - tar)**2, dimensionless=True, polar_opt=polar_opt)
+    loss = weight * solver.integrate_grid((prd - tar) ** 2, dimensionless=True, polar_opt=polar_opt)
     if relative:
         loss = loss / (weight * solver.integrate_grid(tar**2, dimensionless=True, polar_opt=polar_opt))
     loss = torch.mean(loss)
     return loss
 
+
 # rolls out the FNO and compares to the classical solver
-def autoregressive_inference(model,
-                             dataset,
-                             path_root,
-                             nsteps,
-                             autoreg_steps=10,
-                             nskip=1,
-                             plot_channel=0,
-                             nics=20):
+def autoregressive_inference(model, dataset, path_root, nsteps, autoreg_steps=10, nskip=1, plot_channel=0, nics=50):
 
     model.eval()
 
     losses = np.zeros(nics)
     fno_times = np.zeros(nics)
     nwp_times = np.zeros(nics)
+
+    # accumulation buffers for the power spectrum
+    prd_mean_coeffs = []
+    ref_mean_coeffs = []
 
     for iic in range(nics):
         ic = dataset.solver.random_initial_condition(mach=0.2)
@@ -176,44 +180,68 @@ def autoregressive_inference(model,
 
         # ML model
         start_time = time.time()
-        for i in range(1, autoreg_steps+1):
+        for i in range(1, autoreg_steps + 1):
             # evaluate the ML model
             prd = model(prd)
 
-            if iic == nics-1 and nskip > 0 and i % nskip == 0:
+            if iic == nics - 1 and nskip > 0 and i % nskip == 0:
 
                 # do plotting
                 fig = plt.figure(figsize=(7.5, 6))
                 dataset.solver.plot_griddata(prd[0, plot_channel], fig, vmax=4, vmin=-4)
-                plt.savefig(path_root+'_pred_'+str(i//nskip)+'.png')
-                plt.clf()
+                plt.savefig(path_root + "_pred_" + str(i // nskip) + ".png")
+                plt.close()
 
         fno_times[iic] = time.time() - start_time
 
         # classical model
         start_time = time.time()
-        for i in range(1, autoreg_steps+1):
+        for i in range(1, autoreg_steps + 1):
 
             # advance classical model
             uspec = dataset.solver.timestep(uspec, nsteps)
+            ref = (dataset.solver.spec2grid(uspec) - inp_mean) / torch.sqrt(inp_var)
 
-            if iic == nics-1 and i % nskip == 0 and nskip > 0:
-                ref = (dataset.solver.spec2grid(uspec) - inp_mean) / torch.sqrt(inp_var)
+            if iic == nics - 1 and i % nskip == 0 and nskip > 0:
 
                 fig = plt.figure(figsize=(7.5, 6))
                 dataset.solver.plot_griddata(ref[plot_channel], fig, vmax=4, vmin=-4)
-                plt.savefig(path_root+'_truth_'+str(i//nskip)+'.png')
-                plt.clf()
+                plt.savefig(path_root + "_truth_" + str(i // nskip) + ".png")
+                plt.close()
 
         nwp_times[iic] = time.time() - start_time
+
+        # compute power spectrum and add it to the buffers
+        prd_coeffs = dataset.solver.sht(prd[0, plot_channel])
+        ref_coeffs = dataset.solver.sht(ref[plot_channel])
+        prd_mean_coeffs.append(prd_coeffs)
+        ref_mean_coeffs.append(ref_coeffs)
 
         # ref = (dataset.solver.spec2grid(uspec) - inp_mean) / torch.sqrt(inp_var)
         ref = dataset.solver.spec2grid(uspec)
         prd = prd * torch.sqrt(inp_var) + inp_mean
         losses[iic] = l2loss_sphere(dataset.solver, prd, ref, relative=True).item()
 
+    # compute the averaged powerspectra of prediction and reference
+    prd_mean_coeffs = torch.stack(prd_mean_coeffs).abs().pow(2).mean(dim=0)
+    ref_mean_coeffs = torch.stack(ref_mean_coeffs).abs().pow(2).mean(dim=0)
+    prd_mean_coeffs[..., 1:] *= 2.0
+    ref_mean_coeffs[..., 1:] *= 2.0
+    prd_mean_ps = prd_mean_coeffs.sum(dim=-1).detach().cpu()
+    ref_mean_ps = ref_mean_coeffs.sum(dim=-1).detach().cpu()
+
+    # compute the averaged powerspectrum
+    fig = plt.figure(figsize=(7.5, 6))
+    plt.loglog(prd_mean_ps, label="prediction")
+    plt.loglog(ref_mean_ps, label="reference")
+    plt.xlabel("$l$")
+    plt.ylabel("powerspectrum")
+    plt.legend()
+    plt.savefig(path_root + "_powerspectrum.png")
+    plt.close()
 
     return losses, fno_times, nwp_times
+
 
 # convenience function for logging weights and gradients
 def log_weights_and_grads(model, iters=1):
@@ -225,25 +253,15 @@ def log_weights_and_grads(model, iters=1):
     weights_and_grads_fname = os.path.join(root_path, f"weights_and_grads_step{iters:03d}.tar")
     print(weights_and_grads_fname)
 
-    weights_dict = {k:v for k,v in model.named_parameters()}
-    grad_dict = {k:v.grad for k,v in model.named_parameters()}
+    weights_dict = {k: v for k, v in model.named_parameters()}
+    grad_dict = {k: v.grad for k, v in model.named_parameters()}
 
-    store_dict = {'iteration': iters, 'grads': grad_dict, 'weights': weights_dict}
+    store_dict = {"iteration": iters, "grads": grad_dict, "weights": weights_dict}
     torch.save(store_dict, weights_and_grads_fname)
 
+
 # training function
-def train_model(model,
-                dataloader,
-                optimizer,
-                gscaler,
-                scheduler=None,
-                nepochs=20,
-                nfuture=0,
-                num_examples=256,
-                num_valid=8,
-                loss_fn='l2',
-                enable_amp=False,
-                log_grads=0):
+def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=20, nfuture=0, num_examples=256, num_valid=8, loss_fn="l2", enable_amp=False, log_grads=0):
 
     train_start = time.time()
 
@@ -255,7 +273,7 @@ def train_model(model,
         # time each epoch
         epoch_start = time.time()
 
-        dataloader.dataset.set_initial_condition('random')
+        dataloader.dataset.set_initial_condition("random")
         dataloader.dataset.set_num_examples(num_examples)
 
         # get the solver for its convenience functions
@@ -273,18 +291,18 @@ def train_model(model,
                 for _ in range(nfuture):
                     prd = model(prd)
 
-                if loss_fn == 'l2':
+                if loss_fn == "l2":
                     loss = l2loss_sphere(solver, prd, tar, relative=False)
-                elif loss_fn == 'spectral l2':
+                elif loss_fn == "spectral l2":
                     loss = spectral_l2loss_sphere(solver, prd, tar, relative=False)
-                elif loss_fn == 'h1':
+                elif loss_fn == "h1":
                     loss = h1loss_sphere(solver, prd, tar, relative=False)
-                elif loss_fn == 'spectral':
+                elif loss_fn == "spectral":
                     loss = spectral_loss_sphere(solver, prd, tar, relative=False)
-                elif loss_fn == 'fluct':
+                elif loss_fn == "fluct":
                     loss = fluct_l2loss_sphere(solver, prd, tar, inp, relative=True)
                 else:
-                    raise NotImplementedError(f'Unknown loss function {loss_fn}')
+                    raise NotImplementedError(f"Unknown loss function {loss_fn}")
 
             acc_loss += loss.item() * inp.size(0)
 
@@ -301,7 +319,7 @@ def train_model(model,
 
         acc_loss = acc_loss / len(dataloader.dataset)
 
-        dataloader.dataset.set_initial_condition('random')
+        dataloader.dataset.set_initial_condition("random")
         dataloader.dataset.set_num_examples(num_valid)
 
         # perform validation
@@ -323,22 +341,22 @@ def train_model(model,
 
         epoch_time = time.time() - epoch_start
 
-        print(f'--------------------------------------------------------------------------------')
-        print(f'Epoch {epoch} summary:')
-        print(f'time taken: {epoch_time}')
-        print(f'accumulated training loss: {acc_loss}')
-        print(f'relative validation loss: {valid_loss}')
+        print(f"--------------------------------------------------------------------------------")
+        print(f"Epoch {epoch} summary:")
+        print(f"time taken: {epoch_time}")
+        print(f"accumulated training loss: {acc_loss}")
+        print(f"relative validation loss: {valid_loss}")
 
         if wandb.run is not None:
-            current_lr = optimizer.param_groups[0]['lr']
+            current_lr = optimizer.param_groups[0]["lr"]
             wandb.log({"loss": acc_loss, "validation loss": valid_loss, "learning rate": current_lr})
-
 
     train_time = time.time() - train_start
 
-    print(f'--------------------------------------------------------------------------------')
-    print(f'done. Training took {train_time}.')
+    print(f"--------------------------------------------------------------------------------")
+    print(f"done. Training took {train_time}.")
     return valid_loss
+
 
 def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
 
@@ -347,14 +365,14 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     torch.cuda.manual_seed(333)
 
     # set device
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if torch.cuda.is_available():
         torch.cuda.set_device(device.index)
 
     # 1 hour prediction steps
-    dt = 1*3600
+    dt = 1 * 3600
     dt_solver = 150
-    nsteps = dt//dt_solver
+    nsteps = dt // dt_solver
     dataset = PdeDataset(dt=dt, nsteps=nsteps, dims=(256, 512), device=device, normalize=True)
     # There is still an issue with parallel dataloading. Do NOT use it at the moment
     # dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=4, persistent_workers=True)
@@ -371,27 +389,39 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     metrics = {}
 
     from torch_harmonics.examples.sfno import SphericalFourierNeuralOperatorNet as SFNO
+    from torch_harmonics.examples.sfno import LocalSphericalNeuralOperatorNet as LSNO
 
-    models["sfno_sc3_layer4_e16_linskip_nomlp"] = partial(SFNO, spectral_transform='sht', img_size=(nlat, nlon),  grid="equiangular",
-                                                          num_layers=4, scale_factor=3, embed_dim=16, operator_type='driscoll-healy',
-                                                          big_skip=False, pos_embed=False, use_mlp=False, normalization_layer="none")
-    # models["sfno_sc3_layer4_e256_noskip_mlp"]   = partial(SFNO, spectral_transform='sht', img_size=(nlat, nlon),  grid="equiangular",
-    #                                                       num_layers=4, scale_factor=3, embed_dim=256, operator_type='driscoll-healy',
-    #                                                       big_skip=False, pos_embed=False, use_mlp=True, normalization_layer="none")
-    # from torch_harmonics.examples.sfno.models.unet import UNet
-    # models['unet_baseline'] = partial(UNet)
+    # models["sfno_sc2_layers6_e32"] = partial(
+    #     SFNO,
+    #     spectral_transform="sht",
+    #     img_size=(nlat, nlon),
+    #     grid="equiangular",
+    #     num_layers=6,
+    #     scale_factor=1,
+    #     embed_dim=32,
+    #     operator_type="driscoll-healy",
+    #     activation_function="gelu",
+    #     big_skip=True,
+    #     pos_embed=False,
+    #     use_mlp=True,
+    #     normalization_layer="none",
+    # )
 
-
-    # # U-Net if installed
-    # from models.unet import UNet
-    # models['unet_baseline'] = partial(UNet)
-
-    # SFNO models
-    # models['sfno_sc3_layer4_edim256_linear']    = partial(SFNO, spectral_transform='sht', img_size=(nlat, nlon), grid="equiangular",
-    #                                                  num_layers=4, scale_factor=3, embed_dim=256, operator_type='driscoll-healy')
-    # # FNO models
-    # models['fno_sc3_layer4_edim256_linear']     = partial(SFNO, spectral_transform='fft', img_size=(nlat, nlon), grid="equiangular",
-    #                                                  num_layers=4, scale_factor=3, embed_dim=256, operator_type='diagonal')
+    models["lsno_sc2_layers6_e32"] = partial(
+        LSNO,
+        spectral_transform="sht",
+        img_size=(nlat, nlon),
+        grid="equiangular",
+        num_layers=6,
+        scale_factor=1,
+        embed_dim=32,
+        operator_type="driscoll-healy",
+        activation_function="gelu",
+        big_skip=True,
+        pos_embed=False,
+        use_mlp=True,
+        normalization_layer="none",
+    )
 
     # iterate over models and train each model
     root_path = os.path.dirname(__file__)
@@ -404,61 +434,64 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         metrics[model_name] = {}
 
         num_params = count_parameters(model)
-        print(f'number of trainable params: {num_params}')
-        metrics[model_name]['num_params'] = num_params
+        print(f"number of trainable params: {num_params}")
+        metrics[model_name]["num_params"] = num_params
 
         if load_checkpoint:
-            model.load_state_dict(torch.load(os.path.join(root_path, 'checkpoints/'+model_name)))
+            model.load_state_dict(torch.load(os.path.join(root_path, "checkpoints/" + model_name), weights_only=True))
 
         # run the training
         if train:
-            run = wandb.init(project="sfno ablations spherical swe", group=model_name, name=model_name + '_' + str(time.time()), config=model_handle.keywords)
+            run = wandb.init(project="sfno ablations spherical swe", group=model_name, name=model_name + "_" + str(time.time()), config=model_handle.keywords)
 
             # optimizer:
-            optimizer = torch.optim.Adam(model.parameters(), lr=3E-3)
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
+            optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
             gscaler = torch.GradScaler("cuda", enabled=enable_amp)
 
             start_time = time.time()
 
-            print(f'Training {model_name}, single step')
-            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=10, loss_fn='l2', enable_amp=enable_amp, log_grads=log_grads)
+            print(f"Training {model_name}, single step")
+            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=20, loss_fn="l2", enable_amp=enable_amp, log_grads=log_grads)
 
             # # multistep training
             # print(f'Training {model_name}, two step')
             # optimizer = torch.optim.Adam(model.parameters(), lr=5E-5)
             # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
-            # gscaler = amp.GradScaler(enabled=enable_amp)
+            # gscaler = torch.GradScaler(enabled=enable_amp)
             # dataloader.dataset.nsteps = 2 * dt//dt_solver
-            # train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=20, nfuture=1, enable_amp=enable_amp)
+            # train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=5, nfuture=1, enable_amp=enable_amp)
             # dataloader.dataset.nsteps = 1 * dt//dt_solver
 
             training_time = time.time() - start_time
 
             run.finish()
 
-            torch.save(model.state_dict(), os.path.join(root_path, 'checkpoints/'+model_name))
+            torch.save(model.state_dict(), os.path.join(root_path, "checkpoints/" + model_name))
 
         # set seed
         torch.manual_seed(333)
         torch.cuda.manual_seed(333)
 
         with torch.inference_mode():
-            losses, fno_times, nwp_times = autoregressive_inference(model, dataset, os.path.join(root_path,'figures/'+model_name), nsteps=nsteps, autoreg_steps=10)
-            metrics[model_name]['loss_mean'] = np.mean(losses)
-            metrics[model_name]['loss_std'] = np.std(losses)
-            metrics[model_name]['fno_time_mean'] = np.mean(fno_times)
-            metrics[model_name]['fno_time_std'] = np.std(fno_times)
-            metrics[model_name]['nwp_time_mean'] = np.mean(nwp_times)
-            metrics[model_name]['nwp_time_std'] = np.std(nwp_times)
+            losses, fno_times, nwp_times = autoregressive_inference(model, dataset, os.path.join(root_path, "figures/" + model_name), nsteps=nsteps, autoreg_steps=30)
+            metrics[model_name]["loss_mean"] = np.mean(losses)
+            metrics[model_name]["loss_std"] = np.std(losses)
+            metrics[model_name]["fno_time_mean"] = np.mean(fno_times)
+            metrics[model_name]["fno_time_std"] = np.std(fno_times)
+            metrics[model_name]["nwp_time_mean"] = np.mean(nwp_times)
+            metrics[model_name]["nwp_time_std"] = np.std(nwp_times)
             if train:
-                metrics[model_name]['training_time'] = training_time
+                metrics[model_name]["training_time"] = training_time
 
     df = pd.DataFrame(metrics)
-    df.to_pickle(os.path.join(root_path, 'output_data/metrics.pkl'))
+    df.to_pickle(os.path.join(root_path, "output_data/metrics.pkl"))
+
 
 if __name__ == "__main__":
     import torch.multiprocessing as mp
-    mp.set_start_method('forkserver', force=True)
 
+    mp.set_start_method("forkserver", force=True)
+
+    # main(train=False, load_checkpoint=True, enable_amp=False, log_grads=0)
     main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0)
