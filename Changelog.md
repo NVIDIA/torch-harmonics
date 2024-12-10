@@ -6,6 +6,8 @@
 
 * Changing default grid in all SHT routines to `equiangular`
 * Hotfix to the numpy version requirements
+* Reworked DISCO filter basis datastructure
+* Support for new filter basis types
 
 ### v0.7.2
 
