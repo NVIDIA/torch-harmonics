@@ -31,12 +31,104 @@
 
 import torch
 import torch.nn as nn
+import torch.amp as amp
 
-from torch_harmonics import *
+from torch_harmonics import RealSHT, InverseRealSHT
+from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 
 from .layers import *
 
 from functools import partial
+
+
+class DiscreteContinuousEncoder(nn.Module):
+    def __init__(
+        self,
+        inp_shape=(721, 1440),
+        out_shape=(480, 960),
+        grid_in="equiangular",
+        grid_out="equiangular",
+        inp_chans=2,
+        out_chans=2,
+        kernel_shape=[3, 4],
+        groups=1,
+        bias=False,
+    ):
+        super().__init__()
+
+        # set up local convolution
+        self.conv = DiscreteContinuousConvS2(
+            inp_chans,
+            out_chans,
+            in_shape=inp_shape,
+            out_shape=out_shape,
+            kernel_shape=kernel_shape,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            groups=groups,
+            bias=bias,
+            theta_cutoff=math.sqrt(2) * torch.pi / float(out_shape[0] - 1),
+        )
+
+    def forward(self, x):
+        dtype = x.dtype
+
+        with amp.autocast(device_type="cuda", enabled=False):
+            x = x.float()
+            x = self.conv(x)
+            x = x.to(dtype=dtype)
+
+        return x
+
+
+class DiscreteContinuousDecoder(nn.Module):
+    def __init__(
+        self,
+        inp_shape=(480, 960),
+        out_shape=(721, 1440),
+        grid_in="equiangular",
+        grid_out="equiangular",
+        inp_chans=2,
+        out_chans=2,
+        kernel_shape=[3, 4],
+        groups=1,
+        bias=False,
+    ):
+        super().__init__()
+
+        # set up
+        self.sht = RealSHT(*inp_shape, grid=grid_in).float()
+        self.isht = InverseRealSHT(*out_shape, lmax=self.sht.lmax, mmax=self.sht.mmax, grid=grid_out).float()
+
+        # set up DISCO convolution
+        self.convt = DiscreteContinuousConvTransposeS2(
+            inp_chans,
+            out_chans,
+            in_shape=out_shape,
+            out_shape=out_shape,
+            kernel_shape=kernel_shape,
+            grid_in=grid_out,
+            grid_out=grid_out,
+            groups=groups,
+            bias=False,
+            theta_cutoff=math.sqrt(2) * torch.pi / float(inp_shape[0] - 1),
+        )
+
+        # self.convt = nn.Conv2d(inp_chans, out_chans, 1, bias=False)
+
+    def _upscale_sht(self, x: torch.Tensor):
+        return self.isht(self.sht(x))
+
+    def forward(self, x):
+        dtype = x.dtype
+
+        with amp.autocast(device_type="cuda", enabled=False):
+            x = x.float()
+            x = self._upscale_sht(x)
+            x = self.convt(x)
+            x = x.to(dtype=dtype)
+
+        return x
 
 
 class SpectralFilterLayer(nn.Module):
@@ -61,7 +153,15 @@ class SpectralFilterLayer(nn.Module):
         super(SpectralFilterLayer, self).__init__()
 
         if factorization is None:
-            self.filter = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain, operator_type=operator_type, bias=bias)
+            self.filter = SpectralConvS2(
+                forward_transform,
+                inverse_transform,
+                input_dim,
+                output_dim,
+                gain=gain,
+                operator_type=operator_type,
+                bias=bias,
+            )
 
         elif factorization is not None:
             self.filter = FactorizedSpectralConvS2(
@@ -84,7 +184,7 @@ class SpectralFilterLayer(nn.Module):
         return self.filter(x)
 
 
-class SphericalFourierNeuralOperatorBlock(nn.Module):
+class SphericalNeuralOperatorBlock(nn.Module):
     """
     Helper module for a single SFNO/FNO block. Can use both FFTs and SHTs to represent either FNO or SFNO blocks.
     """
@@ -95,6 +195,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         inverse_transform,
         input_dim,
         output_dim,
+        conv_type="local",
         operator_type="driscoll-healy",
         mlp_ratio=2.0,
         drop_rate=0.0,
@@ -104,11 +205,12 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         factorization=None,
         separable=False,
         rank=128,
-        inner_skip="linear",
-        outer_skip=None,
+        inner_skip="None",
+        outer_skip="linear",
         use_mlp=True,
+        disco_kernel_shape=[2, 4],
     ):
-        super(SphericalFourierNeuralOperatorBlock, self).__init__()
+        super().__init__()
 
         if act_layer == nn.Identity:
             gain_factor = 1.0
@@ -119,19 +221,34 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
             gain_factor /= 2.0
 
         # convolution layer
-        self.filter = SpectralFilterLayer(
-            forward_transform,
-            inverse_transform,
-            input_dim,
-            output_dim,
-            gain=gain_factor,
-            operator_type=operator_type,
-            hidden_size_factor=mlp_ratio,
-            factorization=factorization,
-            separable=separable,
-            rank=rank,
-            bias=True,
-        )
+        if conv_type == "local":
+            self.local_conv = DiscreteContinuousConvS2(
+                input_dim,
+                output_dim,
+                in_shape=(forward_transform.nlat, forward_transform.nlon),
+                out_shape=(inverse_transform.nlat, inverse_transform.nlon),
+                kernel_shape=disco_kernel_shape,
+                grid_in=forward_transform.grid,
+                grid_out=inverse_transform.grid,
+                bias=False,
+                theta_cutoff=(disco_kernel_shape[0] + 1) * torch.pi / float(forward_transform.nlat - 1) / math.sqrt(2),
+            )
+        elif conv_type == "global":
+            self.global_conv = SpectralFilterLayer(
+                forward_transform,
+                inverse_transform,
+                input_dim,
+                output_dim,
+                gain=gain_factor,
+                operator_type=operator_type,
+                hidden_size_factor=mlp_ratio,
+                factorization=factorization,
+                separable=separable,
+                rank=rank,
+                bias=False,
+            )
+        else:
+            raise ValueError(f"Unknown convolution type {conv_type}")
 
         if inner_skip == "linear":
             self.inner_skip = nn.Conv2d(input_dim, output_dim, 1, 1)
@@ -159,7 +276,13 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         if use_mlp == True:
             mlp_hidden_dim = int(output_dim * mlp_ratio)
             self.mlp = MLP(
-                in_features=output_dim, out_features=input_dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop_rate=drop_rate, checkpointing=False, gain=gain_factor
+                in_features=output_dim,
+                out_features=input_dim,
+                hidden_features=mlp_hidden_dim,
+                act_layer=act_layer,
+                drop_rate=drop_rate,
+                checkpointing=False,
+                gain=gain_factor,
             )
 
         if outer_skip == "linear":
@@ -178,7 +301,12 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
 
     def forward(self, x):
 
-        x, residual = self.filter(x)
+        residual = x
+
+        if hasattr(self, "global_conv"):
+            x, _ = self.global_conv(x)
+        elif hasattr(self, "local_conv"):
+            x = self.local_conv(x)
 
         x = self.norm0(x)
 
@@ -201,7 +329,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         return x
 
 
-class SphericalFourierNeuralOperatorNet(nn.Module):
+class LocalSphericalNeuralOperatorNet(nn.Module):
     """
     SphericalFourierNeuralOperator module. Can use both FFTs and SHTs to represent either FNO or SFNO,
     both linear and non-linear variants.
@@ -214,6 +342,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         Type of operator to use ('driscoll-healy', 'diagonal'), by default "driscoll-healy"
     img_shape : tuple, optional
         Shape of the input channels, by default (128, 256)
+    kernel_shape: tuple, int
     scale_factor : int, optional
         Scale factor to use, by default 3
     in_chans : int, optional
@@ -226,8 +355,8 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         Number of layers in the network, by default 4
     activation_function : str, optional
         Activation function to use, by default "gelu"
-    encoder_layers : int, optional
-        Number of layers in the encoder, by default 1
+    encoder_kernel_shape : int, optional
+        size of the encoder kernel
     use_mlp : int, optional
         Whether to use MLPs in the SFNO blocks, by default True
     mlp_ratio : int, optional
@@ -273,13 +402,14 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         operator_type="driscoll-healy",
         img_size=(128, 256),
         grid="equiangular",
-        scale_factor=3,
+        scale_factor=4,
         in_chans=3,
         out_chans=3,
         embed_dim=256,
         num_layers=4,
         activation_function="relu",
-        encoder_layers=1,
+        kernel_shape=[3, 4],
+        encoder_kernel_shape=[3, 4],
         use_mlp=True,
         mlp_ratio=2.0,
         drop_rate=0.0,
@@ -293,8 +423,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         rank=128,
         pos_embed=False,
     ):
-
-        super(SphericalFourierNeuralOperatorNet, self).__init__()
+        super().__init__()
 
         self.spectral_transform = spectral_transform
         self.operator_type = operator_type
@@ -305,10 +434,10 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         self.out_chans = out_chans
         self.embed_dim = embed_dim
         self.num_layers = num_layers
+        self.encoder_kernel_shape = encoder_kernel_shape
         self.hard_thresholding_fraction = hard_thresholding_fraction
         self.normalization_layer = normalization_layer
         self.use_mlp = use_mlp
-        self.encoder_layers = encoder_layers
         self.big_skip = big_skip
         self.factorization = factorization
         self.separable = (separable,)
@@ -347,10 +476,10 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             raise NotImplementedError(f"Error, normalization {self.normalization_layer} not implemented.")
 
         if pos_embed == "latlon" or pos_embed == True:
-            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.img_size[0], self.img_size[1]))
+            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.h, self.w))
             nn.init.constant_(self.pos_embed, 0.0)
         elif pos_embed == "lat":
-            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.img_size[0], 1))
+            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.h, 1))
             nn.init.constant_(self.pos_embed, 0.0)
         elif pos_embed == "const":
             self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, 1, 1))
@@ -358,62 +487,49 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         else:
             self.pos_embed = None
 
-        # construct an encoder with num_encoder_layers
-        num_encoder_layers = 1
-        encoder_hidden_dim = int(self.embed_dim * mlp_ratio)
-        current_dim = self.in_chans
-        encoder_layers = []
-        for l in range(num_encoder_layers - 1):
-            fc = nn.Conv2d(current_dim, encoder_hidden_dim, 1, bias=True)
-            # initialize the weights correctly
-            scale = math.sqrt(2.0 / current_dim)
-            nn.init.normal_(fc.weight, mean=0.0, std=scale)
-            if fc.bias is not None:
-                nn.init.constant_(fc.bias, 0.0)
-            encoder_layers.append(fc)
-            encoder_layers.append(self.activation_function())
-            current_dim = encoder_hidden_dim
-        fc = nn.Conv2d(current_dim, self.embed_dim, 1, bias=False)
-        scale = math.sqrt(1.0 / current_dim)
-        nn.init.normal_(fc.weight, mean=0.0, std=scale)
-        if fc.bias is not None:
-            nn.init.constant_(fc.bias, 0.0)
-        encoder_layers.append(fc)
-        self.encoder = nn.Sequential(*encoder_layers)
+        # encoder
+        self.encoder = DiscreteContinuousConvS2(
+            self.in_chans,
+            self.embed_dim,
+            self.img_size,
+            (self.h, self.w),
+            self.encoder_kernel_shape,
+            groups=1,
+            grid_in=grid,
+            grid_out="legendre-gauss",
+            bias=False,
+            theta_cutoff=math.sqrt(2) * torch.pi / float(self.h - 1),
+        )
+
+        # # encoder
+        # self.encoder = DiscreteContinuousEncoder(
+        #     inp_shape=self.img_size,
+        #     out_shape=(self.h, self.w),
+        #     grid_in=grid,
+        #     grid_out="legendre-gauss",
+        #     inp_chans=self.in_chans,
+        #     out_chans=self.embed_dim,
+        #     kernel_shape=self.encoder_kernel_shape,
+        #     groups=1,
+        #     bias=False,
+        # )
 
         # prepare the spectral transform
         if self.spectral_transform == "sht":
-
             modes_lat = int(self.h * self.hard_thresholding_fraction)
             modes_lon = int(self.w // 2 * self.hard_thresholding_fraction)
             modes_lat = modes_lon = min(modes_lat, modes_lon)
 
-            self.trans_down = RealSHT(*self.img_size, lmax=modes_lat, mmax=modes_lon, grid=self.grid).float()
-            self.itrans_up = InverseRealSHT(*self.img_size, lmax=modes_lat, mmax=modes_lon, grid=self.grid).float()
             self.trans = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid="legendre-gauss").float()
             self.itrans = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid="legendre-gauss").float()
-
-        elif self.spectral_transform == "fft":
-
-            modes_lat = int(self.h * self.hard_thresholding_fraction)
-            modes_lon = int((self.w // 2 + 1) * self.hard_thresholding_fraction)
-
-            self.trans_down = RealFFT2(*self.img_size, lmax=modes_lat, mmax=modes_lon).float()
-            self.itrans_up = InverseRealFFT2(*self.img_size, lmax=modes_lat, mmax=modes_lon).float()
-            self.trans = RealFFT2(self.h, self.w, lmax=modes_lat, mmax=modes_lon).float()
-            self.itrans = InverseRealFFT2(self.h, self.w, lmax=modes_lat, mmax=modes_lon).float()
 
         else:
             raise (ValueError("Unknown spectral transform"))
 
         self.blocks = nn.ModuleList([])
         for i in range(self.num_layers):
-
             first_layer = i == 0
             last_layer = i == self.num_layers - 1
-
-            forward_transform = self.trans_down if first_layer else self.trans
-            inverse_transform = self.itrans_up if last_layer else self.itrans
 
             inner_skip = "none"
             outer_skip = "identity"
@@ -425,11 +541,12 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             else:
                 norm_layer = norm_layer1
 
-            block = SphericalFourierNeuralOperatorBlock(
-                forward_transform,
-                inverse_transform,
+            block = SphericalNeuralOperatorBlock(
+                self.trans,
+                self.itrans,
                 self.embed_dim,
                 self.embed_dim,
+                conv_type="global" if i % 2 == 0 else "local",
                 operator_type=self.operator_type,
                 mlp_ratio=mlp_ratio,
                 drop_rate=drop_rate,
@@ -442,39 +559,52 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
                 factorization=self.factorization,
                 separable=self.separable,
                 rank=self.rank,
+                disco_kernel_shape=kernel_shape,
             )
 
             self.blocks.append(block)
 
-        # construct an decoder with num_decoder_layers
-        num_decoder_layers = 1
-        decoder_hidden_dim = int(self.embed_dim * mlp_ratio)
-        current_dim = self.embed_dim + self.big_skip * self.in_chans
-        decoder_layers = []
-        for l in range(num_decoder_layers - 1):
-            fc = nn.Conv2d(current_dim, decoder_hidden_dim, 1, bias=True)
-            # initialize the weights correctly
-            scale = math.sqrt(2.0 / current_dim)
-            nn.init.normal_(fc.weight, mean=0.0, std=scale)
-            if fc.bias is not None:
-                nn.init.constant_(fc.bias, 0.0)
-            decoder_layers.append(fc)
-            decoder_layers.append(self.activation_function())
-            current_dim = decoder_hidden_dim
-        fc = nn.Conv2d(current_dim, self.out_chans, 1, bias=False)
-        scale = math.sqrt(1.0 / current_dim)
-        nn.init.normal_(fc.weight, mean=0.0, std=scale)
-        if fc.bias is not None:
-            nn.init.constant_(fc.bias, 0.0)
-        decoder_layers.append(fc)
-        self.decoder = nn.Sequential(*decoder_layers)
+        # # decoder
+        # self.decoder = DiscreteContinuousConvTransposeS2(
+        #     self.embed_dim,
+        #     self.out_chans,
+        #     (self.h, self.w),
+        #     self.img_size,
+        #     self.encoder_kernel_shape,
+        #     groups=1,
+        #     grid_in="legendre-gauss",
+        #     grid_out=grid,
+        #     bias=False,
+        #     theta_cutoff=math.sqrt(2) * torch.pi / float(self.h - 1),
+        # )
+
+        # decoder
+        self.decoder = DiscreteContinuousDecoder(
+            inp_shape=(self.h, self.w),
+            out_shape=self.img_size,
+            grid_in="legendre-gauss",
+            grid_out=grid,
+            inp_chans=self.embed_dim,
+            out_chans=self.out_chans,
+            kernel_shape=self.encoder_kernel_shape,
+            groups=1,
+            bias=False,
+        )
+
+        # # residual prediction
+        # if self.big_skip:
+        #     self.residual_transform = nn.Conv2d(self.out_chans, self.in_chans, 1, bias=False)
+        #     self.residual_transform.weight.is_shared_mp = ["spatial"]
+        #     self.residual_transform.weight.sharded_dims_mp = [None, None, None, None]
+        #     scale = math.sqrt(0.5 / self.in_chans)
+        #     nn.init.normal_(self.residual_transform.weight, mean=0.0, std=scale)
+
 
     @torch.jit.ignore
     def no_weight_decay(self):
         return {"pos_embed", "cls_token"}
 
     def forward_features(self, x):
-
         x = self.pos_drop(x)
 
         for blk in self.blocks:
@@ -483,7 +613,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         return x
 
     def forward(self, x):
-
         if self.big_skip:
             residual = x
 
@@ -494,9 +623,10 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
 
         x = self.forward_features(x)
 
-        if self.big_skip:
-            x = torch.cat((x, residual), dim=1)
-
         x = self.decoder(x)
+
+        if self.big_skip:
+            # x = x + self.residual_transform(residual)
+            x = x + residual
 
         return x
