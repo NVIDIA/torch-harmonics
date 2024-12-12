@@ -469,21 +469,27 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
         vw = F.conv2d(v, weight=wv, bias=bv)
         qw = F.conv2d(q, weight=wq, bias=bq)
 
-        dvw = attention_cuda_extension.backward_dv(kw, vw, qw, grad_output,
-                                                   quad_weights,
-                                                   col_idx, row_off,
-                                                   nlon_in, nlat_out, nlon_out)
+        # non fused versions
+        # dvw0 = attention_cuda_extension.backward_dv(kw, vw, qw, grad_output,
+        #                                            quad_weights,
+        #                                            col_idx, row_off,
+        #                                            nlon_in, nlat_out, nlon_out)
 
-        dkw = attention_cuda_extension.backward_dk(kw, vw, qw, grad_output,
-                                                   quad_weights,
-                                                   col_idx, row_off,
-                                                   nlon_in, nlat_out, nlon_out)
+        # dkw0 = attention_cuda_extension.backward_dk(kw, vw, qw, grad_output,
+        #                                            quad_weights,
+        #                                            col_idx, row_off,
+        #                                            nlon_in, nlat_out, nlon_out)
 
-        dqw = attention_cuda_extension.backward_dq(kw, vw, qw, grad_output,
-                                                   quad_weights,
-                                                   col_idx, row_off,
-                                                   nlon_in, nlat_out, nlon_out)
-        
+        # dqw0 = attention_cuda_extension.backward_dq(kw, vw, qw, grad_output,
+        #                                            quad_weights,
+        #                                            col_idx, row_off,
+        #                                            nlon_in, nlat_out, nlon_out)
+
+        dkw,dvw,dqw = attention_cuda_extension.backward_dkvq(kw, vw, qw, grad_output,
+                                                             quad_weights,
+                                                             col_idx, row_off,
+                                                             nlon_in, nlat_out, nlon_out)
+
         # input grads
         dv = torch.nn.functional.conv2d(dvw, weight=wv.permute([1,0,2,3]), bias=None)
         dk = torch.nn.functional.conv2d(dkw, weight=wk.permute([1,0,2,3]), bias=None)
