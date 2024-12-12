@@ -2,7 +2,7 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -43,7 +43,7 @@ class SphereSolver(nn.Module):
     - Allen-Cahn eq
     """
 
-    def __init__(self, nlat, nlon, dt, lmax=None, mmax=None, grid='legendre-gauss', radius=1.0, coeff=0.001):
+    def __init__(self, nlat, nlon, dt, lmax=None, mmax=None, grid="equiangular", radius=1.0, coeff=0.001):
         super().__init__()
 
         # time stepping param
@@ -96,7 +96,7 @@ class SphereSolver(nn.Module):
 
     def grid2spec(self, u):
         """spectral coefficients from spatial data"""
-        
+
         return self.sht(u)
 
     def spec2grid(self, uspec):
@@ -116,7 +116,7 @@ class SphereSolver(nn.Module):
             dudtspec = uspec + (1. + 2.j)*self.coeff*self.lap*uspec - (1. + 2.j)*u3spec
         else:
             NotImplementedError
-        
+
         return dudtspec
 
     def randspec(self):
