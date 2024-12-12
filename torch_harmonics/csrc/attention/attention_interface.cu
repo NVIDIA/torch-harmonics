@@ -36,6 +36,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("compute_row_offset", &s2_idx_offset_cuda, "Row offset on S2");
   m.def("backward_dk", &s2_attention_bwd_dk_cuda, "(Local) Attention gradient on S2 (gradient for k)");
   m.def("backward_dv", &s2_attention_bwd_dv_cuda, "(Local) Attention gradient on S2 (gradient for v)");
-  m.def("backward_dq", &s2_attention_bwd_dq_cuda, "(Local) Attention gradient on S2 (gradient for q)");
+  m.def("backward_dq", &s2_attention_bwd_dq_cuda,
+        "(Local) Attention gradient on S2 (gradient for q)");
+  m.def("backward_dkvq", &s2_attention_bwd_dkvq_cuda, "(Local) Attention gradient on S2 (gradient for k,v,&q)");
 }
 
