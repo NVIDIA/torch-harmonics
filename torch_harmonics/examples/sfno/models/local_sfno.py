@@ -454,8 +454,8 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         else:
             raise ValueError(f"Unknown activation function {activation_function}")
 
-        # compute downsampled image size
-        self.h = self.img_size[0] // scale_factor
+        # compute downsampled image size. We assume that the latitude-grid includes both poles
+        self.h = (self.img_size[0] - 1) // scale_factor
         self.w = self.img_size[1] // scale_factor
 
         # dropout
