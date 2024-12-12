@@ -2,6 +2,10 @@
 
 ## Versioning
 
+### v0.7.3
+
+* Changing default grid in all SHT routines to `equiangular`
+
 ### v0.7.2
 
 * Added resampling modules for convenience
