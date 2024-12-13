@@ -36,15 +36,7 @@ from torch.utils.checkpoint import checkpoint
 import math
 
 from torch_harmonics import *
-from .contractions import *
 from .activations import *
-
-# # import FactorizedTensor from tensorly for tensorized operations
-# import tensorly as tl
-# from tensorly.plugins import use_opt_einsum
-# tl.set_backend("pytorch")
-# use_opt_einsum("optimal")
-from tltorch.factorized_tensors.core import FactorizedTensor
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
     # Cut & paste from PyTorch official master until it's in a few official releases - RW
@@ -237,7 +229,7 @@ class SpectralConvS2(nn.Module):
                  operator_type = "driscoll-healy",
                  lr_scale_exponent = 0,
                  bias = False):
-        super(SpectralConvS2, self).__init__()
+        super().__init__()
 
         self.forward_transform = forward_transform
         self.inverse_transform = inverse_transform
@@ -258,123 +250,19 @@ class SpectralConvS2(nn.Module):
 
         if self.operator_type == "diagonal":
             weight_shape += [self.modes_lat, self.modes_lon]
-            from .contractions import contract_diagonal as _contract
+            self.contract_func = "...ilm,oilm->...olm"
         elif self.operator_type == "block-diagonal":
             weight_shape += [self.modes_lat, self.modes_lon, self.modes_lon]
-            from .contractions import contract_blockdiag as _contract
+            self.contract_func = "...ilm,oilnm->...oln"
         elif self.operator_type == "driscoll-healy":
             weight_shape += [self.modes_lat]
-            from .contractions import contract_dhconv as _contract
+            self.contract_func = "...ilm,oil->...olm"
         else:
             raise NotImplementedError(f"Unkonw operator type f{self.operator_type}")
 
         # form weight tensors
-        scale = math.sqrt(gain / in_channels) * torch.ones(self.modes_lat, 2)
-        scale[0] *=  math.sqrt(2)
-        self.weight = nn.Parameter(scale * torch.view_as_real(torch.randn(*weight_shape, dtype=torch.complex64)))
-
-        # get the right contraction function
-        self._contract = _contract
-
-        if bias:
-            self.bias = nn.Parameter(torch.zeros(1, out_channels, 1, 1))
-
-
-    def forward(self, x):
-
-        dtype = x.dtype
-        x = x.float()
-        residual = x
-
-        with torch.autocast(device_type="cuda", enabled=False):
-            x = self.forward_transform(x)
-            if self.scale_residual:
-                residual = self.inverse_transform(x)
-
-
-        x = torch.view_as_real(x)
-        x = self._contract(x, self.weight)
-        x = torch.view_as_complex(x)
-
-        with torch.autocast(device_type="cuda", enabled=False):
-            x = self.inverse_transform(x)
-
-        if hasattr(self, "bias"):
-            x = x + self.bias
-        x = x.type(dtype)
-
-        return x, residual
-
-class FactorizedSpectralConvS2(nn.Module):
-    """
-    Factorized version of SpectralConvS2. Uses tensorly-torch to keep the weights factorized
-    """
-
-    def __init__(self,
-                 forward_transform,
-                 inverse_transform,
-                 in_channels,
-                 out_channels,
-                 gain = 2.,
-                 operator_type = "driscoll-healy",
-                 rank = 0.2,
-                 factorization = None,
-                 separable = False,
-                 implementation = "factorized",
-                 decomposition_kwargs=dict(),
-                 bias = False):
-        super(SpectralConvS2, self).__init__()
-
-        self.forward_transform = forward_transform
-        self.inverse_transform = inverse_transform
-
-        self.modes_lat = self.inverse_transform.lmax
-        self.modes_lon = self.inverse_transform.mmax
-
-        self.scale_residual = (self.forward_transform.nlat != self.inverse_transform.nlat) \
-                        or (self.forward_transform.nlon != self.inverse_transform.nlon)
-
-        # Make sure we are using a Complex Factorized Tensor
-        if factorization is None:
-            factorization = "Dense" # No factorization
-        if not factorization.lower().startswith("complex"):
-            factorization = f"Complex{factorization}"
-
-        # remember factorization details
-        self.operator_type = operator_type
-        self.rank = rank
-        self.factorization = factorization
-        self.separable = separable
-
-        assert self.inverse_transform.lmax == self.modes_lat
-        assert self.inverse_transform.mmax == self.modes_lon
-
-        weight_shape = [out_channels]
-
-        if not self.separable:
-            weight_shape += [in_channels]
-
-        if self.operator_type == "diagonal":
-            weight_shape += [self.modes_lat, self.modes_lon]
-        elif self.operator_type == "block-diagonal":
-            weight_shape += [self.modes_lat, self.modes_lon, self.modes_lon]
-        elif self.operator_type == "driscoll-healy":
-            weight_shape += [self.modes_lat]
-        else:
-            raise NotImplementedError(f"Unkonw operator type f{self.operator_type}")
-
-        # form weight tensors
-        self.weight = FactorizedTensor.new(weight_shape, rank=self.rank, factorization=factorization,
-                                           fixed_rank_modes=False, **decomposition_kwargs)
-
-        # initialization of weights
         scale = math.sqrt(gain / in_channels)
-        self.weight.normal_(0, scale)
-
-        # get the right contraction function
-        from .factorizations import get_contract_fun
-        self._contract = get_contract_fun(self.weight, implementation=implementation, separable=separable)
-
+        self.weight = nn.Parameter(scale * torch.randn(*weight_shape, dtype=torch.complex64))
         if bias:
             self.bias = nn.Parameter(torch.zeros(1, out_channels, 1, 1))
 
@@ -390,7 +278,7 @@ class FactorizedSpectralConvS2(nn.Module):
             if self.scale_residual:
                 residual = self.inverse_transform(x)
 
-        x = self._contract(x, self.weight, separable=self.separable, operator_type=self.operator_type)
+        x = torch.einsum(self.contract_func, x, self.weight)
 
         with torch.autocast(device_type="cuda", enabled=False):
             x = self.inverse_transform(x)

@@ -51,6 +51,7 @@ class DiscreteContinuousEncoder(nn.Module):
         inp_chans=2,
         out_chans=2,
         kernel_shape=[3, 4],
+        basis_type="piecewise linear",
         groups=1,
         bias=False,
     ):
@@ -63,11 +64,12 @@ class DiscreteContinuousEncoder(nn.Module):
             in_shape=inp_shape,
             out_shape=out_shape,
             kernel_shape=kernel_shape,
+            basis_type=basis_type,
             grid_in=grid_in,
             grid_out=grid_out,
             groups=groups,
             bias=bias,
-            theta_cutoff=math.sqrt(2) * torch.pi / float(out_shape[0] - 1),
+            theta_cutoff=4*math.sqrt(2) * torch.pi / float(out_shape[0] - 1),
         )
 
     def forward(self, x):
@@ -91,6 +93,7 @@ class DiscreteContinuousDecoder(nn.Module):
         inp_chans=2,
         out_chans=2,
         kernel_shape=[3, 4],
+        basis_type="piecewise linear",
         groups=1,
         bias=False,
     ):
@@ -107,11 +110,12 @@ class DiscreteContinuousDecoder(nn.Module):
             in_shape=out_shape,
             out_shape=out_shape,
             kernel_shape=kernel_shape,
+            basis_type=basis_type,
             grid_in=grid_out,
             grid_out=grid_out,
             groups=groups,
             bias=False,
-            theta_cutoff=math.sqrt(2) * torch.pi / float(inp_shape[0] - 1),
+            theta_cutoff=4*math.sqrt(2) * torch.pi / float(inp_shape[0] - 1),
         )
 
         # self.convt = nn.Conv2d(inp_chans, out_chans, 1, bias=False)
@@ -130,58 +134,6 @@ class DiscreteContinuousDecoder(nn.Module):
 
         return x
 
-
-class SpectralFilterLayer(nn.Module):
-    """
-    Fourier layer. Contains the convolution part of the FNO/SFNO
-    """
-
-    def __init__(
-        self,
-        forward_transform,
-        inverse_transform,
-        input_dim,
-        output_dim,
-        gain=2.0,
-        operator_type="diagonal",
-        hidden_size_factor=2,
-        factorization=None,
-        separable=False,
-        rank=1e-2,
-        bias=True,
-    ):
-        super(SpectralFilterLayer, self).__init__()
-
-        if factorization is None:
-            self.filter = SpectralConvS2(
-                forward_transform,
-                inverse_transform,
-                input_dim,
-                output_dim,
-                gain=gain,
-                operator_type=operator_type,
-                bias=bias,
-            )
-
-        elif factorization is not None:
-            self.filter = FactorizedSpectralConvS2(
-                forward_transform,
-                inverse_transform,
-                input_dim,
-                output_dim,
-                gain=gain,
-                operator_type=operator_type,
-                rank=rank,
-                factorization=factorization,
-                separable=separable,
-                bias=bias,
-            )
-
-        else:
-            raise (NotImplementedError)
-
-    def forward(self, x):
-        return self.filter(x)
 
 
 class SphericalNeuralOperatorBlock(nn.Module):
@@ -202,13 +154,11 @@ class SphericalNeuralOperatorBlock(nn.Module):
         drop_path=0.0,
         act_layer=nn.ReLU,
         norm_layer=nn.Identity,
-        factorization=None,
-        separable=False,
-        rank=128,
         inner_skip="None",
         outer_skip="linear",
         use_mlp=True,
         disco_kernel_shape=[2, 4],
+        disco_basis_type="piecewise linear",
     ):
         super().__init__()
 
@@ -228,25 +178,14 @@ class SphericalNeuralOperatorBlock(nn.Module):
                 in_shape=(forward_transform.nlat, forward_transform.nlon),
                 out_shape=(inverse_transform.nlat, inverse_transform.nlon),
                 kernel_shape=disco_kernel_shape,
+                basis_type=disco_basis_type,
                 grid_in=forward_transform.grid,
                 grid_out=inverse_transform.grid,
                 bias=False,
-                theta_cutoff=(disco_kernel_shape[0] + 1) * torch.pi / float(forward_transform.nlat - 1) / math.sqrt(2),
+                theta_cutoff=4*math.sqrt(2) * torch.pi / float(inverse_transform.nlat - 1),
             )
         elif conv_type == "global":
-            self.global_conv = SpectralFilterLayer(
-                forward_transform,
-                inverse_transform,
-                input_dim,
-                output_dim,
-                gain=gain_factor,
-                operator_type=operator_type,
-                hidden_size_factor=mlp_ratio,
-                factorization=factorization,
-                separable=separable,
-                rank=rank,
-                bias=False,
-            )
+            self.global_conv =  SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, operator_type=operator_type, bias=False)
         else:
             raise ValueError(f"Unknown convolution type {conv_type}")
 
@@ -260,8 +199,6 @@ class SphericalNeuralOperatorBlock(nn.Module):
             pass
         else:
             raise ValueError(f"Unknown skip connection type {inner_skip}")
-
-        self.act_layer = act_layer()
 
         # first normalisation layer
         self.norm0 = norm_layer()
@@ -313,9 +250,6 @@ class SphericalNeuralOperatorBlock(nn.Module):
         if hasattr(self, "inner_skip"):
             x = x + self.inner_skip(residual)
 
-        if hasattr(self, "act_layer"):
-            x = self.act_layer(x)
-
         if hasattr(self, "mlp"):
             x = self.mlp(x)
 
@@ -331,11 +265,13 @@ class SphericalNeuralOperatorBlock(nn.Module):
 
 class LocalSphericalNeuralOperatorNet(nn.Module):
     """
-    SphericalFourierNeuralOperator module. Can use both FFTs and SHTs to represent either FNO or SFNO,
-    both linear and non-linear variants.
+    LocalSphericalNeuralOperator module. A spherical neural operator which uses both local and global integral
+    operators to accureately model both types of solution operators [1]. The architecture is based on the Spherical
+    Fourier Neural Operator [2] and improves upon it with local integral operators in both the Neural Operator blocks,
+    as well as in the encoder and decoders.
 
     Parameters
-    ----------
+    -----------
     spectral_transform : str, optional
         Type of spectral transformation to use, by default "sht"
     operator_type : str, optional
@@ -373,17 +309,11 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         Whether to add a single large skip connection, by default True
     rank : float, optional
         Rank of the approximation, by default 1.0
-    factorization : Any, optional
-        Type of factorization to use, by default None
-    separable : bool, optional
-        Whether to use separable convolutions, by default False
-    rank : (int, Tuple[int]), optional
-        If a factorization is used, which rank to use. Argument is passed to tensorly
     pos_embed : bool, optional
         Whether to use positional embedding, by default True
 
-    Example:
-    --------
+    Example
+    -----------
     >>> model = SphericalFourierNeuralOperatorNet(
     ...         img_shape=(128, 256),
     ...         scale_factor=4,
@@ -394,6 +324,17 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
     ...         use_mlp=True,)
     >>> model(torch.randn(1, 2, 128, 256)).shape
     torch.Size([1, 2, 128, 256])
+
+    References
+    -----------
+    .. [1] Liu-Schiaffini M., Berner J., Bonev B., Kurth T., Azizzadenesheli K., Anandkumar A.;
+        "Neural Operators with Localized Integral and Differential Kernels" (2024).
+        ICML 2024, https://arxiv.org/pdf/2402.16845.
+
+    .. [2] Bonev B., Kurth T., Hundt C., Pathak, J., Baust M., Kashinath K., Anandkumar A.;
+        "Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere" (2023).
+        ICML 2023, https://arxiv.org/abs/2306.03838.
+
     """
 
     def __init__(
@@ -402,6 +343,7 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         operator_type="driscoll-healy",
         img_size=(128, 256),
         grid="equiangular",
+        grid_internal="legendre-gauss",
         scale_factor=4,
         in_chans=3,
         out_chans=3,
@@ -410,6 +352,7 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         activation_function="relu",
         kernel_shape=[3, 4],
         encoder_kernel_shape=[3, 4],
+        disco_basis_type="piecewise linear",
         use_mlp=True,
         mlp_ratio=2.0,
         drop_rate=0.0,
@@ -418,9 +361,6 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         hard_thresholding_fraction=1.0,
         use_complex_kernels=True,
         big_skip=False,
-        factorization=None,
-        separable=False,
-        rank=128,
         pos_embed=False,
     ):
         super().__init__()
@@ -429,6 +369,7 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         self.operator_type = operator_type
         self.img_size = img_size
         self.grid = grid
+        self.grid_internal = grid_internal
         self.scale_factor = scale_factor
         self.in_chans = in_chans
         self.out_chans = out_chans
@@ -439,9 +380,6 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         self.normalization_layer = normalization_layer
         self.use_mlp = use_mlp
         self.big_skip = big_skip
-        self.factorization = factorization
-        self.separable = (separable,)
-        self.rank = rank
 
         # activation function
         if activation_function == "relu":
@@ -455,7 +393,7 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
             raise ValueError(f"Unknown activation function {activation_function}")
 
         # compute downsampled image size. We assume that the latitude-grid includes both poles
-        self.h = (self.img_size[0] - 1) // scale_factor
+        self.h = (self.img_size[0] - 1) // scale_factor + 1
         self.w = self.img_size[1] // scale_factor
 
         # dropout
@@ -494,9 +432,10 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
             self.img_size,
             (self.h, self.w),
             self.encoder_kernel_shape,
+            basis_type=disco_basis_type,
             groups=1,
             grid_in=grid,
-            grid_out="legendre-gauss",
+            grid_out=grid_internal,
             bias=False,
             theta_cutoff=math.sqrt(2) * torch.pi / float(self.h - 1),
         )
@@ -506,7 +445,7 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         #     inp_shape=self.img_size,
         #     out_shape=(self.h, self.w),
         #     grid_in=grid,
-        #     grid_out="legendre-gauss",
+        #     grid_out=grid_internal,
         #     inp_chans=self.in_chans,
         #     out_chans=self.embed_dim,
         #     kernel_shape=self.encoder_kernel_shape,
@@ -520,8 +459,8 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
             modes_lon = int(self.w // 2 * self.hard_thresholding_fraction)
             modes_lat = modes_lon = min(modes_lat, modes_lon)
 
-            self.trans = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid="legendre-gauss").float()
-            self.itrans = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid="legendre-gauss").float()
+            self.trans = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
+            self.itrans = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
 
         else:
             raise (ValueError("Unknown spectral transform"))
@@ -556,10 +495,8 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
                 inner_skip=inner_skip,
                 outer_skip=outer_skip,
                 use_mlp=use_mlp,
-                factorization=self.factorization,
-                separable=self.separable,
-                rank=self.rank,
                 disco_kernel_shape=kernel_shape,
+                disco_basis_type=disco_basis_type,
             )
 
             self.blocks.append(block)
@@ -582,11 +519,12 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         self.decoder = DiscreteContinuousDecoder(
             inp_shape=(self.h, self.w),
             out_shape=self.img_size,
-            grid_in="legendre-gauss",
+            grid_in=grid_internal,
             grid_out=grid,
             inp_chans=self.embed_dim,
             out_chans=self.out_chans,
             kernel_shape=self.encoder_kernel_shape,
+            basis_type=disco_basis_type,
             groups=1,
             bias=False,
         )

@@ -367,6 +367,21 @@ class ShallowWaterSolver(nn.Module):
             im = ax.pcolormesh(Lons, Lats, data, cmap=cmap, transform=ccrs.PlateCarree(), antialiased=antialiased, vmax=vmax, vmin=vmin)
             plt.title(title, y=1.05)
 
+        elif projection == 'robinson':
+
+            import cartopy.crs as ccrs
+
+            proj = ccrs.Robinson(central_longitude=0.0)
+
+            #ax = plt.gca(projection=proj, frameon=True)
+            ax = fig.add_subplot(projection=proj)
+            Lons = Lons*180/np.pi
+            Lats = Lats*180/np.pi
+
+            # contour data over the map.
+            im = ax.pcolormesh(Lons, Lats, data, cmap=cmap, transform=ccrs.PlateCarree(), antialiased=antialiased, vmax=vmax, vmin=vmin)
+            plt.title(title, y=1.05)
+
         else:
             raise NotImplementedError
 

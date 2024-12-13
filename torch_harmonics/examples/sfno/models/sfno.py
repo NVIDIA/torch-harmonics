@@ -39,51 +39,6 @@ from .layers import *
 from functools import partial
 
 
-class SpectralFilterLayer(nn.Module):
-    """
-    Fourier layer. Contains the convolution part of the FNO/SFNO
-    """
-
-    def __init__(
-        self,
-        forward_transform,
-        inverse_transform,
-        input_dim,
-        output_dim,
-        gain=2.0,
-        operator_type="diagonal",
-        hidden_size_factor=2,
-        factorization=None,
-        separable=False,
-        rank=1e-2,
-        bias=True,
-    ):
-        super(SpectralFilterLayer, self).__init__()
-
-        if factorization is None:
-            self.filter = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain, operator_type=operator_type, bias=bias)
-
-        elif factorization is not None:
-            self.filter = FactorizedSpectralConvS2(
-                forward_transform,
-                inverse_transform,
-                input_dim,
-                output_dim,
-                gain=gain,
-                operator_type=operator_type,
-                rank=rank,
-                factorization=factorization,
-                separable=separable,
-                bias=bias,
-            )
-
-        else:
-            raise (NotImplementedError)
-
-    def forward(self, x):
-        return self.filter(x)
-
-
 class SphericalFourierNeuralOperatorBlock(nn.Module):
     """
     Helper module for a single SFNO/FNO block. Can use both FFTs and SHTs to represent either FNO or SFNO blocks.
@@ -108,7 +63,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         outer_skip=None,
         use_mlp=True,
     ):
-        super(SphericalFourierNeuralOperatorBlock, self).__init__()
+        super().__init__()
 
         if act_layer == nn.Identity:
             gain_factor = 1.0
@@ -118,20 +73,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         if inner_skip == "linear" or inner_skip == "identity":
             gain_factor /= 2.0
 
-        # convolution layer
-        self.filter = SpectralFilterLayer(
-            forward_transform,
-            inverse_transform,
-            input_dim,
-            output_dim,
-            gain=gain_factor,
-            operator_type=operator_type,
-            hidden_size_factor=mlp_ratio,
-            factorization=factorization,
-            separable=separable,
-            rank=rank,
-            bias=True,
-        )
+        self.global_conv = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, operator_type=operator_type, bias=False)
 
         if inner_skip == "linear":
             self.inner_skip = nn.Conv2d(input_dim, output_dim, 1, 1)
@@ -143,8 +85,6 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
             pass
         else:
             raise ValueError(f"Unknown skip connection type {inner_skip}")
-
-        self.act_layer = act_layer()
 
         # first normalisation layer
         self.norm0 = norm_layer()
@@ -178,15 +118,12 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
 
     def forward(self, x):
 
-        x, residual = self.filter(x)
+        x, residual = self.global_conv(x)
 
         x = self.norm0(x)
 
         if hasattr(self, "inner_skip"):
             x = x + self.inner_skip(residual)
-
-        if hasattr(self, "act_layer"):
-            x = self.act_layer(x)
 
         if hasattr(self, "mlp"):
             x = self.mlp(x)
@@ -203,13 +140,12 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
 
 class SphericalFourierNeuralOperatorNet(nn.Module):
     """
-    SphericalFourierNeuralOperator module. Can use both FFTs and SHTs to represent either FNO or SFNO,
-    both linear and non-linear variants.
+    SphericalFourierNeuralOperator module. Implements the 'linear' variant of the Spherical Fourier Neural Operator
+    as presented in [1]. Spherical convolutions are applied via spectral transforms to apply a geometrically consistent
+    and approximately equivariant architecture.
 
     Parameters
     ----------
-    spectral_transform : str, optional
-        Type of spectral transformation to use, by default "sht"
     operator_type : str, optional
         Type of operator to use ('driscoll-healy', 'diagonal'), by default "driscoll-healy"
     img_shape : tuple, optional
@@ -244,12 +180,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         Whether to add a single large skip connection, by default True
     rank : float, optional
         Rank of the approximation, by default 1.0
-    factorization : Any, optional
-        Type of factorization to use, by default None
-    separable : bool, optional
-        Whether to use separable convolutions, by default False
-    rank : (int, Tuple[int]), optional
-        If a factorization is used, which rank to use. Argument is passed to tensorly
     pos_embed : bool, optional
         Whether to use positional embedding, by default True
 
@@ -265,14 +195,20 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
     ...         use_mlp=True,)
     >>> model(torch.randn(1, 2, 128, 256)).shape
     torch.Size([1, 2, 128, 256])
+
+    References
+    -----------
+    .. [1] Bonev B., Kurth T., Hundt C., Pathak, J., Baust M., Kashinath K., Anandkumar A.;
+        "Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere" (2023).
+        ICML 2023, https://arxiv.org/abs/2306.03838.
     """
 
     def __init__(
         self,
-        spectral_transform="sht",
         operator_type="driscoll-healy",
         img_size=(128, 256),
         grid="equiangular",
+        grid_internal="legendre-gauss",
         scale_factor=3,
         in_chans=3,
         out_chans=3,
@@ -288,18 +224,15 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         hard_thresholding_fraction=1.0,
         use_complex_kernels=True,
         big_skip=False,
-        factorization=None,
-        separable=False,
-        rank=128,
         pos_embed=False,
     ):
 
-        super(SphericalFourierNeuralOperatorNet, self).__init__()
+        super().__init__()
 
-        self.spectral_transform = spectral_transform
         self.operator_type = operator_type
         self.img_size = img_size
         self.grid = grid
+        self.grid_internal = grid_internal
         self.scale_factor = scale_factor
         self.in_chans = in_chans
         self.out_chans = out_chans
@@ -310,9 +243,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         self.use_mlp = use_mlp
         self.encoder_layers = encoder_layers
         self.big_skip = big_skip
-        self.factorization = factorization
-        self.separable = (separable,)
-        self.rank = rank
 
         # activation function
         if activation_function == "relu":
@@ -326,7 +256,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             raise ValueError(f"Unknown activation function {activation_function}")
 
         # compute downsampled image size. We assume that the latitude-grid includes both poles
-        self.h = (self.img_size[0] - 1) // scale_factor
+        self.h = (self.img_size[0] - 1) // scale_factor + 1
         self.w = self.img_size[1] // scale_factor
 
         # dropout
@@ -381,30 +311,17 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         encoder_layers.append(fc)
         self.encoder = nn.Sequential(*encoder_layers)
 
-        # prepare the spectral transform
-        if self.spectral_transform == "sht":
+        # compute the modes for the sht
+        modes_lat = self.h
+        # due to some spectral artifacts with cufft, we substract one mode here
+        modes_lon = (self.w // 2 + 1) -1
 
-            modes_lat = int(self.h * self.hard_thresholding_fraction)
-            modes_lon = int(self.w // 2 * self.hard_thresholding_fraction)
-            modes_lat = modes_lon = min(modes_lat, modes_lon)
+        modes_lat = modes_lon = int(min(modes_lat, modes_lon) * self.hard_thresholding_fraction)
 
-            self.trans_down = RealSHT(*self.img_size, lmax=modes_lat, mmax=modes_lon, grid=self.grid).float()
-            self.itrans_up = InverseRealSHT(*self.img_size, lmax=modes_lat, mmax=modes_lon, grid=self.grid).float()
-            self.trans = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid="legendre-gauss").float()
-            self.itrans = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid="legendre-gauss").float()
-
-        elif self.spectral_transform == "fft":
-
-            modes_lat = int(self.h * self.hard_thresholding_fraction)
-            modes_lon = int((self.w // 2 + 1) * self.hard_thresholding_fraction)
-
-            self.trans_down = RealFFT2(*self.img_size, lmax=modes_lat, mmax=modes_lon).float()
-            self.itrans_up = InverseRealFFT2(*self.img_size, lmax=modes_lat, mmax=modes_lon).float()
-            self.trans = RealFFT2(self.h, self.w, lmax=modes_lat, mmax=modes_lon).float()
-            self.itrans = InverseRealFFT2(self.h, self.w, lmax=modes_lat, mmax=modes_lon).float()
-
-        else:
-            raise (ValueError("Unknown spectral transform"))
+        self.trans_down = RealSHT(*self.img_size, lmax=modes_lat, mmax=modes_lon, grid=self.grid).float()
+        self.itrans_up = InverseRealSHT(*self.img_size, lmax=modes_lat, mmax=modes_lon, grid=self.grid).float()
+        self.trans = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
+        self.itrans = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
 
         self.blocks = nn.ModuleList([])
         for i in range(self.num_layers):
@@ -439,9 +356,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
                 inner_skip=inner_skip,
                 outer_skip=outer_skip,
                 use_mlp=use_mlp,
-                factorization=self.factorization,
-                separable=self.separable,
-                rank=self.rank,
             )
 
             self.blocks.append(block)
