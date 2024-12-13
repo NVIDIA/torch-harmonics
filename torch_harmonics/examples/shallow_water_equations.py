@@ -239,7 +239,7 @@ class ShallowWaterSolver(nn.Module):
         ctype = torch.complex128 if self.lap.dtype == torch.float64 else torch.complex64
 
         # mach number relative to wave speed
-        llimit = mlimit = 80
+        llimit = mlimit = 120
 
         # hgrid = self.havg + hamp * torch.randn(self.nlat, self.nlon, device=device, dtype=dtype)
         # ugrid = uamp * torch.randn(self.nlat, self.nlon, device=device, dtype=dtype)
@@ -357,6 +357,21 @@ class ShallowWaterSolver(nn.Module):
             import cartopy.crs as ccrs
 
             proj = ccrs.Orthographic(central_longitude=0.0, central_latitude=25.0)
+
+            #ax = plt.gca(projection=proj, frameon=True)
+            ax = fig.add_subplot(projection=proj)
+            Lons = Lons*180/np.pi
+            Lats = Lats*180/np.pi
+
+            # contour data over the map.
+            im = ax.pcolormesh(Lons, Lats, data, cmap=cmap, transform=ccrs.PlateCarree(), antialiased=antialiased, vmax=vmax, vmin=vmin)
+            plt.title(title, y=1.05)
+
+        elif projection == 'robinson':
+
+            import cartopy.crs as ccrs
+
+            proj = ccrs.Robinson(central_longitude=0.0)
 
             #ax = plt.gca(projection=proj, frameon=True)
             ax = fig.add_subplot(projection=proj)
