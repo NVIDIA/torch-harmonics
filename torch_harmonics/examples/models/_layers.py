@@ -36,7 +36,7 @@ from torch.utils.checkpoint import checkpoint
 import math
 
 from torch_harmonics import *
-from .activations import *
+from ._activations import *
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
     # Cut & paste from PyTorch official master until it's in a few official releases - RW

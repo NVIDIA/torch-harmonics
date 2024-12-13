@@ -44,7 +44,7 @@ import pandas as pd
 
 import matplotlib.pyplot as plt
 
-from torch_harmonics.examples.sfno import PdeDataset
+from torch_harmonics.examples import PdeDataset
 from torch_harmonics import RealSHT
 
 # wandb logging
@@ -409,24 +409,8 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     models = {}
     metrics = {}
 
-    from torch_harmonics.examples.sfno import SphericalFourierNeuralOperatorNet as SFNO
-    from torch_harmonics.examples.sfno import LocalSphericalNeuralOperatorNet as LSNO
-
-    # models[f"sfno_sc2_layers4_e32_nomlp"] = partial(
-    #     SFNO,
-    #     img_size=(nlat, nlon),
-    #     grid="equiangular",
-    #     # hard_thresholding_fraction=0.8,
-    #     num_layers=4,
-    #     scale_factor=2,
-    #     embed_dim=32,
-    #     operator_type="driscoll-healy",
-    #     activation_function="gelu",
-    #     big_skip=True,
-    #     pos_embed=False,
-    #     use_mlp=False,
-    #     normalization_layer="none",
-    # )
+    from torch_harmonics.examples.models import SphericalFourierNeuralOperatorNet as SFNO
+    from torch_harmonics.examples.models import LocalSphericalNeuralOperatorNet as LSNO
 
     models[f"sfno_sc2_layers4_e32_nomlp_leggauss"] = partial(
         SFNO,
@@ -444,21 +428,21 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         normalization_layer="none",
     )
 
-    # models[f"lsno_sc1_layers4_e32_nomlp"] = partial(
-    #     LSNO,
-    #     spectral_transform="sht",
-    #     img_size=(nlat, nlon),
-    #     grid="equiangular",
-    #     num_layers=4,
-    #     scale_factor=2,
-    #     embed_dim=32,
-    #     operator_type="driscoll-healy",
-    #     activation_function="gelu",
-    #     big_skip=True,
-    #     pos_embed=False,
-    #     use_mlp=False,
-    #     normalization_layer="none",
-    # )
+    models[f"lsno_sc1_layers4_e32_nomlp"] = partial(
+        LSNO,
+        spectral_transform="sht",
+        img_size=(nlat, nlon),
+        grid="equiangular",
+        num_layers=4,
+        scale_factor=2,
+        embed_dim=32,
+        operator_type="driscoll-healy",
+        activation_function="gelu",
+        big_skip=True,
+        pos_embed=False,
+        use_mlp=False,
+        normalization_layer="none",
+    )
 
     # iterate over models and train each model
     root_path = os.path.dirname(__file__)

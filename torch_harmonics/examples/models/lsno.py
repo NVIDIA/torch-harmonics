@@ -36,7 +36,7 @@ import torch.amp as amp
 from torch_harmonics import RealSHT, InverseRealSHT
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 
-from .layers import *
+from ._layers import *
 
 from functools import partial
 

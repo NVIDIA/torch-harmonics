@@ -2,7 +2,7 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -31,3 +31,5 @@
 
 from .pde_sphere import SphereSolver
 from .shallow_water_equations import ShallowWaterSolver
+
+from .pde_dataset import PdeDataset
