@@ -6,6 +6,8 @@
 
 * Changing default grid in all SHT routines to `equiangular`
 * Hotfix to the numpy version requirements
+* Changing default grid in all SHT routines to `equiangular`, which makes it consistent with DISCO convolutions
+* Cleaning up the SFNO example and adding new Local Spherical Neural Operator model
 * Reworked DISCO filter basis datastructure
 * Support for new filter basis types
 
