@@ -29,6 +29,5 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from .utils.pde_dataset import PdeDataset
-from .models.sfno import SphericalFourierNeuralOperatorNet
-from .models.local_sfno import LocalSphericalNeuralOperatorNet
+from .sfno import SphericalFourierNeuralOperatorNet
+from .lsno import LocalSphericalNeuralOperatorNet
