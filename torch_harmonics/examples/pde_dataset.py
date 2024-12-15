@@ -33,7 +33,7 @@ import torch
 
 from math import ceil
 
-from ...shallow_water_equations import ShallowWaterSolver
+from .shallow_water_equations import ShallowWaterSolver
 
 
 class PdeDataset(torch.utils.data.Dataset):
