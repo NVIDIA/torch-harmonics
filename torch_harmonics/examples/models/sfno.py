@@ -34,7 +34,7 @@ import torch.nn as nn
 
 from torch_harmonics import *
 
-from .layers import *
+from ._layers import *
 
 from functools import partial
 
