@@ -47,7 +47,7 @@ def get_filter_basis(kernel_shape: Union[int, List[int], Tuple[int, int]], basis
         raise ValueError(f"Unknown basis_type {basis_type}")
 
 
-class AbstractFilterBasis(metaclass=abc.ABCMeta):
+class FilterBasis(metaclass=abc.ABCMeta):
     """
     Abstract base class for a filter basis
     """
@@ -72,7 +72,7 @@ class AbstractFilterBasis(metaclass=abc.ABCMeta):
         raise NotImplementedError
 
 
-class PiecewiseLinearFilterBasis(AbstractFilterBasis):
+class PiecewiseLinearFilterBasis(FilterBasis):
     """
     Tensor-product basis on a disk constructed from piecewise linear basis functions.
     """
@@ -190,7 +190,7 @@ class PiecewiseLinearFilterBasis(AbstractFilterBasis):
         else:
             return self._compute_support_vals_isotropic(r, phi, r_cutoff=r_cutoff)
 
-class DiskMorletFilterBasis(AbstractFilterBasis):
+class DiskMorletFilterBasis(FilterBasis):
     """
     Morlet-like Filter basis. A Gaussian is multiplied with a Fourier basis in x and y.
     """
@@ -228,7 +228,8 @@ class DiskMorletFilterBasis(AbstractFilterBasis):
         iidx = torch.argwhere((r <= r_cutoff) & torch.full_like(ikernel, True, dtype=torch.bool))
 
         # # computes the Gaussian envelope. To ensure that the curve is roughly 0 at the boundary, we rescale the Gaussian by 0.25
-        width = 0.01
+        # width = 0.01
+        width = 0.25
         # width = 1.0
         # envelope = self._gaussian_envelope(r, width=0.25 * r_cutoff)
 
@@ -245,7 +246,7 @@ class DiskMorletFilterBasis(AbstractFilterBasis):
 
         # computes the Gaussian envelope. To ensure that the curve is roughly 0 at the boundary, we rescale the Gaussian by 0.25
         vals = self._gaussian_envelope(r[iidx[:, 1], iidx[:, 2]] / r_cutoff, width=width) * harmonic[iidx[:, 0], iidx[:, 1], iidx[:, 2]] / disk_area
-        vals = torch.ones_like(vals)
+        # vals = torch.ones_like(vals)
 
         return iidx, vals
 

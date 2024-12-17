@@ -56,9 +56,11 @@ except ImportError as err:
     _cuda_extension_available = False
 
 
-def _normalize_convolution_tensor_s2(psi_idx, psi_vals, in_shape, out_shape, kernel_size, quad_weights, transpose_normalization=False, merge_quadrature=False, eps=1e-9):
+def _normalize_convolution_tensor_s2(
+    psi_idx, psi_vals, in_shape, out_shape, kernel_size, quad_weights, transpose_normalization=False, basis_norm_mode="sum", merge_quadrature=False, eps=1e-9
+):
     """
-    Discretely normalizes the convolution tensor.
+    Discretely normalizes the convolution tensor. Supports different normalization modes
     """
 
     nlat_in, nlon_in = in_shape
@@ -74,10 +76,21 @@ def _normalize_convolution_tensor_s2(psi_idx, psi_vals, in_shape, out_shape, ker
         # loop through dimensions which require normalization
         for ik in range(kernel_size):
             for ilat in range(nlat_in):
-                # get relevant entries
-                iidx = torch.argwhere((idx[0] == ik) & (idx[2] == ilat))
-                # normalize, while summing also over the input longitude dimension here as this is not available for the output
-                vnorm = torch.sum(psi_vals[iidx] * q[iidx])
+
+                # get relevant entries depending on the normalization mode
+                if basis_norm_mode == "individual":
+
+                    iidx = torch.argwhere((idx[0] == ik) & (idx[2] == ilat))
+                    # normalize, while summing also over the input longitude dimension here as this is not available for the output
+                    vnorm = torch.sum(psi_vals[iidx].abs() * q[iidx])
+                elif basis_norm_mode == "sum":
+                    # this will perform repeated normalization in the kernel dimension but this shouldn't lead to issues
+                    iidx = torch.argwhere(idx[2] == ilat)
+                    # normalize, while summing also over the input longitude dimension here as this is not available for the output
+                    vnorm = torch.sum(psi_vals[iidx].abs() * q[iidx])
+                else:
+                    raise ValueError(f"Unknown basis normalization mode {basis_norm_mode}.")
+
                 if merge_quadrature:
                     # the correction factor accounts for the difference in longitudinal grid points when the input vector is upscaled
                     psi_vals[iidx] = psi_vals[iidx] * q[iidx] * nlon_in / nlon_out / (vnorm + eps)
@@ -90,10 +103,20 @@ def _normalize_convolution_tensor_s2(psi_idx, psi_vals, in_shape, out_shape, ker
         # loop through dimensions which require normalization
         for ik in range(kernel_size):
             for ilat in range(nlat_out):
-                # get relevant entries
-                iidx = torch.argwhere((idx[0] == ik) & (idx[1] == ilat))
-                # normalize
-                vnorm = torch.sum(psi_vals[iidx] * q[iidx])
+
+                # get relevant entries depending on the normalization mode
+                if basis_norm_mode == "individual":
+                    iidx = torch.argwhere((idx[0] == ik) & (idx[1] == ilat))
+                    # normalize
+                    vnorm = torch.sum(psi_vals[iidx].abs() * q[iidx])
+                elif basis_norm_mode == "sum":
+                    # this will perform repeated normalization in the kernel dimension but this shouldn't lead to issues
+                    iidx = torch.argwhere(idx[1] == ilat)
+                    # normalize
+                    vnorm = torch.sum(psi_vals[iidx].abs() * q[iidx])
+                else:
+                    raise ValueError(f"Unknown basis normalization mode {basis_norm_mode}.")
+
                 if merge_quadrature:
                     psi_vals[iidx] = psi_vals[iidx] * q[iidx] / (vnorm + eps)
                 else:
@@ -110,6 +133,7 @@ def _precompute_convolution_tensor_s2(
     grid_out="equiangular",
     theta_cutoff=0.01 * math.pi,
     transpose_normalization=False,
+    basis_norm_mode="sum",
     merge_quadrature=False,
 ):
     """
@@ -136,6 +160,7 @@ def _precompute_convolution_tensor_s2(
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
 
+    # precompute input and output grids
     lats_in, win = _precompute_latitudes(nlat_in, grid=grid_in)
     lats_in = torch.from_numpy(lats_in).float()
     lats_out, wout = _precompute_latitudes(nlat_out, grid=grid_out)
@@ -144,6 +169,12 @@ def _precompute_convolution_tensor_s2(
     # compute the phi differences
     # It's imporatant to not include the 2 pi point in the longitudes, as it is equivalent to lon=0
     lons_in = torch.linspace(0, 2 * math.pi, nlon_in + 1)[:-1]
+
+    # compute quadrature weights that will be merged into the Psi tensor
+    if transpose_normalization:
+        quad_weights = 2.0 * torch.pi * torch.from_numpy(wout).float().reshape(-1, 1) / nlon_in
+    else:
+        quad_weights = 2.0 * torch.pi * torch.from_numpy(win).float().reshape(-1, 1) / nlon_in
 
     out_idx = []
     out_vals = []
@@ -185,12 +216,16 @@ def _precompute_convolution_tensor_s2(
     out_idx = torch.cat(out_idx, dim=-1).to(torch.long).contiguous()
     out_vals = torch.cat(out_vals, dim=-1).to(torch.float32).contiguous()
 
-    if transpose_normalization:
-        quad_weights = 2.0 * torch.pi * torch.from_numpy(wout).float().reshape(-1, 1) / nlon_in
-    else:
-        quad_weights = 2.0 * torch.pi * torch.from_numpy(win).float().reshape(-1, 1) / nlon_in
     out_vals = _normalize_convolution_tensor_s2(
-        out_idx, out_vals, in_shape, out_shape, kernel_size, quad_weights, transpose_normalization=transpose_normalization, merge_quadrature=merge_quadrature
+        out_idx,
+        out_vals,
+        in_shape,
+        out_shape,
+        kernel_size,
+        quad_weights,
+        transpose_normalization=transpose_normalization,
+        basis_norm_mode=basis_norm_mode,
+        merge_quadrature=merge_quadrature,
     )
 
     return out_idx, out_vals
@@ -198,7 +233,7 @@ def _precompute_convolution_tensor_s2(
 
 class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
     """
-    Abstract base class for DISCO convolutions
+    Abstract base class for discrete-continuous convolutions
     """
 
     def __init__(
@@ -245,7 +280,7 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
 
 class DiscreteContinuousConvS2(DiscreteContinuousConv):
     """
-    Discrete-continuous convolutions (DISCO) on the 2-Sphere as described in [1].
+    Discrete-continuous (DISCO) convolutions on the 2-Sphere as described in [1].
 
     [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
     """
@@ -258,6 +293,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         out_shape: Tuple[int],
         kernel_shape: Union[int, List[int]],
         basis_type: Optional[str] = "piecewise linear",
+        basis_norm_mode: Optional[str] = "sum",
         groups: Optional[int] = 1,
         grid_in: Optional[str] = "equiangular",
         grid_out: Optional[str] = "equiangular",
@@ -277,7 +313,15 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             raise ValueError("Error, theta_cutoff has to be positive.")
 
         idx, vals = _precompute_convolution_tensor_s2(
-            in_shape, out_shape, self.filter_basis, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff, transpose_normalization=False, merge_quadrature=True
+            in_shape,
+            out_shape,
+            self.filter_basis,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            theta_cutoff=theta_cutoff,
+            transpose_normalization=False,
+            basis_norm_mode=basis_norm_mode,
+            merge_quadrature=True,
         )
 
         # sort the values
@@ -339,7 +383,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
 class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     """
-    Discrete-continuous transpose convolutions (DISCO) on the 2-Sphere as described in [1].
+    Discrete-continuous (DISCO) transpose convolutions on the 2-Sphere as described in [1].
 
     [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
     """
@@ -352,6 +396,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         out_shape: Tuple[int],
         kernel_shape: Union[int, List[int]],
         basis_type: Optional[str] = "piecewise linear",
+        basis_norm_mode: Optional[str] = "sum",
         groups: Optional[int] = 1,
         grid_in: Optional[str] = "equiangular",
         grid_out: Optional[str] = "equiangular",
@@ -372,7 +417,15 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # switch in_shape and out_shape since we want transpose conv
         idx, vals = _precompute_convolution_tensor_s2(
-            out_shape, in_shape, self.filter_basis, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff, transpose_normalization=True, merge_quadrature=True
+            out_shape,
+            in_shape,
+            self.filter_basis,
+            grid_in=grid_out,
+            grid_out=grid_in,
+            theta_cutoff=theta_cutoff,
+            transpose_normalization=True,
+            basis_norm_mode=basis_norm_mode,
+            merge_quadrature=True,
         )
 
         # sort the values
