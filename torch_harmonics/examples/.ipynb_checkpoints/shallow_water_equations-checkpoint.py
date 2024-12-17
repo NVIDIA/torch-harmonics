@@ -2,7 +2,7 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-#
+# 
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -45,7 +45,7 @@ class ShallowWaterSolver(nn.Module):
     SWE solver class. Interface inspired bu pyspharm and SHTns
     """
 
-    def __init__(self, nlat, nlon, dt, lmax=None, mmax=None, grid="equiangular", radius=6.37122E6, \
+    def __init__(self, nlat, nlon, dt, lmax=None, mmax=None, grid='legendre-gauss', radius=6.37122E6, \
                  omega=7.292E-5, gravity=9.80616, havg=10.e3, hamp=120.):
         super().__init__()
 
@@ -251,7 +251,7 @@ class ShallowWaterSolver(nn.Module):
         # initial geopotential
         uspec = torch.zeros(3, self.lmax, self.mmax, dtype=ctype, device=self.lap.device)
         uspec[:, :llimit, :mlimit] = torch.sqrt(torch.tensor(4 * torch.pi / llimit / (llimit+1), device=device, dtype=ctype)) * torch.randn_like(uspec[:, :llimit, :mlimit])
-
+        
         uspec[0] = self.gravity * self.hamp * uspec[0]
         uspec[0, 0, 0] += torch.sqrt(torch.tensor(4 * torch.pi, device=device, dtype=ctype)) * self.havg * self.gravity
         uspec[1:] = mach * uspec[1:] * torch.sqrt(self.gravity * self.havg) / self.radius
@@ -278,7 +278,7 @@ class ShallowWaterSolver(nn.Module):
         # uspec = torch.zeros(3, self.lmax, self.mmax, dtype=phispec.dtype, device=device)
         # uspec[0] = phispec
         # uspec[1:] = vrtdivspec
-
+        
         return torch.tril(uspec)
 
     def timestep(self, uspec: torch.Tensor, nsteps: int) -> torch.Tensor:
@@ -295,7 +295,7 @@ class ShallowWaterSolver(nn.Module):
 
         for iter in range(nsteps):
             dudtspec[inew] = self.dudtspec(uspec)
-
+            
             # update vort,div,phiv with third-order adams-bashforth.
             # forward euler, then 2nd-order adams-bashforth time steps to start.
             if iter == 0:
@@ -313,11 +313,11 @@ class ShallowWaterSolver(nn.Module):
             inew = (inew - 1) % 3
             inow = (inow - 1) % 3
             iold = (iold - 1) % 3
-
+        
         return uspec
 
     def integrate_grid(self, ugrid, dimensionless=False, polar_opt=0):
-        dlon = 2 * torch.pi / self.nlon
+        dlon = 2 * torch.pi / self.nlon 
         radius = 1 if dimensionless else self.radius
         if polar_opt > 0:
             out = torch.sum(ugrid[..., polar_opt:-polar_opt, :] * self.quad_weights[polar_opt:-polar_opt] * dlon * radius**2, dim=(-2, -1))
