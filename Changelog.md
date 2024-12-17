@@ -2,7 +2,7 @@
 
 ## Versioning
 
-### v0.7.3
+### v0.7.4
 
 * Changing default grid in all SHT routines to `equiangular`
 * Hotfix to the numpy version requirements
@@ -12,6 +12,11 @@
 * Reworked DISCO filter basis datastructure
 * Support for new filter basis types
 * Adding Morlet-like basis functions on a spherical disk
+
+### v0.7.3
+
+* Changing default grid in all SHT routines to `equiangular`
+* Hotfix to the numpy version requirements
 
 ### v0.7.2
 
