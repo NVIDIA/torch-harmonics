@@ -69,7 +69,7 @@ class DiscreteContinuousEncoder(nn.Module):
             grid_out=grid_out,
             groups=groups,
             bias=bias,
-            theta_cutoff=4*math.sqrt(2) * torch.pi / float(out_shape[0] - 1),
+            theta_cutoff=math.sqrt(2) * torch.pi / float(out_shape[0] - 1),
         )
 
     def forward(self, x):
@@ -115,7 +115,7 @@ class DiscreteContinuousDecoder(nn.Module):
             grid_out=grid_out,
             groups=groups,
             bias=False,
-            theta_cutoff=4*math.sqrt(2) * torch.pi / float(inp_shape[0] - 1),
+            theta_cutoff=math.sqrt(2) * torch.pi / float(inp_shape[0] - 1),
         )
 
         # self.convt = nn.Conv2d(inp_chans, out_chans, 1, bias=False)
