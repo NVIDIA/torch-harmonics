@@ -76,6 +76,7 @@ def _precompute_distributed_convolution_tensor_s2(
     grid_out="equiangular",
     theta_cutoff=0.01 * math.pi,
     transpose_normalization=False,
+    basis_norm_mode="sum",
     merge_quadrature=False,
 ):
     """
@@ -110,6 +111,12 @@ def _precompute_distributed_convolution_tensor_s2(
     # compute the phi differences
     # It's imporatant to not include the 2 pi point in the longitudes, as it is equivalent to lon=0
     lons_in = torch.linspace(0, 2 * math.pi, nlon_in + 1)[:-1]
+
+    # compute quadrature weights that will be merged into the Psi tensor
+    if transpose_normalization:
+        quad_weights = 2.0 * torch.pi * torch.from_numpy(wout).float().reshape(-1, 1) / nlon_in
+    else:
+        quad_weights = 2.0 * torch.pi * torch.from_numpy(win).float().reshape(-1, 1) / nlon_in
 
     out_idx = []
     out_vals = []
@@ -151,13 +158,16 @@ def _precompute_distributed_convolution_tensor_s2(
     out_idx = torch.cat(out_idx, dim=-1).to(torch.long).contiguous()
     out_vals = torch.cat(out_vals, dim=-1).to(torch.float32).contiguous()
 
-    # perform the normalization over the entire psi matrix
-    if transpose_normalization:
-        quad_weights = 2.0 * torch.pi * torch.from_numpy(wout).float().reshape(-1, 1) / nlon_in
-    else:
-        quad_weights = 2.0 * torch.pi * torch.from_numpy(win).float().reshape(-1, 1) / nlon_in
     out_vals = _normalize_convolution_tensor_s2(
-        out_idx, out_vals, in_shape, out_shape, kernel_size, quad_weights, transpose_normalization=transpose_normalization, merge_quadrature=merge_quadrature
+        out_idx,
+        out_vals,
+        in_shape,
+        out_shape,
+        kernel_size,
+        quad_weights,
+        transpose_normalization=transpose_normalization,
+        basis_norm_mode=basis_norm_mode,
+        merge_quadrature=merge_quadrature,
     )
 
     # TODO: this part can be split off into it's own function
@@ -197,6 +207,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         out_shape: Tuple[int],
         kernel_shape: Union[int, List[int]],
         basis_type: Optional[str] = "piecewise linear",
+        basis_norm_mode: Optional[str] = "sum",
         groups: Optional[int] = 1,
         grid_in: Optional[str] = "equiangular",
         grid_out: Optional[str] = "equiangular",
@@ -236,7 +247,15 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.nlat_out_local = self.nlat_out
 
         idx, vals = _precompute_distributed_convolution_tensor_s2(
-            in_shape, out_shape, self.filter_basis, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff, transpose_normalization=False, merge_quadrature=True
+            in_shape,
+            out_shape,
+            self.filter_basis,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            theta_cutoff=theta_cutoff,
+            transpose_normalization=False,
+            basis_norm_mode=basis_norm_mode,
+            merge_quadrature=True,
         )
 
         # sort the values
@@ -328,6 +347,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         out_shape: Tuple[int],
         kernel_shape: Union[int, List[int]],
         basis_type: Optional[str] = "piecewise linear",
+        basis_norm_mode: Optional[str] = "sum",
         groups: Optional[int] = 1,
         grid_in: Optional[str] = "equiangular",
         grid_out: Optional[str] = "equiangular",
@@ -369,7 +389,15 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         # switch in_shape and out_shape since we want transpose conv
         # distributed mode here is swapped because of the transpose
         idx, vals = _precompute_distributed_convolution_tensor_s2(
-            out_shape, in_shape, self.filter_basis, grid_in=grid_out, grid_out=grid_in, theta_cutoff=theta_cutoff, transpose_normalization=True, merge_quadrature=True
+            out_shape,
+            in_shape,
+            self.filter_basis,
+            grid_in=grid_out,
+            grid_out=grid_in,
+            theta_cutoff=theta_cutoff,
+            transpose_normalization=True,
+            basis_norm_mode=basis_norm_mode,
+            merge_quadrature=True,
         )
 
         # sort the values
