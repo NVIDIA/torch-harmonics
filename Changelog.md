@@ -5,6 +5,7 @@
 ### v0.7.3
 
 * Changing default grid in all SHT routines to `equiangular`
+* Hotfix to the numpy version requirements
 
 ### v0.7.2
 
