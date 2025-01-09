@@ -430,21 +430,21 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         normalization_layer="none",
     )
 
-    models[f"lsno_sc2_layers4_e32"] = partial(
-        LSNO,
-        spectral_transform="sht",
-        img_size=(nlat, nlon),
-        grid=grid,
-        num_layers=4,
-        scale_factor=2,
-        embed_dim=32,
-        operator_type="driscoll-healy",
-        activation_function="gelu",
-        big_skip=True,
-        pos_embed=False,
-        use_mlp=True,
-        normalization_layer="none",
-    )
+    # models[f"lsno_sc2_layers4_e32"] = partial(
+    #     LSNO,
+    #     spectral_transform="sht",
+    #     img_size=(nlat, nlon),
+    #     grid=grid,
+    #     num_layers=4,
+    #     scale_factor=2,
+    #     embed_dim=32,
+    #     operator_type="driscoll-healy",
+    #     activation_function="gelu",
+    #     big_skip=True,
+    #     pos_embed=False,
+    #     use_mlp=True,
+    #     normalization_layer="none",
+    # )
 
     # iterate over models and train each model
     root_path = os.path.dirname(__file__)

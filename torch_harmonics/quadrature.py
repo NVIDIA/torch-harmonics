@@ -2,7 +2,7 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -31,6 +31,7 @@
 
 import numpy as np
 
+
 def _precompute_grid(n, grid="equidistant", a=0.0, b=1.0, periodic=False):
 
     if (grid != "equidistant") and periodic:
@@ -50,18 +51,22 @@ def _precompute_grid(n, grid="equidistant", a=0.0, b=1.0, periodic=False):
 
     return xlg, wlg
 
+
 def _precompute_latitudes(nlat, grid="equiangular"):
     r"""
     Convenience routine to precompute latitudes
     """
 
-    # compute coordinates
+    # compute coordinates in the cosine theta domain
     xlg, wlg = _precompute_grid(nlat, grid=grid, a=-1.0, b=1.0, periodic=False)
 
+    # to perform the quadrature and account for the jacobian of the sphere, the quadrature rule
+    # is formulated in the cosine theta domain, which is designed to integrate functions of cos theta
     lats = np.flip(np.arccos(xlg)).copy()
     wlg = np.flip(wlg).copy()
 
     return lats, wlg
+
 
 def trapezoidal_weights(n, a=-1.0, b=1.0, periodic=False):
     r"""
@@ -69,14 +74,15 @@ def trapezoidal_weights(n, a=-1.0, b=1.0, periodic=False):
     on the interval [a, b]
     """
 
-    xlg = np.linspace(a, b, n)
-    wlg = (b - a) / (n - 1) * np.ones(n)
+    xlg = np.linspace(a, b, n, endpoint=periodic)
+    wlg = (b - a) / (n - periodic * 1) * np.ones(n)
 
     if not periodic:
         wlg[0] *= 0.5
         wlg[-1] *= 0.5
 
     return xlg, wlg
+
 
 def legendre_gauss_weights(n, a=-1.0, b=1.0):
     r"""
@@ -90,6 +96,7 @@ def legendre_gauss_weights(n, a=-1.0, b=1.0):
 
     return xlg, wlg
 
+
 def lobatto_weights(n, a=-1.0, b=1.0, tol=1e-16, maxiter=100):
     r"""
     Helper routine which returns the Legendre-Gauss-Lobatto nodes and weights
@@ -102,33 +109,33 @@ def lobatto_weights(n, a=-1.0, b=1.0, tol=1e-16, maxiter=100):
 
     # Vandermonde Matrix
     vdm = np.zeros((n, n))
-  
+
     # initialize Chebyshev nodes as first guess
-    for i in range(n): 
-        tlg[i] = -np.cos(np.pi*i / (n-1))
-    
+    for i in range(n):
+        tlg[i] = -np.cos(np.pi * i / (n - 1))
+
     tmp = 2.0
-    
+
     for i in range(maxiter):
         tmp = tlg
-       
-        vdm[:,0] = 1.0 
-        vdm[:,1] = tlg
-       
+
+        vdm[:, 0] = 1.0
+        vdm[:, 1] = tlg
+
         for k in range(2, n):
-            vdm[:, k] = ( (2*k-1) * tlg * vdm[:, k-1] - (k-1) * vdm[:, k-2] ) / k
-       
-        tlg = tmp - ( tlg*vdm[:, n-1] - vdm[:, n-2] ) / ( n * vdm[:, n-1]) 
-        
-        if (max(abs(tlg - tmp).flatten()) < tol ):
-            break 
-    
-    wlg = 2.0 / ( (n*(n-1))*(vdm[:, n-1]**2))
+            vdm[:, k] = ((2 * k - 1) * tlg * vdm[:, k - 1] - (k - 1) * vdm[:, k - 2]) / k
+
+        tlg = tmp - (tlg * vdm[:, n - 1] - vdm[:, n - 2]) / (n * vdm[:, n - 1])
+
+        if max(abs(tlg - tmp).flatten()) < tol:
+            break
+
+    wlg = 2.0 / ((n * (n - 1)) * (vdm[:, n - 1] ** 2))
 
     # rescale
     tlg = (b - a) * 0.5 * tlg + (b + a) * 0.5
     wlg = wlg * (b - a) * 0.5
-    
+
     return tlg, wlg
 
 
@@ -140,12 +147,12 @@ def clenshaw_curtiss_weights(n, a=-1.0, b=1.0):
     [1] Joerg Waldvogel, Fast Construction of the Fejer and Clenshaw-Curtis Quadrature Rules; BIT Numerical Mathematics, Vol. 43, No. 1, pp. 001–018.
     """
 
-    assert(n > 1)
+    assert n > 1
 
     tcc = np.cos(np.linspace(np.pi, 0, n))
 
     if n == 2:
-        wcc = np.array([1., 1.])
+        wcc = np.array([1.0, 1.0])
     else:
 
         n1 = n - 1
@@ -153,13 +160,13 @@ def clenshaw_curtiss_weights(n, a=-1.0, b=1.0):
         l = len(N)
         m = n1 - l
 
-        v = np.concatenate([2 / N / (N-2), 1 / N[-1:], np.zeros(m)])
+        v = np.concatenate([2 / N / (N - 2), 1 / N[-1:], np.zeros(m)])
         v = 0 - v[:-1] - v[-1:0:-1]
 
         g0 = -np.ones(n1)
         g0[l] = g0[l] + n1
         g0[m] = g0[m] + n1
-        g = g0 / (n1**2 - 1 + (n1%2))
+        g = g0 / (n1**2 - 1 + (n1 % 2))
         wcc = np.fft.ifft(v + g).real
         wcc = np.concatenate((wcc, wcc[:1]))
 
@@ -169,6 +176,7 @@ def clenshaw_curtiss_weights(n, a=-1.0, b=1.0):
 
     return tcc, wcc
 
+
 def fejer2_weights(n, a=-1.0, b=1.0):
     r"""
     Computation of the Fejer quadrature nodes and weights.
@@ -177,7 +185,7 @@ def fejer2_weights(n, a=-1.0, b=1.0):
     [1] Joerg Waldvogel, Fast Construction of the Fejer and Clenshaw-Curtis Quadrature Rules; BIT Numerical Mathematics, Vol. 43, No. 1, pp. 001–018.
     """
 
-    assert(n > 2)
+    assert n > 2
 
     tcc = np.cos(np.linspace(np.pi, 0, n))
 
@@ -186,7 +194,7 @@ def fejer2_weights(n, a=-1.0, b=1.0):
     l = len(N)
     m = n1 - l
 
-    v = np.concatenate([2 / N / (N-2), 1 / N[-1:], np.zeros(m)])
+    v = np.concatenate([2 / N / (N - 2), 1 / N[-1:], np.zeros(m)])
     v = 0 - v[:-1] - v[-1:0:-1]
 
     wcc = np.fft.ifft(v).real

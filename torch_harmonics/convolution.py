@@ -57,70 +57,71 @@ except ImportError as err:
 
 
 def _normalize_convolution_tensor_s2(
-    psi_idx, psi_vals, in_shape, out_shape, kernel_size, quad_weights, transpose_normalization=False, basis_norm_mode="sum", merge_quadrature=False, eps=1e-9
+    psi_idx, psi_vals, in_shape, out_shape, kernel_size, quad_weights, transpose_normalization=False, basis_norm_mode="none", merge_quadrature=False, eps=1e-9
 ):
     """
-    Discretely normalizes the convolution tensor. Supports different normalization modes
+    Discretely normalizes the convolution tensor and pre-applies quadrature weights. Supports the following three normalization modes:
+    - "none": No normalization is applied.
+    - "individual": for each output latitude and filter basis function the filter is numerically integrated over the sphere and normalized so that it yields 1.
+    - "mean": the norm is computed for each output latitude and then averaged over the output latitudes. Each basis function is then normalized by this mean.
     """
 
-    nlat_in, nlon_in = in_shape
-    nlat_out, nlon_out = out_shape
+    # reshape the indices implicitly to be ikernel, out_shape[0], in_shape[0], in_shape[1]
+    idx = torch.stack([psi_idx[0], psi_idx[1], psi_idx[2] // in_shape[1], psi_idx[2] % in_shape[1]], dim=0)
 
-    # reshape the indices implicitly to be ikernel, lat_out, lat_in, lon_in
-    idx = torch.stack([psi_idx[0], psi_idx[1], psi_idx[2] // nlon_in, psi_idx[2] % nlon_in], dim=0)
+    # getting indices for adressing kernels, input and output latitudes
+    ikernel = idx[0]
 
     if transpose_normalization:
-        # pre-compute the quadrature weights
-        q = quad_weights[idx[1]].reshape(-1)
-
-        # loop through dimensions which require normalization
-        for ik in range(kernel_size):
-            for ilat in range(nlat_in):
-
-                # get relevant entries depending on the normalization mode
-                if basis_norm_mode == "individual":
-
-                    iidx = torch.argwhere((idx[0] == ik) & (idx[2] == ilat))
-                    # normalize, while summing also over the input longitude dimension here as this is not available for the output
-                    vnorm = torch.sum(psi_vals[iidx].abs() * q[iidx])
-                elif basis_norm_mode == "sum":
-                    # this will perform repeated normalization in the kernel dimension but this shouldn't lead to issues
-                    iidx = torch.argwhere(idx[2] == ilat)
-                    # normalize, while summing also over the input longitude dimension here as this is not available for the output
-                    vnorm = torch.sum(psi_vals[iidx].abs() * q[iidx])
-                else:
-                    raise ValueError(f"Unknown basis normalization mode {basis_norm_mode}.")
-
-                if merge_quadrature:
-                    # the correction factor accounts for the difference in longitudinal grid points when the input vector is upscaled
-                    psi_vals[iidx] = psi_vals[iidx] * q[iidx] * nlon_in / nlon_out / (vnorm + eps)
-                else:
-                    psi_vals[iidx] = psi_vals[iidx] / (vnorm + eps)
+        ilat_out = idx[2]
+        ilat_in = idx[1]
+        # here we are deliberately swapping input and output shapes to handle transpose normalization with the same code
+        nlat_out = in_shape[0]
+        correction_factor = out_shape[1] / in_shape[1]
     else:
-        # pre-compute the quadrature weights
-        q = quad_weights[idx[2]].reshape(-1)
+        ilat_out = idx[1]
+        ilat_in = idx[2]
+        nlat_out = out_shape[0]
 
-        # loop through dimensions which require normalization
-        for ik in range(kernel_size):
-            for ilat in range(nlat_out):
+    # get the quadrature weights
+    q = quad_weights[ilat_in].reshape(-1)
 
-                # get relevant entries depending on the normalization mode
-                if basis_norm_mode == "individual":
-                    iidx = torch.argwhere((idx[0] == ik) & (idx[1] == ilat))
-                    # normalize
-                    vnorm = torch.sum(psi_vals[iidx].abs() * q[iidx])
-                elif basis_norm_mode == "sum":
-                    # this will perform repeated normalization in the kernel dimension but this shouldn't lead to issues
-                    iidx = torch.argwhere(idx[1] == ilat)
-                    # normalize
-                    vnorm = torch.sum(psi_vals[iidx].abs() * q[iidx])
-                else:
-                    raise ValueError(f"Unknown basis normalization mode {basis_norm_mode}.")
+    # buffer to store intermediate values
+    vnorm = torch.zeros(kernel_size, nlat_out)
 
-                if merge_quadrature:
-                    psi_vals[iidx] = psi_vals[iidx] * q[iidx] / (vnorm + eps)
-                else:
-                    psi_vals[iidx] = psi_vals[iidx] / (vnorm + eps)
+    # loop through dimensions to compute the norms
+    for ik in range(kernel_size):
+        for ilat in range(nlat_out):
+
+            # find indices corresponding to the given output latitude and kernel basis function
+            iidx = torch.argwhere((ikernel == ik) & (ilat_out == ilat))
+
+            # compute the 2-norm, accounting for the fact that it is 4-pi normalized
+            vnorm[ik, ilat] = torch.sqrt(torch.sum(psi_vals[iidx].abs().pow(2) * q[iidx]) / 4 / torch.pi)
+
+    # loop over values and renormalize
+    for ik in range(kernel_size):
+        for ilat in range(nlat_out):
+
+            iidx = torch.argwhere((ikernel == ik) & (ilat_out == ilat))
+
+            if basis_norm_mode == "individual":
+                val = vnorm[ik, ilat]
+            elif basis_norm_mode == "mean":
+                val = vnorm[ik, :].mean()
+            elif basis_norm_mode == "none":
+                val = 1.0
+            else:
+                raise ValueError(f"Unknown basis normalization mode {basis_norm_mode}.")
+
+            if merge_quadrature:
+                psi_vals[iidx] = psi_vals[iidx] * q[iidx] / (val + eps)
+            else:
+                psi_vals[iidx] = psi_vals[iidx] / (val + eps)
+
+
+    if transpose_normalization and merge_quadrature:
+        psi_vals = psi_vals / correction_factor
 
     return psi_vals
 
@@ -133,7 +134,7 @@ def _precompute_convolution_tensor_s2(
     grid_out="equiangular",
     theta_cutoff=0.01 * math.pi,
     transpose_normalization=False,
-    basis_norm_mode="sum",
+    basis_norm_mode="none",
     merge_quadrature=False,
 ):
     """
@@ -187,11 +188,11 @@ def _precompute_convolution_tensor_s2(
         # compute cartesian coordinates of the rotated position
         # This uses the YZY convention of Euler angles, where the last angle (alpha) is a passive rotation,
         # and therefore applied with a negative sign
-        z = -torch.cos(beta) * torch.sin(alpha) * torch.sin(gamma) + torch.cos(alpha) * torch.cos(gamma)
         x = torch.cos(alpha) * torch.cos(beta) * torch.sin(gamma) + torch.cos(gamma) * torch.sin(alpha)
         y = torch.sin(beta) * torch.sin(gamma)
+        z = -torch.cos(beta) * torch.sin(alpha) * torch.sin(gamma) + torch.cos(alpha) * torch.cos(gamma)
 
-        # normalization is emportant to avoid NaNs when arccos and atan are applied
+        # normalization is important to avoid NaNs when arccos and atan are applied
         # this can otherwise lead to spurious artifacts in the solution
         norm = torch.sqrt(x * x + y * y + z * z)
         x = x / norm
@@ -200,7 +201,8 @@ def _precompute_convolution_tensor_s2(
 
         # compute spherical coordinates, where phi needs to fall into the [0, 2pi) range
         theta = torch.arccos(z)
-        phi = torch.arctan2(y, x) + torch.pi
+        phi = torch.arctan2(y, x)
+        phi = torch.where(phi < 0.0, phi + 2 * torch.pi, phi)
 
         # find the indices where the rotated position falls into the support of the kernel
         iidx, vals = filter_basis.compute_support_vals(theta, phi, r_cutoff=theta_cutoff)
@@ -293,7 +295,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         out_shape: Tuple[int],
         kernel_shape: Union[int, List[int]],
         basis_type: Optional[str] = "piecewise linear",
-        basis_norm_mode: Optional[str] = "sum",
+        basis_norm_mode: Optional[str] = "none",
         groups: Optional[int] = 1,
         grid_in: Optional[str] = "equiangular",
         grid_out: Optional[str] = "equiangular",
@@ -304,6 +306,9 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
+
+        # make sure the p-shift works by checking that longitudes are divisible
+        assert self.nlon_in % self.nlon_out == 0
 
         # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
         if theta_cutoff is None:
@@ -396,7 +401,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         out_shape: Tuple[int],
         kernel_shape: Union[int, List[int]],
         basis_type: Optional[str] = "piecewise linear",
-        basis_norm_mode: Optional[str] = "sum",
+        basis_norm_mode: Optional[str] = "none",
         groups: Optional[int] = 1,
         grid_in: Optional[str] = "equiangular",
         grid_out: Optional[str] = "equiangular",
@@ -408,6 +413,9 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
 
+        # make sure the p-shift works by checking that longitudes are divisible
+        assert self.nlon_out % self.nlon_in == 0
+
         # bandlimit
         if theta_cutoff is None:
             theta_cutoff = torch.pi / float(self.nlat_in - 1)
@@ -415,7 +423,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
 
-        # switch in_shape and out_shape since we want transpose conv
+        # switch in_shape and out_shape since we want the transpose convolution
         idx, vals = _precompute_convolution_tensor_s2(
             out_shape,
             in_shape,

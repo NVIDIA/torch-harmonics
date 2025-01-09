@@ -68,19 +68,25 @@ class RealSHT(nn.Module):
 
         # TODO: include assertions regarding the dimensions
 
-        # compute quadrature points
+        # compute quadrature points and lmax based on the exactness of the quadrature
         if self.grid == "legendre-gauss":
             cost, w = legendre_gauss_weights(nlat, -1, 1)
+            # maximum polynomial degree for Gauss Legendre is 2 * nlat - 1 >= 2 * lmax
+            # and therefore lmax = nlat - 1 (inclusive)
             self.lmax = lmax or self.nlat
         elif self.grid == "lobatto":
             cost, w = lobatto_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat-1
+            # maximum polynomial degree for Gauss Legendre is 2 * nlat - 3 >= 2 * lmax
+            # and therefore lmax = nlat - 2 (inclusive)
+            self.lmax = lmax or self.nlat - 1
         elif self.grid == "equiangular":
             cost, w = clenshaw_curtiss_weights(nlat, -1, 1)
-            # cost, w = fejer2_weights(nlat, -1, 1)
+            # in principle, Clenshaw-Curtiss quadrature is only exact up to polynomial degrees of nlat
+            # however, we observe that the quadrature is remarkably accurate for higher degress. This is why we do not
+            # choose a lower lmax for now.
             self.lmax = lmax or self.nlat
         else:
-            raise(ValueError("Unknown quadrature mode"))
+            raise (ValueError("Unknown quadrature mode"))
 
         # apply cosine transform and flip them
         tq = np.flip(np.arccos(cost))
@@ -92,24 +98,24 @@ class RealSHT(nn.Module):
         weights = torch.from_numpy(w)
         pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
         pct = torch.from_numpy(pct)
-        weights = torch.einsum('mlk,k->mlk', pct, weights)
+        weights = torch.einsum("mlk,k->mlk", pct, weights)
 
         # remember quadrature weights
-        self.register_buffer('weights', weights, persistent=False)
+        self.register_buffer("weights", weights, persistent=False)
 
     def extra_repr(self):
         r"""
         Pretty print module
         """
-        return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
+        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
 
         if x.dim() < 2:
             raise ValueError(f"Expected tensor with at least 2 dimensions but got {x.dim()} instead")
 
-        assert(x.shape[-2] == self.nlat)
-        assert(x.shape[-1] == self.nlon)
+        assert x.shape[-2] == self.nlat
+        assert x.shape[-1] == self.nlon
 
         # apply real fft in the longitudinal direction
         x = 2.0 * torch.pi * torch.fft.rfft(x, dim=-1, norm="forward")
@@ -124,11 +130,12 @@ class RealSHT(nn.Module):
         xout = torch.zeros(out_shape, dtype=x.dtype, device=x.device)
 
         # contraction
-        xout[..., 0] = torch.einsum('...km,mlk->...lm', x[..., :self.mmax, 0], self.weights.to(x.dtype) )
-        xout[..., 1] = torch.einsum('...km,mlk->...lm', x[..., :self.mmax, 1], self.weights.to(x.dtype) )
+        xout[..., 0] = torch.einsum("...km,mlk->...lm", x[..., : self.mmax, 0], self.weights.to(x.dtype))
+        xout[..., 1] = torch.einsum("...km,mlk->...lm", x[..., : self.mmax, 1], self.weights.to(x.dtype))
         x = torch.view_as_complex(xout)
 
         return x
+
 
 class InverseRealSHT(nn.Module):
     r"""
@@ -157,12 +164,12 @@ class InverseRealSHT(nn.Module):
             self.lmax = lmax or self.nlat
         elif self.grid == "lobatto":
             cost, _ = lobatto_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat-1
+            self.lmax = lmax or self.nlat - 1
         elif self.grid == "equiangular":
             cost, _ = clenshaw_curtiss_weights(nlat, -1, 1)
             self.lmax = lmax or self.nlat
         else:
-            raise(ValueError("Unknown quadrature mode"))
+            raise (ValueError("Unknown quadrature mode"))
 
         # apply cosine transform and flip them
         t = np.flip(np.arccos(cost))
@@ -174,27 +181,27 @@ class InverseRealSHT(nn.Module):
         pct = torch.from_numpy(pct)
 
         # register buffer
-        self.register_buffer('pct', pct, persistent=False)
+        self.register_buffer("pct", pct, persistent=False)
 
     def extra_repr(self):
         r"""
         Pretty print module
         """
-        return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
+        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
 
         if len(x.shape) < 2:
             raise ValueError(f"Expected tensor with at least 2 dimensions but got {len(x.shape)} instead")
 
-        assert(x.shape[-2] == self.lmax)
-        assert(x.shape[-1] == self.mmax)
+        assert x.shape[-2] == self.lmax
+        assert x.shape[-1] == self.mmax
 
         # Evaluate associated Legendre functions on the output nodes
         x = torch.view_as_real(x)
 
-        rl = torch.einsum('...lm, mlk->...km', x[..., 0], self.pct.to(x.dtype) )
-        im = torch.einsum('...lm, mlk->...km', x[..., 1], self.pct.to(x.dtype) )
+        rl = torch.einsum("...lm, mlk->...km", x[..., 0], self.pct.to(x.dtype))
+        im = torch.einsum("...lm, mlk->...km", x[..., 1], self.pct.to(x.dtype))
         xs = torch.stack((rl, im), -1)
 
         # apply the inverse (real) FFT
@@ -238,13 +245,12 @@ class RealVectorSHT(nn.Module):
             self.lmax = lmax or self.nlat
         elif self.grid == "lobatto":
             cost, w = lobatto_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat-1
+            self.lmax = lmax or self.nlat - 1
         elif self.grid == "equiangular":
             cost, w = clenshaw_curtiss_weights(nlat, -1, 1)
-            # cost, w = fejer2_weights(nlat, -1, 1)
             self.lmax = lmax or self.nlat
         else:
-            raise(ValueError("Unknown quadrature mode"))
+            raise (ValueError("Unknown quadrature mode"))
 
         # apply cosine transform and flip them
         tq = np.flip(np.arccos(cost))
@@ -258,28 +264,28 @@ class RealVectorSHT(nn.Module):
 
         # combine integration weights, normalization factor in to one:
         l = torch.arange(0, self.lmax)
-        norm_factor = 1. / l / (l+1)
-        norm_factor[0] = 1.
-        weights = torch.einsum('dmlk,k,l->dmlk', dpct, weights, norm_factor)
+        norm_factor = 1.0 / l / (l + 1)
+        norm_factor[0] = 1.0
+        weights = torch.einsum("dmlk,k,l->dmlk", dpct, weights, norm_factor)
         # since the second component is imaginary, we need to take complex conjugation into account
         weights[1] = -1 * weights[1]
 
         # remember quadrature weights
-        self.register_buffer('weights', weights, persistent=False)
+        self.register_buffer("weights", weights, persistent=False)
 
     def extra_repr(self):
         r"""
         Pretty print module
         """
-        return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
+        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
 
         if x.dim() < 3:
             raise ValueError(f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
 
-        assert(x.shape[-2] == self.nlat)
-        assert(x.shape[-1] == self.nlon)
+        assert x.shape[-2] == self.nlat
+        assert x.shape[-1] == self.nlon
 
         # apply real fft in the longitudinal direction
         x = 2.0 * torch.pi * torch.fft.rfft(x, dim=-1, norm="forward")
@@ -295,20 +301,24 @@ class RealVectorSHT(nn.Module):
 
         # contraction - spheroidal component
         # real component
-        xout[..., 0, :, :, 0] =   torch.einsum('...km,mlk->...lm', x[..., 0, :, :self.mmax, 0], self.weights[0].to(x.dtype)) \
-                                - torch.einsum('...km,mlk->...lm', x[..., 1, :, :self.mmax, 1], self.weights[1].to(x.dtype))
+        xout[..., 0, :, :, 0] = torch.einsum("...km,mlk->...lm", x[..., 0, :, : self.mmax, 0], self.weights[0].to(x.dtype)) - torch.einsum(
+            "...km,mlk->...lm", x[..., 1, :, : self.mmax, 1], self.weights[1].to(x.dtype)
+        )
 
         # iamg component
-        xout[..., 0, :, :, 1] =   torch.einsum('...km,mlk->...lm', x[..., 0, :, :self.mmax, 1], self.weights[0].to(x.dtype)) \
-                                + torch.einsum('...km,mlk->...lm', x[..., 1, :, :self.mmax, 0], self.weights[1].to(x.dtype))
+        xout[..., 0, :, :, 1] = torch.einsum("...km,mlk->...lm", x[..., 0, :, : self.mmax, 1], self.weights[0].to(x.dtype)) + torch.einsum(
+            "...km,mlk->...lm", x[..., 1, :, : self.mmax, 0], self.weights[1].to(x.dtype)
+        )
 
         # contraction - toroidal component
         # real component
-        xout[..., 1, :, :, 0] = - torch.einsum('...km,mlk->...lm', x[..., 0, :, :self.mmax, 1], self.weights[1].to(x.dtype)) \
-                                - torch.einsum('...km,mlk->...lm', x[..., 1, :, :self.mmax, 0], self.weights[0].to(x.dtype))
+        xout[..., 1, :, :, 0] = -torch.einsum("...km,mlk->...lm", x[..., 0, :, : self.mmax, 1], self.weights[1].to(x.dtype)) - torch.einsum(
+            "...km,mlk->...lm", x[..., 1, :, : self.mmax, 0], self.weights[0].to(x.dtype)
+        )
         # imag component
-        xout[..., 1, :, :, 1] =   torch.einsum('...km,mlk->...lm', x[..., 0, :, :self.mmax, 0], self.weights[1].to(x.dtype)) \
-                                - torch.einsum('...km,mlk->...lm', x[..., 1, :, :self.mmax, 1], self.weights[0].to(x.dtype))
+        xout[..., 1, :, :, 1] = torch.einsum("...km,mlk->...lm", x[..., 0, :, : self.mmax, 0], self.weights[1].to(x.dtype)) - torch.einsum(
+            "...km,mlk->...lm", x[..., 1, :, : self.mmax, 1], self.weights[0].to(x.dtype)
+        )
 
         return torch.view_as_complex(xout)
 
@@ -321,6 +331,7 @@ class InverseRealVectorSHT(nn.Module):
     [1] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
     [2] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
     """
+
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
 
         super().__init__()
@@ -337,12 +348,12 @@ class InverseRealVectorSHT(nn.Module):
             self.lmax = lmax or self.nlat
         elif self.grid == "lobatto":
             cost, _ = lobatto_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat-1
+            self.lmax = lmax or self.nlat - 1
         elif self.grid == "equiangular":
             cost, _ = clenshaw_curtiss_weights(nlat, -1, 1)
             self.lmax = lmax or self.nlat
         else:
-            raise(ValueError("Unknown quadrature mode"))
+            raise (ValueError("Unknown quadrature mode"))
 
         # apply cosine transform and flip them
         t = np.flip(np.arccos(cost))
@@ -354,40 +365,36 @@ class InverseRealVectorSHT(nn.Module):
         dpct = torch.from_numpy(dpct)
 
         # register weights
-        self.register_buffer('dpct', dpct, persistent=False)
+        self.register_buffer("dpct", dpct, persistent=False)
 
     def extra_repr(self):
         r"""
         Pretty print module
         """
-        return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
+        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
 
         if x.dim() < 3:
             raise ValueError(f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
 
-        assert(x.shape[-2] == self.lmax)
-        assert(x.shape[-1] == self.mmax)
+        assert x.shape[-2] == self.lmax
+        assert x.shape[-1] == self.mmax
 
         # Evaluate associated Legendre functions on the output nodes
         x = torch.view_as_real(x)
 
         # contraction - spheroidal component
         # real component
-        srl =   torch.einsum('...lm,mlk->...km', x[..., 0, :, :, 0], self.dpct[0].to(x.dtype)) \
-              - torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 1], self.dpct[1].to(x.dtype))
+        srl = torch.einsum("...lm,mlk->...km", x[..., 0, :, :, 0], self.dpct[0].to(x.dtype)) - torch.einsum("...lm,mlk->...km", x[..., 1, :, :, 1], self.dpct[1].to(x.dtype))
         # iamg component
-        sim =   torch.einsum('...lm,mlk->...km', x[..., 0, :, :, 1], self.dpct[0].to(x.dtype)) \
-              + torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 0], self.dpct[1].to(x.dtype))
+        sim = torch.einsum("...lm,mlk->...km", x[..., 0, :, :, 1], self.dpct[0].to(x.dtype)) + torch.einsum("...lm,mlk->...km", x[..., 1, :, :, 0], self.dpct[1].to(x.dtype))
 
         # contraction - toroidal component
         # real component
-        trl = - torch.einsum('...lm,mlk->...km', x[..., 0, :, :, 1], self.dpct[1].to(x.dtype)) \
-              - torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 0], self.dpct[0].to(x.dtype))
+        trl = -torch.einsum("...lm,mlk->...km", x[..., 0, :, :, 1], self.dpct[1].to(x.dtype)) - torch.einsum("...lm,mlk->...km", x[..., 1, :, :, 0], self.dpct[0].to(x.dtype))
         # imag component
-        tim =   torch.einsum('...lm,mlk->...km', x[..., 0, :, :, 0], self.dpct[1].to(x.dtype)) \
-              - torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 1], self.dpct[0].to(x.dtype))
+        tim = torch.einsum("...lm,mlk->...km", x[..., 0, :, :, 0], self.dpct[1].to(x.dtype)) - torch.einsum("...lm,mlk->...km", x[..., 1, :, :, 1], self.dpct[0].to(x.dtype))
 
         # reassemble
         s = torch.stack((srl, sim), -1)
