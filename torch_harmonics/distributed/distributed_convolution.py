@@ -76,7 +76,7 @@ def _precompute_distributed_convolution_tensor_s2(
     grid_out="equiangular",
     theta_cutoff=0.01 * math.pi,
     transpose_normalization=False,
-    basis_norm_mode="sum",
+    basis_norm_mode="none",
     merge_quadrature=False,
 ):
     """
@@ -142,7 +142,8 @@ def _precompute_distributed_convolution_tensor_s2(
 
         # compute spherical coordinates, where phi needs to fall into the [0, 2pi) range
         theta = torch.arccos(z)
-        phi = torch.arctan2(y, x) + torch.pi
+        phi = torch.arctan2(y, x)
+        phi = torch.where(phi < 0.0, phi + 2 * torch.pi, phi)
 
         # find the indices where the rotated position falls into the support of the kernel
         iidx, vals = filter_basis.compute_support_vals(theta, phi, r_cutoff=theta_cutoff)
@@ -207,7 +208,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         out_shape: Tuple[int],
         kernel_shape: Union[int, List[int]],
         basis_type: Optional[str] = "piecewise linear",
-        basis_norm_mode: Optional[str] = "sum",
+        basis_norm_mode: Optional[str] = "none",
         groups: Optional[int] = 1,
         grid_in: Optional[str] = "equiangular",
         grid_out: Optional[str] = "equiangular",
@@ -347,7 +348,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         out_shape: Tuple[int],
         kernel_shape: Union[int, List[int]],
         basis_type: Optional[str] = "piecewise linear",
-        basis_norm_mode: Optional[str] = "sum",
+        basis_norm_mode: Optional[str] = "none",
         groups: Optional[int] = 1,
         grid_in: Optional[str] = "equiangular",
         grid_out: Optional[str] = "equiangular",

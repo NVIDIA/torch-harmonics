@@ -41,10 +41,17 @@ def get_filter_basis(kernel_shape: Union[int, List[int], Tuple[int, int]], basis
 
     if basis_type == "piecewise linear":
         return PiecewiseLinearFilterBasis(kernel_shape=kernel_shape)
-    elif basis_type == "disk morlet":
-        return DiskMorletFilterBasis(kernel_shape=kernel_shape)
+    elif basis_type == "morlet":
+        return MorletFilterBasis(kernel_shape=kernel_shape)
+    elif basis_type == "zernike":
+        raise NotImplementedError()
     else:
         raise ValueError(f"Unknown basis_type {basis_type}")
+
+
+def _circle_dist(x1: torch.Tensor, x2: torch.Tensor):
+    """Helper function to compute the distance on a circle"""
+    return torch.minimum(torch.abs(x1 - x2), torch.abs(2 * math.pi - torch.abs(x1 - x2)))
 
 
 class FilterBasis(metaclass=abc.ABCMeta):
@@ -63,6 +70,13 @@ class FilterBasis(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def kernel_size(self):
         raise NotImplementedError
+
+    # @abc.abstractmethod
+    # def compute_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float):
+    #     """
+    #     Computes the values of the filter basis
+    #     """
+    #     raise NotImplementedError
 
     @abc.abstractmethod
     def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float):
@@ -136,49 +150,49 @@ class PiecewiseLinearFilterBasis(FilterBasis):
         # disambiguate even and uneven cases and compute the support
         if nr % 2 == 1:
             ir = ((ikernel - 1) // nphi + 1) * dr
-            iphi = ((ikernel - 1) % nphi) * dphi
+            iphi = ((ikernel - 1) % nphi) * dphi - math.pi
         else:
             ir = (ikernel // nphi + 0.5) * dr
-            iphi = (ikernel % nphi) * dphi
+            iphi = (ikernel % nphi) * dphi - math.pi
 
         # find the indices where the rotated position falls into the support of the kernel
         if nr % 2 == 1:
             # find the support
             cond_r = ((r - ir).abs() <= dr) & (r <= r_cutoff)
-            cond_phi = (ikernel == 0) | ((phi - iphi).abs() <= dphi) | ((2 * math.pi - (phi - iphi).abs()) <= dphi)
+            cond_phi = (ikernel == 0) | (_circle_dist(phi, iphi).abs() <= dphi)
             # find indices where conditions are met
             iidx = torch.argwhere(cond_r & cond_phi)
             # compute the distance to the collocation points
             dist_r = (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs()
-            dist_phi = (phi[iidx[:, 1], iidx[:, 2]] - iphi[iidx[:, 0], 0, 0]).abs()
+            dist_phi = _circle_dist(phi[iidx[:, 1], iidx[:, 2]], iphi[iidx[:, 0], 0, 0])
             # compute the value of the basis functions
             vals = 1 - dist_r / dr
             vals *= torch.where(
                 (iidx[:, 0] > 0),
-                (1 - torch.minimum(dist_phi, (2 * math.pi - dist_phi)) / dphi),
+                (1 - dist_phi / dphi),
                 1.0,
             )
 
         else:
-            # in the even case, the inner casis functions overlap into areas with a negative areas
+            # in the even case, the inner basis functions overlap into areas with a negative areas
             rn = -r
-            phin = torch.where(phi + math.pi >= 2 * math.pi, phi - math.pi, phi + math.pi)
+            phin = torch.where(phi + math.pi >= math.pi, phi - math.pi, phi + math.pi)
             # find the support
             cond_r = ((r - ir).abs() <= dr) & (r <= r_cutoff)
-            cond_phi = ((phi - iphi).abs() <= dphi) | ((2 * math.pi - (phi - iphi).abs()) <= dphi)
+            cond_phi = _circle_dist(phi, iphi).abs() <= dphi
             cond_rn = ((rn - ir).abs() <= dr) & (rn <= r_cutoff)
-            cond_phin = ((phin - iphi).abs() <= dphi) | ((2 * math.pi - (phin - iphi).abs()) <= dphi)
+            cond_phin = _circle_dist(phin, iphi) <= dphi
             # find indices where conditions are met
             iidx = torch.argwhere((cond_r & cond_phi) | (cond_rn & cond_phin))
             dist_r = (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs()
-            dist_phi = (phi[iidx[:, 1], iidx[:, 2]] - iphi[iidx[:, 0], 0, 0]).abs()
+            dist_phi = _circle_dist(phi[iidx[:, 1], iidx[:, 2]], iphi[iidx[:, 0], 0, 0])
             dist_rn = (rn[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs()
-            dist_phin = (phin[iidx[:, 1], iidx[:, 2]] - iphi[iidx[:, 0], 0, 0]).abs()
+            dist_phin = _circle_dist(phin[iidx[:, 1], iidx[:, 2]], iphi[iidx[:, 0], 0, 0])
             # compute the value of the basis functions
             vals = cond_r[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - dist_r / dr)
-            vals *= cond_phi[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - torch.minimum(dist_phi, (2 * math.pi - dist_phi)) / dphi)
+            vals *= cond_phi[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - dist_phi / dphi)
             valsn = cond_rn[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - dist_rn / dr)
-            valsn *= cond_phin[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - torch.minimum(dist_phin, (2 * math.pi - dist_phin)) / dphi)
+            valsn *= cond_phin[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - dist_phin / dphi)
             vals += valsn
 
         return iidx, vals
@@ -190,9 +204,10 @@ class PiecewiseLinearFilterBasis(FilterBasis):
         else:
             return self._compute_support_vals_isotropic(r, phi, r_cutoff=r_cutoff)
 
-class DiskMorletFilterBasis(FilterBasis):
+
+class MorletFilterBasis(FilterBasis):
     """
-    Morlet-like Filter basis. A Gaussian is multiplied with a Fourier basis in x and y.
+    Morlet-style filter basis on the disk. A Gaussian is multiplied with a Fourier basis in x and y directions
     """
 
     def __init__(
@@ -209,12 +224,12 @@ class DiskMorletFilterBasis(FilterBasis):
 
     @property
     def kernel_size(self):
-        return self.kernel_shape[0]*self.kernel_shape[1]
+        return self.kernel_shape[0] * self.kernel_shape[1]
 
-    def _gaussian_envelope(self, r: torch.Tensor, width: float =1.0):
-        return 1 / (2 * math.pi * width**2 ) * torch.exp(- 0.5 * r**2 / (width**2))
+    def _gaussian_window(self, r: torch.Tensor, width: float = 1.0):
+        return 1 / (2 * math.pi * width**2) * torch.exp(-0.5 * r**2 / (width**2))
 
-    def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float):
+    def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float, width: float = 0.25):
         """
         Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
         """
@@ -227,26 +242,18 @@ class DiskMorletFilterBasis(FilterBasis):
         # get relevant indices
         iidx = torch.argwhere((r <= r_cutoff) & torch.full_like(ikernel, True, dtype=torch.bool))
 
-        # # computes the Gaussian envelope. To ensure that the curve is roughly 0 at the boundary, we rescale the Gaussian by 0.25
-        # width = 0.01
-        width = 0.25
-        # width = 1.0
-        # envelope = self._gaussian_envelope(r, width=0.25 * r_cutoff)
-
         # get x and y
         x = r * torch.sin(phi) / r_cutoff
         y = r * torch.cos(phi) / r_cutoff
 
-        harmonic = torch.where(nkernel % 2 == 1, torch.sin(torch.ceil(nkernel/2) * math.pi * x / width), torch.cos(torch.ceil(nkernel/2) * math.pi * x / width))
-        harmonic *= torch.where(mkernel % 2 == 1, torch.sin(torch.ceil(mkernel/2) * math.pi * y / width), torch.cos(torch.ceil(mkernel/2) * math.pi * y / width))
+        harmonic = torch.where(nkernel % 2 == 1, torch.sin(torch.ceil(nkernel / 2) * math.pi * x / width), torch.cos(torch.ceil(nkernel / 2) * math.pi * x / width))
+        harmonic *= torch.where(mkernel % 2 == 1, torch.sin(torch.ceil(mkernel / 2) * math.pi * y / width), torch.cos(torch.ceil(mkernel / 2) * math.pi * y / width))
 
         # disk area
         # disk_area = 2.0 * math.pi * (1.0 - math.cos(r_cutoff))
-        disk_area = 1
+        disk_area = 1.0
 
         # computes the Gaussian envelope. To ensure that the curve is roughly 0 at the boundary, we rescale the Gaussian by 0.25
-        vals = self._gaussian_envelope(r[iidx[:, 1], iidx[:, 2]] / r_cutoff, width=width) * harmonic[iidx[:, 0], iidx[:, 1], iidx[:, 2]] / disk_area
-        # vals = torch.ones_like(vals)
+        vals = self._gaussian_window(r[iidx[:, 1], iidx[:, 2]] / r_cutoff, width=width) * harmonic[iidx[:, 0], iidx[:, 1], iidx[:, 2]] / disk_area
 
         return iidx, vals
-
