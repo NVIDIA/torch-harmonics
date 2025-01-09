@@ -96,8 +96,9 @@ def _normalize_convolution_tensor_s2(
             # find indices corresponding to the given output latitude and kernel basis function
             iidx = torch.argwhere((ikernel == ik) & (ilat_out == ilat))
 
-            # compute the 2-norm, accounting for the fact that it is 4-pi normalized
-            vnorm[ik, ilat] = torch.sqrt(torch.sum(psi_vals[iidx].abs().pow(2) * q[iidx]) / 4 / torch.pi)
+            # compute the 1-norm
+            # vnorm[ik, ilat] = torch.sqrt(torch.sum(psi_vals[iidx].abs().pow(2) * q[iidx]))
+            vnorm[ik, ilat] = torch.sum(psi_vals[iidx].abs() * q[iidx])
 
     # loop over values and renormalize
     for ik in range(kernel_size):
@@ -114,10 +115,10 @@ def _normalize_convolution_tensor_s2(
             else:
                 raise ValueError(f"Unknown basis normalization mode {basis_norm_mode}.")
 
+            psi_vals[iidx] = psi_vals[iidx] / (val + eps)
+
             if merge_quadrature:
-                psi_vals[iidx] = psi_vals[iidx] * q[iidx] / (val + eps)
-            else:
-                psi_vals[iidx] = psi_vals[iidx] / (val + eps)
+                psi_vals[iidx] = psi_vals[iidx] * q[iidx]
 
 
     if transpose_normalization and merge_quadrature:
@@ -171,11 +172,12 @@ def _precompute_convolution_tensor_s2(
     # It's imporatant to not include the 2 pi point in the longitudes, as it is equivalent to lon=0
     lons_in = torch.linspace(0, 2 * math.pi, nlon_in + 1)[:-1]
 
-    # compute quadrature weights that will be merged into the Psi tensor
+    # compute quadrature weights and merge them into the convolution tensor.
+    # These quadrature integrate to 1 over the sphere.
     if transpose_normalization:
-        quad_weights = 2.0 * torch.pi * torch.from_numpy(wout).float().reshape(-1, 1) / nlon_in
+        quad_weights = torch.from_numpy(wout).float().reshape(-1, 1) / nlon_in / 2.0
     else:
-        quad_weights = 2.0 * torch.pi * torch.from_numpy(win).float().reshape(-1, 1) / nlon_in
+        quad_weights = torch.from_numpy(win).float().reshape(-1, 1) / nlon_in / 2.0
 
     out_idx = []
     out_vals = []
