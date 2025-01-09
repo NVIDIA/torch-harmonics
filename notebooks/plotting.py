@@ -40,8 +40,8 @@ def plot_sphere(data,
                 title=None,
                 colorbar=False,
                 coastlines=False,
-                central_latitude=20,
-                central_longitude=20,
+                central_latitude=0,
+                central_longitude=0,
                 lon=None,
                 lat=None,
                 **kwargs):
@@ -74,14 +74,15 @@ def plot_sphere(data,
     return im
 
 def plot_data(data,
-              fig=None,
-              projection=None,
-              cmap="RdBu",
-              title=None,
-              colorbar=False,
-              lon=None,
-              lat=None,
-              **kwargs):
+                fig=None,
+                cmap="RdBu",
+                title=None,
+                colorbar=False,
+                coastlines=False,
+                central_longitude=0,
+                lon=None,
+                lat=None,
+                **kwargs):
     if fig == None:
         fig = plt.figure()
 
@@ -93,16 +94,19 @@ def plot_data(data,
         lat = np.linspace(np.pi/2., -np.pi/2., nlat)
     Lon, Lat = np.meshgrid(lon, lat)
 
-    fig = plt.figure(figsize=(10, 5))
-    ax = fig.add_subplot(1, 1, 1, projection=projection)
-    im = ax.pcolormesh(Lon, Lat, data, cmap=cmap, **kwargs)
+    proj = ccrs.PlateCarree(central_longitude=central_longitude)
+    # proj = ccrs.Mollweide(central_longitude=central_longitude)
 
+    ax = fig.add_subplot(projection=proj)
+    Lon = Lon*180/np.pi
+    Lat = Lat*180/np.pi
+
+    # contour data over the map.
+    im = ax.pcolormesh(Lon, Lat, data, cmap=cmap, transform=ccrs.PlateCarree(), antialiased=False, **kwargs)
+    if coastlines:
+        ax.add_feature(cartopy.feature.COASTLINE, edgecolor='white', facecolor='none', linewidth=1.5)
     if colorbar:
         plt.colorbar(im)
     plt.title(title, y=1.05)
-
-    ax.grid(True)
-    ax.set_xticklabels([])
-    ax.set_yticklabels([])
 
     return im
