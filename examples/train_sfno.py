@@ -430,21 +430,20 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         normalization_layer="none",
     )
 
-    # models[f"lsno_sc2_layers4_e32"] = partial(
-    #     LSNO,
-    #     spectral_transform="sht",
-    #     img_size=(nlat, nlon),
-    #     grid=grid,
-    #     num_layers=4,
-    #     scale_factor=2,
-    #     embed_dim=32,
-    #     operator_type="driscoll-healy",
-    #     activation_function="gelu",
-    #     big_skip=True,
-    #     pos_embed=False,
-    #     use_mlp=True,
-    #     normalization_layer="none",
-    # )
+    models[f"lsno_sc2_layers4_e32"] = partial(
+        LSNO,
+        img_size=(nlat, nlon),
+        grid=grid,
+        num_layers=4,
+        scale_factor=2,
+        embed_dim=32,
+        operator_type="driscoll-healy",
+        activation_function="gelu",
+        big_skip=False,
+        pos_embed=False,
+        use_mlp=True,
+        normalization_layer="none",
+    )
 
     # iterate over models and train each model
     root_path = os.path.dirname(__file__)
@@ -487,7 +486,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
                 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
                 gscaler = amp.GradScaler(enabled=enable_amp)
                 dataloader.dataset.nsteps = 2 * dt//dt_solver
-                train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=20, loss_fn="l2", nfuture=nfuture, enable_amp=enable_amp, log_grads=log_grads)
+                train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=10, loss_fn="l2", nfuture=nfuture, enable_amp=enable_amp, log_grads=log_grads)
                 dataloader.dataset.nsteps = 1 * dt//dt_solver
 
             training_time = time.time() - start_time

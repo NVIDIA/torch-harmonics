@@ -76,7 +76,7 @@ def _precompute_distributed_convolution_tensor_s2(
     grid_out="equiangular",
     theta_cutoff=0.01 * math.pi,
     transpose_normalization=False,
-    basis_norm_mode="none",
+    basis_norm_mode="mean",
     merge_quadrature=False,
 ):
     """
@@ -208,7 +208,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         out_shape: Tuple[int],
         kernel_shape: Union[int, List[int]],
         basis_type: Optional[str] = "piecewise linear",
-        basis_norm_mode: Optional[str] = "none",
+        basis_norm_mode: Optional[str] = "mean",
         groups: Optional[int] = 1,
         grid_in: Optional[str] = "equiangular",
         grid_out: Optional[str] = "equiangular",
@@ -348,7 +348,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         out_shape: Tuple[int],
         kernel_shape: Union[int, List[int]],
         basis_type: Optional[str] = "piecewise linear",
-        basis_norm_mode: Optional[str] = "none",
+        basis_norm_mode: Optional[str] = "mean",
         groups: Optional[int] = 1,
         grid_in: Optional[str] = "equiangular",
         grid_out: Optional[str] = "equiangular",
