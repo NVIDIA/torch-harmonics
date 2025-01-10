@@ -440,19 +440,6 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
             theta_cutoff=math.sqrt(2) * torch.pi / float(self.h - 1),
         )
 
-        # # encoder
-        # self.encoder = DiscreteContinuousEncoder(
-        #     inp_shape=self.img_size,
-        #     out_shape=(self.h, self.w),
-        #     grid_in=grid,
-        #     grid_out=grid_internal,
-        #     inp_chans=self.in_chans,
-        #     out_chans=self.embed_dim,
-        #     kernel_shape=self.encoder_kernel_shape,
-        #     groups=1,
-        #     bias=False,
-        # )
-
         # prepare the spectral transform
         if self.spectral_transform == "sht":
             modes_lat = int(self.h * self.hard_thresholding_fraction)
@@ -500,20 +487,6 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
             )
 
             self.blocks.append(block)
-
-        # # decoder
-        # self.decoder = DiscreteContinuousConvTransposeS2(
-        #     self.embed_dim,
-        #     self.out_chans,
-        #     (self.h, self.w),
-        #     self.img_size,
-        #     self.encoder_kernel_shape,
-        #     groups=1,
-        #     grid_in="legendre-gauss",
-        #     grid_out=grid,
-        #     bias=False,
-        #     theta_cutoff=math.sqrt(2) * torch.pi / float(self.h - 1),
-        # )
 
         # decoder
         self.decoder = DiscreteContinuousDecoder(
