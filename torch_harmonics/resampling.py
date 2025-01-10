@@ -71,10 +71,20 @@ class ResampleS2(nn.Module):
         self.lats_out, _ = _precompute_latitudes(nlat_out, grid=grid_out)
         self.lons_out = np.linspace(0, 2 * math.pi, nlon_out, endpoint=False)
 
+        # in the case where some points lie outside of the range spanned by lats_in,
+        # we need to expand the solution to the poles before interpolating
+        self.expand_poles = (self.lats_out > self.lats_in[-1]).any() or (self.lats_out < self.lats_in[0]).any()
+        if self.expand_poles:
+            self.lats_in = np.insert(self.lats_in, 0, 0.0)
+            self.lats_in = np.append(self.lats_in, np.pi)
+
         # prepare the interpolation by computing indices to the left and right of each output latitude
         lat_idx = np.searchsorted(self.lats_in, self.lats_out, side="right") - 1
-        # to guarantee everything stays in bounds
+        # make sure that we properly treat the last point if they coincide with the pole
         lat_idx = np.where(self.lats_out == self.lats_in[-1], lat_idx - 1, lat_idx)
+
+        # lat_idx = np.where(self.lats_out > self.lats_in[-1], lat_idx - 1, lat_idx)
+        # lat_idx = np.where(self.lats_out < self.lats_in[0], 0, lat_idx)
 
         # compute the interpolation weights along the latitude
         lat_weights = torch.from_numpy((self.lats_out - self.lats_in[lat_idx]) / np.diff(self.lats_in)[lat_idx]).float()
@@ -123,12 +133,22 @@ class ResampleS2(nn.Module):
     #     x = torch.roll(x, - self.lon_shift, dims=-1)
     #     return x
 
+    def _expand_poles(self, x: torch.Tensor):
+        repeats = [1 for _ in x.shape]
+        repeats[-1] = x.shape[-1]
+        x_north = x[..., 0:1, :].mean(dim=-1, keepdim=True).repeat(*repeats)
+        x_south = x[..., -1:, :].mean(dim=-1, keepdim=True).repeat(*repeats)
+        x = torch.concatenate((x_north, x, x_south), dim=-2)
+        return x
+
     def _upscale_latitudes(self, x: torch.Tensor):
         # do the interpolation
         x = torch.lerp(x[..., self.lat_idx, :], x[..., self.lat_idx + 1, :], self.lat_weights)
         return x
 
     def forward(self, x: torch.Tensor):
+        if self.expand_poles:
+            x = self._expand_poles(x)
         x = self._upscale_latitudes(x)
         x = self._upscale_longitudes(x)
         return x

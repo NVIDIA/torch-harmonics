@@ -11,7 +11,9 @@
 * New filter basis normalization in DISCO convolutions
 * Reworked DISCO filter basis datastructure
 * Support for new filter basis types
-* Adding Morlet-like basis functions on a spherical disk
+* Adding Morlet wavelet basis functions on a spherical disk
+* Cleaning up the SFNO example and adding new Local Spherical Neural Operator model
+* Updated resampling module to extend input signal to the poles if needed
 
 ### v0.7.3
 
