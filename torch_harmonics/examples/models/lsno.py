@@ -35,6 +35,7 @@ import torch.amp as amp
 
 from torch_harmonics import RealSHT, InverseRealSHT
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
+from torch_harmonics import ResampleS2
 
 from ._layers import *
 
@@ -44,7 +45,7 @@ from functools import partial
 class DiscreteContinuousEncoder(nn.Module):
     def __init__(
         self,
-        inp_shape=(721, 1440),
+        in_shape=(721, 1440),
         out_shape=(480, 960),
         grid_in="equiangular",
         grid_out="equiangular",
@@ -61,7 +62,7 @@ class DiscreteContinuousEncoder(nn.Module):
         self.conv = DiscreteContinuousConvS2(
             inp_chans,
             out_chans,
-            in_shape=inp_shape,
+            in_shape=in_shape,
             out_shape=out_shape,
             kernel_shape=kernel_shape,
             basis_type=basis_type,
@@ -69,7 +70,7 @@ class DiscreteContinuousEncoder(nn.Module):
             grid_out=grid_out,
             groups=groups,
             bias=bias,
-            theta_cutoff=math.sqrt(2) * torch.pi / float(out_shape[0] - 1),
+            theta_cutoff=math.sqrt(2.0) * torch.pi / float(out_shape[0] - 1),
         )
 
     def forward(self, x):
@@ -86,7 +87,7 @@ class DiscreteContinuousEncoder(nn.Module):
 class DiscreteContinuousDecoder(nn.Module):
     def __init__(
         self,
-        inp_shape=(480, 960),
+        in_shape=(480, 960),
         out_shape=(721, 1440),
         grid_in="equiangular",
         grid_out="equiangular",
@@ -99,12 +100,13 @@ class DiscreteContinuousDecoder(nn.Module):
     ):
         super().__init__()
 
-        # set up
-        self.sht = RealSHT(*inp_shape, grid=grid_in).float()
+        # # set up
+        self.sht = RealSHT(*in_shape, grid=grid_in).float()
         self.isht = InverseRealSHT(*out_shape, lmax=self.sht.lmax, mmax=self.sht.mmax, grid=grid_out).float()
+        # self.upscale = ResampleS2(*in_shape, *out_shape, grid_in=grid_in, grid_out=grid_out)
 
         # set up DISCO convolution
-        self.convt = DiscreteContinuousConvTransposeS2(
+        self.conv = DiscreteContinuousConvS2(
             inp_chans,
             out_chans,
             in_shape=out_shape,
@@ -115,21 +117,22 @@ class DiscreteContinuousDecoder(nn.Module):
             grid_out=grid_out,
             groups=groups,
             bias=False,
-            theta_cutoff=math.sqrt(2) * torch.pi / float(inp_shape[0] - 1),
+            theta_cutoff=math.sqrt(2.0) * torch.pi / float(in_shape[0] - 1),
         )
 
         # self.convt = nn.Conv2d(inp_chans, out_chans, 1, bias=False)
 
-    def _upscale_sht(self, x: torch.Tensor):
+    def upscale_sht(self, x: torch.Tensor):
         return self.isht(self.sht(x))
 
     def forward(self, x):
         dtype = x.dtype
+        # x = self.upscale(x)
 
         with amp.autocast(device_type="cuda", enabled=False):
             x = x.float()
-            x = self._upscale_sht(x)
-            x = self.convt(x)
+            x = self.upscale_sht(x)
+            x = self.conv(x)
             x = x.to(dtype=dtype)
 
         return x
@@ -182,7 +185,7 @@ class SphericalNeuralOperatorBlock(nn.Module):
                 grid_in=forward_transform.grid,
                 grid_out=inverse_transform.grid,
                 bias=False,
-                theta_cutoff=4*math.sqrt(2) * torch.pi / float(inverse_transform.nlat - 1),
+                theta_cutoff=4 * math.sqrt(2.0) * torch.pi / float(inverse_transform.nlat - 1),
             )
         elif conv_type == "global":
             self.global_conv =  SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, operator_type=operator_type, bias=False)
@@ -272,8 +275,6 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
 
     Parameters
     -----------
-    spectral_transform : str, optional
-        Type of spectral transformation to use, by default "sht"
     operator_type : str, optional
         Type of operator to use ('driscoll-healy', 'diagonal'), by default "driscoll-healy"
     img_shape : tuple, optional
@@ -339,7 +340,6 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
 
     def __init__(
         self,
-        spectral_transform="sht",
         operator_type="driscoll-healy",
         img_size=(128, 256),
         grid="equiangular",
@@ -365,7 +365,6 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
     ):
         super().__init__()
 
-        self.spectral_transform = spectral_transform
         self.operator_type = operator_type
         self.img_size = img_size
         self.grid = grid
@@ -440,17 +439,13 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
             theta_cutoff=math.sqrt(2) * torch.pi / float(self.h - 1),
         )
 
-        # prepare the spectral transform
-        if self.spectral_transform == "sht":
-            modes_lat = int(self.h * self.hard_thresholding_fraction)
-            modes_lon = int(self.w // 2 * self.hard_thresholding_fraction)
-            modes_lat = modes_lon = min(modes_lat, modes_lon)
+        # prepare the SHT
+        modes_lat = int(self.h * self.hard_thresholding_fraction)
+        modes_lon = int(self.w // 2 * self.hard_thresholding_fraction)
+        modes_lat = modes_lon = min(modes_lat, modes_lon)
 
-            self.trans = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
-            self.itrans = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
-
-        else:
-            raise (ValueError("Unknown spectral transform"))
+        self.trans = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
+        self.itrans = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
 
         self.blocks = nn.ModuleList([])
         for i in range(self.num_layers):
@@ -490,7 +485,7 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
 
         # decoder
         self.decoder = DiscreteContinuousDecoder(
-            inp_shape=(self.h, self.w),
+            in_shape=(self.h, self.w),
             out_shape=self.img_size,
             grid_in=grid_internal,
             grid_out=grid,
