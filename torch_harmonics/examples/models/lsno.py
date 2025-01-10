@@ -275,10 +275,10 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
 
     Parameters
     -----------
-    operator_type : str, optional
-        Type of operator to use ('driscoll-healy', 'diagonal'), by default "driscoll-healy"
     img_shape : tuple, optional
         Shape of the input channels, by default (128, 256)
+    operator_type : str, optional
+        Type of operator to use ('driscoll-healy', 'diagonal'), by default "driscoll-healy"
     kernel_shape: tuple, int
     scale_factor : int, optional
         Scale factor to use, by default 3
@@ -308,8 +308,6 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         Fraction of hard thresholding (frequency cutoff) to apply, by default 1.0
     big_skip : bool, optional
         Whether to add a single large skip connection, by default True
-    rank : float, optional
-        Rank of the approximation, by default 1.0
     pos_embed : bool, optional
         Whether to use positional embedding, by default True
 
@@ -340,8 +338,8 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
 
     def __init__(
         self,
-        operator_type="driscoll-healy",
         img_size=(128, 256),
+        operator_type="driscoll-healy",
         grid="equiangular",
         grid_internal="legendre-gauss",
         scale_factor=4,
