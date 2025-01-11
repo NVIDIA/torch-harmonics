@@ -44,7 +44,7 @@ def get_filter_basis(kernel_shape: Union[int, List[int], Tuple[int, int]], basis
     elif basis_type == "morlet":
         return MorletFilterBasis(kernel_shape=kernel_shape)
     elif basis_type == "zernike":
-        raise NotImplementedError()
+        return ZernikeFilterBasis(kernel_shape=kernel_shape)
     else:
         raise ValueError(f"Unknown basis_type {basis_type}")
 
@@ -52,6 +52,16 @@ def get_filter_basis(kernel_shape: Union[int, List[int], Tuple[int, int]], basis
 def _circle_dist(x1: torch.Tensor, x2: torch.Tensor):
     """Helper function to compute the distance on a circle"""
     return torch.minimum(torch.abs(x1 - x2), torch.abs(2 * math.pi - torch.abs(x1 - x2)))
+
+
+def _log_factorial(x: torch.Tensor):
+    """Helper function to compute the log factorial on a torch tensor"""
+    return torch.lgamma(x + 1)
+
+
+def _factorial(x: torch.Tensor):
+    """Helper function to compute the factorial on a torch tensor"""
+    return torch.exp(_log_factorial(x))
 
 
 class FilterBasis(metaclass=abc.ABCMeta):
@@ -226,7 +236,7 @@ class MorletFilterBasis(FilterBasis):
     def kernel_size(self):
         return self.kernel_shape[0] * self.kernel_shape[1]
 
-    def _gaussian_window(self, r: torch.Tensor, width: float = 1.0):
+    def gaussian_window(self, r: torch.Tensor, width: float = 1.0):
         return 1 / (2 * math.pi * width**2) * torch.exp(-0.5 * r**2 / (width**2))
 
     def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float, width: float = 0.25):
@@ -254,6 +264,76 @@ class MorletFilterBasis(FilterBasis):
         disk_area = 1.0
 
         # computes the Gaussian envelope. To ensure that the curve is roughly 0 at the boundary, we rescale the Gaussian by 0.25
-        vals = self._gaussian_window(r[iidx[:, 1], iidx[:, 2]] / r_cutoff, width=width) * harmonic[iidx[:, 0], iidx[:, 1], iidx[:, 2]] / disk_area
+        vals = self.gaussian_window(r[iidx[:, 1], iidx[:, 2]] / r_cutoff, width=width) * harmonic[iidx[:, 0], iidx[:, 1], iidx[:, 2]] / disk_area
+
+        return iidx, vals
+
+
+class ZernikeFilterBasis(FilterBasis):
+    """
+    Zernike polynomials which are defined on the disk. See https://en.wikipedia.org/wiki/Zernike_polynomials
+    """
+
+    def __init__(
+        self,
+        kernel_shape: Union[int, Tuple[int], List[int]],
+    ):
+
+        if isinstance(kernel_shape, tuple) or isinstance(kernel_shape, list):
+            kernel_shape = kernel_shape[0]
+        if not isinstance(kernel_shape, int):
+            raise ValueError(f"expected kernel_shape to be an integer but got {kernel_shape} instead.")
+
+        super().__init__(kernel_shape=kernel_shape)
+
+    @property
+    def kernel_size(self):
+        return (self.kernel_shape * (self.kernel_shape + 1)) // 2
+
+    def zernikeradial(self, r: torch.Tensor, n: torch.Tensor, m: torch.Tensor):
+        out = torch.zeros_like(r)
+        bound = (n - m) // 2 + 1
+        max_bound = bound.max().item()
+
+        for k in range(max_bound):
+
+            inc = (-1) ** k * _factorial(n - k) * r ** (n - 2 * k) / (math.factorial(k) * _factorial((n + m) // 2 - k) * _factorial((n - m) // 2 - k))
+            out += torch.where(k < bound, inc, 0.0)
+
+        return out
+
+    def zernikepoly(self, r: torch.Tensor, phi: torch.Tensor, n: torch.Tensor, l: torch.Tensor):
+        m = 2 * l - n
+        return torch.where(m < 0, self.zernikeradial(r, n, -m) * torch.sin(m * phi), self.zernikeradial(r, n, m) * torch.cos(m * phi))
+
+    def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float, width: float = 0.25):
+        """
+        Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
+        """
+
+        # enumerator for basis function
+        ikernel = torch.arange(self.kernel_size).reshape(-1, 1, 1)
+
+        # get relevant indices
+        iidx = torch.argwhere((r <= r_cutoff) & torch.full_like(ikernel, True, dtype=torch.bool))
+
+        # indexing logic for zernike polynomials
+        # the total index is given by (n * (n + 2) + l ) // 2 which needs to be reversed
+        # precompute shifts in the level of the "pyramid"
+        nshifts = torch.arange(self.kernel_shape)
+        nshifts = (nshifts + 1) * nshifts // 2
+        # find the level and position within the pyramid
+        nkernel = torch.searchsorted(nshifts, ikernel, right=True) - 1
+        lkernel = ikernel - nshifts[nkernel]
+        # mkernel = 2 * ikernel - nkernel * (nkernel + 2)
+
+        # get corresponding coordinates and n and l indices
+        r = r[iidx[:, 1], iidx[:, 2]] / r_cutoff
+        phi = phi[iidx[:, 1], iidx[:, 2]]
+        n = nkernel[iidx[:, 0], 0, 0]
+        l = lkernel[iidx[:, 0], 0, 0]
+
+        # computes the Zernike polynomials using helper functions
+        vals = self.zernikepoly(r, phi, n, l)
 
         return iidx, vals

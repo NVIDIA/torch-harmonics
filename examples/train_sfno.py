@@ -430,7 +430,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         normalization_layer="none",
     )
 
-    models[f"lsno_sc2_layers4_e32"] = partial(
+    models[f"lsno_sc2_layers4_e32_morlet"] = partial(
         LSNO,
         img_size=(nlat, nlon),
         grid=grid,
@@ -443,6 +443,27 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         pos_embed=False,
         use_mlp=True,
         normalization_layer="none",
+        kernel_shape=[4, 4],
+        encoder_kernel_shape=[4, 4],
+        filter_basis_type="morlet"
+    )
+
+    models[f"lsno_sc2_layers4_e32_zernike"] = partial(
+        LSNO,
+        img_size=(nlat, nlon),
+        grid=grid,
+        num_layers=4,
+        scale_factor=2,
+        embed_dim=32,
+        operator_type="driscoll-healy",
+        activation_function="gelu",
+        big_skip=False,
+        pos_embed=False,
+        use_mlp=True,
+        normalization_layer="none",
+        kernel_shape=[4],
+        encoder_kernel_shape=[4],
+        filter_basis_type="zernike"
     )
 
     # iterate over models and train each model
@@ -468,7 +489,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
 
         # run the training
         if train:
-            run = wandb.init(project="sfno ablations spherical swe", group=model_name, name=model_name + "_" + str(time.time()), config=model_handle.keywords)
+            run = wandb.init(project="local sno spherical swe", group=model_name, name=model_name + "_" + str(time.time()), config=model_handle.keywords)
 
             # optimizer:
             optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
@@ -478,7 +499,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
             start_time = time.time()
 
             print(f"Training {model_name}, single step")
-            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=20, loss_fn="l2", enable_amp=enable_amp, log_grads=log_grads)
+            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=100, loss_fn="l2", enable_amp=enable_amp, log_grads=log_grads)
 
             if nfuture > 0:
                 print(f'Training {model_name}, {nfuture} step')
