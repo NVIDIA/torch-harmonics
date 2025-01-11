@@ -70,7 +70,7 @@ class DiscreteContinuousEncoder(nn.Module):
             grid_out=grid_out,
             groups=groups,
             bias=bias,
-            theta_cutoff=math.sqrt(2.0) * torch.pi / float(out_shape[0] - 1),
+            theta_cutoff=1.0 * torch.pi / float(out_shape[0] - 1),
         )
 
     def forward(self, x):
@@ -103,7 +103,7 @@ class DiscreteContinuousDecoder(nn.Module):
         # # set up
         self.sht = RealSHT(*in_shape, grid=grid_in).float()
         self.isht = InverseRealSHT(*out_shape, lmax=self.sht.lmax, mmax=self.sht.mmax, grid=grid_out).float()
-        # self.upscale = ResampleS2(*in_shape, *out_shape, grid_in=grid_in, grid_out=grid_out)
+        self.upscale = ResampleS2(*in_shape, *out_shape, grid_in=grid_in, grid_out=grid_out)
 
         # set up DISCO convolution
         self.conv = DiscreteContinuousConvS2(
@@ -117,26 +117,23 @@ class DiscreteContinuousDecoder(nn.Module):
             grid_out=grid_out,
             groups=groups,
             bias=False,
-            theta_cutoff=math.sqrt(2.0) * torch.pi / float(in_shape[0] - 1),
+            theta_cutoff=1.0 * torch.pi / float(in_shape[0] - 1),
         )
-
-        # self.convt = nn.Conv2d(inp_chans, out_chans, 1, bias=False)
 
     def upscale_sht(self, x: torch.Tensor):
         return self.isht(self.sht(x))
 
     def forward(self, x):
         dtype = x.dtype
-        # x = self.upscale(x)
+        x = self.upscale(x)
 
         with amp.autocast(device_type="cuda", enabled=False):
             x = x.float()
-            x = self.upscale_sht(x)
+            # x = self.upscale_sht(x)
             x = self.conv(x)
             x = x.to(dtype=dtype)
 
         return x
-
 
 
 class SphericalNeuralOperatorBlock(nn.Module):
@@ -160,7 +157,7 @@ class SphericalNeuralOperatorBlock(nn.Module):
         inner_skip="None",
         outer_skip="linear",
         use_mlp=True,
-        disco_kernel_shape=[2, 4],
+        disco_kernel_shape=[3, 4],
         disco_basis_type="piecewise linear",
     ):
         super().__init__()
@@ -185,10 +182,10 @@ class SphericalNeuralOperatorBlock(nn.Module):
                 grid_in=forward_transform.grid,
                 grid_out=inverse_transform.grid,
                 bias=False,
-                theta_cutoff=4 * math.sqrt(2.0) * torch.pi / float(inverse_transform.nlat - 1),
+                theta_cutoff=1.0 * (disco_kernel_shape[0] + 1) * torch.pi / float(inverse_transform.nlat - 1),
             )
         elif conv_type == "global":
-            self.global_conv =  SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, operator_type=operator_type, bias=False)
+            self.global_conv = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, operator_type=operator_type, bias=False)
         else:
             raise ValueError(f"Unknown convolution type {conv_type}")
 
@@ -294,6 +291,8 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         Activation function to use, by default "gelu"
     encoder_kernel_shape : int, optional
         size of the encoder kernel
+    filter_basis_type: Optional[str]: str, optional
+        filter basis type
     use_mlp : int, optional
         Whether to use MLPs in the SFNO blocks, by default True
     mlp_ratio : int, optional
@@ -350,7 +349,7 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         activation_function="relu",
         kernel_shape=[3, 4],
         encoder_kernel_shape=[3, 4],
-        disco_basis_type="piecewise linear",
+        filter_basis_type="piecewise linear",
         use_mlp=True,
         mlp_ratio=2.0,
         drop_rate=0.0,
@@ -423,18 +422,17 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
             self.pos_embed = None
 
         # encoder
-        self.encoder = DiscreteContinuousConvS2(
-            self.in_chans,
-            self.embed_dim,
-            self.img_size,
-            (self.h, self.w),
-            self.encoder_kernel_shape,
-            basis_type=disco_basis_type,
-            groups=1,
+        self.encoder = DiscreteContinuousEncoder(
+            in_shape=self.img_size,
+            out_shape=(self.h, self.w),
             grid_in=grid,
             grid_out=grid_internal,
+            inp_chans=self.in_chans,
+            out_chans=self.embed_dim,
+            kernel_shape=self.encoder_kernel_shape,
+            basis_type=filter_basis_type,
+            groups=1,
             bias=False,
-            theta_cutoff=math.sqrt(2) * torch.pi / float(self.h - 1),
         )
 
         # prepare the SHT
@@ -476,7 +474,7 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
                 outer_skip=outer_skip,
                 use_mlp=use_mlp,
                 disco_kernel_shape=kernel_shape,
-                disco_basis_type=disco_basis_type,
+                disco_basis_type=filter_basis_type,
             )
 
             self.blocks.append(block)
@@ -490,7 +488,7 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
             inp_chans=self.embed_dim,
             out_chans=self.out_chans,
             kernel_shape=self.encoder_kernel_shape,
-            basis_type=disco_basis_type,
+            basis_type=filter_basis_type,
             groups=1,
             bias=False,
         )
@@ -502,7 +500,6 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         #     self.residual_transform.weight.sharded_dims_mp = [None, None, None, None]
         #     scale = math.sqrt(0.5 / self.in_chans)
         #     nn.init.normal_(self.residual_transform.weight, mean=0.0, std=scale)
-
 
     @torch.jit.ignore
     def no_weight_decay(self):
