@@ -70,6 +70,7 @@ if [ "$run_distributed" = "true" ]; then
         export GRID_W=${grid_size_lon};
         python3 -m pytest tests/test_distributed_sht.py
         python3 -m pytest tests/test_distributed_convolution.py
+        python3 -m pytest tests/test_distributed_resample.py
         "
 else
     echo "Skipping distributed tests."
