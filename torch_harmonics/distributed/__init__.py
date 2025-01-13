@@ -51,3 +51,6 @@ from .distributed_sht import DistributedRealVectorSHT, DistributedInverseRealVec
 # import DISCO
 from .distributed_convolution import DistributedDiscreteContinuousConvS2
 from .distributed_convolution import DistributedDiscreteContinuousConvTransposeS2
+
+# import resampling
+from .distributed_resample import DistributedResampleS2
