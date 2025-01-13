@@ -445,7 +445,8 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         normalization_layer="none",
         kernel_shape=[4, 4],
         encoder_kernel_shape=[4, 4],
-        filter_basis_type="morlet"
+        filter_basis_type="morlet",
+        upsample_sht = True,
     )
 
     models[f"lsno_sc2_layers4_e32_zernike"] = partial(
@@ -463,7 +464,8 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         normalization_layer="none",
         kernel_shape=[4],
         encoder_kernel_shape=[4],
-        filter_basis_type="zernike"
+        filter_basis_type="zernike",
+        upsample_sht = True,
     )
 
     # iterate over models and train each model
