@@ -5,6 +5,7 @@
 ### v0.7.4
 
 * New filter basis normalization in DISCO convolutions
+* More robust pre-computation of DISCO convolution tensor
 * Reworked DISCO filter basis datastructure
 * Support for new filter basis types
 * Added Zernike polynomial basis on a disk
