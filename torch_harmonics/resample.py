@@ -54,7 +54,7 @@ class ResampleS2(nn.Module):
         super().__init__()
 
         # currently only bilinear is supported
-        if mode == "bilinear":
+        if mode in ["bilinear", "bilinear-spherical"]:
             self.mode = mode
         else:
             raise NotImplementedError(f"unknown interpolation mode {mode}")
@@ -123,7 +123,15 @@ class ResampleS2(nn.Module):
 
     def _upscale_longitudes(self, x: torch.Tensor):
         # do the interpolation
-        x = torch.lerp(x[..., self.lon_idx_left], x[..., self.lon_idx_right], self.lon_weights)
+        if self.mode == "bilinear":
+            x = torch.lerp(x[..., self.lon_idx_left], x[..., self.lon_idx_right], self.lon_weights)
+        else:
+            omega = x[..., self.lon_idx_right] - x[..., self.lon_idx_left]
+            somega = torch.sin(omega)
+            start_prefac = torch.where(somega>1.e-4, torch.sin((1.-self.lon_weights) * omega)/somega, (1.-self.lon_weights))
+            end_prefac = torch.where(somega>1.e-4, torch.sin(self.lon_weights * omega)/somega, self.lon_weights)
+            x = start_prefac * x[..., self.lon_idx_left] + end_prefac * x[..., self.lon_idx_right]
+
         return x
 
     # old deprecated method with repeat_interleave
@@ -143,7 +151,15 @@ class ResampleS2(nn.Module):
 
     def _upscale_latitudes(self, x: torch.Tensor):
         # do the interpolation
-        x = torch.lerp(x[..., self.lat_idx, :], x[..., self.lat_idx + 1, :], self.lat_weights)
+        if self.mode == "bilinear":
+            x = torch.lerp(x[..., self.lat_idx, :], x[..., self.lat_idx + 1, :], self.lat_weights)
+        else:
+            omega = x[..., self.lat_idx + 1, :] - x[..., self.lat_idx, :]
+            somega = torch.sin(omega)
+            start_prefac = torch.where(somega>1.e-4, torch.sin((1.-self.lat_weights) * omega)/somega, (1.-self.lat_weights))
+            end_prefac = torch.where(somega>1.e-4, torch.sin(self.lat_weights * omega)/somega, self.lat_weights)
+            x = start_prefac * x[..., self.lat_idx, :] + end_prefac * x[..., self.lat_idx + 1, :]
+
         return x
 
     def forward(self, x: torch.Tensor):
