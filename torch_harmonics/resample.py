@@ -128,18 +128,11 @@ class ResampleS2(nn.Module):
         else:
             omega = x[..., self.lon_idx_right] - x[..., self.lon_idx_left]
             somega = torch.sin(omega)
-            start_prefac = torch.where(somega>1.e-4, torch.sin((1.-self.lon_weights) * omega)/somega, (1.-self.lon_weights))
-            end_prefac = torch.where(somega>1.e-4, torch.sin(self.lon_weights * omega)/somega, self.lon_weights)
+            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - self.lon_weights) * omega) / somega, (1.0 - self.lon_weights))
+            end_prefac = torch.where(somega > 1e-4, torch.sin(self.lon_weights * omega) / somega, self.lon_weights)
             x = start_prefac * x[..., self.lon_idx_left] + end_prefac * x[..., self.lon_idx_right]
 
         return x
-
-    # old deprecated method with repeat_interleave
-    # def _upscale_longitudes(self, x: torch.Tensor):
-    #     # for artifact-free upsampling in the longitudinal direction
-    #     x = torch.repeat_interleave(x, self.lon_scale_factor, dim=-1)
-    #     x = torch.roll(x, - self.lon_shift, dims=-1)
-    #     return x
 
     def _expand_poles(self, x: torch.Tensor):
         repeats = [1 for _ in x.shape]
@@ -156,8 +149,8 @@ class ResampleS2(nn.Module):
         else:
             omega = x[..., self.lat_idx + 1, :] - x[..., self.lat_idx, :]
             somega = torch.sin(omega)
-            start_prefac = torch.where(somega>1.e-4, torch.sin((1.-self.lat_weights) * omega)/somega, (1.-self.lat_weights))
-            end_prefac = torch.where(somega>1.e-4, torch.sin(self.lat_weights * omega)/somega, self.lat_weights)
+            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - self.lat_weights) * omega) / somega, (1.0 - self.lat_weights))
+            end_prefac = torch.where(somega > 1e-4, torch.sin(self.lat_weights * omega) / somega, self.lat_weights)
             x = start_prefac * x[..., self.lat_idx, :] + end_prefac * x[..., self.lat_idx + 1, :]
 
         return x
