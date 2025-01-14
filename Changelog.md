@@ -4,17 +4,15 @@
 
 ### v0.7.4
 
-* Changing default grid in all SHT routines to `equiangular`
-* Hotfix to the numpy version requirements
-* Changing default grid in all SHT routines to `equiangular`, which makes it consistent with DISCO convolutions
-* Cleaning up the SFNO example and adding new Local Spherical Neural Operator model
 * New filter basis normalization in DISCO convolutions
 * Reworked DISCO filter basis datastructure
 * Support for new filter basis types
-* Adding Zernike polynomial basis on a disk
-* Adding Morlet wavelet basis functions on a spherical disk
+* Added Zernike polynomial basis on a disk
+* Added Morlet wavelet basis functions on a spherical disk
 * Cleaning up the SFNO example and adding new Local Spherical Neural Operator model
 * Updated resampling module to extend input signal to the poles if needed
+* Added slerp interpolation to the resampling module
+* Added distributed resampling module
 
 ### v0.7.3
 
