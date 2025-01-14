@@ -183,12 +183,14 @@ class TestDistributedResampling(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [64, 128, 128, 256, 32, 8, "equiangular", "equiangular", 1e-7],
-            [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", 1e-7],
+            [64, 128, 128, 256, 32, 8, "equiangular", "equiangular", "bilinear", 1e-7],
+            [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", "bilinear", 1e-7],
+            [64, 128, 128, 256, 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-7],
+            [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-7],
         ]
     )
     def test_distributed_resampling(
-        self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, grid_in, grid_out, tol
+            self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, grid_in, grid_out, mode, tol
     ):
 
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
@@ -200,6 +202,7 @@ class TestDistributedResampling(unittest.TestCase):
             nlon_out=nlon_out,
             grid_in=grid_in,
             grid_out=grid_out,
+            mode=mode,
         )
 
         # set up handlesD
