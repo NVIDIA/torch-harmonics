@@ -112,11 +112,12 @@ def _precompute_distributed_convolution_tensor_s2(
     # It's imporatant to not include the 2 pi point in the longitudes, as it is equivalent to lon=0
     lons_in = torch.linspace(0, 2 * math.pi, nlon_in + 1)[:-1]
 
-    # compute quadrature weights that will be merged into the Psi tensor
+    # compute quadrature weights and merge them into the convolution tensor.
+    # These quadrature integrate to 1 over the sphere.
     if transpose_normalization:
-        quad_weights = 2.0 * torch.pi * torch.from_numpy(wout).float().reshape(-1, 1) / nlon_in
+        quad_weights = torch.from_numpy(wout).float().reshape(-1, 1) / nlon_in / 2.0
     else:
-        quad_weights = 2.0 * torch.pi * torch.from_numpy(win).float().reshape(-1, 1) / nlon_in
+        quad_weights = torch.from_numpy(win).float().reshape(-1, 1) / nlon_in / 2.0
 
     out_idx = []
     out_vals = []
@@ -129,11 +130,11 @@ def _precompute_distributed_convolution_tensor_s2(
         # compute cartesian coordinates of the rotated position
         # This uses the YZY convention of Euler angles, where the last angle (alpha) is a passive rotation,
         # and therefore applied with a negative sign
-        z = -torch.cos(beta) * torch.sin(alpha) * torch.sin(gamma) + torch.cos(alpha) * torch.cos(gamma)
         x = torch.cos(alpha) * torch.cos(beta) * torch.sin(gamma) + torch.cos(gamma) * torch.sin(alpha)
         y = torch.sin(beta) * torch.sin(gamma)
+        z = -torch.cos(beta) * torch.sin(alpha) * torch.sin(gamma) + torch.cos(alpha) * torch.cos(gamma)
 
-        # normalization is emportant to avoid NaNs when arccos and atan are applied
+        # normalization is important to avoid NaNs when arccos and atan are applied
         # this can otherwise lead to spurious artifacts in the solution
         norm = torch.sqrt(x * x + y * y + z * z)
         x = x / norm
@@ -270,6 +271,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_out_local, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
+        # save all datastructures
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
@@ -412,6 +414,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_in_local, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
+        # save all datastructures
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
