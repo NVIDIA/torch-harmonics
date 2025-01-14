@@ -134,6 +134,7 @@ def _precompute_convolution_tensor_s2(
     grid_in="equiangular",
     grid_out="equiangular",
     theta_cutoff=0.01 * math.pi,
+    theta_eps = 1e-3,
     transpose_normalization=False,
     basis_norm_mode="mean",
     merge_quadrature=False,
@@ -164,20 +165,23 @@ def _precompute_convolution_tensor_s2(
 
     # precompute input and output grids
     lats_in, win = _precompute_latitudes(nlat_in, grid=grid_in)
-    lats_in = torch.from_numpy(lats_in).float()
+    lats_in = torch.from_numpy(lats_in)
     lats_out, wout = _precompute_latitudes(nlat_out, grid=grid_out)
-    lats_out = torch.from_numpy(lats_out).float()
+    lats_out = torch.from_numpy(lats_out)
 
     # compute the phi differences
     # It's imporatant to not include the 2 pi point in the longitudes, as it is equivalent to lon=0
-    lons_in = torch.linspace(0, 2 * math.pi, nlon_in + 1)[:-1]
+    lons_in = torch.linspace(0, 2 * math.pi, nlon_in + 1, dtype=torch.float64)[:-1]
 
     # compute quadrature weights and merge them into the convolution tensor.
     # These quadrature integrate to 1 over the sphere.
     if transpose_normalization:
-        quad_weights = torch.from_numpy(wout).float().reshape(-1, 1) / nlon_in / 2.0
+        quad_weights = torch.from_numpy(wout).reshape(-1, 1) / nlon_in / 2.0
     else:
-        quad_weights = torch.from_numpy(win).float().reshape(-1, 1) / nlon_in / 2.0
+        quad_weights = torch.from_numpy(win).reshape(-1, 1) / nlon_in / 2.0
+
+    # effective theta cutoff if multiplied with a fudge factor to avoid aliasing with grid width (especially near poles)
+    theta_cutoff_eff = (1.0 + theta_eps) * theta_cutoff
 
     out_idx = []
     out_vals = []
@@ -207,7 +211,7 @@ def _precompute_convolution_tensor_s2(
         phi = torch.where(phi < 0.0, phi + 2 * torch.pi, phi)
 
         # find the indices where the rotated position falls into the support of the kernel
-        iidx, vals = filter_basis.compute_support_vals(theta, phi, r_cutoff=theta_cutoff)
+        iidx, vals = filter_basis.compute_support_vals(theta, phi, r_cutoff=theta_cutoff_eff)
 
         # add the output latitude and reshape such that psi has dimensions kernel_shape x nlat_out x (nlat_in*nlon_in)
         idx = torch.stack([iidx[:, 0], t * torch.ones_like(iidx[:, 0]), iidx[:, 1] * nlon_in + iidx[:, 2]], dim=0)
@@ -217,8 +221,8 @@ def _precompute_convolution_tensor_s2(
         out_vals.append(vals)
 
     # concatenate the indices and values
-    out_idx = torch.cat(out_idx, dim=-1).to(torch.long).contiguous()
-    out_vals = torch.cat(out_vals, dim=-1).to(torch.float32).contiguous()
+    out_idx = torch.cat(out_idx, dim=-1)
+    out_vals = torch.cat(out_vals, dim=-1)
 
     out_vals = _normalize_convolution_tensor_s2(
         out_idx,
@@ -231,6 +235,9 @@ def _precompute_convolution_tensor_s2(
         basis_norm_mode=basis_norm_mode,
         merge_quadrature=merge_quadrature,
     )
+
+    out_idx = out_idx.contiguous()
+    out_vals = out_vals.to(dtype=torch.float32).contiguous()
 
     return out_idx, out_vals
 
