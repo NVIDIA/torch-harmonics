@@ -145,14 +145,14 @@ __global__ void s2_attention_kernel(int num_channels, int nlon_in, int nlat_out,
       for(int channel_idx = 0; channel_idx<num_channels; channel_idx++) {
         qdotk += sh_qy_ho_wo[channel_idx]*kx[batch_b][channel_idx][hi][wip];
       }
-      alpha_inz = expf(qdotk - qdotk_max);
+      alpha_inz = expf(qdotk - qdotk_max) * quad_weights[hi];
 
       // thread-local sum alpha
       alpha_sum += alpha_inz;
 
       // multiply alpha, vx, and quadrature weights
       for(int channel_idx = 0; channel_idx<num_channels; channel_idx++) {
-        atomicAdd(&y[batch_b][channel_idx][ho][wo], alpha_inz * vx[batch_b][channel_idx][hi][wip] * quad_weights[hi]);
+        atomicAdd(&y[batch_b][channel_idx][ho][wo], alpha_inz * vx[batch_b][channel_idx][hi][wip]);
       }
     }
   }

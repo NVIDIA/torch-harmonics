@@ -145,7 +145,7 @@ s2_attention_bwd_dv_kernel(int num_channels, int nlon_in, int nlat_out, int nlon
     for(int channel_idx = 0; channel_idx<num_channels; channel_idx++) {
       qdotk += sh_qy_ho_wo[channel_idx]*kx[batch_b][channel_idx][hi][wip];
     }
-    float alpha_inz = expf(qdotk - qdotk_max);
+    float alpha_inz = expf(qdotk - qdotk_max) * quad_weights[hi];
     // sum alpha
     alpha_sum += alpha_inz;
   }
@@ -175,11 +175,11 @@ s2_attention_bwd_dv_kernel(int num_channels, int nlon_in, int nlat_out, int nlon
     for(int channel_idx = 0; channel_idx<num_channels; channel_idx++) {
       qdotk += sh_qy_ho_wo[channel_idx]*kx[batch_b][channel_idx][hi][wip];
     }
-    float alpha_inz = expf(qdotk - qdotk_max);
+    float alpha_inz = expf(qdotk - qdotk_max) * quad_weights[hi];
 
     // multiply alpha/sum_alpha, dy, and quadrature weights
     for(int channel_idx = 0; channel_idx<num_channels; channel_idx++) {
-      atomicAdd(&dydv[batch_b][channel_idx][hi][wip], (alpha_inz/alpha_sum) * dy[batch_b][channel_idx][ho][wo] * quad_weights[hi]);
+      atomicAdd(&dydv[batch_b][channel_idx][hi][wip], (alpha_inz/alpha_sum) * dy[batch_b][channel_idx][ho][wo]);
     }
 
   }
@@ -336,11 +336,11 @@ s2_attention_bwd_dk_kernel(int num_channels, int nlon_in, int nlat_out, int nlon
       qdotk += sh_qy_ho_wo[channel_idx]*kx[batch_b][channel_idx][hi][wip];
     }
     // softmax numerator
-    float alpha_inz = expf(qdotk - qdotk_max);
+    float alpha_inz = expf(qdotk - qdotk_max) * quad_weights[hi];
 
     // sum alpha & integral
     alpha_sum += alpha_inz;
-    integral += alpha_inz * gdotv * quad_weights[hi];
+    integral += alpha_inz * gdotv;
   }
 
   // block sum thread-local alpha_sum and integral
@@ -374,11 +374,11 @@ s2_attention_bwd_dk_kernel(int num_channels, int nlon_in, int nlat_out, int nlon
       gdotv += sh_dy_ho_wo[channel_idx] * vx[batch_b][channel_idx][hi][wip];
       qdotk += sh_qy_ho_wo[channel_idx]*kx[batch_b][channel_idx][hi][wip];
     }
-    float alpha_inz = expf(qdotk - qdotk_max);
+    float alpha_inz = expf(qdotk - qdotk_max) * quad_weights[hi];
     // multiply alpha/sum_alpha, vx, and quadrature weights
     for(int channel_idx = 0; channel_idx<num_channels; channel_idx++) {
       atomicAdd(&dydk[batch_b][channel_idx][hi][wip],
-                sh_qy_ho_wo[channel_idx] * (alpha_inz/alpha_sum) * (quad_weights[hi] * gdotv - integral));
+                sh_qy_ho_wo[channel_idx] * (alpha_inz/alpha_sum) * (gdotv - integral));
     }
   }
   __syncthreads();
@@ -479,16 +479,16 @@ s2_attention_bwd_dq_kernel(int num_channels, int nlon_in, int nlat_out, int nlon
       qdotk += sh_qy_ho_wo[channel_idx] * kx[batch_b][channel_idx][hi][wip];
     }
     // softmax numerator
-    float alpha_inz = expf(qdotk - qdotk_max);
+    float alpha_inz = expf(qdotk - qdotk_max) * quad_weights[hi];
     // sum alpha
     alpha_sum += alpha_inz;
     for(int channel_idx = 0; channel_idx<num_channels; channel_idx++) {
       atomicAdd(&sh_alpha_k[channel_idx],
                 alpha_inz * kx[batch_b][channel_idx][hi][wip]);
       atomicAdd(&sh_alpha_vw[channel_idx],
-                alpha_inz * gdotv * quad_weights[hi]);
+                alpha_inz * gdotv);
       atomicAdd(&sh_alpha_kvw[channel_idx],
-                alpha_inz * kx[batch_b][channel_idx][hi][wip] * gdotv * quad_weights[hi]);
+                alpha_inz * kx[batch_b][channel_idx][hi][wip] * gdotv);
     }
   }
   // sum thread-local alpha_sums across block
@@ -606,19 +606,19 @@ __global__ void s2_attention_bwd_dkvq_kernel(int num_channels, int nlon_in, int 
       qdotk += sh_qy_ho_wo[channel_idx] * kx[batch_b][channel_idx][hi][wip];
     }
     // softmax numerator
-    float alpha_inz = expf(qdotk - qdotk_max);
+    float alpha_inz = expf(qdotk - qdotk_max) * quad_weights[hi];
     // sum alpha
     alpha_sum += alpha_inz;
     for(int channel_idx = 0; channel_idx<num_channels; channel_idx++) {
       atomicAdd(&sh_alpha_k[channel_idx],
                 alpha_inz * kx[batch_b][channel_idx][hi][wip]);
       atomicAdd(&sh_alpha_vw[channel_idx],
-                alpha_inz * gdotv * quad_weights[hi]);
+                alpha_inz * gdotv);
       atomicAdd(&sh_alpha_kvw[channel_idx],
-                alpha_inz * kx[batch_b][channel_idx][hi][wip] * gdotv * quad_weights[hi]);
+                alpha_inz * kx[batch_b][channel_idx][hi][wip] * gdotv);
     }
 
-    integral += alpha_inz * gdotv * quad_weights[hi];
+    integral += alpha_inz * gdotv;
   }
   // sum thread-local alpha_sums & integral across block
   atomicAdd(&sh_alpha_sum[0], alpha_sum);
@@ -661,13 +661,13 @@ __global__ void s2_attention_bwd_dkvq_kernel(int num_channels, int nlon_in, int 
       gdotv += sh_dy_ho_wo[channel_idx] * vx[batch_b][channel_idx][hi][wip];
       qdotk += sh_qy_ho_wo[channel_idx]*kx[batch_b][channel_idx][hi][wip];
     }
-    float alpha_inz = expf(qdotk - qdotk_max);
+    float alpha_inz = expf(qdotk - qdotk_max) * quad_weights[hi];
     // multiply alpha/sum_alpha, vx, and quadrature weights
     for(int channel_idx = 0; channel_idx<num_channels; channel_idx++) {
       atomicAdd(&dydk[batch_b][channel_idx][hi][wip],
                 sh_qy_ho_wo[channel_idx] * (alpha_inz / alpha_sum) *
-                    (quad_weights[hi] * gdotv - integral));
-      atomicAdd(&dydv[batch_b][channel_idx][hi][wip], (alpha_inz/alpha_sum) * sh_dy_ho_wo[channel_idx] * quad_weights[hi]);
+                    (gdotv - integral));
+      atomicAdd(&dydv[batch_b][channel_idx][hi][wip], (alpha_inz/alpha_sum) * sh_dy_ho_wo[channel_idx]);
     }
   }
   __syncthreads();
