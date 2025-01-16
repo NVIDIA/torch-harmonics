@@ -186,7 +186,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 nlat = 512
 nlon = 2*nlat
 batch_size = 32
-signal = torch.randn(batch_size, nlat, nlon)
+signal = torch.randn(batch_size, nlat, nlon, device=device)
 
 # transform data on an equiangular grid
 sht = th.RealSHT(nlat, nlon, grid="equiangular").to(device)
