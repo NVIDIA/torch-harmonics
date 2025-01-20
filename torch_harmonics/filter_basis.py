@@ -239,7 +239,10 @@ class MorletFilterBasis(FilterBasis):
     def gaussian_window(self, r: torch.Tensor, width: float = 1.0):
         return 1 / (2 * math.pi * width**2) * torch.exp(-0.5 * r**2 / (width**2))
 
-    def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float, width: float = 0.25):
+    def hann_window(self, r: torch.Tensor, width: float = 1.0):
+        return torch.cos(0.5 * torch.pi * r / width) ** 2
+
+    def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float, width: float = 1.0):
         """
         Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
         """
@@ -252,19 +255,20 @@ class MorletFilterBasis(FilterBasis):
         # get relevant indices
         iidx = torch.argwhere((r <= r_cutoff) & torch.full_like(ikernel, True, dtype=torch.bool))
 
-        # get x and y
-        x = r * torch.sin(phi) / r_cutoff
-        y = r * torch.cos(phi) / r_cutoff
+        # get corresponding r, phi, x and y coordinates
+        r = r[iidx[:, 1], iidx[:, 2]] / r_cutoff
+        phi = phi[iidx[:, 1], iidx[:, 2]]
+        x = r * torch.sin(phi)
+        y = r * torch.cos(phi)
+        n = nkernel[iidx[:, 0], 0, 0]
+        m = mkernel[iidx[:, 0], 0, 0]
 
-        harmonic = torch.where(nkernel % 2 == 1, torch.sin(torch.ceil(nkernel / 2) * math.pi * x / width), torch.cos(torch.ceil(nkernel / 2) * math.pi * x / width))
-        harmonic *= torch.where(mkernel % 2 == 1, torch.sin(torch.ceil(mkernel / 2) * math.pi * y / width), torch.cos(torch.ceil(mkernel / 2) * math.pi * y / width))
+        harmonic = torch.where(n % 2 == 1, torch.sin(torch.ceil(n / 2) * math.pi * x / width), torch.cos(torch.ceil(n / 2) * math.pi * x / width))
+        harmonic *= torch.where(m % 2 == 1, torch.sin(torch.ceil(m / 2) * math.pi * y / width), torch.cos(torch.ceil(m / 2) * math.pi * y / width))
 
-        # disk area
-        # disk_area = 2.0 * math.pi * (1.0 - math.cos(r_cutoff))
-        disk_area = 1.0
-
-        # computes the Gaussian envelope. To ensure that the curve is roughly 0 at the boundary, we rescale the Gaussian by 0.25
-        vals = self.gaussian_window(r[iidx[:, 1], iidx[:, 2]] / r_cutoff, width=width) * harmonic[iidx[:, 0], iidx[:, 1], iidx[:, 2]] / disk_area
+        # computes the envelope. To ensure that the curve is roughly 0 at the boundary, we rescale the Gaussian by 0.25
+        # vals = self.gaussian_window(r, width=width) * harmonic
+        vals = self.hann_window(r, width=width) * harmonic
 
         return iidx, vals
 

@@ -148,14 +148,13 @@ class SphericalNeuralOperatorBlock(nn.Module):
         input_dim,
         output_dim,
         conv_type="local",
-        operator_type="driscoll-healy",
         mlp_ratio=2.0,
         drop_rate=0.0,
         drop_path=0.0,
-        act_layer=nn.ReLU,
+        act_layer=nn.GELU,
         norm_layer=nn.Identity,
-        inner_skip="None",
-        outer_skip="linear",
+        inner_skip="none",
+        outer_skip="identity",
         use_mlp=True,
         disco_kernel_shape=[3, 4],
         disco_basis_type="piecewise linear",
@@ -185,7 +184,7 @@ class SphericalNeuralOperatorBlock(nn.Module):
                 theta_cutoff=4.0 * (disco_kernel_shape[0] + 1) * torch.pi / float(inverse_transform.nlat - 1),
             )
         elif conv_type == "global":
-            self.global_conv = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, operator_type=operator_type, bias=False)
+            self.global_conv = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, bias=False)
         else:
             raise ValueError(f"Unknown convolution type {conv_type}")
 
@@ -274,8 +273,6 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
     -----------
     img_shape : tuple, optional
         Shape of the input channels, by default (128, 256)
-    operator_type : str, optional
-        Type of operator to use ('driscoll-healy', 'diagonal'), by default "driscoll-healy"
     kernel_shape: tuple, int
     scale_factor : int, optional
         Scale factor to use, by default 3
@@ -314,7 +311,7 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
 
     Example
     -----------
-    >>> model = SphericalFourierNeuralOperatorNet(
+    >>> model = LocalSphericalNeuralOperator(
     ...         img_shape=(128, 256),
     ...         scale_factor=4,
     ...         in_chans=2,
@@ -340,15 +337,14 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
     def __init__(
         self,
         img_size=(128, 256),
-        operator_type="driscoll-healy",
         grid="equiangular",
         grid_internal="legendre-gauss",
-        scale_factor=4,
+        scale_factor=3,
         in_chans=3,
         out_chans=3,
         embed_dim=256,
         num_layers=4,
-        activation_function="relu",
+        activation_function="gelu",
         kernel_shape=[3, 4],
         encoder_kernel_shape=[3, 4],
         filter_basis_type="piecewise linear",
@@ -365,7 +361,6 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
     ):
         super().__init__()
 
-        self.operator_type = operator_type
         self.img_size = img_size
         self.grid = grid
         self.grid_internal = grid_internal
@@ -438,10 +433,12 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
             bias=False,
         )
 
-        # prepare the SHT
-        modes_lat = int(self.h * self.hard_thresholding_fraction)
-        modes_lon = int(self.w // 2 * self.hard_thresholding_fraction)
-        modes_lat = modes_lon = min(modes_lat, modes_lon)
+        # compute the modes for the sht
+        modes_lat = self.h
+        # due to some spectral artifacts with cufft, we substract one mode here
+        modes_lon = (self.w // 2 + 1) - 1
+
+        modes_lat = modes_lon = int(min(modes_lat, modes_lon) * self.hard_thresholding_fraction)
 
         self.trans = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
         self.itrans = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
@@ -450,9 +447,6 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         for i in range(self.num_layers):
             first_layer = i == 0
             last_layer = i == self.num_layers - 1
-
-            inner_skip = "none"
-            outer_skip = "identity"
 
             if first_layer:
                 norm_layer = norm_layer1
@@ -467,14 +461,11 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
                 self.embed_dim,
                 self.embed_dim,
                 conv_type="global" if i % 2 == 0 else "local",
-                operator_type=self.operator_type,
                 mlp_ratio=mlp_ratio,
                 drop_rate=drop_rate,
                 drop_path=dpr[i],
                 act_layer=self.activation_function,
                 norm_layer=norm_layer,
-                inner_skip=inner_skip,
-                outer_skip=outer_skip,
                 use_mlp=use_mlp,
                 disco_kernel_shape=kernel_shape,
                 disco_basis_type=filter_basis_type,

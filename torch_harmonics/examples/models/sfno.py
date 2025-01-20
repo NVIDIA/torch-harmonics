@@ -31,8 +31,7 @@
 
 import torch
 import torch.nn as nn
-
-from torch_harmonics import *
+from torch_harmonics import RealSHT, InverseRealSHT
 
 from ._layers import *
 
@@ -50,17 +49,13 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         inverse_transform,
         input_dim,
         output_dim,
-        operator_type="driscoll-healy",
         mlp_ratio=2.0,
         drop_rate=0.0,
         drop_path=0.0,
-        act_layer=nn.ReLU,
+        act_layer=nn.GELU,
         norm_layer=nn.Identity,
-        factorization=None,
-        separable=False,
-        rank=128,
-        inner_skip="linear",
-        outer_skip=None,
+        inner_skip="none",
+        outer_skip="identity",
         use_mlp=True,
     ):
         super().__init__()
@@ -73,7 +68,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         if inner_skip == "linear" or inner_skip == "identity":
             gain_factor /= 2.0
 
-        self.global_conv = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, operator_type=operator_type, bias=False)
+        self.global_conv = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, bias=False)
 
         if inner_skip == "linear":
             self.inner_skip = nn.Conv2d(input_dim, output_dim, 1, 1)
@@ -148,8 +143,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
     ----------
     img_shape : tuple, optional
         Shape of the input channels, by default (128, 256)
-    operator_type : str, optional
-        Type of operator to use ('driscoll-healy', 'diagonal'), by default "driscoll-healy"
     scale_factor : int, optional
         Scale factor to use, by default 3
     in_chans : int, optional
@@ -204,7 +197,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
     def __init__(
         self,
         img_size=(128, 256),
-        operator_type="driscoll-healy",
         grid="equiangular",
         grid_internal="legendre-gauss",
         scale_factor=3,
@@ -212,7 +204,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         out_chans=3,
         embed_dim=256,
         num_layers=4,
-        activation_function="relu",
+        activation_function="gelu",
         encoder_layers=1,
         use_mlp=True,
         mlp_ratio=2.0,
@@ -227,7 +219,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
 
         super().__init__()
 
-        self.operator_type = operator_type
         self.img_size = img_size
         self.grid = grid
         self.grid_internal = grid_internal
@@ -312,7 +303,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         # compute the modes for the sht
         modes_lat = self.h
         # due to some spectral artifacts with cufft, we substract one mode here
-        modes_lon = (self.w // 2 + 1) -1
+        modes_lon = (self.w // 2 + 1) - 1
 
         modes_lat = modes_lon = int(min(modes_lat, modes_lon) * self.hard_thresholding_fraction)
 
@@ -327,12 +318,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             first_layer = i == 0
             last_layer = i == self.num_layers - 1
 
-            forward_transform = self.trans_down if first_layer else self.trans
-            inverse_transform = self.itrans_up if last_layer else self.itrans
-
-            inner_skip = "none"
-            outer_skip = "identity"
-
             if first_layer:
                 norm_layer = norm_layer1
             elif last_layer:
@@ -341,18 +326,15 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
                 norm_layer = norm_layer1
 
             block = SphericalFourierNeuralOperatorBlock(
-                forward_transform,
-                inverse_transform,
+                self.trans_down if first_layer else self.trans,
+                self.itrans_up if last_layer else self.itrans,
                 self.embed_dim,
                 self.embed_dim,
-                operator_type=self.operator_type,
                 mlp_ratio=mlp_ratio,
                 drop_rate=drop_rate,
                 drop_path=dpr[i],
                 act_layer=self.activation_function,
                 norm_layer=norm_layer,
-                inner_skip=inner_skip,
-                outer_skip=outer_skip,
                 use_mlp=use_mlp,
             )
 
