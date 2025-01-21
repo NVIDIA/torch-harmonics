@@ -41,7 +41,6 @@ def clm(l: int, m: int) -> float:
     """
     return math.sqrt((2*l + 1) / 4 / math.pi) * math.sqrt(math.factorial(l-m) / math.factorial(l+m))
 
-@cache
 def legpoly(mmax: int, lmax: int, x: torch.Tensor, norm: Optional[str]="ortho", inverse: Optional[bool]=False, csphase: Optional[bool]=True) -> torch.Tensor:
     r"""
     Computes the values of (-1)^m c^l_m P^l_m(x) at the positions specified by x.
@@ -91,6 +90,7 @@ def legpoly(mmax: int, lmax: int, x: torch.Tensor, norm: Optional[str]="ortho", 
 
     return vdm
 
+@cache
 def _precompute_legpoly(mmax: int , lmax: int, t: torch.Tensor,
                         norm: Optional[str]="ortho", inverse: Optional[bool]=False, csphase: Optional[bool]=True) -> torch.Tensor:
     r"""
@@ -107,6 +107,7 @@ def _precompute_legpoly(mmax: int , lmax: int, t: torch.Tensor,
 
     return legpoly(mmax, lmax, torch.cos(t), norm=norm, inverse=inverse, csphase=csphase)
 
+@cache
 def _precompute_dlegpoly(mmax: int, lmax: int, t: torch.Tensor,
                          norm: Optional[str]="ortho", inverse: Optional[bool]=False, csphase: Optional[bool]=True) -> torch.Tensor:
     r"""
