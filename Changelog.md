@@ -2,6 +2,11 @@
 
 ## Versioning
 
+### v0.7.5
+* New normalization mode `support` for DISCO convolutions
+* More efficient computation of Morlet filter basis
+* Changed default for Morlet filter basis to a Hann window function
+
 ### v0.7.4
 
 * New filter basis normalization in DISCO convolutions

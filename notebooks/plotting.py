@@ -34,79 +34,66 @@ import matplotlib.pyplot as plt
 import cartopy
 import cartopy.crs as ccrs
 
-def plot_sphere(data,
-                fig=None,
-                cmap="RdBu",
-                title=None,
-                colorbar=False,
-                coastlines=False,
-                central_latitude=0,
-                central_longitude=0,
-                lon=None,
-                lat=None,
-                **kwargs):
+
+def plot_sphere(data, fig=None, cmap="RdBu", title=None, colorbar=False, coastlines=False, gridlines=False, central_latitude=0, central_longitude=0, lon=None, lat=None, **kwargs):
     if fig == None:
         fig = plt.figure()
 
     nlat = data.shape[-2]
     nlon = data.shape[-1]
     if lon is None:
-        lon = np.linspace(0, 2*np.pi, nlon)
+        lon = np.linspace(0, 2 * np.pi, nlon)
     if lat is None:
-        lat = np.linspace(np.pi/2., -np.pi/2., nlat)
+        lat = np.linspace(np.pi / 2.0, -np.pi / 2.0, nlat)
     Lon, Lat = np.meshgrid(lon, lat)
 
     proj = ccrs.Orthographic(central_longitude=central_longitude, central_latitude=central_latitude)
     # proj = ccrs.Mollweide(central_longitude=central_longitude)
 
     ax = fig.add_subplot(projection=proj)
-    Lon = Lon*180/np.pi
-    Lat = Lat*180/np.pi
+    Lon = Lon * 180 / np.pi
+    Lat = Lat * 180 / np.pi
 
     # contour data over the map.
     im = ax.pcolormesh(Lon, Lat, data, cmap=cmap, transform=ccrs.PlateCarree(), antialiased=False, **kwargs)
     if coastlines:
-        ax.add_feature(cartopy.feature.COASTLINE, edgecolor='white', facecolor='none', linewidth=1.5)
+        ax.add_feature(cartopy.feature.COASTLINE, edgecolor="white", facecolor="none", linewidth=1.5)
+    if gridlines:
+        gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False, linewidth=1.5, color="gray", alpha=0.6, linestyle="--")
     if colorbar:
-        plt.colorbar(im)
+        plt.colorbar(im, extend="both")
     plt.title(title, y=1.05)
 
     return im
 
-def plot_data(data,
-                fig=None,
-                cmap="RdBu",
-                title=None,
-                colorbar=False,
-                coastlines=False,
-                central_longitude=0,
-                lon=None,
-                lat=None,
-                **kwargs):
+
+def plot_data(data, fig=None, cmap="RdBu", title=None, colorbar=False, coastlines=False, gridlines=False, central_longitude=0, lon=None, lat=None, **kwargs):
     if fig == None:
         fig = plt.figure()
 
     nlat = data.shape[-2]
     nlon = data.shape[-1]
     if lon is None:
-        lon = np.linspace(0, 2*np.pi, nlon)
+        lon = np.linspace(0, 2 * np.pi, nlon)
     if lat is None:
-        lat = np.linspace(np.pi/2., -np.pi/2., nlat)
+        lat = np.linspace(np.pi / 2.0, -np.pi / 2.0, nlat)
     Lon, Lat = np.meshgrid(lon, lat)
 
     proj = ccrs.PlateCarree(central_longitude=central_longitude)
     # proj = ccrs.Mollweide(central_longitude=central_longitude)
 
     ax = fig.add_subplot(projection=proj)
-    Lon = Lon*180/np.pi
-    Lat = Lat*180/np.pi
+    Lon = Lon * 180 / np.pi
+    Lat = Lat * 180 / np.pi
 
     # contour data over the map.
     im = ax.pcolormesh(Lon, Lat, data, cmap=cmap, transform=ccrs.PlateCarree(), antialiased=False, **kwargs)
     if coastlines:
-        ax.add_feature(cartopy.feature.COASTLINE, edgecolor='white', facecolor='none', linewidth=1.5)
+        ax.add_feature(cartopy.feature.COASTLINE, edgecolor="white", facecolor="none", linewidth=1.5)
+    if gridlines:
+        gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False, linewidth=1.5, color="gray", alpha=0.6, linestyle="--")
     if colorbar:
-        plt.colorbar(im)
+        plt.colorbar(im, extend="both")
     plt.title(title, y=1.05)
 
     return im

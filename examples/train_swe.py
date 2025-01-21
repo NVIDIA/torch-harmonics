@@ -422,7 +422,6 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         num_layers=4,
         scale_factor=2,
         embed_dim=32,
-        operator_type="driscoll-healy",
         activation_function="gelu",
         big_skip=True,
         pos_embed=False,
@@ -437,14 +436,13 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         num_layers=4,
         scale_factor=2,
         embed_dim=32,
-        operator_type="driscoll-healy",
         activation_function="gelu",
-        big_skip=False,
+        big_skip=True,
         pos_embed=False,
         use_mlp=True,
         normalization_layer="none",
-        kernel_shape=[4, 4],
-        encoder_kernel_shape=[4, 4],
+        kernel_shape=[2, 2],
+        encoder_kernel_shape=[2, 2],
         filter_basis_type="morlet",
         upsample_sht = True,
     )
@@ -456,9 +454,8 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         num_layers=4,
         scale_factor=2,
         embed_dim=32,
-        operator_type="driscoll-healy",
         activation_function="gelu",
-        big_skip=False,
+        big_skip=True,
         pos_embed=False,
         use_mlp=True,
         normalization_layer="none",
@@ -501,7 +498,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
             start_time = time.time()
 
             print(f"Training {model_name}, single step")
-            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=100, loss_fn="l2", enable_amp=enable_amp, log_grads=log_grads)
+            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=1, loss_fn="l2", enable_amp=enable_amp, log_grads=log_grads)
 
             if nfuture > 0:
                 print(f'Training {model_name}, {nfuture} step')
