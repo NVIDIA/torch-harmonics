@@ -38,12 +38,12 @@ import math
 import torch
 import torch.nn as nn
 
-from functools import partial
+from functools import partial, cache
 
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes
 from torch_harmonics._disco_convolution import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from torch_harmonics._disco_convolution import _disco_s2_contraction_cuda, _disco_s2_transpose_contraction_cuda
-from torch_harmonics.filter_basis import get_filter_basis
+from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
 
 # import custom C++/CUDA extensions if available
 try:
@@ -134,17 +134,18 @@ def _normalize_convolution_tensor_s2(
     return psi_vals
 
 
+@cache
 def _precompute_convolution_tensor_s2(
-    in_shape,
-    out_shape,
-    filter_basis,
-    grid_in="equiangular",
-    grid_out="equiangular",
-    theta_cutoff=0.01 * math.pi,
-    theta_eps = 1e-3,
-    transpose_normalization=False,
-    basis_norm_mode="mean",
-    merge_quadrature=False,
+    in_shape: Tuple[int],
+    out_shape: Tuple[int],
+    filter_basis: FilterBasis,
+    grid_in: Optional[str]="equiangular",
+    grid_out: Optional[str]="equiangular",
+    theta_cutoff: Optional[float]=0.01 * math.pi,
+    theta_eps: Optional[float]=1e-3,
+    transpose_normalization: Optional[bool]=False,
+    basis_norm_mode: Optional[str]="mean",
+    merge_quadrature: Optional[bool]=False,
 ):
     """
     Precomputes the rotated filters at positions $R^{-1}_j \omega_i = R^{-1}_j R_i \nu = Y(-\theta_j)Z(\phi_i - \phi_j)Y(\theta_j)\nu$.
@@ -258,7 +259,7 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
         self,
         in_channels: int,
         out_channels: int,
-        kernel_shape: Union[int, List[int]],
+        kernel_shape: Union[int, Tuple[int]],
         basis_type: Optional[str] = "piecewise linear",
         groups: Optional[int] = 1,
         bias: Optional[bool] = True,

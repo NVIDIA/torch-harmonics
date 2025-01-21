@@ -30,23 +30,11 @@
 #
 
 import abc
-from typing import List, Tuple, Union, Optional
+from typing import Tuple, Union, Optional
+from functools import cache
 import math
 
 import torch
-
-
-def get_filter_basis(kernel_shape: Union[int, List[int], Tuple[int, int]], basis_type: str):
-    """Factory function to generate the appropriate filter basis"""
-
-    if basis_type == "piecewise linear":
-        return PiecewiseLinearFilterBasis(kernel_shape=kernel_shape)
-    elif basis_type == "morlet":
-        return MorletFilterBasis(kernel_shape=kernel_shape)
-    elif basis_type == "zernike":
-        return ZernikeFilterBasis(kernel_shape=kernel_shape)
-    else:
-        raise ValueError(f"Unknown basis_type {basis_type}")
 
 
 def _circle_dist(x1: torch.Tensor, x2: torch.Tensor):
@@ -71,7 +59,7 @@ class FilterBasis(metaclass=abc.ABCMeta):
 
     def __init__(
         self,
-        kernel_shape: Union[int, List[int], Tuple[int, int]],
+        kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
     ):
 
         self.kernel_shape = kernel_shape
@@ -95,6 +83,19 @@ class FilterBasis(metaclass=abc.ABCMeta):
         """
         raise NotImplementedError
 
+@cache
+def get_filter_basis(kernel_shape: Union[int, Tuple[int], Tuple[int, int]], basis_type: str) -> FilterBasis:
+    """Factory function to generate the appropriate filter basis"""
+
+    if basis_type == "piecewise linear":
+        return PiecewiseLinearFilterBasis(kernel_shape=kernel_shape)
+    elif basis_type == "morlet":
+        return MorletFilterBasis(kernel_shape=kernel_shape)
+    elif basis_type == "zernike":
+        return ZernikeFilterBasis(kernel_shape=kernel_shape)
+    else:
+        raise ValueError(f"Unknown basis_type {basis_type}")
+
 
 class PiecewiseLinearFilterBasis(FilterBasis):
     """
@@ -103,7 +104,7 @@ class PiecewiseLinearFilterBasis(FilterBasis):
 
     def __init__(
         self,
-        kernel_shape: Union[int, List[int], Tuple[int, int]],
+        kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
     ):
 
         if isinstance(kernel_shape, int):
@@ -222,7 +223,7 @@ class MorletFilterBasis(FilterBasis):
 
     def __init__(
         self,
-        kernel_shape: Union[int, List[int], Tuple[int, int]],
+        kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
     ):
 
         if isinstance(kernel_shape, int):
@@ -280,7 +281,7 @@ class ZernikeFilterBasis(FilterBasis):
 
     def __init__(
         self,
-        kernel_shape: Union[int, Tuple[int], List[int]],
+        kernel_shape: Union[int, Tuple[int]],
     ):
 
         if isinstance(kernel_shape, tuple) or isinstance(kernel_shape, list):

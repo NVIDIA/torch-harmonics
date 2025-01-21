@@ -29,15 +29,19 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+from typing import Optional
+from functools import cache
 import numpy as np
 
-def clm(l, m):
+@cache
+def clm(l: int, m: int) -> np.float64:
     """
     defines the normalization factor to orthonormalize the Spherical Harmonics
     """
     return np.sqrt((2*l + 1) / 4 / np.pi) * np.sqrt(np.math.factorial(l-m) / np.math.factorial(l+m))
 
-def legpoly(mmax, lmax, x, norm="ortho", inverse=False, csphase=True):
+
+def legpoly(mmax: int, lmax: int, x: np.ndarray, norm: Optional[str]="ortho", inverse: Optional[bool]=False, csphase: Optional[bool]=True) -> np.ndarray:
     r"""
     Computes the values of (-1)^m c^l_m P^l_m(x) at the positions specified by x.
     The resulting tensor has shape (mmax, lmax, len(x)). The Condon-Shortley Phase (-1)^m
@@ -86,7 +90,8 @@ def legpoly(mmax, lmax, x, norm="ortho", inverse=False, csphase=True):
 
     return vdm
 
-def _precompute_legpoly(mmax, lmax, t, norm="ortho", inverse=False, csphase=True):
+def _precompute_legpoly(mmax: int , lmax: int, t: np.ndarray,
+                        norm: Optional[str]="ortho", inverse: Optional[bool]=False, csphase: Optional[bool]=True) -> np.ndarray:
     r"""
     Computes the values of (-1)^m c^l_m P^l_m(\cos \theta) at the positions specified by t (theta).
     The resulting tensor has shape (mmax, lmax, len(x)). The Condon-Shortley Phase (-1)^m
@@ -101,7 +106,8 @@ def _precompute_legpoly(mmax, lmax, t, norm="ortho", inverse=False, csphase=True
 
     return legpoly(mmax, lmax, np.cos(t), norm=norm, inverse=inverse, csphase=csphase)
 
-def _precompute_dlegpoly(mmax, lmax, t, norm="ortho", inverse=False, csphase=True):
+def _precompute_dlegpoly(mmax: int, lmax: int, t: np.ndarray,
+                         norm: Optional[str]="ortho", inverse: Optional[bool]=False, csphase: Optional[bool]=True) -> np.ndarray:
     r"""
     Computes the values of the derivatives $\frac{d}{d \theta} P^m_l(\cos \theta)$
     at the positions specified by t (theta), as well as $\frac{1}{\sin \theta} P^m_l(\cos \theta)$,
