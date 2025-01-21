@@ -88,6 +88,7 @@ def _normalize_convolution_tensor_s2(
 
     # buffer to store intermediate values
     vnorm = torch.zeros(kernel_size, nlat_out)
+    support = torch.zeros(kernel_size, nlat_out)
 
     # loop through dimensions to compute the norms
     for ik in range(kernel_size):
@@ -100,6 +101,10 @@ def _normalize_convolution_tensor_s2(
             # vnorm[ik, ilat] = torch.sqrt(torch.sum(psi_vals[iidx].abs().pow(2) * q[iidx]))
             vnorm[ik, ilat] = torch.sum(psi_vals[iidx].abs() * q[iidx])
 
+            # compute the support
+            support[ik, ilat] = torch.sum(q[iidx])
+
+
     # loop over values and renormalize
     for ik in range(kernel_size):
         for ilat in range(nlat_out):
@@ -110,6 +115,8 @@ def _normalize_convolution_tensor_s2(
                 val = vnorm[ik, ilat]
             elif basis_norm_mode == "mean":
                 val = vnorm[ik, :].mean()
+            elif basis_norm_mode == "support":
+                val = support[ik, ilat]
             elif basis_norm_mode == "none":
                 val = 1.0
             else:
