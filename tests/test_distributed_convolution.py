@@ -183,18 +183,18 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [128, 256, 128, 256, 32, 8, [3], "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-5],
-            [129, 256, 128, 256, 32, 8, [3], "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-5],
-            [128, 256, 128, 256, 32, 8, [3, 2], "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-5],
-            [128, 256, 64, 128, 32, 8, [3], "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-5],
-            [128, 256, 128, 256, 32, 8, [3], "piecewise linear", "mean", 2, "equiangular", "equiangular", False, 1e-5],
-            [128, 256, 128, 256, 32, 6, [3], "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-5],
-            [128, 256, 128, 256, 32, 8, [3], "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-5],
-            [129, 256, 129, 256, 32, 8, [3], "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-5],
-            [128, 256, 128, 256, 32, 8, [3, 2], "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-5],
-            [64, 128, 128, 256, 32, 8, [3], "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-5],
-            [128, 256, 128, 256, 32, 8, [3], "piecewise linear", "mean", 2, "equiangular", "equiangular", True, 1e-5],
-            [128, 256, 128, 256, 32, 6, [3], "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-5],
+            [128, 256, 128, 256, 32, 8, (3,), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-5],
+            [129, 256, 128, 256, 32, 8, (3,), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-5],
+            [128, 256, 128, 256, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-5],
+            [128, 256, 64, 128, 32, 8, (3,), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-5],
+            [128, 256, 128, 256, 32, 8, (3,), "piecewise linear", "mean", 2, "equiangular", "equiangular", False, 1e-5],
+            [128, 256, 128, 256, 32, 6, (3,), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-5],
+            [128, 256, 128, 256, 32, 8, (3,), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-5],
+            [129, 256, 129, 256, 32, 8, (3,), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-5],
+            [128, 256, 128, 256, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-5],
+            [64, 128, 128, 256, 32, 8, (3,), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-5],
+            [128, 256, 128, 256, 32, 8, (3,), "piecewise linear", "mean", 2, "equiangular", "equiangular", True, 1e-5],
+            [128, 256, 128, 256, 32, 6, (3,), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-5],
         ]
     )
     def test_distributed_disco_conv(

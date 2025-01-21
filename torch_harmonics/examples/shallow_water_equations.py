@@ -35,6 +35,7 @@ import torch.nn as nn
 import torch_harmonics as harmonics
 from torch_harmonics.quadrature import *
 
+import math
 import numpy as np
 
 
@@ -79,11 +80,11 @@ class ShallowWaterSolver(nn.Module):
         elif self.grid == "equiangular":
             cost, quad_weights = harmonics.quadrature.clenshaw_curtiss_weights(self.nlat, -1, 1)
 
-        quad_weights = torch.as_tensor(quad_weights).reshape(-1, 1)
+        quad_weights = quad_weights.reshape(-1, 1)
 
         # apply cosine transform and flip them
-        lats = -torch.as_tensor(np.arcsin(cost))
-        lons = torch.linspace(0, 2*np.pi, self.nlon+1, dtype=torch.float64)[:nlon]
+        lats = -torch.arcsin(cost)
+        lons = torch.linspace(0, 2*math.pi, self.nlon+1, dtype=torch.float64)[:nlon]
 
         self.lmax = self.sht.lmax
         self.mmax = self.sht.mmax
@@ -360,8 +361,8 @@ class ShallowWaterSolver(nn.Module):
 
             #ax = plt.gca(projection=proj, frameon=True)
             ax = fig.add_subplot(projection=proj)
-            Lons = Lons*180/np.pi
-            Lats = Lats*180/np.pi
+            Lons = Lons*180/math.pi
+            Lats = Lats*180/math.pi
 
             # contour data over the map.
             im = ax.pcolormesh(Lons, Lats, data, cmap=cmap, transform=ccrs.PlateCarree(), antialiased=antialiased, vmax=vmax, vmin=vmin)
@@ -375,8 +376,8 @@ class ShallowWaterSolver(nn.Module):
 
             #ax = plt.gca(projection=proj, frameon=True)
             ax = fig.add_subplot(projection=proj)
-            Lons = Lons*180/np.pi
-            Lats = Lats*180/np.pi
+            Lons = Lons*180/math.pi
+            Lats = Lats*180/math.pi
 
             # contour data over the map.
             im = ax.pcolormesh(Lons, Lats, data, cmap=cmap, transform=ccrs.PlateCarree(), antialiased=antialiased, vmax=vmax, vmin=vmin)

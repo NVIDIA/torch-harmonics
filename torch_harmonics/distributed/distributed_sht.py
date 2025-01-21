@@ -30,7 +30,6 @@
 #
 
 import os
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.fft
@@ -75,13 +74,13 @@ class DistributedRealSHT(nn.Module):
 
         # compute quadrature points
         if self.grid == "legendre-gauss":
-            cost, w = legendre_gauss_weights(nlat, -1, 1)
+            cost, weights = legendre_gauss_weights(nlat, -1, 1)
             self.lmax = lmax or self.nlat
         elif self.grid == "lobatto":
-            cost, w = lobatto_weights(nlat, -1, 1)
+            cost, weights = lobatto_weights(nlat, -1, 1)
             self.lmax = lmax or self.nlat-1
         elif self.grid == "equiangular":
-            cost, w = clenshaw_curtiss_weights(nlat, -1, 1)
+            cost, weights = clenshaw_curtiss_weights(nlat, -1, 1)
             # cost, w = fejer2_weights(nlat, -1, 1)
             self.lmax = lmax or self.nlat
         else:
@@ -94,7 +93,7 @@ class DistributedRealSHT(nn.Module):
         self.comm_rank_azimuth = azimuth_group_rank()
 
         # apply cosine transform and flip them
-        tq = np.flip(np.arccos(cost))
+        tq = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine the dimensions
         self.mmax = mmax or self.nlon // 2 + 1
@@ -106,9 +105,7 @@ class DistributedRealSHT(nn.Module):
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
 
         # combine quadrature weights with the legendre weights
-        weights = torch.from_numpy(w)
         pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
-        pct = torch.from_numpy(pct)
         weights = torch.einsum('mlk,k->mlk', pct, weights)
 
         # split weights
@@ -208,7 +205,7 @@ class DistributedInverseRealSHT(nn.Module):
         self.comm_rank_azimuth = azimuth_group_rank()
 
         # apply cosine transform and flip them
-        t = np.flip(np.arccos(cost))
+        t = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine the dimensions
         self.mmax = mmax or self.nlon // 2 + 1
@@ -221,7 +218,6 @@ class DistributedInverseRealSHT(nn.Module):
 
         # compute legende polynomials
         pct = _precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
-        pct = torch.from_numpy(pct)
 
         # split in m
         pct = split_tensor_along_dim(pct, dim=0, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]
@@ -308,13 +304,13 @@ class DistributedRealVectorSHT(nn.Module):
 
         # compute quadrature points
         if self.grid == "legendre-gauss":
-            cost, w = legendre_gauss_weights(nlat, -1, 1)
+            cost, weights = legendre_gauss_weights(nlat, -1, 1)
             self.lmax = lmax or self.nlat
         elif self.grid == "lobatto":
-            cost, w = lobatto_weights(nlat, -1, 1)
+            cost, weights = lobatto_weights(nlat, -1, 1)
             self.lmax = lmax or self.nlat-1
         elif self.grid == "equiangular":
-            cost, w = clenshaw_curtiss_weights(nlat, -1, 1)
+            cost, weights = clenshaw_curtiss_weights(nlat, -1, 1)
             # cost, w = fejer2_weights(nlat, -1, 1)
             self.lmax = lmax or self.nlat
         else:
@@ -327,7 +323,7 @@ class DistributedRealVectorSHT(nn.Module):
         self.comm_rank_azimuth = azimuth_group_rank()
 
         # apply cosine transform and flip them
-        tq = np.flip(np.arccos(cost))
+        tq = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine the dimensions
         self.mmax = mmax or self.nlon // 2 + 1
@@ -339,9 +335,7 @@ class DistributedRealVectorSHT(nn.Module):
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
 
         # compute weights
-        weights = torch.from_numpy(w)
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
-        dpct = torch.from_numpy(dpct)
 
         # combine integration weights, normalization factor in to one:
         l = torch.arange(0, self.lmax)
@@ -461,7 +455,7 @@ class DistributedInverseRealVectorSHT(nn.Module):
         self.comm_rank_azimuth = azimuth_group_rank()
 
         # apply cosine transform and flip them
-        t = np.flip(np.arccos(cost))
+        t = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine the dimensions
         self.mmax = mmax or self.nlon // 2 + 1
@@ -474,7 +468,6 @@ class DistributedInverseRealVectorSHT(nn.Module):
 
         # compute legende polynomials
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
-        dpct = torch.from_numpy(dpct)
 
         # split in m
         dpct = split_tensor_along_dim(dpct, dim=1, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]

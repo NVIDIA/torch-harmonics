@@ -173,9 +173,7 @@ def _precompute_convolution_tensor_s2(
 
     # precompute input and output grids
     lats_in, win = _precompute_latitudes(nlat_in, grid=grid_in)
-    lats_in = torch.from_numpy(lats_in)
     lats_out, wout = _precompute_latitudes(nlat_out, grid=grid_out)
-    lats_out = torch.from_numpy(lats_out)
 
     # compute the phi differences
     # It's imporatant to not include the 2 pi point in the longitudes, as it is equivalent to lon=0
@@ -184,9 +182,9 @@ def _precompute_convolution_tensor_s2(
     # compute quadrature weights and merge them into the convolution tensor.
     # These quadrature integrate to 1 over the sphere.
     if transpose_normalization:
-        quad_weights = torch.from_numpy(wout).reshape(-1, 1) / nlon_in / 2.0
+        quad_weights = wout.reshape(-1, 1) / nlon_in / 2.0
     else:
-        quad_weights = torch.from_numpy(win).reshape(-1, 1) / nlon_in / 2.0
+        quad_weights = win.reshape(-1, 1) / nlon_in / 2.0
 
     # effective theta cutoff if multiplied with a fudge factor to avoid aliasing with grid width (especially near poles)
     theta_cutoff_eff = (1.0 + theta_eps) * theta_cutoff

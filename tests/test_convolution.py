@@ -106,9 +106,7 @@ def _precompute_convolution_tensor_dense(
     nlat_out, nlon_out = out_shape
 
     lats_in, win = quadrature._precompute_latitudes(nlat_in, grid=grid_in)
-    lats_in = torch.from_numpy(lats_in)
     lats_out, wout = quadrature._precompute_latitudes(nlat_out, grid=grid_out)
-    lats_out = torch.from_numpy(lats_out)
 
     # compute the phi differences. We need to make the linspace exclusive to not double the last point
     lons_in = torch.linspace(0, 2 * math.pi, nlon_in + 1, dtype=torch.float64)[:-1]
@@ -119,9 +117,9 @@ def _precompute_convolution_tensor_dense(
 
     # compute quadrature weights that will be merged into the Psi tensor
     if transpose_normalization:
-        quad_weights = torch.from_numpy(wout).reshape(-1, 1) / nlon_in / 2.0
+        quad_weights = wout.reshape(-1, 1) / nlon_in / 2.0
     else:
-        quad_weights = torch.from_numpy(win).reshape(-1, 1) / nlon_in / 2.0
+        quad_weights = win.reshape(-1, 1) / nlon_in / 2.0
 
     # array for accumulating non-zero indices
     out = torch.zeros(kernel_size, nlat_out, nlon_out, nlat_in, nlon_in, dtype=torch.float64)
