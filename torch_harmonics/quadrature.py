@@ -57,7 +57,11 @@ def _precompute_grid(n: int, grid: Optional[str]="equidistant", a: Optional[floa
 
 @lru_cache(typed=True, copy=True)
 def _precompute_longitudes(nlon: int):
-    lons = torch.linspace(0, 2 * math.pi, nlon+1, dtype=torch.float64)[:-1]
+    r"""
+    Convenience routine to precompute longitudes
+    """
+    
+    lons = torch.linspace(0, 2 * math.pi, nlon+1, dtype=torch.float64, requires_grad=False)[:-1]
     return lons
 
 
@@ -66,15 +70,15 @@ def _precompute_latitudes(nlat: int, grid: Optional[str]="equiangular") -> Tuple
     r"""
     Convenience routine to precompute latitudes
     """
-
+        
     # compute coordinates in the cosine theta domain
     xlg, wlg = _precompute_grid(nlat, grid=grid, a=-1.0, b=1.0, periodic=False)
-
+    
     # to perform the quadrature and account for the jacobian of the sphere, the quadrature rule
     # is formulated in the cosine theta domain, which is designed to integrate functions of cos theta
     lats = torch.flip(torch.arccos(xlg), dims=(0,)).clone()
     wlg = torch.flip(wlg, dims=(0,)).clone()
-
+    
     return lats, wlg
 
 
@@ -85,7 +89,7 @@ def trapezoidal_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0,
     """
 
     xlg = torch.from_numpy(np.linspace(a, b, n, endpoint=periodic))
-    wlg = (b - a) / (n - periodic * 1) * torch.ones(n)
+    wlg = (b - a) / (n - periodic * 1) * torch.ones(n, requires_grad=False)
 
     if not periodic:
         wlg[0] *= 0.5
@@ -116,12 +120,12 @@ def lobatto_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0,
     on the interval [a, b]
     """
 
-    wlg = torch.zeros((n,), dtype=torch.float64)
-    tlg = torch.zeros((n,), dtype=torch.float64)
-    tmp = torch.zeros((n,), dtype=torch.float64)
+    wlg = torch.zeros((n,), dtype=torch.float64, requires_grad=False)
+    tlg = torch.zeros((n,), dtype=torch.float64, requires_grad=False)
+    tmp = torch.zeros((n,), dtype=torch.float64, requires_grad=False)
 
     # Vandermonde Matrix
-    vdm = torch.zeros((n, n), dtype=torch.float64)
+    vdm = torch.zeros((n, n), dtype=torch.float64, requires_grad=False)
 
     # initialize Chebyshev nodes as first guess
     for i in range(n):
@@ -162,7 +166,7 @@ def clenshaw_curtiss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]
 
     assert n > 1
 
-    tcc = torch.cos(torch.linspace(math.pi, 0, n, dtype=torch.float64))
+    tcc = torch.cos(torch.linspace(math.pi, 0, n, dtype=torch.float64, requires_grad=False))
 
     if n == 2:
         wcc = torch.tensor([1.0, 1.0], dtype=torch.float64)
@@ -173,11 +177,11 @@ def clenshaw_curtiss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]
         l = len(N)
         m = n1 - l
 
-        v = torch.cat([2 / N / (N - 2), 1 / N[-1:], torch.zeros(m, dtype=torch.float64)])
+        v = torch.cat([2 / N / (N - 2), 1 / N[-1:], torch.zeros(m, dtype=torch.float64, requires_grad=False)])
         #v = 0 - v[:-1] - v[-1:0:-1]
         v = 0 - v[:-1] - torch.flip(v[1:], dims=(0,))
 
-        g0 = -torch.ones(n1, dtype=torch.float64)
+        g0 = -torch.ones(n1, dtype=torch.float64, requires_grad=False)
         g0[l] = g0[l] + n1
         g0[m] = g0[m] + n1
         g = g0 / (n1**2 - 1 + (n1 % 2))
@@ -201,14 +205,14 @@ def fejer2_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0) -> T
 
     assert n > 2
 
-    tcc = torch.cos(torch.linspace(math.pi, 0, n, dtype=torch.float64))
+    tcc = torch.cos(torch.linspace(math.pi, 0, n, dtype=torch.float64, requires_grad=False))
 
     n1 = n - 1
     N = torch.arange(1, n1, 2, dtype=torch.float64)
     l = len(N)
     m = n1 - l
 
-    v = torch.cat([2 / N / (N - 2), 1 / N[-1:], torch.zeros(m, dtype=torch.float64)])
+    v = torch.cat([2 / N / (N - 2), 1 / N[-1:], torch.zeros(m, dtype=torch.float64, requires_grad=False)])
     #v = 0 - v[:-1] - v[-1:0:-1]
     v = 0 - v[:-1] - torch.flip(v[1:], dims=(0,))
 

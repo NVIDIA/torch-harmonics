@@ -93,9 +93,6 @@ class ResampleS2(nn.Module):
         lat_weights = ((self.lats_out - self.lats_in[lat_idx]) / torch.diff(self.lats_in)[lat_idx]).to(torch.float32)
         lat_weights = lat_weights.unsqueeze(-1)
 
-        # convert to tensor
-        #lat_idx = torch.LongTensor(lat_idx)
-
         # register buffers
         self.register_buffer("lat_idx", lat_idx, persistent=False)
         self.register_buffer("lat_weights", lat_weights, persistent=False)
@@ -108,10 +105,6 @@ class ResampleS2(nn.Module):
         diff = self.lons_in[lon_idx_right] - self.lons_in[lon_idx_left]
         diff = torch.where(diff < 0.0, diff + 2 * math.pi, diff)
         lon_weights = ((self.lons_out - self.lons_in[lon_idx_left]) / diff).to(torch.float32)
-
-        # convert to tensor
-        #lon_idx_left = torch.LongTensor(lon_idx_left)
-        #lon_idx_right = torch.LongTensor(lon_idx_right)
 
         # register buffers
         self.register_buffer("lon_idx_left", lon_idx_left, persistent=False)
