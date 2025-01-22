@@ -30,7 +30,7 @@
 #
 
 from typing import Tuple, Optional
-from functools import cache
+from torch_harmonics.cache import lru_cache
 import math
 import numpy as np
 import torch
@@ -57,7 +57,7 @@ def _precompute_grid(n: int, grid: Optional[str]="equidistant", a: Optional[floa
     return xlg, wlg
 
 
-@cache
+@lru_cache(typed=True, copy=True)
 def _precompute_latitudes(nlat: int, grid: Optional[str]="equiangular") -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Convenience routine to precompute latitudes

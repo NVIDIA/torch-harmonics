@@ -29,10 +29,11 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from functools import cache
 from typing import Optional
 import math
 import torch
+
+from torch_harmonics.cache import lru_cache
 
 
 def clm(l: int, m: int) -> float:
@@ -90,7 +91,7 @@ def legpoly(mmax: int, lmax: int, x: torch.Tensor, norm: Optional[str]="ortho", 
 
     return vdm
 
-@cache
+@lru_cache(typed=True, copy=True)
 def _precompute_legpoly(mmax: int , lmax: int, t: torch.Tensor,
                         norm: Optional[str]="ortho", inverse: Optional[bool]=False, csphase: Optional[bool]=True) -> torch.Tensor:
     r"""
@@ -107,7 +108,7 @@ def _precompute_legpoly(mmax: int , lmax: int, t: torch.Tensor,
 
     return legpoly(mmax, lmax, torch.cos(t), norm=norm, inverse=inverse, csphase=csphase)
 
-@cache
+@lru_cache(typed=True, copy=True)
 def _precompute_dlegpoly(mmax: int, lmax: int, t: torch.Tensor,
                          norm: Optional[str]="ortho", inverse: Optional[bool]=False, csphase: Optional[bool]=True) -> torch.Tensor:
     r"""

@@ -38,8 +38,9 @@ import math
 import torch
 import torch.nn as nn
 
-from functools import partial, cache
+from functools import partial
 
+from torch_harmonics.cache import lru_cache
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes
 from torch_harmonics._disco_convolution import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from torch_harmonics._disco_convolution import _disco_s2_contraction_cuda, _disco_s2_transpose_contraction_cuda
@@ -134,7 +135,7 @@ def _normalize_convolution_tensor_s2(
     return psi_vals
 
 
-@cache
+@lru_cache(typed=True, copy=True)
 def _precompute_convolution_tensor_s2(
     in_shape: Tuple[int],
     out_shape: Tuple[int],

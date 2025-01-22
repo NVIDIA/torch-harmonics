@@ -31,10 +31,11 @@
 
 import abc
 from typing import Tuple, Union, Optional
-from functools import cache
 import math
 
 import torch
+
+from torch_harmonics.cache import lru_cache
 
 
 def _circle_dist(x1: torch.Tensor, x2: torch.Tensor):
@@ -83,7 +84,8 @@ class FilterBasis(metaclass=abc.ABCMeta):
         """
         raise NotImplementedError
 
-@cache
+
+@lru_cache(typed=True, copy=False)
 def get_filter_basis(kernel_shape: Union[int, Tuple[int], Tuple[int, int]], basis_type: str) -> FilterBasis:
     """Factory function to generate the appropriate filter basis"""
 
