@@ -29,14 +29,14 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from functools import lru_cache
+import functools
 from copy import deepcopy
 
 # copying LRU cache decorator a la:
 # https://stackoverflow.com/questions/54909357/how-to-get-functools-lru-cache-to-return-new-instances
 def lru_cache(maxsize=20, typed=False, copy=False):
     def decorator(f):
-        cached_func = lru_cache(maxsize=maxsize, typed=typed)(f)
+        cached_func = functools.lru_cache(maxsize=maxsize, typed=typed)(f)
         def wrapper(*args, **kwargs):
             res = cached_func(*args, **kwargs)
             if copy:
