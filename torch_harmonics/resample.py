@@ -90,7 +90,7 @@ class ResampleS2(nn.Module):
         # lat_idx = np.where(self.lats_out < self.lats_in[0], 0, lat_idx)
 
         # compute the interpolation weights along the latitude
-        lat_weights = ((self.lats_out - self.lats_in[lat_idx]) / np.diff(self.lats_in)[lat_idx]).to(torch.float32)
+        lat_weights = ((self.lats_out - self.lats_in[lat_idx]) / torch.diff(self.lats_in)[lat_idx]).to(torch.float32)
         lat_weights = lat_weights.unsqueeze(-1)
 
         # convert to tensor

@@ -104,7 +104,7 @@ class DistributedResampleS2(nn.Module):
         # lat_idx = np.where(self.lats_out < self.lats_in[0], 0, lat_idx)
 
         # compute the interpolation weights along the latitude
-        lat_weights = ((self.lats_out - self.lats_in[lat_idx]) / np.diff(self.lats_in)[lat_idx]).to(torch.float32)
+        lat_weights = ((self.lats_out - self.lats_in[lat_idx]) / torch.diff(self.lats_in)[lat_idx]).to(torch.float32)
         lat_weights = lat_weights.unsqueeze(-1)
 
         # convert to tensor
@@ -116,7 +116,7 @@ class DistributedResampleS2(nn.Module):
 
         # get left and right indices but this time make sure periodicity in the longitude is handled
         lon_idx_left = torch.searchsorted(self.lons_in, self.lons_out, side="right") - 1
-        lon_idx_right = torch.where(self.lons_out >= self.lons_in[-1], np.zeros_like(lon_idx_left), lon_idx_left + 1)
+        lon_idx_right = torch.where(self.lons_out >= self.lons_in[-1], torch.zeros_like(lon_idx_left), lon_idx_left + 1)
 
         # get the difference
         diff = self.lons_in[lon_idx_right] - self.lons_in[lon_idx_left]

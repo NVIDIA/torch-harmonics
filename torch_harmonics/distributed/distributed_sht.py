@@ -109,7 +109,7 @@ class DistributedRealSHT(nn.Module):
         weights = torch.einsum('mlk,k->mlk', pct, weights)
 
         # split weights
-        weights = split_tensor_along_dim(weights, dim=0, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]
+        weights = split_tensor_along_dim(weights, dim=0, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth].contiguous()
 
         # remember quadrature weights
         self.register_buffer('weights', weights, persistent=False)
@@ -220,7 +220,7 @@ class DistributedInverseRealSHT(nn.Module):
         pct = _precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
 
         # split in m
-        pct = split_tensor_along_dim(pct, dim=0, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]
+        pct = split_tensor_along_dim(pct, dim=0, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth].contiguous()
 
         # register
         self.register_buffer('pct', pct, persistent=False)
@@ -346,7 +346,7 @@ class DistributedRealVectorSHT(nn.Module):
         weights[1] = -1 * weights[1]
 
         # we need to split in m, pad before:
-        weights = split_tensor_along_dim(weights, dim=1, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]
+        weights = split_tensor_along_dim(weights, dim=1, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth].contiguous()
 
         # remember quadrature weights
         self.register_buffer('weights', weights, persistent=False)
@@ -470,7 +470,7 @@ class DistributedInverseRealVectorSHT(nn.Module):
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
 
         # split in m
-        dpct = split_tensor_along_dim(dpct, dim=1, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]
+        dpct = split_tensor_along_dim(dpct, dim=1, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth].contiguous()
 
         # register buffer
         self.register_buffer('dpct', dpct, persistent=False)
