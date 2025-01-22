@@ -35,7 +35,6 @@ import math
 import numpy as np
 import torch
 
-
 def _precompute_grid(n: int, grid: Optional[str]="equidistant", a: Optional[float]=0.0, b: Optional[float]=1.0,
                      periodic: Optional[bool]=False) -> Tuple[torch.Tensor, torch.Tensor]:
 
@@ -55,6 +54,11 @@ def _precompute_grid(n: int, grid: Optional[str]="equidistant", a: Optional[floa
         raise ValueError(f"Unknown grid type {grid}")
 
     return xlg, wlg
+
+@lru_cache(typed=True, copy=True):
+def _precompute_longitudes(nlon: int):
+    lons = torch.linspace(0, 2 * math.pi, nlon+1, dtype=torch.float64)[:-1]
+    return lons
 
 
 @lru_cache(typed=True, copy=True)

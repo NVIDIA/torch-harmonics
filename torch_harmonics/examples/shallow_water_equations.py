@@ -84,7 +84,7 @@ class ShallowWaterSolver(nn.Module):
 
         # apply cosine transform and flip them
         lats = -torch.arcsin(cost)
-        lons = torch.linspace(0, 2*math.pi, self.nlon+1, dtype=torch.float64)[:nlon]
+        lons = _precompute_longitudes(self.nlon)
 
         self.lmax = self.sht.lmax
         self.mmax = self.sht.mmax

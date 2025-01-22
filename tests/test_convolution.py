@@ -38,7 +38,7 @@ import torch
 from torch.autograd import gradcheck
 from torch_harmonics import *
 
-from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes
+from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
 
 
 def _normalize_convolution_tensor_dense(psi, quad_weights, transpose_normalization=False, basis_norm_mode="none", merge_quadrature=False, eps=1e-9):
@@ -108,9 +108,9 @@ def _precompute_convolution_tensor_dense(
     lats_in, win = quadrature._precompute_latitudes(nlat_in, grid=grid_in)
     lats_out, wout = quadrature._precompute_latitudes(nlat_out, grid=grid_out)
 
-    # compute the phi differences. We need to make the linspace exclusive to not double the last point
-    lons_in = torch.linspace(0, 2 * math.pi, nlon_in + 1, dtype=torch.float64)[:-1]
-    lons_out = torch.linspace(0, 2 * math.pi, nlon_out + 1, dtype=torch.float64)[:-1]
+    # compute the phi differences.
+    lons_in = _precompute_longitudes(nlon_in)
+    lons_out = _precompute_longitudes(nlon_out)
 
     # effective theta cutoff if multiplied with a fudge factor to avoid aliasing with grid width (especially near poles)
     theta_cutoff_eff = (1.0 + theta_eps) * theta_cutoff

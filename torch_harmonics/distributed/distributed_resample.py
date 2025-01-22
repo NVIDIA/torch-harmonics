@@ -35,7 +35,7 @@ import math
 import torch
 import torch.nn as nn
 
-from torch_harmonics.quadrature import _precompute_latitudes
+from torch_harmonics.quadrature import _precompute_latitudes, _precompute_longitudes
 from torch_harmonics.distributed import polar_group_size, azimuth_group_size, distributed_transpose_azimuth, distributed_transpose_polar
 from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
 from torch_harmonics.distributed import compute_split_shapes
@@ -81,9 +81,9 @@ class DistributedResampleS2(nn.Module):
 
         # for upscaling the latitudes we will use interpolation
         self.lats_in, _ = _precompute_latitudes(nlat_in, grid=grid_in)
-        self.lons_in = torch.linspace(0, 2 * math.pi, nlon_in+1)[:-1]
+        self.lons_in = _precompute_longitudes(nlon_in)
         self.lats_out, _ = _precompute_latitudes(nlat_out, grid=grid_out)
-        self.lons_out = torch.linspace(0, 2 * math.pi, nlon_out+1)[:-1]
+        self.lons_out = _precompute_longitudes(nlon_out)
 
         # in the case where some points lie outside of the range spanned by lats_in,
         # we need to expand the solution to the poles before interpolating

@@ -41,7 +41,7 @@ import torch.nn as nn
 from functools import partial
 
 from torch_harmonics.cache import lru_cache
-from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes
+from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
 from torch_harmonics._disco_convolution import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from torch_harmonics._disco_convolution import _disco_s2_contraction_cuda, _disco_s2_transpose_contraction_cuda
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
@@ -178,7 +178,7 @@ def _precompute_convolution_tensor_s2(
 
     # compute the phi differences
     # It's imporatant to not include the 2 pi point in the longitudes, as it is equivalent to lon=0
-    lons_in = torch.linspace(0, 2 * math.pi, nlon_in + 1, dtype=torch.float64)[:-1]
+    lons_in = _precompute_longitudes(nlon_in)
 
     # compute quadrature weights and merge them into the convolution tensor.
     # These quadrature integrate to 1 over the sphere.
