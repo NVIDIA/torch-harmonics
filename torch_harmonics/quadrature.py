@@ -55,7 +55,7 @@ def _precompute_grid(n: int, grid: Optional[str]="equidistant", a: Optional[floa
 
     return xlg, wlg
 
-@lru_cache(typed=True, copy=True):
+@lru_cache(typed=True, copy=True)
 def _precompute_longitudes(nlon: int):
     lons = torch.linspace(0, 2 * math.pi, nlon+1, dtype=torch.float64)[:-1]
     return lons
