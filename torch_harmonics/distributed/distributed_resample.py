@@ -125,6 +125,8 @@ class DistributedResampleS2(nn.Module):
         self.register_buffer("lon_idx_right", lon_idx_right, persistent=False)
         self.register_buffer("lon_weights", lon_weights, persistent=False)
 
+        self.skip_resampling = (nlon_in == nlon_out) and (nlat_in == nlat_out) and (grid_in == grid_out)
+
     def extra_repr(self):
         r"""
         Pretty print module
@@ -166,6 +168,9 @@ class DistributedResampleS2(nn.Module):
         return x
 
     def forward(self, x: torch.Tensor):
+
+        if self.skip_resampling:
+            return x
 
         # transpose data so that h is local, and channels are split
         num_chans = x.shape[-3]

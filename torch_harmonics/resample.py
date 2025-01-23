@@ -111,6 +111,9 @@ class ResampleS2(nn.Module):
         self.register_buffer("lon_idx_right", lon_idx_right, persistent=False)
         self.register_buffer("lon_weights", lon_weights, persistent=False)
 
+        self.skip_resampling = (nlon_in == nlon_out) and (nlat_in == nlat_out) and (grid_in == grid_out)
+        
+
     def extra_repr(self):
         r"""
         Pretty print module
@@ -152,6 +155,9 @@ class ResampleS2(nn.Module):
         return x
 
     def forward(self, x: torch.Tensor):
+        if self.skip_resampling:
+            return x
+        
         if self.expand_poles:
             x = self._expand_poles(x)
         x = self._upscale_latitudes(x)
