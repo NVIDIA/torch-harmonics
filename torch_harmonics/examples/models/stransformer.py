@@ -51,8 +51,8 @@ class DiscreteContinuousEncoder(nn.Module):
         grid_out="equiangular",
         inp_chans=2,
         out_chans=2,
-        kernel_shape=[3, 4],
-        basis_type="piecewise linear",
+        kernel_shape=(3, 3),
+        basis_type="morlet",
         groups=1,
         bias=False,
     ):
@@ -93,11 +93,11 @@ class DiscreteContinuousDecoder(nn.Module):
         grid_out="equiangular",
         inp_chans=2,
         out_chans=2,
-        kernel_shape=[3, 4],
-        basis_type="piecewise linear",
+        kernel_shape=(3, 3),
+        basis_type="morlet",
         groups=1,
         bias=False,
-        upsample_sht=False
+        upsample_sht=False,
     ):
         super().__init__()
 
@@ -143,24 +143,21 @@ class SphericalSelfAttentionBlock(nn.Module):
 
     def __init__(
         self,
-        in_shape=(480, 960),
-        out_shape=(480, 960),
-        grid_in="equiangular",
-        grid_out="equiangular",
-        inp_chans=2,
-        out_chans=2,
+        forward_transform,
+        inverse_transform,
+        input_dim,
+        output_dim,
         conv_type="local",
-        operator_type="driscoll-healy",
         mlp_ratio=2.0,
         drop_rate=0.0,
         drop_path=0.0,
-        act_layer=nn.ReLU,
-        norm_layer=nn.Identity,
-        inner_skip="None",
-        outer_skip="linear",
+        act_layer=nn.GELU,
+        norm_layer="none",
+        inner_skip="none",
+        outer_skip="identity",
         use_mlp=True,
-        disco_kernel_shape=[3, 4],
-        disco_basis_type="piecewise linear",
+        disco_kernel_shape=(3, 3),
+        disco_basis_type="morlet",
     ):
         super().__init__()
 
@@ -172,42 +169,45 @@ class SphericalSelfAttentionBlock(nn.Module):
         if inner_skip == "linear" or inner_skip == "identity":
             gain_factor /= 2.0
 
-        # replace with spectral attention
-
-
-
-        # # convolution layer
-        # if conv_type == "local":
-        #     self.local_conv = DiscreteContinuousConvS2(
-        #         input_dim,
-        #         output_dim,
-        #         in_shape=(forward_transform.nlat, forward_transform.nlon),
-        #         out_shape=(inverse_transform.nlat, inverse_transform.nlon),
-        #         kernel_shape=disco_kernel_shape,
-        #         basis_type=disco_basis_type,
-        #         grid_in=forward_transform.grid,
-        #         grid_out=inverse_transform.grid,
-        #         bias=False,
-        #         theta_cutoff=4.0 * (disco_kernel_shape[0] + 1) * torch.pi / float(inverse_transform.nlat - 1),
-        #     )
-        # elif conv_type == "global":
-        #     self.global_conv = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, operator_type=operator_type, bias=False)
-        # else:
-        #     raise ValueError(f"Unknown convolution type {conv_type}")
+        # convolution layer
+        if conv_type == "local":
+            self.local_conv = DiscreteContinuousConvS2(
+                input_dim,
+                output_dim,
+                in_shape=(forward_transform.nlat, forward_transform.nlon),
+                out_shape=(inverse_transform.nlat, inverse_transform.nlon),
+                kernel_shape=disco_kernel_shape,
+                basis_type=disco_basis_type,
+                grid_in=forward_transform.grid,
+                grid_out=inverse_transform.grid,
+                bias=False,
+                theta_cutoff=4.0 * (disco_kernel_shape[0] + 1) * torch.pi / float(inverse_transform.nlat - 1),
+            )
+        elif conv_type == "global":
+            self.global_conv = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, bias=False)
+        else:
+            raise ValueError(f"Unknown convolution type {conv_type}")
 
         if inner_skip == "linear":
-            self.inner_skip = nn.Conv2d(inp_chans, out_chans, 1, 1)
+            self.inner_skip = nn.Conv2d(input_dim, output_dim, 1, 1)
             nn.init.normal_(self.inner_skip.weight, std=math.sqrt(gain_factor / input_dim))
         elif inner_skip == "identity":
-            assert inp_chans == out_chans
+            assert input_dim == output_dim
             self.inner_skip = nn.Identity()
         elif inner_skip == "none":
             pass
         else:
             raise ValueError(f"Unknown skip connection type {inner_skip}")
 
-        # first normalisation layer
-        self.norm0 = norm_layer()
+        # normalisation layer
+        if norm_layer == "layer_norm":
+            self.norm = nn.LayerNorm(normalized_shape=(inverse_transform.nlat, inverse_transform.nlon), eps=1e-6)
+        elif norm_layer == "instance_norm":
+            self.norm = nn.InstanceNorm2d(num_features=output_dim, eps=1e-6, affine=True, track_running_stats=False)
+        elif norm_layer == "none":
+            self.norm = nn.Identity()
+        else:
+            raise NotImplementedError(f"Error, normalization {norm_layer} not implemented.")
 
         # dropout
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
@@ -217,10 +217,10 @@ class SphericalSelfAttentionBlock(nn.Module):
             gain_factor /= 2.0
 
         if use_mlp == True:
-            mlp_hidden_dim = int(out_chans * mlp_ratio)
+            mlp_hidden_dim = int(output_dim * mlp_ratio)
             self.mlp = MLP(
-                in_features=out_chans,
-                out_features=inp_chans,
+                in_features=output_dim,
+                out_features=input_dim,
                 hidden_features=mlp_hidden_dim,
                 act_layer=act_layer,
                 drop_rate=drop_rate,
@@ -232,15 +232,12 @@ class SphericalSelfAttentionBlock(nn.Module):
             self.outer_skip = nn.Conv2d(input_dim, input_dim, 1, 1)
             torch.nn.init.normal_(self.outer_skip.weight, std=math.sqrt(gain_factor / input_dim))
         elif outer_skip == "identity":
-            assert input_dim == out_chans
+            assert input_dim == output_dim
             self.outer_skip = nn.Identity()
         elif outer_skip == "none":
             pass
         else:
             raise ValueError(f"Unknown skip connection type {outer_skip}")
-
-        # second normalisation layer
-        self.norm1 = norm_layer()
 
     def forward(self, x):
 
@@ -251,15 +248,13 @@ class SphericalSelfAttentionBlock(nn.Module):
         elif hasattr(self, "local_conv"):
             x = self.local_conv(x)
 
-        x = self.norm0(x)
+        x = self.norm(x)
 
         if hasattr(self, "inner_skip"):
             x = x + self.inner_skip(residual)
 
         if hasattr(self, "mlp"):
             x = self.mlp(x)
-
-        x = self.norm1(x)
 
         x = self.drop_path(x)
 
@@ -269,7 +264,7 @@ class SphericalSelfAttentionBlock(nn.Module):
         return x
 
 
-class SphericalTransformerNet(nn.Module):
+class SphericalNeighborhoodTransformerNet(nn.Module):
     """
     Spherical transformer module
 
@@ -277,8 +272,6 @@ class SphericalTransformerNet(nn.Module):
     -----------
     img_shape : tuple, optional
         Shape of the input channels, by default (128, 256)
-    operator_type : str, optional
-        Type of operator to use ('driscoll-healy', 'diagonal'), by default "driscoll-healy"
     kernel_shape: tuple, int
     scale_factor : int, optional
         Scale factor to use, by default 3
@@ -345,14 +338,14 @@ class SphericalTransformerNet(nn.Module):
         img_size=(128, 256),
         grid="equiangular",
         grid_internal="legendre-gauss",
-        scale_factor=4,
+        scale_factor=3,
         in_chans=3,
         out_chans=3,
         embed_dim=256,
         num_layers=4,
-        activation_function="relu",
-        encoder_kernel_shape=[3, 4],
-        filter_basis_type="piecewise linear",
+        activation_function="gelu",
+        encoder_kernel_shape=(3, 3),
+        filter_basis_type="morlet",
         use_mlp=True,
         mlp_ratio=2.0,
         drop_rate=0.0,
@@ -366,7 +359,6 @@ class SphericalTransformerNet(nn.Module):
     ):
         super().__init__()
 
-        self.operator_type = operator_type
         self.img_size = img_size
         self.grid = grid
         self.grid_internal = grid_internal
@@ -400,19 +392,6 @@ class SphericalTransformerNet(nn.Module):
         self.pos_drop = nn.Dropout(p=drop_rate) if drop_rate > 0.0 else nn.Identity()
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, self.num_layers)]
 
-        # pick norm layer
-        if self.normalization_layer == "layer_norm":
-            norm_layer0 = partial(nn.LayerNorm, normalized_shape=(self.img_size[0], self.img_size[1]), eps=1e-6)
-            norm_layer1 = partial(nn.LayerNorm, normalized_shape=(self.h, self.w), eps=1e-6)
-        elif self.normalization_layer == "instance_norm":
-            norm_layer0 = partial(nn.InstanceNorm2d, num_features=self.embed_dim, eps=1e-6, affine=True, track_running_stats=False)
-            norm_layer1 = partial(nn.InstanceNorm2d, num_features=self.embed_dim, eps=1e-6, affine=True, track_running_stats=False)
-        elif self.normalization_layer == "none":
-            norm_layer0 = nn.Identity
-            norm_layer1 = norm_layer0
-        else:
-            raise NotImplementedError(f"Error, normalization {self.normalization_layer} not implemented.")
-
         # for transformers this should be reingineered properly
         if pos_embed == "latlon" or pos_embed == True:
             self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.h, self.w))
@@ -441,28 +420,17 @@ class SphericalTransformerNet(nn.Module):
             bias=False,
         )
 
-        # prepare the SHT
-        modes_lat = int(self.h * self.hard_thresholding_fraction)
-        modes_lon = int(self.w // 2 * self.hard_thresholding_fraction)
-        modes_lat = modes_lon = min(modes_lat, modes_lon)
+        # compute the modes for the sht
+        modes_lat = self.h
+        # due to some spectral artifacts with cufft, we substract one mode here
+        modes_lon = (self.w // 2 + 1) - 1
+        modes_lat = modes_lon = int(min(modes_lat, modes_lon) * self.hard_thresholding_fraction)
 
         self.trans = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
         self.itrans = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
 
         self.blocks = nn.ModuleList([])
         for i in range(self.num_layers):
-            first_layer = i == 0
-            last_layer = i == self.num_layers - 1
-
-            inner_skip = "none"
-            outer_skip = "identity"
-
-            if first_layer:
-                norm_layer = norm_layer1
-            elif last_layer:
-                norm_layer = norm_layer0
-            else:
-                norm_layer = norm_layer1
 
             block = SphericalAttentionBlock(
                 in_shape=(self.h, self.w),
@@ -475,9 +443,7 @@ class SphericalTransformerNet(nn.Module):
                 drop_rate=drop_rate,
                 drop_path=dpr[i],
                 act_layer=self.activation_function,
-                norm_layer=norm_layer,
-                inner_skip=inner_skip,
-                outer_skip=outer_skip,
+                norm_layer=self.normalization_layer,
                 use_mlp=use_mlp,
                 disco_kernel_shape=kernel_shape,
                 disco_basis_type=filter_basis_type,
@@ -497,16 +463,8 @@ class SphericalTransformerNet(nn.Module):
             basis_type=filter_basis_type,
             groups=1,
             bias=False,
-            upsample_sht=upsample_sht
+            upsample_sht=upsample_sht,
         )
-
-        # # residual prediction
-        # if self.residual_prediction:
-        #     self.residual_transform = nn.Conv2d(self.out_chans, self.in_chans, 1, bias=False)
-        #     self.residual_transform.weight.is_shared_mp = ["spatial"]
-        #     self.residual_transform.weight.sharded_dims_mp = [None, None, None, None]
-        #     scale = math.sqrt(0.5 / self.in_chans)
-        #     nn.init.normal_(self.residual_transform.weight, mean=0.0, std=scale)
 
     @torch.jit.ignore
     def no_weight_decay(self):
@@ -534,7 +492,6 @@ class SphericalTransformerNet(nn.Module):
         x = self.decoder(x)
 
         if self.residual_prediction:
-            # x = x + self.residual_transform(residual)
             x = x + residual
 
         return x
