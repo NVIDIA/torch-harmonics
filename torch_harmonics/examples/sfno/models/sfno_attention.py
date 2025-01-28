@@ -266,7 +266,7 @@ class AttentionSphericalFourierNeuralOperatorNet(nn.Module):
         Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "instance_norm"
     hard_thresholding_fraction : float, optional
         Fraction of hard thresholding (frequency cutoff) to apply, by default 1.0
-    big_skip : bool, optional
+    residual_prediction : bool, optional
         Whether to add a single large skip connection, by default True
     rank : float, optional
         Rank of the approximation, by default 1.0
@@ -313,7 +313,7 @@ class AttentionSphericalFourierNeuralOperatorNet(nn.Module):
         normalization_layer="none",
         hard_thresholding_fraction=1.0,
         use_complex_kernels=True,
-        big_skip=False,
+        residual_prediction=False,
         factorization=None,
         separable=False,
         rank=128,
@@ -334,7 +334,7 @@ class AttentionSphericalFourierNeuralOperatorNet(nn.Module):
         self.hard_thresholding_fraction = hard_thresholding_fraction
         self.normalization_layer = normalization_layer
         self.use_mlp = use_mlp
-        self.big_skip = big_skip
+        self.residual_prediction = residual_prediction
         self.factorization = factorization
         self.separable = (separable,)
         self.rank = rank
@@ -411,7 +411,7 @@ class AttentionSphericalFourierNeuralOperatorNet(nn.Module):
                 vdim=self.embed_dim,
             )
         )
-        
+
         # prepare the spectral transform
         if self.spectral_transform == "sht":
             modes_lat = int(self.h * self.hard_thresholding_fraction)
@@ -498,7 +498,7 @@ class AttentionSphericalFourierNeuralOperatorNet(nn.Module):
         return x
 
     def forward(self, x):
-        if self.big_skip:
+        if self.residual_prediction:
             residual = x
 
         x = self.encoder(x)
@@ -510,7 +510,7 @@ class AttentionSphericalFourierNeuralOperatorNet(nn.Module):
 
         x = self.decoder(x)
 
-        if self.big_skip:
+        if self.residual_prediction:
             x = x + residual
 
         return x

@@ -31,6 +31,7 @@
 
 import torch
 import torch.nn as nn
+
 from torch_harmonics import RealSHT, InverseRealSHT
 
 from ._layers import *
@@ -53,7 +54,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         drop_rate=0.0,
         drop_path=0.0,
         act_layer=nn.GELU,
-        norm_layer=nn.Identity,
+        norm_layer="none",
         inner_skip="none",
         outer_skip="identity",
         use_mlp=True,
@@ -81,8 +82,15 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         else:
             raise ValueError(f"Unknown skip connection type {inner_skip}")
 
-        # first normalisation layer
-        self.norm0 = norm_layer()
+        # normalisation layer
+        if norm_layer == "layer_norm":
+            self.norm = nn.LayerNorm(normalized_shape=(inverse_transform.nlat, inverse_transform.nlon), eps=1e-6)
+        elif norm_layer == "instance_norm":
+            self.norm = nn.InstanceNorm2d(num_features=output_dim, eps=1e-6, affine=True, track_running_stats=False)
+        elif norm_layer == "none":
+            self.norm = nn.Identity()
+        else:
+            raise NotImplementedError(f"Error, normalization {self.norm_layer} not implemented.")
 
         # dropout
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
@@ -108,22 +116,18 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         else:
             raise ValueError(f"Unknown skip connection type {outer_skip}")
 
-        # second normalisation layer
-        self.norm1 = norm_layer()
 
     def forward(self, x):
 
         x, residual = self.global_conv(x)
 
-        x = self.norm0(x)
+        x = self.norm(x)
 
         if hasattr(self, "inner_skip"):
             x = x + self.inner_skip(residual)
 
         if hasattr(self, "mlp"):
             x = self.mlp(x)
-
-        x = self.norm1(x)
 
         x = self.drop_path(x)
 
@@ -169,7 +173,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "instance_norm"
     hard_thresholding_fraction : float, optional
         Fraction of hard thresholding (frequency cutoff) to apply, by default 1.0
-    big_skip : bool, optional
+    residual_prediction : bool, optional
         Whether to add a single large skip connection, by default True
     pos_embed : bool, optional
         Whether to use positional embedding, by default True
@@ -213,7 +217,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         normalization_layer="none",
         hard_thresholding_fraction=1.0,
         use_complex_kernels=True,
-        big_skip=False,
+        residual_prediction=False,
         pos_embed=False,
     ):
 
@@ -231,7 +235,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         self.normalization_layer = normalization_layer
         self.use_mlp = use_mlp
         self.encoder_layers = encoder_layers
-        self.big_skip = big_skip
+        self.residual_prediction = residual_prediction
 
         # activation function
         if activation_function == "relu":
@@ -251,19 +255,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         # dropout
         self.pos_drop = nn.Dropout(p=drop_rate) if drop_rate > 0.0 else nn.Identity()
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, self.num_layers)]
-
-        # pick norm layer
-        if self.normalization_layer == "layer_norm":
-            norm_layer0 = partial(nn.LayerNorm, normalized_shape=(self.img_size[0], self.img_size[1]), eps=1e-6)
-            norm_layer1 = partial(nn.LayerNorm, normalized_shape=(self.h, self.w), eps=1e-6)
-        elif self.normalization_layer == "instance_norm":
-            norm_layer0 = partial(nn.InstanceNorm2d, num_features=self.embed_dim, eps=1e-6, affine=True, track_running_stats=False)
-            norm_layer1 = partial(nn.InstanceNorm2d, num_features=self.embed_dim, eps=1e-6, affine=True, track_running_stats=False)
-        elif self.normalization_layer == "none":
-            norm_layer0 = nn.Identity
-            norm_layer1 = norm_layer0
-        else:
-            raise NotImplementedError(f"Error, normalization {self.normalization_layer} not implemented.")
 
         if pos_embed == "latlon" or pos_embed == True:
             self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.img_size[0], self.img_size[1]))
@@ -318,13 +309,6 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
             first_layer = i == 0
             last_layer = i == self.num_layers - 1
 
-            if first_layer:
-                norm_layer = norm_layer1
-            elif last_layer:
-                norm_layer = norm_layer0
-            else:
-                norm_layer = norm_layer1
-
             block = SphericalFourierNeuralOperatorBlock(
                 self.trans_down if first_layer else self.trans,
                 self.itrans_up if last_layer else self.itrans,
@@ -334,7 +318,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
                 drop_rate=drop_rate,
                 drop_path=dpr[i],
                 act_layer=self.activation_function,
-                norm_layer=norm_layer,
+                norm_layer=self.normalization_layer,
                 use_mlp=use_mlp,
             )
 
@@ -343,7 +327,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
         # construct an decoder with num_decoder_layers
         num_decoder_layers = 1
         decoder_hidden_dim = int(self.embed_dim * mlp_ratio)
-        current_dim = self.embed_dim + self.big_skip * self.in_chans
+        current_dim = self.embed_dim
         decoder_layers = []
         for l in range(num_decoder_layers - 1):
             fc = nn.Conv2d(current_dim, decoder_hidden_dim, 1, bias=True)
@@ -378,7 +362,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
 
     def forward(self, x):
 
-        if self.big_skip:
+        if self.residual_prediction:
             residual = x
 
         x = self.encoder(x)
@@ -388,9 +372,9 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
 
         x = self.forward_features(x)
 
-        if self.big_skip:
-            x = torch.cat((x, residual), dim=1)
-
         x = self.decoder(x)
+
+        if self.residual_prediction:
+            x = x + residual
 
         return x
