@@ -51,8 +51,8 @@ class DiscreteContinuousEncoder(nn.Module):
         grid_out="equiangular",
         inp_chans=2,
         out_chans=2,
-        kernel_shape=[3, 4],
-        basis_type="piecewise linear",
+        kernel_shape=(3, 3),
+        basis_type="morlet",
         groups=1,
         bias=False,
     ):
@@ -93,11 +93,11 @@ class DiscreteContinuousDecoder(nn.Module):
         grid_out="equiangular",
         inp_chans=2,
         out_chans=2,
-        kernel_shape=[3, 4],
-        basis_type="piecewise linear",
+        kernel_shape=(3, 3),
+        basis_type="morlet",
         groups=1,
         bias=False,
-        upsample_sht=False
+        upsample_sht=False,
     ):
         super().__init__()
 
@@ -152,12 +152,12 @@ class SphericalNeuralOperatorBlock(nn.Module):
         drop_rate=0.0,
         drop_path=0.0,
         act_layer=nn.GELU,
-        norm_layer=nn.Identity,
+        norm_layer="none",
         inner_skip="none",
         outer_skip="identity",
         use_mlp=True,
-        disco_kernel_shape=[3, 4],
-        disco_basis_type="piecewise linear",
+        disco_kernel_shape=(3, 3),
+        disco_basis_type="morlet",
     ):
         super().__init__()
 
@@ -199,8 +199,15 @@ class SphericalNeuralOperatorBlock(nn.Module):
         else:
             raise ValueError(f"Unknown skip connection type {inner_skip}")
 
-        # first normalisation layer
-        self.norm0 = norm_layer()
+        # normalisation layer
+        if norm_layer == "layer_norm":
+            self.norm = nn.LayerNorm(normalized_shape=(inverse_transform.nlat, inverse_transform.nlon), eps=1e-6)
+        elif norm_layer == "instance_norm":
+            self.norm = nn.InstanceNorm2d(num_features=output_dim, eps=1e-6, affine=True, track_running_stats=False)
+        elif norm_layer == "none":
+            self.norm = nn.Identity()
+        else:
+            raise NotImplementedError(f"Error, normalization {norm_layer} not implemented.")
 
         # dropout
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
@@ -232,9 +239,6 @@ class SphericalNeuralOperatorBlock(nn.Module):
         else:
             raise ValueError(f"Unknown skip connection type {outer_skip}")
 
-        # second normalisation layer
-        self.norm1 = norm_layer()
-
     def forward(self, x):
 
         residual = x
@@ -244,15 +248,13 @@ class SphericalNeuralOperatorBlock(nn.Module):
         elif hasattr(self, "local_conv"):
             x = self.local_conv(x)
 
-        x = self.norm0(x)
+        x = self.norm(x)
 
         if hasattr(self, "inner_skip"):
             x = x + self.inner_skip(residual)
 
         if hasattr(self, "mlp"):
             x = self.mlp(x)
-
-        x = self.norm1(x)
 
         x = self.drop_path(x)
 
@@ -345,9 +347,9 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         embed_dim=256,
         num_layers=4,
         activation_function="gelu",
-        kernel_shape=[3, 4],
-        encoder_kernel_shape=[3, 4],
-        filter_basis_type="piecewise linear",
+        kernel_shape=(3, 3),
+        encoder_kernel_shape=(3, 3),
+        filter_basis_type="morlet",
         use_mlp=True,
         mlp_ratio=2.0,
         drop_rate=0.0,
@@ -355,7 +357,7 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         normalization_layer="none",
         hard_thresholding_fraction=1.0,
         use_complex_kernels=True,
-        big_skip=False,
+        residual_prediction=False,
         pos_embed=False,
         upsample_sht=False,
     ):
@@ -373,7 +375,7 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         self.hard_thresholding_fraction = hard_thresholding_fraction
         self.normalization_layer = normalization_layer
         self.use_mlp = use_mlp
-        self.big_skip = big_skip
+        self.residual_prediction = residual_prediction
 
         # activation function
         if activation_function == "relu":
@@ -393,19 +395,6 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         # dropout
         self.pos_drop = nn.Dropout(p=drop_rate) if drop_rate > 0.0 else nn.Identity()
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, self.num_layers)]
-
-        # pick norm layer
-        if self.normalization_layer == "layer_norm":
-            norm_layer0 = partial(nn.LayerNorm, normalized_shape=(self.img_size[0], self.img_size[1]), eps=1e-6)
-            norm_layer1 = partial(nn.LayerNorm, normalized_shape=(self.h, self.w), eps=1e-6)
-        elif self.normalization_layer == "instance_norm":
-            norm_layer0 = partial(nn.InstanceNorm2d, num_features=self.embed_dim, eps=1e-6, affine=True, track_running_stats=False)
-            norm_layer1 = partial(nn.InstanceNorm2d, num_features=self.embed_dim, eps=1e-6, affine=True, track_running_stats=False)
-        elif self.normalization_layer == "none":
-            norm_layer0 = nn.Identity
-            norm_layer1 = norm_layer0
-        else:
-            raise NotImplementedError(f"Error, normalization {self.normalization_layer} not implemented.")
 
         if pos_embed == "latlon" or pos_embed == True:
             self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.h, self.w))
@@ -445,15 +434,6 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
 
         self.blocks = nn.ModuleList([])
         for i in range(self.num_layers):
-            first_layer = i == 0
-            last_layer = i == self.num_layers - 1
-
-            if first_layer:
-                norm_layer = norm_layer1
-            elif last_layer:
-                norm_layer = norm_layer0
-            else:
-                norm_layer = norm_layer1
 
             block = SphericalNeuralOperatorBlock(
                 self.trans,
@@ -465,7 +445,7 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
                 drop_rate=drop_rate,
                 drop_path=dpr[i],
                 act_layer=self.activation_function,
-                norm_layer=norm_layer,
+                norm_layer=self.normalization_layer,
                 use_mlp=use_mlp,
                 disco_kernel_shape=kernel_shape,
                 disco_basis_type=filter_basis_type,
@@ -485,16 +465,8 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
             basis_type=filter_basis_type,
             groups=1,
             bias=False,
-            upsample_sht=upsample_sht
+            upsample_sht=upsample_sht,
         )
-
-        # # residual prediction
-        # if self.big_skip:
-        #     self.residual_transform = nn.Conv2d(self.out_chans, self.in_chans, 1, bias=False)
-        #     self.residual_transform.weight.is_shared_mp = ["spatial"]
-        #     self.residual_transform.weight.sharded_dims_mp = [None, None, None, None]
-        #     scale = math.sqrt(0.5 / self.in_chans)
-        #     nn.init.normal_(self.residual_transform.weight, mean=0.0, std=scale)
 
     @torch.jit.ignore
     def no_weight_decay(self):
@@ -509,7 +481,7 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
         return x
 
     def forward(self, x):
-        if self.big_skip:
+        if self.residual_prediction:
             residual = x
 
         x = self.encoder(x)
@@ -521,8 +493,7 @@ class LocalSphericalNeuralOperatorNet(nn.Module):
 
         x = self.decoder(x)
 
-        if self.big_skip:
-            # x = x + self.residual_transform(residual)
+        if self.residual_prediction:
             x = x + residual
 
         return x
