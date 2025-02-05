@@ -32,9 +32,10 @@
 import torch
 import torch.nn as nn
 import torch.amp as amp
+import numpy as np
 
-from torch_harmonics import RealSHT, InverseRealSHT
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
+from torch_harmonics import NeighborhoodAttentionS2
 from torch_harmonics import ResampleS2
 
 from ._layers import *
@@ -49,7 +50,7 @@ class DiscreteContinuousEncoder(nn.Module):
         out_shape=(480, 960),
         grid_in="equiangular",
         grid_out="equiangular",
-        inp_chans=2,
+        in_chans=2,
         out_chans=2,
         kernel_shape=(3, 3),
         basis_type="morlet",
@@ -60,7 +61,7 @@ class DiscreteContinuousEncoder(nn.Module):
 
         # set up local convolution
         self.conv = DiscreteContinuousConvS2(
-            inp_chans,
+            in_chans,
             out_chans,
             in_shape=in_shape,
             out_shape=out_shape,
@@ -91,7 +92,7 @@ class DiscreteContinuousDecoder(nn.Module):
         out_shape=(721, 1440),
         grid_in="equiangular",
         grid_out="equiangular",
-        inp_chans=2,
+        in_chans=2,
         out_chans=2,
         kernel_shape=(3, 3),
         basis_type="morlet",
@@ -111,7 +112,7 @@ class DiscreteContinuousDecoder(nn.Module):
 
         # set up DISCO convolution
         self.conv = DiscreteContinuousConvS2(
-            inp_chans,
+            in_chans,
             out_chans,
             in_shape=out_shape,
             out_shape=out_shape,
@@ -136,18 +137,39 @@ class DiscreteContinuousDecoder(nn.Module):
         return x
 
 
-class SphericalSelfAttentionBlock(nn.Module):
+def get_sinusoid_encoding(nlat, nlon, denom_factor=10000):
+    """ Make Sinusoid Encoding Table
+
+        Args:
+            num_tokens (int): number of tokens
+            token_len (int): length of a token
+
+        Returns:
+            (torch.FloatTensor) sinusoidal position encoding table
+    """
+    def get_position_angle_vec(i):
+        return [i / np.power(denom_factor, 2 * (j // 2) / nlon) for j in range(nlon)]
+
+    sinusoid_table = np.array([get_position_angle_vec(i) for i in range(nlat)])
+    sinusoid_table[:, 0::2] = np.sin(sinusoid_table[:, 0::2])
+    sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])
+
+    return torch.FloatTensor(sinusoid_table).unsqueeze(0)
+
+
+class SphericalAttentionBlock(nn.Module):
     """
     Helper module for a single SFNO/FNO block. Can use both FFTs and SHTs to represent either FNO or SFNO blocks.
     """
 
     def __init__(
         self,
-        forward_transform,
-        inverse_transform,
-        input_dim,
-        output_dim,
-        conv_type="local",
+        in_shape=(480, 960),
+        out_shape=(480, 960),
+        grid_in="equiangular",
+        grid_out="equiangular",
+        in_chans=2,
+        out_chans=2,
         mlp_ratio=2.0,
         drop_rate=0.0,
         drop_path=0.0,
@@ -156,8 +178,6 @@ class SphericalSelfAttentionBlock(nn.Module):
         inner_skip="none",
         outer_skip="identity",
         use_mlp=True,
-        disco_kernel_shape=(3, 3),
-        disco_basis_type="morlet",
     ):
         super().__init__()
 
@@ -169,30 +189,25 @@ class SphericalSelfAttentionBlock(nn.Module):
         if inner_skip == "linear" or inner_skip == "identity":
             gain_factor /= 2.0
 
-        # convolution layer
-        if conv_type == "local":
-            self.local_conv = DiscreteContinuousConvS2(
-                input_dim,
-                output_dim,
-                in_shape=(forward_transform.nlat, forward_transform.nlon),
-                out_shape=(inverse_transform.nlat, inverse_transform.nlon),
-                kernel_shape=disco_kernel_shape,
-                basis_type=disco_basis_type,
-                grid_in=forward_transform.grid,
-                grid_out=inverse_transform.grid,
-                bias=False,
-                theta_cutoff=4.0 * (disco_kernel_shape[0] + 1) * torch.pi / float(inverse_transform.nlat - 1),
-            )
-        elif conv_type == "global":
-            self.global_conv = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, bias=False)
-        else:
-            raise ValueError(f"Unknown convolution type {conv_type}")
+        theta_cutoff = 3 * torch.pi / (in_shape[0] - 1)
+
+        self.self_attn = NeighborhoodAttentionS2(
+            in_channels=in_chans,
+            in_shape=in_shape,
+            out_shape=out_shape,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            theta_cutoff=theta_cutoff,
+            k_channels=None,
+            out_channels=None,
+        )
 
         if inner_skip == "linear":
-            self.inner_skip = nn.Conv2d(input_dim, output_dim, 1, 1)
-            nn.init.normal_(self.inner_skip.weight, std=math.sqrt(gain_factor / input_dim))
+            self.inner_skip = nn.Conv2d(in_chans, out_chans, 1, 1)
+            nn.init.normal_(self.inner_skip.weight, std=math.sqrt(gain_factor / in_chans))
         elif inner_skip == "identity":
-            assert input_dim == output_dim
+            assert in_shape == out_shape
+            assert grid_in == grid_out
             self.inner_skip = nn.Identity()
         elif inner_skip == "none":
             pass
@@ -201,9 +216,9 @@ class SphericalSelfAttentionBlock(nn.Module):
 
         # normalisation layer
         if norm_layer == "layer_norm":
-            self.norm = nn.LayerNorm(normalized_shape=(inverse_transform.nlat, inverse_transform.nlon), eps=1e-6)
+            self.norm = nn.LayerNorm(normalized_shape=out_shape, eps=1e-6)
         elif norm_layer == "instance_norm":
-            self.norm = nn.InstanceNorm2d(num_features=output_dim, eps=1e-6, affine=True, track_running_stats=False)
+            self.norm = nn.InstanceNorm2d(num_features=out_chans, eps=1e-6, affine=True, track_running_stats=False)
         elif norm_layer == "none":
             self.norm = nn.Identity()
         else:
@@ -217,10 +232,10 @@ class SphericalSelfAttentionBlock(nn.Module):
             gain_factor /= 2.0
 
         if use_mlp == True:
-            mlp_hidden_dim = int(output_dim * mlp_ratio)
+            mlp_hidden_dim = int(out_chans * mlp_ratio)
             self.mlp = MLP(
-                in_features=output_dim,
-                out_features=input_dim,
+                in_features=out_chans,
+                out_features=out_chans,
                 hidden_features=mlp_hidden_dim,
                 act_layer=act_layer,
                 drop_rate=drop_rate,
@@ -229,10 +244,11 @@ class SphericalSelfAttentionBlock(nn.Module):
             )
 
         if outer_skip == "linear":
-            self.outer_skip = nn.Conv2d(input_dim, input_dim, 1, 1)
-            torch.nn.init.normal_(self.outer_skip.weight, std=math.sqrt(gain_factor / input_dim))
+            self.outer_skip = nn.Conv2d(in_chans, out_chans, 1, 1)
+            torch.nn.init.normal_(self.outer_skip.weight, std=math.sqrt(gain_factor / in_chans))
         elif outer_skip == "identity":
-            assert input_dim == output_dim
+            assert in_shape == out_shape
+            assert grid_in == grid_out
             self.outer_skip = nn.Identity()
         elif outer_skip == "none":
             pass
@@ -243,10 +259,7 @@ class SphericalSelfAttentionBlock(nn.Module):
 
         residual = x
 
-        if hasattr(self, "global_conv"):
-            x, _ = self.global_conv(x)
-        elif hasattr(self, "local_conv"):
-            x = self.local_conv(x)
+        x = self.self_attn(x)
 
         x = self.norm(x)
 
@@ -392,16 +405,9 @@ class SphericalNeighborhoodTransformerNet(nn.Module):
         self.pos_drop = nn.Dropout(p=drop_rate) if drop_rate > 0.0 else nn.Identity()
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, self.num_layers)]
 
-        # for transformers this should be reingineered properly
-        if pos_embed == "latlon" or pos_embed == True:
-            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.h, self.w))
-            nn.init.constant_(self.pos_embed, 0.0)
-        elif pos_embed == "lat":
-            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.h, 1))
-            nn.init.constant_(self.pos_embed, 0.0)
-        elif pos_embed == "const":
-            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, 1, 1))
-            nn.init.constant_(self.pos_embed, 0.0)
+        if pos_embed:
+            # patch-extraction and positional embedding
+            self.pos_embed = get_sinusoid_encoding
         else:
             self.pos_embed = None
 
@@ -412,7 +418,7 @@ class SphericalNeighborhoodTransformerNet(nn.Module):
             out_shape=(self.h, self.w),
             grid_in=grid,
             grid_out=grid_internal,
-            inp_chans=self.in_chans,
+            in_chans=self.in_chans,
             out_chans=self.embed_dim,
             kernel_shape=self.encoder_kernel_shape,
             basis_type=filter_basis_type,
@@ -420,14 +426,15 @@ class SphericalNeighborhoodTransformerNet(nn.Module):
             bias=False,
         )
 
-        # compute the modes for the sht
-        modes_lat = self.h
-        # due to some spectral artifacts with cufft, we substract one mode here
-        modes_lon = (self.w // 2 + 1) - 1
-        modes_lat = modes_lon = int(min(modes_lat, modes_lon) * self.hard_thresholding_fraction)
 
-        self.trans = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
-        self.itrans = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
+        # # compute the modes for the sht
+        # modes_lat = self.h
+        # # due to some spectral artifacts with cufft, we substract one mode here
+        # modes_lon = (self.w // 2 + 1) - 1
+        # modes_lat = modes_lon = int(min(modes_lat, modes_lon) * self.hard_thresholding_fraction)
+
+        # self.trans = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
+        # self.itrans = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
 
         self.blocks = nn.ModuleList([])
         for i in range(self.num_layers):
@@ -437,7 +444,7 @@ class SphericalNeighborhoodTransformerNet(nn.Module):
                 out_shape=(self.h, self.w),
                 grid_in=grid_internal,
                 grid_out=grid_internal,
-                inp_chans=self.embed_dim,
+                in_chans=self.embed_dim,
                 out_chans=self.embed_dim,
                 mlp_ratio=mlp_ratio,
                 drop_rate=drop_rate,
@@ -445,8 +452,6 @@ class SphericalNeighborhoodTransformerNet(nn.Module):
                 act_layer=self.activation_function,
                 norm_layer=self.normalization_layer,
                 use_mlp=use_mlp,
-                disco_kernel_shape=kernel_shape,
-                disco_basis_type=filter_basis_type,
             )
 
             self.blocks.append(block)
@@ -457,7 +462,7 @@ class SphericalNeighborhoodTransformerNet(nn.Module):
             out_shape=self.img_size,
             grid_in=grid_internal,
             grid_out=grid,
-            inp_chans=self.embed_dim,
+            in_chans=self.embed_dim,
             out_chans=self.out_chans,
             kernel_shape=self.encoder_kernel_shape,
             basis_type=filter_basis_type,
@@ -485,7 +490,7 @@ class SphericalNeighborhoodTransformerNet(nn.Module):
         x = self.encoder(x)
 
         if self.pos_embed is not None:
-            x = x + self.pos_embed
+            x = x + self.pos_embed(x.shape[-2], x.shape[-1], denom_factor=10000).to(x.device)
 
         x = self.forward_features(x)
 
@@ -494,4 +499,239 @@ class SphericalNeighborhoodTransformerNet(nn.Module):
         if self.residual_prediction:
             x = x + residual
 
+        return x
+
+
+class SphericalNeighborhoodTransformerSegmentationNet(nn.Module):
+    """
+    Spherical transformer module for segmentation problems
+
+    Parameters
+    -----------
+    img_shape : tuple, optional
+        Shape of the input channels, by default (128, 256)
+    kernel_shape: tuple, int
+    scale_factor : int, optional
+        Scale factor to use, by default 3
+    in_chans : int, optional
+        Number of input channels, by default 3
+    out_chans : int, optional
+        Number of output channels, by default 3
+    embed_dim : int, optional
+        Dimension of the embeddings, by default 256
+    num_layers : int, optional
+        Number of layers in the network, by default 4
+    activation_function : str, optional
+        Activation function to use, by default "gelu"
+    encoder_kernel_shape : int, optional
+        size of the encoder kernel
+    filter_basis_type: Optional[str]: str, optional
+        filter basis type
+    use_mlp : int, optional
+        Whether to use MLPs in the SFNO blocks, by default True
+    mlp_ratio : int, optional
+        Ratio of MLP to use, by default 2.0
+    drop_rate : float, optional
+        Dropout rate, by default 0.0
+    drop_path_rate : float, optional
+        Dropout path rate, by default 0.0
+    normalization_layer : str, optional
+        Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "instance_norm"
+    hard_thresholding_fraction : float, optional
+        Fraction of hard thresholding (frequency cutoff) to apply, by default 1.0
+    residual_prediction : bool, optional
+        Whether to add a single large skip connection, by default True
+    pos_embed : bool, optional
+        Whether to use positional embedding, by default True
+    upsample_sht : bool, optional
+        Use SHT upsampling if true, else linear interpolation
+
+    Example
+    -----------
+    >>> model = SphericalTransformerNet(
+    ...         img_shape=(128, 256),
+    ...         scale_factor=4,
+    ...         in_chans=2,
+    ...         out_chans=2,
+    ...         embed_dim=16,
+    ...         num_layers=4,
+    ...         use_mlp=True,)
+    >>> model(torch.randn(1, 2, 128, 256)).shape
+    torch.Size([1, 2, 128, 256])
+
+    References
+    -----------
+    .. [1] Liu-Schiaffini M., Berner J., Bonev B., Kurth T., Azizzadenesheli K., Anandkumar A.;
+        "Neural Operators with Localized Integral and Differential Kernels" (2024).
+        ICML 2024, https://arxiv.org/pdf/2402.16845.
+
+    .. [2] Bonev B., Kurth T., Hundt C., Pathak, J., Baust M., Kashinath K., Anandkumar A.;
+        "Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere" (2023).
+        ICML 2023, https://arxiv.org/abs/2306.03838.
+
+    """
+
+    def __init__(
+        self,
+        img_size,
+        num_classes,
+        grid="equiangular",
+        grid_internal="legendre-gauss",
+        scale_factor=3,
+        in_chans=3,
+        out_chans=3,
+        embed_dim=256,
+        num_layers=4,
+        activation_function="gelu",
+        encoder_kernel_shape=(3, 3),
+        filter_basis_type="morlet",
+        use_mlp=True,
+        mlp_ratio=2.0,
+        drop_rate=0.0,
+        drop_path_rate=0.0,
+        normalization_layer="none",
+        hard_thresholding_fraction=1.0,
+        use_complex_kernels=True,
+        residual_prediction=False,
+        pos_embed=False,
+        upsample_sht=False,
+    ):
+        super().__init__()
+
+        self.img_size = img_size
+        self.num_classes = num_classes
+        self.grid = grid
+        self.grid_internal = grid_internal
+        self.scale_factor = scale_factor
+        self.in_chans = in_chans
+        self.out_chans = out_chans
+        self.embed_dim = embed_dim
+        self.num_layers = num_layers
+        self.encoder_kernel_shape = encoder_kernel_shape
+        self.hard_thresholding_fraction = hard_thresholding_fraction
+        self.normalization_layer = normalization_layer
+        self.use_mlp = use_mlp
+        self.residual_prediction = residual_prediction
+
+        # activation function
+        if activation_function == "relu":
+            self.activation_function = nn.ReLU
+        elif activation_function == "gelu":
+            self.activation_function = nn.GELU
+        # for debugging purposes
+        elif activation_function == "identity":
+            self.activation_function = nn.Identity
+        else:
+            raise ValueError(f"Unknown activation function {activation_function}")
+
+        # compute downsampled image size. We assume that the latitude-grid includes both poles
+        self.h = (self.img_size[0] - 1) // scale_factor + 1
+        self.w = self.img_size[1] // scale_factor
+
+        # dropout
+        self.pos_drop = nn.Dropout(p=drop_rate) if drop_rate > 0.0 else nn.Identity()
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, self.num_layers)]
+
+        if pos_embed:
+            # patch-extraction and positional embedding
+            self.pos_embed = get_sinusoid_encoding
+        else:
+            self.pos_embed = None
+
+        # maybe keep for now becuase tr
+        # encoder
+        self.encoder = DiscreteContinuousEncoder(
+            in_shape=self.img_size,
+            out_shape=(self.h, self.w),
+            grid_in=grid,
+            grid_out=grid_internal,
+            in_chans=self.in_chans,
+            out_chans=self.embed_dim,
+            kernel_shape=self.encoder_kernel_shape,
+            basis_type=filter_basis_type,
+            groups=1,
+            bias=False,
+        )
+
+
+        # # compute the modes for the sht
+        # modes_lat = self.h
+        # # due to some spectral artifacts with cufft, we substract one mode here
+        # modes_lon = (self.w // 2 + 1) - 1
+        # modes_lat = modes_lon = int(min(modes_lat, modes_lon) * self.hard_thresholding_fraction)
+
+        # self.trans = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
+        # self.itrans = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
+
+        self.blocks = nn.ModuleList([])
+        for i in range(self.num_layers):
+
+            block = SphericalAttentionBlock(
+                in_shape=(self.h, self.w),
+                out_shape=(self.h, self.w),
+                grid_in=grid_internal,
+                grid_out=grid_internal,
+                in_chans=self.embed_dim,
+                out_chans=self.embed_dim,
+                mlp_ratio=mlp_ratio,
+                drop_rate=drop_rate,
+                drop_path=dpr[i],
+                act_layer=self.activation_function,
+                norm_layer=self.normalization_layer,
+                use_mlp=use_mlp,
+            )
+
+            self.blocks.append(block)
+
+        # decoder
+        self.decoder = DiscreteContinuousDecoder(
+            in_shape=(self.h, self.w),
+            out_shape=self.img_size,
+            grid_in=grid_internal,
+            grid_out=grid,
+            in_chans=self.embed_dim,
+            out_chans=self.out_chans,
+            kernel_shape=self.encoder_kernel_shape,
+            basis_type=filter_basis_type,
+            groups=1,
+            bias=False,
+            upsample_sht=upsample_sht,
+        )
+
+        # Classification Head
+        self.class_head = nn.Sequential(
+            nn.LayerNorm(self.out_chans),
+            nn.Linear(self.out_chans, self.num_classes)  # Assume 1000 classes for classification
+        )
+
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {"pos_embed", "cls_token"}
+
+    def forward_features(self, x):
+        x = self.pos_drop(x)
+
+        for blk in self.blocks:
+            x = blk(x)
+
+        return x
+
+    def forward(self, x):
+        if self.residual_prediction:
+            residual = x
+
+        x = self.encoder(x)
+
+        if self.pos_embed is not None:
+            x = x + self.pos_embed(x.shape[-2], x.shape[-1], denom_factor=10000).to(x.device)
+
+        x = self.forward_features(x)
+
+        x = self.decoder(x)
+
+        if self.residual_prediction:
+            x = x + residual
+
+        x = self.class_head(x)
         return x
