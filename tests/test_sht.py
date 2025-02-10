@@ -79,10 +79,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
     def setUp(self):
 
         if torch.cuda.is_available():
-            print("Running test on GPU")
             self.device = torch.device("cuda")
         else:
-            print("Running test on CPU")
             self.device = torch.device("cpu")
 
     @parameterized.expand(
@@ -97,7 +95,7 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
     )
     def test_sht(self, nlat, nlon, batch_size, norm, grid, tol, verbose):
         if verbose:
-            print(f"Testing real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization")
+            print(f"Testing real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization on {self.device.type} device")
 
         testiters = [1, 2, 4, 8, 16]
         if grid == "equiangular":
