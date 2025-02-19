@@ -31,7 +31,8 @@ import os
 import tarfile
 import requests
 from tqdm import tqdm
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
+import torch
 from PIL import Image
 import numpy as np
 from pathlib import Path
@@ -99,19 +100,22 @@ class TarDownloader:
             return extracted_dir
 
     def download_dataset(self, file_extracted_directory_pairs):
-        results = []
+        data_folders = []
         for (file, extracted_folder_name) in file_extracted_directory_pairs:
             if not (self.local_dir / extracted_folder_name).exists():
                 downloaded_file = self._download_file(file)
-                results.append(self._extract_tar(downloaded_file))
+                data_folders.append(self._extract_tar(downloaded_file))
             else:
                 print(f"Warning: Skipping D/L for '{file}' because folder '{extracted_folder_name}' already exists")
-                results.append(extracted_folder_name)
+                data_folders.append(extracted_folder_name)
 
-        return results
+        labels_json_url = "https://raw.githubusercontent.com/alexsax/2D-3D-Semantics/refs/heads/master/assets/semantic_labels.json"
+        segmentation_classes = requests.get(labels_json_url).json()
+        return data_folders, segmentation_classes
 
 class Spherical2D3DSDataset(Dataset):
-    def __init__(self, root_dirs, input_folder='pano/rgb', output_folder='pano/semantic', output_name="semantic"):
+    def __init__(self, root_dirs, segmentation_classes, input_folder='pano/rgb', output_folder='pano/semantic', output_name="semantic"):
+        self.segmentation_classes = segmentation_classes
         self.root_dirs = root_dirs
         self.input_folder = input_folder
         self.output_folder = output_folder
@@ -145,6 +149,24 @@ class Spherical2D3DSDataset(Dataset):
             elif not os.path.exists(output_dir):
                 print("Warning: Output dir doesn't exist: ", output_dir)
                 continue
+
+    @property
+    def dim(self):
+        (img_rgb, img_seg) = self.__getitem__(0)
+        return (img_rgb.shape, img_seg.shape)
+
+    @property
+    def num_classes(self):
+        return len(self.segmentation_classes)
+
+    def _rgb_to_id(self, img):
+        return img[:,:,0]*256*256 + img[:,:,1]*256 + img[:,:,2]
+
+    def _id_to_class(self, class_id):
+        if class_id > self.num_classes:
+            print("WARNING: ID > number of classes!")
+            return None
+        return self.segmentation_classes[class_id]
 
     def __len__(self):
         return len(self.file_paths)
