@@ -29,11 +29,27 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-__version__ = "0.7.6"
+import unittest
+from parameterized import parameterized
+import math
+import torch
 
-from .sht import RealSHT, InverseRealSHT, RealVectorSHT, InverseRealVectorSHT
-from .convolution import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
-from .resample import ResampleS2
-from . import quadrature
-from . import random_fields
-from . import examples
+
+class TestCacheConsistency(unittest.TestCase):
+
+    def test_consistency(self, verbose=False):
+        if verbose:
+            print("Testing that cache values does not get modified externally")
+        from torch_harmonics.legendre import _precompute_legpoly
+
+        with torch.no_grad():
+            cost = torch.cos(torch.linspace(0.0, 2.0 * math.pi, 10, dtype=torch.float64))
+            leg1 = _precompute_legpoly(10, 10, cost)
+            # perform in-place modification of leg1
+            leg1 *= -1.0
+            leg2 = _precompute_legpoly(10, 10, cost)
+            self.assertFalse(torch.allclose(leg1, leg2))
+
+
+if __name__ == "__main__":
+    unittest.main()
