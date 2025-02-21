@@ -33,7 +33,9 @@
 import torch
 import torch.nn as nn
 import torch_harmonics as harmonics
+from torch_harmonics.quadrature import _precompute_longitudes
 
+import math
 import numpy as np
 
 
@@ -74,8 +76,8 @@ class SphereSolver(nn.Module):
             cost, _ = harmonics.quadrature.clenshaw_curtiss_weights(self.nlat, -1, 1)
 
         # apply cosine transform and flip them
-        lats = -torch.as_tensor(np.arcsin(cost))
-        lons = torch.linspace(0, 2*np.pi, self.nlon+1, dtype=torch.float64)[:nlon]
+        lats = -torch.arcsin(cost)
+        lons = _precompute_longitudes(self.nlon)
 
         self.lmax = self.sht.lmax
         self.mmax = self.sht.mmax
@@ -162,8 +164,8 @@ class SphereSolver(nn.Module):
 
             #ax = plt.gca(projection=proj, frameon=True)
             ax = fig.add_subplot(projection=proj)
-            Lons = Lons*180/np.pi
-            Lats = Lats*180/np.pi
+            Lons = Lons*180/math.pi
+            Lats = Lats*180/math.pi
 
             # contour data over the map.
             im = ax.pcolormesh(Lons, Lats, data, cmap=cmap, transform=ccrs.PlateCarree(), antialiased=antialiased, vmax=vmax, vmin=vmin)

@@ -32,7 +32,6 @@
 import unittest
 from parameterized import parameterized
 import math
-import numpy as np
 import torch
 from torch.autograd import gradcheck
 from torch_harmonics import *
@@ -41,31 +40,32 @@ from torch_harmonics import *
 class TestLegendrePolynomials(unittest.TestCase):
 
     def setUp(self):
-        self.cml = lambda m, l: np.sqrt((2 * l + 1) / 4 / np.pi) * np.sqrt(math.factorial(l - m) / math.factorial(l + m))
+        self.cml = lambda m, l: math.sqrt((2 * l + 1) / 4 / math.pi) * math.sqrt(math.factorial(l - m) / math.factorial(l + m))
         self.pml = dict()
 
         # preparing associated Legendre Polynomials (These include the Condon-Shortley phase)
         # for reference see e.g. https://en.wikipedia.org/wiki/Associated_Legendre_polynomials
-        self.pml[(0, 0)] = lambda x: np.ones_like(x)
+        self.pml[(0, 0)] = lambda x: torch.ones_like(x)
         self.pml[(0, 1)] = lambda x: x
-        self.pml[(1, 1)] = lambda x: -np.sqrt(1.0 - x**2)
+        self.pml[(1, 1)] = lambda x: -torch.sqrt(1.0 - x**2)
         self.pml[(0, 2)] = lambda x: 0.5 * (3 * x**2 - 1)
-        self.pml[(1, 2)] = lambda x: -3 * x * np.sqrt(1.0 - x**2)
+        self.pml[(1, 2)] = lambda x: -3 * x * torch.sqrt(1.0 - x**2)
         self.pml[(2, 2)] = lambda x: 3 * (1 - x**2)
         self.pml[(0, 3)] = lambda x: 0.5 * (5 * x**3 - 3 * x)
-        self.pml[(1, 3)] = lambda x: 1.5 * (1 - 5 * x**2) * np.sqrt(1.0 - x**2)
+        self.pml[(1, 3)] = lambda x: 1.5 * (1 - 5 * x**2) * torch.sqrt(1.0 - x**2)
         self.pml[(2, 3)] = lambda x: 15 * x * (1 - x**2)
-        self.pml[(3, 3)] = lambda x: -15 * np.sqrt(1.0 - x**2) ** 3
+        self.pml[(3, 3)] = lambda x: -15 * torch.sqrt(1.0 - x**2) ** 3
 
         self.lmax = self.mmax = 4
 
         self.tol = 1e-9
 
-    def test_legendre(self):
-        print("Testing computation of associated Legendre polynomials")
+    def test_legendre(self, verbose=False):
+        if verbose:
+            print("Testing computation of associated Legendre polynomials")
         from torch_harmonics.legendre import legpoly
 
-        t = np.linspace(0, 1, 100)
+        t = torch.linspace(0, 1, 100, dtype=torch.float64)
         vdm = legpoly(self.mmax, self.lmax, t)
 
         for l in range(self.lmax):
@@ -79,24 +79,23 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
     def setUp(self):
 
         if torch.cuda.is_available():
-            print("Running test on GPU")
             self.device = torch.device("cuda")
         else:
-            print("Running test on CPU")
             self.device = torch.device("cpu")
 
     @parameterized.expand(
         [
-            [256, 512, 32, "ortho", "equiangular", 1e-9],
-            [256, 512, 32, "ortho", "legendre-gauss", 1e-9],
-            [256, 512, 32, "four-pi", "equiangular", 1e-9],
-            [256, 512, 32, "four-pi", "legendre-gauss", 1e-9],
-            [256, 512, 32, "schmidt", "equiangular", 1e-9],
-            [256, 512, 32, "schmidt", "legendre-gauss", 1e-9],
+            [256, 512, 32, "ortho", "equiangular", 1e-9, False],
+            [256, 512, 32, "ortho", "legendre-gauss", 1e-9, False],
+            [256, 512, 32, "four-pi", "equiangular", 1e-9, False],
+            [256, 512, 32, "four-pi", "legendre-gauss", 1e-9, False],
+            [256, 512, 32, "schmidt", "equiangular", 1e-9, False],
+            [256, 512, 32, "schmidt", "legendre-gauss", 1e-9, False],
         ]
     )
-    def test_sht(self, nlat, nlon, batch_size, norm, grid, tol):
-        print(f"Testing real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization")
+    def test_sht(self, nlat, nlon, batch_size, norm, grid, tol, verbose):
+        if verbose:
+            print(f"Testing real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization on {self.device.type} device")
 
         testiters = [1, 2, 4, 8, 16]
         if grid == "equiangular":
@@ -116,7 +115,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         # testing error accumulation
         for iter in testiters:
             with self.subTest(i=iter):
-                print(f"{iter} iterations of batchsize {batch_size}:")
+                if verbose:
+                    print(f"{iter} iterations of batchsize {batch_size}:")
 
                 base = signal
 
@@ -124,27 +124,29 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
                     base = isht(sht(base))
 
                 err = torch.mean(torch.norm(base - signal, p="fro", dim=(-1, -2)) / torch.norm(signal, p="fro", dim=(-1, -2)))
-                print(f"final relative error: {err.item()}")
+                if verbose:
+                    print(f"final relative error: {err.item()}")
                 self.assertTrue(err.item() <= tol)
 
     @parameterized.expand(
         [
-            [12, 24, 2, "ortho", "equiangular", 1e-5],
-            [12, 24, 2, "ortho", "legendre-gauss", 1e-5],
-            [12, 24, 2, "four-pi", "equiangular", 1e-5],
-            [12, 24, 2, "four-pi", "legendre-gauss", 1e-5],
-            [12, 24, 2, "schmidt", "equiangular", 1e-5],
-            [12, 24, 2, "schmidt", "legendre-gauss", 1e-5],
-            [15, 30, 2, "ortho", "equiangular", 1e-5],
-            [15, 30, 2, "ortho", "legendre-gauss", 1e-5],
-            [15, 30, 2, "four-pi", "equiangular", 1e-5],
-            [15, 30, 2, "four-pi", "legendre-gauss", 1e-5],
-            [15, 30, 2, "schmidt", "equiangular", 1e-5],
-            [15, 30, 2, "schmidt", "legendre-gauss", 1e-5],
+            [12, 24, 2, "ortho", "equiangular", 1e-5, False],
+            [12, 24, 2, "ortho", "legendre-gauss", 1e-5, False],
+            [12, 24, 2, "four-pi", "equiangular", 1e-5, False],
+            [12, 24, 2, "four-pi", "legendre-gauss", 1e-5, False],
+            [12, 24, 2, "schmidt", "equiangular", 1e-5, False],
+            [12, 24, 2, "schmidt", "legendre-gauss", 1e-5, False],
+            [15, 30, 2, "ortho", "equiangular", 1e-5, False],
+            [15, 30, 2, "ortho", "legendre-gauss", 1e-5, False],
+            [15, 30, 2, "four-pi", "equiangular", 1e-5, False],
+            [15, 30, 2, "four-pi", "legendre-gauss", 1e-5, False],
+            [15, 30, 2, "schmidt", "equiangular", 1e-5, False],
+            [15, 30, 2, "schmidt", "legendre-gauss", 1e-5, False],
         ]
     )
-    def test_sht_grads(self, nlat, nlon, batch_size, norm, grid, tol):
-        print(f"Testing gradients of real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization")
+    def test_sht_grads(self, nlat, nlon, batch_size, norm, grid, tol, verbose):
+        if verbose:
+            print(f"Testing gradients of real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization")
 
         if grid == "equiangular":
             mmax = nlat // 2

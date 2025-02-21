@@ -2,7 +2,16 @@
 
 ## Versioning
 
+### v0.7.6
+
+* Adding cache for precomoputed tensors such as weight tensors for DISCO and SHT
+* Cache is returning copies of tensors and not references. Users are still encouraged to re-use
+  those tensors manually in their models because this will also save memory. However,
+  the cache will help with model setup speed.
+* Adding test which ensures that cache is working correctly
+
 ### v0.7.5
+
 * New normalization mode `support` for DISCO convolutions
 * More efficient computation of Morlet filter basis
 * Changed default for Morlet filter basis to a Hann window function

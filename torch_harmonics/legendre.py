@@ -29,15 +29,20 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import numpy as np
+from typing import Optional
+import math
+import torch
 
-def clm(l, m):
+from torch_harmonics.cache import lru_cache
+
+
+def clm(l: int, m: int) -> float:
     """
     defines the normalization factor to orthonormalize the Spherical Harmonics
     """
-    return np.sqrt((2*l + 1) / 4 / np.pi) * np.sqrt(np.math.factorial(l-m) / np.math.factorial(l+m))
+    return math.sqrt((2*l + 1) / 4 / math.pi) * math.sqrt(math.factorial(l-m) / math.factorial(l+m))
 
-def legpoly(mmax, lmax, x, norm="ortho", inverse=False, csphase=True):
+def legpoly(mmax: int, lmax: int, x: torch.Tensor, norm: Optional[str]="ortho", inverse: Optional[bool]=False, csphase: Optional[bool]=True) -> torch.Tensor:
     r"""
     Computes the values of (-1)^m c^l_m P^l_m(x) at the positions specified by x.
     The resulting tensor has shape (mmax, lmax, len(x)). The Condon-Shortley Phase (-1)^m
@@ -52,31 +57,31 @@ def legpoly(mmax, lmax, x, norm="ortho", inverse=False, csphase=True):
 
     # compute the tensor P^m_n:
     nmax = max(mmax,lmax)
-    vdm = np.zeros((nmax, nmax, len(x)), dtype=np.float64)
+    vdm = torch.zeros((nmax, nmax, len(x)), dtype=torch.float64, requires_grad=False)
         
-    norm_factor = 1. if norm == "ortho" else np.sqrt(4 * np.pi)
+    norm_factor = 1. if norm == "ortho" else math.sqrt(4 * math.pi)
     norm_factor = 1. / norm_factor if inverse else norm_factor
 
     # initial values to start the recursion
-    vdm[0,0,:] = norm_factor / np.sqrt(4 * np.pi)
+    vdm[0,0,:] = norm_factor / math.sqrt(4 * math.pi)
 
     # fill the diagonal and the lower diagonal
     for l in range(1, nmax):
-        vdm[l-1, l, :] = np.sqrt(2*l + 1) * x * vdm[l-1, l-1, :]
-        vdm[l, l, :] = np.sqrt( (2*l + 1) * (1 + x) * (1 - x) / 2 / l ) * vdm[l-1, l-1, :]
+        vdm[l-1, l, :] = math.sqrt(2*l + 1) * x * vdm[l-1, l-1, :]
+        vdm[l, l, :] = torch.sqrt( (2*l + 1) * (1 + x) * (1 - x) / 2 / l ) * vdm[l-1, l-1, :]
 
     # fill the remaining values on the upper triangle and multiply b
     for l in range(2, nmax):
         for m in range(0, l-1):
-            vdm[m, l, :] = x * np.sqrt((2*l - 1) / (l - m) * (2*l + 1) / (l + m)) * vdm[m, l-1, :] \
-                            - np.sqrt((l + m - 1) / (l - m) * (2*l + 1) / (2*l - 3) * (l - m - 1) / (l + m)) * vdm[m, l-2, :]
+            vdm[m, l, :] = x * math.sqrt((2*l - 1) / (l - m) * (2*l + 1) / (l + m)) * vdm[m, l-1, :] \
+                            - math.sqrt((l + m - 1) / (l - m) * (2*l + 1) / (2*l - 3) * (l - m - 1) / (l + m)) * vdm[m, l-2, :]
 
     if norm == "schmidt":
         for l in range(0, nmax):
             if inverse:
-                vdm[:, l, : ] = vdm[:, l, : ] * np.sqrt(2*l + 1)
+                vdm[:, l, : ] = vdm[:, l, : ] * math.sqrt(2*l + 1)
             else:
-                vdm[:, l, : ] = vdm[:, l, : ] / np.sqrt(2*l + 1)
+                vdm[:, l, : ] = vdm[:, l, : ] / math.sqrt(2*l + 1)
 
     vdm = vdm[:mmax, :lmax]
 
@@ -86,7 +91,9 @@ def legpoly(mmax, lmax, x, norm="ortho", inverse=False, csphase=True):
 
     return vdm
 
-def _precompute_legpoly(mmax, lmax, t, norm="ortho", inverse=False, csphase=True):
+@lru_cache(typed=True, copy=True)
+def _precompute_legpoly(mmax: int , lmax: int, t: torch.Tensor,
+                        norm: Optional[str]="ortho", inverse: Optional[bool]=False, csphase: Optional[bool]=True) -> torch.Tensor:
     r"""
     Computes the values of (-1)^m c^l_m P^l_m(\cos \theta) at the positions specified by t (theta).
     The resulting tensor has shape (mmax, lmax, len(x)). The Condon-Shortley Phase (-1)^m
@@ -99,9 +106,11 @@ def _precompute_legpoly(mmax, lmax, t, norm="ortho", inverse=False, csphase=True
     [3] Schrama, E.; Orbit integration based upon interpolated gravitational gradients
     """
 
-    return legpoly(mmax, lmax, np.cos(t), norm=norm, inverse=inverse, csphase=csphase)
+    return legpoly(mmax, lmax, torch.cos(t), norm=norm, inverse=inverse, csphase=csphase)
 
-def _precompute_dlegpoly(mmax, lmax, t, norm="ortho", inverse=False, csphase=True):
+@lru_cache(typed=True, copy=True)
+def _precompute_dlegpoly(mmax: int, lmax: int, t: torch.Tensor,
+                         norm: Optional[str]="ortho", inverse: Optional[bool]=False, csphase: Optional[bool]=True) -> torch.Tensor:
     r"""
     Computes the values of the derivatives $\frac{d}{d \theta} P^m_l(\cos \theta)$
     at the positions specified by t (theta), as well as $\frac{1}{\sin \theta} P^m_l(\cos \theta)$,
@@ -114,29 +123,29 @@ def _precompute_dlegpoly(mmax, lmax, t, norm="ortho", inverse=False, csphase=Tru
 
     pct = _precompute_legpoly(mmax+1, lmax+1, t, norm=norm, inverse=inverse, csphase=False)
 
-    dpct = np.zeros((2, mmax, lmax, len(t)), dtype=np.float64)
+    dpct = torch.zeros((2, mmax, lmax, len(t)), dtype=torch.float64, requires_grad=False)
 
     # fill the derivative terms wrt theta
     for l in range(0, lmax):
 
         # m = 0
-        dpct[0, 0, l] = - np.sqrt(l*(l+1)) * pct[1, l]
+        dpct[0, 0, l] = - math.sqrt(l*(l+1)) * pct[1, l]
 
         # 0 < m < l
         for m in range(1, min(l, mmax)):
-            dpct[0, m, l] = 0.5 * ( np.sqrt((l+m)*(l-m+1)) * pct[m-1, l] - np.sqrt((l-m)*(l+m+1)) * pct[m+1, l] )
+            dpct[0, m, l] = 0.5 * ( math.sqrt((l+m)*(l-m+1)) * pct[m-1, l] - math.sqrt((l-m)*(l+m+1)) * pct[m+1, l] )
 
         # m == l
         if mmax > l:
-            dpct[0, l, l] = np.sqrt(l/2) * pct[l-1, l]
+            dpct[0, l, l] = math.sqrt(l/2) * pct[l-1, l]
 
         # fill the - 1j m P^m_l / sin(phi). as this component is purely imaginary,
         # we won't store it explicitly in a complex array
         for m in range(1, min(l+1, mmax)):
             # this component is implicitly complex
             # we do not divide by m here as this cancels with the derivative of the exponential
-            dpct[1, m, l] = 0.5 * np.sqrt((2*l+1)/(2*l+3)) * \
-                ( np.sqrt((l-m+1)*(l-m+2)) * pct[m-1, l+1] + np.sqrt((l+m+1)*(l+m+2)) * pct[m+1, l+1] )
+            dpct[1, m, l] = 0.5 * math.sqrt((2*l+1)/(2*l+3)) * \
+                ( math.sqrt((l-m+1)*(l-m+2)) * pct[m-1, l+1] + math.sqrt((l+m+1)*(l+m+2)) * pct[m+1, l+1] )
 
     if csphase:
         for m in range(1, mmax, 2):

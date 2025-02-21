@@ -31,12 +31,12 @@
 
 from typing import List, Tuple, Union, Optional
 import math
-import numpy as np
+#import numpy as np
 
 import torch
 import torch.nn as nn
 
-from torch_harmonics.quadrature import _precompute_latitudes
+from torch_harmonics.quadrature import _precompute_latitudes, _precompute_longitudes
 
 
 class ResampleS2(nn.Module):
@@ -67,53 +67,52 @@ class ResampleS2(nn.Module):
 
         # for upscaling the latitudes we will use interpolation
         self.lats_in, _ = _precompute_latitudes(nlat_in, grid=grid_in)
-        self.lons_in = np.linspace(0, 2 * math.pi, nlon_in, endpoint=False)
+        self.lons_in = _precompute_longitudes(nlon_in)
         self.lats_out, _ = _precompute_latitudes(nlat_out, grid=grid_out)
-        self.lons_out = np.linspace(0, 2 * math.pi, nlon_out, endpoint=False)
+        self.lons_out = _precompute_longitudes(nlon_out)
 
         # in the case where some points lie outside of the range spanned by lats_in,
         # we need to expand the solution to the poles before interpolating
         self.expand_poles = (self.lats_out > self.lats_in[-1]).any() or (self.lats_out < self.lats_in[0]).any()
         if self.expand_poles:
-            self.lats_in = np.insert(self.lats_in, 0, 0.0)
-            self.lats_in = np.append(self.lats_in, np.pi)
+            self.lats_in = torch.cat([torch.tensor([0.], dtype=torch.float64),
+                                      self.lats_in,
+                                      torch.tensor([math.pi], dtype=torch.float64)]).contiguous()
+            #self.lats_in = np.insert(self.lats_in, 0, 0.0)
+            #self.lats_in = np.append(self.lats_in, np.pi)
 
         # prepare the interpolation by computing indices to the left and right of each output latitude
-        lat_idx = np.searchsorted(self.lats_in, self.lats_out, side="right") - 1
+        lat_idx = torch.searchsorted(self.lats_in, self.lats_out, side="right") - 1
         # make sure that we properly treat the last point if they coincide with the pole
-        lat_idx = np.where(self.lats_out == self.lats_in[-1], lat_idx - 1, lat_idx)
+        lat_idx = torch.where(self.lats_out == self.lats_in[-1], lat_idx - 1, lat_idx)
 
         # lat_idx = np.where(self.lats_out > self.lats_in[-1], lat_idx - 1, lat_idx)
         # lat_idx = np.where(self.lats_out < self.lats_in[0], 0, lat_idx)
 
         # compute the interpolation weights along the latitude
-        lat_weights = torch.from_numpy((self.lats_out - self.lats_in[lat_idx]) / np.diff(self.lats_in)[lat_idx]).float()
+        lat_weights = ((self.lats_out - self.lats_in[lat_idx]) / torch.diff(self.lats_in)[lat_idx]).to(torch.float32)
         lat_weights = lat_weights.unsqueeze(-1)
-
-        # convert to tensor
-        lat_idx = torch.LongTensor(lat_idx)
 
         # register buffers
         self.register_buffer("lat_idx", lat_idx, persistent=False)
         self.register_buffer("lat_weights", lat_weights, persistent=False)
 
         # get left and right indices but this time make sure periodicity in the longitude is handled
-        lon_idx_left = np.searchsorted(self.lons_in, self.lons_out, side="right") - 1
-        lon_idx_right = np.where(self.lons_out >= self.lons_in[-1], np.zeros_like(lon_idx_left), lon_idx_left + 1)
+        lon_idx_left = torch.searchsorted(self.lons_in, self.lons_out, side="right") - 1
+        lon_idx_right = torch.where(self.lons_out >= self.lons_in[-1], torch.zeros_like(lon_idx_left), lon_idx_left + 1)
 
         # get the difference
         diff = self.lons_in[lon_idx_right] - self.lons_in[lon_idx_left]
-        diff = np.where(diff < 0.0, diff + 2 * math.pi, diff)
-        lon_weights = torch.from_numpy((self.lons_out - self.lons_in[lon_idx_left]) / diff).float()
-
-        # convert to tensor
-        lon_idx_left = torch.LongTensor(lon_idx_left)
-        lon_idx_right = torch.LongTensor(lon_idx_right)
+        diff = torch.where(diff < 0.0, diff + 2 * math.pi, diff)
+        lon_weights = ((self.lons_out - self.lons_in[lon_idx_left]) / diff).to(torch.float32)
 
         # register buffers
         self.register_buffer("lon_idx_left", lon_idx_left, persistent=False)
         self.register_buffer("lon_idx_right", lon_idx_right, persistent=False)
         self.register_buffer("lon_weights", lon_weights, persistent=False)
+
+        self.skip_resampling = (nlon_in == nlon_out) and (nlat_in == nlat_out) and (grid_in == grid_out)
+        
 
     def extra_repr(self):
         r"""
@@ -139,7 +138,7 @@ class ResampleS2(nn.Module):
         repeats[-1] = x.shape[-1]
         x_north = x[..., 0:1, :].mean(dim=-1, keepdim=True).repeat(*repeats)
         x_south = x[..., -1:, :].mean(dim=-1, keepdim=True).repeat(*repeats)
-        x = torch.concatenate((x_north, x, x_south), dim=-2)
+        x = torch.concatenate((x_north, x, x_south), dim=-2).contiguous()
         return x
 
     def _upscale_latitudes(self, x: torch.Tensor):
@@ -156,6 +155,9 @@ class ResampleS2(nn.Module):
         return x
 
     def forward(self, x: torch.Tensor):
+        if self.skip_resampling:
+            return x
+        
         if self.expand_poles:
             x = self._expand_poles(x)
         x = self._upscale_latitudes(x)

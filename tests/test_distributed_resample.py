@@ -183,14 +183,14 @@ class TestDistributedResampling(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [64, 128, 128, 256, 32, 8, "equiangular", "equiangular", "bilinear", 1e-7],
-            [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", "bilinear", 1e-7],
-            [64, 128, 128, 256, 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-7],
-            [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-7],
+            [64, 128, 128, 256, 32, 8, "equiangular", "equiangular", "bilinear", 1e-7, False],
+            [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", "bilinear", 1e-7, False],
+            [64, 128, 128, 256, 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-7, False],
+            [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-7, False],
         ]
     )
     def test_distributed_resampling(
-            self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, grid_in, grid_out, mode, tol
+            self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, grid_in, grid_out, mode, tol, verbose
     ):
 
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
@@ -248,7 +248,7 @@ class TestDistributedResampling(unittest.TestCase):
         with torch.no_grad():
             out_gather_full = self._gather_helper_fwd(out_local, B, C, res_dist)
             err = torch.mean(torch.norm(out_full - out_gather_full, p="fro", dim=(-1, -2)) / torch.norm(out_full, p="fro", dim=(-1, -2)))
-            if self.world_rank == 0:
+            if verbose and (self.world_rank == )0:
                 print(f"final relative error of output: {err.item()}")
         self.assertTrue(err.item() <= tol)
 
@@ -259,7 +259,7 @@ class TestDistributedResampling(unittest.TestCase):
             igrad_gather_full = self._gather_helper_bwd(igrad_local, B, C, res_dist)
 
             err = torch.mean(torch.norm(igrad_full - igrad_gather_full, p="fro", dim=(-1, -2)) / torch.norm(igrad_full, p="fro", dim=(-1, -2)))
-            if self.world_rank == 0:
+            if verbose and (self.world_rank == 0):
                 print(f"final relative error of gradients: {err.item()}")
         self.assertTrue(err.item() <= tol)
 
