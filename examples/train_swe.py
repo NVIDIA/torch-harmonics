@@ -442,8 +442,8 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         pos_embed=False,
         use_mlp=True,
         normalization_layer="none",
-        kernel_shape=[4, 4],
-        encoder_kernel_shape=[4, 4],
+        kernel_shape=(4, 4),
+        encoder_kernel_shape=(4, 4),
         filter_basis_type="morlet",
         upsample_sht = True,
     )
@@ -460,7 +460,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         pos_embed=True,
         use_mlp=True,
         normalization_layer="none",
-        encoder_kernel_shape=[4, 4],
+        encoder_kernel_shape=(4, 4),
         filter_basis_type="morlet",
         upsample_sht = True,
     )
