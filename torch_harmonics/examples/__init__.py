@@ -33,4 +33,4 @@ from .pde_sphere import SphereSolver
 from .shallow_water_equations import ShallowWaterSolver
 
 from .pde_dataset import PdeDataset
-from .get_2d3ds_dataset import Spherical2D3DSDataset, TarDownloader
+from .spherical_2d3ds_dataset import Spherical2D3DSDataset, TarDownloader
