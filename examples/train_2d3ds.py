@@ -47,8 +47,6 @@ import matplotlib.pyplot as plt
 from torch_harmonics.examples import PdeDataset, Spherical2D3DSDataset, TarDownloader
 from torch_harmonics import RealSHT
 
-from pathlib import Path
-
 # wandb logging
 import wandb
 
@@ -391,8 +389,8 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data
     if torch.cuda.is_available():
         torch.cuda.set_device(device.index)
 
-    data_dir = Path(_data_dir) / Path("2D3DS")
-    data_dir.mkdir(parents=True, exist_ok=True)
+    data_dir = os.path.join(_data_dir, "2D3DS")
+    os.makedirs(data_dir, exist_ok=True)
 
     # 2D3DS download & dataset initialization
     tardl = TarDownloader(base_url="https://cvg-data.inf.ethz.ch/2d3ds/no_xyz/", local_dir=str(data_dir))
@@ -416,7 +414,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data
 
     models[f"snt_sc2_layers4_e32"] = partial(
         SNT,
-        img_size=(img_h, img_w),
+        (img_h, img_w),
         dataset.num_classes,
         grid="equiangular",
         num_layers=4,
@@ -427,7 +425,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data
         pos_embed=True,
         use_mlp=True,
         normalization_layer="none",
-        encoder_kernel_shape=[4, 4],
+        encoder_kernel_shape=(4, 4),
         filter_basis_type="morlet",
         upsample_sht = True,
     )

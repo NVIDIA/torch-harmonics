@@ -34,7 +34,7 @@ import torch.nn as nn
 
 from torch_harmonics import RealSHT, InverseRealSHT
 
-from ._layers import *
+from ._layers import MLP
 
 from functools import partial
 
