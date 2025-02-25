@@ -36,7 +36,6 @@ import torch
 from torch.autograd import gradcheck
 import torch_harmonics as th
 
-
 class TestLegendrePolynomials(unittest.TestCase):
 
     def setUp(self):
