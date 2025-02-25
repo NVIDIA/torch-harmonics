@@ -29,12 +29,14 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import math
+
 import torch
 import torch.nn as nn
 
 from torch_harmonics import RealSHT, InverseRealSHT
 
-from ._layers import MLP
+from ._layers import MLP, SpectralConvS2
 
 from functools import partial
 

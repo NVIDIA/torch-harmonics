@@ -37,7 +37,7 @@ from torch_harmonics import RealSHT, InverseRealSHT
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 from torch_harmonics import ResampleS2
 
-from ._layers import MLP
+from ._layers import MLP, SpectralConvS2
 
 from functools import partial
 
