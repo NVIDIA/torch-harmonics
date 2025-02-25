@@ -394,7 +394,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     dt_solver = 150
     nsteps = dt // dt_solver
     grid = "legendre-gauss"
-    nlat, nlon =(181, 360)
+    nlat, nlon =(180, 360)
     dataset = PdeDataset(dt=dt, nsteps=nsteps, dims=(nlat, nlon), device=device, grid=grid, normalize=True)
     dataset.sht = RealSHT(nlat=nlat, nlon=nlon, grid= grid).to(device=device)
     # There is still an issue with parallel dataloading. Do NOT use it at the moment
@@ -411,56 +411,74 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     models = {}
     metrics = {}
 
-    from torch_harmonics.examples.models import SphericalFourierNeuralOperatorNet as SFNO
-    from torch_harmonics.examples.models import LocalSphericalNeuralOperatorNet as LSNO
-    from torch_harmonics.examples.models import SphericalNeighborhoodTransformerNet as SNT
+    from torch_harmonics.examples.models import SphericalFourierNeuralOperator as SFNO
+    from torch_harmonics.examples.models import LocalSphericalNeuralOperator as LSNO
+    from torch_harmonics.examples.models import SphericalTransformer as S2T
+    from torch_harmonics.examples.models import VisionTransformer as ViT
 
-    models[f"sfno_sc2_layers4_e32"] = partial(
-        SFNO,
+    # models[f"sfno_sc2_layers4_e32"] = partial(
+    #     SFNO,
+    #     img_size=(nlat, nlon),
+    #     grid=grid,
+    #     hard_thresholding_fraction=0.8,
+    #     num_layers=4,
+    #     scale_factor=2,
+    #     embed_dim=32,
+    #     activation_function="gelu",
+    #     residual_prediction=True,
+    #     pos_embed=False,
+    #     use_mlp=True,
+    #     normalization_layer="none",
+    # )
+
+    # models[f"lsno_sc2_layers4_e32_morlet"] = partial(
+    #     LSNO,
+    #     img_size=(nlat, nlon),
+    #     grid=grid,
+    #     num_layers=4,
+    #     scale_factor=2,
+    #     embed_dim=32,
+    #     activation_function="gelu",
+    #     residual_prediction=False,
+    #     pos_embed=False,
+    #     use_mlp=True,
+    #     normalization_layer="none",
+    #     kernel_shape=[4, 4],
+    #     encoder_kernel_shape=[4, 4],
+    #     filter_basis_type="morlet",
+    #     upsample_sht = True,
+    # )
+
+    # models[f"vit_4x4_layers4_e128"] = partial(
+    #     ViT,
+    #     inp_shape=(nlat, nlon),
+    #     patch_size=(4, 4),
+    #     inp_chans=3,
+    #     out_chans=3,
+    #     embed_dim=128,
+    #     depth=4,
+    #     num_heads=8,
+    #     mlp_ratio=2.0,
+    #     qkv_bias=True,
+    #     mlp_drop_rate=0.0,
+    #     attn_drop_rate=0.0,
+    #     path_drop_rate=0.0,
+    #     norm_layer="layer_norm",
+    # )
+
+    models[f"s2t_sc3_layers4_e128_latembed"] = partial(
+        S2T,
         img_size=(nlat, nlon),
         grid=grid,
-        hard_thresholding_fraction=0.8,
         num_layers=4,
-        scale_factor=2,
-        embed_dim=32,
-        activation_function="gelu",
-        residual_prediction=True,
-        pos_embed=False,
-        use_mlp=True,
-        normalization_layer="none",
-    )
-
-    models[f"lsno_sc2_layers4_e32_morlet"] = partial(
-        LSNO,
-        img_size=(nlat, nlon),
-        grid=grid,
-        num_layers=4,
-        scale_factor=2,
-        embed_dim=32,
+        scale_factor=3,
+        embed_dim=128,
         activation_function="gelu",
         residual_prediction=False,
-        pos_embed=False,
+        pos_embed="none",
         use_mlp=True,
         normalization_layer="none",
-        kernel_shape=(4, 4),
-        encoder_kernel_shape=(4, 4),
-        filter_basis_type="morlet",
-        upsample_sht = True,
-    )
-
-    models[f"snt_sc2_layers4_e32"] = partial(
-        SNT,
-        img_size=(nlat, nlon),
-        grid=grid,
-        num_layers=4,
-        scale_factor=2,
-        embed_dim=32,
-        activation_function="gelu",
-        residual_prediction=False,
-        pos_embed=True,
-        use_mlp=True,
-        normalization_layer="none",
-        encoder_kernel_shape=(4, 4),
+        encoder_kernel_shape=[4, 4],
         filter_basis_type="morlet",
         upsample_sht = True,
     )
@@ -495,7 +513,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
             run = wandb.init(project="local sno spherical swe", group=model_name, name=model_name + "_" + str(time.time()), config=model_handle.keywords)
 
             # optimizer:
-            optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+            optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
             gscaler = torch.GradScaler("cuda", enabled=enable_amp)
 
@@ -506,7 +524,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
 
             if nfuture > 0:
                 print(f'Training {model_name}, {nfuture} step')
-                optimizer = torch.optim.Adam(model.parameters(), lr=1E-3)
+                optimizer = torch.optim.Adam(model.parameters(), lr=1E-4)
                 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
                 gscaler = amp.GradScaler(enabled=enable_amp)
                 dataloader.dataset.nsteps = 2 * dt//dt_solver

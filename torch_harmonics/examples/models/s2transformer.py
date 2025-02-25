@@ -29,17 +29,95 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.amp as amp
 
-from torch_harmonics import RealSHT, InverseRealSHT
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
+from torch_harmonics import NeighborhoodAttentionS2
 from torch_harmonics import ResampleS2
+from torch_harmonics import InverseRealSHT
+from torch_harmonics.quadrature import _precompute_latitudes
 
-from ._layers import MLP, SpectralConvS2
+from ._layers import *
 
 from functools import partial
+
+
+class PositionEmbeddingS2(nn.Module):
+    """
+    Returns position embeddings on the torus
+    """
+
+    def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1):
+
+        super().__init__()
+
+        self.img_shape = img_shape
+        self.num_chans = num_chans
+
+        with torch.no_grad():
+
+            # alternating custom position embeddings
+            lats, _ = _precompute_latitudes(img_shape[0], grid=grid)
+            lats = lats.reshape(-1, 1)
+            lons = torch.linspace(0, 2 * math.pi, img_shape[1] + 1)[:-1]
+            lons = lons.reshape(1, -1)
+
+            # channel index
+            k = torch.arange(self.num_chans).reshape(1, -1, 1, 1)
+            pos_embed = torch.where(k % 2 == 0, torch.sin(k * (lons + lats)), torch.cos(k * (lons - lats)))
+
+        # register tensor
+        self.register_buffer("position_embeddings", pos_embed.float())
+
+    def forward(self, x: torch.Tensor):
+
+        return x + self.position_embeddings
+
+
+class SphericalHarmonicEmbedding(nn.Module):
+    """
+    Returns position embeddings for the spherical transformer
+    """
+
+    def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1):
+
+        super().__init__()
+
+        self.img_shape = img_shape
+        self.num_chans = num_chans
+
+        # compute maximum required frequency and prepare isht
+        lmax = math.floor(math.sqrt(self.num_chans)) + 1
+        isht = InverseRealSHT(nlat=self.img_shape[0], nlon=self.img_shape[1], lmax=lmax, mmax=lmax, grid=grid)
+
+        # fill position embedding
+        with torch.no_grad():
+            pos_embed_freq = torch.zeros(1, self.num_chans, isht.lmax, isht.mmax, dtype=torch.complex64)
+
+            for i in range(self.num_chans):
+                l = math.floor(math.sqrt(i))
+                m = i - l**2 - l
+
+                if m < 0:
+                    pos_embed_freq[0, i, l, -m] = 1.0j
+                else:
+                    pos_embed_freq[0, i, l, m] = 1.0
+
+        # compute spatial position embeddings
+        pos_embed = isht(pos_embed_freq)
+
+        # normalization
+        pos_embed = pos_embed / torch.amax(pos_embed.abs(), dim=(-1, -2), keepdim=True)
+
+        # register tensor
+        self.register_buffer("position_embeddings", pos_embed)
+
+    def forward(self, x: torch.Tensor):
+        return x + self.position_embeddings
 
 
 class DiscreteContinuousEncoder(nn.Module):
@@ -49,7 +127,7 @@ class DiscreteContinuousEncoder(nn.Module):
         out_shape=(480, 960),
         grid_in="equiangular",
         grid_out="equiangular",
-        inp_chans=2,
+        in_chans=2,
         out_chans=2,
         kernel_shape=(3, 3),
         basis_type="morlet",
@@ -60,7 +138,7 @@ class DiscreteContinuousEncoder(nn.Module):
 
         # set up local convolution
         self.conv = DiscreteContinuousConvS2(
-            inp_chans,
+            in_chans,
             out_chans,
             in_shape=in_shape,
             out_shape=out_shape,
@@ -91,7 +169,7 @@ class DiscreteContinuousDecoder(nn.Module):
         out_shape=(721, 1440),
         grid_in="equiangular",
         grid_out="equiangular",
-        inp_chans=2,
+        in_chans=2,
         out_chans=2,
         kernel_shape=(3, 3),
         basis_type="morlet",
@@ -111,7 +189,7 @@ class DiscreteContinuousDecoder(nn.Module):
 
         # set up DISCO convolution
         self.conv = DiscreteContinuousConvS2(
-            inp_chans,
+            in_chans,
             out_chans,
             in_shape=out_shape,
             out_shape=out_shape,
@@ -136,140 +214,103 @@ class DiscreteContinuousDecoder(nn.Module):
         return x
 
 
-class SphericalNeuralOperatorBlock(nn.Module):
+class SphericalAttentionBlock(nn.Module):
     """
     Helper module for a single SFNO/FNO block. Can use both FFTs and SHTs to represent either FNO or SFNO blocks.
     """
 
     def __init__(
         self,
-        forward_transform,
-        inverse_transform,
-        input_dim,
-        output_dim,
-        conv_type="local",
+        in_shape=(480, 960),
+        out_shape=(480, 960),
+        grid_in="equiangular",
+        grid_out="equiangular",
+        in_chans=2,
+        out_chans=2,
         mlp_ratio=2.0,
         drop_rate=0.0,
         drop_path=0.0,
         act_layer=nn.GELU,
         norm_layer="none",
-        inner_skip="none",
-        outer_skip="identity",
         use_mlp=True,
-        disco_kernel_shape=(3, 3),
-        disco_basis_type="morlet",
     ):
         super().__init__()
 
-        if act_layer == nn.Identity:
-            gain_factor = 1.0
-        else:
-            gain_factor = 2.0
-
-        if inner_skip == "linear" or inner_skip == "identity":
-            gain_factor /= 2.0
-
-        # convolution layer
-        if conv_type == "local":
-            self.local_conv = DiscreteContinuousConvS2(
-                input_dim,
-                output_dim,
-                in_shape=(forward_transform.nlat, forward_transform.nlon),
-                out_shape=(inverse_transform.nlat, inverse_transform.nlon),
-                kernel_shape=disco_kernel_shape,
-                basis_type=disco_basis_type,
-                grid_in=forward_transform.grid,
-                grid_out=inverse_transform.grid,
-                bias=False,
-                theta_cutoff=4.0 * (disco_kernel_shape[0] + 1) * torch.pi / float(inverse_transform.nlat - 1),
-            )
-        elif conv_type == "global":
-            self.global_conv = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, bias=False)
-        else:
-            raise ValueError(f"Unknown convolution type {conv_type}")
-
-        if inner_skip == "linear":
-            self.inner_skip = nn.Conv2d(input_dim, output_dim, 1, 1)
-            nn.init.normal_(self.inner_skip.weight, std=math.sqrt(gain_factor / input_dim))
-        elif inner_skip == "identity":
-            assert input_dim == output_dim
-            self.inner_skip = nn.Identity()
-        elif inner_skip == "none":
-            pass
-        else:
-            raise ValueError(f"Unknown skip connection type {inner_skip}")
-
         # normalisation layer
         if norm_layer == "layer_norm":
-            self.norm = nn.LayerNorm(normalized_shape=(inverse_transform.nlat, inverse_transform.nlon), eps=1e-6)
+            self.norm0 = nn.LayerNorm(normalized_shape=in_shape, eps=1e-6)
+            self.norm1 = nn.LayerNorm(normalized_shape=out_shape, eps=1e-6)
         elif norm_layer == "instance_norm":
-            self.norm = nn.InstanceNorm2d(num_features=output_dim, eps=1e-6, affine=True, track_running_stats=False)
+            self.norm0 = nn.InstanceNorm2d(num_features=in_chans, eps=1e-6, affine=True, track_running_stats=False)
+            self.norm1 = nn.InstanceNorm2d(num_features=out_chans, eps=1e-6, affine=True, track_running_stats=False)
         elif norm_layer == "none":
-            self.norm = nn.Identity()
+            self.norm0 = nn.Identity()
+            self.norm1 = nn.Identity()
         else:
             raise NotImplementedError(f"Error, normalization {norm_layer} not implemented.")
+
+        # determine radius for neighborhood attention
+        theta_cutoff = 5 * torch.pi / (in_shape[0] - 1)
+
+        self.self_attn = NeighborhoodAttentionS2(
+            in_channels=in_chans,
+            in_shape=in_shape,
+            out_shape=out_shape,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            theta_cutoff=theta_cutoff,
+            k_channels=None,
+            out_channels=None,
+        )
+
+        self.skip0 = nn.Identity()
 
         # dropout
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
-        gain_factor = 1.0
-        if outer_skip == "linear" or inner_skip == "identity":
-            gain_factor /= 2.0
-
         if use_mlp == True:
-            mlp_hidden_dim = int(output_dim * mlp_ratio)
+            mlp_hidden_dim = int(out_chans * mlp_ratio)
             self.mlp = MLP(
-                in_features=output_dim,
-                out_features=input_dim,
+                in_features=out_chans,
+                out_features=out_chans,
                 hidden_features=mlp_hidden_dim,
                 act_layer=act_layer,
                 drop_rate=drop_rate,
                 checkpointing=False,
-                gain=gain_factor,
+                gain=0.5,
             )
 
-        if outer_skip == "linear":
-            self.outer_skip = nn.Conv2d(input_dim, input_dim, 1, 1)
-            torch.nn.init.normal_(self.outer_skip.weight, std=math.sqrt(gain_factor / input_dim))
-        elif outer_skip == "identity":
-            assert input_dim == output_dim
-            self.outer_skip = nn.Identity()
-        elif outer_skip == "none":
-            pass
-        else:
-            raise ValueError(f"Unknown skip connection type {outer_skip}")
+        self.skip1 = nn.Identity()
 
     def forward(self, x):
 
         residual = x
 
-        if hasattr(self, "global_conv"):
-            x, _ = self.global_conv(x)
-        elif hasattr(self, "local_conv"):
-            x = self.local_conv(x)
+        x = self.norm0(x)
 
-        x = self.norm(x)
+        x = self.self_attn(x)
 
-        if hasattr(self, "inner_skip"):
-            x = x + self.inner_skip(residual)
+        if hasattr(self, "skip0"):
+            x = x + self.skip0(residual)
+
+        residual = x
+
+        x = self.norm1(x)
 
         if hasattr(self, "mlp"):
             x = self.mlp(x)
 
         x = self.drop_path(x)
 
-        if hasattr(self, "outer_skip"):
-            x = x + self.outer_skip(residual)
+        if hasattr(self, "skip1"):
+            x = x + self.skip1(residual)
 
         return x
 
 
-class LocalSphericalNeuralOperator(nn.Module):
+class SphericalTransformer(nn.Module):
     """
-    LocalSphericalNeuralOperator module. A spherical neural operator which uses both local and global integral
-    operators to accureately model both types of solution operators [1]. The architecture is based on the Spherical
-    Fourier Neural Operator [2] and improves upon it with local integral operators in both the Neural Operator blocks,
-    as well as in the encoder and decoders.
+    Spherical transformer model designed to approximate mappings from spherical signals to spherical signals
 
     Parameters
     -----------
@@ -304,7 +345,7 @@ class LocalSphericalNeuralOperator(nn.Module):
         Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "instance_norm"
     hard_thresholding_fraction : float, optional
         Fraction of hard thresholding (frequency cutoff) to apply, by default 1.0
-    big_skip : bool, optional
+    residual_prediction : bool, optional
         Whether to add a single large skip connection, by default True
     pos_embed : bool, optional
         Whether to use positional embedding, by default True
@@ -313,7 +354,7 @@ class LocalSphericalNeuralOperator(nn.Module):
 
     Example
     -----------
-    >>> model = LocalSphericalNeuralOperator(
+    >>> model = SphericalTransformer(
     ...         img_shape=(128, 256),
     ...         scale_factor=4,
     ...         in_chans=2,
@@ -323,17 +364,6 @@ class LocalSphericalNeuralOperator(nn.Module):
     ...         use_mlp=True,)
     >>> model(torch.randn(1, 2, 128, 256)).shape
     torch.Size([1, 2, 128, 256])
-
-    References
-    -----------
-    .. [1] Liu-Schiaffini M., Berner J., Bonev B., Kurth T., Azizzadenesheli K., Anandkumar A.;
-        "Neural Operators with Localized Integral and Differential Kernels" (2024).
-        ICML 2024, https://arxiv.org/pdf/2402.16845.
-
-    .. [2] Bonev B., Kurth T., Hundt C., Pathak, J., Baust M., Kashinath K., Anandkumar A.;
-        "Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere" (2023).
-        ICML 2023, https://arxiv.org/abs/2306.03838.
-
     """
 
     def __init__(
@@ -347,7 +377,6 @@ class LocalSphericalNeuralOperator(nn.Module):
         embed_dim=256,
         num_layers=4,
         activation_function="gelu",
-        kernel_shape=(3, 3),
         encoder_kernel_shape=(3, 3),
         filter_basis_type="morlet",
         use_mlp=True,
@@ -396,25 +425,33 @@ class LocalSphericalNeuralOperator(nn.Module):
         self.pos_drop = nn.Dropout(p=drop_rate) if drop_rate > 0.0 else nn.Identity()
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, self.num_layers)]
 
-        if pos_embed == "latlon" or pos_embed == True:
-            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.h, self.w))
-            nn.init.constant_(self.pos_embed, 0.0)
-        elif pos_embed == "lat":
-            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.h, 1))
-            nn.init.constant_(self.pos_embed, 0.0)
-        elif pos_embed == "const":
-            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, 1, 1))
-            nn.init.constant_(self.pos_embed, 0.0)
-        else:
-            self.pos_embed = None
+        # # for transformers this should be reingineered properly
+        # if pos_embed == "latlon" or pos_embed == True:
+        #     self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.h, self.w))
+        #     nn.init.constant_(self.pos_embed, 0.0)
+        # elif pos_embed == "lat":
+        #     self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.h, 1))
+        #     nn.init.constant_(self.pos_embed, 0.0)
+        # elif pos_embed == "const":
+        #     self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, 1, 1))
+        #     nn.init.constant_(self.pos_embed, 0.0)
+        # else:
+        #     self.pos_embed = None
+        if pos_embed == "spherical harmonic":
+            self.pos_embed = SphericalHarmonicEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal)
+        elif pos_embed == "s2":
+            self.pos_embed = PositionEmbeddingS2((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal)
+        elif pos_embed == "none":
+            self.pos_embed = nn.Identity()
 
+        # maybe keep for now becuase tr
         # encoder
         self.encoder = DiscreteContinuousEncoder(
             in_shape=self.img_size,
             out_shape=(self.h, self.w),
             grid_in=grid,
             grid_out=grid_internal,
-            inp_chans=self.in_chans,
+            in_chans=self.in_chans,
             out_chans=self.embed_dim,
             kernel_shape=self.encoder_kernel_shape,
             basis_type=filter_basis_type,
@@ -422,33 +459,22 @@ class LocalSphericalNeuralOperator(nn.Module):
             bias=False,
         )
 
-        # compute the modes for the sht
-        modes_lat = self.h
-        # due to some spectral artifacts with cufft, we substract one mode here
-        modes_lon = (self.w // 2 + 1) - 1
-
-        modes_lat = modes_lon = int(min(modes_lat, modes_lon) * self.hard_thresholding_fraction)
-
-        self.trans = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
-        self.itrans = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
-
         self.blocks = nn.ModuleList([])
         for i in range(self.num_layers):
 
-            block = SphericalNeuralOperatorBlock(
-                self.trans,
-                self.itrans,
-                self.embed_dim,
-                self.embed_dim,
-                conv_type="global" if i % 2 == 0 else "local",
+            block = SphericalAttentionBlock(
+                in_shape=(self.h, self.w),
+                out_shape=(self.h, self.w),
+                grid_in=grid_internal,
+                grid_out=grid_internal,
+                in_chans=self.embed_dim,
+                out_chans=self.embed_dim,
                 mlp_ratio=mlp_ratio,
                 drop_rate=drop_rate,
                 drop_path=dpr[i],
                 act_layer=self.activation_function,
                 norm_layer=self.normalization_layer,
                 use_mlp=use_mlp,
-                disco_kernel_shape=kernel_shape,
-                disco_basis_type=filter_basis_type,
             )
 
             self.blocks.append(block)
@@ -459,7 +485,7 @@ class LocalSphericalNeuralOperator(nn.Module):
             out_shape=self.img_size,
             grid_in=grid_internal,
             grid_out=grid,
-            inp_chans=self.embed_dim,
+            in_chans=self.embed_dim,
             out_chans=self.out_chans,
             kernel_shape=self.encoder_kernel_shape,
             basis_type=filter_basis_type,
@@ -487,7 +513,8 @@ class LocalSphericalNeuralOperator(nn.Module):
         x = self.encoder(x)
 
         if self.pos_embed is not None:
-            x = x + self.pos_embed
+            # x = x + self.pos_embed
+            x = self.pos_embed(x)
 
         x = self.forward_features(x)
 
