@@ -29,8 +29,6 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import math
-
 import torch
 import torch.nn as nn
 
@@ -139,7 +137,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         return x
 
 
-class SphericalFourierNeuralOperatorNet(nn.Module):
+class SphericalFourierNeuralOperator(nn.Module):
     """
     SphericalFourierNeuralOperator module. Implements the 'linear' variant of the Spherical Fourier Neural Operator
     as presented in [1]. Spherical convolutions are applied via spectral transforms to apply a geometrically consistent
@@ -182,7 +180,7 @@ class SphericalFourierNeuralOperatorNet(nn.Module):
 
     Example:
     --------
-    >>> model = SphericalFourierNeuralOperatorNet(
+    >>> model = SphericalFourierNeuralOperator(
     ...         img_shape=(128, 256),
     ...         scale_factor=4,
     ...         in_chans=2,
