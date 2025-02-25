@@ -495,7 +495,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
             run = wandb.init(project="local sno spherical swe", group=model_name, name=model_name + "_" + str(time.time()), config=model_handle.keywords)
 
             # optimizer:
-            optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
+            optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
             gscaler = torch.GradScaler("cuda", enabled=enable_amp)
 
@@ -506,7 +506,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
 
             if nfuture > 0:
                 print(f'Training {model_name}, {nfuture} step')
-                optimizer = torch.optim.Adam(model.parameters(), lr=5E-5)
+                optimizer = torch.optim.Adam(model.parameters(), lr=1E-3)
                 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
                 gscaler = amp.GradScaler(enabled=enable_amp)
                 dataloader.dataset.nsteps = 2 * dt//dt_solver
