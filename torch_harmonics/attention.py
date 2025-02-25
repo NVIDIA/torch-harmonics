@@ -109,7 +109,7 @@ class NeighborhoodAttentionS2(nn.Module):
 
         # integration weights
         _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
-        quad_weights = 2.0 * torch.pi * torch.from_numpy(wgl).float() / self.nlon_in
+        quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
         # create a dummy filter basis to pass to the construction of the convolution tensor
