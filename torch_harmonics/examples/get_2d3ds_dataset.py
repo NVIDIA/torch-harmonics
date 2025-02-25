@@ -30,7 +30,6 @@
 import os
 from torch.utils.data import Dataset
 import torch
-from PIL import Image
 import numpy as np
 
 class TarDownloader:
@@ -39,7 +38,6 @@ class TarDownloader:
         import tarfile
         import requests
         from tqdm import tqdm
-        from pathlib import Path
         
         self.base_url = base_url
         self.local_dir = Path(local_dir)
@@ -118,6 +116,9 @@ class TarDownloader:
 
 class Spherical2D3DSDataset(Dataset):
     def __init__(self, root_dirs, segmentation_classes, input_folder='pano/rgb', output_folder='pano/semantic', output_name="semantic"):
+
+        from PIL import Image
+        
         self.segmentation_classes = segmentation_classes
         self.root_dirs = root_dirs
         self.input_folder = input_folder
