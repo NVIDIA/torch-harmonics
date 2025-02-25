@@ -44,7 +44,7 @@ import pandas as pd
 
 import matplotlib.pyplot as plt
 
-from torch_harmonics.examples import PdeDataset, Spherical2D3DSDataset, TarDownloader
+from torch_harmonics.examples import Spherical2D3DSDataset, TarDownloader
 from torch_harmonics import RealSHT
 
 # wandb logging
