@@ -29,7 +29,6 @@
 
 import os
 import tarfile
-import requests
 from tqdm import tqdm
 from torch.utils.data import Dataset
 import torch
@@ -39,6 +38,9 @@ from pathlib import Path
 
 class TarDownloader:
     def __init__(self, base_url, local_dir="data"):
+
+        import requests
+        
         self.base_url = base_url
         self.local_dir = Path(local_dir)
         self.local_dir.mkdir(parents=True, exist_ok=True)
