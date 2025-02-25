@@ -32,7 +32,6 @@ from torch.utils.data import Dataset
 import torch
 from PIL import Image
 import numpy as np
-from pathlib import Path
 
 class TarDownloader:
     def __init__(self, base_url, local_dir="data"):
@@ -40,6 +39,7 @@ class TarDownloader:
         import tarfile
         import requests
         from tqdm import tqdm
+        from pathlib import Path
         
         self.base_url = base_url
         self.local_dir = Path(local_dir)
@@ -114,6 +114,7 @@ class TarDownloader:
         labels_json_url = "https://raw.githubusercontent.com/alexsax/2D-3D-Semantics/refs/heads/master/assets/semantic_labels.json"
         segmentation_classes = requests.get(labels_json_url).json()
         return data_folders, segmentation_classes
+
 
 class Spherical2D3DSDataset(Dataset):
     def __init__(self, root_dirs, segmentation_classes, input_folder='pano/rgb', output_folder='pano/semantic', output_name="semantic"):
