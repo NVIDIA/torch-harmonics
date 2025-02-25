@@ -38,7 +38,7 @@ from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTran
 from torch_harmonics import NeighborhoodAttentionS2
 from torch_harmonics import ResampleS2
 
-from ._layers import *
+from ._layers import MLP
 
 from functools import partial
 
