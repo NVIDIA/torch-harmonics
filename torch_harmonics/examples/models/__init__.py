@@ -31,4 +31,4 @@
 
 from .sfno import SphericalFourierNeuralOperator
 from .lsno import LocalSphericalNeuralOperator
-from .s2transformer import SphericalNeighborhoodTransformer
+from .s2transformer import SphericalTransformer

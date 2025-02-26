@@ -35,7 +35,6 @@ import math
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 
 from torch_harmonics.quadrature import _precompute_latitudes
@@ -52,10 +51,109 @@ except ImportError as err:
     attention_cuda_extension = None
     _cuda_extension_available = False
 
+# class AttentionS2(nn.Module):
+#     """
+#     (Global) attention on the 2-sphere.
+
+#     Parameters
+#     -----------
+#     in_channels: int
+#         number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
+#     in_shape: tuple
+#         shape of the input grid
+#     out_shape: tuple
+#         shape of the output grid
+#     grid_in: str, optional
+#         input grid type, "equiangular" by default
+#     grid_out: str, optional
+#         output grid type, "equiangular" by default
+#     bias: bool, optional
+#         if specified, adds bias to input / output projection layers
+#     k_channels: int
+#         number of dimensions for interior inner product in the attention matrix (corresponds to kdim in MHA in PyTorch)
+#     out_channels: int, optional
+#         number of dimensions for interior inner product in the attention matrix (corresponds to vdim in MHA in PyTorch)
+#     """
+
+#     def __init__(
+#         self,
+#         in_channels: int,
+#         in_shape: Tuple[int],
+#         out_shape: Tuple[int],
+#         grid_in: Optional[str] = "equiangular",
+#         grid_out: Optional[str] = "equiangular",
+#         bias: Optional[bool] = True,
+#         k_channels: Optional[int] = None,
+#         out_channels: Optional[int] = None,
+#     ):
+#         super().__init__()
+
+#         self.nlat_in, self.nlon_in = in_shape
+#         self.nlat_out, self.nlon_out = out_shape
+
+#         self.in_channels = in_channels
+#         self.k_channels = in_channels if k_channels is None else k_channels
+#         self.out_channels = in_channels if out_channels is None else out_channels
+
+#         if theta_cutoff <= 0.0:
+#             raise ValueError("Error, theta_cutoff has to be positive.")
+
+#         # integration weights
+#         _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
+#         quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
+#         self.register_buffer("quad_weights", quad_weights, persistent=False)
+
+#         # learnable parameters
+#         # TODO: double-check that this gives us the correct initialization magnitudes
+#         scale = math.sqrt(1.0 / self.in_channels)
+#         self.q_weights = nn.Parameter(scale * torch.randn(self.k_channels, self.in_channels, 1, 1))
+#         self.k_weights = nn.Parameter(scale * torch.randn(self.k_channels, self.in_channels, 1, 1))
+#         self.v_weights = nn.Parameter(scale * torch.randn(self.out_channels, self.in_channels, 1, 1))
+
+#         if bias:
+#             self.q_bias = nn.Parameter(torch.zeros(self.k_channels))
+#             self.k_bias = nn.Parameter(torch.zeros(self.k_channels))
+#             self.v_bias = nn.Parameter(torch.zeros(self.out_channels))
+#         else:
+#             self.q_bias = None
+#             self.k_bias = None
+#             self.v_bias = None
+
+#     def extra_repr(self):
+#         r"""
+#         Pretty print module
+#         """
+#         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}"
+
+#     def forward(self, query: torch.Tensor, key: Optional[torch.Tensor] = None, value: Optional[torch.Tensor] = None) -> torch.Tensor:
+
+#         # self attention simplification
+#         if key is None:
+#             key = query
+
+#         if value is None:
+#             value = query
+
+#         # change this later to allow arbitrary number of batch dims
+#         assert (query.dim() == key.dim()) and (key.dim() == value.dim()) and (value.dim() == 4)
+
+#         # add checks if dimensions match
+
+#         # reshape to the right dimensions
+#         query = query.permute(0,2,3,1).reshape(-1, self.nlat_out * nlon_out, self.in_channels)
+#         key = key.permute(0,2,3,1).reshape(-1, self.nlat_in * nlon_in, self.in_channels)
+#         value = value.permute(0,2,3,1).reshape(-1, self.nlat_in * nlon_in, self.in_channels)
+
+#         # multiply the query, key and value tensors
+
+#         out = nn.functional.scaled_dot_product_attention()
+
+#         return out
+
 
 class NeighborhoodAttentionS2(nn.Module):
     """
-    Neighborhood attention on the sphere
+    Neighborhood attention on the 2-sphere.
 
     Parameters
     -----------
