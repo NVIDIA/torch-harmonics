@@ -86,6 +86,7 @@ class NeighborhoodAttentionS2(nn.Module):
         out_shape: Tuple[int],
         grid_in: Optional[str] = "equiangular",
         grid_out: Optional[str] = "equiangular",
+        scale: Optional[Union[torch.Tensor, float]] = None,
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         k_channels: Optional[int] = None,
@@ -161,6 +162,11 @@ class NeighborhoodAttentionS2(nn.Module):
         self.k_weights = nn.Parameter(scale * torch.randn(self.k_channels, self.in_channels, 1, 1))
         self.v_weights = nn.Parameter(scale * torch.randn(self.out_channels, self.in_channels, 1, 1))
 
+        if scale is not None:
+            self.scale = scale
+        else:
+            self.scale = 1 / math.sqrt(k_channels)
+        
         if bias:
             self.q_bias = nn.Parameter(torch.zeros(self.k_channels))
             self.k_bias = nn.Parameter(torch.zeros(self.k_channels))
@@ -188,8 +194,10 @@ class NeighborhoodAttentionS2(nn.Module):
         # change this later to allow arbitrary number of batch dims
         assert (query.dim() == key.dim()) and (key.dim() == value.dim()) and (value.dim() == 4)
 
+        # do the scaling
+        query = query * self.scale
+        
         # TODO: insert dimension checks for input
-
         if query.is_cuda and _cuda_extension_available:
             out = _neighborhood_attention_s2_cuda(
                 key,
