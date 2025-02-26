@@ -87,10 +87,13 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         [
             [256, 512, 32, "ortho", "equiangular", 1e-9, False],
             [256, 512, 32, "ortho", "legendre-gauss", 1e-9, False],
+            [256, 512, 32, "ortho", "lobatto", 1e-9, False],
             [256, 512, 32, "four-pi", "equiangular", 1e-9, False],
             [256, 512, 32, "four-pi", "legendre-gauss", 1e-9, False],
+            [256, 512, 32, "four-pi", "lobatto", 1e-9, False],
             [256, 512, 32, "schmidt", "equiangular", 1e-9, False],
             [256, 512, 32, "schmidt", "legendre-gauss", 1e-9, False],
+            [256, 512, 32, "schmidt", "lobatto", 1e-9, False],
         ]
     )
     def test_sht(self, nlat, nlon, batch_size, norm, grid, tol, verbose):
@@ -100,6 +103,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         testiters = [1, 2, 4, 8, 16]
         if grid == "equiangular":
             mmax = nlat // 2
+        elif grid == "lobatto":
+            mmax = nlat - 1
         else:
             mmax = nlat
         lmax = mmax
@@ -132,16 +137,22 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         [
             [12, 24, 2, "ortho", "equiangular", 1e-5, False],
             [12, 24, 2, "ortho", "legendre-gauss", 1e-5, False],
+            [12, 24, 2, "ortho", "lobatto", 1e-5, False],
             [12, 24, 2, "four-pi", "equiangular", 1e-5, False],
             [12, 24, 2, "four-pi", "legendre-gauss", 1e-5, False],
+            [12, 24, 2, "four-pi", "lobatto", 1e-5, False],
             [12, 24, 2, "schmidt", "equiangular", 1e-5, False],
             [12, 24, 2, "schmidt", "legendre-gauss", 1e-5, False],
+            [12, 24, 2, "schmidt", "lobatto", 1e-5, False],
             [15, 30, 2, "ortho", "equiangular", 1e-5, False],
             [15, 30, 2, "ortho", "legendre-gauss", 1e-5, False],
+            [15, 30, 2, "ortho", "lobatto", 1e-5, False],
             [15, 30, 2, "four-pi", "equiangular", 1e-5, False],
             [15, 30, 2, "four-pi", "legendre-gauss", 1e-5, False],
+            [15, 30, 2, "four-pi", "lobatto", 1e-5, False],
             [15, 30, 2, "schmidt", "equiangular", 1e-5, False],
             [15, 30, 2, "schmidt", "legendre-gauss", 1e-5, False],
+            [15, 30, 2, "schmidt", "lobatto", 1e-5, False],
         ]
     )
     def test_sht_grads(self, nlat, nlon, batch_size, norm, grid, tol, verbose):
@@ -150,6 +161,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
 
         if grid == "equiangular":
             mmax = nlat // 2
+        elif grid == "lobatto":
+            mmax = nlat - 1
         else:
             mmax = nlat
         lmax = mmax
