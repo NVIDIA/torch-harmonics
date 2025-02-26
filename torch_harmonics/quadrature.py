@@ -129,7 +129,7 @@ def lobatto_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0,
 
     # initialize Chebyshev nodes as first guess
     for i in range(n):
-        tlg[i] = -torch.cos(math.pi * i / (n - 1))
+        tlg[i] = -math.cos(math.pi * i / (n - 1))
 
     tmp = 2.0
 
