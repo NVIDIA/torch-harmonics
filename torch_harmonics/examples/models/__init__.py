@@ -29,6 +29,6 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from .sfno import SphericalFourierNeuralOperatorNet
-from .lsno import LocalSphericalNeuralOperatorNet
-from .stransformer import SphericalNeighborhoodTransformerNet
+from .sfno import SphericalFourierNeuralOperator
+from .lsno import LocalSphericalNeuralOperator
+from .s2transformer import SphericalNeighborhoodTransformer
