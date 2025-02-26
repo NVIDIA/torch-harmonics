@@ -50,8 +50,6 @@ from torch_harmonics import RealSHT
 # wandb logging
 import wandb
 
-wandb.login()
-
 
 def l2loss_sphere(solver, prd, tar, relative=False, squared=True):
     loss = solver.integrate_grid((prd - tar) ** 2, dimensionless=True).sum(dim=-1)
@@ -414,7 +412,6 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     from torch_harmonics.examples.models import SphericalFourierNeuralOperator as SFNO
     from torch_harmonics.examples.models import LocalSphericalNeuralOperator as LSNO
     from torch_harmonics.examples.models import SphericalTransformer as S2T
-    from torch_harmonics.examples.models import VisionTransformer as ViT
 
     # models[f"sfno_sc2_layers4_e32"] = partial(
     #     SFNO,
@@ -447,23 +444,6 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     #     encoder_kernel_shape=[4, 4],
     #     filter_basis_type="morlet",
     #     upsample_sht = True,
-    # )
-
-    # models[f"vit_4x4_layers4_e128"] = partial(
-    #     ViT,
-    #     inp_shape=(nlat, nlon),
-    #     patch_size=(4, 4),
-    #     inp_chans=3,
-    #     out_chans=3,
-    #     embed_dim=128,
-    #     depth=4,
-    #     num_heads=8,
-    #     mlp_ratio=2.0,
-    #     qkv_bias=True,
-    #     mlp_drop_rate=0.0,
-    #     attn_drop_rate=0.0,
-    #     path_drop_rate=0.0,
-    #     norm_layer="layer_norm",
     # )
 
     models[f"s2t_sc3_layers4_e128_latembed"] = partial(
@@ -562,6 +542,8 @@ if __name__ == "__main__":
     import torch.multiprocessing as mp
 
     mp.set_start_method("forkserver", force=True)
+
+    wandb.login()
 
     # main(train=False, load_checkpoint=True, enable_amp=False, log_grads=0)
     main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0)

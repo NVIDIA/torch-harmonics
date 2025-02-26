@@ -37,6 +37,9 @@ COPY . /workspace/torch_harmonics
 # we need this for tests
 RUN pip install parameterized
 
+# we install this for the examples
+RUN pip install wandb
+
 # The custom CUDA extension does not suppport architerctures < 7.0
 ENV FORCE_CUDA_EXTENSION=1
 ENV TORCH_CUDA_ARCH_LIST "7.0 7.2 7.5 8.0 8.6 8.7 9.0+PTX"
