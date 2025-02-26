@@ -293,14 +293,14 @@ class NeighborhoodAttentionS2(nn.Module):
         assert (query.dim() == key.dim()) and (key.dim() == value.dim()) and (value.dim() == 4)
 
         # do the scaling
-        query = query.clone() * self.scale
+        query_scaled = query * self.scale
         
         # TODO: insert dimension checks for input
         if query.is_cuda and _cuda_extension_available:
             out = _neighborhood_attention_s2_cuda(
                 key,
                 value,
-                query,
+                query_scaled,
                 self.k_weights,
                 self.v_weights,
                 self.q_weights,
@@ -322,7 +322,7 @@ class NeighborhoodAttentionS2(nn.Module):
             out = _neighborhood_attention_s2_torch(
                 key,
                 value,
-                query,
+                query_scaled,
                 self.k_weights,
                 self.v_weights,
                 self.q_weights,
