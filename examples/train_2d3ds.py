@@ -410,12 +410,12 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data
     models = {}
     metrics = {}
 
-    from torch_harmonics.examples.models import SphericalNeighborhoodTransformerNet as SNT
+    from torch_harmonics.examples.models import SphericalTransformerForSegmentation as SNT
 
     models[f"snt_sc2_layers4_e32"] = partial(
         SNT,
-        (img_h, img_w),
         dataset.num_classes,
+        img_size=(img_h, img_w),
         grid="equiangular",
         num_layers=4,
         scale_factor=2,
