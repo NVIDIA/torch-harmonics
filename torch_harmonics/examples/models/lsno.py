@@ -29,6 +29,8 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.amp as amp
@@ -37,7 +39,7 @@ from torch_harmonics import RealSHT, InverseRealSHT
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 from torch_harmonics import ResampleS2
 
-from ._layers import MLP, SpectralConvS2
+from ._layers import MLP, SpectralConvS2, SequencePositionEmbedding, SpectralPositionEmbedding, LearnablePositionEmbedding
 
 from functools import partial
 
@@ -358,7 +360,7 @@ class LocalSphericalNeuralOperator(nn.Module):
         hard_thresholding_fraction=1.0,
         use_complex_kernels=True,
         residual_prediction=False,
-        pos_embed=False,
+        pos_embed="none",
         upsample_sht=False,
     ):
         super().__init__()
@@ -396,17 +398,18 @@ class LocalSphericalNeuralOperator(nn.Module):
         self.pos_drop = nn.Dropout(p=drop_rate) if drop_rate > 0.0 else nn.Identity()
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, self.num_layers)]
 
-        if pos_embed == "latlon" or pos_embed == True:
-            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.h, self.w))
-            nn.init.constant_(self.pos_embed, 0.0)
-        elif pos_embed == "lat":
-            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.h, 1))
-            nn.init.constant_(self.pos_embed, 0.0)
-        elif pos_embed == "const":
-            self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, 1, 1))
-            nn.init.constant_(self.pos_embed, 0.0)
+        if pos_embed == "sequence":
+            self.pos_embed = SequencePositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal)
+        elif pos_embed == "spectral":
+            self.pos_embed = SpectralPositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal)
+        elif pos_embed == "learnable lat":
+            self.pos_embed = LearnablePositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal, embed_type="lat")
+        elif pos_embed == "learnable latlon":
+            self.pos_embed = LearnablePositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal, embed_type="latlon")
+        elif pos_embed == "none":
+            self.pos_embed = nn.Identity()
         else:
-            self.pos_embed = None
+            raise ValueError(f"Unknown position embedding type {pos_embed}")
 
         # encoder
         self.encoder = DiscreteContinuousEncoder(
@@ -487,7 +490,7 @@ class LocalSphericalNeuralOperator(nn.Module):
         x = self.encoder(x)
 
         if self.pos_embed is not None:
-            x = x + self.pos_embed
+            x = self.pos_embed(x)
 
         x = self.forward_features(x)
 

@@ -29,11 +29,15 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import abc
+import math
+
 import torch
 import torch.nn as nn
 import torch.fft
 from torch.utils.checkpoint import checkpoint
-import math
+
+from torch_harmonics import InverseRealSHT
 
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
@@ -220,6 +224,23 @@ class InverseRealFFT2(nn.Module):
         return torch.fft.irfft2(x, dim=(-2, -1), s=(self.nlat, self.nlon), norm="ortho")
 
 
+class LayerNorm(nn.Module):
+    """
+    Wrapper class that moves the channel dimension to the end
+    """
+
+    def __init__(self, in_channels, eps=1e-05, elementwise_affine=True, bias=True, device=None, dtype=None):
+        super().__init__()
+
+        self.channel_dim = -3
+
+        self.norm = nn.LayerNorm(normalized_shape=in_channels, eps=1e-6, elementwise_affine=elementwise_affine, bias=bias, device=device, dtype=dtype)
+
+    def forward(self, x):
+
+        return self.norm(x.transpose(self.channel_dim, -1)).transpose(-1, self.channel_dim)
+
+
 class SpectralConvS2(nn.Module):
     """
     Spectral Convolution according to Driscoll & Healy. Designed for convolutions on the two-sphere S2
@@ -285,3 +306,116 @@ class SpectralConvS2(nn.Module):
         x = x.type(dtype)
 
         return x, residual
+
+class PositionEmbedding(nn.Module, metaclass=abc.ABCMeta):
+    """
+    Returns standard sequence based position embedding
+    """
+
+    def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1):
+
+        super().__init__()
+
+        self.img_shape = img_shape
+        self.num_chans = num_chans
+
+    def forward(self, x: torch.Tensor):
+
+        return x + self.position_embeddings
+
+class SequencePositionEmbedding(PositionEmbedding):
+    """
+    Returns standard sequence based position embedding
+    """
+
+    def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1):
+
+        super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
+
+        with torch.no_grad():
+
+            # alternating custom position embeddings
+            pos = torch.arange(self.img_shape[0] * self.img_shape[1]).reshape(1, 1, *self.img_shape).repeat(1, self.num_chans, 1, 1)
+            k = torch.arange(self.num_chans).reshape(1, self.num_chans, 1, 1)
+            denom = torch.pow(10000, 2 * k / self.num_chans)
+
+            pos_embed = torch.where(k % 2 == 0, torch.sin(pos / denom), torch.cos(pos / denom))
+
+        # register tensor
+        self.register_buffer("position_embeddings", pos_embed.float())
+
+class SpectralPositionEmbedding(PositionEmbedding):
+    """
+    Returns position embeddings for the spherical transformer
+    """
+
+    def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1):
+
+        super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
+
+        # compute maximum required frequency and prepare isht
+        lmax = math.floor(math.sqrt(self.num_chans)) + 1
+        isht = InverseRealSHT(nlat=self.img_shape[0], nlon=self.img_shape[1], lmax=lmax, mmax=lmax, grid=grid)
+
+        # fill position embedding
+        with torch.no_grad():
+            pos_embed_freq = torch.zeros(1, self.num_chans, isht.lmax, isht.mmax, dtype=torch.complex64)
+
+            for i in range(self.num_chans):
+                l = math.floor(math.sqrt(i))
+                m = i - l**2 - l
+
+                if m < 0:
+                    pos_embed_freq[0, i, l, -m] = 1.0j
+                else:
+                    pos_embed_freq[0, i, l, m] = 1.0
+
+        # compute spatial position embeddings
+        pos_embed = isht(pos_embed_freq)
+
+        # normalization
+        pos_embed = pos_embed / torch.amax(pos_embed.abs(), dim=(-1, -2), keepdim=True)
+
+        # register tensor
+        self.register_buffer("position_embeddings", pos_embed)
+
+
+class LearnablePositionEmbedding(PositionEmbedding):
+    """
+    Returns position embeddings for the spherical transformer
+    """
+
+    def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1, embed_type="lat"):
+
+        super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
+
+        if embed_type == "latlon":
+            self.position_embedding = nn.Parameter(torch.zeros(1, self.num_chans, self.img_shape[0], self.img_shape[1]))
+        elif embed_type == "lat":
+            self.position_embedding = nn.Parameter(torch.zeros(1, self.num_chans, self.img_shape[0], 1))
+        else:
+            raise ValueError(f"Unknown learnable position embedding type {embed_type}")
+
+# class SpiralPositionEmbedding(PositionEmbedding):
+#     """
+#     Returns position embeddings on the torus
+#     """
+
+#     def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1):
+
+#         super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
+
+#         with torch.no_grad():
+
+#             # alternating custom position embeddings
+#             lats, _ = _precompute_latitudes(img_shape[0], grid=grid)
+#             lats = lats.reshape(-1, 1)
+#             lons = torch.linspace(0, 2 * math.pi, img_shape[1] + 1)[:-1]
+#             lons = lons.reshape(1, -1)
+
+#             # channel index
+#             k = torch.arange(self.num_chans).reshape(1, -1, 1, 1)
+#             pos_embed = torch.where(k % 2 == 0, torch.sin(k * (lons + lats)), torch.cos(k * (lons - lats)))
+
+#         # register tensor
+#         self.register_buffer("position_embeddings", pos_embed.float())

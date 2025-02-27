@@ -41,83 +41,9 @@ from torch_harmonics import ResampleS2
 from torch_harmonics import RealSHT, InverseRealSHT
 from torch_harmonics.quadrature import _precompute_latitudes
 
-from ._layers import MLP
+from ._layers import MLP, LayerNorm, SequencePositionEmbedding, SpectralPositionEmbedding, LearnablePositionEmbedding
 
 from functools import partial
-
-
-class PositionEmbeddingS2(nn.Module):
-    """
-    Returns position embeddings on the torus
-    """
-
-    def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1):
-
-        super().__init__()
-
-        self.img_shape = img_shape
-        self.num_chans = num_chans
-
-        with torch.no_grad():
-
-            # alternating custom position embeddings
-            lats, _ = _precompute_latitudes(img_shape[0], grid=grid)
-            lats = lats.reshape(-1, 1)
-            lons = torch.linspace(0, 2 * math.pi, img_shape[1] + 1)[:-1]
-            lons = lons.reshape(1, -1)
-
-            # channel index
-            k = torch.arange(self.num_chans).reshape(1, -1, 1, 1)
-            pos_embed = torch.where(k % 2 == 0, torch.sin(k * (lons + lats)), torch.cos(k * (lons - lats)))
-
-        # register tensor
-        self.register_buffer("position_embeddings", pos_embed.float())
-
-    def forward(self, x: torch.Tensor):
-
-        return x + self.position_embeddings
-
-
-class SphericalHarmonicEmbedding(nn.Module):
-    """
-    Returns position embeddings for the spherical transformer
-    """
-
-    def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1):
-
-        super().__init__()
-
-        self.img_shape = img_shape
-        self.num_chans = num_chans
-
-        # compute maximum required frequency and prepare isht
-        lmax = math.floor(math.sqrt(self.num_chans)) + 1
-        isht = InverseRealSHT(nlat=self.img_shape[0], nlon=self.img_shape[1], lmax=lmax, mmax=lmax, grid=grid)
-
-        # fill position embedding
-        with torch.no_grad():
-            pos_embed_freq = torch.zeros(1, self.num_chans, isht.lmax, isht.mmax, dtype=torch.complex64)
-
-            for i in range(self.num_chans):
-                l = math.floor(math.sqrt(i))
-                m = i - l**2 - l
-
-                if m < 0:
-                    pos_embed_freq[0, i, l, -m] = 1.0j
-                else:
-                    pos_embed_freq[0, i, l, m] = 1.0
-
-        # compute spatial position embeddings
-        pos_embed = isht(pos_embed_freq)
-
-        # normalization
-        pos_embed = pos_embed / torch.amax(pos_embed.abs(), dim=(-1, -2), keepdim=True)
-
-        # register tensor
-        self.register_buffer("position_embeddings", pos_embed)
-
-    def forward(self, x: torch.Tensor):
-        return x + self.position_embeddings
 
 
 class DiscreteContinuousEncoder(nn.Module):
@@ -238,11 +164,11 @@ class SphericalAttentionBlock(nn.Module):
 
         # normalisation layer
         if norm_layer == "layer_norm":
-            self.norm0 = nn.LayerNorm(normalized_shape=in_shape, eps=1e-6)
-            self.norm1 = nn.LayerNorm(normalized_shape=out_shape, eps=1e-6)
+            self.norm0 = LayerNorm(in_channels=in_chans, eps=1e-6)
+            self.norm1 = LayerNorm(in_channels=in_chans, eps=1e-6)
         elif norm_layer == "instance_norm":
             self.norm0 = nn.InstanceNorm2d(num_features=in_chans, eps=1e-6, affine=True, track_running_stats=False)
-            self.norm1 = nn.InstanceNorm2d(num_features=out_chans, eps=1e-6, affine=True, track_running_stats=False)
+            self.norm1 = nn.InstanceNorm2d(num_features=in_chans, eps=1e-6, affine=True, track_running_stats=False)
         elif norm_layer == "none":
             self.norm0 = nn.Identity()
             self.norm1 = nn.Identity()
@@ -387,7 +313,7 @@ class SphericalTransformer(nn.Module):
         hard_thresholding_fraction=1.0,
         use_complex_kernels=True,
         residual_prediction=False,
-        pos_embed=False,
+        pos_embed="spectral",
         upsample_sht=False,
     ):
         super().__init__()
@@ -425,24 +351,18 @@ class SphericalTransformer(nn.Module):
         self.pos_drop = nn.Dropout(p=drop_rate) if drop_rate > 0.0 else nn.Identity()
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, self.num_layers)]
 
-        # # for transformers this should be reingineered properly
-        # if pos_embed == "latlon" or pos_embed == True:
-        #     self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.h, self.w))
-        #     nn.init.constant_(self.pos_embed, 0.0)
-        # elif pos_embed == "lat":
-        #     self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, self.h, 1))
-        #     nn.init.constant_(self.pos_embed, 0.0)
-        # elif pos_embed == "const":
-        #     self.pos_embed = nn.Parameter(torch.zeros(1, self.embed_dim, 1, 1))
-        #     nn.init.constant_(self.pos_embed, 0.0)
-        # else:
-        #     self.pos_embed = None
-        if pos_embed == "spherical harmonic":
-            self.pos_embed = SphericalHarmonicEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal)
-        elif pos_embed == "s2":
-            self.pos_embed = PositionEmbeddingS2((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal)
+        if pos_embed == "sequence":
+            self.pos_embed = SequencePositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal)
+        elif pos_embed == "spectral":
+            self.pos_embed = SpectralPositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal)
+        elif pos_embed == "learnable lat":
+            self.pos_embed = LearnablePositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal, embed_type="lat")
+        elif pos_embed == "learnable latlon":
+            self.pos_embed = LearnablePositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal, embed_type="latlon")
         elif pos_embed == "none":
             self.pos_embed = nn.Identity()
+        else:
+            raise ValueError(f"Unknown position embedding type {pos_embed}")
 
         # maybe keep for now becuase tr
         # encoder

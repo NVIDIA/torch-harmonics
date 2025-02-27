@@ -197,7 +197,7 @@ def autoregressive_inference(model, dataset, path_root, nsteps, autoreg_steps=10
                 # do plotting
                 fig = plt.figure(figsize=(7.5, 6))
                 dataset.solver.plot_griddata(prd[0, plot_channel], fig, vmax=4, vmin=-4, projection="robinson")
-                plt.savefig(os.path.join(path_root,'pred_'+str(i//nskip)+'.png'))
+                plt.savefig(os.path.join(path_root, "pred_" + str(i // nskip) + ".png"))
                 plt.close()
 
         fno_times[iic] = time.time() - start_time
@@ -215,7 +215,7 @@ def autoregressive_inference(model, dataset, path_root, nsteps, autoreg_steps=10
 
                 fig = plt.figure(figsize=(7.5, 6))
                 dataset.solver.plot_griddata(ref[plot_channel], fig, vmax=4, vmin=-4, projection="robinson")
-                plt.savefig(os.path.join(path_root,'truth_'+str(i//nskip)+'.png'))
+                plt.savefig(os.path.join(path_root, "truth_" + str(i // nskip) + ".png"))
                 plt.close()
 
         nwp_times[iic] = time.time() - start_time
@@ -251,7 +251,7 @@ def autoregressive_inference(model, dataset, path_root, nsteps, autoreg_steps=10
         plt.xlabel("$l$")
         plt.ylabel("powerspectrum")
         plt.legend()
-        plt.savefig(os.path.join(path_root,f'powerspectrum_{step}.png'))
+        plt.savefig(os.path.join(path_root, f"powerspectrum_{step}.png"))
         fig.clf()
         plt.close()
 
@@ -373,14 +373,11 @@ def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=2
     return valid_loss
 
 
-def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
+def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, nfuture=0):
 
     # set seed
     torch.manual_seed(333)
     torch.cuda.manual_seed(333)
-
-    # set parameters
-    nfuture=0
 
     # set device
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -392,9 +389,9 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     dt_solver = 150
     nsteps = dt // dt_solver
     grid = "legendre-gauss"
-    nlat, nlon =(180, 360)
+    nlat, nlon = (180, 360)
     dataset = PdeDataset(dt=dt, nsteps=nsteps, dims=(nlat, nlon), device=device, grid=grid, normalize=True)
-    dataset.sht = RealSHT(nlat=nlat, nlon=nlon, grid= grid).to(device=device)
+    dataset.sht = RealSHT(nlat=nlat, nlon=nlon, grid=grid).to(device=device)
     # There is still an issue with parallel dataloading. Do NOT use it at the moment
     # dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=4, persistent_workers=True)
     dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=0, persistent_workers=False)
@@ -417,13 +414,11 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     #     SFNO,
     #     img_size=(nlat, nlon),
     #     grid=grid,
-    #     hard_thresholding_fraction=0.8,
     #     num_layers=4,
     #     scale_factor=2,
     #     embed_dim=32,
     #     activation_function="gelu",
     #     residual_prediction=True,
-    #     pos_embed=False,
     #     use_mlp=True,
     #     normalization_layer="none",
     # )
@@ -437,7 +432,6 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     #     embed_dim=32,
     #     activation_function="gelu",
     #     residual_prediction=False,
-    #     pos_embed=False,
     #     use_mlp=True,
     #     normalization_layer="none",
     #     kernel_shape=(4, 4),
@@ -446,21 +440,21 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     #     upsample_sht = True,
     # )
 
-    models[f"s2t_sc3_layers4_e128_latembed"] = partial(
+    models[f"s2t_sc2_layers4_e32"] = partial(
         S2T,
         img_size=(nlat, nlon),
         grid=grid,
         num_layers=4,
-        scale_factor=3,
-        embed_dim=128,
+        scale_factor=2,
+        embed_dim=32,
         activation_function="gelu",
         residual_prediction=False,
-        pos_embed="none",
+        pos_embed="spectral",
         use_mlp=True,
-        normalization_layer="none",
+        normalization_layer="instance_norm",
         encoder_kernel_shape=(4, 4),
         filter_basis_type="morlet",
-        upsample_sht = True,
+        upsample_sht=True,
     )
 
     # iterate over models and train each model
@@ -477,11 +471,11 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         print(f"number of trainable params: {num_params}")
         metrics[model_name]["num_params"] = num_params
 
-        exp_dir = os.path.join(root_path, 'checkpoints', model_name)
+        exp_dir = os.path.join(root_path, "checkpoints_swe", model_name)
         if not os.path.isdir(exp_dir):
             os.makedirs(exp_dir, exist_ok=True)
 
-        exp_dir = os.path.join(root_path, 'checkpoints', model_name)
+        exp_dir = os.path.join(root_path, "checkpoints_swe", model_name)
         if not os.path.isdir(exp_dir):
             os.makedirs(exp_dir, exist_ok=True)
 
@@ -503,26 +497,26 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
             train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=20, loss_fn="l2", enable_amp=enable_amp, log_grads=log_grads)
 
             if nfuture > 0:
-                print(f'Training {model_name}, {nfuture} step')
-                optimizer = torch.optim.Adam(model.parameters(), lr=1E-4)
-                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
-                gscaler = amp.GradScaler(enabled=enable_amp)
-                dataloader.dataset.nsteps = 2 * dt//dt_solver
-                train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=10, loss_fn="l2", nfuture=nfuture, enable_amp=enable_amp, log_grads=log_grads)
-                dataloader.dataset.nsteps = 1 * dt//dt_solver
+                print(f"Finetuning {model_name}, {nfuture} step")
+                optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
+                gscaler = torch.GradScaler(enabled=enable_amp)
+                dataloader.dataset.nsteps = 2 * dt // dt_solver
+                train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=20, loss_fn="l2", nfuture=nfuture, enable_amp=enable_amp, log_grads=log_grads)
+                dataloader.dataset.nsteps = 1 * dt // dt_solver
 
             training_time = time.time() - start_time
 
             run.finish()
 
-            torch.save(model.state_dict(), os.path.join(exp_dir, 'checkpoint.pt'))
+            torch.save(model.state_dict(), os.path.join(exp_dir, "checkpoint.pt"))
 
         # set seed
         torch.manual_seed(333)
         torch.cuda.manual_seed(333)
 
         with torch.inference_mode():
-            losses, fno_times, nwp_times = autoregressive_inference(model, dataset, os.path.join(exp_dir,'figures'), nsteps=nsteps, autoreg_steps=30, nics=50)
+            losses, fno_times, nwp_times = autoregressive_inference(model, dataset, os.path.join(exp_dir, "figures"), nsteps=nsteps, autoreg_steps=30, nics=50)
             metrics[model_name]["loss_mean"] = np.mean(losses)
             metrics[model_name]["loss_std"] = np.std(losses)
             metrics[model_name]["fno_time_mean"] = np.mean(fno_times)
@@ -533,9 +527,14 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
                 metrics[model_name]["training_time"] = training_time
 
     df = pd.DataFrame(metrics)
-    if not os.path.isdir(os.path.join(exp_dir, 'output_data',)):
-        os.makedirs(os.path.join(exp_dir, 'output_data'), exist_ok=True)
-    df.to_pickle(os.path.join(exp_dir, 'output_data', 'metrics.pkl'))
+    if not os.path.isdir(
+        os.path.join(
+            exp_dir,
+            "output_data",
+        )
+    ):
+        os.makedirs(os.path.join(exp_dir, "output_data"), exist_ok=True)
+    df.to_pickle(os.path.join(exp_dir, "output_data", "metrics.pkl"))
 
 
 if __name__ == "__main__":
@@ -546,4 +545,4 @@ if __name__ == "__main__":
     wandb.login()
 
     # main(train=False, load_checkpoint=True, enable_amp=False, log_grads=0)
-    main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0)
+    main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, nfuture=0)
