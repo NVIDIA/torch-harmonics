@@ -51,6 +51,28 @@ from torch_harmonics import RealSHT
 import wandb
 
 
+# helper routine for counting number of paramerters in model
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+# convenience function for logging weights and gradients
+def log_weights_and_grads(model, iters=1):
+    """
+    Helper routine intended for debugging purposes
+    """
+    root_path = os.path.join(os.path.dirname(__file__), "weights_and_grads")
+
+    weights_and_grads_fname = os.path.join(root_path, f"weights_and_grads_step{iters:03d}.tar")
+    print(weights_and_grads_fname)
+
+    weights_dict = {k: v for k, v in model.named_parameters()}
+    grad_dict = {k: v.grad for k, v in model.named_parameters()}
+
+    store_dict = {"iteration": iters, "grads": grad_dict, "weights": weights_dict}
+    torch.save(store_dict, weights_and_grads_fname)
+
+
 def l2loss_sphere(solver, prd, tar, relative=False, squared=True):
     loss = solver.integrate_grid((prd - tar) ** 2, dimensionless=True).sum(dim=-1)
     if relative:
@@ -258,23 +280,6 @@ def autoregressive_inference(model, dataset, path_root, nsteps, autoreg_steps=10
     return losses, fno_times, nwp_times
 
 
-# convenience function for logging weights and gradients
-def log_weights_and_grads(model, iters=1):
-    """
-    Helper routine intended for debugging purposes
-    """
-    root_path = os.path.join(os.path.dirname(__file__), "weights_and_grads")
-
-    weights_and_grads_fname = os.path.join(root_path, f"weights_and_grads_step{iters:03d}.tar")
-    print(weights_and_grads_fname)
-
-    weights_dict = {k: v for k, v in model.named_parameters()}
-    grad_dict = {k: v.grad for k, v in model.named_parameters()}
-
-    store_dict = {"iteration": iters, "grads": grad_dict, "weights": weights_dict}
-    torch.save(store_dict, weights_and_grads_fname)
-
-
 # training function
 def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=20, nfuture=0, num_examples=256, num_valid=8, loss_fn="l2", enable_amp=False, log_grads=0):
 
@@ -398,9 +403,6 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, nfutu
 
     nlat = dataset.nlat
     nlon = dataset.nlon
-
-    def count_parameters(model):
-        return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
     # prepare dicts containing models and corresponding metrics
     models = {}

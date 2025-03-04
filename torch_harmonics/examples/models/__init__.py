@@ -32,4 +32,4 @@
 from .sfno import SphericalFourierNeuralOperator
 from .lsno import LocalSphericalNeuralOperator
 from .s2transformer import SphericalTransformer
-from .s2segmentation import SphericalTransformerForSegmentation, LocalSphericalNeuralOperatorForSegmentation, SphericalFourierNeuralOperatorForSegmentation
+from .segmentation_head import SphericalTransformerForSegmentation, LocalSphericalNeuralOperatorForSegmentation, SphericalFourierNeuralOperatorForSegmentation

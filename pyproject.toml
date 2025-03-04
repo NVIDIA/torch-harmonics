@@ -54,6 +54,6 @@ dev = [
 2d3ds = [
     "requests",
     "tarfile",
-    "pillow",
-    "tqdm"
+    "tqdm",
+    "torchvision",
 ]

@@ -53,21 +53,14 @@ class SegmentationWrapper(nn.Module, metaclass=abc.ABCMeta):
 
         self.activation_function = activation_function
 
-        self.softmax = nn.Softmax(dim=-3) # assumes dim = (...,C,H,W), so dim=-3 gets C
+        self.softmax = nn.Softmax(dim=-3)  # assumes dim = (...,C,H,W), so dim=-3 gets C
 
-        self.mlp = MLP(
-            in_features=out_chans,
-            out_features=num_classes,
-            hidden_features=[256, 256],
-            act_layer=self.activation_function
-        )
+        print(num_classes)
+
+        self.mlp = MLP(in_features=out_chans, out_features=num_classes, hidden_features=out_chans, act_layer=self.activation_function)
 
         # apply softmax to the output of the MLP
         self.segmentation_head = nn.Sequential(self.mlp, self.softmax)
-
-        # check if self.backbone exists
-        if not hasattr(self, "backbone"):
-            raise ValueError("backbone not defined, define self.backbone in the __init__ method of the subclass")
 
     def forward(self, x):
         x = self.backbone(x)
@@ -77,7 +70,11 @@ class SegmentationWrapper(nn.Module, metaclass=abc.ABCMeta):
 
 class SphericalTransformerForSegmentation(SegmentationWrapper):
 
-    def __init__(self, num_classes:int, **kwargs):
+    def __init__(self, num_classes: int, embed_dim: int = 256, **kwargs):
+
+        kwargs["out_chans"] = embed_dim
+        kwargs["embed_dim"] = embed_dim
+
         super().__init__(num_classes, kwargs["out_chans"])
 
         self.backbone = SphericalTransformer(**kwargs)
@@ -85,7 +82,10 @@ class SphericalTransformerForSegmentation(SegmentationWrapper):
 
 class LocalSphericalNeuralOperatorForSegmentation(SegmentationWrapper):
 
-    def __init__(self, num_classes:int, **kwargs):
+    def __init__(self, num_classes: int, embed_dim: int = 256, **kwargs):
+        kwargs["out_chans"] = embed_dim
+        kwargs["embed_dim"] = embed_dim
+
         super().__init__(num_classes, kwargs["out_chans"])
 
         self.backbone = LocalSphericalNeuralOperator(**kwargs)
@@ -93,7 +93,10 @@ class LocalSphericalNeuralOperatorForSegmentation(SegmentationWrapper):
 
 class SphericalFourierNeuralOperatorForSegmentation(SegmentationWrapper):
 
-    def __init__(self, num_classes:int, **kwargs):
+    def __init__(self, num_classes: int, embed_dim: int = 256, **kwargs):
+        kwargs["out_chans"] = embed_dim
+        kwargs["embed_dim"] = embed_dim
+
         super().__init__(num_classes, kwargs["out_chans"])
 
         self.backbone = SphericalFourierNeuralOperator(**kwargs)

@@ -32,16 +32,17 @@ from torch.utils.data import Dataset
 import torch
 import numpy as np
 
+
 class TarDownloader:
+    """
+    Convenience class for downloading tarfiles
+    """
+
     def __init__(self, base_url, local_dir="data"):
 
-        import tarfile
-        import requests
-        from tqdm import tqdm
-        
         self.base_url = base_url
-        self.local_dir = Path(local_dir)
-        self.local_dir.mkdir(parents=True, exist_ok=True)
+        self.local_dir = local_dir
+        os.makedirs(self.local_dir, exist_ok=True)
 
     # def _extract_tar_root(self, file_paths, root_path):
     #     # Convert root_path to a Path object
@@ -55,34 +56,31 @@ class TarDownloader:
     #     return str(common_path)
 
     def _download_file(self, filename):
+
+        import requests
+        from tqdm import tqdm
+
         url = f"{self.base_url}/{filename}"
-        local_path = self.local_dir / filename
-        if local_path.exists():
+        local_path = os.path.join(self.local_dir, filename)
+        if os.path.exists(local_path):
             print(f"Note: Skipping download for {filename}, because it already exists")
             return local_path
 
         print(f"Downloading {filename}...")
-        temp_path = local_path.with_suffix('.part')
+        temp_path = local_path.split(".")[0] + ".part"
 
         # Resume logic
         headers = {}
-        if temp_path.exists():
-            headers = {'Range': f'bytes={temp_path.stat().st_size}-'}
+        if os.path.exists(temp_path):
+            headers = {"Range": f"bytes={os.stat(temp_path).st_size}-"}
 
         response = requests.get(url, headers=headers, stream=True, timeout=30)
-        if temp_path.exists():
-            total_size = int(response.headers.get('content-length', 0)) + temp_path.stat().st_size
+        if os.path.exists(temp_path):
+            total_size = int(response.headers.get("content-length", 0)) + os.stat(temp_path).st_size
         else:
-            total_size = int(response.headers.get('content-length', 0))
+            total_size = int(response.headers.get("content-length", 0))
 
-        with open(temp_path, 'ab') as f, tqdm(
-            desc=filename,
-            total=total_size,
-            unit='B',
-            unit_scale=True,
-            unit_divisor=1024,
-            initial=temp_path.stat().st_size
-        ) as pbar:
+        with open(temp_path, "ab") as f, tqdm(desc=filename, total=total_size, unit="B", unit_scale=True, unit_divisor=1024, initial=os.stat(temp_path).st_size) as pbar:
             for chunk in response.iter_content(chunk_size=1024):
                 if chunk:
                     f.write(chunk)
@@ -92,6 +90,8 @@ class TarDownloader:
         return local_path
 
     def _extract_tar(self, tar_path):
+        import tarfile
+
         with tarfile.open(tar_path) as tar:
             tar.extractall(path=self.local_dir)
             tar_filenames = tar.getnames()
@@ -100,9 +100,12 @@ class TarDownloader:
             return extracted_dir
 
     def download_dataset(self, file_extracted_directory_pairs):
+
+        import requests
+
         data_folders = []
-        for (file, extracted_folder_name) in file_extracted_directory_pairs:
-            if not (self.local_dir / extracted_folder_name).exists():
+        for file, extracted_folder_name in file_extracted_directory_pairs:
+            if not os.path.exists(os.path.join(self.local_dir, extracted_folder_name)):
                 downloaded_file = self._download_file(file)
                 data_folders.append(self._extract_tar(downloaded_file))
             else:
@@ -114,11 +117,20 @@ class TarDownloader:
         return data_folders, segmentation_classes
 
 
-class Spherical2D3DSDataset(Dataset):
-    def __init__(self, root_dirs, segmentation_classes, input_folder='pano/rgb', output_folder='pano/semantic', output_name="semantic"):
+class SphericalSegmentationDataset(Dataset):
+    """
+    Spherical segmentation dataset from [1].
 
-        from PIL import Image
-        
+    References
+    -----------
+    .. [1] Armeni, I.,  Sax, S.,  Zamir, A. R.,  Savarese, S.;
+        "Joint 2D-3D-Semantic Data for Indoor Scene Understanding" (2017).
+        https://arxiv.org/abs/1702.01105.
+    """
+
+
+    def __init__(self, root_dirs, segmentation_classes, input_folder="pano/rgb", output_folder="pano/semantic", output_name="semantic"):
+
         self.segmentation_classes = segmentation_classes
         self.root_dirs = root_dirs
         self.input_folder = input_folder
@@ -141,7 +153,7 @@ class Spherical2D3DSDataset(Dataset):
                     if not file_input.endswith(".png"):
                         continue
                     input_path = os.path.join(input_dir, file_input)
-                    file_output = "_".join(Path(input_path).stem.split("_")[:-1])+f"_{output_name}.png"
+                    file_output = "_".join(os.path.splitext(os.path.basename(input_path))[0].split("_")[:-1]) + f"_{output_name}.png"
                     output_path = os.path.join(output_dir, file_output)
                     if not os.path.exists(output_path):
                         print(f"Warning: Couldn't find output file in pair: ({input_path},{output_path})")
@@ -155,16 +167,26 @@ class Spherical2D3DSDataset(Dataset):
                 continue
 
     @property
-    def dim(self):
+    def shape(self):
         (img_rgb, img_seg) = self.__getitem__(0)
         return (img_rgb.shape, img_seg.shape)
+
+    @property
+    def target_shape(self):
+        (img_rgb, img_seg) = self.__getitem__(0)
+        return img_seg.shape
+
+    @property
+    def input_shape(self):
+        (img_rgb, img_seg) = self.__getitem__(0)
+        return img_rgb.shape
 
     @property
     def num_classes(self):
         return len(self.segmentation_classes)
 
     def _rgb_to_id(self, img):
-        return img[:,:,0]*256*256 + img[:,:,1]*256 + img[:,:,2]
+        return img[:, :, 0] * 256 * 256 + img[:, :, 1] * 256 + img[:, :, 2]
 
     def _id_to_class(self, class_id):
         if class_id > self.num_classes:
@@ -176,10 +198,12 @@ class Spherical2D3DSDataset(Dataset):
         return len(self.file_paths)
 
     def __getitem__(self, idx):
+
+        from torchvision import io
+
         input_path, output_path = self.file_paths[idx]
 
-        # Load and convert images to numpy arrays (or tensors if needed)
-        input_img = np.array(Image.open(input_path))
-        output_img = np.array(Image.open(output_path))
+        input_img = io.read_image(input_path)
+        output_img = io.read_image(output_path)
 
         return input_img, output_img

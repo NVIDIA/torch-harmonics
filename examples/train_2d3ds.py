@@ -44,116 +44,33 @@ import pandas as pd
 
 import matplotlib.pyplot as plt
 
-from torch_harmonics.examples import Spherical2D3DSDataset, TarDownloader
+from torch_harmonics.examples import SphericalSegmentationDataset, TarDownloader
 from torch_harmonics import RealSHT
 
 # wandb logging
 import wandb
 
-wandb.login()
+
+# helper routine for counting number of paramerters in model
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-def l2loss_sphere(solver, prd, tar, relative=False, squared=True):
-    loss = solver.integrate_grid((prd - tar) ** 2, dimensionless=True).sum(dim=-1)
-    if relative:
-        loss = loss / solver.integrate_grid(tar**2, dimensionless=True).sum(dim=-1)
+# convenience function for logging weights and gradients
+def log_weights_and_grads(model, iters=1):
+    """
+    Helper routine intended for debugging purposes
+    """
+    root_path = os.path.join(os.path.dirname(__file__), "weights_and_grads")
 
-    if not squared:
-        loss = torch.sqrt(loss)
-    loss = loss.mean()
+    weights_and_grads_fname = os.path.join(root_path, f"weights_and_grads_step{iters:03d}.tar")
+    print(weights_and_grads_fname)
 
-    return loss
+    weights_dict = {k: v for k, v in model.named_parameters()}
+    grad_dict = {k: v.grad for k, v in model.named_parameters()}
 
-
-def spectral_l2loss_sphere(solver, prd, tar, relative=False, squared=True):
-    # compute coefficients
-    coeffs = torch.view_as_real(solver.sht(prd - tar))
-    coeffs = coeffs[..., 0] ** 2 + coeffs[..., 1] ** 2
-    norm2 = coeffs[..., :, 0] + 2 * torch.sum(coeffs[..., :, 1:], dim=-1)
-    loss = torch.sum(norm2, dim=(-1, -2))
-
-    if relative:
-        tar_coeffs = torch.view_as_real(solver.sht(tar))
-        tar_coeffs = tar_coeffs[..., 0] ** 2 + tar_coeffs[..., 1] ** 2
-        tar_norm2 = tar_coeffs[..., :, 0] + 2 * torch.sum(tar_coeffs[..., :, 1:], dim=-1)
-        tar_norm2 = torch.sum(tar_norm2, dim=(-1, -2))
-        loss = loss / tar_norm2
-
-    if not squared:
-        loss = torch.sqrt(loss)
-    loss = loss.mean()
-
-    return loss
-
-
-def spectral_loss_sphere(solver, prd, tar, relative=False, squared=True):
-    # gradient weighting factors
-    lmax = solver.sht.lmax
-    ls = torch.arange(lmax).float()
-    spectral_weights = (ls * (ls + 1)).reshape(1, 1, -1, 1).to(prd.device)
-
-    # compute coefficients
-    coeffs = torch.view_as_real(solver.sht(prd - tar))
-    coeffs = coeffs[..., 0] ** 2 + coeffs[..., 1] ** 2
-    coeffs = spectral_weights * coeffs
-    norm2 = coeffs[..., :, 0] + 2 * torch.sum(coeffs[..., :, 1:], dim=-1)
-    loss = torch.sum(norm2, dim=(-1, -2))
-
-    if relative:
-        tar_coeffs = torch.view_as_real(solver.sht(tar))
-        tar_coeffs = tar_coeffs[..., 0] ** 2 + tar_coeffs[..., 1] ** 2
-        tar_coeffs = spectral_weights * tar_coeffs
-        tar_norm2 = tar_coeffs[..., :, 0] + 2 * torch.sum(tar_coeffs[..., :, 1:], dim=-1)
-        tar_norm2 = torch.sum(tar_norm2, dim=(-1, -2))
-        loss = loss / tar_norm2
-
-    if not squared:
-        loss = torch.sqrt(loss)
-    loss = loss.mean()
-
-    return loss
-
-
-def h1loss_sphere(solver, prd, tar, relative=False, squared=True):
-    # gradient weighting factors
-    lmax = solver.sht.lmax
-    ls = torch.arange(lmax).float()
-    spectral_weights = (ls * (ls + 1)).reshape(1, 1, -1, 1).to(prd.device)
-
-    # compute coefficients
-    coeffs = torch.view_as_real(solver.sht(prd - tar))
-    coeffs = coeffs[..., 0] ** 2 + coeffs[..., 1] ** 2
-    h1_coeffs = spectral_weights * coeffs
-    h1_norm2 = h1_coeffs[..., :, 0] + 2 * torch.sum(h1_coeffs[..., :, 1:], dim=-1)
-    l2_norm2 = coeffs[..., :, 0] + 2 * torch.sum(coeffs[..., :, 1:], dim=-1)
-    h1_loss = torch.sum(h1_norm2, dim=(-1, -2))
-    l2_loss = torch.sum(l2_norm2, dim=(-1, -2))
-
-    # strictly speaking this is not exactly h1 loss
-    if not squared:
-        loss = torch.sqrt(h1_loss) + torch.sqrt(l2_loss)
-    else:
-        loss = h1_loss + l2_loss
-
-    if relative:
-        raise NotImplementedError("Relative H1 loss not implemented")
-
-    loss = loss.mean()
-
-    return loss
-
-
-def fluct_l2loss_sphere(solver, prd, tar, inp, relative=False, polar_opt=0):
-    # compute the weighting factor first
-    fluct = solver.integrate_grid((tar - inp) ** 2, dimensionless=True, polar_opt=polar_opt)
-    weight = fluct / torch.sum(fluct, dim=-1, keepdim=True)
-    # weight = weight.reshape(*weight.shape, 1, 1)
-
-    loss = weight * solver.integrate_grid((prd - tar) ** 2, dimensionless=True, polar_opt=polar_opt)
-    if relative:
-        loss = loss / (weight * solver.integrate_grid(tar**2, dimensionless=True, polar_opt=polar_opt))
-    loss = torch.mean(loss)
-    return loss
+    store_dict = {"iteration": iters, "grads": grad_dict, "weights": weights_dict}
+    torch.save(store_dict, weights_and_grads_fname)
 
 
 # rolls out the FNO and compares to the classical solver
@@ -199,7 +116,7 @@ def autoregressive_inference(model, dataset, path_root, nsteps, autoreg_steps=10
                 # do plotting
                 fig = plt.figure(figsize=(7.5, 6))
                 dataset.solver.plot_griddata(prd[0, plot_channel], fig, vmax=4, vmin=-4, projection="robinson")
-                plt.savefig(os.path.join(path_root,'pred_'+str(i//nskip)+'.png'))
+                plt.savefig(os.path.join(path_root, "pred_" + str(i // nskip) + ".png"))
                 plt.close()
 
         fno_times[iic] = time.time() - start_time
@@ -217,7 +134,7 @@ def autoregressive_inference(model, dataset, path_root, nsteps, autoreg_steps=10
 
                 fig = plt.figure(figsize=(7.5, 6))
                 dataset.solver.plot_griddata(ref[plot_channel], fig, vmax=4, vmin=-4, projection="robinson")
-                plt.savefig(os.path.join(path_root,'truth_'+str(i//nskip)+'.png'))
+                plt.savefig(os.path.join(path_root, "truth_" + str(i // nskip) + ".png"))
                 plt.close()
 
         nwp_times[iic] = time.time() - start_time
@@ -253,28 +170,11 @@ def autoregressive_inference(model, dataset, path_root, nsteps, autoreg_steps=10
         plt.xlabel("$l$")
         plt.ylabel("powerspectrum")
         plt.legend()
-        plt.savefig(os.path.join(path_root,f'powerspectrum_{step}.png'))
+        plt.savefig(os.path.join(path_root, f"powerspectrum_{step}.png"))
         fig.clf()
         plt.close()
 
     return losses, fno_times, nwp_times
-
-
-# convenience function for logging weights and gradients
-def log_weights_and_grads(model, iters=1):
-    """
-    Helper routine intended for debugging purposes
-    """
-    root_path = os.path.join(os.path.dirname(__file__), "weights_and_grads")
-
-    weights_and_grads_fname = os.path.join(root_path, f"weights_and_grads_step{iters:03d}.tar")
-    print(weights_and_grads_fname)
-
-    weights_dict = {k: v for k, v in model.named_parameters()}
-    grad_dict = {k: v.grad for k, v in model.named_parameters()}
-
-    store_dict = {"iteration": iters, "grads": grad_dict, "weights": weights_dict}
-    torch.save(store_dict, weights_and_grads_fname)
 
 
 # training function
@@ -375,14 +275,14 @@ def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=2
     return valid_loss
 
 
-def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data_dir=".data"):
+def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data_dir="data"):
 
     # set seed
     torch.manual_seed(333)
     torch.cuda.manual_seed(333)
 
     # set parameters
-    nfuture=0
+    nfuture = 0
 
     # set device
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -394,40 +294,36 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data
 
     # 2D3DS download & dataset initialization
     tardl = TarDownloader(base_url="https://cvg-data.inf.ethz.ch/2d3ds/no_xyz/", local_dir=str(data_dir))
-    _, classes = tardl.download_dataset([("area_3_no_xyz.tar","area_3"),("area_5a_no_xyz.tar","area_5a")])
-    dataset = Spherical2D3DSDataset([f"{data_dir}/area_3",f"{data_dir}/area_5a"], classes)
+    _, classes = tardl.download_dataset([("area_3_no_xyz.tar", "area_3"), ("area_5a_no_xyz.tar", "area_5a")])
+    dataset = SphericalSegmentationDataset([f"{data_dir}/area_3", f"{data_dir}/area_5a"], classes)
 
     dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=0, persistent_workers=False)
 
-    (rgb_dim, _) = dataset.dim
-    img_h = rgb_dim[0]
-    img_w = rgb_dim[1]
-
-    def count_parameters(model):
-        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    img_size = dataset.input_shape[1:]
 
     # prepare dicts containing models and corresponding metrics
     models = {}
     metrics = {}
 
-    from torch_harmonics.examples.models import SphericalTransformerForSegmentation as SNT
+    from torch_harmonics.examples.models import SphericalTransformerForSegmentation as S2T
 
-    models[f"snt_sc2_layers4_e32"] = partial(
-        SNT,
+    models[f"s2t_sc2_layers4_e32"] = partial(
+        S2T,
         dataset.num_classes,
-        img_size=(img_h, img_w),
+        img_size=img_size,
         grid="equiangular",
+        in_chans=3,
         num_layers=4,
         scale_factor=2,
-        embed_dim=32,
+        embed_dim=128,
         activation_function="gelu",
         residual_prediction=False,
-        pos_embed=True,
+        pos_embed="spectral",
         use_mlp=True,
-        normalization_layer="none",
+        normalization_layer="instance_norm",
         encoder_kernel_shape=(4, 4),
         filter_basis_type="morlet",
-        upsample_sht = True,
+        upsample_sht=True,
     )
 
     # iterate over models and train each model
@@ -444,11 +340,11 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data
         print(f"number of trainable params: {num_params}")
         metrics[model_name]["num_params"] = num_params
 
-        exp_dir = os.path.join(root_path, 'checkpoints', model_name)
+        exp_dir = os.path.join(root_path, "checkpoints_2d3ds", model_name)
         if not os.path.isdir(exp_dir):
             os.makedirs(exp_dir, exist_ok=True)
 
-        exp_dir = os.path.join(root_path, 'checkpoints', model_name)
+        exp_dir = os.path.join(root_path, "checkpoints_2d3ds", model_name)
         if not os.path.isdir(exp_dir):
             os.makedirs(exp_dir, exist_ok=True)
 
@@ -460,7 +356,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data
             run = wandb.init(project="local sno spherical swe", group=model_name, name=model_name + "_" + str(time.time()), config=model_handle.keywords)
 
             # optimizer:
-            optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
+            optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
             gscaler = torch.GradScaler("cuda", enabled=enable_amp)
 
@@ -469,27 +365,18 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data
             print(f"Training {model_name}, single step")
             train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=20, loss_fn="l2", enable_amp=enable_amp, log_grads=log_grads)
 
-            if nfuture > 0:
-                print(f'Training {model_name}, {nfuture} step')
-                optimizer = torch.optim.Adam(model.parameters(), lr=5E-5)
-                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
-                gscaler = amp.GradScaler(enabled=enable_amp)
-                dataloader.dataset.nsteps = 2 * dt//dt_solver
-                train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=10, loss_fn="l2", nfuture=nfuture, enable_amp=enable_amp, log_grads=log_grads)
-                dataloader.dataset.nsteps = 1 * dt//dt_solver
-
             training_time = time.time() - start_time
 
             run.finish()
 
-            torch.save(model.state_dict(), os.path.join(exp_dir, 'checkpoint.pt'))
+            torch.save(model.state_dict(), os.path.join(exp_dir, "checkpoint.pt"))
 
         # set seed
         torch.manual_seed(333)
         torch.cuda.manual_seed(333)
 
         with torch.inference_mode():
-            losses, fno_times, nwp_times = autoregressive_inference(model, dataset, os.path.join(exp_dir,'figures'), nsteps=nsteps, autoreg_steps=30, nics=50)
+            losses, fno_times, nwp_times = autoregressive_inference(model, dataset, os.path.join(exp_dir, "figures"), nsteps=nsteps, autoreg_steps=30, nics=50)
             metrics[model_name]["loss_mean"] = np.mean(losses)
             metrics[model_name]["loss_std"] = np.std(losses)
             metrics[model_name]["fno_time_mean"] = np.mean(fno_times)
@@ -500,15 +387,22 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data
                 metrics[model_name]["training_time"] = training_time
 
     df = pd.DataFrame(metrics)
-    if not os.path.isdir(os.path.join(exp_dir, 'output_data',)):
-        os.makedirs(os.path.join(exp_dir, 'output_data'), exist_ok=True)
-    df.to_pickle(os.path.join(exp_dir, 'output_data', 'metrics.pkl'))
+    if not os.path.isdir(
+        os.path.join(
+            exp_dir,
+            "output_data",
+        )
+    ):
+        os.makedirs(os.path.join(exp_dir, "output_data"), exist_ok=True)
+    df.to_pickle(os.path.join(exp_dir, "output_data", "metrics.pkl"))
 
 
 if __name__ == "__main__":
     import torch.multiprocessing as mp
 
     mp.set_start_method("forkserver", force=True)
+
+    wandb.login()
 
     # main(train=False, load_checkpoint=True, enable_amp=False, log_grads=0)
     main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0)

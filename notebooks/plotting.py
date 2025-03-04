@@ -73,6 +73,27 @@ def plot_sphere(data,
 
     return im
 
+def imshow_sphere(data,
+                fig=None,
+                title=None,
+                central_latitude=0,
+                central_longitude=0,
+                **kwargs):
+    if fig == None:
+        fig = plt.figure()
+
+
+    proj = ccrs.Robinson(central_longitude=central_longitude)
+    # proj = ccrs.Mollweide(central_longitude=central_longitude)
+
+    ax = fig.add_subplot(projection=proj)
+
+    # contour data over the map.
+    im = ax.imshow(data, transform=ccrs.PlateCarree(), **kwargs)
+    plt.title(title, y=1.05)
+
+    return im
+
 def plot_data(data,
                 fig=None,
                 cmap="RdBu",
