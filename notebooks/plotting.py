@@ -83,7 +83,7 @@ def imshow_sphere(data,
         fig = plt.figure()
 
 
-    proj = ccrs.Robinson(central_longitude=central_longitude)
+    proj = ccrs.Robinson(central_longitude=central_longitude+180)
     # proj = ccrs.Mollweide(central_longitude=central_longitude)
 
     ax = fig.add_subplot(projection=proj)
@@ -115,7 +115,7 @@ def plot_data(data,
         lat = np.linspace(np.pi/2., -np.pi/2., nlat)
     Lon, Lat = np.meshgrid(lon, lat)
 
-    proj = ccrs.PlateCarree(central_longitude=central_longitude)
+    proj = ccrs.Robinson(central_longitude=central_longitude)
     # proj = ccrs.Mollweide(central_longitude=central_longitude)
 
     ax = fig.add_subplot(projection=proj)

@@ -55,5 +55,6 @@ dev = [
     "requests",
     "tarfile",
     "tqdm",
-    "torchvision",
+    "PIL",
+    "h5py",
 ]

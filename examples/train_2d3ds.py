@@ -29,7 +29,8 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os
+import os, sys
+sys.path.append("../notebooks")
 import time
 
 from tqdm import tqdm
@@ -44,11 +45,34 @@ import pandas as pd
 
 import matplotlib.pyplot as plt
 
-from torch_harmonics.examples import SphericalSegmentationDataset, TarDownloader
-from torch_harmonics import RealSHT
+from torch_harmonics.examples import SphericalSegmentationDataset, SphericalSegmendationDatasetDownloader
+from torch_harmonics.quadrature import _precompute_latitudes
+
+from plotting import plot_sphere, plot_data, imshow_sphere
 
 # wandb logging
 import wandb
+
+
+class CrossEntropyLossS2(nn.Module):
+
+    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
+
+        super().__init__()
+
+        _, q = _precompute_latitudes(nlat=nlat, grid=grid)
+
+        q = q.reshape(-1, 1) * 2 * torch.pi / nlon
+
+        self.register_buffer("quad_weights", q)
+
+    def forward(self, inp: torch.Tensor, tar: torch.Tensor):
+
+        ce = nn.functional.cross_entropy(inp, tar, reduction="none")
+        ce = (ce * self.quad_weights).sum(dim=(-1, -2)) / 4 / torch.pi
+        ce = ce.mean()
+
+        return ce
 
 
 # helper routine for counting number of paramerters in model
@@ -74,111 +98,48 @@ def log_weights_and_grads(model, iters=1):
 
 
 # rolls out the FNO and compares to the classical solver
-def autoregressive_inference(model, dataset, path_root, nsteps, autoreg_steps=10, nskip=1, plot_channel=0, nics=50):
+def validate_model(model, dataset, loss_fn, path_root, num_examples=10, device=torch.device("cpu")):
 
     model.eval()
+
+    num_examples = min(len(dataset), num_examples)
 
     # make output
     if not os.path.isdir(path_root):
         os.makedirs(path_root, exist_ok=True)
 
-    losses = np.zeros(nics)
-    fno_times = np.zeros(nics)
-    nwp_times = np.zeros(nics)
+    losses = np.zeros(num_examples)
+    # fno_times = np.zeros(num_samples)
 
-    # accumulation buffers for the power spectrum
-    prd_mean_coeffs = []
-    ref_mean_coeffs = []
 
-    for iic in range(nics):
-        ic = dataset.solver.random_initial_condition(mach=0.2)
-        inp_mean = dataset.inp_mean
-        inp_var = dataset.inp_var
+    for idx in range(num_examples):
+        with torch.no_grad():
+            inp, tar = dataset[idx]
+            prd = model(inp.unsqueeze(0).to(device))
+            num_classes = prd.shape[-3]
 
-        prd = (dataset.solver.spec2grid(ic) - inp_mean) / torch.sqrt(inp_var)
-        prd = prd.unsqueeze(0)
-        uspec = ic.clone()
+            losses[idx] = loss_fn(prd, tar.unsqueeze(0).to(device)).item()
 
-        # add IC to power spectrum series
-        prd_coeffs = [dataset.sht(prd[0, plot_channel]).detach().cpu().clone()]
-        ref_coeffs = [prd_coeffs[0].clone()]
+            prd = nn.functional.softmax(prd, dim=-3)
+            prd = torch.argmax(prd, dim=-3).squeeze()
 
-        # ML model
-        start_time = time.time()
-        for i in range(1, autoreg_steps + 1):
-            # evaluate the ML model
-            prd = model(prd)
+            # do plotting
+            fig = plt.figure(figsize=(7.5, 6))
+            plot_data(prd.cpu() / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow")
+            plt.savefig(os.path.join(path_root, "pred_" + str(idx) + ".png"))
+            plt.close()
 
-            prd_coeffs.append(dataset.sht(prd[0, plot_channel]).detach().cpu().clone())
+            fig = plt.figure(figsize=(7.5, 6))
+            plot_data(tar.cpu() / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow")
+            plt.savefig(os.path.join(path_root, "truth_" + str(idx) + ".png"))
+            plt.close()
 
-            if iic == nics - 1 and nskip > 0 and i % nskip == 0:
-
-                # do plotting
-                fig = plt.figure(figsize=(7.5, 6))
-                dataset.solver.plot_griddata(prd[0, plot_channel], fig, vmax=4, vmin=-4, projection="robinson")
-                plt.savefig(os.path.join(path_root, "pred_" + str(i // nskip) + ".png"))
-                plt.close()
-
-        fno_times[iic] = time.time() - start_time
-
-        # classical model
-        start_time = time.time()
-        for i in range(1, autoreg_steps + 1):
-
-            # advance classical model
-            uspec = dataset.solver.timestep(uspec, nsteps)
-            ref = (dataset.solver.spec2grid(uspec) - inp_mean) / torch.sqrt(inp_var)
-            ref_coeffs.append(dataset.sht(ref[plot_channel]).detach().cpu().clone())
-
-            if iic == nics - 1 and i % nskip == 0 and nskip > 0:
-
-                fig = plt.figure(figsize=(7.5, 6))
-                dataset.solver.plot_griddata(ref[plot_channel], fig, vmax=4, vmin=-4, projection="robinson")
-                plt.savefig(os.path.join(path_root, "truth_" + str(i // nskip) + ".png"))
-                plt.close()
-
-        nwp_times[iic] = time.time() - start_time
-
-        # compute power spectrum and add it to the buffers
-        prd_mean_coeffs.append(torch.stack(prd_coeffs, 0))
-        ref_mean_coeffs.append(torch.stack(ref_coeffs, 0))
-
-        # ref = (dataset.solver.spec2grid(uspec) - inp_mean) / torch.sqrt(inp_var)
-        ref = dataset.solver.spec2grid(uspec)
-        prd = prd * torch.sqrt(inp_var) + inp_mean
-        losses[iic] = l2loss_sphere(dataset.solver, prd, ref, relative=True).item()
-
-    # compute the averaged powerspectra of prediction and reference
-    with torch.no_grad():
-        prd_mean_coeffs = torch.stack(prd_mean_coeffs, dim=0).abs().pow(2).mean(dim=0)
-        ref_mean_coeffs = torch.stack(ref_mean_coeffs, dim=0).abs().pow(2).mean(dim=0)
-
-        prd_mean_coeffs[..., 1:] *= 2.0
-        ref_mean_coeffs[..., 1:] *= 2.0
-        prd_mean_ps = prd_mean_coeffs.sum(dim=-1).contiguous()
-        ref_mean_ps = ref_mean_coeffs.sum(dim=-1).contiguous()
-
-        # split the stuff
-        prd_mean_ps = [x.squeeze() for x in list(torch.split(prd_mean_ps, 1, dim=0))]
-        ref_mean_ps = [x.squeeze() for x in list(torch.split(ref_mean_ps, 1, dim=0))]
-
-    # compute the averaged powerspectrum
-    for step, (pps, rps) in enumerate(zip(prd_mean_ps, ref_mean_ps)):
-        fig = plt.figure(figsize=(7.5, 6))
-        plt.semilogy(pps, label="prediction")
-        plt.semilogy(rps, label="reference")
-        plt.xlabel("$l$")
-        plt.ylabel("powerspectrum")
-        plt.legend()
-        plt.savefig(os.path.join(path_root, f"powerspectrum_{step}.png"))
-        fig.clf()
-        plt.close()
-
-    return losses, fno_times, nwp_times
+    return losses
 
 
 # training function
-def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=20, nfuture=0, num_examples=256, num_valid=8, loss_fn="l2", enable_amp=False, log_grads=0):
+def train_model(model, train_dataloader, test_dataloader, loss_fn, optimizer, gscaler, scheduler=None, nepochs=20, enable_amp=False, log_grads=0, device=torch.device("cpu")):
+
 
     train_start = time.time()
 
@@ -190,38 +151,22 @@ def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=2
         # time each epoch
         epoch_start = time.time()
 
-        dataloader.dataset.set_initial_condition("random")
-        dataloader.dataset.set_num_examples(num_examples)
-
-        # get the solver for its convenience functions
-        solver = dataloader.dataset.solver
-
         # do the training
-        acc_loss = 0
+        accumulated_loss = 0
         model.train()
 
-        for inp, tar in dataloader:
+        for inp, tar in train_dataloader:
 
             with torch.autocast(device_type="cuda", enabled=enable_amp):
 
+                inp = inp.to(device)
+                tar = tar.to(device)
+
                 prd = model(inp)
-                for _ in range(nfuture):
-                    prd = model(prd)
 
-                if loss_fn == "l2":
-                    loss = l2loss_sphere(solver, prd, tar, relative=False)
-                elif loss_fn == "spectral l2":
-                    loss = spectral_l2loss_sphere(solver, prd, tar, relative=False)
-                elif loss_fn == "h1":
-                    loss = h1loss_sphere(solver, prd, tar, relative=False)
-                elif loss_fn == "spectral":
-                    loss = spectral_loss_sphere(solver, prd, tar, relative=False)
-                elif loss_fn == "fluct":
-                    loss = fluct_l2loss_sphere(solver, prd, tar, inp, relative=True)
-                else:
-                    raise NotImplementedError(f"Unknown loss function {loss_fn}")
+                loss = loss_fn(prd, tar)
 
-            acc_loss += loss.item() * inp.size(0)
+            accumulated_loss += loss.item() * inp.size(0)
 
             optimizer.zero_grad(set_to_none=True)
             gscaler.scale(loss).backward()
@@ -234,24 +179,23 @@ def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=2
 
             iters += 1
 
-        acc_loss = acc_loss / len(dataloader.dataset)
-
-        dataloader.dataset.set_initial_condition("random")
-        dataloader.dataset.set_num_examples(num_valid)
+        accumulated_loss = accumulated_loss / len(train_dataloader.dataset)
 
         # perform validation
         valid_loss = 0
         model.eval()
         with torch.no_grad():
-            for inp, tar in dataloader:
+            for inp, tar in test_dataloader:
+                inp = inp.to(device)
+                tar = tar.to(device)
+
                 prd = model(inp)
-                for _ in range(nfuture):
-                    prd = model(prd)
-                loss = l2loss_sphere(solver, prd, tar, relative=True)
+
+                loss = loss_fn(prd, tar)
 
                 valid_loss += loss.item() * inp.size(0)
 
-        valid_loss = valid_loss / len(dataloader.dataset)
+        valid_loss = valid_loss / len(test_dataloader.dataset)
 
         if scheduler is not None:
             scheduler.step(valid_loss)
@@ -261,12 +205,12 @@ def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=2
         print(f"--------------------------------------------------------------------------------")
         print(f"Epoch {epoch} summary:")
         print(f"time taken: {epoch_time}")
-        print(f"accumulated training loss: {acc_loss}")
+        print(f"accumulated training loss: {accumulated_loss}")
         print(f"relative validation loss: {valid_loss}")
 
         if wandb.run is not None:
             current_lr = optimizer.param_groups[0]["lr"]
-            wandb.log({"loss": acc_loss, "validation loss": valid_loss, "learning rate": current_lr})
+            wandb.log({"loss": accumulated_loss, "validation loss": valid_loss, "learning rate": current_lr})
 
     train_time = time.time() - train_start
 
@@ -277,6 +221,9 @@ def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=2
 
 def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data_dir="data"):
 
+    # directory for outputs
+    root_path = os.path.dirname(__file__)
+
     # set seed
     torch.manual_seed(333)
     torch.cuda.manual_seed(333)
@@ -285,6 +232,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data
     nfuture = 0
 
     # set device
+    # device=torch.device("cpu")
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if torch.cuda.is_available():
         torch.cuda.set_device(device.index)
@@ -293,29 +241,75 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data
     os.makedirs(data_dir, exist_ok=True)
 
     # 2D3DS download & dataset initialization
-    tardl = TarDownloader(base_url="https://cvg-data.inf.ethz.ch/2d3ds/no_xyz/", local_dir=str(data_dir))
-    _, classes = tardl.download_dataset([("area_3_no_xyz.tar", "area_3"), ("area_5a_no_xyz.tar", "area_5a")])
-    dataset = SphericalSegmentationDataset([f"{data_dir}/area_3", f"{data_dir}/area_5a"], classes)
+    downloader = SphericalSegmendationDatasetDownloader(base_url="https://cvg-data.inf.ethz.ch/2d3ds/no_xyz/", local_dir=str(data_dir))
+    dataset_file = downloader.prepare_dataset()
 
-    dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=0, persistent_workers=False)
+    # create the dataset and split it
+    print(f"Initializing dataset...")
+    dataset = SphericalSegmentationDataset(dataset_file=dataset_file)
+    train_dataset, test_dataset = torch.utils.data.random_split(dataset, [0.9, 0.1])
+
+    train_dataloader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=0, persistent_workers=False, pin_memory=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=8, shuffle=True, num_workers=0, persistent_workers=False, pin_memory=True)
+
+    print(dataset.input_shape)
 
     img_size = dataset.input_shape[1:]
+    print(f"Train dataset initialized with {len(train_dataset)} samples of resolution {img_size}")
+    print(f"Test dataset initialized with {len(test_dataset)} samples of resolution {img_size}")
 
     # prepare dicts containing models and corresponding metrics
     models = {}
     metrics = {}
 
+    from torch_harmonics.examples.models import SphericalFourierNeuralOperatorForSegmentation as SFNO
+    from torch_harmonics.examples.models import LocalSphericalNeuralOperatorForSegmentation as LSNO
     from torch_harmonics.examples.models import SphericalTransformerForSegmentation as S2T
 
-    models[f"s2t_sc2_layers4_e32"] = partial(
+
+    # models[f"sfno_sc4_layers4_e32"] = partial(
+    #     SFNO,
+    #     dataset.num_classes,
+    #     img_size=img_size,
+    #     grid="equiangular",
+    #     in_chans=4,
+    #     num_layers=4,
+    #     scale_factor=4,
+    #     embed_dim=32,
+    #     activation_function="gelu",
+    #     residual_prediction=False,
+    #     use_mlp=True,
+    #     normalization_layer="instance_norm",
+    # )
+
+    models[f"lsno_sc4_layers4_e32_morlet"] = partial(
+        LSNO,
+        dataset.num_classes,
+        img_size=img_size,
+        grid="equiangular",
+        in_chans=4,
+        num_layers=4,
+        scale_factor=4,
+        embed_dim=32,
+        activation_function="gelu",
+        residual_prediction=False,
+        use_mlp=True,
+        normalization_layer="instance_norm",
+        kernel_shape=(4, 4),
+        encoder_kernel_shape=(4, 4),
+        filter_basis_type="morlet",
+        upsample_sht = True,
+    )
+
+    models[f"s2t_sc4_layers4_e32"] = partial(
         S2T,
         dataset.num_classes,
         img_size=img_size,
         grid="equiangular",
-        in_chans=3,
+        in_chans=4,
         num_layers=4,
-        scale_factor=2,
-        embed_dim=128,
+        scale_factor=4,
+        embed_dim=32,
         activation_function="gelu",
         residual_prediction=False,
         pos_embed="spectral",
@@ -326,8 +320,10 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data
         upsample_sht=True,
     )
 
+    # create the loss object
+    loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
+
     # iterate over models and train each model
-    root_path = os.path.dirname(__file__)
     for model_name, model_handle in models.items():
 
         model = model_handle().to(device)
@@ -344,16 +340,12 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data
         if not os.path.isdir(exp_dir):
             os.makedirs(exp_dir, exist_ok=True)
 
-        exp_dir = os.path.join(root_path, "checkpoints_2d3ds", model_name)
-        if not os.path.isdir(exp_dir):
-            os.makedirs(exp_dir, exist_ok=True)
-
         if load_checkpoint:
             model.load_state_dict(torch.load(os.path.join(exp_dir, "checkpoint.pt")))
 
         # run the training
         if train:
-            run = wandb.init(project="local sno spherical swe", group=model_name, name=model_name + "_" + str(time.time()), config=model_handle.keywords)
+            run = wandb.init(project="spherical segmentation 2d3ds", group=model_name, name=model_name + "_" + str(time.time()), config=model_handle.keywords)
 
             # optimizer:
             optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -362,8 +354,8 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data
 
             start_time = time.time()
 
-            print(f"Training {model_name}, single step")
-            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=20, loss_fn="l2", enable_amp=enable_amp, log_grads=log_grads)
+            print(f"Training {model_name}")
+            train_model(model, train_dataloader, test_dataloader, loss_fn, optimizer, gscaler, scheduler, nepochs=20, enable_amp=enable_amp, log_grads=log_grads, device=device)
 
             training_time = time.time() - start_time
 
@@ -376,13 +368,11 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, _data
         torch.cuda.manual_seed(333)
 
         with torch.inference_mode():
-            losses, fno_times, nwp_times = autoregressive_inference(model, dataset, os.path.join(exp_dir, "figures"), nsteps=nsteps, autoreg_steps=30, nics=50)
-            metrics[model_name]["loss_mean"] = np.mean(losses)
-            metrics[model_name]["loss_std"] = np.std(losses)
-            metrics[model_name]["fno_time_mean"] = np.mean(fno_times)
-            metrics[model_name]["fno_time_std"] = np.std(fno_times)
-            metrics[model_name]["nwp_time_mean"] = np.mean(nwp_times)
-            metrics[model_name]["nwp_time_std"] = np.std(nwp_times)
+            losses = validate_model(model, test_dataset, loss_fn, os.path.join(exp_dir, "figures"), num_examples=50)
+            # metrics[model_name]["loss_mean"] = np.mean(losses)
+            # metrics[model_name]["loss_std"] = np.std(losses)
+            # metrics[model_name]["fno_time_mean"] = np.mean(fno_times)
+            # metrics[model_name]["fno_time_std"] = np.std(fno_times)
             if train:
                 metrics[model_name]["training_time"] = training_time
 

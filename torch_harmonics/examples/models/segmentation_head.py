@@ -55,16 +55,13 @@ class SegmentationWrapper(nn.Module, metaclass=abc.ABCMeta):
 
         self.softmax = nn.Softmax(dim=-3)  # assumes dim = (...,C,H,W), so dim=-3 gets C
 
-        print(num_classes)
-
         self.mlp = MLP(in_features=out_chans, out_features=num_classes, hidden_features=out_chans, act_layer=self.activation_function)
 
-        # apply softmax to the output of the MLP
-        self.segmentation_head = nn.Sequential(self.mlp, self.softmax)
-
-    def forward(self, x):
+    def forward(self, x, output_logits=True):
         x = self.backbone(x)
-        x = self.segmentation_head(x)
+        x = self.mlp(x)
+        if not output_logits:
+            x = self.softmax(x)
         return x
 
 

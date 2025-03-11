@@ -300,7 +300,7 @@ def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=2
         solver = dataloader.dataset.solver
 
         # do the training
-        acc_loss = 0
+        accumulated_loss = 0
         model.train()
 
         for inp, tar in dataloader:
@@ -324,7 +324,7 @@ def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=2
                 else:
                     raise NotImplementedError(f"Unknown loss function {loss_fn}")
 
-            acc_loss += loss.item() * inp.size(0)
+            accumulated_loss += loss.item() * inp.size(0)
 
             optimizer.zero_grad(set_to_none=True)
             gscaler.scale(loss).backward()
@@ -337,7 +337,7 @@ def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=2
 
             iters += 1
 
-        acc_loss = acc_loss / len(dataloader.dataset)
+        accumulated_loss = accumulated_loss / len(dataloader.dataset)
 
         dataloader.dataset.set_initial_condition("random")
         dataloader.dataset.set_num_examples(num_valid)
@@ -364,12 +364,12 @@ def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=2
         print(f"--------------------------------------------------------------------------------")
         print(f"Epoch {epoch} summary:")
         print(f"time taken: {epoch_time}")
-        print(f"accumulated training loss: {acc_loss}")
+        print(f"accumulated training loss: {accumulated_loss}")
         print(f"relative validation loss: {valid_loss}")
 
         if wandb.run is not None:
             current_lr = optimizer.param_groups[0]["lr"]
-            wandb.log({"loss": acc_loss, "validation loss": valid_loss, "learning rate": current_lr})
+            wandb.log({"loss": accumulated_loss, "validation loss": valid_loss, "learning rate": current_lr})
 
     train_time = time.time() - train_start
 
@@ -379,6 +379,9 @@ def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=2
 
 
 def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, nfuture=0):
+
+    # directory for outputs
+    root_path = os.path.dirname(__file__)
 
     # set seed
     torch.manual_seed(333)
@@ -460,7 +463,6 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, nfutu
     )
 
     # iterate over models and train each model
-    root_path = os.path.dirname(__file__)
     for model_name, model_handle in models.items():
 
         model = model_handle().to(device)
