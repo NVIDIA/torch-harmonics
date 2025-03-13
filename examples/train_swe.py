@@ -445,7 +445,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, nfutu
     #     upsample_sht = True,
     # )
 
-    models[f"s2t_sc2_layers4_e32"] = partial(
+    models[f"s2t_sc2_layers4_e32_h1"] = partial(
         S2T,
         img_size=(nlat, nlon),
         grid=grid,
@@ -455,6 +455,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, nfutu
         activation_function="gelu",
         residual_prediction=False,
         pos_embed="spectral",
+        num_heads=1,
         use_mlp=True,
         normalization_layer="instance_norm",
         encoder_kernel_shape=(4, 4),

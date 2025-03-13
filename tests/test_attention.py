@@ -151,17 +151,19 @@ class TestNeighborhoodAttention(unittest.TestCase):
     @parameterized.expand(
         [
             # self attention
-            [8, 4, (17, 32), (17, 32), "equiangular", "equiangular", 1e-6, 1e-4],
+            [8, 4, 1, (17, 32), (17, 32), "equiangular", "equiangular", 1e-6, 1e-4],
         ]
     )
-    def test_fwd(self, batch_size, channels, in_shape, out_shape, grid_in, grid_out, atol, rtol):
+    def test_fwd(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol):
 
         # extract some parameters
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
         # set up neighbor matrix
-        att = NeighborhoodAttentionS2(in_channels=channels, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=False).to(self.device)
+        att = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads,
+                                      in_shape=in_shape, out_shape=out_shape,
+                                      grid_in=grid_in, grid_out=grid_out, bias=False).to(self.device)
 
         # Execute and compare
         k_inp = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device=self.device)
@@ -187,17 +189,19 @@ class TestNeighborhoodAttention(unittest.TestCase):
     @parameterized.expand(
         [
             # regular convolution
-            [8, 4, (17, 32), (17, 32), "equiangular", "equiangular", 1e-6, 1e-4],
+            [8, 4, 1, (17, 32), (17, 32), "equiangular", "equiangular", 1e-6, 1e-4],
         ]
     )
-    def test_bwd_dv(self, batch_size, channels, in_shape, out_shape, grid_in, grid_out, atol, rtol):
+    def test_bwd_dv(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol):
 
         # extract some parameters
         _, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
         # set up neighbor matrix
-        att = NeighborhoodAttentionS2(channels, in_shape, out_shape, grid_in, grid_out, False).to(self.device)
+        att = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads,
+                                      in_shape=in_shape, out_shape=out_shape,
+                                      grid_in=grid_in, grid_out=grid_out, bias=False).to(self.device)
 
         # Execute and compare
         k_inp = torch.randn(batch_size, channels, *in_shape, dtype=torch.float32, device=self.device)
@@ -232,17 +236,19 @@ class TestNeighborhoodAttention(unittest.TestCase):
     @parameterized.expand(
         [
             # regular convolution
-            [8, 4, (17, 32), (17, 32), "equiangular", "equiangular", 1e-6, 1e-3],
+            [8, 4, 1, (17, 32), (17, 32), "equiangular", "equiangular", 1e-6, 1e-3],
         ]
     )
-    def test_bwd_dk(self, batch_size, channels, in_shape, out_shape, grid_in, grid_out, atol, rtol):
+    def test_bwd_dk(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol):
 
         # extract some parameters
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
         # set up neighbor matrix
-        att = NeighborhoodAttentionS2(channels, in_shape, out_shape, grid_in, grid_out, False).to(self.device)
+        att = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads,
+                                      in_shape=in_shape, out_shape=out_shape,
+                                      grid_in=grid_in, grid_out=grid_out, bias=False).to(self.device)
 
         # Execute and compare
         k_inp = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device=self.device)
@@ -277,17 +283,19 @@ class TestNeighborhoodAttention(unittest.TestCase):
     @parameterized.expand(
         [
             # regular convolution
-            [8, 4, (17, 32), (17, 32), "equiangular", "equiangular", 4e-6, 1e-3],
+            [8, 4, 1, (17, 32), (17, 32), "equiangular", "equiangular", 4e-6, 1e-3],
         ]
     )
-    def test_bwd_dq(self, batch_size, channels, in_shape, out_shape, grid_in, grid_out, atol, rtol):
+    def test_bwd_dq(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol):
 
         # extract some parameters
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
         # set up neighbor matrix
-        att = NeighborhoodAttentionS2(channels, in_shape, out_shape, grid_in, grid_out, False).to(self.device)
+        att = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads,
+                                      in_shape=in_shape, out_shape=out_shape,
+                                      grid_in=grid_in, grid_out=grid_out, bias=False).to(self.device)
 
         # Execute and compare
         k_inp = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device=self.device)
@@ -322,10 +330,10 @@ class TestNeighborhoodAttention(unittest.TestCase):
     @parameterized.expand(
         [
             # self attention
-            [1, 73, (721, 1440), (721, 1440), "equiangular", "equiangular", 1e-5, 1e-5],
+            [1, 73, 1, (721, 1440), (721, 1440), "equiangular", "equiangular", 1e-5, 1e-5],
         ]
     )
-    def test_big(self, batch_size, channels, in_shape, out_shape, grid_in, grid_out, atol, rtol):
+    def test_big(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol):
 
         # this test only makes sense when CUDA version is available
         if torch.cuda.is_available():
@@ -345,7 +353,9 @@ class TestNeighborhoodAttention(unittest.TestCase):
         q_gpu.requires_grad = False
 
         # set up layers
-        att_gpu = NeighborhoodAttentionS2(in_channels=channels, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True).to("cuda:0")
+        att_gpu = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads,
+                                          in_shape=in_shape, out_shape=out_shape,
+                                          grid_in=grid_in, grid_out=grid_out, bias=True).to("cuda:0")
 
         # random weights
         with torch.no_grad():
@@ -381,10 +391,10 @@ class TestNeighborhoodAttention(unittest.TestCase):
     @parameterized.expand(
         [
             # self attention
-            [10, 2, (17, 32), (17, 32), "equiangular", "equiangular", 1e-5, 1e-5],
+            [10, 2, 1, (17, 32), (17, 32), "equiangular", "equiangular", 1e-5, 1e-5],
         ]
     )
-    def test_neighborhood(self, batch_size, num_channels, in_shape, out_shape, grid_in, grid_out, atol, rtol):
+    def test_neighborhood(self, batch_size, num_channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol):
         """
         This test sets a specific q[ho,wo] value to 1.0 (elsewhere 0), and then a neighborhood of k around ho,wo to 1.0 (else 0.0). Also vi is set to a sinusoidal input. We also run it with fully 0 q,k. We test that the output of the nonzero q,k is only different to the zero q,k in a single point. We also check the value of this difference (as a regression test).
         """
@@ -395,7 +405,9 @@ class TestNeighborhoodAttention(unittest.TestCase):
         from torch_harmonics import _neighborhood_attention_s2_fwd_torch
 
         device = "cpu"
-        nas2_2 = NeighborhoodAttentionS2(in_channels=num_channels, in_shape=(nlat_in, nlon_in), out_shape=(nlat_out, nlon_out), theta_cutoff=torch.pi / 128 * 10)
+        nas2_2 = NeighborhoodAttentionS2(in_channels=num_channels, num_heads=heads,
+                                         in_shape=(nlat_in, nlon_in), out_shape=(nlat_out, nlon_out),
+                                         theta_cutoff=torch.pi / 128 * 10)
         nas2_2.to(device)
         qo = torch.zeros((batch_size, num_channels, nlat_in, nlon_in)).to(device)
         x = torch.linspace(0, 2 * np.pi, nlat_in)  # 100 points in x direction
@@ -411,7 +423,9 @@ class TestNeighborhoodAttention(unittest.TestCase):
         ho = 10
         wo = 15
         qo[:, 0, ho, wo] = 1.0
-        nas3 = NeighborhoodAttentionS2(in_channels=num_channels, in_shape=(nlat_in, nlon_in), out_shape=(nlat_out, nlon_out), theta_cutoff=torch.pi / 128 * 7)
+        nas3 = NeighborhoodAttentionS2(in_channels=num_channels, num_heads=heads,
+                                       in_shape=(nlat_in, nlon_in), out_shape=(nlat_out, nlon_out),
+                                       theta_cutoff=torch.pi / 128 * 7)
         zstart = nas3.psi_roff_idx[ho]
         zend = nas3.psi_roff_idx[ho + 1]
 
@@ -449,11 +463,11 @@ class TestNeighborhoodAttention(unittest.TestCase):
     @parameterized.expand(
         [
             # self attention
-            [8, 4, (17, 32), (17, 32), "equiangular", "equiangular", 2e-4, 1e-5],
-            [8, 4, (17, 32), (17, 32), "equiangular", "equiangular", 2e-4, 1e-5],
+            [8, 4, 1, (17, 32), (17, 32), "equiangular", "equiangular", 2e-4, 1e-5],
+            [8, 4, 1, (17, 32), (17, 32), "equiangular", "equiangular", 2e-4, 1e-5],
         ]
     )
-    def test_full(self, batch_size, channels, in_shape, out_shape, grid_in, grid_out, atol, rtol):
+    def test_full(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol):
 
         # extract some parameters
         nlat_in, nlon_in = in_shape
@@ -467,7 +481,9 @@ class TestNeighborhoodAttention(unittest.TestCase):
         q_cpu.requires_grad = True
 
         # set up layers
-        att_cpu = NeighborhoodAttentionS2(in_channels=channels, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True)
+        att_cpu = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads,
+                                          in_shape=in_shape, out_shape=out_shape,
+                                          grid_in=grid_in, grid_out=grid_out, bias=True)
 
         # random weights
         with torch.no_grad():
@@ -482,7 +498,9 @@ class TestNeighborhoodAttention(unittest.TestCase):
         out_grad = torch.randn(out_cpu.shape, dtype=torch.float32, device="cpu")
         out_cpu.backward(out_grad)
 
-        att_gpu = NeighborhoodAttentionS2(in_channels=channels, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True).to(self.device)
+        att_gpu = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads,
+                                          in_shape=in_shape, out_shape=out_shape,
+                                          grid_in=grid_in, grid_out=grid_out, bias=True).to(self.device)
 
         # sync weights:
         with torch.no_grad():
@@ -492,6 +510,7 @@ class TestNeighborhoodAttention(unittest.TestCase):
             att_gpu.q_bias.copy_(att_cpu.q_bias)
             att_gpu.k_bias.copy_(att_cpu.k_bias)
             att_gpu.v_bias.copy_(att_cpu.v_bias)
+            att_gpu.project.copy_(att_cpu.project)
 
         q_gpu = q_cpu.detach().clone().to(self.device)
         q_gpu.requires_grad = True
@@ -515,6 +534,7 @@ class TestNeighborhoodAttention(unittest.TestCase):
         self.assertTrue(torch.allclose(att_cpu.q_weights.grad.to(self.device), att_gpu.q_weights.grad, atol=atol, rtol=rtol))
         self.assertTrue(torch.allclose(att_cpu.k_weights.grad.to(self.device), att_gpu.k_weights.grad, atol=atol, rtol=rtol))
         self.assertTrue(torch.allclose(att_cpu.v_weights.grad.to(self.device), att_gpu.v_weights.grad, atol=atol, rtol=rtol))
+        self.assertTrue(torch.allclose(att_cpu.project.grad.to(self.device), att_gpu.project.grad, atol=atol, rtol=rtol))
 
         # check bias gradients
         self.assertTrue(torch.allclose(att_cpu.q_bias.grad.to(self.device), att_gpu.q_bias.grad, atol=atol, rtol=rtol))

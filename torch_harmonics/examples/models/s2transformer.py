@@ -153,6 +153,7 @@ class SphericalAttentionBlock(nn.Module):
         grid_out="equiangular",
         in_chans=2,
         out_chans=2,
+        num_heads=1,
         mlp_ratio=2.0,
         drop_rate=0.0,
         drop_path=0.0,
@@ -184,6 +185,7 @@ class SphericalAttentionBlock(nn.Module):
             out_shape=out_shape,
             grid_in=grid_in,
             grid_out=grid_out,
+            num_heads=num_heads,
             theta_cutoff=theta_cutoff,
             k_channels=None,
             out_channels=None,
@@ -257,8 +259,10 @@ class SphericalTransformer(nn.Module):
         Activation function to use, by default "gelu"
     encoder_kernel_shape : int, optional
         size of the encoder kernel
-    filter_basis_type: Optional[str]: str, optional
+    filter_basis_type: str, optional
         filter basis type
+    num_heads: int, optional
+        number of attention heads
     use_mlp : int, optional
         Whether to use MLPs in the SFNO blocks, by default True
     mlp_ratio : int, optional
@@ -305,13 +309,13 @@ class SphericalTransformer(nn.Module):
         activation_function="gelu",
         encoder_kernel_shape=(3, 3),
         filter_basis_type="morlet",
+        num_heads=1,
         use_mlp=True,
         mlp_ratio=2.0,
         drop_rate=0.0,
         drop_path_rate=0.0,
         normalization_layer="none",
         hard_thresholding_fraction=1.0,
-        use_complex_kernels=True,
         residual_prediction=False,
         pos_embed="spectral",
         upsample_sht=False,
@@ -389,6 +393,7 @@ class SphericalTransformer(nn.Module):
                 grid_out=grid_internal,
                 in_chans=self.embed_dim,
                 out_chans=self.embed_dim,
+                num_heads=num_heads,
                 mlp_ratio=mlp_ratio,
                 drop_rate=drop_rate,
                 drop_path=dpr[i],

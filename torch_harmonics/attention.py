@@ -78,10 +78,12 @@ except ImportError as err:
 #     def __init__(
 #         self,
 #         in_channels: int,
+#         num_heads: int,
 #         in_shape: Tuple[int],
 #         out_shape: Tuple[int],
 #         grid_in: Optional[str] = "equiangular",
 #         grid_out: Optional[str] = "equiangular",
+#         scale: Optional[Union[torch.Tensor, float]] = None,
 #         bias: Optional[bool] = True,
 #         k_channels: Optional[int] = None,
 #         out_channels: Optional[int] = None,
@@ -106,14 +108,14 @@ except ImportError as err:
 #         # learnable parameters
 #         # TODO: double-check that this gives us the correct initialization magnitudes
 #         scale = math.sqrt(1.0 / self.in_channels)
-#         self.q_weights = nn.Parameter(scale * torch.randn(self.k_channels, self.in_channels, 1, 1))
-#         self.k_weights = nn.Parameter(scale * torch.randn(self.k_channels, self.in_channels, 1, 1))
-#         self.v_weights = nn.Parameter(scale * torch.randn(self.out_channels, self.in_channels, 1, 1))
+#         self.q_weights = nn.Parameter(scale * torch.randn(self.in_channels, num_heads * self.k_channels, 1, 1))
+#         self.k_weights = nn.Parameter(scale * torch.randn(self.in_channels, num_heads * self.k_channels, 1, 1))
+#         self.v_weights = nn.Parameter(scale * torch.randn(self.in_channels, num_heads * self.out_channels, 1, 1))
 
 #         if bias:
-#             self.q_bias = nn.Parameter(torch.zeros(self.k_channels))
-#             self.k_bias = nn.Parameter(torch.zeros(self.k_channels))
-#             self.v_bias = nn.Parameter(torch.zeros(self.out_channels))
+#             self.q_bias = nn.Parameter(torch.zeros(1, 1, num_heads, self.k_channels))
+#             self.k_bias = nn.Parameter(torch.zeros(1, 1, num_heads, self.k_channels))
+#             self.v_bias = nn.Parameter(torch.zeros(1, 1, self.out_channels))
 #         else:
 #             self.q_bias = None
 #             self.k_bias = None
@@ -140,13 +142,12 @@ except ImportError as err:
 #         # add checks if dimensions match
 
 #         # reshape to the right dimensions
-#         query = query.permute(0,2,3,1).reshape(-1, self.nlat_out * nlon_out, self.in_channels)
-#         key = key.permute(0,2,3,1).reshape(-1, self.nlat_in * nlon_in, self.in_channels)
-#         value = value.permute(0,2,3,1).reshape(-1, self.nlat_in * nlon_in, self.in_channels)
+#         B, _, H, W = query.shape
+#         query = nn.functional.conv2d(query, self.q_weights, bias=self.q_bias).reshape(B, self.num_heads, self.k_channels, H*W).permute(0,1,3,2)
+#         key = nn.functional.conv2d(key, self.k_weights, bias=self.k_bias).reshape(B, self.num_heads, self.k_channels, H*W).permute(0,1,3,2)
+#         value = nn.functional.conv2d(value, self.v_weights, bias=self.v_bias).reshape(B, self.num_heads, self.out_channels, H*W).permute(0,1,3,2)
 
-#         # multiply the query, key and value tensors
-
-#         out = nn.functional.scaled_dot_product_attention()
+#         out = nn.functional.scaled_dot_product_attention(query, key, value)
 
 #         return out
 
@@ -184,6 +185,7 @@ class NeighborhoodAttentionS2(nn.Module):
         out_shape: Tuple[int],
         grid_in: Optional[str] = "equiangular",
         grid_out: Optional[str] = "equiangular",
+        num_heads: Optional[int] = 1,
         scale: Optional[Union[torch.Tensor, float]] = None,
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
@@ -196,6 +198,7 @@ class NeighborhoodAttentionS2(nn.Module):
         self.nlat_out, self.nlon_out = out_shape
 
         self.in_channels = in_channels
+        self.num_heads = num_heads
         self.k_channels = in_channels if k_channels is None else k_channels
         self.out_channels = in_channels if out_channels is None else out_channels
 
@@ -256,19 +259,21 @@ class NeighborhoodAttentionS2(nn.Module):
         # learnable parameters
         # TODO: double-check that this gives us the correct initialization magnitudes
         scale = math.sqrt(1.0 / self.in_channels)
-        self.q_weights = nn.Parameter(scale * torch.randn(self.k_channels, self.in_channels, 1, 1))
-        self.k_weights = nn.Parameter(scale * torch.randn(self.k_channels, self.in_channels, 1, 1))
-        self.v_weights = nn.Parameter(scale * torch.randn(self.out_channels, self.in_channels, 1, 1))
+        self.q_weights = nn.Parameter(scale * torch.randn(self.num_heads * self.k_channels, self.in_channels, 1, 1))
+        self.k_weights = nn.Parameter(scale * torch.randn(self.num_heads * self.k_channels, self.in_channels, 1, 1))
+        self.v_weights = nn.Parameter(scale * torch.randn(self.num_heads * self.out_channels, self.in_channels, 1, 1))
+        pscale = math.sqrt(1.0 / self.num_heads)
+        self.project = nn.Parameter(pscale * torch.randn(1, self.num_heads, 1, 1, 1))
 
         if scale is not None:
             self.scale = scale
         else:
             self.scale = 1 / math.sqrt(k_channels)
-        
+
         if bias:
-            self.q_bias = nn.Parameter(torch.zeros(self.k_channels))
-            self.k_bias = nn.Parameter(torch.zeros(self.k_channels))
-            self.v_bias = nn.Parameter(torch.zeros(self.out_channels))
+            self.q_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
+            self.k_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
+            self.v_bias = nn.Parameter(torch.zeros(self.num_heads * self.out_channels))
         else:
             self.q_bias = None
             self.k_bias = None
@@ -294,9 +299,10 @@ class NeighborhoodAttentionS2(nn.Module):
 
         # do the scaling
         query_scaled = query * self.scale
-        
+
         # TODO: insert dimension checks for input
         if query.is_cuda and _cuda_extension_available:
+
             out = _neighborhood_attention_s2_cuda(
                 key,
                 value,
@@ -311,6 +317,7 @@ class NeighborhoodAttentionS2(nn.Module):
                 self.psi_col_idx,
                 self.psi_roff_idx,
                 self.max_psi_nnz,
+                self.num_heads,
                 self.nlon_in,
                 self.nlat_out,
                 self.nlon_out,
@@ -318,6 +325,7 @@ class NeighborhoodAttentionS2(nn.Module):
         else:
             if query.is_cuda:
                 warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
+
             # call attention
             out = _neighborhood_attention_s2_torch(
                 key,
@@ -332,9 +340,14 @@ class NeighborhoodAttentionS2(nn.Module):
                 self.quad_weights,
                 self.psi_col_idx,
                 self.psi_roff_idx,
+                self.num_heads,
                 self.nlon_in,
                 self.nlat_out,
                 self.nlon_out,
             )
+
+        B, _, H, W = out.shape
+        out = out.reshape(B, self.num_heads, -1, H, W)
+        out = nn.functional.conv3d(out, self.project).squeeze(1)
 
         return out

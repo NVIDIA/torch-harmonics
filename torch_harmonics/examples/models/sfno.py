@@ -217,7 +217,6 @@ class SphericalFourierNeuralOperator(nn.Module):
         drop_path_rate=0.0,
         normalization_layer="none",
         hard_thresholding_fraction=1.0,
-        use_complex_kernels=True,
         residual_prediction=False,
         pos_embed="none",
     ):

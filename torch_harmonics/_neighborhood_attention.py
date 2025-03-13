@@ -330,9 +330,10 @@ class _NeighborhoodAttentionS2(torch.autograd.Function):
                 wk: torch.Tensor, wv: torch.Tensor, wq: torch.Tensor,
                 bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], bq: Union[torch.Tensor, None],
                 quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-                nlon_in: int, nlat_out: int, nlon_out: int):
+                nh: int, nlon_in: int, nlat_out: int, nlon_out: int):
 
         ctx.save_for_backward(col_idx, row_off, quad_weights, k, v, q, wk, wv, wq, bk, bv, bq)
+        ctx.nh = nh
         ctx.nlon_in = nlon_in
         ctx.nlat_out = nlat_out
         ctx.nlon_out = nlon_out
@@ -340,6 +341,14 @@ class _NeighborhoodAttentionS2(torch.autograd.Function):
         kw = F.conv2d(k, weight=wk, bias=bk)
         vw = F.conv2d(v, weight=wv, bias=bv)
         qw = F.conv2d(q, weight=wq, bias=bq)
+
+        # reshape, folding num heads into batch dim
+        B, _, H, W = kw.shape
+        kw = kw.reshape(B*nh, -1, H, W)
+        B, _, H, W = vw.shape
+        vw = vw.reshape(B*nh, -1, H, W)
+        B, _, H, W = qw.shape
+        qw = qw.reshape(B*nh, -1, H, W)
 
         kw = kw.to(torch.float32)
         vw = vw.to(torch.float32)
@@ -349,19 +358,33 @@ class _NeighborhoodAttentionS2(torch.autograd.Function):
                                                       col_idx, row_off,
                                                       nlon_in, nlat_out, nlon_out)
 
+        _, C, H, W = output.shape
+        output = output.reshape(B, -1, H, W)
+
         return output
 
     @staticmethod
     @custom_bwd(device_type="cpu")
     def backward(ctx, grad_output):
         col_idx, row_off, quad_weights, k, v, q, wk, wv, wq, bk, bv, bq = ctx.saved_tensors
+        nh = ctx.nh
         nlon_in = ctx.nlon_in
         nlat_out = ctx.nlat_out
         nlon_out = ctx.nlon_out
-
+        
         kw = F.conv2d(k, weight=wk, bias=bk)
         vw = F.conv2d(v, weight=wv, bias=bv)
         qw = F.conv2d(q, weight=wq, bias=bq)
+
+        # reshape, folding num heads into batch dim
+        B, _, H, W = kw.shape
+        kw = kw.reshape(B*nh, -1, H, W)
+        B, _, H, W = vw.shape
+        vw = vw.reshape(B*nh, -1, H, W)
+        B, _, H, W = qw.shape
+        qw = qw.reshape(B*nh, -1, H, W)
+        B, _, H, W  = grad_output.shape
+        grad_output = grad_output.reshape(B*nh, -1, H, W)
 
         dvw = _neighborhood_attention_s2_bwd_dv_torch(kw, vw, qw, grad_output,
                                                       quad_weights,
@@ -377,113 +400,15 @@ class _NeighborhoodAttentionS2(torch.autograd.Function):
                                                       quad_weights,
                                                       col_idx, row_off,
                                                       nlon_in, nlat_out, nlon_out)
+
+        # reshape again
+        _, C, H, W = dkw.shape
+        dkw = dkw.reshape(B, nh * C, H, W)
+        _, C, H, W = dvw.shape
+        dvw = dvw.reshape(B, nh * C, H, W)
+        _, C, H, W = dqw.shape
+        dqw = dqw.reshape(B, nh * C, H, W)
         
-        # input grads
-        dv = torch.nn.functional.conv2d(dvw, weight=wv.permute([1,0,2,3]), bias=None)
-        dk = torch.nn.functional.conv2d(dkw, weight=wk.permute([1,0,2,3]), bias=None)
-        dq = torch.nn.functional.conv2d(dqw, weight=wq.permute([1,0,2,3]), bias=None)
-
-        # weight grads
-        dwv = torch.einsum("bchw,bfhw->cf", dvw, v).reshape(*wv.shape).contiguous()
-        dwk = torch.einsum("bchw,bfhw->cf", dkw, k).reshape(*wk.shape).contiguous()
-        dwq = torch.einsum("bchw,bfhw->cf", dqw, q).reshape(*wq.shape).contiguous()
-
-        # bias grads:
-        if bv is not None:
-            dbv = torch.sum(dvw, dim=(0,2,3))
-        else:
-            dbv = None
-
-        if bk is not None:
-            dbk = torch.sum(dkw, dim=(0,2,3))
-        else:
-            dbk = None
-
-        if bq is not None:
-            dbq = torch.sum(dqw, dim=(0,2,3))
-        else:
-            dbq = None
-
-        return dk, dv, dq, dwk, dwv, dwq, dbk, dbv, dbq, \
-                None, None, None, None, None, None
-
-
-def _neighborhood_attention_s2_torch(k: torch.Tensor, v: torch.Tensor, q: torch.Tensor, 
-                                     wk: torch.Tensor, wv: torch.Tensor, wq: torch.Tensor,
-                                     bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], 
-                                     bq: Union[torch.Tensor, None], quad_weights: torch.Tensor,
-                                     col_idx: torch.Tensor, row_off: torch.Tensor,
-                                     nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-    
-    return _NeighborhoodAttentionS2.apply(k, v, q, wk, wv, wq, bk, bv, bq,
-                                          quad_weights, col_idx, row_off,
-                                          nlon_in, nlat_out, nlon_out)
-
-
-class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
-
-    @staticmethod
-    @custom_fwd(device_type="cuda")
-    def forward(ctx, k: torch.Tensor, v: torch.Tensor, q: torch.Tensor,
-                wk: torch.Tensor, wv: torch.Tensor, wq: torch.Tensor,
-                bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], bq: Union[torch.Tensor, None], 
-                quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-                max_psi_nnz: int, nlon_in: int, nlat_out: int, nlon_out: int):
-
-        ctx.save_for_backward(col_idx, row_off, quad_weights, k, v, q, wk, wv, wq, bk, bv, bq)
-        ctx.max_psi_nnz = max_psi_nnz
-        ctx.nlon_in = nlon_in
-        ctx.nlat_out = nlat_out
-        ctx.nlon_out = nlon_out
-
-        kw = F.conv2d(k, weight=wk, bias=bk)
-        vw = F.conv2d(v, weight=wv, bias=bv)
-        qw = F.conv2d(q, weight=wq, bias=bq)
-
-        kw = kw.to(torch.float32)
-        vw = vw.to(torch.float32)
-        qw = qw.to(torch.float32)
-        
-        output = attention_cuda_extension.forward(kw, vw, qw, quad_weights,
-                                                  col_idx, row_off,
-                                                  nlon_in, nlat_out, nlon_out)
-
-        return output
-
-    @staticmethod
-    @custom_bwd(device_type="cuda")
-    def backward(ctx, grad_output):
-        col_idx, row_off, quad_weights, k, v, q, wk, wv, wq, bk, bv, bq = ctx.saved_tensors
-        max_psi_nnz = ctx.max_psi_nnz
-        nlon_in = ctx.nlon_in
-        nlat_out = ctx.nlat_out
-        nlon_out = ctx.nlon_out
-
-        kw = F.conv2d(k, weight=wk, bias=bk)
-        vw = F.conv2d(v, weight=wv, bias=bv)
-        qw = F.conv2d(q, weight=wq, bias=bq)
-
-        # non fused versions
-        # dvw0 = attention_cuda_extension.backward_dv(kw, vw, qw, grad_output,
-        #                                            quad_weights,
-        #                                            col_idx, row_off,
-        #                                            nlon_in, nlat_out, nlon_out)
-
-        # dkw0 = attention_cuda_extension.backward_dk(kw, vw, qw, grad_output,
-        #                                            quad_weights,
-        #                                            col_idx, row_off,
-        #                                            nlon_in, nlat_out, nlon_out)
-
-        # dqw0 = attention_cuda_extension.backward_dq(kw, vw, qw, grad_output,
-        #                                            quad_weights,
-        #                                            col_idx, row_off,
-        #                                            nlon_in, nlat_out, nlon_out)
-
-        dkw,dvw,dqw = attention_cuda_extension.backward_dkvq(kw, vw, qw, grad_output,
-                                                             quad_weights,
-                                                             col_idx, row_off,
-                                                             nlon_in, nlat_out, nlon_out)
-
         # input grads
         dv = torch.nn.functional.conv2d(dvw, weight=wv.permute([1,0,2,3]), bias=None)
         dk = torch.nn.functional.conv2d(dkw, weight=wk.permute([1,0,2,3]), bias=None)
@@ -514,13 +439,135 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
                 None, None, None, None, None, None, None
 
 
+def _neighborhood_attention_s2_torch(k: torch.Tensor, v: torch.Tensor, q: torch.Tensor, 
+                                     wk: torch.Tensor, wv: torch.Tensor, wq: torch.Tensor,
+                                     bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], 
+                                     bq: Union[torch.Tensor, None], quad_weights: torch.Tensor,
+                                     col_idx: torch.Tensor, row_off: torch.Tensor,
+                                     nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+    
+    return _NeighborhoodAttentionS2.apply(k, v, q, wk, wv, wq, bk, bv, bq,
+                                          quad_weights, col_idx, row_off,
+                                          nh, nlon_in, nlat_out, nlon_out)
+
+
+class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
+
+    @staticmethod
+    @custom_fwd(device_type="cuda")
+    def forward(ctx, k: torch.Tensor, v: torch.Tensor, q: torch.Tensor,
+                wk: torch.Tensor, wv: torch.Tensor, wq: torch.Tensor,
+                bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], bq: Union[torch.Tensor, None], 
+                quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+                max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int):
+
+        ctx.save_for_backward(col_idx, row_off, quad_weights, k, v, q, wk, wv, wq, bk, bv, bq)
+        ctx.nh = nh
+        ctx.max_psi_nnz = max_psi_nnz
+        ctx.nlon_in = nlon_in
+        ctx.nlat_out = nlat_out
+        ctx.nlon_out = nlon_out
+
+        kw = F.conv2d(k, weight=wk, bias=bk)
+        vw = F.conv2d(v, weight=wv, bias=bv)
+        qw = F.conv2d(q, weight=wq, bias=bq)
+
+        # reshape, folding num heads into batch dim
+        B, _, H, W = kw.shape
+        kw = kw.reshape(B*nh, -1, H, W)
+        B, _, H, W = vw.shape
+        vw = vw.reshape(B*nh, -1, H, W)
+        B, _, H, W = qw.shape
+        qw = qw.reshape(B*nh, -1, H, W)
+        
+        # convert to float32
+        kw = kw.to(torch.float32)
+        vw = vw.to(torch.float32)
+        qw = qw.to(torch.float32)
+        
+        output = attention_cuda_extension.forward(kw, vw, qw, quad_weights,
+                                                  col_idx, row_off,
+                                                  nlon_in, nlat_out, nlon_out)
+
+        _, C, H, W = output.shape
+        output = output.reshape(B, -1, H, W)
+
+        return output
+
+    @staticmethod
+    @custom_bwd(device_type="cuda")
+    def backward(ctx, grad_output):
+        col_idx, row_off, quad_weights, k, v, q, wk, wv, wq, bk, bv, bq = ctx.saved_tensors
+        nh = ctx.nh
+        max_psi_nnz = ctx.max_psi_nnz
+        nlon_in = ctx.nlon_in
+        nlat_out = ctx.nlat_out
+        nlon_out = ctx.nlon_out
+
+        kw = F.conv2d(k, weight=wk, bias=bk)
+        vw = F.conv2d(v, weight=wv, bias=bv)
+        qw = F.conv2d(q, weight=wq, bias=bq)
+
+        # reshape, folding num heads into batch dim
+        B, _, H, W = kw.shape
+        kw = kw.reshape(B*nh, -1, H, W)
+        B, _, H, W = vw.shape
+        vw = vw.reshape(B*nh, -1, H, W)
+        B, _, H, W = qw.shape
+        qw = qw.reshape(B*nh, -1, H, W)
+        B, _, H, W  = grad_output.shape
+        grad_output = grad_output.reshape(B*nh, -1, H, W)
+
+        dkw,dvw,dqw = attention_cuda_extension.backward_dkvq(kw, vw, qw, grad_output,
+                                                             quad_weights,
+                                                             col_idx, row_off,
+                                                             nlon_in, nlat_out, nlon_out)
+
+        # reshape again
+        _, C, H, W = dkw.shape
+        dkw = dkw.reshape(B, nh * C, H, W)
+        _, C, H, W = dvw.shape
+        dvw = dvw.reshape(B, nh * C, H, W)
+        _, C, H, W = dqw.shape
+        dqw = dqw.reshape(B, nh * C, H, W)
+
+        # input grads
+        dv = torch.nn.functional.conv2d(dvw, weight=wv.permute([1,0,2,3]), bias=None)
+        dk = torch.nn.functional.conv2d(dkw, weight=wk.permute([1,0,2,3]), bias=None)
+        dq = torch.nn.functional.conv2d(dqw, weight=wq.permute([1,0,2,3]), bias=None)
+
+        # weight grads
+        dwv = torch.einsum("bchw,bfhw->cf", dvw, v).reshape(*wv.shape).contiguous()
+        dwk = torch.einsum("bchw,bfhw->cf", dkw, k).reshape(*wk.shape).contiguous()
+        dwq = torch.einsum("bchw,bfhw->cf", dqw, q).reshape(*wq.shape).contiguous()
+
+        # bias grads:
+        if bv is not None:
+            dbv = torch.sum(dvw, dim=(0,2,3))
+        else:
+            dbv = None
+
+        if bk is not None:
+            dbk = torch.sum(dkw, dim=(0,2,3))
+        else:
+            dbk = None
+
+        if bq is not None:
+            dbq = torch.sum(dqw, dim=(0,2,3))
+        else:
+            dbq = None
+
+        return dk, dv, dq, dwk, dwv, dwq, dbk, dbv, dbq, \
+                None, None, None, None, None, None, None, None
+
+
 def _neighborhood_attention_s2_cuda(k: torch.Tensor, v: torch.Tensor, q: torch.Tensor, 
                                     wk: torch.Tensor, wv: torch.Tensor, wq: torch.Tensor,
                                     bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], 
                                     bq: Union[torch.Tensor, None], quad_weights: torch.Tensor,
                                     col_idx: torch.Tensor, row_off: torch.Tensor, max_psi_nnz: int,
-                                    nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+                                    nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
     
     return _NeighborhoodAttentionS2Cuda.apply(k, v, q, wk, wv, wq, bk, bv, bq, 
                                               quad_weights, col_idx, row_off, max_psi_nnz,
-                                              nlon_in, nlat_out, nlon_out)
+                                              nh, nlon_in, nlat_out, nlon_out)
