@@ -220,9 +220,6 @@ def train_model(
                 prd = model(inp)
                 loss = loss_fn(prd, tar)
 
-            accumulated_loss[0] += loss.detach() * inp.size(0)
-            accumulated_loss[1] += inp.size(0)
-
             optimizer.zero_grad(set_to_none=True)
             gscaler.scale(loss).backward()
 
@@ -231,6 +228,10 @@ def train_model(
 
             gscaler.step(optimizer)
             gscaler.update()
+
+            # accumulate loss
+            accumulated_loss[0] += loss.detach() * inp.size(0)
+            accumulated_loss[1] += inp.size(0)
 
             iters += 1
 
@@ -336,9 +337,6 @@ def main(
     torch.manual_seed(333)
     torch.cuda.manual_seed(333)
 
-    # set parameters
-    nfuture = 0
-
     # set device
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
     if torch.cuda.is_available():
@@ -392,14 +390,16 @@ def main(
 
         # get stas from file: WARNING! STATS HAVE BEEN COMPUTED OVER ALL SAMPLES
         # NEED TO DISENTANGLE THAT CORRECTLY WITH STATIC SPLITS!
-        # mean = dataset.mean
-        # std = dataset.std
-        # normalization = v2.Normalize(mean=mean, std=std)
+        #mean = dataset.mean
+        #std = dataset.std
+        #print(f"Applying mean/variance normalization with mean={mean}, std={std}.")
+        #normalization = v2.Normalize(mean=mean, std=std)
+        
         # imagenet normalization
         normalization = v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         augmentation = v2.Compose(
             [
-                # v2.RandomAdjustSharpness(1.1, p=0.5),
+                v2.RandomAdjustSharpness(1.1, p=0.5),
                 v2.RandomAutocontrast(p=0.5),
                 v2.GaussianNoise(mean=0.0, sigma=0.1, clip=True),
                 v2.ColorJitter(),
@@ -488,11 +488,11 @@ def main(
     #    upsample_sht=False,
     #)
 
-    models[f"s2u_sc4_layers4_e128_morlet"] = partial(
+    models[f"s2u_sc4_layers4_e128_pl"] = partial(
          S2U,
          img_size=img_size,
          grid="equiangular",
-         grid_internal="legendre-gauss",
+         grid_internal="equiangular",
          in_chans=in_channels,
          num_classes=dataset.num_classes,
          embed_dims=[64, 128, 256, 512],

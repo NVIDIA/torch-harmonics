@@ -63,25 +63,28 @@ def _get_stats_multiclass(
     tn_count = torch.zeros(batch_size, num_classes, dtype=torch.float32, device=output.device)
 
     matched = target == output
+    not_matched = target != output
     for i in range(batch_size):
         matched_i = matched[i, ...]
+        not_matched_i = not_matched[i, ...]
         target_i = target[i, ...]
         output_i = output[i, ...]
         for c in range(num_classes):
             # compute weights
             qwt_c = quad_weights[target_i == c]
             qwo_c = quad_weights[output_i == c]
+            neg_qwo_c = quad_weights[output_i != c]
 
             # true positives
             tp_count[i, c] = torch.sum(matched_i[target_i == c] * qwt_c)
             # false positives
-            fp_count[i, c] = torch.sum(output_i[output_i == c] * qwo_c) - tp_count[i, c]
+            fp_count[i, c] = torch.sum(not_matched_i[output_i == c] * qwo_c)
             # false negatives
-            fn_count[i, c] = torch.sum(target_i[target_i == c] * qwt_c) - tp_count[i, c]
+            fn_count[i, c] = torch.sum(not_matched_i[output_i != c] * neg_qwo_c)
 
-    # true negatives
-    tn_count = num_elements - tp_count - fp_count - fn_count
 
+    # true negatives is the leftovers
+    tn_count = torch.sum(quad_weights) - tp_count - fp_count - fn_count
     return tp_count, fp_count, fn_count, tn_count
 
 
@@ -101,8 +104,8 @@ class BaseMetricS2(nn.Module):
         q = q.reshape(-1, 1) * 2 * torch.pi / nlon
 
         # numerical precision can be an issue here, make sure it sums to 1:
-        q = q / torch.sum(q)
         q = torch.tile(q, (1, nlon))
+        q = q / torch.sum(q)
         self.register_buffer("quad_weights", q)
 
         if weight is None:
@@ -110,7 +113,7 @@ class BaseMetricS2(nn.Module):
         else:
             self.register_buffer("weight", weight.unsqueeze(0))
 
-    def _forward(self, pred: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
+    def _forward(self, pred: torch.Tensor, truth: torch.Tensor) -> Tuple[torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor]:
         # convert logits to class predictions
         pred_class = _predict_classes(pred)
 

@@ -404,6 +404,7 @@ class SphericalSegmentationDataset(Dataset):
         if self.h5file is None:
             # init files
             self._init_files()
+            self.current_buffer = 0
 
         # init buffers
         if self.inp_buffers is None:
@@ -415,6 +416,7 @@ class SphericalSegmentationDataset(Dataset):
         inp = self.inp_buffers[self.current_buffer]
         tar = self.tar_buffers[self.current_buffer]
 
+        # switch to next buffer
         self.current_buffer = (self.current_buffer + 1) % 2
 
         self.inputs.read_direct(inp, np.s_[idx : idx + 1, 0 : self.img_rgb[0], 0 : self.img_rgb[1], 0 : self.img_rgb[2]])
@@ -422,4 +424,4 @@ class SphericalSegmentationDataset(Dataset):
         if mask_invalid:
             tar = self._mask_invalid(tar)
 
-        return inp, tar
+        return np.copy(inp), np.copy(tar)
