@@ -35,7 +35,7 @@ import torch.nn as nn
 
 from torch_harmonics import RealSHT, InverseRealSHT
 
-from ._layers import MLP, SpectralConvS2, SequencePositionEmbedding, SpectralPositionEmbedding, LearnablePositionEmbedding
+from torch_harmonics.examples.models._layers import MLP, SpectralConvS2, SequencePositionEmbedding, SpectralPositionEmbedding, LearnablePositionEmbedding
 
 from functools import partial
 

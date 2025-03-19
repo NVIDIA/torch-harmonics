@@ -1,6 +1,6 @@
 # coding=utf-8
 
-# SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2024 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 #
 # Redistribution and use in source and binary forms, with or without
@@ -39,10 +39,15 @@ from torch_harmonics import RealSHT, InverseRealSHT
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 from torch_harmonics import ResampleS2
 
-from ._layers import MLP, SpectralConvS2, SequencePositionEmbedding, SpectralPositionEmbedding, LearnablePositionEmbedding
+from torch_harmonics.examples.models._layers import MLP, SpectralConvS2, SequencePositionEmbedding, SpectralPositionEmbedding, LearnablePositionEmbedding
 
 from functools import partial
 
+# heuristic for finding theta_cutoff
+def _compute_cutoff_radius(nlat, kernel_shape, basis_type):
+    theta_cutoff_factor = {"piecewise linear": 0.5, "morlet": 0.5, "zernike": math.sqrt(2.0)}
+
+    return (kernel_shape[0] + 1) * theta_cutoff_factor[basis_type] * math.pi / float(nlat - 1)
 
 class DiscreteContinuousEncoder(nn.Module):
     def __init__(
@@ -72,7 +77,7 @@ class DiscreteContinuousEncoder(nn.Module):
             grid_out=grid_out,
             groups=groups,
             bias=bias,
-            theta_cutoff=4.0 * torch.pi / float(out_shape[0] - 1),
+            theta_cutoff=_compute_cutoff_radius(in_shape[0], kernel_shape, basis_type),
         )
 
     def forward(self, x):
@@ -123,7 +128,7 @@ class DiscreteContinuousDecoder(nn.Module):
             grid_out=grid_out,
             groups=groups,
             bias=False,
-            theta_cutoff=4.0 * torch.pi / float(in_shape[0] - 1),
+            theta_cutoff=_compute_cutoff_radius(in_shape[0], kernel_shape, basis_type),
         )
 
     def forward(self, x):
@@ -173,6 +178,7 @@ class SphericalNeuralOperatorBlock(nn.Module):
 
         # convolution layer
         if conv_type == "local":
+            theta_cutoff = 2.0 * _compute_cutoff_radius(forward_transform.nlat, disco_kernel_shape, disco_basis_type)
             self.local_conv = DiscreteContinuousConvS2(
                 input_dim,
                 output_dim,
@@ -183,7 +189,7 @@ class SphericalNeuralOperatorBlock(nn.Module):
                 grid_in=forward_transform.grid,
                 grid_out=inverse_transform.grid,
                 bias=False,
-                theta_cutoff=4.0 * (disco_kernel_shape[0] + 1) * torch.pi / float(inverse_transform.nlat - 1),
+                theta_cutoff=theta_cutoff,
             )
         elif conv_type == "global":
             self.global_conv = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, bias=False)

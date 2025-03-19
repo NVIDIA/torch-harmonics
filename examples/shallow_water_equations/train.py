@@ -31,9 +31,10 @@
 
 import os
 import time
+import argparse
+from functools import partial
 
 from tqdm import tqdm
-from functools import partial
 
 import torch
 import torch.nn as nn
@@ -281,9 +282,16 @@ def autoregressive_inference(model, dataset, path_root, nsteps, autoreg_steps=10
 
 
 # training function
-def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=20, nfuture=0, num_examples=256, num_valid=8, loss_fn="l2", enable_amp=False, log_grads=0):
+def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=20, nfuture=0, num_examples=256, num_valid=8, loss_fn="l2", amp_mode="none", log_grads=0):
 
     train_start = time.time()
+
+    # set AMP type
+    amp_dtype = torch.float32
+    if amp_mode == "fp16":
+        amp_dtype = torch.float16
+    elif amp_mode == "bf16":
+        amp_dtype = torch.bfloat16
 
     # count iterations
     iters = 0
@@ -305,7 +313,7 @@ def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=2
 
         for inp, tar in dataloader:
 
-            with torch.autocast(device_type="cuda", enabled=enable_amp):
+            with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=(amp_mode != "none")):
 
                 prd = model(inp)
                 for _ in range(nfuture):
@@ -378,10 +386,7 @@ def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=2
     return valid_loss
 
 
-def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, nfuture=0):
-
-    # directory for outputs
-    root_path = os.path.dirname(__file__)
+def main(root_path, pretrain_epochs=200, finetune_epochs=20, batch_size=1, learning_rate=1e-3, train=True, load_checkpoint=False, amp_mode="none", log_grads=0):
 
     # set seed
     torch.manual_seed(333)
@@ -401,8 +406,8 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, nfutu
     dataset = PdeDataset(dt=dt, nsteps=nsteps, dims=(nlat, nlon), device=device, grid=grid, normalize=True)
     dataset.sht = RealSHT(nlat=nlat, nlon=nlon, grid=grid).to(device=device)
     # There is still an issue with parallel dataloading. Do NOT use it at the moment
-    # dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=4, persistent_workers=True)
-    dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=0, persistent_workers=False)
+    # dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4, persistent_workers=True)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0, persistent_workers=False)
 
     nlat = dataset.nlat
     nlon = dataset.nlon
@@ -415,35 +420,35 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, nfutu
     from torch_harmonics.examples.models import LocalSphericalNeuralOperator as LSNO
     from torch_harmonics.examples.models import SphericalTransformer as S2T
 
-    # models[f"sfno_sc2_layers4_e32"] = partial(
-    #     SFNO,
-    #     img_size=(nlat, nlon),
-    #     grid=grid,
-    #     num_layers=4,
-    #     scale_factor=2,
-    #     embed_dim=32,
-    #     activation_function="gelu",
-    #     residual_prediction=True,
-    #     use_mlp=True,
-    #     normalization_layer="none",
-    # )
+    models[f"sfno_sc2_layers4_e32"] = partial(
+        SFNO,
+        img_size=(nlat, nlon),
+        grid=grid,
+        num_layers=4,
+        scale_factor=2,
+        embed_dim=32,
+        activation_function="gelu",
+        residual_prediction=True,
+        use_mlp=True,
+        normalization_layer="none",
+    )
 
-    # models[f"lsno_sc2_layers4_e32_morlet"] = partial(
-    #     LSNO,
-    #     img_size=(nlat, nlon),
-    #     grid=grid,
-    #     num_layers=4,
-    #     scale_factor=2,
-    #     embed_dim=32,
-    #     activation_function="gelu",
-    #     residual_prediction=False,
-    #     use_mlp=True,
-    #     normalization_layer="none",
-    #     kernel_shape=(4, 4),
-    #     encoder_kernel_shape=(4, 4),
-    #     filter_basis_type="morlet",
-    #     upsample_sht = True,
-    # )
+    models[f"lsno_sc2_layers4_e32_morlet"] = partial(
+        LSNO,
+        img_size=(nlat, nlon),
+        grid=grid,
+        num_layers=4,
+        scale_factor=2,
+        embed_dim=32,
+        activation_function="gelu",
+        residual_prediction=False,
+        use_mlp=True,
+        normalization_layer="none",
+        kernel_shape=(4, 4),
+        encoder_kernel_shape=(4, 4),
+        filter_basis_type="morlet",
+        upsample_sht = True,
+    )
 
     models[f"s2t_sc2_layers4_e32_h1"] = partial(
         S2T,
@@ -476,11 +481,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, nfutu
         print(f"number of trainable params: {num_params}")
         metrics[model_name]["num_params"] = num_params
 
-        exp_dir = os.path.join(root_path, "checkpoints_swe", model_name)
-        if not os.path.isdir(exp_dir):
-            os.makedirs(exp_dir, exist_ok=True)
-
-        exp_dir = os.path.join(root_path, "checkpoints_swe", model_name)
+        exp_dir = os.path.join(root_path, model_name)
         if not os.path.isdir(exp_dir):
             os.makedirs(exp_dir, exist_ok=True)
 
@@ -492,22 +493,23 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, nfutu
             run = wandb.init(project="local sno spherical swe", group=model_name, name=model_name + "_" + str(time.time()), config=model_handle.keywords)
 
             # optimizer:
-            optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+            optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
-            gscaler = torch.GradScaler("cuda", enabled=enable_amp)
+            gscaler = torch.GradScaler("cuda", enabled=(amp_mode != "none"))
 
             start_time = time.time()
 
             print(f"Training {model_name}, single step")
-            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=20, loss_fn="l2", enable_amp=enable_amp, log_grads=log_grads)
+            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=pretrain_epochs, loss_fn="l2", amp_mode=amp_mode, log_grads=log_grads)
 
-            if nfuture > 0:
+            if finetune_epochs > 0:
+                nfuture = 1
                 print(f"Finetuning {model_name}, {nfuture} step")
-                optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+                optimizer = torch.optim.Adam(model.parameters(), lr=0.1 * learning_rate)
                 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
-                gscaler = torch.GradScaler(enabled=enable_amp)
+                gscaler = torch.GradScaler(enabled=(amp_mode != "none"))
                 dataloader.dataset.nsteps = 2 * dt // dt_solver
-                train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=20, loss_fn="l2", nfuture=nfuture, enable_amp=enable_amp, log_grads=log_grads)
+                train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=finetune_epochs, loss_fn="l2", nfuture=nfuture, amp_mode=amp_mode, log_grads=log_grads)
                 dataloader.dataset.nsteps = 1 * dt // dt_solver
 
             training_time = time.time() - start_time
@@ -549,5 +551,27 @@ if __name__ == "__main__":
 
     wandb.login()
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--root_path", default=os.path.join(os.path.dirname(__file__), "checkpoints"), type=str, help="Override the path where checkpoints and run information are stored"
+    )
+    parser.add_argument("--pretrain_epochs", default=1, type=int, help="Number of pretraining epochs.")
+    parser.add_argument("--finetune_epochs", default=0, type=int, help="Number of fine-tuning epochs.")
+    parser.add_argument("--batch_size", default=4, type=int, help="Switch for overriding batch size in the configuration file.")
+    parser.add_argument("--learning_rate", default=1e-4, type=float, help="Switch to override learning rate.")
+    parser.add_argument("--resume", action="store_true", help="Reload checkpoints.")
+    parser.add_argument("--amp_mode", default="none", type=str, choices=["none", "bf16", "fp16"], help="Switch to enable AMP.")
+    args = parser.parse_args()
+
     # main(train=False, load_checkpoint=True, enable_amp=False, log_grads=0)
-    main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0, nfuture=0)
+    main(
+        root_path=args.root_path,
+        pretrain_epochs=args.pretrain_epochs,
+        finetune_epochs=args.finetune_epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        train=True,
+        load_checkpoint=args.resume,
+        amp_mode=args.amp_mode,
+        log_grads=0,
+    )
