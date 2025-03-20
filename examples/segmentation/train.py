@@ -420,10 +420,10 @@ def main(
     class_histogram = torch.from_numpy(dataset.class_histogram)
 
     # # no class weights
-    class_weights = torch.ones_like(class_histogram)
+    #class_weights = torch.ones_like(class_histogram)
 
     # inverse frequency weighting
-    #class_weights = 1 / torch.clamp(class_histogram, min=1e-3, max=None)
+    class_weights = 1 / torch.clamp(class_histogram, min=1e-3, max=None)
 
     # log weigthing
     # class_weights = 1 / (torch.log(class_histogram + 1) + 1)
@@ -562,8 +562,8 @@ def main(
     #)
 
     # create the loss object
-    loss_fn = SoftCrossEntropyLoss(smooth_factor=0, ignore_index=-100, reduction="mean").to(device=device)
-    #loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=0.).to(device=device)
+    #loss_fn = SoftCrossEntropyLoss(smooth_factor=0, ignore_index=-100, reduction="mean").to(device=device)
+    loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=0.).to(device=device)
     #loss_fn = DiceLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular",  weight=class_weights, smooth=0.).to(device=device)
     # loss_fn = FocalLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
 
