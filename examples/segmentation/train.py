@@ -206,10 +206,10 @@ def train_model(
             if augmentation is not None:
                 inp = augmentation(inp)
 
-                # roll horizontally
-                shift = random.randint(0, inp.shape[-1] - 1)
-                inp = torch.roll(inp, shift, dims=-1)
-                tar = torch.roll(tar, shift, dims=-1)
+                ## roll horizontally
+                #shift = random.randint(0, inp.shape[-1] - 1)
+                #inp = torch.roll(inp, shift, dims=-1)
+                #tar = torch.roll(tar, shift, dims=-1)
 
                 # flip randomly horizontally
                 if random.random() < 0.5:
@@ -359,7 +359,7 @@ def main(
     # make sure splitting is consistent across ranks
     rng = torch.Generator().manual_seed(333)
     #split_ratios = [0.9, 0.09, 0.01]
-    split_ratios = [0.8, 0.1, 0.1]
+    split_ratios = [0.95, 0.025, 0.025]
     dataset = SphericalSegmentationDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel)
     train_dataset, test_dataset, valid_dataset = torch.utils.data.random_split(dataset, split_ratios, generator=rng)
 
@@ -406,7 +406,6 @@ def main(
                 v2.RandomAutocontrast(p=0.5),
                 v2.GaussianNoise(mean=0.0, sigma=0.1, clip=True),
                 v2.ColorJitter(),
-                v2.RandomChannelPermutation(),
             ]
         )
     else:
@@ -420,10 +419,10 @@ def main(
     class_histogram = torch.from_numpy(dataset.class_histogram)
 
     # # no class weights
-    #class_weights = torch.ones_like(class_histogram)
+    class_weights = torch.ones_like(class_histogram)
 
     # inverse frequency weighting
-    class_weights = 1 / torch.clamp(class_histogram, min=1e-3, max=None)
+    #class_weights = 1 / torch.clamp(class_histogram, min=1e-3, max=None)
 
     # log weigthing
     # class_weights = 1 / (torch.log(class_histogram + 1) + 1)
@@ -562,8 +561,8 @@ def main(
     #)
 
     # create the loss object
-    #loss_fn = SoftCrossEntropyLoss(smooth_factor=0, ignore_index=-100, reduction="mean").to(device=device)
-    loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=0.).to(device=device)
+    loss_fn = SoftCrossEntropyLoss(smooth_factor=0, ignore_index=-100, reduction="mean").to(device=device)
+    #loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=0.).to(device=device)
     #loss_fn = DiceLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular",  weight=class_weights, smooth=0.).to(device=device)
     # loss_fn = FocalLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
 
