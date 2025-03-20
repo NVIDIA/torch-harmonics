@@ -37,7 +37,7 @@ import numpy as np
 import torch
 
 # from torch.autograd import gradcheck
-from torch_harmonics import NeighborhoodAttentionS2
+from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
 
 from torch_harmonics._neighborhood_attention import (
     _neighborhood_attention_s2_torch,
@@ -541,6 +541,33 @@ class TestNeighborhoodAttention(unittest.TestCase):
         self.assertTrue(torch.allclose(att_cpu.k_bias.grad.to(self.device), att_gpu.k_bias.grad, atol=atol, rtol=rtol))
         self.assertTrue(torch.allclose(att_cpu.v_bias.grad.to(self.device), att_gpu.v_bias.grad, atol=atol, rtol=rtol))
 
+    @parameterized.expand(
+        [
+            # self attention
+            [8, 4, 3, (17, 32), (17, 32), "equiangular", "equiangular", 2e-4, 1e-5],
+            [8, 4, 3, (17, 32), (17, 32), "legendre-gauss", "legendre-gauss", 2e-4, 1e-5],
+            [8, 4, 3, (17, 32), (17, 32), "lobatto", "lobatto", 2e-4, 1e-5],
+        ]
+    )
+    def test_full_attention(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol):
+        # extract some parameters
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        k_cpu = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device="cpu")
+        k_cpu.requires_grad = True
+        v_cpu = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device="cpu")
+        v_cpu.requires_grad = True
+        q_cpu = torch.randn(batch_size, channels, nlat_out, nlon_out, dtype=torch.float32, device="cpu")
+        q_cpu.requires_grad = True
+
+        att_cpu = AttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True)
+
+        out = att_cpu(q_cpu, k_cpu, v_cpu)
+
+        # check if output is sane
+        self.assertFalse(torch.isnan(out).any())
+        
 
 if __name__ == "__main__":
     unittest.main()

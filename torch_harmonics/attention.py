@@ -51,105 +51,129 @@ except ImportError as err:
     attention_cuda_extension = None
     _cuda_extension_available = False
 
-# class AttentionS2(nn.Module):
-#     """
-#     (Global) attention on the 2-sphere.
 
-#     Parameters
-#     -----------
-#     in_channels: int
-#         number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
-#     in_shape: tuple
-#         shape of the input grid
-#     out_shape: tuple
-#         shape of the output grid
-#     grid_in: str, optional
-#         input grid type, "equiangular" by default
-#     grid_out: str, optional
-#         output grid type, "equiangular" by default
-#     bias: bool, optional
-#         if specified, adds bias to input / output projection layers
-#     k_channels: int
-#         number of dimensions for interior inner product in the attention matrix (corresponds to kdim in MHA in PyTorch)
-#     out_channels: int, optional
-#         number of dimensions for interior inner product in the attention matrix (corresponds to vdim in MHA in PyTorch)
-#     """
+class AttentionS2(nn.Module):
+    """
+    (Global) attention on the 2-sphere.
+    Parameters
+    -----------
+    in_channels: int
+        number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
+    num_heads: int
+        number of attention heads
+    in_shape: tuple
+        shape of the input grid
+    out_shape: tuple
+        shape of the output grid
+    grid_in: str, optional
+        input grid type, "equiangular" by default
+    grid_out: str, optional
+        output grid type, "equiangular" by default
+    bias: bool, optional
+        if specified, adds bias to input / output projection layers
+    k_channels: int
+        number of dimensions for interior inner product in the attention matrix (corresponds to kdim in MHA in PyTorch)
+    out_channels: int, optional
+        number of dimensions for interior inner product in the attention matrix (corresponds to vdim in MHA in PyTorch)
+    """
 
-#     def __init__(
-#         self,
-#         in_channels: int,
-#         num_heads: int,
-#         in_shape: Tuple[int],
-#         out_shape: Tuple[int],
-#         grid_in: Optional[str] = "equiangular",
-#         grid_out: Optional[str] = "equiangular",
-#         scale: Optional[Union[torch.Tensor, float]] = None,
-#         bias: Optional[bool] = True,
-#         k_channels: Optional[int] = None,
-#         out_channels: Optional[int] = None,
-#     ):
-#         super().__init__()
-
-#         self.nlat_in, self.nlon_in = in_shape
-#         self.nlat_out, self.nlon_out = out_shape
-
-#         self.in_channels = in_channels
-#         self.k_channels = in_channels if k_channels is None else k_channels
-#         self.out_channels = in_channels if out_channels is None else out_channels
-
-#         if theta_cutoff <= 0.0:
-#             raise ValueError("Error, theta_cutoff has to be positive.")
-
-#         # integration weights
-#         _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
-#         quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
-#         self.register_buffer("quad_weights", quad_weights, persistent=False)
-
-#         # learnable parameters
-#         # TODO: double-check that this gives us the correct initialization magnitudes
-#         scale = math.sqrt(1.0 / self.in_channels)
-#         self.q_weights = nn.Parameter(scale * torch.randn(self.in_channels, num_heads * self.k_channels, 1, 1))
-#         self.k_weights = nn.Parameter(scale * torch.randn(self.in_channels, num_heads * self.k_channels, 1, 1))
-#         self.v_weights = nn.Parameter(scale * torch.randn(self.in_channels, num_heads * self.out_channels, 1, 1))
-
-#         if bias:
-#             self.q_bias = nn.Parameter(torch.zeros(1, 1, num_heads, self.k_channels))
-#             self.k_bias = nn.Parameter(torch.zeros(1, 1, num_heads, self.k_channels))
-#             self.v_bias = nn.Parameter(torch.zeros(1, 1, self.out_channels))
-#         else:
-#             self.q_bias = None
-#             self.k_bias = None
-#             self.v_bias = None
-
-#     def extra_repr(self):
-#         r"""
-#         Pretty print module
-#         """
-#         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}"
-
-#     def forward(self, query: torch.Tensor, key: Optional[torch.Tensor] = None, value: Optional[torch.Tensor] = None) -> torch.Tensor:
-
-#         # self attention simplification
-#         if key is None:
-#             key = query
-
-#         if value is None:
-#             value = query
-
-#         # change this later to allow arbitrary number of batch dims
-#         assert (query.dim() == key.dim()) and (key.dim() == value.dim()) and (value.dim() == 4)
-
-#         # add checks if dimensions match
-
-#         # reshape to the right dimensions
-#         B, _, H, W = query.shape
-#         query = nn.functional.conv2d(query, self.q_weights, bias=self.q_bias).reshape(B, self.num_heads, self.k_channels, H*W).permute(0,1,3,2)
-#         key = nn.functional.conv2d(key, self.k_weights, bias=self.k_bias).reshape(B, self.num_heads, self.k_channels, H*W).permute(0,1,3,2)
-#         value = nn.functional.conv2d(value, self.v_weights, bias=self.v_bias).reshape(B, self.num_heads, self.out_channels, H*W).permute(0,1,3,2)
-
-#         out = nn.functional.scaled_dot_product_attention(query, key, value)
-
-#         return out
+    def __init__(
+            self,
+            in_channels: int,
+            num_heads: int,
+            in_shape: Tuple[int],
+            out_shape: Tuple[int],
+            grid_in: Optional[str] = "equiangular",
+            grid_out: Optional[str] = "equiangular",
+            bias: Optional[bool] = True,
+            k_channels: Optional[int] = None,
+            out_channels: Optional[int] = None,
+    ):
+        super().__init__()
+        
+        self.nlat_in, self.nlon_in = in_shape
+        self.nlat_out, self.nlon_out = out_shape
+        
+        self.in_channels = in_channels
+        self.num_heads = num_heads
+        self.k_channels = in_channels if k_channels is None else k_channels
+        self.out_channels = in_channels if out_channels is None else out_channels
+    
+        # integration weights
+        _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
+        quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
+        # we need to tile and flatten them accordingly
+        quad_weights = torch.tile(quad_weights, (1, self.nlon_in)).flatten()
+        # compute log
+        log_quad_weights = torch.log(quad_weights).reshape(1,1,-1)
+        self.register_buffer("log_quad_weights", log_quad_weights, persistent=False)
+        
+        # learnable parameters
+        # TODO: double-check that this gives us the correct initialization magnitudes
+        scale = math.sqrt(1.0 / self.in_channels)
+        self.q_weights = nn.Parameter(scale * torch.randn(self.num_heads * self.k_channels, self.in_channels, 1, 1))
+        self.k_weights = nn.Parameter(scale * torch.randn(self.num_heads * self.k_channels, self.in_channels, 1, 1))
+        self.v_weights = nn.Parameter(scale * torch.randn(self.num_heads * self.out_channels, self.in_channels, 1, 1))
+        self.project = nn.Parameter(scale * torch.randn(1, self.num_heads, 1, 1, 1))
+        
+        if bias:
+            self.q_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
+            self.k_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
+            self.v_bias = nn.Parameter(torch.zeros(self.num_heads * self.out_channels))
+        else:
+            self.q_bias = None
+            self.k_bias = None
+            self.v_bias = None         
+            
+            
+    def extra_repr(self):
+        r"""
+            Pretty print module
+         """
+        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}"
+    
+    def forward(self, query: torch.Tensor, key: Optional[torch.Tensor] = None, value: Optional[torch.Tensor] = None) -> torch.Tensor:
+        
+        # self attention simplification
+        if key is None:
+            key = query
+            
+        if value is None:
+            value = query
+                
+        # change this later to allow arbitrary number of batch dims
+        assert (query.dim() == key.dim()) and (key.dim() == value.dim()) and (value.dim() == 4)
+        
+        # perform MLP
+        query = nn.functional.conv2d(query, self.q_weights, bias=self.q_bias)
+        key = nn.functional.conv2d(key, self.k_weights, bias=self.k_bias)
+        value = nn.functional.conv2d(value, self.v_weights, bias=self.v_bias)
+        
+        # reshape
+        B, _, H, W = query.shape
+        query = query.reshape(B, self.num_heads, -1, H, W)
+        B, _, H, W = key.shape
+        key = key.reshape(B, self.num_heads, -1, H, W)
+        B, _, H, W = value.shape
+        value = value.reshape(B, self.num_heads, -1, H, W)
+        
+        # reshape to the right dimensions
+        B, _, C, H, W = query.shape
+        query = query.permute(0,1,3,4,2).reshape(B, self.num_heads, H*W, C)
+        B, _, C, H, W = key.shape
+        key = key.permute(0,1,3,4,2).reshape(B, self.num_heads, H*W, C)
+        B, _, C, H, W = value.shape
+        value = value.permute(0,1,3,4,2).reshape(B, self.num_heads, H*W, C)
+        
+        # multiply the query, key and value tensors
+        out = nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=self.log_quad_weights)
+        
+        # reshape
+        B, _, _, C = out.shape
+        out = out.permute(0,2,3,1).reshape(B, self.num_heads, C, self.nlat_out, self.nlon_out)
+        out = nn.functional.conv3d(out, self.project).squeeze(1)
+        
+        return out
 
 
 class NeighborhoodAttentionS2(nn.Module):
