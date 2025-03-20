@@ -55,7 +55,7 @@ import matplotlib.pyplot as plt
 
 from torch_harmonics.examples import SphericalSegmentationDataset, SphericalSegmendationDatasetDownloader
 from torch_harmonics.quadrature import _precompute_latitudes
-from torch_harmonics.examples.losses import DiceLossS2, CrossEntropyLossS2, FocalLossS2, SoftCrossEntropyLoss
+from torch_harmonics.examples.losses import DiceLossS2, CrossEntropyLossS2, FocalLossS2
 from torch_harmonics.examples.metrics import IntersectionOverUnionS2, AccuracyS2
 
 from plotting import plot_sphere, plot_data, imshow_sphere
@@ -419,7 +419,7 @@ def main(
     class_histogram = torch.from_numpy(dataset.class_histogram)
 
     # # no class weights
-    class_weights = torch.ones_like(class_histogram)
+    #class_weights = torch.ones_like(class_histogram)
 
     # inverse frequency weighting
     #class_weights = 1 / torch.clamp(class_histogram, min=1e-3, max=None)
@@ -428,8 +428,10 @@ def main(
     # class_weights = 1 / (torch.log(class_histogram + 1) + 1)
 
     # give non-occuring classes zero weight
-    class_weights = torch.where(class_histogram > 0.0, class_weights, 0.0)
-    class_weights = class_weights / torch.sum(class_weights)
+    #class_weights = torch.where(class_histogram > 0.0, class_weights, 0.0)
+    #class_weights = class_weights / torch.sum(class_weights)
+
+    class_weights = None
 
     # make sure there is no nan
     if (class_weights is not None) and torch.isnan(class_weights).any():
@@ -561,8 +563,7 @@ def main(
     #)
 
     # create the loss object
-    loss_fn = SoftCrossEntropyLoss(smooth_factor=0, ignore_index=-100, reduction="mean").to(device=device)
-    #loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=0.).to(device=device)
+    loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=0.).to(device=device)
     #loss_fn = DiceLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular",  weight=class_weights, smooth=0.).to(device=device)
     # loss_fn = FocalLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
 
@@ -571,7 +572,7 @@ def main(
 
     # metrics
     metrics_fns = {
-        "mIoU": IntersectionOverUnionS2(
+        "mIoU":IntersectionOverUnionS2(
             nlat=img_size[0],
             nlon=img_size[1],
             grid="equiangular",
@@ -582,20 +583,6 @@ def main(
             nlon=img_size[1],
             grid="equiangular",
             weight=class_weights,
-        ).to(device=device),
-        "mIoU_ours":IntersectionOverUnionS2(
-            nlat=img_size[0],
-            nlon=img_size[1],
-            grid="equiangular",
-            weight=class_weights,
-            type="quadrature"
-        ).to(device=device),
-        "mAcc_ours": AccuracyS2(
-            nlat=img_size[0],
-            nlon=img_size[1],
-            grid="equiangular",
-            weight=class_weights,
-            type="quadrature"
         ).to(device=device),
     }
 
