@@ -407,6 +407,8 @@ class SphericalUNet(nn.Module):
         drop_conv_rate=0.1,
         drop_path_rate=0.1,
         drop_dense_rate=0.5,
+        conv_downsample=False,
+        conv_upsample=False,
     ):
         super().__init__()
 
@@ -460,6 +462,7 @@ class SphericalUNet(nn.Module):
                     drop_path_rate=dpr[i],
                     drop_dense_rate=drop_dense_rate,
                     transform_skip=transform_skip,
+                    conv_downsample=conv_downsample,
                 )
             )
             out_shape = out_shape_new
@@ -493,6 +496,7 @@ class SphericalUNet(nn.Module):
                     drop_path_rate=0.,
                     drop_dense_rate=drop_dense_rate,
                     transform_skip=transform_skip,
+                    conv_upsample=conv_upsample,
                 )
             )
 

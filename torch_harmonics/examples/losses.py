@@ -123,7 +123,7 @@ class CrossEntropyLossS2(nn.Module):
 
         ce = nn.functional.cross_entropy(prd, tar, weight=self.weight, reduction="none", ignore_index=self.ignore_index, label_smoothing=self.smooth)
         ce = (ce * self.quad_weights).sum(dim=(-1, -2))
-        ce = ce.mean()
+        ce = torch.mean(ce)
 
         return ce
 

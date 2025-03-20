@@ -123,23 +123,25 @@ class BaseMetricS2(nn.Module):
         # compute averages:
         if self.mode == "micro":
             if self.weight is not None:
+                # weighted average
                 tp = torch.sum(tp * self.weight)
                 fp = torch.sum(fp * self.weight)
                 fn = torch.sum(fn * self.weight)
                 tn = torch.sum(tn * self.weight)
             else:
-                tp = torch.sum(tp)
-                fp = torch.sum(fp)
-                fn = torch.sum(fn)
-                tn = torch.sum(tn)
+                # normal average
+                tp = torch.mean(tp)
+                fp = torch.mean(fp)
+                fn = torch.mean(fn)
+                tn = torch.mean(tn)
 
             # compute score
             score = tp / (tp + fp + fn)
         else:
-            tp = torch.sum(tp, dim=0)
-            fp = torch.sum(fp, dim=0)
-            fn = torch.sum(fn, dim=0)
-            tn = torch.sum(tn, dim=0)
+            tp = torch.mean(tp, dim=0)
+            fp = torch.mean(fp, dim=0)
+            fn = torch.mean(fn, dim=0)
+            tn = torch.mean(tn, dim=0)
 
         return tp, fp, fn, tn
 
@@ -163,7 +165,7 @@ class IntersectionOverUnionS2(BaseMetricS2):
             if self.weight is not None:
                 score = torch.sum(score * self.weight)
             else:
-                score = torch.sum(score)
+                score = torch.mean(score)
 
         return score
 
@@ -187,6 +189,6 @@ class AccuracyS2(BaseMetricS2):
             if self.weight is not None:
                 score = torch.sum(score * self.weight)
             else:
-                score = torch.sum(score)
+                score = torch.mean(score)
 
         return score

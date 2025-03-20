@@ -36,7 +36,7 @@ import torch.nn as nn
 import torch.amp as amp
 
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
-from torch_harmonics import NeighborhoodAttentionS2
+from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
 from torch_harmonics import ResampleS2
 from torch_harmonics import RealSHT, InverseRealSHT
 from torch_harmonics.quadrature import _precompute_latitudes
@@ -221,24 +221,36 @@ class AttentionWrapper(nn.Module):
             shape,
             grid,
             heads,
-            theta_cutoff,
             pre_norm=False,
             drop_path=0.,
+            attention_mode="neighborhood",
     ):
         super().__init__()
 
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        
-        self.att = NeighborhoodAttentionS2(
-            in_channels=channels,
-	    in_shape=shape,
-            out_shape=shape,
-            grid_in=grid,
-            grid_out=grid,
-            theta_cutoff=theta_cutoff,
-            out_channels=channels,
-            num_heads=heads,
-        )
+
+        if attention_mode == "neighborhood":
+            theta_cutoff = _compute_cutoff_radius(shape[0], (1,), "piecewise linear")
+            self.att = NeighborhoodAttentionS2(
+                in_channels=channels,
+	        in_shape=shape,
+                out_shape=shape,
+                grid_in=grid,
+                grid_out=grid,
+                theta_cutoff=theta_cutoff,
+                out_channels=channels,
+                num_heads=heads,
+            )
+        else:
+            self.att = AttentionS2(
+                in_channels=channels,
+                num_heads=heads,
+                in_shape=shape,
+                out_shape=shape,
+                grid_in=grid,
+                grid_out=grid,
+                out_channels=channels,
+            )
 
         self.norm = None
         if pre_norm:
@@ -286,6 +298,7 @@ class TransformerBlock(nn.Module):
 	basis_type="morlet",
         activation=nn.GELU,
         drop_path_rates=0.,
+        attention_mode="neighborhood",
     ):
         super().__init__()
 
@@ -321,9 +334,9 @@ class TransformerBlock(nn.Module):
                     shape=out_shape,
                     grid=grid_out,
                     heads=heads,
-                    theta_cutoff=theta_cutoff,
                     pre_norm=True,
                     drop_path=drop_path_rates[i],
+                    attention_mode=attention_mode,
                 )
             )
             
@@ -508,6 +521,7 @@ class SphericalSegformer(nn.Module):
         mlp_ratio=2.0,
         drop_rate=0.0,
         drop_path_rate=0.1,
+        attention_mode="neighborhood",
     ):
         super().__init__()
 
@@ -563,6 +577,7 @@ class SphericalSegformer(nn.Module):
                     basis_type=filter_basis_type,
                     activation=self.activation_function,
                     drop_path_rates=dpr[cur:cur+self.depths[i]],
+                    attention_mode=attention_mode,
                 )
             )
             cur += self.depths[i]

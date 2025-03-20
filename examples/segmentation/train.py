@@ -207,9 +207,9 @@ def train_model(
                 inp = augmentation(inp)
 
                 # roll horizontally
-                shift = random.randint(0, inp.shape[-1] - 1)
-                inp = torch.roll(inp, shift, dims=-1)
-                tar = torch.roll(tar, shift, dims=-1)
+                #shift = random.randint(0, inp.shape[-1] - 1)
+                #inp = torch.roll(inp, shift, dims=-1)
+                #tar = torch.roll(tar, shift, dims=-1)
 
                 # flip randomly horizontally
                 if random.random() < 0.5:
@@ -375,10 +375,13 @@ def main(
 
     # create the dataloaders
     train_dataloader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True if train_sampler is None else False, sampler=train_sampler, num_workers=4, persistent_workers=True, pin_memory=True
+        train_dataset, batch_size=batch_size, shuffle=True if train_sampler is None else False,
+        sampler=train_sampler, num_workers=4, persistent_workers=True, pin_memory=True
     )
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, sampler=test_sampler, num_workers=4, persistent_workers=True, pin_memory=True)
-    valid_dataloader = DataLoader(valid_dataset, batch_size=1, shuffle=False, sampler=valid_sampler, num_workers=0, persistent_workers=False, pin_memory=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, sampler=test_sampler,
+                                 num_workers=4, persistent_workers=True, pin_memory=True)
+    valid_dataloader = DataLoader(valid_dataset, batch_size=1, shuffle=False, sampler=valid_sampler,
+                                  num_workers=0, persistent_workers=False, pin_memory=True)
 
     # TODO: move augmentation into extra helper module
     if enable_data_augmentation:
@@ -399,7 +402,7 @@ def main(
         normalization = v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         augmentation = v2.Compose(
             [
-                v2.RandomAdjustSharpness(1.1, p=0.5),
+                #v2.RandomAdjustSharpness(1.1, p=0.5),
                 v2.RandomAutocontrast(p=0.5),
                 v2.GaussianNoise(mean=0.0, sigma=0.1, clip=True),
                 v2.ColorJitter(),
@@ -417,10 +420,10 @@ def main(
     class_histogram = torch.from_numpy(dataset.class_histogram)
 
     # # no class weights
-    # class_weights = torch.ones_like(class_histogram)
+    class_weights = torch.ones_like(class_histogram)
 
     # inverse frequency weighting
-    class_weights = 1 / torch.clamp(class_histogram, min=1e-3, max=None)
+    #class_weights = 1 / torch.clamp(class_histogram, min=1e-3, max=None)
 
     # log weigthing
     # class_weights = 1 / (torch.log(class_histogram + 1) + 1)
@@ -430,7 +433,7 @@ def main(
     class_weights = class_weights / torch.sum(class_weights)
 
     # make sure there is no nan
-    if torch.isnan(class_weights).any():
+    if (class_weights is not None) and torch.isnan(class_weights).any():
         raise ValueError("The class weights contain NaN.")
 
     if logging:
@@ -488,43 +491,46 @@ def main(
     #    upsample_sht=False,
     #)
 
-    models[f"s2u_sc4_layers4_e128_pl"] = partial(
-         S2U,
-         img_size=img_size,
-         grid="equiangular",
-         grid_internal="equiangular",
-         in_chans=in_channels,
-         num_classes=dataset.num_classes,
-         embed_dims=[64, 128, 256, 512],
-         depths=[2, 2, 2, 2],
-         scale_factor=2,
-         activation_function="relu",
-         kernel_shape=(3, 4),
-         filter_basis_type="piecewise linear",
-         drop_path_rate=0.1,
-         drop_conv_rate=0.2,
-         drop_dense_rate=0.5,
-         transform_skip=False,
-    )
+    #models[f"s2u_sc4_layers4_e128_pl"] = partial(
+    #     S2U,
+    #     img_size=img_size,
+    #     grid="equiangular",
+    #     grid_internal="equiangular",
+    #     in_chans=in_channels,
+    #     num_classes=dataset.num_classes,
+    #     embed_dims=[64, 128, 256, 512],
+    #     depths=[2, 2, 2, 2],
+    #     scale_factor=2,
+    #     activation_function="relu",
+    #     kernel_shape=(3,),
+    #     filter_basis_type="piecewise linear",
+    #     drop_path_rate=0.1,
+    #     drop_conv_rate=0.2,
+    #     drop_dense_rate=0.5,
+    #     transform_skip=False,
+    #     conv_upsample=True,
+    #     conv_downsample=True,
+    #)
 
-    # models[f"segformer_nb4_e256_morlet"] = partial(
-    #    S2S,
-    #    img_size=img_size,
-    #    grid="equiangular",
-    #    grid_internal="legendre-gauss",
-    #    in_chans=in_channels,
-    #    num_classes=dataset.num_classes,
-    #    embed_dims=[64, 128, 256, 512],
-    #    heads=[1, 2, 4, 8],
-    #    depths=[3, 4, 6, 3],
-    #    scale_factor=2,
-    #    activation_function="gelu",
-    #    kernel_shape=(3, 3),
-    #    filter_basis_type="morlet",
-    #    mlp_ratio=4.0,
-    #    drop_rate=0.0,
-    #    drop_path_rate=0.1,
-    # )
+    models[f"segformer_nb4_e256_morlet"] = partial(
+        S2S,
+        img_size=img_size,
+        grid="equiangular",
+        grid_internal="legendre-gauss",
+        in_chans=in_channels,
+        num_classes=dataset.num_classes,
+        embed_dims=[64, 128, 256, 512],
+        heads=[1, 2, 4, 8],
+        depths=[3, 4, 6, 3],
+        scale_factor=2,
+        activation_function="gelu",
+        kernel_shape=(3, 3),
+        filter_basis_type="morlet",
+        mlp_ratio=4.0,
+        drop_rate=0.0,
+        drop_path_rate=0.1,
+        attention_mode="full",
+    )
 
     # models[f"s2t_sc2_layers6_e64"] = partial(
     #     S2T,
