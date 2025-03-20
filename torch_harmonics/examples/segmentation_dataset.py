@@ -132,7 +132,11 @@ class SphericalSegmendationDatasetDownloader:
         return data_folders, class_labels
 
     def _rgb_to_id(self, img, class_labels_map, class_labels_indices):
-        lookup_indices = img[..., 0] * 256 * 256 + img[..., 1] * 256 + img[..., 2]
+        # Convert to int32 first to avoid overflow
+        r = img[..., 0].astype(np.int32)
+        g = img[..., 1].astype(np.int32)
+        b = img[..., 2].astype(np.int32)
+        lookup_indices = r * 256 * 256 + g * 256 + b
 
         def _convert(lookup: int) -> int:
             # the dataset has a bad label for clutter, so we need to fix it
@@ -156,6 +160,7 @@ class SphericalSegmendationDatasetDownloader:
         class_labels,
         input_path: str = "pano/rgb",
         output_path: str = "pano/semantic",
+        depth_path: str = "pano/depth",
         output_filename="semantic",
         dataset_file: str = "segmentation_dataset.h5",
         downsampling_factor: int = 16,
@@ -175,25 +180,39 @@ class SphericalSegmendationDatasetDownloader:
 
         # condition class labels first:
         class_labels_map = [label.split("_")[0] for label in class_labels]
+
+        print(len(class_labels_map))
         class_labels_indices = sorted(list(set(class_labels_map)))
+        cmap = plt.get_cmap("viridis")
+        colors = cmap(np.linspace(0, 1, len(class_labels_indices)))
+        print(len(class_labels_indices))
+        print(class_labels_indices)
 
         # get all the file path input, output pairs
         for base_path in data_folders:
 
             input_dir = os.path.join(self.local_dir, base_path, input_path)
             output_dir = os.path.join(self.local_dir, base_path, output_path)
-
-            if os.path.exists(input_dir) and os.path.exists(output_dir):
+            depth_dir = os.path.join(self.local_dir, base_path, depth_path)
+            
+            if os.path.exists(input_dir) and os.path.exists(output_dir) and os.path.exists(depth_dir):
                 for file_input in os.listdir(input_dir):
                     if not file_input.endswith(".png"):
                         continue
                     input_filepath = os.path.join(input_dir, file_input)
                     output_filepath = "_".join(os.path.splitext(os.path.basename(input_filepath))[0].split("_")[:-1]) + f"_{output_filename}.png"
                     output_filepath = os.path.join(output_dir, output_filepath)
+                    depth_filepath = "_".join(os.path.splitext(os.path.basename(input_filepath))[0].split("_")[:-1]) + f"_depth.png"
+                    depth_filepath = os.path.join(depth_dir, depth_filepath)
                     if not os.path.exists(output_filepath):
                         print(f"Warning: Couldn't find output file in pair: ({input_filepath},{output_filepath})")
                         continue
-                    file_paths.append((input_filepath, output_filepath))
+
+                    if not os.path.exists(depth_filepath):
+                        print(f"Warning: Couldn't find depth file in pair: ({input_filepath},{depth_filepath})")
+                        continue
+                    
+                    file_paths.append((input_filepath, output_filepath, depth_filepath))
             elif not os.path.exists(input_dir):
                 print("Warning: Input dir doesn't exist: ", input_dir)
                 continue
@@ -204,7 +223,7 @@ class SphericalSegmendationDatasetDownloader:
         num_samples = len(file_paths)
 
         if num_samples > 0:
-            first_inp, first_tar = file_paths[0]
+            first_inp, first_tar, first_dep = file_paths[0]
             first_inp = np.array(Image.open(first_inp))
             first_tar = np.array(Image.open(first_tar))
 
@@ -221,6 +240,7 @@ class SphericalSegmendationDatasetDownloader:
         with h5.File(converted_dataset_path, "w") as h5file:
             input_data = h5file.create_dataset("inputs", (num_samples, inp_channels, *img_shape), "f4")
             target_data = h5file.create_dataset("targets", (num_samples, *img_shape), "i8")
+            depth_data = h5file.create_dataset("depths", (num_samples, *img_shape), "f4")
             classes = h5file.create_dataset("class_labels", data=class_labels_indices)
             num_classes = len(set(class_labels_indices))
 
@@ -296,6 +316,14 @@ class SphericalSegmendationDatasetDownloader:
                 
                 # write to file
                 target_data[i, ...] = tar_data[...]
+                
+                # Here we want depth
+                dep = Image.open(file_paths[i][2])
+
+                if downsampling_factor != 1:
+                    dep = dep.resize(size=(img_shape[1], img_shape[0]), resample=Image.NEAREST)
+                dep_data = np.array(dep)    
+                depth_data[i, ...] = dep_data[...]
 
                 # update the class histogram
                 for c in range(num_classes):
