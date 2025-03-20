@@ -211,7 +211,9 @@ class CrossEntropyLossS2(nn.Module):
 
     def forward(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
 
-        ce = nn.functional.cross_entropy(prd, tar, weight=self.weight, reduction="none", ignore_index=self.ignore_index, label_smoothing=self.smooth)
+        # compute log softmax
+        logits = nn.functional.log_softmax(prd, dim=1)
+        ce = nn.functional.cross_entropy(logits, tar, weight=self.weight, reduction="none", ignore_index=self.ignore_index, label_smoothing=self.smooth)
         ce = (ce * self.quad_weights).sum(dim=(-1, -2))
         ce = torch.mean(ce)
 
@@ -231,9 +233,12 @@ class FocalLossS2(nn.Module):
 
     def forward(self, prd: torch.Tensor, tar: torch.Tensor, alpha: float = 0.25, gamma: float = 2):
 
+        # compute logits
+        logits = nn.functional.log_softmax(prd, dim=1)
+        
         # w = (1.0 - nn.functional.softmax(prd, dim=-3)).pow(gamma)
         # w = torch.where(tar == self.ignore_index, 0.0, w.gather(-3, tar.unsqueeze(-3)).squeeze(-3))
-        ce = nn.functional.cross_entropy(prd, tar, weight=None, reduction="none", ignore_index=self.ignore_index)
+        ce = nn.functional.cross_entropy(logits, tar, weight=None, reduction="none", ignore_index=self.ignore_index)
         fl = alpha * (1 - torch.exp(-ce)) ** gamma * ce
         # fl = w * ce
         fl = (fl * self.quad_weights).sum(dim=(-1, -2))
