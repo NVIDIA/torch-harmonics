@@ -207,9 +207,9 @@ def train_model(
                 inp = augmentation(inp)
 
                 # roll horizontally
-                #shift = random.randint(0, inp.shape[-1] - 1)
-                #inp = torch.roll(inp, shift, dims=-1)
-                #tar = torch.roll(tar, shift, dims=-1)
+                shift = random.randint(0, inp.shape[-1] - 1)
+                inp = torch.roll(inp, shift, dims=-1)
+                tar = torch.roll(tar, shift, dims=-1)
 
                 # flip randomly horizontally
                 if random.random() < 0.5:
@@ -562,8 +562,8 @@ def main(
     #)
 
     # create the loss object
-    #loss_fn = SoftCrossEntropyLoss(smooth_factor=0, ignore_index=-100, reduction="mean").to(device=device)
-    loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=0.).to(device=device)
+    loss_fn = SoftCrossEntropyLoss(smooth_factor=0, ignore_index=-100, reduction="mean").to(device=device)
+    #loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=0.).to(device=device)
     #loss_fn = DiceLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular",  weight=class_weights, smooth=0.).to(device=device)
     # loss_fn = FocalLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
 
