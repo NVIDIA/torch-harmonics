@@ -55,7 +55,7 @@ import matplotlib.pyplot as plt
 
 from torch_harmonics.examples import SphericalSegmentationDataset, SphericalSegmendationDatasetDownloader
 from torch_harmonics.quadrature import _precompute_latitudes
-from torch_harmonics.examples.losses import DiceLossS2, CrossEntropyLossS2, FocalLossS2
+from torch_harmonics.examples.losses import DiceLossS2, CrossEntropyLossS2, FocalLossS2, SoftCrossEntropyLoss
 from torch_harmonics.examples.metrics import IntersectionOverUnionS2, AccuracyS2
 
 from plotting import plot_sphere, plot_data, imshow_sphere
@@ -491,46 +491,44 @@ def main(
     #    upsample_sht=False,
     #)
 
-    #models[f"s2u_sc4_layers4_e128_pl"] = partial(
-    #     S2U,
-    #     img_size=img_size,
-    #     grid="equiangular",
-    #     grid_internal="equiangular",
-    #     in_chans=in_channels,
-    #     num_classes=dataset.num_classes,
-    #     embed_dims=[64, 128, 256, 512],
-    #     depths=[2, 2, 2, 2],
-    #     scale_factor=2,
-    #     activation_function="relu",
-    #     kernel_shape=(3,),
-    #     filter_basis_type="piecewise linear",
-    #     drop_path_rate=0.1,
-    #     drop_conv_rate=0.2,
-    #     drop_dense_rate=0.5,
-    #     transform_skip=False,
-    #     conv_upsample=True,
-    #     conv_downsample=True,
-    #)
-
-    models[f"segformer_nb4_e256_morlet"] = partial(
-        S2S,
-        img_size=img_size,
-        grid="equiangular",
-        grid_internal="legendre-gauss",
-        in_chans=in_channels,
-        num_classes=dataset.num_classes,
-        embed_dims=[64, 128, 256, 512],
-        heads=[1, 2, 4, 8],
-        depths=[3, 4, 6, 3],
-        scale_factor=2,
-        activation_function="gelu",
-        kernel_shape=(3, 3),
-        filter_basis_type="morlet",
-        mlp_ratio=4.0,
-        drop_rate=0.0,
-        drop_path_rate=0.1,
-        attention_mode="full",
+    models[f"s2u_sc4_layers4_e128_pl"] = partial(
+          S2U,
+          img_size=img_size,
+          grid="equiangular",
+          grid_internal="equiangular",
+          in_chans=in_channels,
+          num_classes=dataset.num_classes,
+          embed_dims=[64, 128, 256, 512],
+          depths=[2, 2, 2, 2],
+          scale_factor=2,
+          activation_function="relu",
+          kernel_shape=(3, 4),
+          filter_basis_type="piecewise linear",
+          drop_path_rate=0.1,
+          drop_conv_rate=0.2,
+          drop_dense_rate=0.5,
+          transform_skip=False,
     )
+
+    #models[f"segformer_nb4_e256_morlet"] = partial(
+    #    S2S,
+    #    img_size=img_size,
+    #    grid="equiangular",
+    #    grid_internal="legendre-gauss",
+    #    in_chans=in_channels,
+    #    num_classes=dataset.num_classes,
+    #    embed_dims=[64, 128, 256, 512],
+    #    heads=[1, 2, 4, 8],
+    #    depths=[3, 4, 6, 3],
+    #    scale_factor=2,
+    #    activation_function="gelu",
+    #    kernel_shape=(3, 3),
+    #    filter_basis_type="morlet",
+    #    mlp_ratio=4.0,
+    #    drop_rate=0.0,
+    #    drop_path_rate=0.1,
+    #    attention_mode="full",
+    #)
 
     # models[f"s2t_sc2_layers6_e64"] = partial(
     #     S2T,
@@ -551,19 +549,20 @@ def main(
     #     upsample_sht=False,
     # )
 
-    # models[f"unetplusplus"] = partial(
-    #     UnetPlusPlus,
-    #     in_channels=in_channels,
-    #     classes=dataset.num_classes,
-    #     encoder_name="resnet34",
-    #     encoder_weights="imagenet",
-    #     decoder_attention_type="scse",
-    #     decoder_use_batchnorm=True,
-    #     decoder_channels=(256, 128, 64, 32, 16),
-    #     activation="softmax",
-    # )
+    #models[f"unetplusplus"] = partial(
+    #    UnetPlusPlus,
+    #    in_channels=in_channels,
+    #    classes=dataset.num_classes,
+    #    encoder_name="resnet34",
+    #    encoder_weights="imagenet",
+    #    decoder_attention_type="scse",
+    #    decoder_use_batchnorm=True,
+    #    decoder_channels=(256, 128, 64, 32, 16),
+    #    activation="softmax",
+    #)
 
     # create the loss object
+    #loss_fn = SoftCrossEntropyLoss(smooth_factor=0, ignore_index=-100, reduction="mean").to(device=device)
     loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=0.).to(device=device)
     #loss_fn = DiceLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular",  weight=class_weights, smooth=0.).to(device=device)
     # loss_fn = FocalLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
@@ -584,7 +583,21 @@ def main(
             nlon=img_size[1],
             grid="equiangular",
             weight=class_weights,
-        ).to(device=device)
+        ).to(device=device),
+        "mIoU_ours":IntersectionOverUnionS2(
+            nlat=img_size[0],
+            nlon=img_size[1],
+            grid="equiangular",
+            weight=class_weights,
+            type="quadrature"
+        ).to(device=device),
+        "mAcc_ours": AccuracyS2(
+            nlat=img_size[0],
+            nlon=img_size[1],
+            grid="equiangular",
+            weight=class_weights,
+            type="quadrature"
+        ).to(device=device),
     }
 
     # iterate over models and train each model

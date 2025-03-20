@@ -35,7 +35,52 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics.quadrature import _precompute_latitudes
+from .losses import get_quadrature_weights
 
+@torch.no_grad()
+def _get_stats_multiclass_uniform(
+    output: torch.LongTensor,
+    target: torch.LongTensor,
+    num_classes: int,
+    ignore_index: Optional[int],
+) -> Tuple[torch.LongTensor, torch.LongTensor, torch.LongTensor, torch.LongTensor]:
+    batch_size, *dims = output.shape
+    num_elements = torch.prod(torch.tensor(dims)).long()
+
+    if ignore_index is not None:
+        ignore = target == ignore_index
+        output = torch.where(ignore, -1, output)
+        target = torch.where(ignore, -1, target)
+        ignore_per_sample = ignore.view(batch_size, -1).sum(1)
+
+    tp_count = torch.zeros(batch_size, num_classes, dtype=torch.long, device=output.device)
+    fp_count = torch.zeros(batch_size, num_classes, dtype=torch.long, device=output.device)
+    fn_count = torch.zeros(batch_size, num_classes, dtype=torch.long, device=output.device)
+    tn_count = torch.zeros(batch_size, num_classes, dtype=torch.long, device=output.device)
+
+    for i in range(batch_size):
+        target_i = target[i]
+        output_i = output[i]
+        mask = output_i == target_i
+        matched = torch.where(mask, target_i, -1)
+        tp = torch.histc(matched.float(), bins=num_classes, min=0, max=num_classes - 1)
+        fp = (
+            torch.histc(output_i.float(), bins=num_classes, min=0, max=num_classes - 1)
+            - tp
+        )
+        fn = (
+            torch.histc(target_i.float(), bins=num_classes, min=0, max=num_classes - 1)
+            - tp
+        )
+        tn = num_elements - tp - fp - fn
+        if ignore_index is not None:
+            tn = tn - ignore_per_sample[i]
+        tp_count[i] = tp.long()
+        fp_count[i] = fp.long()
+        fn_count[i] = fn.long()
+        tn_count[i] = tn.long()
+
+    return tp_count, fp_count, fn_count, tn_count
 
 # routine to compute multiclass labels on the sphere
 # the routine follows the implementation in
@@ -73,15 +118,13 @@ def _get_stats_multiclass(
             # compute weights
             qwt_c = quad_weights[target_i == c]
             qwo_c = quad_weights[output_i == c]
-            neg_qwo_c = quad_weights[output_i != c]
 
             # true positives
             tp_count[i, c] = torch.sum(matched_i[target_i == c] * qwt_c)
             # false positives
             fp_count[i, c] = torch.sum(not_matched_i[output_i == c] * qwo_c)
             # false negatives
-            fn_count[i, c] = torch.sum(not_matched_i[output_i != c] * neg_qwo_c)
-
+            fn_count[i, c] = torch.sum(not_matched_i[target_i == c] * qwt_c)
 
     # true negatives is the leftovers
     tn_count = torch.sum(quad_weights) - tp_count - fp_count - fn_count
@@ -93,19 +136,15 @@ def _predict_classes(logits: torch.Tensor) -> torch.Tensor:
 
 
 class BaseMetricS2(nn.Module):
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
+    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro", type: str = "uniform"):
         super().__init__()
 
         self.ignore_index = ignore_index
         self.mode = mode
-
+        self.type = type
         # area weights
-        _, q = _precompute_latitudes(nlat=nlat, grid=grid)
-        q = q.reshape(-1, 1) * 2 * torch.pi / nlon
-
-        # numerical precision can be an issue here, make sure it sums to 1:
-        q = torch.tile(q, (1, nlon))
-        q = q / torch.sum(q)
+        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid)
+        q = q.tile((1, nlon)).contiguous()
         self.register_buffer("quad_weights", q)
 
         if weight is None:
@@ -118,7 +157,12 @@ class BaseMetricS2(nn.Module):
         pred_class = _predict_classes(pred)
 
         # get true positive, false positive, etc
-        tp, fp, fn, tn = _get_stats_multiclass(pred_class, truth, pred.shape[1], self.quad_weights, self.ignore_index)
+        if self.type == "uniform":
+            tp, fp, fn, tn = _get_stats_multiclass_uniform(pred_class, truth, pred.shape[1], self.ignore_index)
+        elif self.type=="quadrature":
+            tp, fp, fn, tn = _get_stats_multiclass(pred_class, truth, pred.shape[1], self.quad_weights, self.ignore_index)
+        else:
+            raise ValueError(f"Unknown type metric {type}")
 
         # compute averages:
         if self.mode == "micro":
@@ -143,12 +187,20 @@ class BaseMetricS2(nn.Module):
             fn = torch.mean(fn, dim=0)
             tn = torch.mean(tn, dim=0)
 
+
+        # tp2 = torch.sum(tp2)
+        # fp2 = torch.sum(fp2)
+        # fn2 = torch.sum(fn2)
+        # tn2 = torch.sum(tn2)
+
+        # print(f"metrics theirs/ours IoU: {tp}/({tp}+{fp}+{fn})={tp/(tp+fp+fn)} vs {tp2}/({tp2}+{fp2}+{fn2})={tp2/(tp2+fp2+fn2)}")
+
         return tp, fp, fn, tn
 
 
 class IntersectionOverUnionS2(BaseMetricS2):
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
-        super().__init__(nlat, nlon, grid, weight, ignore_index, mode)
+    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro", type="uniform"):
+        super().__init__(nlat, nlon, grid, weight, ignore_index, mode, type)
 
     def forward(self, pred: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
 
@@ -171,8 +223,8 @@ class IntersectionOverUnionS2(BaseMetricS2):
 
 
 class AccuracyS2(BaseMetricS2):
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
-        super().__init__(nlat, nlon, grid, weight, ignore_index, mode)
+    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro", type="uniform"):
+        super().__init__(nlat, nlon, grid, weight, ignore_index, mode, type)
 
     def forward(self, pred: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
 
