@@ -222,11 +222,17 @@ class CrossEntropyLossS2(nn.Module):
 
 class FocalLossS2(nn.Module):
 
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", ignore_index: int = -100):
+    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, smooth: float = 0, ignore_index: int = -100):
 
         super().__init__()
 
+        self.smooth = smooth
         self.ignore_index = ignore_index
+
+        if weight is None:
+            self.weight = None
+        else:
+            self.register_buffer("weight", weight)
         
         q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid)
         self.register_buffer("quad_weights", q)
@@ -238,7 +244,7 @@ class FocalLossS2(nn.Module):
         
         # w = (1.0 - nn.functional.softmax(prd, dim=-3)).pow(gamma)
         # w = torch.where(tar == self.ignore_index, 0.0, w.gather(-3, tar.unsqueeze(-3)).squeeze(-3))
-        ce = nn.functional.cross_entropy(logits, tar, weight=None, reduction="none", ignore_index=self.ignore_index)
+        ce = nn.functional.cross_entropy(logits, tar, weight=self.weight, reduction="none", ignore_index=self.ignore_index, label_smoothing=self.smooth)
         fl = alpha * (1 - torch.exp(-ce)) ** gamma * ce
         # fl = w * ce
         fl = (fl * self.quad_weights).sum(dim=(-1, -2))
