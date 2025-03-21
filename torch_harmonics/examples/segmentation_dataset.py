@@ -53,7 +53,7 @@ DEFAULT_TAR_FILE_PAIRS = [
 DEFAULT_LABELS_URL = "https://raw.githubusercontent.com/alexsax/2D-3D-Semantics/refs/heads/master/assets/semantic_labels.json"
 
 
-class SphericalSegmendationDatasetDownloader:
+class Stanford2D3DSDownloader:
     """
     Convenience class for downloading the 2d3ds dataset [1].
 
@@ -276,7 +276,7 @@ class SphericalSegmendationDatasetDownloader:
                 # write to disk
                 input_data[i, ...] = inp_data[...]
 
-                # compute stats
+                # compute stats -> segmentation
                 count += 1
                 # min/max
                 tmp_min = np.min(inp_data, axis=(1, 2))
@@ -323,16 +323,42 @@ class SphericalSegmendationDatasetDownloader:
                 dep_data = np.array(dep)    
                 depth_data[i, ...] = dep_data[...]
 
+                # compute stats -> depth
+                # min/max
+                tmp_min_depth = np.min(dep_data, axis=(0, 1))
+                tmp_max_depth = np.max(dep_data, axis=(0, 1))
+                # mean/var
+                tmp_mean_depth = np.mean(dep_data, axis=(0, 1))
+                if i == 0:
+                    min_vals_depth = tmp_min_depth
+                    max_vals_depth = tmp_max_depth
+                    mean_vals_depth = tmp_mean_depth
+                    m2_vals_depth = np.mean(np.square(dep_data-tmp_mean_depth))
+                else:   
+                    delta_depth = tmp_mean_depth - mean_vals_depth
+                    min_vals_depth = np.minimum(min_vals_depth, tmp_min_depth)
+                    max_vals_depth = np.minimum(max_vals_depth, tmp_max_depth)
+                    mean_vals_depth += delta_depth / float(count)
+                    delta2_depth = tmp_mean_depth - mean_vals_depth
+                    m2_vals_depth += delta_depth * delta2_depth
+
                 # update the class histogram
                 for c in range(num_classes):
                     class_histogram[c] += quad_weights[tar_data == c].sum()
 
             # record min/max
-            h5file.create_dataset("min", data=min_vals.astype(np.float32))
-            h5file.create_dataset("max", data=max_vals.astype(np.float32))
-            h5file.create_dataset("mean", data=mean_vals.astype(np.float32))
+            h5file.create_dataset("min_seg", data=min_vals.astype(np.float32))
+            h5file.create_dataset("max_seg", data=max_vals.astype(np.float32))
+            h5file.create_dataset("mean_seg", data=mean_vals.astype(np.float32))
             std_vals = np.sqrt(m2_vals / float(count - 1))
-            h5file.create_dataset("std", data=std_vals.astype(np.float32))
+            h5file.create_dataset("std_seg", data=std_vals.astype(np.float32))
+            
+            # record min/max
+            h5file.create_dataset("min_depth", data=min_vals_depth.astype(np.float32))
+            h5file.create_dataset("max_depth", data=max_vals_depth.astype(np.float32))
+            h5file.create_dataset("mean_depth", data=mean_vals_depth.astype(np.float32))
+            std_vals_depth = np.sqrt(m2_vals_depth / float(count - 1))
+            h5file.create_dataset("std_depth", data=std_vals_depth.astype(np.float32))
 
             # record class histogram
             class_histogram = class_histogram / num_samples
@@ -360,7 +386,7 @@ class SphericalSegmendationDatasetDownloader:
         return self.converted_dataset_path
 
 
-class Stanford2D3DSegmentationDataset(Dataset):
+class StanfordSegmentationDataset(Dataset):
     """
     Spherical segmentation dataset from [1].
 
@@ -390,8 +416,10 @@ class Stanford2D3DSegmentationDataset(Dataset):
             self.class_histogram = np.array(h5file["class_histogram"][...])
             self.class_histogram = self.class_histogram / self.class_histogram.sum()
 
-            self.mean = h5file["mean"][...]
-            self.std = h5file["std"][...]
+            self.mean = h5file["mean_seg"][...]
+            self.std = h5file["std_seg"][...]
+            self.min = h5file["min_seg"][...]
+            self.max = h5file["max_seg"][...]
 
         if ignore_alpha_channel:
             self.img_rgb = (3, self.img_rgb[1], self.img_rgb[2])
@@ -459,7 +487,7 @@ class Stanford2D3DSegmentationDataset(Dataset):
 
         return np.copy(inp), np.copy(tar)
 
-class Stanford2D3DDepthDataset(Dataset):
+class StanfordDepthDataset(Dataset):
     """
     Spherical segmentation dataset from [1].
 
@@ -484,6 +512,10 @@ class Stanford2D3DDepthDataset(Dataset):
             self.img_rgb = h5file["inputs"][0].shape
             self.img_depth = h5file["targets"][0].shape
             self.num_samples = h5file["inputs"].shape[0]
+            self.mean = h5file["mean_depth"][...]
+            self.std = h5file["std_depth"][...]
+            self.min = h5file["min_depth"][...]
+            self.max = h5file["max_depth"][...]
 
         if ignore_alpha_channel:
             self.img_rgb = (3, self.img_rgb[1], self.img_rgb[2])

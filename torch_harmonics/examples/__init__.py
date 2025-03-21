@@ -33,4 +33,4 @@ from .pde_sphere import SphereSolver
 from .shallow_water_equations import ShallowWaterSolver
 
 from .pde_dataset import PdeDataset
-from .segmentation_dataset import Stanford2D3DSegmentationDataset, Stanford2D3DDepthDataset, Stanford2D3DSematicsDatasetDownloader
+from .segmentation_dataset import StanfordSegmentationDataset, StanfordDepthDataset, Stanford2D3DSDownloader
