@@ -180,8 +180,6 @@ class SphericalSegmendationDatasetDownloader:
 
         # condition class labels first:
         class_labels_map = [label.split("_")[0] for label in class_labels]
-
-        print(len(class_labels_map))
         class_labels_indices = sorted(list(set(class_labels_map)))
         cmap = plt.get_cmap("viridis")
         colors = cmap(np.linspace(0, 1, len(class_labels_indices)))
@@ -362,7 +360,7 @@ class SphericalSegmendationDatasetDownloader:
         return self.converted_dataset_path
 
 
-class SphericalSegmentationDataset(Dataset):
+class Stanford2D3DSegmentationDataset(Dataset):
     """
     Spherical segmentation dataset from [1].
 
@@ -458,5 +456,84 @@ class SphericalSegmentationDataset(Dataset):
         self.targets.read_direct(tar, np.s_[idx : idx + 1, 0 : self.img_seg[0], 0 : self.img_seg[1]])
         if mask_invalid:
             tar = self._mask_invalid(tar)
+
+        return np.copy(inp), np.copy(tar)
+
+class Stanford2D3DDepthDataset(Dataset):
+    """
+    Spherical segmentation dataset from [1].
+
+    References
+    -----------
+    .. [1] Armeni, I.,  Sax, S.,  Zamir, A. R.,  Savarese, S.;
+        "Joint 2D-3D-Semantic Data for Indoor Scene Understanding" (2017).
+        https://arxiv.org/abs/1702.01105.
+    """
+
+    def __init__(
+        self,
+        dataset_file,
+        ignore_alpha_channel=True,
+    ):
+
+        import h5py as h5
+
+        self.dataset_file = dataset_file
+
+        with h5.File(self.dataset_file, "r") as h5file:
+            self.img_rgb = h5file["inputs"][0].shape
+            self.img_depth = h5file["targets"][0].shape
+            self.num_samples = h5file["inputs"].shape[0]
+
+        if ignore_alpha_channel:
+            self.img_rgb = (3, self.img_rgb[1], self.img_rgb[2])
+
+        # open file and check for
+        self.h5file = None
+        self.inputs = None
+        self.targets = None
+        self.current_buffer = 0
+        self.inp_buffers = None
+        self.tar_buffers = None
+
+    @property
+    def target_shape(self):
+        return self.img_depth
+
+    @property
+    def input_shape(self):
+        return self.img_rgb
+
+    def __len__(self):
+        return self.num_samples
+
+    def _init_files(self):
+        import h5py as h5
+        self.h5file = h5.File(self.dataset_file, "r")
+        self.inputs = self.h5file["inputs"]
+        self.targets = self.h5file["targets"]
+
+    def __getitem__(self, idx):
+
+        if self.h5file is None:
+            # init files
+            self._init_files()
+            self.current_buffer = 0
+
+        # init buffers
+        if self.inp_buffers is None:
+            self.inp_buffers = [np.empty(self.img_rgb, dtype=np.float32), np.empty(self.img_rgb, dtype=np.float32)]
+        if self.tar_buffers is None:
+            self.tar_buffers = [np.empty(self.img_depth, dtype=np.float32), np.empty(self.img_depth, dtype=np.float32)]
+
+        # double buffering
+        inp = self.inp_buffers[self.current_buffer]
+        tar = self.tar_buffers[self.current_buffer]
+
+        # switch to next buffer
+        self.current_buffer = (self.current_buffer + 1) % 2
+
+        self.inputs.read_direct(inp, np.s_[idx : idx + 1, 0 : self.img_rgb[0], 0 : self.img_rgb[1], 0 : self.img_rgb[2]])
+        self.targets.read_direct(tar, np.s_[idx : idx + 1, 0 : self.img_depth[0], 0 : self.img_depth[1]])
 
         return np.copy(inp), np.copy(tar)
