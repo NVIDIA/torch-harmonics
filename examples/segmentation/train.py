@@ -33,7 +33,6 @@ import os
 import sys
 import random
 
-sys.path.append("../../notebooks")
 import time
 
 import argparse
@@ -57,8 +56,7 @@ from torch_harmonics.examples import SphericalSegmentationDataset, SphericalSegm
 from torch_harmonics.quadrature import _precompute_latitudes
 from torch_harmonics.examples.losses import DiceLossS2, CrossEntropyLossS2, FocalLossS2
 from torch_harmonics.examples.metrics import IntersectionOverUnionS2, AccuracyS2
-
-from plotting import plot_sphere, plot_data, imshow_sphere
+from torch_harmonics.plotting import plot_sphere, imshow_sphere
 
 # wandb logging
 import wandb
@@ -137,12 +135,12 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
             # do plotting
             glob_idx = idx + glob_off
             fig = plt.figure(figsize=(7.5, 6))
-            plot_data(prd.cpu() / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow")
+            plot_sphere(prd.cpu() / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow")
             plt.savefig(os.path.join(path_root, "pred_" + str(glob_idx) + ".png"))
             plt.close()
 
             fig = plt.figure(figsize=(7.5, 6))
-            plot_data(tar.cpu().squeeze(0) / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow")
+            plot_sphere(tar.cpu().squeeze(0) / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow")
             plt.savefig(os.path.join(path_root, "truth_" + str(glob_idx) + ".png"))
             plt.close()
 
@@ -350,15 +348,16 @@ def main(
     downloader = SphericalSegmendationDatasetDownloader(base_url="https://cvg-data.inf.ethz.ch/2d3ds/no_xyz/", local_dir=str(data_path))
     dataset_file = downloader.prepare_dataset(downsampling_factor=16)
 
+    # intiialize distributed for ddp
     if dist.is_initialized():
         dist.barrier(device_ids=[device.index])
 
     # create the dataset and split it
     if logging:
         print(f"Initializing dataset...")
+
     # make sure splitting is consistent across ranks
     rng = torch.Generator().manual_seed(333)
-    #split_ratios = [0.9, 0.09, 0.01]
     split_ratios = [0.95, 0.025, 0.025]
     dataset = SphericalSegmentationDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel)
     train_dataset, test_dataset, valid_dataset = torch.utils.data.random_split(dataset, split_ratios, generator=rng)
@@ -397,12 +396,11 @@ def main(
         #std = dataset.std
         #print(f"Applying mean/variance normalization with mean={mean}, std={std}.")
         #normalization = v2.Normalize(mean=mean, std=std)
-        
+
         # imagenet normalization
         normalization = v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         augmentation = v2.Compose(
             [
-                #v2.RandomAdjustSharpness(1.1, p=0.5),
                 v2.RandomAutocontrast(p=0.5),
                 v2.GaussianNoise(mean=0.0, sigma=0.1, clip=True),
                 v2.ColorJitter(),
@@ -419,23 +417,23 @@ def main(
     class_histogram = torch.from_numpy(dataset.class_histogram)
 
     # # no class weights
-    #class_weights = torch.ones_like(class_histogram)
+    # class_weights = torch.ones_like(class_histogram)
 
-    # inverse frequency weighting
-    #class_weights = 1 / torch.clamp(class_histogram, min=1e-3, max=None)
+    # # inverse frequency weighting
+    # class_weights = 1 / torch.clamp(class_histogram, min=1e-3, max=None)
 
     # log weigthing
-    # class_weights = 1 / (torch.log(class_histogram + 1) + 1)
+    class_weights = - 1 / torch.log(class_histogram)
 
-    # give non-occuring classes zero weight
-    #class_weights = torch.where(class_histogram > 0.0, class_weights, 0.0)
-    #class_weights = class_weights / torch.sum(class_weights)
-
-    class_weights = None
+    # # give non-occuring classes zero weight
+    # class_weights = torch.where(class_histogram > 0.0, class_weights, 0.0)
+    # class_weights = dataset.num_classes * class_weights / torch.sum(class_weights)
 
     # make sure there is no nan
     if (class_weights is not None) and torch.isnan(class_weights).any():
         raise ValueError("The class weights contain NaN.")
+
+    # class_weights = None
 
     if logging:
         print(f"Train dataset initialized with {len(train_dataset)} samples of resolution {img_size}")

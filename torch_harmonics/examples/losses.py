@@ -146,7 +146,7 @@ class FocalLossS2(nn.Module):
             self.weight = None
         else:
             self.register_buffer("weight", weight)
-        
+
         q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid)
         self.register_buffer("quad_weights", q)
 
@@ -154,7 +154,7 @@ class FocalLossS2(nn.Module):
 
         # compute logits
         logits = nn.functional.log_softmax(prd, dim=1)
-        
+
         # w = (1.0 - nn.functional.softmax(prd, dim=-3)).pow(gamma)
         # w = torch.where(tar == self.ignore_index, 0.0, w.gather(-3, tar.unsqueeze(-3)).squeeze(-3))
         ce = nn.functional.cross_entropy(logits, tar, weight=self.weight, reduction="none", ignore_index=self.ignore_index, label_smoothing=self.smooth)
