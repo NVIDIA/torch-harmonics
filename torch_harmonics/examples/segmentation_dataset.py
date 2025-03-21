@@ -135,7 +135,14 @@ class SphericalSegmendationDatasetDownloader:
         lookup_indices = img[..., 0] * 256 * 256 + img[..., 1] * 256 + img[..., 2]
 
         def _convert(lookup: int) -> int:
-            label = class_labels_map[lookup]
+            # the dataset has a bad label for clutter, so we need to fix it
+            # clutter is 855309, but the labels file has it as 3341
+            # The original conversion used uint8, which overflowed the clutter label to 3341
+            # this is a fix to handle that accidental usage of undefined overflow behavior
+            if lookup == 855309:
+                label = class_labels_map[3341] # clutter
+            else:
+                label = class_labels_map[lookup]
             class_index = class_labels_indices.index(label)
             return class_index
 
@@ -282,7 +289,7 @@ class SphericalSegmendationDatasetDownloader:
                 if downsampling_factor != 1:
                     tar = tar.resize(size=(img_shape[1], img_shape[0]), resample=Image.NEAREST)
                     
-                tar_data = np.array(tar)
+                tar_data = np.array(tar, dtype=np.uint32)
 
                 # map to classes
                 tar_data = self._rgb_to_id(tar_data, class_labels_map, class_labels_indices)
