@@ -52,7 +52,7 @@ import pandas as pd
 
 import matplotlib.pyplot as plt
 
-from torch_harmonics.examples import SphericalSegmentationDataset, SphericalSegmendationDatasetDownloader
+from torch_harmonics.examples import StanfordSegmentationDataset, Stanford2D3DSDownloader
 from torch_harmonics.quadrature import _precompute_latitudes
 from torch_harmonics.examples.losses import DiceLossS2, CrossEntropyLossS2, FocalLossS2
 from torch_harmonics.examples.metrics import IntersectionOverUnionS2, AccuracyS2
@@ -345,7 +345,7 @@ def main(
         os.makedirs(data_path, exist_ok=True)
 
     # 2D3DS download & dataset initialization
-    downloader = SphericalSegmendationDatasetDownloader(base_url="https://cvg-data.inf.ethz.ch/2d3ds/no_xyz/", local_dir=str(data_path))
+    downloader = Stanford2D3DSDownloader(base_url="https://cvg-data.inf.ethz.ch/2d3ds/no_xyz/", local_dir=str(data_path))
     dataset_file = downloader.prepare_dataset(downsampling_factor=16)
 
     # intiialize distributed for ddp
@@ -359,7 +359,7 @@ def main(
     # make sure splitting is consistent across ranks
     rng = torch.Generator().manual_seed(333)
     split_ratios = [0.95, 0.025, 0.025]
-    dataset = SphericalSegmentationDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel)
+    dataset = StanfordSegmentationDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel)
     train_dataset, test_dataset, valid_dataset = torch.utils.data.random_split(dataset, split_ratios, generator=rng)
 
     # split dataset if distributed
