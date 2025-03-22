@@ -158,11 +158,11 @@ class Stanford2D3DSDownloader:
         self,
         data_folders,
         class_labels,
-        input_path: str = "pano/rgb",
-        output_path: str = "pano/semantic",
+        rgb_path: str = "pano/rgb",
+        semantic_path: str = "pano/semantic",
         depth_path: str = "pano/depth",
         output_filename="semantic",
-        dataset_file: str = "segmentation_dataset.h5",
+        dataset_file: str = "stanford_2d3ds_dataset.h5",
         downsampling_factor: int = 16,
         remove_alpha_channel: bool = True,
     ):
@@ -189,33 +189,36 @@ class Stanford2D3DSDownloader:
         # get all the file path input, output pairs
         for base_path in data_folders:
 
-            input_dir = os.path.join(self.local_dir, base_path, input_path)
-            output_dir = os.path.join(self.local_dir, base_path, output_path)
+            rgb_dir = os.path.join(self.local_dir, base_path, rgb_path)
+            semantic_dir = os.path.join(self.local_dir, base_path, semantic_path)
             depth_dir = os.path.join(self.local_dir, base_path, depth_path)
             
-            if os.path.exists(input_dir) and os.path.exists(output_dir) and os.path.exists(depth_dir):
-                for file_input in os.listdir(input_dir):
+            if os.path.exists(rgb_dir) and os.path.exists(semantic_dir) and os.path.exists(depth_dir):
+                for file_input in os.listdir(rgb_dir):
                     if not file_input.endswith(".png"):
                         continue
-                    input_filepath = os.path.join(input_dir, file_input)
-                    output_filepath = "_".join(os.path.splitext(os.path.basename(input_filepath))[0].split("_")[:-1]) + f"_{output_filename}.png"
-                    output_filepath = os.path.join(output_dir, output_filepath)
-                    depth_filepath = "_".join(os.path.splitext(os.path.basename(input_filepath))[0].split("_")[:-1]) + f"_depth.png"
+                    rgb_filepath = os.path.join(rgb_dir, file_input)
+                    semantic_filepath = "_".join(os.path.splitext(os.path.basename(rgb_filepath))[0].split("_")[:-1]) + f"_{output_filename}.png"
+                    semantic_filepath = os.path.join(semantic_dir, semantic_filepath)
+                    depth_filepath = "_".join(os.path.splitext(os.path.basename(rgb_filepath))[0].split("_")[:-1]) + f"_depth.png"
                     depth_filepath = os.path.join(depth_dir, depth_filepath)
-                    if not os.path.exists(output_filepath):
-                        print(f"Warning: Couldn't find output file in pair: ({input_filepath},{output_filepath})")
+                    if not os.path.exists(semantic_filepath):
+                        print(f"Warning: Couldn't find output file in pair: ({rgb_filepath},{semantic_filepath})")
                         continue
 
                     if not os.path.exists(depth_filepath):
-                        print(f"Warning: Couldn't find depth file in pair: ({input_filepath},{depth_filepath})")
+                        print(f"Warning: Couldn't find depth file in pair: ({rgb_filepath},{depth_filepath})")
                         continue
                     
-                    file_paths.append((input_filepath, output_filepath, depth_filepath))
-            elif not os.path.exists(input_dir):
-                print("Warning: Input dir doesn't exist: ", input_dir)
+                    file_paths.append((rgb_filepath, semantic_filepath, depth_filepath))
+            elif not os.path.exists(rgb_dir):
+                print("Warning: RGB dir doesn't exist: ", rgb_dir)
                 continue
-            elif not os.path.exists(output_dir):
-                print("Warning: Output dir doesn't exist: ", output_dir)
+            elif not os.path.exists(semantic_dir):
+                print("Warning: Semantic dir doesn't exist: ", semantic_dir)
+                continue
+            elif not os.path.exists(depth_dir):
+                print("Warning: Depth dir doesn't exist: ", depth_dir)
                 continue
 
         num_samples = len(file_paths)
@@ -236,9 +239,9 @@ class Stanford2D3DSDownloader:
 
         # create the dataset file
         with h5.File(converted_dataset_path, "w") as h5file:
-            input_data = h5file.create_dataset("inputs", (num_samples, inp_channels, *img_shape), "f4")
-            target_data = h5file.create_dataset("targets", (num_samples, *img_shape), "i8")
-            depth_data = h5file.create_dataset("depths", (num_samples, *img_shape), "f4")
+            rgb_data = h5file.create_dataset("rgb", (num_samples, inp_channels, *img_shape), "f4")
+            semantic_data = h5file.create_dataset("semantic", (num_samples, *img_shape), "i8")
+            depth_data = h5file.create_dataset("depth", (num_samples, *img_shape), "f4")
             classes = h5file.create_dataset("class_labels", data=class_labels_indices)
             num_classes = len(set(class_labels_indices))
 
@@ -274,7 +277,7 @@ class Stanford2D3DSDownloader:
                 inp_data = np.transpose(inp_data / 255., axes=(2,0,1))
 
                 # write to disk
-                input_data[i, ...] = inp_data[...]
+                rgb_data[i, ...] = inp_data[...]
 
                 # compute stats -> segmentation
                 count += 1
@@ -301,19 +304,19 @@ class Stanford2D3DSDownloader:
                     m2_vals += delta * delta2
 
                 # get the target
-                tar = Image.open(file_paths[i][1])
+                sem = Image.open(file_paths[i][1])
 
                 # downsampling
                 if downsampling_factor != 1:
-                    tar = tar.resize(size=(img_shape[1], img_shape[0]), resample=Image.NEAREST)
+                    sem = sem.resize(size=(img_shape[1], img_shape[0]), resample=Image.NEAREST)
                     
-                tar_data = np.array(tar, dtype=np.uint32)
+                sem_data = np.array(sem, dtype=np.uint32)
 
                 # map to classes
-                tar_data = self._rgb_to_id(tar_data, class_labels_map, class_labels_indices)
-                
+                sem_data = self._rgb_to_id(sem_data, class_labels_map, class_labels_indices)
+
                 # write to file
-                target_data[i, ...] = tar_data[...]
+                semantic_data[i, ...] = sem_data[...]
                 
                 # Here we want depth
                 dep = Image.open(file_paths[i][2])
@@ -344,14 +347,14 @@ class Stanford2D3DSDownloader:
 
                 # update the class histogram
                 for c in range(num_classes):
-                    class_histogram[c] += quad_weights[tar_data == c].sum()
+                    class_histogram[c] += quad_weights[sem_data == c].sum()
 
             # record min/max
-            h5file.create_dataset("min_seg", data=min_vals.astype(np.float32))
-            h5file.create_dataset("max_seg", data=max_vals.astype(np.float32))
-            h5file.create_dataset("mean_seg", data=mean_vals.astype(np.float32))
+            h5file.create_dataset("min_sem", data=min_vals.astype(np.float32))
+            h5file.create_dataset("max_sem", data=max_vals.astype(np.float32))
+            h5file.create_dataset("mean_sem", data=mean_vals.astype(np.float32))
             std_vals = np.sqrt(m2_vals / float(count - 1))
-            h5file.create_dataset("std_seg", data=std_vals.astype(np.float32))
+            h5file.create_dataset("std_sem", data=std_vals.astype(np.float32))
             
             # record min/max
             h5file.create_dataset("min_depth", data=min_vals_depth.astype(np.float32))
@@ -368,7 +371,7 @@ class Stanford2D3DSDownloader:
 
     
     def prepare_dataset(self, file_extracted_directory_pairs=DEFAULT_TAR_FILE_PAIRS,
-                        dataset_file: str = "segmentation_dataset.h5", downsampling_factor: int = 16):
+                        dataset_file: str = "stanford_2d3ds_dataset.h5", downsampling_factor: int = 16):
 
         converted_dataset_path = os.path.join(self.local_dir, dataset_file)
         if os.path.exists(converted_dataset_path):
@@ -408,18 +411,18 @@ class StanfordSegmentationDataset(Dataset):
         self.dataset_file = dataset_file
 
         with h5.File(self.dataset_file, "r") as h5file:
-            self.img_rgb = h5file["inputs"][0].shape
-            self.img_seg = h5file["targets"][0].shape
-            self.num_samples = h5file["inputs"].shape[0]
+            self.img_rgb = h5file["rgb"][0].shape
+            self.img_seg = h5file["semantic"][0].shape
+            self.num_samples = h5file["rgb"].shape[0]
             self.num_classes = h5file["class_labels"].shape[0]
 
             self.class_histogram = np.array(h5file["class_histogram"][...])
             self.class_histogram = self.class_histogram / self.class_histogram.sum()
 
-            self.mean = h5file["mean_seg"][...]
-            self.std = h5file["std_seg"][...]
-            self.min = h5file["min_seg"][...]
-            self.max = h5file["max_seg"][...]
+            self.mean = h5file["mean_sem"][...]
+            self.std = h5file["std_sem"][...]
+            self.min = h5file["min_sem"][...]
+            self.max = h5file["max_sem"][...]
 
         if ignore_alpha_channel:
             self.img_rgb = (3, self.img_rgb[1], self.img_rgb[2])
@@ -427,11 +430,11 @@ class StanfordSegmentationDataset(Dataset):
         # open file and check for
         self.h5file = None
         self.class_labels = None
-        self.inputs = None
-        self.targets = None
+        self.rgb = None
+        self.semantic = None
         self.current_buffer = 0
         self.inp_buffers = None
-        self.tar_buffers = None
+        self.semantic_buffers = None
 
     @property
     def target_shape(self):
@@ -457,8 +460,8 @@ class StanfordSegmentationDataset(Dataset):
         import h5py as h5
         self.h5file = h5.File(self.dataset_file, "r")
         self.class_labels = self.h5file["class_labels"]
-        self.inputs = self.h5file["inputs"]
-        self.targets = self.h5file["targets"]
+        self.rgb = self.h5file["rgb"]
+        self.semantic = self.h5file["semantic"]
 
     def __getitem__(self, idx, mask_invalid=True):
 
@@ -470,22 +473,22 @@ class StanfordSegmentationDataset(Dataset):
         # init buffers
         if self.inp_buffers is None:
             self.inp_buffers = [np.empty(self.img_rgb, dtype=np.float32), np.empty(self.img_rgb, dtype=np.float32)]
-        if self.tar_buffers is None:
-            self.tar_buffers = [np.empty(self.img_seg, dtype=np.int64), np.empty(self.img_seg, dtype=np.int64)]
+        if self.semantic_buffers is None:
+            self.semantic_buffers = [np.empty(self.img_seg, dtype=np.int64), np.empty(self.img_seg, dtype=np.int64)]
 
         # double buffering
         inp = self.inp_buffers[self.current_buffer]
-        tar = self.tar_buffers[self.current_buffer]
+        sem = self.semantic_buffers[self.current_buffer]
 
         # switch to next buffer
         self.current_buffer = (self.current_buffer + 1) % 2
 
-        self.inputs.read_direct(inp, np.s_[idx : idx + 1, 0 : self.img_rgb[0], 0 : self.img_rgb[1], 0 : self.img_rgb[2]])
-        self.targets.read_direct(tar, np.s_[idx : idx + 1, 0 : self.img_seg[0], 0 : self.img_seg[1]])
+        self.rgb.read_direct(inp, np.s_[idx : idx + 1, 0 : self.img_rgb[0], 0 : self.img_rgb[1], 0 : self.img_rgb[2]])
+        self.semantic.read_direct(sem, np.s_[idx : idx + 1, 0 : self.img_seg[0], 0 : self.img_seg[1]])
         if mask_invalid:
-            tar = self._mask_invalid(tar)
+            sem = self._mask_invalid(sem)
 
-        return np.copy(inp), np.copy(tar)
+        return np.copy(inp), np.copy(sem)
 
 class StanfordDepthDataset(Dataset):
     """
@@ -509,9 +512,9 @@ class StanfordDepthDataset(Dataset):
         self.dataset_file = dataset_file
 
         with h5.File(self.dataset_file, "r") as h5file:
-            self.img_rgb = h5file["inputs"][0].shape
-            self.img_depth = h5file["targets"][0].shape
-            self.num_samples = h5file["inputs"].shape[0]
+            self.img_rgb = h5file["rgb"][0].shape
+            self.img_depth = h5file["depth"][0].shape
+            self.num_samples = h5file["rgb"].shape[0]
             self.mean = h5file["mean_depth"][...]
             self.std = h5file["std_depth"][...]
             self.min = h5file["min_depth"][...]
@@ -522,11 +525,11 @@ class StanfordDepthDataset(Dataset):
 
         # open file and check for
         self.h5file = None
-        self.inputs = None
-        self.targets = None
+        self.rgb = None
+        self.semantic = None
         self.current_buffer = 0
         self.inp_buffers = None
-        self.tar_buffers = None
+        self.depth_buffers = None
 
     @property
     def target_shape(self):
@@ -542,8 +545,8 @@ class StanfordDepthDataset(Dataset):
     def _init_files(self):
         import h5py as h5
         self.h5file = h5.File(self.dataset_file, "r")
-        self.inputs = self.h5file["inputs"]
-        self.targets = self.h5file["targets"]
+        self.rgb = self.h5file["rgb"]
+        self.semantic = self.h5file["semantic"]
 
     def __getitem__(self, idx):
 
@@ -555,17 +558,17 @@ class StanfordDepthDataset(Dataset):
         # init buffers
         if self.inp_buffers is None:
             self.inp_buffers = [np.empty(self.img_rgb, dtype=np.float32), np.empty(self.img_rgb, dtype=np.float32)]
-        if self.tar_buffers is None:
-            self.tar_buffers = [np.empty(self.img_depth, dtype=np.float32), np.empty(self.img_depth, dtype=np.float32)]
+        if self.depth_buffers is None:
+            self.depth_buffers = [np.empty(self.img_depth, dtype=np.float32), np.empty(self.img_depth, dtype=np.float32)]
 
         # double buffering
         inp = self.inp_buffers[self.current_buffer]
-        tar = self.tar_buffers[self.current_buffer]
+        depth = self.depth_buffers[self.current_buffer]
 
         # switch to next buffer
         self.current_buffer = (self.current_buffer + 1) % 2
 
-        self.inputs.read_direct(inp, np.s_[idx : idx + 1, 0 : self.img_rgb[0], 0 : self.img_rgb[1], 0 : self.img_rgb[2]])
-        self.targets.read_direct(tar, np.s_[idx : idx + 1, 0 : self.img_depth[0], 0 : self.img_depth[1]])
+        self.rgb.read_direct(inp, np.s_[idx : idx + 1, 0 : self.img_rgb[0], 0 : self.img_rgb[1], 0 : self.img_rgb[2]])
+        self.semantic.read_direct(depth, np.s_[idx : idx + 1, 0 : self.img_depth[0], 0 : self.img_depth[1]])
 
         return np.copy(inp), np.copy(tar)
