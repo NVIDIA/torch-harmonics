@@ -204,6 +204,7 @@ def train_model(
             inp = inp.to(device)
             tar = tar.to(device)
             mask = mask.to(device)
+            mask = mask.to(device)
 
             if normalization_in is not None:
                 inp = normalization_in(inp)
@@ -259,6 +260,7 @@ def train_model(
             for step, (inp, tar, mask) in enumerate(test_dataloader):
                 inp = inp.to(device)
                 tar = tar.to(device)
+                mask = mask.to(device)
                 mask = mask.to(device)
 
                 if normalization_in is not None:
