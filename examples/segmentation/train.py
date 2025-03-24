@@ -308,6 +308,7 @@ def main(
     num_epochs=100,
     batch_size=8,
     learning_rate=1e-4,
+    label_smoothing=0.,
     train=True,
     load_checkpoint=False,
     amp_mode="none",
@@ -556,8 +557,8 @@ def main(
     #)
 
     # create the loss object
-    loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=0.).to(device=device)
-    #loss_fn = DiceLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular",  weight=class_weights, smooth=0.).to(device=device)
+    #loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=label_smoothing).to(device=device)
+    loss_fn = DiceLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular",  weight=class_weights, smooth=label_smoothing).to(device=device)
     # loss_fn = FocalLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
 
     # compile loss function
@@ -706,6 +707,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_epochs", default=100, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--batch_size", default=8, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--learning_rate", default=1e-4, type=float, help="Switch to override learning rate.")
+    parser.add_argument("--label_smoothing_factor", default=0., type=float, help="Label smoothing factor [0, 1].")
     parser.add_argument("--resume", action="store_true", help="Reload checkpoints.")
     parser.add_argument("--amp_mode", default="none", type=str, choices=["none", "bf16", "fp16"], help="Switch to enable AMP.")
     parser.add_argument("--enable_ddp", action="store_true", help="Switch to enable distributed data parallel.")
@@ -717,6 +719,7 @@ if __name__ == "__main__":
         num_epochs=args.num_epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
+        label_smoothing=args.label_smoothing_factor,
         train=True,
         load_checkpoint=args.resume,
         amp_mode=args.amp_mode,
