@@ -132,7 +132,7 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
             for metric in metrics_fns:
                 metric_buff = metrics[metric]
                 metric_fn = metrics_fns[metric]
-                metric_buff[idx] = metric_fn(prd, tar)
+                metric_buff[idx] = metric_fn(prd, tar, mask)
 
             prd = nn.functional.softmax(prd, dim=-3)
             prd = torch.argmax(prd, dim=-3).squeeze(0)
@@ -277,7 +277,7 @@ def train_model(
                 for metric in metrics_fns:
                     metric_buff = valid_metrics[metric]
                     metric_fn = metrics_fns[metric]
-                    metric_buff[0] += metric_fn(prd, tar) * inp.size(0)
+                    metric_buff[0] += metric_fn(prd, tar, mask) * inp.size(0)
                     metric_buff[1] += inp.size(0)
 
             if dist.is_initialized():

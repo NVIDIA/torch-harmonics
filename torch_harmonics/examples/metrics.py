@@ -196,9 +196,9 @@ class RmseS2(nn.Module):
         q = q.tile((1, nlon)).contiguous()
         self.register_buffer("quad_weights", q)
 
-    def forward(self, pred: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
+    def forward(self, pred: torch.Tensor, truth: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         # Compute squared differences
-        squared_diff = (pred - truth) ** 2
+        squared_diff = ((pred - truth) * mask) ** 2
         
         # Average over the spatial dimensions using quadrature weights
         # Assuming pred and truth have shape (batch, channels, lat, lon)
