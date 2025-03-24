@@ -36,13 +36,16 @@ from typing import Optional
 
 from torch_harmonics.quadrature import _precompute_latitudes
 
-def get_quadrature_weights(nlat: int, nlon: int, grid: str) -> torch.Tensor:
+def get_quadrature_weights(nlat: int, nlon: int, grid: str, tile: bool=False) -> torch.Tensor:
     # area weights
     _, q = _precompute_latitudes(nlat=nlat, grid=grid)
     q = q.reshape(-1, 1) * 2 * torch.pi / nlon
 
     # numerical precision can be an issue here, make sure it sums to 1:
     q = q / torch.sum(q) / float(nlon)
+
+    if tile:
+        q = torch.tile(q, (1, nlon)).contiguous()
 
     return q.to(torch.float32)
 

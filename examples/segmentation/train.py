@@ -52,11 +52,13 @@ import pandas as pd
 
 import matplotlib.pyplot as plt
 
-from torch_harmonics.examples import StanfordSegmentationDataset, Stanford2D3DSDownloader
+from torch_harmonics.examples import StanfordSegmentationDataset, Stanford2D3DSDownloader, compute_stats_s2
 from torch_harmonics.quadrature import _precompute_latitudes
 from torch_harmonics.examples.losses import DiceLossS2, CrossEntropyLossS2, FocalLossS2
 from torch_harmonics.examples.metrics import IntersectionOverUnionS2, AccuracyS2
 from torch_harmonics.plotting import plot_sphere, imshow_sphere
+
+from torchvision.transforms import v2
 
 # wandb logging
 import wandb
@@ -358,6 +360,12 @@ def main(
     dataset = StanfordSegmentationDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel)
     train_dataset, test_dataset, valid_dataset = torch.utils.data.random_split(dataset, split_ratios, generator=rng)
 
+    # compute stats on the train dataset
+    means, stds = compute_stats_s2(train_dataset.dataset)
+    train_dataset.dataset.reset()
+    if logging:
+        print(f"Computed stats: means={means}, stds={stds}")
+
     # split dataset if distributed
     if dist.is_initialized():
         train_sampler = DistributedSampler(train_dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank(), shuffle=True, drop_last=True)
@@ -379,22 +387,14 @@ def main(
                                   num_workers=0, persistent_workers=False, pin_memory=True)
 
     # TODO: move augmentation into extra helper module
+    normalization = v2.Normalize(mean=means.tolist(), std=stds.tolist())
     if enable_data_augmentation:
         if not ignore_alpha_channel:
             raise NotImplementedError("You can only use data augmentation with RGB images, RGBA is not supported.")
         if logging:
             print("Using data augmentation")
-        from torchvision.transforms import v2
-
-        # get stas from file: WARNING! STATS HAVE BEEN COMPUTED OVER ALL SAMPLES
-        # NEED TO DISENTANGLE THAT CORRECTLY WITH STATIC SPLITS!
-        #mean = dataset.mean
-        #std = dataset.std
-        #print(f"Applying mean/variance normalization with mean={mean}, std={std}.")
-        #normalization = v2.Normalize(mean=mean, std=std)
 
         # imagenet normalization
-        normalization = v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         augmentation = v2.Compose(
             [
                 v2.RandomAutocontrast(p=0.5),
@@ -403,7 +403,6 @@ def main(
             ]
         )
     else:
-        normalization = None
         augmentation = None
 
     in_channels = 3 if ignore_alpha_channel else 4
@@ -413,13 +412,13 @@ def main(
     class_histogram = torch.from_numpy(dataset.class_histogram)
 
     # # no class weights
-    # class_weights = None
+    class_weights = None
 
     # # inverse frequency weighting
     # class_weights = 1 / torch.clamp(class_histogram, min=1e-3, max=None)
 
     # log weigthing
-    class_weights = - 1 / torch.log(class_histogram)
+    #class_weights = - 1 / torch.log(class_histogram)
 
     # # give non-occuring classes zero weight
     # class_weights = torch.where(class_histogram > 0.0, class_weights, 0.0)

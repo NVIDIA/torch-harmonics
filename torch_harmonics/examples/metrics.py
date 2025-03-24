@@ -99,8 +99,7 @@ class BaseMetricS2(nn.Module):
         self.mode = mode
         
         # area weights
-        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid)
-        q = q.tile((1, nlon)).contiguous()
+        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid, tile=True)
         self.register_buffer("quad_weights", q)
 
         if weight is None:
