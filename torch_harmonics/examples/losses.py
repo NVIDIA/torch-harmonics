@@ -182,9 +182,9 @@ class L2LossS2(nn.Module):
         squared_diff = (prd - tar) ** 2
         
         # Weight the differences by quadrature weights and sum over lat/lon
-        #weighted_loss = (squared_diff * self.quad_weights).sum(dim=(-1, -2))
+        weighted_loss = (squared_diff * self.quad_weights).sum(dim=(-1, -2))
         
         # Average over batch
-        loss = torch.mean(squared_diff)
+        loss = torch.mean(weighted_loss)
         
         return loss
