@@ -115,9 +115,10 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
         glob_off = num_examples * dist.get_rank()
 
     with torch.no_grad():
-        for idx, (inp, tar) in enumerate(dataloader):
+        for idx, (inp, tar, mask) in enumerate(dataloader):
             inp = inp.to(device)
             tar = tar.to(device)
+            mask = mask.to(device)
 
             if normalization_in is not None:
                 inp = normalization_in(inp)
@@ -200,9 +201,10 @@ def train_model(
         if dist.is_initialized():
             train_sampler.set_epoch(epoch)
 
-        for step, (inp, tar) in enumerate(train_dataloader):
+        for step, (inp, tar, mask) in enumerate(train_dataloader):
             inp = inp.to(device)
             tar = tar.to(device)
+            mask = mask.to(device)
 
             if normalization_in is not None:
                 inp = normalization_in(inp)
@@ -258,6 +260,7 @@ def train_model(
             for step, (inp, tar) in enumerate(test_dataloader):
                 inp = inp.to(device)
                 tar = tar.to(device)
+                mask = mask.to(device)
 
                 if normalization_in is not None:
                     inp = normalization_in(inp)
