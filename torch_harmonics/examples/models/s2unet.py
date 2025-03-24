@@ -249,7 +249,7 @@ class UpsamplingBlock(nn.Module):
                 in_channels=out_channels,
                 out_channels=out_channels,
                 in_shape=in_shape,
-                out_shape=out_shape,
+                out_shape=in_shape,
                 kernel_shape=kernel_shape,
                 basis_type=basis_type,
                 grid_in=grid_in,

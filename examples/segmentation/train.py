@@ -204,11 +204,6 @@ def train_model(
             if augmentation is not None:
                 inp = augmentation(inp)
 
-                ## roll horizontally
-                #shift = random.randint(0, inp.shape[-1] - 1)
-                #inp = torch.roll(inp, shift, dims=-1)
-                #tar = torch.roll(tar, shift, dims=-1)
-
                 # flip randomly horizontally
                 if random.random() < 0.5:
                     inp = torch.flip(inp, dims=(-1,))
