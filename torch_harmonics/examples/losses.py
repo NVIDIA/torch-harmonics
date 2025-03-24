@@ -176,10 +176,10 @@ class L2LossS2(nn.Module):
         q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid)
         self.register_buffer("quad_weights", q)
 
-    def forward(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+    def forward(self, prd: torch.Tensor, tar: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         # Compute squared difference
 
-        squared_diff = (prd - tar) ** 2
+        squared_diff = ((prd - tar) * mask) ** 2
         
         # Weight the differences by quadrature weights and sum over lat/lon
         weighted_loss = (squared_diff * self.quad_weights).sum(dim=(-1, -2))

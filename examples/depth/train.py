@@ -115,10 +115,10 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
         glob_off = num_examples * dist.get_rank()
 
     with torch.no_grad():
-        for idx, (inp, tar) in enumerate(dataloader):
+        for idx, (inp, tar, mask) in enumerate(dataloader):
             inp = inp.to(device)
             tar = tar.to(device)
-
+            mask = mask.to(device)
             if normalization_in is not None:
                 inp = normalization_in(inp)
 
@@ -127,7 +127,7 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
 
             prd = model(inp)
 
-            losses[idx] = loss_fn(prd, tar)
+            losses[idx] = loss_fn(prd, tar, mask)
 
             for metric in metrics_fns:
                 metric_buff = metrics[metric]
@@ -199,10 +199,11 @@ def train_model(
 
         if dist.is_initialized():
             train_sampler.set_epoch(epoch)
-
-        for step, (inp, tar) in enumerate(train_dataloader):
+                
+        for step, (inp, tar, mask) in enumerate(train_dataloader):
             inp = inp.to(device)
             tar = tar.to(device)
+            mask = mask.to(device)
 
             if normalization_in is not None:
                 inp = normalization_in(inp)
@@ -220,7 +221,7 @@ def train_model(
 
             with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=(amp_mode != "none")):
                 prd = model(inp)
-                loss = loss_fn(prd, tar)
+                loss = loss_fn(prd, tar, mask)
 
             optimizer.zero_grad(set_to_none=True)
             gscaler.scale(loss).backward()
@@ -255,9 +256,10 @@ def train_model(
             test_sampler.set_epoch(epoch)
 
         with torch.no_grad():
-            for step, (inp, tar) in enumerate(test_dataloader):
+            for step, (inp, tar, mask) in enumerate(test_dataloader):
                 inp = inp.to(device)
                 tar = tar.to(device)
+                mask = mask.to(device)
 
                 if normalization_in is not None:
                     inp = normalization_in(inp)
@@ -267,7 +269,7 @@ def train_model(
 
                 with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=(amp_mode != "none")):
                     prd = model(inp)
-                    loss = loss_fn(prd, tar)
+                    loss = loss_fn(prd, tar, mask)
 
                 valid_loss[0] += loss * inp.size(0)
                 valid_loss[1] += inp.size(0)
@@ -396,8 +398,9 @@ def main(
                                   num_workers=0, persistent_workers=False, pin_memory=True)
 
     # TODO: move augmentation into extra helper module
-    normalization_in = v2.Normalize(mean=means_in.tolist(), stds=stds_in.tolist())
-    normalization_out = v2.Normalize(mean=means_out.tolist(), stds=stds_out.tolist())
+    normalization_in = v2.Normalize(mean=means_in.tolist(), std=stds_in.tolist())
+    normalization_out = v2.Normalize(mean=[means_out], std=[stds_out])
+
     if enable_data_augmentation:
         if not ignore_alpha_channel:
             raise NotImplementedError("You can only use data augmentation with RGB images, RGBA is not supported.")
