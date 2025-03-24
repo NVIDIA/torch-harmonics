@@ -36,7 +36,6 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 
 import numpy as np
-import h5py as h5
 
 from torch_harmonics.quadrature import _precompute_latitudes
 from torch_harmonics.examples.losses import get_quadrature_weights
@@ -173,6 +172,7 @@ class Stanford2D3DSDownloader:
 
         from PIL import Image
         from tqdm import tqdm
+        import h5py as h5
 
         file_paths = []
 
@@ -412,6 +412,8 @@ class StanfordSegmentationDataset(Dataset):
         ignore_alpha_channel=True,
     ):
 
+        import h5py as h5
+
         self.dataset_file = dataset_file
 
         with h5.File(self.dataset_file, "r") as h5file:
@@ -458,6 +460,7 @@ class StanfordSegmentationDataset(Dataset):
         return self.num_samples
 
     def _init_files(self):
+        import h5py as h5
         self.h5file = h5.File(self.dataset_file, "r")
         self.class_labels = self.h5file["class_labels"]
         self.rgb = self.h5file["rgb"]
@@ -504,6 +507,8 @@ class StanfordDepthDataset(Dataset):
         ignore_alpha_channel=True,
     ):
 
+        import h5py as h5
+        
         self.dataset_file = dataset_file
 
         with h5.File(self.dataset_file, "r") as h5file:
@@ -543,6 +548,7 @@ class StanfordDepthDataset(Dataset):
         return self.num_samples
 
     def _init_files(self):
+        import h5py as h5
         self.h5file = h5.File(self.dataset_file, "r")
         self.rgb = self.h5file["rgb"]
         self.depth = self.h5file["depth"]
