@@ -312,7 +312,6 @@ class TransformerBlock(nn.Module):
 
         assert(len(drop_path_rates) == nrep)
 
-        theta_cutoff = _compute_cutoff_radius(in_shape[0], [1], "morlet")
         self.fwd =[
             OverlapPatchMerging(
                 in_shape=in_shape,
@@ -416,7 +415,7 @@ class Upsampling(nn.Module):
                                  kernel_size=1,
                                  bias=True)
 
-        theta_cutoff = _compute_cutoff_radius(out_shape[0], kernel_shape, basis_type)
+        theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
         self.upsample = DiscreteContinuousConvTransposeS2(
             out_channels,
             out_channels,

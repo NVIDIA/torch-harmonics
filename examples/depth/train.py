@@ -52,10 +52,10 @@ import pandas as pd
 
 import matplotlib.pyplot as plt
 
-from torch_harmonics.examples import StanfordSegmentationDataset, Stanford2D3DSDownloader, compute_stats_s2
+from torch_harmonics.examples import StanfordDepthDataset, Stanford2D3DSDownloader, compute_stats_s2
 from torch_harmonics.quadrature import _precompute_latitudes
-from torch_harmonics.examples.losses import DiceLossS2, CrossEntropyLossS2, FocalLossS2
-from torch_harmonics.examples.metrics import IntersectionOverUnionS2, AccuracyS2
+from torch_harmonics.examples.losses import L2LossS2
+from torch_harmonics.examples.metrics import RmseS2
 from torch_harmonics.plotting import plot_sphere, imshow_sphere
 
 from torchvision.transforms import v2
@@ -89,7 +89,8 @@ def log_weights_and_grads(exp_dir, model, iters=1):
 
 
 # rolls out the FNO and compares to the classical solver
-def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normalization=None, logging=True, device=torch.device("cpu")):
+def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normalization_in=None, normalization_out=None,
+                   logging=True, device=torch.device("cpu")):
 
     model.eval()
 
@@ -114,22 +115,24 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
         glob_off = num_examples * dist.get_rank()
 
     with torch.no_grad():
-        for idx, (inp, tar) in enumerate(dataloader):
+        for idx, (inp, tar, mask) in enumerate(dataloader):
             inp = inp.to(device)
             tar = tar.to(device)
+            mask = mask.to(device)
+            if normalization_in is not None:
+                inp = normalization_in(inp)
 
-            if normalization is not None:
-                inp = normalization(inp)
+            if normalization_out is not None:
+                tar = normalization_out(tar)
 
             prd = model(inp)
-            num_classes = prd.shape[-3]
 
-            losses[idx] = loss_fn(prd, tar)
+            losses[idx] = loss_fn(prd, tar, mask)
 
             for metric in metrics_fns:
                 metric_buff = metrics[metric]
                 metric_fn = metrics_fns[metric]
-                metric_buff[idx] = metric_fn(prd, tar)
+                metric_buff[idx] = metric_fn(prd, tar, mask)
 
             prd = nn.functional.softmax(prd, dim=-3)
             prd = torch.argmax(prd, dim=-3).squeeze(0)
@@ -137,12 +140,12 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
             # do plotting
             glob_idx = idx + glob_off
             fig = plt.figure(figsize=(7.5, 6))
-            plot_sphere(prd.cpu() / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow")
+            plot_sphere(prd.cpu(), fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow")
             plt.savefig(os.path.join(path_root, "pred_" + str(glob_idx) + ".png"))
             plt.close()
 
             fig = plt.figure(figsize=(7.5, 6))
-            plot_sphere(tar.cpu().squeeze(0) / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow")
+            plot_sphere(tar.cpu().squeeze(0), fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow")
             plt.savefig(os.path.join(path_root, "truth_" + str(glob_idx) + ".png"))
             plt.close()
 
@@ -161,7 +164,8 @@ def train_model(
     optimizer,
     gscaler,
     scheduler=None,
-    normalization=None,
+    normalization_in=None,
+    normalization_out=None,
     augmentation=None,
     nepochs=20,
     amp_mode="none",
@@ -195,17 +199,21 @@ def train_model(
 
         if dist.is_initialized():
             train_sampler.set_epoch(epoch)
-
-        for step, (inp, tar) in enumerate(train_dataloader):
+                
+        for step, (inp, tar, mask) in enumerate(train_dataloader):
             inp = inp.to(device)
             tar = tar.to(device)
+            mask = mask.to(device)
 
-            if normalization is not None:
-                inp = normalization(inp)
+            if normalization_in is not None:
+                inp = normalization_in(inp)
+                
+            if normalization_out is not None:
+                tar = normalization_out(tar)
 
             if augmentation is not None:
                 inp = augmentation(inp)
-
+                
                 # flip randomly horizontally
                 if random.random() < 0.5:
                     inp = torch.flip(inp, dims=(-1,))
@@ -213,7 +221,7 @@ def train_model(
 
             with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=(amp_mode != "none")):
                 prd = model(inp)
-                loss = loss_fn(prd, tar)
+                loss = loss_fn(prd, tar, mask)
 
             optimizer.zero_grad(set_to_none=True)
             gscaler.scale(loss).backward()
@@ -248,16 +256,20 @@ def train_model(
             test_sampler.set_epoch(epoch)
 
         with torch.no_grad():
-            for step, (inp, tar) in enumerate(test_dataloader):
+            for step, (inp, tar, mask) in enumerate(test_dataloader):
                 inp = inp.to(device)
                 tar = tar.to(device)
+                mask = mask.to(device)
 
-                if normalization is not None:
-                    inp = normalization(inp)
+                if normalization_in is not None:
+                    inp = normalization_in(inp)
+
+                if normalization_out is not None:
+                    tar = normalization_out(tar)
 
                 with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=(amp_mode != "none")):
                     prd = model(inp)
-                    loss = loss_fn(prd, tar)
+                    loss = loss_fn(prd, tar, mask)
 
                 valid_loss[0] += loss * inp.size(0)
                 valid_loss[1] += inp.size(0)
@@ -265,7 +277,7 @@ def train_model(
                 for metric in metrics_fns:
                     metric_buff = valid_metrics[metric]
                     metric_fn = metrics_fns[metric]
-                    metric_buff[0] += metric_fn(prd, tar) * inp.size(0)
+                    metric_buff[0] += metric_fn(prd, tar, mask) * inp.size(0)
                     metric_buff[1] += inp.size(0)
 
             if dist.is_initialized():
@@ -310,7 +322,6 @@ def main(
     num_epochs=100,
     batch_size=8,
     learning_rate=1e-4,
-    label_smoothing=0.,
     train=True,
     load_checkpoint=False,
     amp_mode="none",
@@ -357,14 +368,14 @@ def main(
     # make sure splitting is consistent across ranks
     rng = torch.Generator().manual_seed(333)
     split_ratios = [0.95, 0.025, 0.025]
-    dataset = StanfordSegmentationDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel)
+    dataset = StanfordDepthDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel)
     train_dataset, test_dataset, valid_dataset = torch.utils.data.random_split(dataset, split_ratios, generator=rng)
 
-    # compute stats on the train dataset
-    means, stds = compute_stats_s2(train_dataset)
+    # stats computation
+    means_in, stds_in, means_out, stds_out = compute_stats_s2(train_dataset.dataset)
     train_dataset.dataset.reset()
     if logging:
-        print(f"Computed stats: means={means}, stds={stds}")
+        print(f"Computed stats: means_in={means_in}, stds_in={stds_in}, means_out={means_out}, stds_out={stds_out}")
 
     # split dataset if distributed
     if dist.is_initialized():
@@ -387,7 +398,9 @@ def main(
                                   num_workers=0, persistent_workers=False, pin_memory=True)
 
     # TODO: move augmentation into extra helper module
-    normalization = v2.Normalize(mean=means.tolist(), std=stds.tolist())
+    normalization_in = v2.Normalize(mean=means_in.tolist(), std=stds_in.tolist())
+    normalization_out = v2.Normalize(mean=[means_out], std=[stds_out])
+
     if enable_data_augmentation:
         if not ignore_alpha_channel:
             raise NotImplementedError("You can only use data augmentation with RGB images, RGBA is not supported.")
@@ -409,25 +422,7 @@ def main(
 
     # print dataset info
     img_size = dataset.input_shape[1:]
-    class_histogram = torch.from_numpy(dataset.class_histogram)
-
-    # # no class weights
-    class_weights = None
-
-    # # inverse frequency weighting
-    # class_weights = 1 / torch.clamp(class_histogram, min=1e-3, max=None)
-
-    # log weigthing
-    #class_weights = - 1 / torch.log(class_histogram)
-
-    # # give non-occuring classes zero weight
-    # class_weights = torch.where(class_histogram > 0.0, class_weights, 0.0)
-    # class_weights = dataset.num_classes * class_weights / torch.sum(class_weights)
-
-    # make sure there is no nan
-    if (class_weights is not None) and torch.isnan(class_weights).any():
-        raise ValueError("The class weights contain NaN.")
-
+    
     if logging:
         print(f"Train dataset initialized with {len(train_dataset)} samples of resolution {img_size}")
         print(f"Test dataset initialized with {len(test_dataset)} samples of resolution {img_size}")
@@ -437,11 +432,13 @@ def main(
     models = {}
     metrics = {}
 
-    from torch_harmonics.examples.models import SphericalFourierNeuralOperatorForSegmentation as SFNO
-    from torch_harmonics.examples.models import LocalSphericalNeuralOperatorForSegmentation as LSNO
-    from torch_harmonics.examples.models import SphericalTransformerForSegmentation as S2T
-    from torch_harmonics.examples.models import SphericalSegformer as S2S
-    from torch_harmonics.examples.models import SphericalUNet as S2U
+    from torch_harmonics.examples.models import SphericalFourierNeuralOperator as SFNO
+    from torch_harmonics.examples.models import LocalSphericalNeuralOperator as LSNO
+    from torch_harmonics.examples.models import SphericalTransformer as S2T
+
+    nlat = 128
+    nlon = 256
+    grid = "equiangular"
 
     # pip install segmentation-models-pytorch
     try:
@@ -449,132 +446,70 @@ def main(
     except:
         print("Segmentation Models package not found, some models are not available")
 
-    # models[f"sfno_sc4_layers4_e32"] = partial(
-    #     SFNO,
-    #     dataset.num_classes,
-    #     img_size=img_size,
-    #     grid="equiangular",
-    #     in_chans=in_channels,
-    #     num_layers=4,
-    #     scale_factor=4,
-    #     embed_dim=32,
-    #     activation_function="gelu",
-    #     residual_prediction=False,
-    #     use_mlp=True,
-    #     normalization_layer="instance_norm",
-    # )
-
-    #models[f"lsno_sc2_layers6_e64_morlet"] = partial(
-    #    LSNO,
-    #    dataset.num_classes,
-    #    img_size=img_size,
-    #    grid="equiangular",
-    #    in_chans=in_channels,
-    #    num_layers=6,
-    #    scale_factor=2,
-    #    embed_dim=64,
-    #    activation_function="gelu",
-    #    residual_prediction=False,
-    #    use_mlp=True,
-    #    normalization_layer="none",
-    #    kernel_shape=(4, 4),
-    #    encoder_kernel_shape=(4, 4),
-    #    filter_basis_type="morlet",
-    #    upsample_sht=False,
-    #)
-
-    models[f"s2u_sc4_layers4_e128_pl"] = partial(
-          S2U,
-          img_size=img_size,
-          grid="equiangular",
-          grid_internal="equiangular",
-          in_chans=in_channels,
-          num_classes=dataset.num_classes,
-          embed_dims=[64, 128, 256, 512],
-          depths=[2, 2, 2, 2],
-          scale_factor=2,
-          activation_function="relu",
-          kernel_shape=(3, 4),
-          filter_basis_type="piecewise linear",
-          drop_path_rate=0.1,
-          drop_conv_rate=0.2,
-          drop_dense_rate=0.5,
-          transform_skip=False,
+    models[f"sfno_sc2_layers4_e32"] = partial(
+        SFNO,
+        out_chans=1,
+        img_size=(nlat, nlon),
+        grid=grid,
+        num_layers=4,
+        scale_factor=2,
+        embed_dim=32,
+        activation_function="gelu",
+        residual_prediction=False,
+        use_mlp=True,
+        normalization_layer="none",
     )
 
-    #models[f"segformer_nb4_e256_morlet"] = partial(
-    #    S2S,
-    #    img_size=img_size,
-    #    grid="equiangular",
-    #    grid_internal="legendre-gauss",
-    #    in_chans=in_channels,
-    #    num_classes=dataset.num_classes,
-    #    embed_dims=[64, 128, 256, 512],
-    #    heads=[1, 2, 4, 8],
-    #    depths=[3, 4, 6, 3],
-    #    scale_factor=2,
-    #    activation_function="gelu",
-    #    kernel_shape=(3, 3),
-    #    filter_basis_type="morlet",
-    #    mlp_ratio=4.0,
-    #    drop_rate=0.0,
-    #    drop_path_rate=0.1,
-    #    attention_mode="full",
-    #)
+    models[f"lsno_sc2_layers4_e32_morlet"] = partial(
+        LSNO,
+        out_chans=1,
+        img_size=(nlat, nlon),
+        grid=grid,
+        num_layers=4,
+        scale_factor=2,
+        embed_dim=32,
+        activation_function="gelu",
+        residual_prediction=False,
+        use_mlp=True,
+        normalization_layer="none",
+        kernel_shape=(4, 4),
+        encoder_kernel_shape=(4, 4),
+        filter_basis_type="morlet",
+        upsample_sht = True,
+    )
 
-    # models[f"s2t_sc2_layers6_e64"] = partial(
-    #     S2T,
-    #     dataset.num_classes,
-    #     img_size=img_size,
-    #     grid="equiangular",
-    #     in_chans=in_channels,
-    #     num_layers=6,
-    #     scale_factor=2,
-    #     embed_dim=64,
-    #     activation_function="gelu",
-    #     residual_prediction=False,
-    #     pos_embed="spectral",
-    #     use_mlp=True,
-    #     normalization_layer="instance_norm",
-    #     encoder_kernel_shape=(4, 4),
-    #     filter_basis_type="morlet",
-    #     upsample_sht=False,
-    # )
-
-    #models[f"unetplusplus"] = partial(
-    #    UnetPlusPlus,
-    #    in_channels=in_channels,
-    #    classes=dataset.num_classes,
-    #    encoder_name="resnet34",
-    #    encoder_weights="imagenet",
-    #    decoder_attention_type="scse",
-    #    decoder_use_batchnorm=True,
-    #    decoder_channels=(256, 128, 64, 32, 16),
-    #    activation="softmax",
-    #)
+    models[f"s2t_sc2_layers4_e32_h1"] = partial(
+        S2T,
+        out_chans=1,
+        img_size=(nlat, nlon),
+        grid=grid,
+        num_layers=4,
+        scale_factor=2,
+        embed_dim=32,
+        activation_function="gelu",
+        residual_prediction=False,
+        pos_embed="spectral",
+        num_heads=1,
+        use_mlp=True,
+        normalization_layer="instance_norm",
+        encoder_kernel_shape=(4, 4),
+        filter_basis_type="morlet",
+        upsample_sht=True,
+    )
 
     # create the loss object
-    loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=label_smoothing).to(device=device)
-    #loss_fn = DiceLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular",  weight=class_weights, smooth=label_smoothing).to(device=device)
+    # loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=0.).to(device=device)
+    # loss_fn = DiceLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular",  weight=class_weights, smooth=0.).to(device=device)
     # loss_fn = FocalLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
-
+    loss_fn = L2LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
     # compile loss function
     # loss_fn = torch.compile(loss_fn, mode="max-autotune")
 
     # metrics
     metrics_fns = {
-        "mIoU":IntersectionOverUnionS2(
-            nlat=img_size[0],
-            nlon=img_size[1],
-            grid="equiangular",
-            weight=class_weights,
-        ).to(device=device),
-        "mAcc": AccuracyS2(
-            nlat=img_size[0],
-            nlon=img_size[1],
-            grid="equiangular",
-            weight=class_weights,
-        ).to(device=device),
+        "rmse": RmseS2(nlat=img_size[0], 
+                        nlon=img_size[1], 
+                        grid="equiangular").to(device=device)
     }
 
     # iterate over models and train each model
@@ -631,7 +566,8 @@ def main(
                 optimizer,
                 gscaler,
                 scheduler,
-                normalization=normalization,
+                normalization_in=normalization_in,
+                normalization_out=normalization_out,
                 augmentation=augmentation,
                 nepochs=num_epochs,
                 amp_mode=amp_mode,
@@ -653,7 +589,8 @@ def main(
 
         with torch.inference_mode():
             losses, metric_results = validate_model(
-                model, valid_dataloader, loss_fn, metrics_fns, os.path.join(exp_dir, "figures"), normalization=normalization, logging=logging, device=device
+                model, valid_dataloader, loss_fn, metrics_fns, os.path.join(exp_dir, "figures"),
+                normalization_in=normalization_in, normalization_out=normalization_out, logging=logging, device=device
             )
             metrics[model_name]["loss_mean"] = torch.mean(losses)
             for metric in metric_results:
@@ -704,7 +641,6 @@ if __name__ == "__main__":
     parser.add_argument("--num_epochs", default=100, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--batch_size", default=8, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--learning_rate", default=1e-4, type=float, help="Switch to override learning rate.")
-    parser.add_argument("--label_smoothing_factor", default=0., type=float, help="Label smoothing factor [0, 1].")
     parser.add_argument("--resume", action="store_true", help="Reload checkpoints.")
     parser.add_argument("--amp_mode", default="none", type=str, choices=["none", "bf16", "fp16"], help="Switch to enable AMP.")
     parser.add_argument("--enable_ddp", action="store_true", help="Switch to enable distributed data parallel.")
@@ -716,7 +652,6 @@ if __name__ == "__main__":
         num_epochs=args.num_epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
-        label_smoothing=args.label_smoothing_factor,
         train=True,
         load_checkpoint=args.resume,
         amp_mode=args.amp_mode,
