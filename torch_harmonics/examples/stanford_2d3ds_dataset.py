@@ -351,11 +351,11 @@ class Stanford2D3DSDownloader:
                     class_histogram[c] += quad_weights[sem_data == c].sum()
 
             # record min/max
-            h5file.create_dataset("min_sem", data=min_vals.astype(np.float32))
-            h5file.create_dataset("max_sem", data=max_vals.astype(np.float32))
-            h5file.create_dataset("mean_sem", data=mean_vals.astype(np.float32))
+            h5file.create_dataset("min_rgb", data=min_vals.astype(np.float32))
+            h5file.create_dataset("max_rgb", data=max_vals.astype(np.float32))
+            h5file.create_dataset("mean_rgb", data=mean_vals.astype(np.float32))
             std_vals = np.sqrt(m2_vals / float(count - 1))
-            h5file.create_dataset("std_sem", data=std_vals.astype(np.float32))
+            h5file.create_dataset("std_rgb", data=std_vals.astype(np.float32))
             
             # record min/max
             h5file.create_dataset("min_depth", data=min_vals_depth.astype(np.float32))
@@ -419,10 +419,10 @@ class StanfordSegmentationDataset(Dataset):
             self.class_histogram = np.array(h5file["class_histogram"][...])
             self.class_histogram = self.class_histogram / self.class_histogram.sum()
 
-            self.mean = h5file["mean_sem"][...]
-            self.std = h5file["std_sem"][...]
-            self.min = h5file["min_sem"][...]
-            self.max = h5file["max_sem"][...]
+            self.mean = h5file["mean_rgb"][...]
+            self.std = h5file["std_rgb"][...]
+            self.min = h5file["min_rgb"][...]
+            self.max = h5file["max_rgb"][...]
 
         if ignore_alpha_channel:
             self.img_rgb = (3, self.img_rgb[1], self.img_rgb[2])
@@ -432,9 +432,6 @@ class StanfordSegmentationDataset(Dataset):
         self.class_labels = None
         self.rgb = None
         self.semantic = None
-        self.current_buffer = 0
-        self.rgb_buffers = None
-        self.semantic_buffers = None
 
     @property
     def target_shape(self):
@@ -468,28 +465,15 @@ class StanfordSegmentationDataset(Dataset):
         if self.h5file is None:
             # init files
             self._init_files()
-            self.current_buffer = 0
 
-        # init buffers
-        if self.rgb_buffers is None:
-            self.rgb_buffers = [np.empty(self.img_rgb, dtype=np.float32), np.empty(self.img_rgb, dtype=np.float32)]
-        if self.semantic_buffers is None:
-            self.semantic_buffers = [np.empty(self.img_seg, dtype=np.int64), np.empty(self.img_seg, dtype=np.int64)]
-
-        # double buffering
-        rgb = self.rgb_buffers[self.current_buffer]
-        sem = self.semantic_buffers[self.current_buffer]
-
-        # switch to next buffer
-        self.current_buffer = (self.current_buffer + 1) % 2
-
-        self.rgb.read_direct(rgb, np.s_[idx : idx + 1, 0 : self.img_rgb[0], 0 : self.img_rgb[1], 0 : self.img_rgb[2]])
-        self.semantic.read_direct(sem, np.s_[idx : idx + 1, 0 : self.img_seg[0], 0 : self.img_seg[1]])
+        rgb = self.rgb[idx, 0 : self.img_rgb[0], 0 : self.img_rgb[1], 0 : self.img_rgb[2]]
+        sem = self.semantic[idx, 0 : self.img_seg[0], 0 : self.img_seg[1]]
         if mask_invalid:
             sem = self._mask_invalid(sem)
 
-        return np.copy(rgb), np.copy(sem)
+        return rgb, sem
 
+    
 class StanfordDepthDataset(Dataset):
     """
     Spherical segmentation dataset from [1].
@@ -515,10 +499,16 @@ class StanfordDepthDataset(Dataset):
             self.img_rgb = h5file["rgb"][0].shape
             self.img_depth = h5file["depth"][0].shape
             self.num_samples = h5file["rgb"].shape[0]
-            self.mean = h5file["mean_depth"][...]
-            self.std = h5file["std_depth"][...]
-            self.min = h5file["min_depth"][...]
-            self.max = h5file["max_depth"][...]
+            
+            self.mean_in = h5file["mean_rgb"][...]
+            self.std_in = h5file["std_rgb"][...]
+            self.min_in = h5file["min_rgb"][...]
+            self.max_in = h5file["max_rgb"][...]
+
+            self.mean_out = h5file["mean_depth"][...]
+            self.std_out = h5file["std_depth"][...]
+            self.min_out = h5file["min_depth"][...]
+            self.max_out = h5file["max_depth"][...]
 
         if ignore_alpha_channel:
             self.img_rgb = (3, self.img_rgb[1], self.img_rgb[2])
@@ -527,9 +517,6 @@ class StanfordDepthDataset(Dataset):
         self.h5file = None
         self.rgb = None
         self.depth = None
-        self.current_buffer = 0
-        self.rgb_buffers = None
-        self.depth_buffers = None
 
     @property
     def target_shape(self):
@@ -553,26 +540,8 @@ class StanfordDepthDataset(Dataset):
         if self.h5file is None:
             # init files
             self._init_files()
-            self.current_buffer = 0
 
-        # init buffers
-        if self.rgb_buffers is None:
-            self.rgb_buffers = [np.empty(self.img_rgb, dtype=np.float32), np.empty(self.img_rgb, dtype=np.float32)]
-        if self.depth_buffers is None:
-            self.depth_buffers = [np.empty(self.img_depth, dtype=np.float32), np.empty(self.img_depth, dtype=np.float32)]
+        rgb = self.rgb[idx, 0 : self.img_rgb[0], 0 : self.img_rgb[1], 0 : self.img_rgb[2]]
+        depth = self.depth[idx, 0 : self.img_depth[0], 0 : self.img_depth[1]]
 
-        # double buffering
-        rgb = self.rgb_buffers[self.current_buffer]
-        depth = self.depth_buffers[self.current_buffer]
-
-        # switch to next buffer
-        self.current_buffer = (self.current_buffer + 1) % 2
-
-        self.rgb.read_direct(rgb, np.s_[idx : idx + 1, 0 : self.img_rgb[0], 0 : self.img_rgb[1], 0 : self.img_rgb[2]])
-        self.depth.read_direct(depth, np.s_[idx : idx + 1, 0 : self.img_depth[0], 0 : self.img_depth[1]])
-
-<<<<<<< HEAD
-        return np.copy(inp), np.copy(tar)
-=======
-        return np.copy(rgb), np.copy(depth)
->>>>>>> more specific renaming of variables, inp_data -> rgb_data
+        return rgb, depth
