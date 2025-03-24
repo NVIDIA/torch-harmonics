@@ -168,6 +168,7 @@ class FocalLossS2(nn.Module):
 
         return fl
 
+
 class L2LossS2(nn.Module):
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
         super().__init__()
@@ -179,10 +180,10 @@ class L2LossS2(nn.Module):
     def forward(self, prd: torch.Tensor, tar: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         # Compute squared difference
 
-        squared_diff = ((prd - tar) * mask) ** 2
+        squared_diff = torch.square(prd - tar)
         
         # Weight the differences by quadrature weights and sum over lat/lon
-        weighted_loss = (squared_diff * self.quad_weights).sum(dim=(-1, -2))
+        weighted_loss = torch.sum(squared_diff * self.quad_weights * mask, dim=(-1, -2))
         
         # Average over batch
         loss = torch.mean(weighted_loss)

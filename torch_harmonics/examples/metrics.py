@@ -187,18 +187,18 @@ class AccuracyS2(BaseMetricS2):
 
         return score
 
+
 class RmseS2(nn.Module):
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
         super().__init__()
         
         # area weights
-        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid)
-        q = q.tile((1, nlon)).contiguous()
+        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid, tiled=True)
         self.register_buffer("quad_weights", q)
 
     def forward(self, pred: torch.Tensor, truth: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         # Compute squared differences
-        squared_diff = ((pred - truth) * mask) ** 2
+        squared_diff = torch.square(pred - truth) * mask
         
         # Average over the spatial dimensions using quadrature weights
         # Assuming pred and truth have shape (batch, channels, lat, lon)
@@ -208,7 +208,7 @@ class RmseS2(nn.Module):
         weights = self.quad_weights.view(1, 1, *self.quad_weights.shape)
         
         # Compute weighted mean squared error
-        weighted_mse = torch.sum(squared_diff * weights, dim=(-2, -1)) / torch.sum(self.quad_weights)
+        weighted_mse = torch.sum(squared_diff * weights, dim=(-2, -1))
         
         # Average over channels and batch
         rmse = torch.sqrt(torch.mean(weighted_mse))
