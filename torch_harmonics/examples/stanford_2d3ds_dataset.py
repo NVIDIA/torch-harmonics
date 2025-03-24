@@ -514,7 +514,7 @@ class StanfordDepthDataset(Dataset):
         with h5.File(self.dataset_file, "r") as h5file:
             self.img_rgb = h5file["rgb"][0].shape
             self.img_depth = h5file["depth"][0].shape
-            self.img_mask = h5file["mask"][0].shape
+            self.img_mask = h5file["depth_mask"][0].shape
             self.num_samples = h5file["rgb"].shape[0]
             
             self.mean_in = h5file["mean_rgb"][...]
