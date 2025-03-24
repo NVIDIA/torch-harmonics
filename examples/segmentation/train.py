@@ -417,7 +417,7 @@ def main(
     class_histogram = torch.from_numpy(dataset.class_histogram)
 
     # # no class weights
-    # class_weights = torch.ones_like(class_histogram)
+    # class_weights = None
 
     # # inverse frequency weighting
     # class_weights = 1 / torch.clamp(class_histogram, min=1e-3, max=None)
