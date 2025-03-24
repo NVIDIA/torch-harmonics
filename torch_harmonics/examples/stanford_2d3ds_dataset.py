@@ -33,9 +33,10 @@ import os
 import math
 
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 
 import numpy as np
+import h5py as h5
 
 from torch_harmonics.quadrature import _precompute_latitudes
 from torch_harmonics.examples.losses import get_quadrature_weights
@@ -172,7 +173,6 @@ class Stanford2D3DSDownloader:
 
         from PIL import Image
         from tqdm import tqdm
-        import h5py as h5
 
         file_paths = []
 
@@ -242,6 +242,7 @@ class Stanford2D3DSDownloader:
             rgb_data = h5file.create_dataset("rgb", (num_samples, rgb_channels, *img_shape), "f4")
             semantic_data = h5file.create_dataset("semantic", (num_samples, *img_shape), "i8")
             depth_data = h5file.create_dataset("depth", (num_samples, *img_shape), "f4")
+            depth_mask = h5file.create_dataset("depth_mask", (num_samples, *img_shape), "i1")
             classes = h5file.create_dataset("class_labels", data=class_labels_indices)
             num_classes = len(set(class_labels_indices))
 
@@ -322,16 +323,20 @@ class Stanford2D3DSDownloader:
 
                 if downsampling_factor != 1:
                     dep = dep.resize(size=(img_shape[1], img_shape[0]), resample=Image.NEAREST)
-                dep_data = np.array(dep)    
-                depth_data[count, ...] = dep_data[...]
+                dep_data = np.array(dep)
+                mask = np.where(dep_data == 65535, 0, 1)
+                depth_data[count, ...] = dep_data[...] / 65536.0
+                depth_mask[count, ...] = mask[...]
 
                 # compute stats -> depth
                 # min/max
                 tmp_min_depth = np.min(dep_data, axis=(0, 1))
                 tmp_max_depth = np.max(dep_data, axis=(0, 1))
                 # mean/var
-                tmp_mean_depth = np.sum(dep_data * quad_weights[np.newaxis, :, :], axis=(1, 2))
-                tmp_m2_depth = np.sum(np.square(dep_data-tmp_mean_depth[:, np.newaxis, np.newaxis]) * quad_weights[np.newaxis, :, :])
+                tmp_mask = mask.astype(np.float64)
+                tmp_mask = mask / np.sum(mask)
+                tmp_mean_depth = np.sum(dep_data * quad_weights[:, :] * mask[:, :])
+                tmp_m2_depth = np.sum(np.square(dep_data-tmp_mean_depth) * quad_weights[:, :] * mask[:, :])
                 if count == 0:
                     min_vals_depth = tmp_min_depth
                     max_vals_depth = tmp_max_depth
@@ -407,8 +412,6 @@ class StanfordSegmentationDataset(Dataset):
         ignore_alpha_channel=True,
     ):
 
-        import h5py as h5
-
         self.dataset_file = dataset_file
 
         with h5.File(self.dataset_file, "r") as h5file:
@@ -455,7 +458,6 @@ class StanfordSegmentationDataset(Dataset):
         return self.num_samples
 
     def _init_files(self):
-        import h5py as h5
         self.h5file = h5.File(self.dataset_file, "r")
         self.class_labels = self.h5file["class_labels"]
         self.rgb = self.h5file["rgb"]
@@ -467,6 +469,8 @@ class StanfordSegmentationDataset(Dataset):
         self.semantic = None
         if self.h5file is not None:
             self.h5file.close()
+            del self.h5file
+        self.h5file = None
 
     def __getitem__(self, idx, mask_invalid=True):
 
@@ -500,13 +504,12 @@ class StanfordDepthDataset(Dataset):
         ignore_alpha_channel=True,
     ):
 
-        import h5py as h5
-
         self.dataset_file = dataset_file
 
         with h5.File(self.dataset_file, "r") as h5file:
             self.img_rgb = h5file["rgb"][0].shape
             self.img_depth = h5file["depth"][0].shape
+            self.img_mask = h5file["mask"][0].shape
             self.num_samples = h5file["rgb"].shape[0]
             
             self.mean_in = h5file["mean_rgb"][...]
@@ -526,6 +529,7 @@ class StanfordDepthDataset(Dataset):
         self.h5file = None
         self.rgb = None
         self.depth = None
+        self.mask = None
 
     @property
     def target_shape(self):
@@ -539,16 +543,19 @@ class StanfordDepthDataset(Dataset):
         return self.num_samples
 
     def _init_files(self):
-        import h5py as h5
         self.h5file = h5.File(self.dataset_file, "r")
         self.rgb = self.h5file["rgb"]
         self.depth = self.h5file["depth"]
+        self.mask = self.h5file["depth_mask"]
 
     def reset(self):
         self.rgb = None
         self.depth = None
+        self.mask = None
         if self.h5file is not None:
             self.h5file.close()
+            del self.h5file
+        self.h5file = None
 
     def __getitem__(self, idx):
 
@@ -558,8 +565,9 @@ class StanfordDepthDataset(Dataset):
 
         rgb = self.rgb[idx, 0 : self.img_rgb[0], 0 : self.img_rgb[1], 0 : self.img_rgb[2]]
         depth = self.depth[idx, 0 : self.img_depth[0], 0 : self.img_depth[1]]
+        mask = self.mask[idx, 0 : self.img_mask[0], 0 : self.img_mask[1]].astype(np.float32)
 
-        return rgb, depth
+        return rgb, depth, mask
 
 
 
@@ -567,29 +575,36 @@ def compute_stats_s2(dataset: Dataset):
 
     nexamples = len(dataset)
     for count in range(nexamples):
-        inp, tar = dataset[i]
+        token = dataset[count]
+        
+        if isinstance(dataset, StanfordDepthDataset):
+            inp, tar, mask = token
+        else:
+            inp, tar = token
 
         if count == 0:
-            quadrature_weights = get_quadrature_weights(nlat=inp.shape[1], nlon=inp.shape[2], grid="equiangular", tile=True).numpy().astype(np.float64)
+            quad_weights = get_quadrature_weights(nlat=inp.shape[1], nlon=inp.shape[2], grid="equiangular", tile=True).numpy().astype(np.float64)
         
         # do welford update
         if count == 0:
-            rgb_means = np.sum(inp * quadrature_weights[np.newaxis, :, :], axis=(1,2))
+            rgb_means = np.sum(inp * quad_weights[np.newaxis, :, :], axis=(1,2))
             rgb_stds = np.sum(np.square(inp-rgb_means[:, np.newaxis, np.newaxis]) * quad_weights[np.newaxis, :, :], axis=(1,2))
             if isinstance(dataset, StanfordDepthDataset):
-                depth_means = np.sum(tar * quadrature_weights[np.newaxis, :, :], axis=(1,2))
-                depth_stds = np.sum(np.square(tar-depth_means[:, np.newaxis, np.newaxis]) * quad_weights[np.newaxis, :, :], axis=(1,2))
+                mask = mask / np.sum(mask)
+                depth_means = np.sum(tar * quad_weights[:, :] * mask)
+                depth_stds = np.sum(np.square(tar-depth_means) * quad_weights[:, :] * mask)
 
         else:
-            means = np.sum(inp * quadrature_weights[np.newaxis, :, :], axis=(1,2))
+            means = np.sum(inp * quad_weights[np.newaxis, :, :], axis=(1,2))
             m2s = np.sum(np.square(inp-means[:, np.newaxis, np.newaxis]) * quad_weights[np.newaxis, :, :], axis=(1,2))
             delta = means - rgb_means
             rgb_means += delta / float(count + 1)
             rgb_stds += m2s + delta * delta * float(count / (count + 1))
 
             if isinstance(dataset, StanfordDepthDataset):
-                means = np.sum(tar * quadrature_weights[np.newaxis, :, :], axis=(1,2))
-                m2s = np.sum(np.square(tar-means[:, np.newaxis, np.newaxis]) * quad_weights[np.newaxis, :, :], axis=(1,2))
+                mask = mask / np.sum(mask)
+                means = np.sum(tar * quad_weights[:, :] * mask)
+                m2s = np.sum(np.square(tar-means) * quad_weights[:, :] * mask)
                 delta = means - depth_means
                 depth_means += delta / float(count + 1)
                 depth_stds += m2s + delta * delta * float(count / (count + 1))

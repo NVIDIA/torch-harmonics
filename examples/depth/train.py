@@ -52,11 +52,13 @@ import pandas as pd
 
 import matplotlib.pyplot as plt
 
-from torch_harmonics.examples import StanfordDepthDataset, Stanford2D3DSDownloader
+from torch_harmonics.examples import StanfordDepthDataset, Stanford2D3DSDownloader, compute_stats_s2
 from torch_harmonics.quadrature import _precompute_latitudes
 from torch_harmonics.examples.losses import L2LossS2
 from torch_harmonics.examples.metrics import RmseS2
 from torch_harmonics.plotting import plot_sphere, imshow_sphere
+
+from torchvision.transforms import v2
 
 # wandb logging
 import wandb
@@ -87,7 +89,8 @@ def log_weights_and_grads(exp_dir, model, iters=1):
 
 
 # rolls out the FNO and compares to the classical solver
-def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normalization=None, logging=True, device=torch.device("cpu")):
+def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normalization_in=None, normalization_out=None,
+                   logging=True, device=torch.device("cpu")):
 
     model.eval()
 
@@ -116,8 +119,11 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
             inp = inp.to(device)
             tar = tar.to(device)
 
-            if normalization is not None:
-                inp = normalization(inp)
+            if normalization_in is not None:
+                inp = normalization_in(inp)
+
+            if normalization_out is not None:
+                tar = normalization_out(tar)
 
             prd = model(inp)
 
@@ -158,7 +164,8 @@ def train_model(
     optimizer,
     gscaler,
     scheduler=None,
-    normalization=None,
+    normalization_in=None,
+    normalization_out=None,
     augmentation=None,
     nepochs=20,
     amp_mode="none",
@@ -197,8 +204,11 @@ def train_model(
             inp = inp.to(device)
             tar = tar.to(device)
 
-            if normalization is not None:
-                inp = normalization(inp)
+            if normalization_in is not None:
+                inp = normalization_in(inp)
+                
+            if normalization_out is not None:
+                tar = normalization_out(tar)
 
             if augmentation is not None:
                 inp = augmentation(inp)
@@ -249,8 +259,11 @@ def train_model(
                 inp = inp.to(device)
                 tar = tar.to(device)
 
-                if normalization is not None:
-                    inp = normalization(inp)
+                if normalization_in is not None:
+                    inp = normalization_in(inp)
+
+                if normalization_out is not None:
+                    tar = normalization_out(tar)
 
                 with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=(amp_mode != "none")):
                     prd = model(inp)
@@ -356,6 +369,12 @@ def main(
     dataset = StanfordDepthDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel)
     train_dataset, test_dataset, valid_dataset = torch.utils.data.random_split(dataset, split_ratios, generator=rng)
 
+    # stats computation
+    means_in, stds_in, means_out, stds_out = compute_stats_s2(train_dataset.dataset)
+    train_dataset.dataset.reset()
+    if logging:
+        print(f"Computed stats: means_in={means_in}, stds_in={stds_in}, means_out={means_out}, stds_out={stds_out}")
+
     # split dataset if distributed
     if dist.is_initialized():
         train_sampler = DistributedSampler(train_dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank(), shuffle=True, drop_last=True)
@@ -377,22 +396,15 @@ def main(
                                   num_workers=0, persistent_workers=False, pin_memory=True)
 
     # TODO: move augmentation into extra helper module
+    normalization_in = v2.Normalize(mean=means_in.tolist(), stds=stds_in.tolist())
+    normalization_out = v2.Normalize(mean=means_out.tolist(), stds=stds_out.tolist())
     if enable_data_augmentation:
         if not ignore_alpha_channel:
             raise NotImplementedError("You can only use data augmentation with RGB images, RGBA is not supported.")
         if logging:
             print("Using data augmentation")
-        from torchvision.transforms import v2
-
-        # get stas from file: WARNING! STATS HAVE BEEN COMPUTED OVER ALL SAMPLES
-        # NEED TO DISENTANGLE THAT CORRECTLY WITH STATIC SPLITS!
-        #mean = dataset.mean
-        #std = dataset.std
-        #print(f"Applying mean/variance normalization with mean={mean}, std={std}.")
-        #normalization = v2.Normalize(mean=mean, std=std)
 
         # imagenet normalization
-        normalization = v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         augmentation = v2.Compose(
             [
                 v2.RandomAutocontrast(p=0.5),
@@ -401,7 +413,6 @@ def main(
             ]
         )
     else:
-        normalization = None
         augmentation = None
 
     in_channels = 3 if ignore_alpha_channel else 4
@@ -552,7 +563,8 @@ def main(
                 optimizer,
                 gscaler,
                 scheduler,
-                normalization=normalization,
+                normalization_in=normalization_in,
+                normalization_out=normalization_out,
                 augmentation=augmentation,
                 nepochs=num_epochs,
                 amp_mode=amp_mode,
@@ -574,7 +586,8 @@ def main(
 
         with torch.inference_mode():
             losses, metric_results = validate_model(
-                model, valid_dataloader, loss_fn, metrics_fns, os.path.join(exp_dir, "figures"), normalization=normalization, logging=logging, device=device
+                model, valid_dataloader, loss_fn, metrics_fns, os.path.join(exp_dir, "figures"),
+                normalization_in=normalization_in, normalization_out=normalization_out, logging=logging, device=device
             )
             metrics[model_name]["loss_mean"] = torch.mean(losses)
             for metric in metric_results:

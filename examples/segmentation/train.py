@@ -361,7 +361,7 @@ def main(
     train_dataset, test_dataset, valid_dataset = torch.utils.data.random_split(dataset, split_ratios, generator=rng)
 
     # compute stats on the train dataset
-    means, stds = compute_stats_s2(train_dataset.dataset)
+    means, stds = compute_stats_s2(train_dataset)
     train_dataset.dataset.reset()
     if logging:
         print(f"Computed stats: means={means}, stds={stds}")
@@ -427,8 +427,6 @@ def main(
     # make sure there is no nan
     if (class_weights is not None) and torch.isnan(class_weights).any():
         raise ValueError("The class weights contain NaN.")
-
-    # class_weights = None
 
     if logging:
         print(f"Train dataset initialized with {len(train_dataset)} samples of resolution {img_size}")
@@ -556,8 +554,8 @@ def main(
     #)
 
     # create the loss object
-    #loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=label_smoothing).to(device=device)
-    loss_fn = DiceLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular",  weight=class_weights, smooth=label_smoothing).to(device=device)
+    loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=label_smoothing).to(device=device)
+    #loss_fn = DiceLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular",  weight=class_weights, smooth=label_smoothing).to(device=device)
     # loss_fn = FocalLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
 
     # compile loss function
