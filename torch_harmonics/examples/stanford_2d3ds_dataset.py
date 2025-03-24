@@ -181,8 +181,6 @@ class Stanford2D3DSDownloader:
         # condition class labels first:
         class_labels_map = [label.split("_")[0] for label in class_labels]
         class_labels_indices = sorted(list(set(class_labels_map)))
-        cmap = plt.get_cmap("viridis")
-        colors = cmap(np.linspace(0, 1, len(class_labels_indices)))
         print(len(class_labels_indices))
         print(class_labels_indices)
 
