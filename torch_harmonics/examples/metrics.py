@@ -193,7 +193,7 @@ class RmseS2(nn.Module):
         super().__init__()
         
         # area weights
-        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid, tiled=True)
+        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid, tile=True)
         self.register_buffer("quad_weights", q)
 
     def forward(self, pred: torch.Tensor, truth: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
