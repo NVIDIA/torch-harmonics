@@ -199,7 +199,7 @@ def train_model(
 
         if dist.is_initialized():
             train_sampler.set_epoch(epoch)
-                
+
         for step, (inp, tar, mask) in enumerate(train_dataloader):
             inp = inp.to(device)
             tar = tar.to(device)
@@ -207,13 +207,13 @@ def train_model(
 
             if normalization_in is not None:
                 inp = normalization_in(inp)
-                
+
             if normalization_out is not None:
                 tar = normalization_out(tar)
 
             if augmentation is not None:
                 inp = augmentation(inp)
-                
+
                 # flip randomly horizontally
                 if random.random() < 0.5:
                     inp = torch.flip(inp, dims=(-1,))
@@ -422,7 +422,7 @@ def main(
 
     # print dataset info
     img_size = dataset.input_shape[1:]
-    
+
     if logging:
         print(f"Train dataset initialized with {len(train_dataset)} samples of resolution {img_size}")
         print(f"Test dataset initialized with {len(test_dataset)} samples of resolution {img_size}")
@@ -507,8 +507,8 @@ def main(
 
     # metrics
     metrics_fns = {
-        "rmse": RmseS2(nlat=img_size[0], 
-                        nlon=img_size[1], 
+        "rmse": RmseS2(nlat=img_size[0],
+                        nlon=img_size[1],
                         grid="equiangular").to(device=device)
     }
 
@@ -634,7 +634,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--data_path",
-        default=os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"),
+        default=os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "2D3DS"),
         type=str,
         help="Directory to where the dataset is stored. If the dataset is not found in that location, it will be downloaded automatically.",
     )

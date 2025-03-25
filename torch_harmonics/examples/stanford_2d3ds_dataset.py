@@ -182,8 +182,6 @@ class Stanford2D3DSDownloader:
         # condition class labels first:
         class_labels_map = [label.split("_")[0] for label in class_labels]
         class_labels_indices = sorted(list(set(class_labels_map)))
-        print(len(class_labels_indices))
-        print(class_labels_indices)
 
         # get all the file path input, output pairs
         for base_path in data_folders:
@@ -191,7 +189,7 @@ class Stanford2D3DSDownloader:
             rgb_dir = os.path.join(self.local_dir, base_path, rgb_path)
             semantic_dir = os.path.join(self.local_dir, base_path, semantic_path)
             depth_dir = os.path.join(self.local_dir, base_path, depth_path)
-            
+
             if os.path.exists(rgb_dir) and os.path.exists(semantic_dir) and os.path.exists(depth_dir):
                 for file_input in os.listdir(rgb_dir):
                     if not file_input.endswith(".png"):
@@ -208,7 +206,7 @@ class Stanford2D3DSDownloader:
                     if not os.path.exists(depth_filepath):
                         print(f"Warning: Couldn't find depth file in pair: ({rgb_filepath},{depth_filepath})")
                         continue
-                    
+
                     file_paths.append((rgb_filepath, semantic_filepath, depth_filepath))
             elif not os.path.exists(rgb_dir):
                 print("Warning: RGB dir doesn't exist: ", rgb_dir)
@@ -257,7 +255,7 @@ class Stanford2D3DSDownloader:
             for count in tqdm(range(num_samples), desc="preparing dataset"):
                 # open image
                 img = Image.open(file_paths[count][0])
-                
+
                 # downsampling
                 if downsampling_factor != 1:
                     # first width, then weight, weird
@@ -301,7 +299,7 @@ class Stanford2D3DSDownloader:
                     delta = tmp_mean - mean_vals
                     mean_vals += delta / float(count + 1)
                     m2_vals += tmp_m2 + delta * delta * float(count / (count + 1))
-                    
+
 
                 # get the target
                 sem = Image.open(file_paths[count][1])
@@ -309,7 +307,7 @@ class Stanford2D3DSDownloader:
                 # downsampling
                 if downsampling_factor != 1:
                     sem = sem.resize(size=(img_shape[1], img_shape[0]), resample=Image.NEAREST)
-                    
+
                 sem_data = np.array(sem, dtype=np.uint32)
 
                 # map to classes
@@ -317,7 +315,7 @@ class Stanford2D3DSDownloader:
 
                 # write to file
                 semantic_data[count, ...] = sem_data[...]
-                
+
                 # Here we want depth
                 dep = Image.open(file_paths[count][2])
 
@@ -359,7 +357,7 @@ class Stanford2D3DSDownloader:
             h5file.create_dataset("mean_rgb", data=mean_vals.astype(np.float32))
             std_vals = np.sqrt(m2_vals / float(num_samples - 1))
             h5file.create_dataset("std_rgb", data=std_vals.astype(np.float32))
-            
+
             # record min/max
             h5file.create_dataset("min_depth", data=min_vals_depth.astype(np.float32))
             h5file.create_dataset("max_depth", data=max_vals_depth.astype(np.float32))
@@ -373,7 +371,7 @@ class Stanford2D3DSDownloader:
 
         return converted_dataset_path
 
-    
+
     def prepare_dataset(self, file_extracted_directory_pairs=DEFAULT_TAR_FILE_PAIRS,
                         dataset_file: str = "stanford_2d3ds_dataset.h5", downsampling_factor: int = 16):
 
@@ -508,7 +506,7 @@ class StanfordDepthDataset(Dataset):
     ):
 
         import h5py as h5
-        
+
         self.dataset_file = dataset_file
 
         with h5.File(self.dataset_file, "r") as h5file:
@@ -516,7 +514,7 @@ class StanfordDepthDataset(Dataset):
             self.img_depth = h5file["depth"][0].shape
             self.img_mask = h5file["depth_mask"][0].shape
             self.num_samples = h5file["rgb"].shape[0]
-            
+
             self.mean_in = h5file["mean_rgb"][...]
             self.std_in = h5file["std_rgb"][...]
             self.min_in = h5file["min_rgb"][...]
@@ -582,7 +580,7 @@ def compute_stats_s2(dataset: Dataset):
     nexamples = len(dataset)
     for count in range(nexamples):
         token = dataset[count]
-        
+
         if isinstance(dataset, StanfordDepthDataset):
             inp, tar, mask = token
         else:
@@ -590,7 +588,7 @@ def compute_stats_s2(dataset: Dataset):
 
         if count == 0:
             quad_weights = get_quadrature_weights(nlat=inp.shape[1], nlon=inp.shape[2], grid="equiangular", tile=True).numpy().astype(np.float64)
-        
+
         # do welford update
         if count == 0:
             rgb_means = np.sum(inp * quad_weights[np.newaxis, :, :], axis=(1,2))
@@ -621,5 +619,5 @@ def compute_stats_s2(dataset: Dataset):
     if isinstance(dataset, StanfordDepthDataset):
         depth_stds = np.sqrt(depth_stds / float(nexamples - 1))
         result += (depth_means.astype(np.float32), depth_stds.astype(np.float32))
-    
+
     return result

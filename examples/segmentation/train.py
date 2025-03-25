@@ -697,7 +697,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--data_path",
-        default=os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"),
+        default=os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "2D3DS"),
         type=str,
         help="Directory to where the dataset is stored. If the dataset is not found in that location, it will be downloaded automatically.",
     )
