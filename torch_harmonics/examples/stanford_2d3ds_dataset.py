@@ -33,7 +33,7 @@ import os
 import math
 
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Subset
 
 import numpy as np
 
@@ -444,6 +444,11 @@ class StanfordSegmentationDataset(Dataset):
         self.rgb = None
         self.semantic = None
 
+        # return index set to false by default
+        # when true, the __getitem__ method will return the index of the input,target pair
+        self.return_index = False
+
+
     @property
     def target_shape(self):
         return self.img_seg
@@ -451,6 +456,9 @@ class StanfordSegmentationDataset(Dataset):
     @property
     def input_shape(self):
         return self.img_rgb
+
+    def set_return_index(self, return_index: bool):
+        self.return_index = return_index
 
     def get_img_filepath(self, idx: int):
         return self.img_filepath[idx]
@@ -497,9 +505,30 @@ class StanfordSegmentationDataset(Dataset):
         if mask_invalid:
             sem = self._mask_invalid(sem)
 
-        return rgb, sem
+        if self.return_index:
+            # return index as well to be able to get the file path
+            return rgb, sem, idx
+        else:
+            return rgb, sem
 
+class StanfordDatasetSubset(Subset):
+    def __init__(self, dataset, indices, return_index=False):
+        super().__init__(dataset, indices)
+        self.return_index = return_index
+        self.dataset = dataset
 
+    def set_return_index(self, value):
+        self.return_index = value
+
+    def __getitem__(self, index):
+        real_index = self.indices[index]
+        data = self.dataset[real_index]
+
+        if self.return_index:
+            return data[0], data[1], real_index
+        else:
+            # Otherwise, return only (data, target)
+            return data[0], data[1]
 
 class StanfordDepthDataset(Dataset):
     """

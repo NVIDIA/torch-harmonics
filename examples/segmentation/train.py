@@ -52,7 +52,7 @@ import pandas as pd
 
 import matplotlib.pyplot as plt
 
-from torch_harmonics.examples import StanfordSegmentationDataset, Stanford2D3DSDownloader, compute_stats_s2
+from torch_harmonics.examples import StanfordSegmentationDataset, Stanford2D3DSDownloader, StanfordDatasetSubset, compute_stats_s2
 from torch_harmonics.quadrature import _precompute_latitudes
 from torch_harmonics.examples.losses import DiceLossS2, CrossEntropyLossS2, FocalLossS2
 from torch_harmonics.examples.metrics import IntersectionOverUnionS2, AccuracyS2
@@ -115,6 +115,7 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
 
     with torch.no_grad():
         for idx, (inp, tar) in enumerate(dataloader):
+            (_, _, idx_file) = dataloader.dataset[idx]
             inp = inp.to(device)
             tar = tar.to(device)
 
@@ -142,7 +143,7 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
             plt.close()
 
             fig = plt.figure(figsize=(7.5, 6))
-            plot_sphere(tar.cpu().squeeze(0) / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow")
+            plot_sphere(tar.cpu().squeeze(0) / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow", title=dataloader.dataset.dataset.get_tar_filepath(idx_file))
             plt.savefig(os.path.join(path_root, "truth_" + str(glob_idx) + ".png"))
             plt.close()
 
@@ -358,7 +359,14 @@ def main(
     rng = torch.Generator().manual_seed(333)
     split_ratios = [0.95, 0.025, 0.025]
     dataset = StanfordSegmentationDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel)
-    train_dataset, test_dataset, valid_dataset = torch.utils.data.random_split(dataset, split_ratios, generator=rng)
+    # train_dataset, test_dataset, valid_dataset = torch.utils.data.random_split(dataset, split_ratios, generator=rng)
+
+    train_indices, test_indices, valid_indices = torch.utils.data.random_split(range(len(dataset)), split_ratios, generator=rng)
+    # Create custom subsets
+    train_dataset = StanfordDatasetSubset(dataset, train_indices)
+    test_dataset = StanfordDatasetSubset(dataset, test_indices)
+    valid_dataset = StanfordDatasetSubset(dataset, valid_indices, return_index=True)
+    valid_dataset.set_return_index(True)
 
     # compute stats on the train dataset
     means, stds = compute_stats_s2(train_dataset)
@@ -552,6 +560,9 @@ def main(
     #    decoder_channels=(256, 128, 64, 32, 16),
     #    activation="softmax",
     #)
+
+    if len(models) == 0:
+        raise ValueError("No models selected")
 
     # create the loss object
     loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=label_smoothing).to(device=device)
