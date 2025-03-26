@@ -243,6 +243,8 @@ class Stanford2D3DSDownloader:
             depth_mask = h5file.create_dataset("depth_mask", (num_samples, *img_shape), "i1")
             classes = h5file.create_dataset("class_labels", data=class_labels_indices)
             num_classes = len(set(class_labels_indices))
+            data_source_path = h5file.create_dataset("data_source_path", (num_samples,), dtype=h5.string_dtype(encoding='utf-8'))
+            data_target_path = h5file.create_dataset("data_target_path", (num_samples,), dtype=h5.string_dtype(encoding='utf-8'))
 
             # prepare computation of the class histogram
             class_histogram = np.zeros(num_classes)
@@ -276,6 +278,7 @@ class Stanford2D3DSDownloader:
 
                 # write to disk
                 rgb_data[count, ...] = r_data[...]
+                data_source_path[count] = file_paths[count][0]
 
                 # compute stats -> segmentation
                 # min/max
@@ -315,6 +318,7 @@ class Stanford2D3DSDownloader:
 
                 # write to file
                 semantic_data[count, ...] = sem_data[...]
+                data_target_path[count] = file_paths[count][1]
 
                 # Here we want depth
                 dep = Image.open(file_paths[count][2])
@@ -428,6 +432,9 @@ class StanfordSegmentationDataset(Dataset):
             self.min = h5file["min_rgb"][...]
             self.max = h5file["max_rgb"][...]
 
+            self.img_filepath = h5file["data_source_path"][...]
+            self.tar_filepath = h5file["data_target_path"][...]
+
         if ignore_alpha_channel:
             self.img_rgb = (3, self.img_rgb[1], self.img_rgb[2])
 
@@ -444,6 +451,12 @@ class StanfordSegmentationDataset(Dataset):
     @property
     def input_shape(self):
         return self.img_rgb
+
+    def get_img_filepath(self, idx: int):
+        return self.img_filepath[idx]
+
+    def get_tar_filepath(self, idx: int):
+        return self.tar_filepath[idx]
 
     def _id_to_class(self, class_id):
         if class_id > self.num_classes:
