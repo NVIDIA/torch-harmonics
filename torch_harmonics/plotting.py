@@ -112,8 +112,8 @@ def plot_sphere(
     if colorbar:
         plt.colorbar(im)
 
-    # add title
-    plt.title(title, y=1.05)
+    # add title with smaller font
+    plt.title(title, y=1.05, fontsize=8)
 
     return im
 
