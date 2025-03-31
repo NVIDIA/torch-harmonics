@@ -143,7 +143,7 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
             plt.close()
 
             fig = plt.figure(figsize=(7.5, 6))
-            plot_sphere(tar.cpu().squeeze(0) / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow", filepath=dataloader.dataset.dataset.get_tar_filepath(idx_file))
+            plot_sphere(tar.cpu().squeeze(0) / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow", filepath_src=dataloader.dataset.dataset.get_tar_filepath(idx_file))
             plt.savefig(os.path.join(path_root, "truth_" + str(glob_idx) + ".png"))
             plt.close()
 
