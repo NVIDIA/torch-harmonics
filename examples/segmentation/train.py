@@ -162,6 +162,7 @@ def train_model(
     optimizer,
     gscaler,
     scheduler=None,
+    max_grad_norm=0.,
     normalization=None,
     augmentation=None,
     nepochs=20,
@@ -221,6 +222,9 @@ def train_model(
 
             if log_grads and (iters % log_grads == 0) and (exp_dir is not None):
                 log_weights_and_grads(exp_dir, model, iters=iters)
+
+            if max_grad_norm > 0.:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
 
             gscaler.step(optimizer)
             gscaler.update()
@@ -312,6 +316,7 @@ def main(
     batch_size=8,
     learning_rate=1e-4,
     label_smoothing=0.,
+    max_grad_norm=0.,
     train=True,
     load_checkpoint=False,
     amp_mode="none",
@@ -320,6 +325,7 @@ def main(
     ignore_alpha_channel=True,
     log_grads=0,
     data_path="data",
+    data_downsampling_factor=16,
 ):
 
     # initialize distributed
@@ -345,7 +351,7 @@ def main(
 
     # 2D3DS download & dataset initialization
     downloader = Stanford2D3DSDownloader(base_url="https://cvg-data.inf.ethz.ch/2d3ds/no_xyz/", local_dir=str(data_path))
-    dataset_file = downloader.prepare_dataset(downsampling_factor=16)
+    dataset_file = downloader.prepare_dataset(dataset_file=f"stanford_2d3ds_dataset_ds{data_downsampling_factor}.h5", downsampling_factor=16)
 
     # intiialize distributed for ddp
     if dist.is_initialized():
@@ -489,44 +495,46 @@ def main(
     #    upsample_sht=False,
     #)
 
-    models[f"s2u_sc4_layers4_e128_pl"] = partial(
-          S2U,
-          img_size=img_size,
-          grid="equiangular",
-          grid_internal="equiangular",
-          in_chans=in_channels,
-          num_classes=dataset.num_classes,
-          embed_dims=[64, 128, 256, 512],
-          depths=[2, 2, 2, 2],
-          scale_factor=2,
-          activation_function="relu",
-          kernel_shape=(3, 4),
-          filter_basis_type="piecewise linear",
-          drop_path_rate=0.1,
-          drop_conv_rate=0.2,
-          drop_dense_rate=0.5,
-          transform_skip=False,
-    )
+    #models[f"s2u_sc4_layers4_e128_pl"] = partial(
+    #     S2U,
+    #     img_size=img_size,
+    #     grid="equiangular",
+    #     grid_internal="equiangular",
+    #     in_chans=in_channels,
+    #     num_classes=dataset.num_classes,
+    #     embed_dims=[64, 128, 256, 512],
+    #     depths=[2, 2, 2, 2],
+    #     scale_factor=2,
+    #     activation_function="relu",
+    #     kernel_shape=(3, 4),
+    #     filter_basis_type="piecewise linear",
+    #     drop_path_rate=0.1,
+    #     drop_conv_rate=0.2,
+    #     drop_dense_rate=0.5,
+    #     transform_skip=False,
+    #     conv_upsample=True,
+    #     conv_downsample=True,
+    #)  
 
-    #models[f"segformer_nb4_e256_morlet"] = partial(
-    #    S2S,
-    #    img_size=img_size,
-    #    grid="equiangular",
-    #    grid_internal="legendre-gauss",
-    #    in_chans=in_channels,
-    #    num_classes=dataset.num_classes,
-    #    embed_dims=[64, 128, 256, 512],
-    #    heads=[1, 2, 4, 8],
-    #    depths=[3, 4, 6, 3],
-    #    scale_factor=2,
-    #    activation_function="gelu",
-    #    kernel_shape=(3, 3),
-    #    filter_basis_type="morlet",
-    #    mlp_ratio=4.0,
-    #    drop_rate=0.0,
-    #    drop_path_rate=0.1,
-    #    attention_mode="full",
-    #)
+    models[f"segformer_nb4_e512_full"] = partial(
+        S2S,
+        img_size=img_size,
+        grid="equiangular",
+        grid_internal="equiangular",
+        in_chans=in_channels,
+        num_classes=dataset.num_classes,
+        embed_dims=[64, 128, 256, 512],
+        heads=[1, 2, 4, 8],
+        depths=[3, 4, 6, 3],
+        scale_factor=2,
+        activation_function="gelu",
+        kernel_shape=(3, 4),
+        filter_basis_type="piecewise linear",
+	mlp_ratio=4.0,
+        att_drop_rate=0.5,
+        drop_path_rate=0.1,
+        attention_mode="full",
+    )
 
     # models[f"s2t_sc2_layers6_e64"] = partial(
     #     S2T,
@@ -640,6 +648,7 @@ def main(
                 optimizer,
                 gscaler,
                 scheduler,
+                max_grad_norm=max_grad_norm,
                 normalization=normalization,
                 augmentation=augmentation,
                 nepochs=num_epochs,
@@ -712,7 +721,9 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_epochs", default=100, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--batch_size", default=8, type=int, help="Switch for overriding batch size in the configuration file.")
+    parser.add_argument("--data_downsampling_factor", default=16, type=int, help="Switch for overriding the downsampling factor of the data.")
     parser.add_argument("--learning_rate", default=1e-4, type=float, help="Switch to override learning rate.")
+    parser.add_argument("--max_grad_norm", default=0., type=float, help="Switch to override max grad norm. A value > 0 activates gradient clipping.")
     parser.add_argument("--label_smoothing_factor", default=0., type=float, help="Label smoothing factor [0, 1].")
     parser.add_argument("--resume", action="store_true", help="Reload checkpoints.")
     parser.add_argument("--amp_mode", default="none", type=str, choices=["none", "bf16", "fp16"], help="Switch to enable AMP.")
@@ -726,6 +737,7 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         label_smoothing=args.label_smoothing_factor,
+        max_grad_norm=args.max_grad_norm,
         train=True,
         load_checkpoint=args.resume,
         amp_mode=args.amp_mode,
@@ -734,4 +746,5 @@ if __name__ == "__main__":
         ignore_alpha_channel=True,
         log_grads=0,
         data_path=args.data_path,
+        data_downsampling_factor=args.data_downsampling_factor,
     )
