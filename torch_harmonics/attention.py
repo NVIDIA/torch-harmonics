@@ -88,6 +88,7 @@ class AttentionS2(nn.Module):
             bias: Optional[bool] = True,
             k_channels: Optional[int] = None,
             out_channels: Optional[int] = None,
+            drop_rate: Optional[float]=0.0,
     ):
         super().__init__()
         
@@ -98,6 +99,7 @@ class AttentionS2(nn.Module):
         self.num_heads = num_heads
         self.k_channels = in_channels if k_channels is None else k_channels
         self.out_channels = in_channels if out_channels is None else out_channels
+        self.drop_rate = drop_rate
     
         # integration weights
         _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
@@ -166,7 +168,7 @@ class AttentionS2(nn.Module):
         value = value.permute(0,1,3,4,2).reshape(B, self.num_heads, H*W, C)
         
         # multiply the query, key and value tensors
-        out = nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=self.log_quad_weights)
+        out = nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=self.log_quad_weights, dropout_p=self.drop_rate)
         
         # reshape
         B, _, _, C = out.shape

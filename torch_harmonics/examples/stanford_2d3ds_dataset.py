@@ -33,7 +33,7 @@ import os
 import math
 
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Subset
 
 import numpy as np
 
@@ -243,6 +243,8 @@ class Stanford2D3DSDownloader:
             depth_mask = h5file.create_dataset("depth_mask", (num_samples, *img_shape), "i1")
             classes = h5file.create_dataset("class_labels", data=class_labels_indices)
             num_classes = len(set(class_labels_indices))
+            data_source_path = h5file.create_dataset("data_source_path", (num_samples,), dtype=h5.string_dtype(encoding='utf-8'))
+            data_target_path = h5file.create_dataset("data_target_path", (num_samples,), dtype=h5.string_dtype(encoding='utf-8'))
 
             # prepare computation of the class histogram
             class_histogram = np.zeros(num_classes)
@@ -276,6 +278,7 @@ class Stanford2D3DSDownloader:
 
                 # write to disk
                 rgb_data[count, ...] = r_data[...]
+                data_source_path[count] = file_paths[count][0]
 
                 # compute stats -> segmentation
                 # min/max
@@ -315,6 +318,7 @@ class Stanford2D3DSDownloader:
 
                 # write to file
                 semantic_data[count, ...] = sem_data[...]
+                data_target_path[count] = file_paths[count][1]
 
                 # Here we want depth
                 dep = Image.open(file_paths[count][2])
@@ -428,6 +432,9 @@ class StanfordSegmentationDataset(Dataset):
             self.min = h5file["min_rgb"][...]
             self.max = h5file["max_rgb"][...]
 
+            self.img_filepath = h5file["data_source_path"][...]
+            self.tar_filepath = h5file["data_target_path"][...]
+
         if ignore_alpha_channel:
             self.img_rgb = (3, self.img_rgb[1], self.img_rgb[2])
 
@@ -437,6 +444,11 @@ class StanfordSegmentationDataset(Dataset):
         self.rgb = None
         self.semantic = None
 
+        # return index set to false by default
+        # when true, the __getitem__ method will return the index of the input,target pair
+        self.return_index = False
+
+
     @property
     def target_shape(self):
         return self.img_seg
@@ -444,6 +456,15 @@ class StanfordSegmentationDataset(Dataset):
     @property
     def input_shape(self):
         return self.img_rgb
+
+    def set_return_index(self, return_index: bool):
+        self.return_index = return_index
+
+    def get_img_filepath(self, idx: int):
+        return self.img_filepath[idx]
+
+    def get_tar_filepath(self, idx: int):
+        return self.tar_filepath[idx]
 
     def _id_to_class(self, class_id):
         if class_id > self.num_classes:
@@ -484,9 +505,30 @@ class StanfordSegmentationDataset(Dataset):
         if mask_invalid:
             sem = self._mask_invalid(sem)
 
-        return rgb, sem
+        if self.return_index:
+            # return index as well to be able to get the file path
+            return rgb, sem, idx
+        else:
+            return rgb, sem
 
+class StanfordDatasetSubset(Subset):
+    def __init__(self, dataset, indices, return_index=False):
+        super().__init__(dataset, indices)
+        self.return_index = return_index
+        self.dataset = dataset
 
+    def set_return_index(self, value):
+        self.return_index = value
+
+    def __getitem__(self, index):
+        real_index = self.indices[index]
+        data = self.dataset[real_index]
+
+        if self.return_index:
+            return data[0], data[1], real_index
+        else:
+            # Otherwise, return only (data, target)
+            return data[0], data[1]
 
 class StanfordDepthDataset(Dataset):
     """

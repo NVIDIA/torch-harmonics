@@ -222,6 +222,7 @@ class AttentionWrapper(nn.Module):
             grid,
             heads,
             pre_norm=False,
+            attention_drop_rate=0.,
             drop_path=0.,
             attention_mode="neighborhood",
     ):
@@ -240,6 +241,7 @@ class AttentionWrapper(nn.Module):
                 theta_cutoff=theta_cutoff,
                 out_channels=channels,
                 num_heads=heads,
+                drop_rate=attention_drop_rate,
             )
         else:
             self.att = AttentionS2(
@@ -297,6 +299,7 @@ class TransformerBlock(nn.Module):
 	kernel_shape=(3, 3),
 	basis_type="morlet",
         activation=nn.GELU,
+        att_drop_rate=0.,
         drop_path_rates=0.,
         attention_mode="neighborhood",
     ):
@@ -334,6 +337,7 @@ class TransformerBlock(nn.Module):
                     grid=grid_out,
                     heads=heads,
                     pre_norm=True,
+                    attention_drop_rate=att_drop_rate,
                     drop_path=drop_path_rates[i],
                     attention_mode=attention_mode,
                 )
@@ -518,7 +522,7 @@ class SphericalSegformer(nn.Module):
         kernel_shape=(3, 3),
         filter_basis_type="morlet",
         mlp_ratio=2.0,
-        drop_rate=0.0,
+        att_drop_rate=0.0,
         drop_path_rate=0.1,
         attention_mode="neighborhood",
     ):
@@ -575,6 +579,7 @@ class SphericalSegformer(nn.Module):
                     kernel_shape=kernel_shape,
                     basis_type=filter_basis_type,
                     activation=self.activation_function,
+                    att_drop_rate=att_drop_rate,
                     drop_path_rates=dpr[cur:cur+self.depths[i]],
                     attention_mode=attention_mode,
                 )
