@@ -359,14 +359,12 @@ def main(
     rng = torch.Generator().manual_seed(333)
     split_ratios = [0.95, 0.025, 0.025]
     dataset = StanfordSegmentationDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel)
-    # train_dataset, test_dataset, valid_dataset = torch.utils.data.random_split(dataset, split_ratios, generator=rng)
 
-    train_indices, test_indices, valid_indices = torch.utils.data.random_split(range(len(dataset)), split_ratios, generator=rng)
     # Create custom subsets
+    train_indices, test_indices, valid_indices = torch.utils.data.random_split(range(len(dataset)), split_ratios, generator=rng)
     train_dataset = StanfordDatasetSubset(dataset, train_indices)
     test_dataset = StanfordDatasetSubset(dataset, test_indices)
     valid_dataset = StanfordDatasetSubset(dataset, valid_indices, return_index=True)
-    valid_dataset.set_return_index(True)
 
     # compute stats on the train dataset
     means, stds = compute_stats_s2(train_dataset)
