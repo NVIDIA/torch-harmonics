@@ -412,11 +412,13 @@ class StanfordSegmentationDataset(Dataset):
         self,
         dataset_file,
         ignore_alpha_channel=True,
+        exclude_polar_fraction=0,
     ):
 
         import h5py as h5
 
         self.dataset_file = dataset_file
+        self.exclude_polar_fraction = exclude_polar_fraction
 
         with h5.File(self.dataset_file, "r") as h5file:
             self.img_rgb = h5file["rgb"][0].shape
@@ -424,6 +426,7 @@ class StanfordSegmentationDataset(Dataset):
             self.num_samples = h5file["rgb"].shape[0]
             self.num_classes = h5file["class_labels"].shape[0]
 
+            self.class_labels = [class_name.decode("utf-8") for class_name in h5file["class_labels"][...].tolist()]
             self.class_histogram = np.array(h5file["class_histogram"][...])
             self.class_histogram = self.class_histogram / self.class_histogram.sum()
 
@@ -440,7 +443,6 @@ class StanfordSegmentationDataset(Dataset):
 
         # open file and check for
         self.h5file = None
-        self.class_labels = None
         self.rgb = None
         self.semantic = None
 
@@ -481,12 +483,10 @@ class StanfordSegmentationDataset(Dataset):
     def _init_files(self):
         import h5py as h5
         self.h5file = h5.File(self.dataset_file, "r")
-        self.class_labels = self.h5file["class_labels"]
         self.rgb = self.h5file["rgb"]
         self.semantic = self.h5file["semantic"]
 
     def reset(self):
-        self.class_labels = None
         self.rgb = None
         self.semantic = None
         if self.h5file is not None:
@@ -505,11 +505,14 @@ class StanfordSegmentationDataset(Dataset):
         if mask_invalid:
             sem = self._mask_invalid(sem)
 
-        if self.return_index:
-            # return index as well to be able to get the file path
-            return rgb, sem, idx
-        else:
-            return rgb, sem
+        if self.exclude_polar_fraction > 0:
+            hcut = int(self.exclude_polar_fraction * sem.shape[0])
+            if hcut > 0:
+                sem[0:hcut, :] = -100
+                sem[-hcut:, :] = -100
+
+        return rgb, sem
+
 
 class StanfordDatasetSubset(Subset):
     def __init__(self, dataset, indices, return_index=False):
@@ -529,6 +532,7 @@ class StanfordDatasetSubset(Subset):
         else:
             # Otherwise, return only (data, target)
             return data[0], data[1]
+
 
 class StanfordDepthDataset(Dataset):
     """

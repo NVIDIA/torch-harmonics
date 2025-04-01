@@ -39,6 +39,7 @@ import argparse
 
 from tqdm import tqdm
 from functools import partial
+from typing import List
 
 import torch
 import torch.nn as nn
@@ -62,6 +63,26 @@ from torchvision.transforms import v2
 
 # wandb logging
 import wandb
+
+# image mask generation helper
+def generate_wandb_image(inp: torch.Tensor, prd: torch.Tensor, tar: torch.Tensor, class_labels: List[str]):
+    # generate dict from class names
+    class_dict = {i: c for i, c in enumerate(class_labels)}
+    class_dict[100] = "<N/A>"
+
+    # we need to cast to a positive number
+    tar = torch.where(tar == -100, 100, tar)
+
+    # convert input to image
+    inp = (inp.cpu().numpy()*255).astype(np.uint8)
+    prd = prd.cpu().numpy().astype(np.uint8)
+    tar = tar.cpu().numpy().astype(np.uint8)
+
+    # convert mask data
+    masks = {"prediction": {"mask_data": prd, "class_labels": class_dict}, "ground truth": {"mask_data": tar, "class_labels": class_dict}}
+    img = wandb.Image(inp, masks=masks)
+
+    return img
 
 
 # helper routine for counting number of paramerters in model
@@ -88,12 +109,13 @@ def log_weights_and_grads(exp_dir, model, iters=1):
     torch.save(store_dict, weights_and_grads_fname)
 
 
-# rolls out the FNO and compares to the classical solver
-def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normalization=None, logging=True, device=torch.device("cpu")):
+# validates the model on the validation dataset and computes metrics
+def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, class_labels, normalization=None, logging=True, device=torch.device("cpu")):
 
     model.eval()
 
     num_examples = len(dataloader)
+    num_classes = len(class_labels)
 
     # make output
     if logging and not os.path.isdir(path_root):
@@ -119,11 +141,11 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
             inp = inp.to(device)
             tar = tar.to(device)
 
+            inp_raw = inp.clone().squeeze(0).permute(1, 2, 0).contiguous()
             if normalization is not None:
                 inp = normalization(inp)
 
             prd = model(inp)
-            num_classes = prd.shape[-3]
 
             losses[idx] = loss_fn(prd, tar)
 
@@ -134,17 +156,24 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
 
             prd = nn.functional.softmax(prd, dim=-3)
             prd = torch.argmax(prd, dim=-3).squeeze(0)
+            tar = tar.squeeze(0)
 
             # do plotting
             glob_idx = idx + glob_off
-            fig = plt.figure(figsize=(7.5, 6))
-            plot_sphere(prd.cpu() / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow")
-            plt.savefig(os.path.join(path_root, "pred_" + str(glob_idx) + ".png"))
-            plt.close()
+            num_cols = 3
+            num_rows = 1
+            fig = plt.figure(layout="constrained", figsize=(7.5 * num_cols, 6 * num_rows), dpi=150)
+            subfigs = fig.subfigures(num_rows, num_cols, wspace=0.04)
+            imshow_sphere(inp_raw.cpu(), fig=subfigs[0])
+            plot_sphere(tar.cpu() / num_classes, fig=subfigs[2], vmin=0.0, vmax=1.0, cmap="tab20c")
+            plot_sphere(prd.cpu() / num_classes, fig=subfigs[1], vmin=0.0, vmax=1.0, cmap="tab20c")
 
-            fig = plt.figure(figsize=(7.5, 6))
-            plot_sphere(tar.cpu().squeeze(0) / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow", filepath_src=dataloader.dataset.dataset.get_tar_filepath(idx_file))
-            plt.savefig(os.path.join(path_root, "truth_" + str(glob_idx) + ".png"))
+            # Add column labels
+            column_labels = ["Input", "Truth", "Prediction"]
+            for j, label in enumerate(column_labels):
+                fig.text((j + 0.5) / 3, 1.03, label, va="top", ha="center", fontsize="large")
+
+            plt.savefig(os.path.join(path_root, "inp_pred_truth_" + str(glob_idx) + ".png"))
             plt.close()
 
     return losses, metrics
@@ -162,13 +191,15 @@ def train_model(
     optimizer,
     gscaler,
     scheduler=None,
+    max_grad_norm=0.,
     normalization=None,
-    augmentation=None,
+    augmentation=False,
     nepochs=20,
     amp_mode="none",
     log_grads=0,
     exp_dir=None,
     logging=True,
+    class_labels=None,
     device=torch.device("cpu"),
 ):
 
@@ -204,9 +235,7 @@ def train_model(
             if normalization is not None:
                 inp = normalization(inp)
 
-            if augmentation is not None:
-                inp = augmentation(inp)
-
+            if augmentation:
                 # flip randomly horizontally
                 if random.random() < 0.5:
                     inp = torch.flip(inp, dims=(-1,))
@@ -221,6 +250,9 @@ def train_model(
 
             if log_grads and (iters % log_grads == 0) and (exp_dir is not None):
                 log_weights_and_grads(exp_dir, model, iters=iters)
+
+            if max_grad_norm > 0.:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
 
             gscaler.step(optimizer)
             gscaler.update()
@@ -248,10 +280,15 @@ def train_model(
         if dist.is_initialized():
             test_sampler.set_epoch(epoch)
 
+        # dict for logging
+        logdict = {}
         with torch.no_grad():
             for step, (inp, tar) in enumerate(test_dataloader):
                 inp = inp.to(device)
                 tar = tar.to(device)
+
+                if logging and (step == 0):
+                    inp_raw = inp[0, ...].clone().permute(1, 2, 0).contiguous()
 
                 if normalization is not None:
                     inp = normalization(inp)
@@ -268,6 +305,13 @@ def train_model(
                     metric_fn = metrics_fns[metric]
                     metric_buff[0] += metric_fn(prd, tar) * inp.size(0)
                     metric_buff[1] += inp.size(0)
+
+                if logging and (step == 0) and (class_labels is not None):
+                    prd = nn.functional.softmax(prd, dim=1)
+                    prd = torch.argmax(prd, dim=1)[0, ...]
+                    tar = tar[0, ...]
+                    # convert to images
+                    logdict["predictions"] = generate_wandb_image(inp_raw, prd, tar, class_labels)
 
             if dist.is_initialized():
                 dist.all_reduce(valid_loss)
@@ -294,7 +338,12 @@ def train_model(
 
             if wandb.run is not None:
                 current_lr = optimizer.param_groups[0]["lr"]
-                wandb.log({"loss": accumulated_loss, "validation loss": valid_loss, "learning rate": current_lr})
+                logdict["loss"] = accumulated_loss
+                logdict["validation loss"] = valid_loss
+                logdict["learning rate"] = current_lr
+                for metric in valid_metrics:
+                    logdict[metric] = valid_metrics[metric]
+                wandb.log(logdict)
 
     # wrapping up
     train_time = time.time() - train_start
@@ -311,7 +360,8 @@ def main(
     num_epochs=100,
     batch_size=8,
     learning_rate=1e-4,
-    label_smoothing=0.,
+    label_smoothing=0.0,
+    max_grad_norm=0.0,
     train=True,
     load_checkpoint=False,
     amp_mode="none",
@@ -320,6 +370,7 @@ def main(
     ignore_alpha_channel=True,
     log_grads=0,
     data_path="data",
+    data_downsampling_factor=16,
 ):
 
     # initialize distributed
@@ -345,7 +396,7 @@ def main(
 
     # 2D3DS download & dataset initialization
     downloader = Stanford2D3DSDownloader(base_url="https://cvg-data.inf.ethz.ch/2d3ds/no_xyz/", local_dir=str(data_path))
-    dataset_file = downloader.prepare_dataset(downsampling_factor=16)
+    dataset_file = downloader.prepare_dataset(dataset_file=f"stanford_2d3ds_dataset_ds{data_downsampling_factor}.h5", downsampling_factor=data_downsampling_factor)
 
     # intiialize distributed for ddp
     if dist.is_initialized():
@@ -358,7 +409,7 @@ def main(
     # make sure splitting is consistent across ranks
     rng = torch.Generator().manual_seed(333)
     split_ratios = [0.95, 0.025, 0.025]
-    dataset = StanfordSegmentationDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel)
+    dataset = StanfordSegmentationDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel, exclude_polar_fraction=0.2)
 
     # Create custom subsets
     train_indices, test_indices, valid_indices = torch.utils.data.random_split(range(len(dataset)), split_ratios, generator=rng)
@@ -384,34 +435,17 @@ def main(
 
     # create the dataloaders
     train_dataloader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True if train_sampler is None else False,
-        sampler=train_sampler, num_workers=4, persistent_workers=True, pin_memory=True
+        train_dataset, batch_size=batch_size, shuffle=True if train_sampler is None else False, sampler=train_sampler, num_workers=4, persistent_workers=True, pin_memory=True
     )
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, sampler=test_sampler,
-                                 num_workers=4, persistent_workers=True, pin_memory=True)
-    valid_dataloader = DataLoader(valid_dataset, batch_size=1, shuffle=False, sampler=valid_sampler,
-                                  num_workers=0, persistent_workers=False, pin_memory=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, sampler=test_sampler, num_workers=4, persistent_workers=True, pin_memory=True)
+    valid_dataloader = DataLoader(valid_dataset, batch_size=1, shuffle=False, sampler=valid_sampler, num_workers=0, persistent_workers=False, pin_memory=True)
 
     # TODO: move augmentation into extra helper module
     normalization = v2.Normalize(mean=means.tolist(), std=stds.tolist())
-    if enable_data_augmentation:
-        if not ignore_alpha_channel:
-            raise NotImplementedError("You can only use data augmentation with RGB images, RGBA is not supported.")
-        if logging:
-            print("Using data augmentation")
-
-        # imagenet normalization
-        augmentation = v2.Compose(
-            [
-                v2.RandomAutocontrast(p=0.5),
-                v2.GaussianNoise(mean=0.0, sigma=0.1, clip=True),
-                v2.ColorJitter(),
-            ]
-        )
-    else:
-        augmentation = None
+    augmentation = enable_data_augmentation
 
     in_channels = 3 if ignore_alpha_channel else 4
+    class_labels = dataset.class_labels
 
     # print dataset info
     img_size = dataset.input_shape[1:]
@@ -424,7 +458,7 @@ def main(
     # class_weights = 1 / torch.clamp(class_histogram, min=1e-3, max=None)
 
     # log weigthing
-    #class_weights = - 1 / torch.log(class_histogram)
+    # class_weights = - 1 / torch.log(class_histogram)
 
     # # give non-occuring classes zero weight
     # class_weights = torch.where(class_histogram > 0.0, class_weights, 0.0)
@@ -455,60 +489,82 @@ def main(
     except:
         print("Segmentation Models package not found, some models are not available")
 
-    # models[f"sfno_sc4_layers4_e32"] = partial(
+    # models[f"sfno_sc4_layers4_e64"] = partial(
     #     SFNO,
     #     dataset.num_classes,
     #     img_size=img_size,
     #     grid="equiangular",
     #     in_chans=in_channels,
     #     num_layers=4,
-    #     scale_factor=4,
-    #     embed_dim=32,
+    #     scale_factor=2,
+    #     embed_dim=64,
     #     activation_function="gelu",
     #     residual_prediction=False,
     #     use_mlp=True,
     #     normalization_layer="instance_norm",
     # )
 
-    #models[f"lsno_sc2_layers6_e64_morlet"] = partial(
-    #    LSNO,
-    #    dataset.num_classes,
-    #    img_size=img_size,
-    #    grid="equiangular",
-    #    in_chans=in_channels,
-    #    num_layers=6,
-    #    scale_factor=2,
-    #    embed_dim=64,
-    #    activation_function="gelu",
-    #    residual_prediction=False,
-    #    use_mlp=True,
-    #    normalization_layer="none",
-    #    kernel_shape=(4, 4),
-    #    encoder_kernel_shape=(4, 4),
-    #    filter_basis_type="morlet",
-    #    upsample_sht=False,
-    #)
-
-    models[f"s2u_sc4_layers4_e128_pl"] = partial(
-          S2U,
-          img_size=img_size,
-          grid="equiangular",
-          grid_internal="equiangular",
-          in_chans=in_channels,
-          num_classes=dataset.num_classes,
-          embed_dims=[64, 128, 256, 512],
-          depths=[2, 2, 2, 2],
-          scale_factor=2,
-          activation_function="relu",
-          kernel_shape=(3, 4),
-          filter_basis_type="piecewise linear",
-          drop_path_rate=0.1,
-          drop_conv_rate=0.2,
-          drop_dense_rate=0.5,
-          transform_skip=False,
+    models[f"lsno_sc2_layers4_e64_plinear"] = partial(
+       LSNO,
+       dataset.num_classes,
+       img_size=img_size,
+       grid="equiangular",
+       in_chans=in_channels,
+       num_layers=4,
+       scale_factor=2,
+       embed_dim=64,
+       activation_function="gelu",
+       residual_prediction=False,
+       use_mlp=True,
+       normalization_layer="instance_norm",
+       kernel_shape=(3, 4),
+       encoder_kernel_shape=(3, 4),
+       filter_basis_type="piecewise linear",
+       upsample_sht=False
     )
 
-    #models[f"segformer_nb4_e256_morlet"] = partial(
+    models[f"s2u_sc4_layers4_e128_pl_gelu"] = partial(
+         S2U,
+         img_size=img_size,
+         grid="equiangular",
+         grid_internal="equiangular",
+         in_chans=in_channels,
+         num_classes=dataset.num_classes,
+         embed_dims=[64, 128, 256, 512],
+         depths=[2, 2, 2, 2],
+         scale_factor=2,
+         activation_function="gelu",
+         kernel_shape=(3, 4),
+         filter_basis_type="piecewise linear",
+         drop_path_rate=0.1,
+         drop_conv_rate=0.2,
+         drop_dense_rate=0.5,
+         transform_skip=False,
+         conv_upsample=True,
+         conv_downsample=True,
+    )
+
+    #models[f"segformer_nb4_e512_full"] = partial(
+    #    S2S,
+    #    img_size=img_size,
+    #    grid="equiangular",
+    #    grid_internal="equiangular",
+    #    in_chans=in_channels,
+    #    num_classes=dataset.num_classes,
+    #    embed_dims=[64, 128, 256, 512],
+    #    heads=[1, 2, 4, 8],
+    #    depths=[3, 4, 6, 3],
+    #    scale_factor=2,
+    #    activation_function="gelu",
+    #    kernel_shape=(3, 4),
+    #    filter_basis_type="piecewise linear",
+    #    mlp_ratio=4.0,
+    #    att_drop_rate=0.5,
+    #    drop_path_rate=0.1,
+    #    attention_mode="full",
+    #)
+
+    # models[f"segformer_nb4_e256_morlet"] = partial(
     #    S2S,
     #    img_size=img_size,
     #    grid="equiangular",
@@ -526,28 +582,47 @@ def main(
     #    drop_rate=0.0,
     #    drop_path_rate=0.1,
     #    attention_mode="full",
-    #)
-
-    # models[f"s2t_sc2_layers6_e64"] = partial(
-    #     S2T,
-    #     dataset.num_classes,
-    #     img_size=img_size,
-    #     grid="equiangular",
-    #     in_chans=in_channels,
-    #     num_layers=6,
-    #     scale_factor=2,
-    #     embed_dim=64,
-    #     activation_function="gelu",
-    #     residual_prediction=False,
-    #     pos_embed="spectral",
-    #     use_mlp=True,
-    #     normalization_layer="instance_norm",
-    #     encoder_kernel_shape=(4, 4),
-    #     filter_basis_type="morlet",
-    #     upsample_sht=False,
     # )
 
-    #models[f"unetplusplus"] = partial(
+    models[f"s2t_sc2_layers4_e32"] = partial(
+        S2T,
+        dataset.num_classes,
+        img_size=img_size,
+        grid="equiangular",
+        in_chans=in_channels,
+        num_layers=4,
+        scale_factor=2,
+        embed_dim=32,
+        activation_function="gelu",
+        residual_prediction=False,
+        pos_embed="spectral",
+        use_mlp=True,
+        normalization_layer="instance_norm",
+        encoder_kernel_shape=(3, 4),
+        filter_basis_type="piecewise linear",
+        upsample_sht=False,
+    )
+
+    #models[f"s2t_sc2_layers6_e64"] = partial(
+    #    S2T,
+    #    dataset.num_classes,
+    #    img_size=img_size,
+    #    grid="equiangular",
+    #    in_chans=in_channels,
+    #    num_layers=6,
+    #    scale_factor=2,
+    #    embed_dim=64,
+    #    activation_function="gelu",
+    #    residual_prediction=False,
+    #    pos_embed="spectral",
+    #    use_mlp=True,
+    #    normalization_layer="instance_norm",
+    #    encoder_kernel_shape=(4, 4),
+    #    filter_basis_type="morlet",
+    #    upsample_sht=False,
+    #)
+
+    # models[f"unetplusplus"] = partial(
     #    UnetPlusPlus,
     #    in_channels=in_channels,
     #    classes=dataset.num_classes,
@@ -557,14 +632,14 @@ def main(
     #    decoder_use_batchnorm=True,
     #    decoder_channels=(256, 128, 64, 32, 16),
     #    activation="softmax",
-    #)
+    # )
 
     if len(models) == 0:
         raise ValueError("No models selected")
 
     # create the loss object
     loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=label_smoothing).to(device=device)
-    #loss_fn = DiceLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular",  weight=class_weights, smooth=label_smoothing).to(device=device)
+    # loss_fn = DiceLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular",  weight=class_weights, smooth=label_smoothing).to(device=device)
     # loss_fn = FocalLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
 
     # compile loss function
@@ -572,7 +647,7 @@ def main(
 
     # metrics
     metrics_fns = {
-        "mIoU":IntersectionOverUnionS2(
+        "mIoU": IntersectionOverUnionS2(
             nlat=img_size[0],
             nlon=img_size[1],
             grid="equiangular",
@@ -620,9 +695,8 @@ def main(
                 run = None
 
             # optimizer:
-            optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01,
-                                          foreach=torch.cuda.is_available())
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
+            optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01, foreach=torch.cuda.is_available())
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", patience=10)
             gscaler = torch.GradScaler("cuda", enabled=(amp_mode == "fp16"))
 
             start_time = time.time()
@@ -640,6 +714,7 @@ def main(
                 optimizer,
                 gscaler,
                 scheduler,
+                max_grad_norm=max_grad_norm,
                 normalization=normalization,
                 augmentation=augmentation,
                 nepochs=num_epochs,
@@ -647,6 +722,7 @@ def main(
                 log_grads=log_grads,
                 exp_dir=exp_dir,
                 logging=logging,
+                class_labels=class_labels,
                 device=device,
             )
 
@@ -662,7 +738,7 @@ def main(
 
         with torch.inference_mode():
             losses, metric_results = validate_model(
-                model, valid_dataloader, loss_fn, metrics_fns, os.path.join(exp_dir, "figures"), normalization=normalization, logging=logging, device=device
+                model, valid_dataloader, loss_fn, metrics_fns, os.path.join(exp_dir, "figures"), class_labels, normalization=normalization, logging=logging, device=device
             )
             metrics[model_name]["loss_mean"] = torch.mean(losses)
             for metric in metric_results:
@@ -712,8 +788,10 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_epochs", default=100, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--batch_size", default=8, type=int, help="Switch for overriding batch size in the configuration file.")
+    parser.add_argument("--data_downsampling_factor", default=16, type=int, help="Switch for overriding the downsampling factor of the data.")
     parser.add_argument("--learning_rate", default=1e-4, type=float, help="Switch to override learning rate.")
-    parser.add_argument("--label_smoothing_factor", default=0., type=float, help="Label smoothing factor [0, 1].")
+    parser.add_argument("--max_grad_norm", default=0.0, type=float, help="Switch to override max grad norm. A value > 0 activates gradient clipping.")
+    parser.add_argument("--label_smoothing_factor", default=0.0, type=float, help="Label smoothing factor [0, 1].")
     parser.add_argument("--resume", action="store_true", help="Reload checkpoints.")
     parser.add_argument("--amp_mode", default="none", type=str, choices=["none", "bf16", "fp16"], help="Switch to enable AMP.")
     parser.add_argument("--enable_ddp", action="store_true", help="Switch to enable distributed data parallel.")
@@ -726,6 +804,7 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         label_smoothing=args.label_smoothing_factor,
+        max_grad_norm=args.max_grad_norm,
         train=True,
         load_checkpoint=args.resume,
         amp_mode=args.amp_mode,
@@ -734,4 +813,5 @@ if __name__ == "__main__":
         ignore_alpha_channel=True,
         log_grads=0,
         data_path=args.data_path,
+        data_downsampling_factor=args.data_downsampling_factor,
     )

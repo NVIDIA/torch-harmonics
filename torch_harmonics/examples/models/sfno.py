@@ -59,6 +59,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         inner_skip="none",
         outer_skip="identity",
         use_mlp=True,
+        bias=False,
     ):
         super().__init__()
 
@@ -70,7 +71,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         if inner_skip == "linear" or inner_skip == "identity":
             gain_factor /= 2.0
 
-        self.global_conv = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, bias=False)
+        self.global_conv = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, bias=bias)
 
         if inner_skip == "linear":
             self.inner_skip = nn.Conv2d(input_dim, output_dim, 1, 1)
@@ -178,6 +179,8 @@ class SphericalFourierNeuralOperator(nn.Module):
         Whether to add a single large skip connection, by default True
     pos_embed : bool, optional
         Whether to use positional embedding, by default True
+    bias : bool, optional
+        Whether to use a bias, by default False
 
     Example:
     --------
@@ -219,6 +222,7 @@ class SphericalFourierNeuralOperator(nn.Module):
         hard_thresholding_fraction=1.0,
         residual_prediction=False,
         pos_embed="none",
+        bias=False,
     ):
 
         super().__init__()
@@ -284,7 +288,7 @@ class SphericalFourierNeuralOperator(nn.Module):
             encoder_layers.append(fc)
             encoder_layers.append(self.activation_function())
             current_dim = encoder_hidden_dim
-        fc = nn.Conv2d(current_dim, self.embed_dim, 1, bias=False)
+        fc = nn.Conv2d(current_dim, self.embed_dim, 1, bias=bias)
         scale = math.sqrt(1.0 / current_dim)
         nn.init.normal_(fc.weight, mean=0.0, std=scale)
         if fc.bias is not None:
@@ -321,6 +325,7 @@ class SphericalFourierNeuralOperator(nn.Module):
                 act_layer=self.activation_function,
                 norm_layer=self.normalization_layer,
                 use_mlp=use_mlp,
+                bias=bias,
             )
 
             self.blocks.append(block)
@@ -340,7 +345,7 @@ class SphericalFourierNeuralOperator(nn.Module):
             decoder_layers.append(fc)
             decoder_layers.append(self.activation_function())
             current_dim = decoder_hidden_dim
-        fc = nn.Conv2d(current_dim, self.out_chans, 1, bias=False)
+        fc = nn.Conv2d(current_dim, self.out_chans, 1, bias=bias)
         scale = math.sqrt(1.0 / current_dim)
         nn.init.normal_(fc.weight, mean=0.0, std=scale)
         if fc.bias is not None:
