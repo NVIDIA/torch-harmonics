@@ -166,7 +166,7 @@ def train_model(
     scheduler=None,
     normalization_in=None,
     normalization_out=None,
-    augmentation=None,
+    augmentation=False,
     nepochs=20,
     amp_mode="none",
     log_grads=0,
@@ -211,9 +211,7 @@ def train_model(
             if normalization_out is not None:
                 tar = normalization_out(tar)
 
-            if augmentation is not None:
-                inp = augmentation(inp)
-
+            if augmentation:
                 # flip randomly horizontally
                 if random.random() < 0.5:
                     inp = torch.flip(inp, dims=(-1,))
@@ -330,6 +328,7 @@ def main(
     ignore_alpha_channel=True,
     log_grads=0,
     data_path="data",
+    data_downsampling_factor=16,
 ):
 
     # initialize distributed
@@ -355,7 +354,7 @@ def main(
 
     # 2D3DS download & dataset initialization
     downloader = Stanford2D3DSDownloader(base_url="https://cvg-data.inf.ethz.ch/2d3ds/no_xyz/", local_dir=str(data_path))
-    dataset_file = downloader.prepare_dataset(downsampling_factor=16)
+    dataset_file = downloader.prepare_dataset(dataset_file=f"stanford_2d3ds_dataset_ds{data_downsampling_factor}.h5", downsampling_factor=data_downsampling_factor)
 
     # intiialize distributed for ddp
     if dist.is_initialized():
@@ -400,23 +399,7 @@ def main(
     # TODO: move augmentation into extra helper module
     normalization_in = v2.Normalize(mean=means_in.tolist(), std=stds_in.tolist())
     normalization_out = v2.Normalize(mean=[means_out], std=[stds_out])
-
-    if enable_data_augmentation:
-        if not ignore_alpha_channel:
-            raise NotImplementedError("You can only use data augmentation with RGB images, RGBA is not supported.")
-        if logging:
-            print("Using data augmentation")
-
-        # imagenet normalization
-        augmentation = v2.Compose(
-            [
-                v2.RandomAutocontrast(p=0.5),
-                v2.GaussianNoise(mean=0.0, sigma=0.1, clip=True),
-                v2.ColorJitter(),
-            ]
-        )
-    else:
-        augmentation = None
+    augmentation = enable_data_augmentation
 
     in_channels = 3 if ignore_alpha_channel else 4
 
@@ -640,6 +623,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_epochs", default=100, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--batch_size", default=8, type=int, help="Switch for overriding batch size in the configuration file.")
+    parser.add_argument("--data_downsampling_factor", default=16, type=int, help="Switch for overriding the downsampling factor of the data.")
     parser.add_argument("--learning_rate", default=1e-4, type=float, help="Switch to override learning rate.")
     parser.add_argument("--resume", action="store_true", help="Reload checkpoints.")
     parser.add_argument("--amp_mode", default="none", type=str, choices=["none", "bf16", "fp16"], help="Switch to enable AMP.")
@@ -660,4 +644,5 @@ if __name__ == "__main__":
         ignore_alpha_channel=True,
         log_grads=0,
         data_path=args.data_path,
+        data_downsampling_factor=args.data_downsampling_factor,
     )

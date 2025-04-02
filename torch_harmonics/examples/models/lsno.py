@@ -165,6 +165,7 @@ class SphericalNeuralOperatorBlock(nn.Module):
         use_mlp=True,
         disco_kernel_shape=(3, 3),
         disco_basis_type="morlet",
+        bias=False,
     ):
         super().__init__()
 
@@ -188,11 +189,11 @@ class SphericalNeuralOperatorBlock(nn.Module):
                 basis_type=disco_basis_type,
                 grid_in=forward_transform.grid,
                 grid_out=inverse_transform.grid,
-                bias=False,
+                bias=bias,
                 theta_cutoff=theta_cutoff,
             )
         elif conv_type == "global":
-            self.global_conv = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, bias=False)
+            self.global_conv = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, bias=bias)
         else:
             raise ValueError(f"Unknown convolution type {conv_type}")
 
@@ -310,6 +311,8 @@ class LocalSphericalNeuralOperator(nn.Module):
         Dropout path rate, by default 0.0
     normalization_layer : str, optional
         Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "instance_norm"
+    sfno_block_frequency : int, optional
+        Hopw often a (global) SFNO block is used, by default 2
     hard_thresholding_fraction : float, optional
         Fraction of hard thresholding (frequency cutoff) to apply, by default 1.0
     big_skip : bool, optional
@@ -318,6 +321,8 @@ class LocalSphericalNeuralOperator(nn.Module):
         Whether to use positional embedding, by default True
     upsample_sht : bool, optional
         Use SHT upsampling if true, else linear interpolation
+    bias : bool, optional
+        Whether to use a bias, by default False
 
     Example
     -----------
@@ -363,10 +368,12 @@ class LocalSphericalNeuralOperator(nn.Module):
         drop_rate=0.0,
         drop_path_rate=0.0,
         normalization_layer="none",
+        sfno_block_frequency=2,
         hard_thresholding_fraction=1.0,
         residual_prediction=False,
         pos_embed="none",
         upsample_sht=False,
+        bias=False,
     ):
         super().__init__()
 
@@ -427,7 +434,7 @@ class LocalSphericalNeuralOperator(nn.Module):
             kernel_shape=self.encoder_kernel_shape,
             basis_type=filter_basis_type,
             groups=1,
-            bias=False,
+            bias=bias,
         )
 
         # compute the modes for the sht
@@ -448,7 +455,7 @@ class LocalSphericalNeuralOperator(nn.Module):
                 self.itrans,
                 self.embed_dim,
                 self.embed_dim,
-                conv_type="global" if i % 2 == 0 else "local",
+                conv_type="global" if i % sfno_block_frequency == (sfno_block_frequency-1) else "local",
                 mlp_ratio=mlp_ratio,
                 drop_rate=drop_rate,
                 drop_path=dpr[i],
@@ -457,6 +464,7 @@ class LocalSphericalNeuralOperator(nn.Module):
                 use_mlp=use_mlp,
                 disco_kernel_shape=kernel_shape,
                 disco_basis_type=filter_basis_type,
+                bias=bias,
             )
 
             self.blocks.append(block)
@@ -472,7 +480,7 @@ class LocalSphericalNeuralOperator(nn.Module):
             kernel_shape=self.encoder_kernel_shape,
             basis_type=filter_basis_type,
             groups=1,
-            bias=False,
+            bias=bias,
             upsample_sht=upsample_sht,
         )
 

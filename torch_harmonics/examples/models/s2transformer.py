@@ -165,6 +165,7 @@ class SphericalAttentionBlock(nn.Module):
         act_layer=nn.GELU,
         norm_layer="none",
         use_mlp=True,
+        bias=False,
     ):
         super().__init__()
 
@@ -194,6 +195,7 @@ class SphericalAttentionBlock(nn.Module):
             theta_cutoff=theta_cutoff,
             k_channels=None,
             out_channels=None,
+            bias=bias,
         )
 
         self.skip0 = nn.Identity()
@@ -286,6 +288,8 @@ class SphericalTransformer(nn.Module):
         Whether to use positional embedding, by default True
     upsample_sht : bool, optional
         Use SHT upsampling if true, else linear interpolation
+    bias : bool, optional
+        Whether to use a bias, by default False
 
     Example
     -----------
@@ -324,6 +328,7 @@ class SphericalTransformer(nn.Module):
         residual_prediction=False,
         pos_embed="spectral",
         upsample_sht=False,
+        bias=False,
     ):
         super().__init__()
 
@@ -385,7 +390,7 @@ class SphericalTransformer(nn.Module):
             kernel_shape=self.encoder_kernel_shape,
             basis_type=filter_basis_type,
             groups=1,
-            bias=False,
+            bias=bias,
         )
 
         self.blocks = nn.ModuleList([])
@@ -405,6 +410,7 @@ class SphericalTransformer(nn.Module):
                 act_layer=self.activation_function,
                 norm_layer=self.normalization_layer,
                 use_mlp=use_mlp,
+                bias=bias,
             )
 
             self.blocks.append(block)
@@ -420,7 +426,7 @@ class SphericalTransformer(nn.Module):
             kernel_shape=self.encoder_kernel_shape,
             basis_type=filter_basis_type,
             groups=1,
-            bias=False,
+            bias=bias,
             upsample_sht=upsample_sht,
         )
 

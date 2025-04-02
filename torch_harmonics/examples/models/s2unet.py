@@ -97,7 +97,7 @@ class DownsamplingBlock(nn.Module):
                     basis_type=basis_type,
                     grid_in=grid_out,
                     grid_out=grid_out,
-                    bias=True,
+                    bias=False,
                     theta_cutoff=theta_cutoff
                 )
             )
@@ -134,7 +134,7 @@ class DownsamplingBlock(nn.Module):
 	        basis_type=basis_type,
                 grid_in=grid_in,
 	        grid_out=grid_out,
-                bias=True,
+                bias=False,
                 theta_cutoff=theta_cutoff
             )
         else:
@@ -221,18 +221,39 @@ class UpsamplingBlock(nn.Module):
         if in_shape != out_shape:
             if conv_upsample:
                 theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
-                self.upsample = DiscreteContinuousConvTransposeS2(
-                    in_channels=out_channels,
-                    out_channels=out_channels,
-                    in_shape=in_shape,
-                    out_shape=out_shape,
-                    kernel_shape=kernel_shape,
-                    basis_type=basis_type,
-                    grid_in=grid_in,
-                    grid_out=grid_out,
-                    bias=True,
-                    theta_cutoff=theta_cutoff
-                )
+                self.upsample = nn.Sequential(
+                    DiscreteContinuousConvTransposeS2(
+                        in_channels=out_channels,
+                        out_channels=out_channels,
+                        in_shape=in_shape,
+                        out_shape=out_shape,
+                        kernel_shape=kernel_shape,
+                        basis_type=basis_type,
+                        grid_in=grid_in,
+                        grid_out=grid_out,
+                        bias=False,
+                        theta_cutoff=theta_cutoff
+                    ),
+                    nn.BatchNorm2d(out_channels,
+                                   eps=1e-05,
+                                   momentum=0.1,
+                                   affine=True,
+                                   track_running_stats=True),
+                    activation(),
+                    DiscreteContinuousConvS2(
+                        in_channels=out_channels,
+                        out_channels=out_channels,
+                        in_shape=out_shape,
+                        out_shape=out_shape,
+                        kernel_shape=kernel_shape,
+                        basis_type=basis_type,
+                        grid_in=grid_in,
+                        grid_out=grid_out,
+                        bias=False,
+                        theta_cutoff=theta_cutoff
+                    ),
+            )
+                    
             else:
                 self.upsample = ResampleS2(
                     nlat_in=in_shape[0],
@@ -254,7 +275,7 @@ class UpsamplingBlock(nn.Module):
                 basis_type=basis_type,
                 grid_in=grid_in,
                 grid_out=grid_out,
-                bias=True,
+                bias=False,
                 theta_cutoff=theta_cutoff
             )
 
@@ -272,7 +293,7 @@ class UpsamplingBlock(nn.Module):
                     basis_type=basis_type,
                     grid_in=grid_in,
                     grid_out=grid_in,
-                    bias=True,
+                    bias=False,
                     theta_cutoff=theta_cutoff
                 )
             )

@@ -158,7 +158,7 @@ class MixFFN(nn.Module):
             basis_type=basis_type,
             grid_in=grid,
             grid_out=grid,
-            groups=1,
+            groups=inout_channels,
             bias=conv_bias,
             theta_cutoff=theta_cutoff
             )
@@ -203,7 +203,7 @@ class MixFFN(nn.Module):
         # because in the paper they only use depthwise conv,
         # but without this activation it would just be a fused MM
         # with the disco conv
-        x = self.act(self.mlp_in(x))
+        x = self.mlp_in(x)
 
         # conv parth
         x = self.act(self.conv(x))
@@ -229,7 +229,8 @@ class AttentionWrapper(nn.Module):
         super().__init__()
 
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-
+        self.attention_mode = attention_mode
+        
         if attention_mode == "neighborhood":
             theta_cutoff = _compute_cutoff_radius(shape[0], (1,), "piecewise linear")
             self.att = NeighborhoodAttentionS2(
@@ -241,7 +242,7 @@ class AttentionWrapper(nn.Module):
                 theta_cutoff=theta_cutoff,
                 out_channels=channels,
                 num_heads=heads,
-                drop_rate=attention_drop_rate,
+                #drop_rate=attention_drop_rate,
             )
         else:
             self.att = AttentionS2(
@@ -252,6 +253,7 @@ class AttentionWrapper(nn.Module):
                 grid_in=grid,
                 grid_out=grid,
                 out_channels=channels,
+                drop_rate=attention_drop_rate,
             )
 
         self.norm = None
@@ -268,6 +270,7 @@ class AttentionWrapper(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         residual = x
@@ -275,11 +278,14 @@ class AttentionWrapper(nn.Module):
             x = x.permute(0,2,3,1)
             x = self.norm(x)
             x = x.permute(0,3,1,2)
-        
-        dtype = x.dtype
-        with amp.autocast(device_type="cuda", enabled=False):
-            x = x.float()
-            x = self.att(x).to(dtype=dtype)
+
+        if self.attention_mode == "neighborhood":
+            dtype = x.dtype
+            with amp.autocast(device_type="cuda", enabled=False):
+                x = x.float()
+                x = self.att(x).to(dtype=dtype)
+        else:
+            x = self.att(x)
 
         return residual + self.drop_path(x)
 
