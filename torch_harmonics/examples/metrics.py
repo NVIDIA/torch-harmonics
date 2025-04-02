@@ -189,28 +189,34 @@ class AccuracyS2(BaseMetricS2):
 
 
 class RmseS2(nn.Module):
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
+    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", mask_invalid: bool = True):
         super().__init__()
         
         # area weights
         q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid, tile=True)
         self.register_buffer("quad_weights", q)
 
-    def forward(self, pred: torch.Tensor, truth: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, pred: torch.Tensor, truth: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # Squeeze the channel dimension if necessary
+        
+        
+        pred = pred.squeeze(1)
+        
         # Compute squared differences
-        squared_diff = torch.square(pred - truth) * mask
+        squared_diff = torch.square(pred - truth)
         
-        # Average over the spatial dimensions using quadrature weights
-        # Assuming pred and truth have shape (batch, channels, lat, lon)
-        batch_size, num_channels = pred.shape[:2]
+        # Apply mask and weights
+        weighted_squared_diff = squared_diff  * self.quad_weights
+        if mask is not None:
+            weighted_squared_diff = weighted_squared_diff * mask
         
-        # Reshape quadrature weights to match the input dimensions
-        weights = self.quad_weights.view(1, 1, *self.quad_weights.shape)
+        # Sum over spatial dimensions (lat, lon) and batch
+        total_weighted_diff = torch.sum(weighted_squared_diff)
         
-        # Compute weighted mean squared error
-        weighted_mse = torch.sum(squared_diff * weights, dim=(-2, -1))
-        
-        # Average over channels and batch
-        rmse = torch.sqrt(torch.mean(weighted_mse))
+        # Compute final RMSE (scalar)
+        if mask is not None:
+            rmse = torch.sqrt(total_weighted_diff / torch.sum(mask))
+        else:
+            rmse = torch.sqrt(total_weighted_diff)
         
         return rmse

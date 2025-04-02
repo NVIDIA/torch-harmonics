@@ -33,6 +33,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
+from abc import ABC, abstractmethod
 
 from torch_harmonics.quadrature import _precompute_latitudes
 
@@ -169,23 +170,71 @@ class FocalLossS2(nn.Module):
         return fl
 
 
-class L2LossS2(nn.Module):
+class SphericalLossBase(nn.Module, ABC):
+    """Abstract base class for spherical losses that handles common initialization and integration."""
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
         super().__init__()
-
-        # Get quadrature weights for proper spherical averaging
+        self.nlat = nlat
+        self.nlon = nlon
+        self.dlon = 2 * torch.pi / self.nlon
+        
         q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid)
         self.register_buffer("quad_weights", q)
 
-    def forward(self, prd: torch.Tensor, tar: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        # Compute squared difference
+    def integrate_grid(self, ugrid, mask=None):
+        out = (1.0 / (4 * torch.pi)) * torch.sum(ugrid * self.quad_weights * self.dlon, dim=(-2, -1))
+        if mask is not None:
+            out = out * 4 * torch.pi / torch.sum(mask) * self.nlat * self.nlon
+        return out
 
-        squared_diff = torch.square(prd - tar)
+    @abstractmethod
+    def compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+        """Abstract method that must be implemented by child classes to compute loss terms.
         
-        # Weight the differences by quadrature weights and sum over lat/lon
-        weighted_loss = torch.sum(squared_diff * self.quad_weights * mask, dim=(-1, -2))
+        Args:
+            prd (torch.Tensor): Prediction tensor
+            tar (torch.Tensor): Target tensor
+            
+        Returns:
+            torch.Tensor: Computed loss term before integration
+        """
+        pass
+
+    def forward(self, prd: torch.Tensor, tar: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Common forward pass that handles masking and reduction.
         
-        # Average over batch
-        loss = torch.mean(weighted_loss)
-        
-        return loss
+        Args:
+            prd (torch.Tensor): Prediction tensor
+            tar (torch.Tensor): Target tensor
+            mask (Optional[torch.Tensor], optional): Mask tensor. Defaults to None.
+            
+        Returns:
+            torch.Tensor: Final loss value
+        """
+        loss_term = self.compute_loss_term(prd, tar)
+        if mask is not None:
+            loss_term = loss_term * mask
+
+        loss = self.integrate_grid(loss_term, mask)
+        return torch.sqrt(loss).mean()
+
+# The implementations remain the same, but now they're forced to implement compute_loss_term
+class SquaredL2LossS2(SphericalLossBase):
+    def compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+        prd = prd.squeeze(1)
+        return torch.square(prd - tar)
+
+class RelativeL2LossS2(SphericalLossBase):
+    def compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+        prd = prd.squeeze(1)
+        return torch.square(prd - tar) / (torch.square(tar) + 1e-8)
+
+class RelativeL1LossS2(SphericalLossBase):
+    def compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+        prd = prd.squeeze(1)
+        return torch.abs(prd - tar) / (torch.abs(tar) + 1e-8)
+
+class L1LossS2(SphericalLossBase):
+    def compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+        prd = prd.squeeze(1)
+        return torch.abs(prd - tar)
