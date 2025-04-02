@@ -592,7 +592,6 @@ class StanfordDepthDataset(Dataset):
         self.h5file = h5.File(self.dataset_file, "r")
         self.rgb = self.h5file["rgb"]
         self.depth = self.h5file["depth"]
-        self.log_depth = np.log(1 + np.array(self.h5file["depth"]))
         
     def reset(self):
         self.rgb = None
