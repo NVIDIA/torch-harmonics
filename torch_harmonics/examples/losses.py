@@ -174,17 +174,16 @@ class SphericalLossBase(nn.Module, ABC):
     """Abstract base class for spherical losses that handles common initialization and integration."""
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
         super().__init__()
-        self.nlat = nlat
-        self.nlon = nlon
-        self.dlon = 2 * torch.pi / self.nlon
         
         q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid)
+
         self.register_buffer("quad_weights", q)
 
-    def integrate_grid(self, ugrid, mask=None):
-        out = (1.0 / (4 * torch.pi)) * torch.sum(ugrid * self.quad_weights * self.dlon, dim=(-2, -1))
-        if mask is not None:
-            out = out * 4 * torch.pi / torch.sum(mask) * self.nlat * self.nlon
+    def integrate_sphere(self, ugrid, mask=None):
+        if mask is None:
+            out = torch.sum(ugrid * self.quad_weights, dim=(-2, -1))
+        elif mask is not None:
+            out = torch.sum(mask * ugrid * self.quad_weights, dim=(-2, -1)) / torch.sum(mask * self.quad_weights, dim=(-2, -1))
         return out
 
     @abstractmethod
@@ -212,29 +211,23 @@ class SphericalLossBase(nn.Module, ABC):
             torch.Tensor: Final loss value
         """
         loss_term = self.compute_loss_term(prd, tar)
-        if mask is not None:
-            loss_term = loss_term * mask
-
-        loss = self.integrate_grid(loss_term, mask)
-        return torch.sqrt(loss).mean()
+        loss = self.integrate_sphere(loss_term, mask)
+        return torch.mean(loss)
 
 # The implementations remain the same, but now they're forced to implement compute_loss_term
 class SquaredL2LossS2(SphericalLossBase):
     def compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
-        prd = prd.squeeze(1)
         return torch.square(prd - tar)
 
-class RelativeL2LossS2(SphericalLossBase):
-    def compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
-        prd = prd.squeeze(1)
-        return torch.square(prd - tar) / (torch.square(tar) + 1e-8)
+# class RelativeL2LossS2(SphericalLossBase):
+#     def compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+#         prd = prd.squeeze(1)
+#         return torch.square(prd - tar) / (torch.square(tar) + 1e-8)
 
-class RelativeL1LossS2(SphericalLossBase):
-    def compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
-        prd = prd.squeeze(1)
-        return torch.abs(prd - tar) / (torch.abs(tar) + 1e-8)
+# class RelativeL1LossS2(SphericalLossBase):
+#     def compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+#         return torch.abs(prd - tar) / (torch.abs(tar) + 1e-8)
 
 class L1LossS2(SphericalLossBase):
     def compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
-        prd = prd.squeeze(1)
         return torch.abs(prd - tar)

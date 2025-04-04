@@ -126,7 +126,7 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
             
             prd = model(inp)
 
-            losses[idx] = loss_fn(prd, tar, mask)
+            losses[idx] = loss_fn(prd, tar.unsqueeze(-3), mask)
 
             for metric in metrics_fns:
                 metric_buff = metrics[metric]
@@ -228,7 +228,7 @@ def train_model(
             
             with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=(amp_mode != "none")):
                 prd = model(inp)
-                loss = loss_fn(prd, tar, mask)
+                loss = loss_fn(prd, tar.unsqueeze(-3), mask)
                 
             optimizer.zero_grad(set_to_none=True)
             gscaler.scale(loss).backward()
@@ -276,7 +276,7 @@ def train_model(
                     
                 with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=(amp_mode != "none")):
                     prd = model(inp)
-                    loss = loss_fn(prd, tar, mask)
+                    loss = loss_fn(prd, tar.unsqueeze(-3), mask)
 
                 valid_loss[0] += loss * inp.size(0)
                 valid_loss[1] += inp.size(0)
@@ -377,11 +377,12 @@ def main(
     # make sure splitting is consistent across ranks
     rng = torch.Generator().manual_seed(333)
     split_ratios = [0.95, 0.025, 0.025]
-    dataset = StanfordDepthDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel, log=True, exclude_polar_fraction=exclude_polar_fraction)
+    dataset = StanfordDepthDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel, log_depth=True, exclude_polar_fraction=exclude_polar_fraction)
     train_dataset, test_dataset, valid_dataset = torch.utils.data.random_split(dataset, split_ratios, generator=rng)
 
     # stats computation
-    means_in, stds_in, means_out, stds_out = compute_stats_s2(train_dataset.dataset)
+    means_in, stds_in, means_out, stds_out = compute_stats_s2(train_dataset.dataset, normalize_target=True)
+    # means_in, stds_in = compute_stats_s2(train_dataset.dataset)
     train_dataset.dataset.reset()
     if logging:
         print(f"Computed stats:")
@@ -389,7 +390,7 @@ def main(
         print(f"stds_in={stds_in}")
         print(f"means_out={means_out}")
         print(f"stds_out={stds_out}")
-
+    
     # split dataset if distributed
     if dist.is_initialized():
         train_sampler = DistributedSampler(train_dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank(), shuffle=True, drop_last=True)
@@ -442,37 +443,37 @@ def main(
     except:
         print("Segmentation Models package not found, some models are not available")
 
-    models[f"sfno_sc2_layers4_e32"] = partial(
-        SFNO,
-        out_chans=1,
-        img_size=(nlat, nlon),
-        grid=grid,
-        num_layers=4,
-        scale_factor=4,
-        embed_dim=32,
-        activation_function="gelu",
-        residual_prediction=False,
-        use_mlp=True,
-        normalization_layer="layer_norm",
-    )
-
-    # models[f"lsno_sc2_layers4_e32_morlet"] = partial(
-    #     LSNO,
+    # models[f"sfno_sc2_layers4_e32"] = partial(
+    #     SFNO,
     #     out_chans=1,
     #     img_size=(nlat, nlon),
     #     grid=grid,
     #     num_layers=4,
-    #     scale_factor=1,
+    #     scale_factor=4,
     #     embed_dim=32,
     #     activation_function="gelu",
     #     residual_prediction=False,
     #     use_mlp=True,
     #     normalization_layer="layer_norm",
-    #     kernel_shape=(4, 4),
-    #     encoder_kernel_shape=(4, 4),
-    #     filter_basis_type="morlet",
-    #     upsample_sht = True,
     # )
+
+    models[f"lsno_sc1_layers4_e32_zernike"] = partial(
+        LSNO,
+        out_chans=1,
+        img_size=(nlat, nlon),
+        grid=grid,
+        num_layers=4,
+        scale_factor=1,
+        embed_dim=32,
+        activation_function="gelu",
+        residual_prediction=False,
+        use_mlp=True,
+        normalization_layer="layer_norm",
+        kernel_shape=(4,),
+        encoder_kernel_shape=(4,),
+        filter_basis_type="zernike",
+        upsample_sht = False,
+    )
 
     # models[f"s2t_sc2_layers4_e32_h1"] = partial(
     #     S2T,

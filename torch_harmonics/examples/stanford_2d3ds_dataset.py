@@ -145,7 +145,7 @@ class Stanford2D3DSDownloader:
             # The original conversion used uint8, which overflowed the clutter label to 3341
             # this is a fix to handle that accidental usage of undefined overflow behavior
             if lookup == 855309:
-                label = class_labels_map[3341] # clutter
+                label = class_labels_map[3341]  # clutter
             else:
                 label = class_labels_map[lookup]
             class_index = class_labels_indices.index(label)
@@ -223,8 +223,8 @@ class Stanford2D3DSDownloader:
         if num_samples > 0:
             first_rgb, first_semantic, first_depth = file_paths[0]
             first_rgb = np.array(Image.open(first_rgb))
-            #first_semantic = np.array(Image.open(first_semantic))
-            #first_depth = np.array(Image.open(first_depth))
+            # first_semantic = np.array(Image.open(first_semantic))
+            # first_depth = np.array(Image.open(first_depth))
 
             rgb_shape = first_rgb.shape
             img_shape = (rgb_shape[0] // downsampling_factor, rgb_shape[1] // downsampling_factor)
@@ -242,8 +242,8 @@ class Stanford2D3DSDownloader:
             depth_data = h5file.create_dataset("depth", (num_samples, *img_shape), "f4")
             classes = h5file.create_dataset("class_labels", data=class_labels_indices)
             num_classes = len(set(class_labels_indices))
-            data_source_path = h5file.create_dataset("data_source_path", (num_samples,), dtype=h5.string_dtype(encoding='utf-8'))
-            data_target_path = h5file.create_dataset("data_target_path", (num_samples,), dtype=h5.string_dtype(encoding='utf-8'))
+            data_source_path = h5file.create_dataset("data_source_path", (num_samples,), dtype=h5.string_dtype(encoding="utf-8"))
+            data_target_path = h5file.create_dataset("data_target_path", (num_samples,), dtype=h5.string_dtype(encoding="utf-8"))
 
             # prepare computation of the class histogram
             class_histogram = np.zeros(num_classes)
@@ -264,16 +264,16 @@ class Stanford2D3DSDownloader:
 
                 # remove alpha channel if requested
                 if remove_alpha_channel:
-                    img = img.convert('RGBA')
-                    background = Image.new('RGBA', img.size, (255,255,255))
+                    img = img.convert("RGBA")
+                    background = Image.new("RGBA", img.size, (255, 255, 255))
                     # compoe foreground and background and remove alpha channel
                     img = np.array(Image.alpha_composite(background, img))
-                    r_data = img[:,:,:3]
+                    r_data = img[:, :, :3]
                 else:
                     r_data = np.array(img)
 
                 # transpose to channels first
-                r_data = np.transpose(r_data / 255., axes=(2,0,1))
+                r_data = np.transpose(r_data / 255.0, axes=(2, 0, 1))
 
                 # write to disk
                 rgb_data[count, ...] = r_data[...]
@@ -285,7 +285,7 @@ class Stanford2D3DSDownloader:
                 tmp_max = np.max(r_data, axis=(1, 2))
                 # mean/var
                 tmp_mean = np.sum(r_data * quad_weights[np.newaxis, :, :], axis=(1, 2))
-                tmp_m2 = np.sum(np.square(r_data-tmp_mean[:, np.newaxis, np.newaxis]) * quad_weights[np.newaxis, :, :])
+                tmp_m2 = np.sum(np.square(r_data - tmp_mean[:, np.newaxis, np.newaxis]) * quad_weights[np.newaxis, :, :])
                 if count == 0:
                     # min/max
                     min_vals = tmp_min
@@ -301,7 +301,6 @@ class Stanford2D3DSDownloader:
                     delta = tmp_mean - mean_vals
                     mean_vals += delta / float(count + 1)
                     m2_vals += tmp_m2 + delta * delta * float(count / (count + 1))
-
 
                 # get the target
                 sem = Image.open(file_paths[count][1])
@@ -325,16 +324,16 @@ class Stanford2D3DSDownloader:
                 if downsampling_factor != 1:
                     dep = dep.resize(size=(img_shape[1], img_shape[0]), resample=Image.NEAREST)
                 dep_data = np.array(dep)
-                
+
                 depth_data[count, ...] = dep_data[...] / 65536.0
-                
+
                 # compute stats -> depth
                 # min/max
                 tmp_min_depth = np.min(dep_data, axis=(0, 1))
                 tmp_max_depth = np.max(dep_data, axis=(0, 1))
                 # mean/var
                 tmp_mean_depth = np.sum(dep_data * quad_weights[:, :])
-                tmp_m2_depth = np.sum(np.square(dep_data-tmp_mean_depth) * quad_weights[:, :])
+                tmp_m2_depth = np.sum(np.square(dep_data - tmp_mean_depth) * quad_weights[:, :])
                 if count == 0:
                     min_vals_depth = tmp_min_depth
                     max_vals_depth = tmp_max_depth
@@ -371,9 +370,7 @@ class Stanford2D3DSDownloader:
 
         return converted_dataset_path
 
-
-    def prepare_dataset(self, file_extracted_directory_pairs=DEFAULT_TAR_FILE_PAIRS,
-                        dataset_file: str = "stanford_2d3ds_dataset.h5", downsampling_factor: int = 16):
+    def prepare_dataset(self, file_extracted_directory_pairs=DEFAULT_TAR_FILE_PAIRS, dataset_file: str = "stanford_2d3ds_dataset.h5", downsampling_factor: int = 16):
 
         converted_dataset_path = os.path.join(self.local_dir, dataset_file)
         if os.path.exists(converted_dataset_path):
@@ -383,14 +380,11 @@ class Stanford2D3DSDownloader:
             return converted_dataset_path
 
         data_folders, class_labels = self.download_dataset(file_extracted_directory_pairs=file_extracted_directory_pairs)
-        converted_dataset_path = self.convert_dataset(data_folders=data_folders, class_labels=class_labels,
-                                                      dataset_file=dataset_file, downsampling_factor=downsampling_factor)
+        converted_dataset_path = self.convert_dataset(data_folders=data_folders, class_labels=class_labels, dataset_file=dataset_file, downsampling_factor=downsampling_factor)
 
         self.converted_dataset_path = converted_dataset_path
 
         return self.converted_dataset_path
-
-
 
 
 class StanfordSegmentationDataset(Dataset):
@@ -446,7 +440,6 @@ class StanfordSegmentationDataset(Dataset):
         # when true, the __getitem__ method will return the index of the input,target pair
         self.return_index = False
 
-
     @property
     def target_shape(self):
         return self.img_seg
@@ -478,6 +471,7 @@ class StanfordSegmentationDataset(Dataset):
 
     def _init_files(self):
         import h5py as h5
+
         self.h5file = h5.File(self.dataset_file, "r")
         self.rgb = self.h5file["rgb"]
         self.semantic = self.h5file["semantic"]
@@ -541,17 +535,12 @@ class StanfordDepthDataset(Dataset):
         https://arxiv.org/abs/1702.01105.
     """
 
-    def __init__(
-        self,
-        dataset_file,
-        ignore_alpha_channel=True,
-        log=False,
-        exclude_polar_fraction=0.
-    ):
+    def __init__(self, dataset_file, ignore_alpha_channel=True, log_depth=False, exclude_polar_fraction=0.0):
 
         import h5py as h5
+
         self.dataset_file = dataset_file
-        self.log = log
+        self.log_depth = log_depth
         self.exclude_polar_fraction = exclude_polar_fraction
         with h5.File(self.dataset_file, "r") as h5file:
             self.img_rgb = h5file["rgb"][0].shape
@@ -575,7 +564,7 @@ class StanfordDepthDataset(Dataset):
         self.h5file = None
         self.rgb = None
         self.depth = None
-        
+
     @property
     def target_shape(self):
         return self.img_depth
@@ -589,10 +578,11 @@ class StanfordDepthDataset(Dataset):
 
     def _init_files(self):
         import h5py as h5
+
         self.h5file = h5.File(self.dataset_file, "r")
         self.rgb = self.h5file["rgb"]
         self.depth = self.h5file["depth"]
-        
+
     def reset(self):
         self.rgb = None
         self.depth = None
@@ -603,7 +593,6 @@ class StanfordDepthDataset(Dataset):
 
     def _mask_invalid(self, tar):
         return tar * np.where(tar == tar.max(), 0, 1)
-
 
     def __getitem__(self, idx, mask_invalid=True):
 
@@ -622,53 +611,82 @@ class StanfordDepthDataset(Dataset):
             if hcut > 0:
                 depth[0:hcut, :] = 0
                 depth[-hcut:, :] = 0
-        
-        if self.log:
+
+        if self.log_depth:
             depth = np.log(1 + depth)
 
         return rgb, depth
 
 
-def compute_stats_s2(dataset: Dataset):
+def compute_stats_s2(dataset: Dataset, normalize_target: bool = False):
+    """
+    Compute stats using parallel welford reduction and quadrature on the sphere. The parallel welford reduction follows this article (parallel algorithm): https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
+    """
+
     nexamples = len(dataset)
-    for count in range(nexamples):
-        token = dataset[count]
+    count = 0
+    for isample in range(nexamples):
+        token = dataset[isample]
 
+        # dimension of inp and tar are (3, nlat, nlon)
         inp, tar = token
-       
-        if isinstance(dataset, StanfordDepthDataset):
-            mask = np.where(tar == 0, 0, 1)
+        nlat = tar.shape[-2]
+        nlon = tar.shape[-1]
 
-        if count == 0:
+        # pre-compute quadrature weights
+        if isample == 0:
             quad_weights = get_quadrature_weights(nlat=inp.shape[1], nlon=inp.shape[2], grid="equiangular", tile=True).numpy().astype(np.float64)
 
-        # do welford update
-        if count == 0:
-            rgb_means = np.sum(inp * quad_weights[np.newaxis, :, :], axis=(1,2))
-            rgb_stds = np.sum(np.square(inp-rgb_means[:, np.newaxis, np.newaxis]) * quad_weights[np.newaxis, :, :], axis=(1,2))
-            if isinstance(dataset, StanfordDepthDataset):
-                mask = mask / np.sum(mask)
-                depth_means = np.sum(tar * quad_weights[:, :] * mask)
-                depth_stds = np.sum(np.square(tar-depth_means) * quad_weights[:, :] * mask)
-        else:
-            means = np.sum(inp * quad_weights[np.newaxis, :, :], axis=(1,2))
-            m2s = np.sum(np.square(inp-means[:, np.newaxis, np.newaxis]) * quad_weights[np.newaxis, :, :], axis=(1,2))
-            delta = means - rgb_means
-            rgb_means += delta / float(count + 1)
-            rgb_stds += m2s + delta * delta * float(count / (count + 1))
+        # this is a special case for the depth dataset
+        # TODO: maybe make this an argument
+        if normalize_target:
+            mask = np.where(tar == 0, 0, 1)
+            masked_area = np.sum(mask * quad_weights[np.newaxis, :, :], axis=(-2, -1))
 
-            if isinstance(dataset, StanfordDepthDataset):
-                mask = mask / np.sum(mask)
-                means = np.sum(tar * quad_weights[:, :] * mask)
-                m2s = np.sum(np.square(tar-means) * quad_weights[:, :] * mask)
-                delta = means - depth_means
-                depth_means += delta / float(count + 1)
-                depth_stds += m2s + delta * delta * float(count / (count + 1))
+        # get initial welford values
+        if isample == 0:
+            # input
+            inp_means = np.sum(inp * quad_weights[np.newaxis, :, :], axis=(-2, -1))
+            inp_m2s = np.sum(np.square(inp - inp_means[:, np.newaxis, np.newaxis]) * quad_weights[np.newaxis, :, :], axis=(-2, -1))
+
+            # target
+            if normalize_target:
+                tar_means = np.sum(mask * tar * quad_weights[np.newaxis, :, :], axis=(-2, -1)) / masked_area
+                tar_m2s = np.sum(mask * np.square(tar - tar_means[:, np.newaxis, np.newaxis]) * quad_weights[np.newaxis, :, :], axis=(-2, -1)) / masked_area
+
+            # update count
+            count = 1
+
+        # do welford update
+        else:
+            # input
+            # get new mean and m2
+            inp_mean = np.sum(inp * quad_weights[np.newaxis, :, :], axis=(-2, -1))
+            inp_m2 = np.sum(np.square(inp - inp_mean[:, np.newaxis, np.newaxis]) * quad_weights[np.newaxis, :, :], axis=(-2, -1))
+            # update welford values
+            inp_delta = inp_mean - inp_means
+            inp_m2s = inp_m2s + inp_m2 + inp_delta**2 * count / float(count + 1)
+            inp_means = inp_means + inp_delta / float(count + 1)
+
+            # target
+            if normalize_target:
+                # get new mean and m2
+                tar_mean = np.sum(mask * tar * quad_weights[np.newaxis, :, :], axis=(-2, -1)) / masked_area
+                tar_m2 = np.sum(mask * np.square(tar - tar_mean[:, np.newaxis, np.newaxis]) * quad_weights[np.newaxis, :, :], axis=(-2, -1)) / masked_area
+                # update welford values
+                tar_delta = tar_mean - tar_means
+                tar_m2s = tar_m2s + tar_m2 + tar_delta**2 * count / float(count + 1)
+                tar_means = tar_means + tar_delta / float(count + 1)
+
+            # update count
+            count += 1
+
     # finalize
-    rgb_stds = np.sqrt(rgb_stds / float(nexamples - 1))
-    result = (rgb_means.astype(np.float32), rgb_stds.astype(np.float32))
-    if isinstance(dataset, StanfordDepthDataset):
-        depth_stds = np.sqrt(depth_stds / float(nexamples - 1))
-        result += (depth_means.astype(np.float32), depth_stds.astype(np.float32))
+    inp_stds = np.sqrt(inp_m2s / float(count))
+    result = (inp_means.astype(np.float32), inp_stds.astype(np.float32))
+
+    if normalize_target:
+        tar_stds = np.sqrt(tar_m2s / float(count))
+        result += (tar_means.astype(np.float32), tar_stds.astype(np.float32))
 
     return result
