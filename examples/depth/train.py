@@ -382,7 +382,7 @@ def main(
 
     # stats computation
     means_in, stds_in, means_out, stds_out = compute_stats_s2(train_dataset.dataset, normalize_target=True)
-    # means_in, stds_in = compute_stats_s2(train_dataset.dataset)
+    
     train_dataset.dataset.reset()
     if logging:
         print(f"Computed stats:")
@@ -411,7 +411,7 @@ def main(
 
     # TODO: move augmentation into extra helper module
     normalization_in = v2.Normalize(mean=means_in.tolist(), std=stds_in.tolist())
-    normalization_out = v2.Normalize(mean=[means_out], std=[stds_out])
+    normalization_out = v2.Normalize(mean=means_out.tolist(), std=stds_out.tolist())
     augmentation = enable_data_augmentation
 
     in_channels = 3 if ignore_alpha_channel else 4
