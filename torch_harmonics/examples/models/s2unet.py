@@ -70,7 +70,7 @@ class DownsamplingBlock(nn.Module):
         drop_conv_rate=0.,
         drop_path_rate=0.,
         drop_dense_rate=0.,
-        conv_downsample=False,
+        downsampling_mode="bilinear",
     ):
         super().__init__()
 
@@ -123,7 +123,7 @@ class DownsamplingBlock(nn.Module):
                 activation(),
             )
 
-        if conv_downsample:
+        if downsampling_mode == "conv":
             theta_cutoff = _compute_cutoff_radius(out_shape[0], kernel_shape, basis_type)
             self.downsample = DiscreteContinuousConvS2(
                 out_channels,
@@ -145,7 +145,7 @@ class DownsamplingBlock(nn.Module):
                 nlon_out=out_shape[1],
                 grid_in=grid_in,
                 grid_out=grid_out,
-                mode="bilinear",
+                mode=downsampling_mode,
             )
 
         # make sequential
@@ -207,7 +207,7 @@ class UpsamplingBlock(nn.Module):
         drop_conv_rate=0.,
         drop_path_rate=0.,
         drop_dense_rate=0.,
-        conv_upsample=False,
+        upsampling_mode="bilinear",
     ):
         super().__init__()
 
@@ -219,7 +219,7 @@ class UpsamplingBlock(nn.Module):
         self.drop_path = DropPath(drop_path_rate) if drop_path_rate > 0. else nn.Identity()
 
         if in_shape != out_shape:
-            if conv_upsample:
+            if upsampling_mode == "conv":
                 theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
                 self.upsample = nn.Sequential(
                     DiscreteContinuousConvTransposeS2(
@@ -262,7 +262,7 @@ class UpsamplingBlock(nn.Module):
                     nlon_out=out_shape[1],
                     grid_in=grid_in,
                     grid_out=grid_out,
-                    mode="bilinear",
+                    mode=upsampling_mode,
                 )
         else:
             theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
@@ -428,8 +428,8 @@ class SphericalUNet(nn.Module):
         drop_conv_rate=0.1,
         drop_path_rate=0.1,
         drop_dense_rate=0.5,
-        conv_downsample=False,
-        conv_upsample=False,
+        downsampling_mode="bilinear",
+        upsampling_mode="bilinear",
     ):
         super().__init__()
 
@@ -483,7 +483,7 @@ class SphericalUNet(nn.Module):
                     drop_path_rate=dpr[i],
                     drop_dense_rate=drop_dense_rate,
                     transform_skip=transform_skip,
-                    conv_downsample=conv_downsample,
+                    downsampling_mode=downsampling_mode,
                 )
             )
             out_shape = out_shape_new
@@ -517,7 +517,7 @@ class SphericalUNet(nn.Module):
                     drop_path_rate=0.,
                     drop_dense_rate=drop_dense_rate,
                     transform_skip=transform_skip,
-                    conv_upsample=conv_upsample,
+                    upsampling_mode=upsampling_mode,
                 )
             )
 

@@ -512,8 +512,8 @@ def main(
     #     drop_conv_rate=0.2,
     #     drop_dense_rate=0.5,
     #     transform_skip=False,
-    #     conv_upsample=True,
-    #     conv_downsample=True,
+    #     upsampling_mode="conv",
+    #     downsampling_mode="conv",
     #)  
 
     models[f"segformer_nb4_e512_full"] = partial(
