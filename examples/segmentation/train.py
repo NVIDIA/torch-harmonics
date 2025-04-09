@@ -351,7 +351,7 @@ def main(
 
     # 2D3DS download & dataset initialization
     downloader = Stanford2D3DSDownloader(base_url="https://cvg-data.inf.ethz.ch/2d3ds/no_xyz/", local_dir=str(data_path))
-    dataset_file = downloader.prepare_dataset(dataset_file=f"stanford_2d3ds_dataset_ds{data_downsampling_factor}.h5", downsampling_factor=16)
+    dataset_file = downloader.prepare_dataset(dataset_file=f"stanford_2d3ds_dataset_ds{data_downsampling_factor}.h5", downsampling_factor=data_downsampling_factor)
 
     # intiialize distributed for ddp
     if dist.is_initialized():
@@ -495,46 +495,46 @@ def main(
     #    upsample_sht=False,
     #)
 
-    #models[f"s2u_sc4_layers4_e128_pl"] = partial(
-    #     S2U,
-    #     img_size=img_size,
-    #     grid="equiangular",
-    #     grid_internal="equiangular",
-    #     in_chans=in_channels,
-    #     num_classes=dataset.num_classes,
-    #     embed_dims=[64, 128, 256, 512],
-    #     depths=[2, 2, 2, 2],
-    #     scale_factor=2,
-    #     activation_function="relu",
-    #     kernel_shape=(3, 4),
-    #     filter_basis_type="piecewise linear",
-    #     drop_path_rate=0.1,
-    #     drop_conv_rate=0.2,
-    #     drop_dense_rate=0.5,
-    #     transform_skip=False,
-    #     upsampling_mode="conv",
-    #     downsampling_mode="conv",
-    #)  
+    models[f"s2u_sc4_layers4_e128_pl"] = partial(
+         S2U,
+         img_size=img_size,
+         grid="equiangular",
+         grid_internal="equiangular",
+         in_chans=in_channels,
+         num_classes=dataset.num_classes,
+         embed_dims=[64, 128, 256, 512],
+         depths=[2, 2, 2, 2],
+         scale_factor=2,
+         activation_function="relu",
+         kernel_shape=(3, 4),
+         filter_basis_type="piecewise linear",
+         drop_path_rate=0.1,
+         drop_conv_rate=0.2,
+         drop_dense_rate=0.5,
+         transform_skip=False,
+         upsampling_mode="conv",
+         downsampling_mode="conv",
+    )  
 
-    models[f"segformer_nb4_e512_full"] = partial(
-        S2S,
-        img_size=img_size,
-        grid="equiangular",
-        grid_internal="equiangular",
-        in_chans=in_channels,
-        num_classes=dataset.num_classes,
-        embed_dims=[64, 128, 256, 512],
-        heads=[1, 2, 4, 8],
-        depths=[3, 4, 6, 3],
-        scale_factor=2,
-        activation_function="gelu",
-        kernel_shape=(3, 4),
-        filter_basis_type="piecewise linear",
-	mlp_ratio=4.0,
-        att_drop_rate=0.5,
-        drop_path_rate=0.1,
-        attention_mode="full",
-    )
+    #models[f"segformer_nb4_e512_full"] = partial(
+    #    S2S,
+    #    img_size=img_size,
+    #    grid="equiangular",
+    #    grid_internal="equiangular",
+    #    in_chans=in_channels,
+    #    num_classes=dataset.num_classes,
+    #    embed_dims=[64, 128, 256, 512],
+    #    heads=[1, 2, 4, 8],
+    #    depths=[3, 4, 6, 3],
+    #    scale_factor=2,
+    #    activation_function="gelu",
+    #    kernel_shape=(3, 4),
+    #    filter_basis_type="piecewise linear",
+    #    mlp_ratio=4.0,
+    #    att_drop_rate=0.5,
+    #    drop_path_rate=0.1,
+    #    attention_mode="full",
+    #)
 
     # models[f"s2t_sc2_layers6_e64"] = partial(
     #     S2T,
