@@ -195,7 +195,7 @@ class InverseRealSHT(nn.Module):
 
         # Evaluate associated Legendre functions on the output nodes
         x = torch.view_as_real(x)
-        xs = torch.einsum("...lmr, mlk->...kmr", x, self.pct.to(x.dtype))
+        xs = torch.einsum("...lmr, mlk->...kmr", x, self.pct.to(x.dtype)).contiguous()
 
         # apply the inverse (real) FFT
         x = torch.view_as_complex(xs)
