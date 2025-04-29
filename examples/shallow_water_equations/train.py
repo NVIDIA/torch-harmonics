@@ -49,7 +49,10 @@ from torch_harmonics.examples import PdeDataset
 from torch_harmonics import RealSHT
 
 # wandb logging
-import wandb
+try:
+    import wandb
+except:
+    wandb = None
 
 
 # helper routine for counting number of paramerters in model
@@ -375,9 +378,10 @@ def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=2
         print(f"accumulated training loss: {accumulated_loss}")
         print(f"relative validation loss: {valid_loss}")
 
-        if wandb.run is not None:
-            current_lr = optimizer.param_groups[0]["lr"]
-            wandb.log({"loss": accumulated_loss, "validation loss": valid_loss, "learning rate": current_lr})
+        if wandb is not None:
+            if wandb.run is not None:
+                current_lr = optimizer.param_groups[0]["lr"]
+                wandb.log({"loss": accumulated_loss, "validation loss": valid_loss, "learning rate": current_lr})
 
     train_time = time.time() - train_start
 
@@ -420,34 +424,51 @@ def main(root_path, pretrain_epochs=200, finetune_epochs=20, batch_size=1, learn
     from torch_harmonics.examples.models import LocalSphericalNeuralOperator as LSNO
     from torch_harmonics.examples.models import SphericalTransformer as S2T
 
-    models[f"sfno_sc2_layers4_e32"] = partial(
-        SFNO,
-        img_size=(nlat, nlon),
-        grid=grid,
-        num_layers=4,
-        scale_factor=2,
-        embed_dim=32,
-        activation_function="gelu",
-        residual_prediction=True,
-        use_mlp=True,
-        normalization_layer="none",
-    )
+    from examples.benchmark_models.transformer import Transformer
 
-    models[f"lsno_sc2_layers4_e32_morlet"] = partial(
-        LSNO,
+    # models[f"sfno_sc2_layers4_e32"] = partial(
+    #     SFNO,
+    #     img_size=(nlat, nlon),
+    #     grid=grid,
+    #     num_layers=4,
+    #     scale_factor=2,
+    #     embed_dim=32,
+    #     activation_function="gelu",
+    #     residual_prediction=True,
+    #     use_mlp=True,
+    #     normalization_layer="none",
+    # )
+
+    # models[f"lsno_sc2_layers4_e32_morlet"] = partial(
+    #     LSNO,
+    #     img_size=(nlat, nlon),
+    #     grid=grid,
+    #     num_layers=4,
+    #     scale_factor=2,
+    #     embed_dim=32,
+    #     activation_function="gelu",
+    #     residual_prediction=False,
+    #     use_mlp=True,
+    #     normalization_layer="none",
+    #     kernel_shape=(4, 4),
+    #     encoder_kernel_shape=(4, 4),
+    #     filter_basis_type="morlet",
+    #     upsample_sht = True,
+    # )
+
+    models[f"t_sc2_layers4_e32_h1"] = partial(
+        Transformer,
         img_size=(nlat, nlon),
-        grid=grid,
         num_layers=4,
         scale_factor=2,
         embed_dim=32,
         activation_function="gelu",
         residual_prediction=False,
+        pos_embed="spectral",
+        num_heads=1,
         use_mlp=True,
-        normalization_layer="none",
-        kernel_shape=(4, 4),
+        normalization_layer="instance_norm",
         encoder_kernel_shape=(4, 4),
-        filter_basis_type="morlet",
-        upsample_sht = True,
     )
 
     models[f"s2t_sc2_layers4_e32_h1"] = partial(
@@ -490,7 +511,8 @@ def main(root_path, pretrain_epochs=200, finetune_epochs=20, batch_size=1, learn
 
         # run the training
         if train:
-            run = wandb.init(project="local sno spherical swe", group=model_name, name=model_name + "_" + str(time.time()), config=model_handle.keywords)
+            if wandb is not None:
+                run = wandb.init(project="local sno spherical swe", group=model_name, name=model_name + "_" + str(time.time()), config=model_handle.keywords)
 
             # optimizer:
             optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -514,7 +536,8 @@ def main(root_path, pretrain_epochs=200, finetune_epochs=20, batch_size=1, learn
 
             training_time = time.time() - start_time
 
-            run.finish()
+            if wandb is not None:
+                run.finish()
 
             torch.save(model.state_dict(), os.path.join(exp_dir, "checkpoint.pt"))
 
@@ -548,8 +571,8 @@ if __name__ == "__main__":
     import torch.multiprocessing as mp
 
     mp.set_start_method("forkserver", force=True)
-
-    wandb.login()
+    if wandb is not None:
+        wandb.login()
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
