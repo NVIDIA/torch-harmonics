@@ -50,8 +50,6 @@ from torch_harmonics import RealSHT
 # wandb logging
 import wandb
 
-wandb.login()
-
 
 def l2loss_sphere(solver, prd, tar, relative=False, squared=True):
     loss = solver.integrate_grid((prd - tar) ** 2, dimensionless=True).sum(dim=-1)
@@ -381,6 +379,9 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     torch.manual_seed(333)
     torch.cuda.manual_seed(333)
 
+    # login
+    wandb.login()
+
     # set parameters
     nfuture=0
 
@@ -394,7 +395,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     dt_solver = 150
     nsteps = dt // dt_solver
     grid = "legendre-gauss"
-    nlat, nlon =(181, 360)
+    nlat, nlon = (257, 512)
     dataset = PdeDataset(dt=dt, nsteps=nsteps, dims=(nlat, nlon), device=device, grid=grid, normalize=True)
     dataset.sht = RealSHT(nlat=nlat, nlon=nlon, grid= grid).to(device=device)
     # There is still an issue with parallel dataloading. Do NOT use it at the moment
@@ -498,7 +499,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
             start_time = time.time()
 
             print(f"Training {model_name}, single step")
-            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=1, loss_fn="l2", enable_amp=enable_amp, log_grads=log_grads)
+            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=100, loss_fn="l2", enable_amp=enable_amp, log_grads=log_grads)
 
             if nfuture > 0:
                 print(f'Training {model_name}, {nfuture} step')
