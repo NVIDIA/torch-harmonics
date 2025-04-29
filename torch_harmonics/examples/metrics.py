@@ -97,7 +97,7 @@ class BaseMetricS2(nn.Module):
 
         self.ignore_index = ignore_index
         self.mode = mode
-        
+
         # area weights
         q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid, tile=True)
         self.register_buffer("quad_weights", q)
@@ -107,7 +107,7 @@ class BaseMetricS2(nn.Module):
         else:
             self.register_buffer("weight", weight.unsqueeze(0))
 
-    def _forward(self, pred: torch.Tensor, truth: torch.Tensor) -> Tuple[torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor]:
+    def _forward(self, pred: torch.Tensor, truth: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # convert logits to class predictions
         pred_class = _predict_classes(pred)
 
@@ -186,37 +186,3 @@ class AccuracyS2(BaseMetricS2):
                 score = torch.mean(score)
 
         return score
-
-
-class RmseS2(nn.Module):
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", mask_invalid: bool = True):
-        super().__init__()
-        
-        # area weights
-        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid, tile=True)
-        self.register_buffer("quad_weights", q)
-
-    def forward(self, pred: torch.Tensor, truth: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        # Squeeze the channel dimension if necessary
-        
-        
-        pred = pred.squeeze(1)
-        
-        # Compute squared differences
-        squared_diff = torch.square(pred - truth)
-        
-        # Apply mask and weights
-        weighted_squared_diff = squared_diff  * self.quad_weights
-        if mask is not None:
-            weighted_squared_diff = weighted_squared_diff * mask
-        
-        # Sum over spatial dimensions (lat, lon) and batch
-        total_weighted_diff = torch.sum(weighted_squared_diff)
-        
-        # Compute final RMSE (scalar)
-        if mask is not None:
-            rmse = torch.sqrt(total_weighted_diff / torch.sum(mask))
-        else:
-            rmse = torch.sqrt(total_weighted_diff)
-        
-        return rmse

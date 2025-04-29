@@ -30,6 +30,7 @@
 #
 
 from typing import List, Tuple, Union, Optional
+from warnings import warn
 
 import math
 
@@ -49,8 +50,7 @@ try:
     _cuda_extension_available = True
 except ImportError as err:
     attention_cuda_extension = None
-    _cuda_extension_available = False
-
+    _cuda_extension_available = False 
 
 class AttentionS2(nn.Module):
     """

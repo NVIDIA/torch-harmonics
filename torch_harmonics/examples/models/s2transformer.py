@@ -36,12 +36,12 @@ import torch.nn as nn
 import torch.amp as amp
 
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
-from torch_harmonics import NeighborhoodAttentionS2
+from torch_harmonics import NeighborhoodAttentionS2, AttentionS2
 from torch_harmonics import ResampleS2
 from torch_harmonics import RealSHT, InverseRealSHT
 from torch_harmonics.quadrature import _precompute_latitudes
 
-from torch_harmonics.examples.models._layers import MLP, LayerNorm, SequencePositionEmbedding, SpectralPositionEmbedding, LearnablePositionEmbedding
+from torch_harmonics.examples.models._layers import MLP, DropPath, LayerNorm, SequencePositionEmbedding, SpectralPositionEmbedding, LearnablePositionEmbedding
 
 from functools import partial
 
@@ -166,9 +166,10 @@ class SphericalAttentionBlock(nn.Module):
         norm_layer="none",
         use_mlp=True,
         bias=False,
+        attention_mode="neighborhood"
     ):
         super().__init__()
-
+    
         # normalisation layer
         if norm_layer == "layer_norm":
             self.norm0 = LayerNorm(in_channels=in_chans, eps=1e-6)
@@ -183,20 +184,33 @@ class SphericalAttentionBlock(nn.Module):
             raise NotImplementedError(f"Error, normalization {norm_layer} not implemented.")
 
         # determine radius for neighborhood attention
-        theta_cutoff = 3 * torch.pi / (in_shape[0] - 1)
+        self.attention_mode = attention_mode
+        if attention_mode == "neighborhood":
+            theta_cutoff = 3 * torch.pi / (in_shape[0] - 1)
 
-        self.self_attn = NeighborhoodAttentionS2(
-            in_channels=in_chans,
-            in_shape=in_shape,
-            out_shape=out_shape,
-            grid_in=grid_in,
-            grid_out=grid_out,
-            num_heads=num_heads,
-            theta_cutoff=theta_cutoff,
-            k_channels=None,
-            out_channels=None,
-            bias=bias,
-        )
+            self.self_attn = NeighborhoodAttentionS2(
+                in_channels=in_chans,
+                in_shape=in_shape,
+                out_shape=out_shape,
+                grid_in=grid_in,
+                grid_out=grid_out,
+                num_heads=num_heads,
+                theta_cutoff=theta_cutoff,
+                k_channels=None,
+                out_channels=None,
+                bias=bias,
+            )
+        else:
+            self.self_attn = AttentionS2(
+                in_channels=in_chans,
+                num_heads=num_heads,
+                in_shape=in_shape,
+                out_shape=out_shape,
+                grid_in=grid_in,
+                grid_out=grid_out,
+                out_channels=in_chans,
+                drop_rate=drop_rate,
+            )
 
         self.skip0 = nn.Identity()
 
@@ -223,7 +237,15 @@ class SphericalAttentionBlock(nn.Module):
 
         x = self.norm0(x)
 
-        x = self.self_attn(x)
+        #x = self.self_attn(x)
+
+        if self.attention_mode == "neighborhood":
+            dtype = x.dtype
+            with amp.autocast(device_type="cuda", enabled=False):
+                x = x.float()
+                x = self.self_attn(x).to(dtype=dtype)
+        else:
+            x = self.self_attn(x)
 
         if hasattr(self, "skip0"):
             x = x + self.skip0(residual)
@@ -328,6 +350,7 @@ class SphericalTransformer(nn.Module):
         residual_prediction=False,
         pos_embed="spectral",
         upsample_sht=False,
+        attention_mode="neighborhood",
         bias=False,
     ):
         super().__init__()
@@ -411,6 +434,7 @@ class SphericalTransformer(nn.Module):
                 norm_layer=self.normalization_layer,
                 use_mlp=use_mlp,
                 bias=bias,
+                attention_mode=attention_mode,
             )
 
             self.blocks.append(block)

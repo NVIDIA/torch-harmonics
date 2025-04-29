@@ -30,39 +30,27 @@
 #
 
 import os
-import sys
-import random
-
 import time
-
 import argparse
 
-from tqdm import tqdm
 from functools import partial
 
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
+from torchvision.transforms import v2
 
-import numpy as np
 import pandas as pd
-
 import matplotlib.pyplot as plt
 
 from torch_harmonics.examples import StanfordDepthDataset, Stanford2D3DSDownloader, compute_stats_s2
-from torch_harmonics.quadrature import _precompute_latitudes
-from torch_harmonics.examples.losses import SquaredL2LossS2, get_quadrature_weights
-from torch_harmonics.examples.metrics import RmseS2
-from torch_harmonics.plotting import plot_sphere, imshow_sphere
-
-from torchvision.transforms import v2
+from torch_harmonics.examples.losses import W11LossS2, L1LossS2, L2LossS2
+from torch_harmonics.plotting import plot_sphere
 
 # wandb logging
 import wandb
-
 
 # helper routine for counting number of paramerters in model
 def count_parameters(model):
@@ -103,7 +91,6 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
         dist.barrier(device_ids=[device.index])
 
     losses = torch.zeros(num_examples, dtype=torch.float32, device=device)
-    # fno_times = np.zeros(num_samples)
 
     metrics = {}
     for metric in metrics_fns:
@@ -123,7 +110,7 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
 
             if normalization_out is not None:
                 tar = normalization_out(tar)
-            
+
             prd = model(inp)
 
             losses[idx] = loss_fn(prd, tar.unsqueeze(-3), mask)
@@ -136,14 +123,14 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
             # prd = nn.functional.softmax(prd, dim=-3)
             # prd = torch.argmax(prd, dim=-3).squeeze(0)
 
-            prd = prd.squeeze(1)        
-            
+            prd = prd.squeeze(1)
+
             tar = tar * mask
             prd = prd * mask
 
             prd = prd.squeeze().cpu().numpy()
             tar = tar.squeeze().cpu().numpy()
-            
+
             # do plotting
             glob_idx = idx + glob_off
             fig = plt.figure(layout="constrained", figsize=(12, 6), dpi=150)
@@ -187,7 +174,7 @@ def train_model(
     log_grads=0,
     exp_dir=None,
     logging=True,
-    device=torch.device("cpu"), 
+    device=torch.device("cpu"),
 ):
 
     train_start = time.time()
@@ -225,11 +212,11 @@ def train_model(
 
             if normalization_out is not None:
                 tar = normalization_out(tar)
-            
+
             with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=(amp_mode != "none")):
                 prd = model(inp)
                 loss = loss_fn(prd, tar.unsqueeze(-3), mask)
-                
+
             optimizer.zero_grad(set_to_none=True)
             gscaler.scale(loss).backward()
 
@@ -267,13 +254,13 @@ def train_model(
                 inp = inp.to(device)
                 tar = tar.to(device)
                 mask = torch.where(tar == 0, 0.0, 1.0)
-                
+
                 if normalization_in is not None:
                     inp = normalization_in(inp)
 
                 if normalization_out is not None:
                     tar = normalization_out(tar)
-                    
+
                 with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=(amp_mode != "none")):
                     prd = model(inp)
                     loss = loss_fn(prd, tar.unsqueeze(-3), mask)
@@ -377,12 +364,12 @@ def main(
     # make sure splitting is consistent across ranks
     rng = torch.Generator().manual_seed(333)
     split_ratios = [0.95, 0.025, 0.025]
-    dataset = StanfordDepthDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel, log_depth=True, exclude_polar_fraction=exclude_polar_fraction)
+    dataset = StanfordDepthDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel, log_depth=False, exclude_polar_fraction=exclude_polar_fraction)
     train_dataset, test_dataset, valid_dataset = torch.utils.data.random_split(dataset, split_ratios, generator=rng)
 
     # stats computation
     means_in, stds_in, means_out, stds_out = compute_stats_s2(train_dataset.dataset, normalize_target=True)
-    
+
     train_dataset.dataset.reset()
     if logging:
         print(f"Computed stats:")
@@ -390,7 +377,7 @@ def main(
         print(f"stds_in={stds_in}")
         print(f"means_out={means_out}")
         print(f"stds_out={stds_out}")
-    
+
     # split dataset if distributed
     if dist.is_initialized():
         train_sampler = DistributedSampler(train_dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank(), shuffle=True, drop_last=True)
@@ -431,17 +418,12 @@ def main(
     from torch_harmonics.examples.models import SphericalFourierNeuralOperator as SFNO
     from torch_harmonics.examples.models import LocalSphericalNeuralOperator as LSNO
     from torch_harmonics.examples.models import SphericalTransformer as S2T
-    from torch_harmonics.examples.models import SphericalUNet as S2UNet
+    from torch_harmonics.examples.models import SphericalUNet as S2U
 
     nlat = 128
     nlon = 256
     grid = "equiangular"
 
-    # pip install segmentation-models-pytorch
-    try:
-        from segmentation_models_pytorch import UnetPlusPlus
-    except:
-        print("Segmentation Models package not found, some models are not available")
 
     # models[f"sfno_sc2_layers4_e32"] = partial(
     #     SFNO,
@@ -457,50 +439,71 @@ def main(
     #     normalization_layer="layer_norm",
     # )
 
-    models[f"lsno_sc1_layers4_e32_zernike"] = partial(
-        LSNO,
-        out_chans=1,
-        img_size=(nlat, nlon),
-        grid=grid,
-        num_layers=4,
-        scale_factor=1,
-        embed_dim=32,
-        activation_function="gelu",
-        residual_prediction=False,
-        use_mlp=True,
-        normalization_layer="layer_norm",
-        kernel_shape=(4,),
-        encoder_kernel_shape=(4,),
-        filter_basis_type="zernike",
-        upsample_sht = False,
-    )
-
-    # models[f"s2t_sc2_layers4_e32_h1"] = partial(
-    #     S2T,
+    # models[f"lsno_sc1_layers4_e32_zernike_50ep"] = partial(
+    #     LSNO,
     #     out_chans=1,
     #     img_size=(nlat, nlon),
     #     grid=grid,
     #     num_layers=4,
-    #     scale_factor=2,
+    #     scale_factor=1,
     #     embed_dim=32,
     #     activation_function="gelu",
     #     residual_prediction=False,
-    #     pos_embed="spectral",
-    #     num_heads=1,
     #     use_mlp=True,
-    #     normalization_layer="instance_norm",
-    #     encoder_kernel_shape=(4, 4),
-    #     filter_basis_type="morlet",
-    #     upsample_sht=True,
+    #     normalization_layer="layer_norm",
+    #     kernel_shape=(4,),
+    #     encoder_kernel_shape=(4,),
+    #     filter_basis_type="zernike",
+    #     upsample_sht = False,
     # )
 
-    # create the loss object
-    loss_fn = SquaredL2LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
-    # compile loss function
-    #loss_fn = torch.compile(loss_fn, mode="max-autotune")
+    models[f"s2u_W11_lr3_gelu_sc2_norm"] = partial(
+        S2U,
+        img_size=img_size,
+        grid="equiangular",
+        grid_internal="equiangular",
+        in_chans=in_channels,
+        num_classes=1,
+        embed_dims=[32, 64, 128, 256, 512],
+        depths=[2, 2, 2, 2, 2],
+        scale_factor=2,
+        activation_function="gelu",
+        kernel_shape=(3, 3),
+        filter_basis_type="piecewise linear",
+        drop_path_rate=0.1,
+        drop_conv_rate=0.1,
+        drop_dense_rate=0.1,
+        transform_skip=True,
+        upsampling_mode="conv",
+        downsampling_mode="conv"
+    )
+
+    # models[f"s2t_W11_gelu_lr3_6l_e128_pl"] = partial(
+    #     S2T,
+    #     in_chans=3,
+    #     out_chans=1,
+    #     img_size=(nlat, nlon),
+    #     grid="equiangular",
+    #     num_layers=6,
+    #     scale_factor=2,
+    #     embed_dim=128,
+    #     activation_function="gelu",
+    #     residual_prediction=False,
+    #     pos_embed="spectral",
+    #     use_mlp=True,
+    #     encoder_kernel_shape=(6, 6),  # could be 4,4
+    #     normalization_layer="instance_norm",
+    #     filter_basis_type="piecewise linear",
+    #     upsample_sht=False,
+    #     attention_mode="neighborhood"
+    # )
+
+    loss_w11 = W11LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
+    loss_l1 = L1LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
+    loss_fn = lambda prd, tar, mask: 0.1 * loss_w11(prd, tar, mask) + loss_l1(prd, tar, mask)
 
     # metrics
-    metrics_fns = {"rmse": RmseS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)}
+    metrics_fns = {"l2 error": L2LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)}
 
     # iterate over models and train each model
     for model_name, model_handle in models.items():

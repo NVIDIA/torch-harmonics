@@ -37,7 +37,8 @@ from abc import ABC, abstractmethod
 
 from torch_harmonics.quadrature import _precompute_latitudes
 
-def get_quadrature_weights(nlat: int, nlon: int, grid: str, tile: bool=False) -> torch.Tensor:
+
+def get_quadrature_weights(nlat: int, nlon: int, grid: str, tile: bool = False) -> torch.Tensor:
     # area weights
     _, q = _precompute_latitudes(nlat=nlat, grid=grid)
     q = q.reshape(-1, 1) * 2 * torch.pi / nlon
@@ -172,14 +173,18 @@ class FocalLossS2(nn.Module):
 
 class SphericalLossBase(nn.Module, ABC):
     """Abstract base class for spherical losses that handles common initialization and integration."""
+
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
         super().__init__()
-        
-        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid)
 
+        self.nlat = nlat
+        self.nlon = nlon
+        self.grid = grid
+
+        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid)
         self.register_buffer("quad_weights", q)
 
-    def integrate_sphere(self, ugrid, mask=None):
+    def _integrate_sphere(self, ugrid, mask=None):
         if mask is None:
             out = torch.sum(ugrid * self.quad_weights, dim=(-2, -1))
         elif mask is not None:
@@ -187,47 +192,123 @@ class SphericalLossBase(nn.Module, ABC):
         return out
 
     @abstractmethod
-    def compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+    def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
         """Abstract method that must be implemented by child classes to compute loss terms.
-        
+
         Args:
             prd (torch.Tensor): Prediction tensor
             tar (torch.Tensor): Target tensor
-            
+
         Returns:
             torch.Tensor: Computed loss term before integration
         """
         pass
 
+    def _post_integration_hook(self, loss: torch.Tensor) -> torch.Tensor:
+        """Post-integration hook. Commonly used for the roots in Lp norms"""
+        return loss
+
     def forward(self, prd: torch.Tensor, tar: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Common forward pass that handles masking and reduction.
-        
+
         Args:
             prd (torch.Tensor): Prediction tensor
             tar (torch.Tensor): Target tensor
             mask (Optional[torch.Tensor], optional): Mask tensor. Defaults to None.
-            
+
         Returns:
             torch.Tensor: Final loss value
         """
-        loss_term = self.compute_loss_term(prd, tar)
-        loss = self.integrate_sphere(loss_term, mask)
+        loss_term = self._compute_loss_term(prd, tar)
+        # Integrate over the sphere for each item in the batch
+        loss = self._integrate_sphere(loss_term, mask)
+        # potentially call root
+        loss = self._post_integration_hook(loss)
+        # Average the loss over the batch dimension
         return torch.mean(loss)
 
-# The implementations remain the same, but now they're forced to implement compute_loss_term
+
 class SquaredL2LossS2(SphericalLossBase):
-    def compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+    def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
         return torch.square(prd - tar)
 
-# class RelativeL2LossS2(SphericalLossBase):
-#     def compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
-#         prd = prd.squeeze(1)
-#         return torch.square(prd - tar) / (torch.square(tar) + 1e-8)
-
-# class RelativeL1LossS2(SphericalLossBase):
-#     def compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
-#         return torch.abs(prd - tar) / (torch.abs(tar) + 1e-8)
-
 class L1LossS2(SphericalLossBase):
-    def compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+    def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
         return torch.abs(prd - tar)
+
+class L2LossS2(SquaredL2LossS2):
+    def _post_integration_hook(self, loss: torch.Tensor) -> torch.Tensor:
+        return torch.sqrt(loss)
+
+class W11LossS2(SphericalLossBase):
+    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
+        super().__init__(nlat=nlat, nlon=nlon, grid=grid)
+        # Set up grid and domain for FFT
+        l_phi = 2 * torch.pi  # domain size
+        l_theta = torch.pi  # domain size
+
+        k_phi = torch.fft.fftfreq(nlon, d=l_phi / (2 * torch.pi * nlon))
+        k_theta = torch.fft.fftfreq(nlat, d=l_theta / (2 * torch.pi * nlat))
+        k_theta_mesh, k_phi_mesh = torch.meshgrid(k_theta, k_phi, indexing="ij")
+        self.register_buffer("k_phi_mesh", k_phi_mesh)
+        self.register_buffer("k_theta_mesh", k_theta_mesh)
+
+    def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+        prd_prime_fft2_phi_h = torch.fft.ifft2(1j * self.k_phi_mesh * torch.fft.fft2(prd)).real
+        prd_prime_fft2_theta_h = torch.fft.ifft2(1j * self.k_theta_mesh * torch.fft.fft2(prd)).real
+
+        tar_prime_fft2_phi_h = torch.fft.ifft2(1j * self.k_phi_mesh * torch.fft.fft2(tar)).real
+        tar_prime_fft2_theta_h = torch.fft.ifft2(1j * self.k_theta_mesh * torch.fft.fft2(tar)).real
+
+        # Return the element-wise loss term
+        return torch.abs(prd_prime_fft2_phi_h - tar_prime_fft2_phi_h) + torch.abs(prd_prime_fft2_theta_h - tar_prime_fft2_theta_h)
+
+
+class NormalLossS2(SphericalLossBase):
+    """Combined L1 and Surface Normal Consistency Loss for spherical data.
+
+    This loss function combines an L1 loss term with a surface normal alignment term.
+
+    The loss consists of:
+    1. L1 Loss: Absolute difference between predicted and target values
+    2. Normal Consistency Loss: 1 - cosine similarity between surface normals
+       (equivalent to cosine distance between normal vectors)
+
+    Surface normals are computed by calculating gradients in latitude and longitude
+    directions using FFT, then constructing 3D normal vectors that are normalized.
+
+    Args:
+        nlat (int): Number of latitude points
+        nlon (int): Number of longitude points
+        grid (str, optional): Grid type. Defaults to "equiangular".
+    """
+
+    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
+        super().__init__(nlat=nlat, nlon=nlon, grid=grid)
+        # Set up grid and domain for FFT
+        l_phi = 2 * torch.pi  # domain size
+        l_theta = torch.pi  # domain size
+
+        k_phi = torch.fft.fftfreq(nlon, d=l_phi / (2 * torch.pi * nlon))
+        k_theta = torch.fft.fftfreq(nlat, d=l_theta / (2 * torch.pi * nlat))
+        k_theta_mesh, k_phi_mesh = torch.meshgrid(k_theta, k_phi, indexing="ij")
+        self.register_buffer("k_phi_mesh", k_phi_mesh)
+        self.register_buffer("k_theta_mesh", k_theta_mesh)
+
+    def compute_gradients(self, x):
+        x_prime_fft2_phi_h = torch.fft.ifft2(1j * self.k_phi_mesh * torch.fft.fft2(x)).real
+        x_prime_fft2_theta_h = torch.fft.ifft2(1j * self.k_theta_mesh * torch.fft.fft2(x)).real
+        return x_prime_fft2_theta_h, x_prime_fft2_phi_h
+
+    def compute_normals(self, x):
+        x = x.to(torch.float32)
+        grad_lat, grad_lon = self.compute_gradients(x)
+        normals = torch.stack([-grad_lon, -grad_lat, torch.ones_like(x)], dim=1)
+        normals = F.normalize(normals, p=2, dim=1)
+        return normals
+
+    def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+        pred_normals = self.compute_normals(prd)
+        tar_normals = self.compute_normals(tar)
+        normal_loss = 1 - torch.sum(pred_normals * tar_normals, dim=1, keepdim=True)
+        return normal_loss
