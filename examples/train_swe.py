@@ -442,7 +442,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         pos_embed=False,
         use_mlp=True,
         normalization_layer="none",
-        kernel_shape=[2, 2],
+        kernel_shape=(2, 2),
         encoder_kernel_shape=[2, 2],
         filter_basis_type="morlet",
         upsample_sht = True,
@@ -460,7 +460,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         pos_embed=False,
         use_mlp=True,
         normalization_layer="none",
-        kernel_shape=[4],
+        kernel_shape=(4),
         encoder_kernel_shape=[4],
         filter_basis_type="zernike",
         upsample_sht = True,
@@ -499,7 +499,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
             start_time = time.time()
 
             print(f"Training {model_name}, single step")
-            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=100, loss_fn="l2", enable_amp=enable_amp, log_grads=log_grads)
+            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=200, loss_fn="l2", enable_amp=enable_amp, log_grads=log_grads)
 
             if nfuture > 0:
                 print(f'Training {model_name}, {nfuture} step')
