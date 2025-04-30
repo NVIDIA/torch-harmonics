@@ -263,7 +263,7 @@ def log_weights_and_grads(model, iters=1):
     """
     Helper routine intended for debugging purposes
     """
-    root_path = os.path.join(os.path.dirname(__file__), "weights_and_grads")
+    root_path = os.path.join(os.getcwd(), "weights_and_grads")
 
     weights_and_grads_fname = os.path.join(root_path, f"weights_and_grads_step{iters:03d}.tar")
     print(weights_and_grads_fname)
@@ -443,7 +443,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         use_mlp=True,
         normalization_layer="none",
         kernel_shape=(2, 2),
-        encoder_kernel_shape=[2, 2],
+        encoder_kernel_shape=(2, 2),
         filter_basis_type="morlet",
         upsample_sht = True,
     )
@@ -461,13 +461,13 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         use_mlp=True,
         normalization_layer="none",
         kernel_shape=(4),
-        encoder_kernel_shape=[4],
+        encoder_kernel_shape=(4),
         filter_basis_type="zernike",
         upsample_sht = True,
     )
 
     # iterate over models and train each model
-    root_path = os.path.dirname(__file__)
+    root_path = os.getcwd()
     for model_name, model_handle in models.items():
 
         model = model_handle().to(device)
