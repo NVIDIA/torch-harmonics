@@ -119,16 +119,18 @@ class AttentionS2(nn.Module):
         self.q_weights = nn.Parameter(scale * torch.randn(self.num_heads * self.k_channels, self.in_channels, 1, 1))
         self.k_weights = nn.Parameter(scale * torch.randn(self.num_heads * self.k_channels, self.in_channels, 1, 1))
         self.v_weights = nn.Parameter(scale * torch.randn(self.num_heads * self.out_channels, self.in_channels, 1, 1))
-        self.project = nn.Parameter(scale * torch.randn(1, self.num_heads, 1, 1, 1))
+        self.proj_weights = nn.Parameter(scale * torch.randn(1, self.num_heads, 1, 1, 1))
         
         if bias:
             self.q_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
             self.k_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
             self.v_bias = nn.Parameter(torch.zeros(self.num_heads * self.out_channels))
+            self.proj_bias = nn.Parameter(torch.zeros(self.num_heads))
         else:
             self.q_bias = None
             self.k_bias = None
-            self.v_bias = None         
+            self.v_bias = None
+            self.proj_bias = None
             
             
     def extra_repr(self):
@@ -176,7 +178,7 @@ class AttentionS2(nn.Module):
         # reshape
         B, _, _, C = out.shape
         out = out.permute(0,2,3,1).reshape(B, self.num_heads, C, self.nlat_out, self.nlon_out)
-        out = nn.functional.conv3d(out, self.project).squeeze(1)
+        out = nn.functional.conv3d(out, self.proj_weights, bias=self.proj_bias).squeeze(1)
         
         return out
 
@@ -292,7 +294,7 @@ class NeighborhoodAttentionS2(nn.Module):
         self.k_weights = nn.Parameter(scale * torch.randn(self.num_heads * self.k_channels, self.in_channels, 1, 1))
         self.v_weights = nn.Parameter(scale * torch.randn(self.num_heads * self.out_channels, self.in_channels, 1, 1))
         pscale = math.sqrt(1.0 / self.num_heads)
-        self.project = nn.Parameter(pscale * torch.randn(1, self.num_heads, 1, 1, 1))
+        self.proj_weight = nn.Parameter(pscale * torch.randn(1, self.num_heads, 1, 1, 1))
 
         if scale is not None:
             self.scale = scale
@@ -303,10 +305,12 @@ class NeighborhoodAttentionS2(nn.Module):
             self.q_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
             self.k_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
             self.v_bias = nn.Parameter(torch.zeros(self.num_heads * self.out_channels))
+            self.proj_bias = nn.Parameter(torch.zeros(self.num_heads))
         else:
             self.q_bias = None
             self.k_bias = None
             self.v_bias = None
+            self.proj_bias = None
 
     def extra_repr(self):
         r"""
@@ -377,6 +381,6 @@ class NeighborhoodAttentionS2(nn.Module):
 
         B, _, H, W = out.shape
         out = out.reshape(B, self.num_heads, -1, H, W)
-        out = nn.functional.conv3d(out, self.project).squeeze(1)
+        out = nn.functional.conv3d(out, self.proj_weight, bias=self.proj_bias).squeeze(1)
 
         return out
