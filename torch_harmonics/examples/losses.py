@@ -296,19 +296,47 @@ class NormalLossS2(SphericalLossBase):
         self.register_buffer("k_theta_mesh", k_theta_mesh)
 
     def compute_gradients(self, x):
+        # Make sure x is reshaped to have a batch dimension if it's missing
+        if x.dim() == 2:
+            x = x.unsqueeze(0)  # Add batch dimension
+        
         x_prime_fft2_phi_h = torch.fft.ifft2(1j * self.k_phi_mesh * torch.fft.fft2(x)).real
         x_prime_fft2_theta_h = torch.fft.ifft2(1j * self.k_theta_mesh * torch.fft.fft2(x)).real
         return x_prime_fft2_theta_h, x_prime_fft2_phi_h
 
     def compute_normals(self, x):
         x = x.to(torch.float32)
+        # Ensure x has a batch dimension
+        if x.dim() == 2:
+            x = x.unsqueeze(0)
+            
         grad_lat, grad_lon = self.compute_gradients(x)
-        normals = torch.stack([-grad_lon, -grad_lat, torch.ones_like(x)], dim=1)
+        
+        # Create 3D normal vectors
+        ones = torch.ones_like(x)
+        normals = torch.stack([-grad_lon, -grad_lat, ones], dim=1)
+        
+        # Normalize along component dimension
         normals = F.normalize(normals, p=2, dim=1)
         return normals
 
     def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+        # Handle dimensions for both prediction and target
+        # Ensure we have at least a batch dimension
+        if prd.dim() == 2:
+            prd = prd.unsqueeze(0)
+        if tar.dim() == 2:
+            tar = tar.unsqueeze(0)
+            
+        # For 4D tensors (batch, channel, height, width), remove channel if it's 1
+        if prd.dim() == 4 and prd.size(1) == 1:
+            prd = prd.squeeze(1)
+        if tar.dim() == 4 and tar.size(1) == 1:
+            tar = tar.squeeze(1)
+            
         pred_normals = self.compute_normals(prd)
         tar_normals = self.compute_normals(tar)
+        
+        # Compute cosine similarity
         normal_loss = 1 - torch.sum(pred_normals * tar_normals, dim=1, keepdim=True)
         return normal_loss

@@ -33,7 +33,6 @@ import math
 
 import torch
 import torch.nn as nn
-import torch.amp as amp
 import torch.nn.functional as F
 from torch_harmonics.examples.models._layers import MLP, LayerNorm, SequencePositionEmbedding, SpectralPositionEmbedding, LearnablePositionEmbedding
 from natten import NeighborhoodAttention2D as NeighborhoodAttention
@@ -51,7 +50,7 @@ class Encoder(nn.Module):
         bias=False,
     ):
         super().__init__()
-        stride_h = in_shape[0] // out_shape[0]   
+        stride_h = in_shape[0] // out_shape[0]
         stride_w = in_shape[1] // out_shape[1]
         pad_h = math.ceil(((out_shape[0] - 1) * stride_h
                         - in_shape[0]
@@ -70,13 +69,7 @@ class Encoder(nn.Module):
         )
 
     def forward(self, x):
-        dtype = x.dtype
-
-        with amp.autocast(device_type="cuda", enabled=False):
-            x = x.float()
-            x = self.conv(x)
-            x = x.to(dtype=dtype)
-
+        x = self.conv(x)
         return x
 
 
@@ -103,20 +96,40 @@ class Decoder(nn.Module):
         )
 
     def forward(self, x):
-        dtype = x.dtype
-
-        with amp.autocast(device_type="cuda", enabled=False):
-            x = x.float()
-            x = F.interpolate(x, size=self.out_shape, mode="bilinear")
-            x = self.conv(x)
-            x = x.to(dtype=dtype)
-
+        x = F.interpolate(x, size=self.out_shape, mode="bilinear")
+        x = self.conv(x)
         return x
 
+class GlobalAttention(nn.Module):
+    """
+    Global self-attention block over 2D inputs using MultiheadAttention.
+
+    Input shape: (B, C, H, W)
+    Output shape: (B, C, H, W) with residual skip.
+    """
+    def __init__(self, chans, num_heads=8, dropout=0.0, bias=False):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(
+            embed_dim=chans,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+            bias=bias)
+
+    def forward(self, x):
+        # x: B, C, H, W
+        B, H, W, C = x.shape
+        # flatten spatial dims
+        x_flat = x.view(B, H * W, C)  # B, N, C
+        # self-attention
+        out, _ = self.attn(x_flat, x_flat, x_flat)
+        # reshape back
+        out = out.view(B, H, W, C)
+        return out
 
 class AttentionBlock(nn.Module):
     """
-    Neighborhood attention block based on Natten. 
+    Neighborhood attention block based on Natten.
     """
 
     def __init__(
@@ -132,6 +145,7 @@ class AttentionBlock(nn.Module):
         norm_layer="none",
         use_mlp=True,
         bias=False,
+        attention_mode="neighborhood"
     ):
         super().__init__()
 
@@ -149,19 +163,28 @@ class AttentionBlock(nn.Module):
             raise NotImplementedError(f"Error, normalization {norm_layer} not implemented.")
 
         # determine shape for neighborhood attention
-        kernel_shape = int((in_shape[0] - 1) // (3 * torch.pi))
-        if kernel_shape % 2 == 0:
-            kernel_shape += 1
-        self.self_attn = NeighborhoodAttention(
-            chans,
-            kernel_size=kernel_shape,
-            dilation=1,
-            num_heads=num_heads,
-            qkv_bias=bias,
-            qk_scale=None,
-            attn_drop=0.0,
-            proj_drop=0.0,
-        )
+        if attention_mode == "neighborhood":
+            kernel_shape = int((in_shape[0] - 1) // (3 * torch.pi))
+            if kernel_shape % 2 == 0:
+                kernel_shape += 1
+            kernel_shape = max(3, kernel_shape)
+            self.self_attn = NeighborhoodAttention(
+                chans,
+                kernel_size=kernel_shape,
+                dilation=1,
+                num_heads=num_heads,
+                qkv_bias=bias,
+                qk_scale=None,
+                attn_drop=drop_rate,
+                proj_drop=drop_rate,
+            )
+        else:
+            self.self_attn = GlobalAttention(
+                chans,
+                num_heads=num_heads,
+                dropout=drop_rate,
+                bias=bias
+            )
 
         self.skip0 = nn.Identity()
 
@@ -247,6 +270,8 @@ class Transformer(nn.Module):
         "sequence", "spectral", "learnable lat", "learnable latlon", or "none".
     bias : bool
         Whether convolution and attention projections include bias.
+    attention_mode: str
+        "neighborhood" or "global"
 
     Example
     -------
@@ -268,6 +293,7 @@ class Transformer(nn.Module):
     ...     residual_prediction=False,
     ...     pos_embed="spectral",
     ...     bias=False,
+    ...     attention_mode="neighborhood"
     ... )
     >>> x = torch.randn(1, 3, 128, 256)
     >>> print(model(x).shape)
@@ -294,6 +320,7 @@ class Transformer(nn.Module):
         residual_prediction=False,
         pos_embed="spectral",
         bias=False,
+        attention_mode="neighborhood"
     ):
         super().__init__()
 
@@ -367,6 +394,7 @@ class Transformer(nn.Module):
                 norm_layer=self.normalization_layer,
                 use_mlp=use_mlp,
                 bias=bias,
+                attention_mode=attention_mode
             )
 
             self.blocks.append(block)
@@ -388,7 +416,6 @@ class Transformer(nn.Module):
 
     def forward_features(self, x):
         x = self.pos_drop(x)
-        
         for blk in self.blocks:
             x = blk(x)
         return x
@@ -409,7 +436,6 @@ class Transformer(nn.Module):
             x = x + residual
 
         return x
-
 
 if __name__ == "__main__":
     model = Transformer(

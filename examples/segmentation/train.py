@@ -29,8 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os
-import sys
+import os, sys
 import random
 
 import time
@@ -38,7 +37,6 @@ import time
 import argparse
 
 from tqdm import tqdm
-from functools import partial
 
 import torch
 import torch.nn as nn
@@ -59,6 +57,10 @@ from torch_harmonics.examples.metrics import IntersectionOverUnionS2, AccuracyS2
 from torch_harmonics.plotting import plot_sphere, imshow_sphere
 
 from torchvision.transforms import v2
+
+# import baseline models
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from model_registry import get_baseline_models
 
 # wandb logging
 import wandb
@@ -116,13 +118,13 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
     with torch.no_grad():
         for idx, (inp, tar) in enumerate(dataloader):
             (_, _, idx_file) = dataloader.dataset[idx]
-            inp = inp.to(device)
+            inpd = inp.to(device)
             tar = tar.to(device)
 
             if normalization is not None:
-                inp = normalization(inp)
+                inpd = normalization(inpd)
 
-            prd = model(inp)
+            prd = model(inpd)
             num_classes = prd.shape[-3]
 
             losses[idx] = loss_fn(prd, tar)
@@ -143,8 +145,14 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
             plt.close()
 
             fig = plt.figure(figsize=(7.5, 6))
-            plot_sphere(tar.cpu().squeeze(0) / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow", filepath_src=dataloader.dataset.dataset.get_tar_filepath(idx_file))
+            # filepath_src = dataloader.dataset.dataset.get_tar_filepath(idx_file)
+            plot_sphere(tar.cpu().squeeze(0) / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow", filepath_src=None)
             plt.savefig(os.path.join(path_root, "truth_" + str(glob_idx) + ".png"))
+            plt.close()
+
+            fig = plt.figure(figsize=(7.5, 6))
+            imshow_sphere(inp.cpu().squeeze(0).permute(1, 2, 0), fig=fig)
+            plt.savefig(os.path.join(path_root, "input_" + str(glob_idx) + ".png"))
             plt.close()
 
     return losses, metrics
@@ -162,7 +170,7 @@ def train_model(
     optimizer,
     gscaler,
     scheduler=None,
-    max_grad_norm=0.,
+    max_grad_norm=0.0,
     normalization=None,
     augmentation=None,
     nepochs=20,
@@ -223,7 +231,7 @@ def train_model(
             if log_grads and (iters % log_grads == 0) and (exp_dir is not None):
                 log_weights_and_grads(exp_dir, model, iters=iters)
 
-            if max_grad_norm > 0.:
+            if max_grad_norm > 0.0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
 
             gscaler.step(optimizer)
@@ -298,7 +306,10 @@ def train_model(
 
             if wandb.run is not None:
                 current_lr = optimizer.param_groups[0]["lr"]
-                wandb.log({"loss": accumulated_loss, "validation loss": valid_loss, "learning rate": current_lr})
+                log_dict = {"loss": accumulated_loss, "validation loss": valid_loss, "learning rate": current_lr}
+                for metric in valid_metrics:
+                    log_dict[metric] = valid_metrics[metric]
+                wandb.log(log_dict)
 
     # wrapping up
     train_time = time.time() - train_start
@@ -315,8 +326,8 @@ def main(
     num_epochs=100,
     batch_size=8,
     learning_rate=1e-4,
-    label_smoothing=0.,
-    max_grad_norm=0.,
+    label_smoothing=0.0,
+    max_grad_norm=0.0,
     train=True,
     load_checkpoint=False,
     amp_mode="none",
@@ -390,13 +401,10 @@ def main(
 
     # create the dataloaders
     train_dataloader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True if train_sampler is None else False,
-        sampler=train_sampler, num_workers=4, persistent_workers=True, pin_memory=True
+        train_dataset, batch_size=batch_size, shuffle=True if train_sampler is None else False, sampler=train_sampler, num_workers=4, persistent_workers=True, pin_memory=True
     )
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, sampler=test_sampler,
-                                 num_workers=4, persistent_workers=True, pin_memory=True)
-    valid_dataloader = DataLoader(valid_dataset, batch_size=1, shuffle=False, sampler=valid_sampler,
-                                  num_workers=0, persistent_workers=False, pin_memory=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, sampler=test_sampler, num_workers=4, persistent_workers=True, pin_memory=True)
+    valid_dataloader = DataLoader(valid_dataset, batch_size=1, shuffle=False, sampler=valid_sampler, num_workers=0, persistent_workers=False, pin_memory=True)
 
     # TODO: move augmentation into extra helper module
     normalization = v2.Normalize(mean=means.tolist(), std=stds.tolist())
@@ -423,18 +431,9 @@ def main(
     img_size = dataset.input_shape[1:]
     class_histogram = torch.from_numpy(dataset.class_histogram)
 
-    # # no class weights
+    # various class weights where tried such as inverse frequency
+    # No class weights seem to work best
     class_weights = None
-
-    # # inverse frequency weighting
-    # class_weights = 1 / torch.clamp(class_histogram, min=1e-3, max=None)
-
-    # log weigthing
-    #class_weights = - 1 / torch.log(class_histogram)
-
-    # # give non-occuring classes zero weight
-    # class_weights = torch.where(class_histogram > 0.0, class_weights, 0.0)
-    # class_weights = dataset.num_classes * class_weights / torch.sum(class_weights)
 
     # make sure there is no nan
     if (class_weights is not None) and torch.isnan(class_weights).any():
@@ -445,148 +444,31 @@ def main(
         print(f"Test dataset initialized with {len(test_dataset)} samples of resolution {img_size}")
         print(f"Validation dataset initialized with {len(valid_dataset)} samples of resolution {img_size}")
 
-    # prepare dicts containing models and corresponding metrics
-    models = {}
-    metrics = {}
+    # get baseline model registry
+    baseline_models = get_baseline_models(img_size=img_size, in_chans=in_channels, out_chans=dataset.num_classes)
 
-    from torch_harmonics.examples.models import SphericalFourierNeuralOperatorForSegmentation as SFNO
-    from torch_harmonics.examples.models import LocalSphericalNeuralOperatorForSegmentation as LSNO
-    from torch_harmonics.examples.models import SphericalTransformerForSegmentation as S2T
-    from torch_harmonics.examples.models import SphericalSegformer as S2S
-    from torch_harmonics.examples.models import SphericalUNet as S2U
-
-    # pip install segmentation-models-pytorch
-    try:
-        from segmentation_models_pytorch import UnetPlusPlus
-    except:
-        print("Segmentation Models package not found, some models are not available")
-
-    # models[f"sfno_sc4_layers4_e32"] = partial(
-    #     SFNO,
-    #     dataset.num_classes,
-    #     img_size=img_size,
-    #     grid="equiangular",
-    #     in_chans=in_channels,
-    #     num_layers=4,
-    #     scale_factor=4,
-    #     embed_dim=32,
-    #     activation_function="gelu",
-    #     residual_prediction=False,
-    #     use_mlp=True,
-    #     normalization_layer="instance_norm",
-    # )
-
-    #models[f"lsno_sc2_layers6_e64_morlet"] = partial(
-    #    LSNO,
-    #    dataset.num_classes,
-    #    img_size=img_size,
-    #    grid="equiangular",
-    #    in_chans=in_channels,
-    #    num_layers=6,
-    #    scale_factor=2,
-    #    embed_dim=64,
-    #    activation_function="gelu",
-    #    residual_prediction=False,
-    #    use_mlp=True,
-    #    normalization_layer="none",
-    #    kernel_shape=(4, 4),
-    #    encoder_kernel_shape=(4, 4),
-    #    filter_basis_type="morlet",
-    #    upsample_sht=False,
-    #)
-
-    models[f"s2u_sc4_layers4_e128_pl"] = partial(
-         S2U,
-         img_size=img_size,
-         grid="equiangular",
-         grid_internal="equiangular",
-         in_chans=in_channels,
-         num_classes=dataset.num_classes,
-         embed_dims=[64, 128, 256, 512],
-         depths=[2, 2, 2, 2],
-         scale_factor=2,
-         activation_function="relu",
-         kernel_shape=(3, 4),
-         filter_basis_type="piecewise linear",
-         drop_path_rate=0.1,
-         drop_conv_rate=0.2,
-         drop_dense_rate=0.5,
-         transform_skip=False,
-         upsampling_mode="conv",
-         downsampling_mode="conv",
-    )  
-
-    #models[f"segformer_nb4_e512_full"] = partial(
-    #    S2S,
-    #    img_size=img_size,
-    #    grid="equiangular",
-    #    grid_internal="equiangular",
-    #    in_chans=in_channels,
-    #    num_classes=dataset.num_classes,
-    #    embed_dims=[64, 128, 256, 512],
-    #    heads=[1, 2, 4, 8],
-    #    depths=[3, 4, 6, 3],
-    #    scale_factor=2,
-    #    activation_function="gelu",
-    #    kernel_shape=(3, 4),
-    #    filter_basis_type="piecewise linear",
-    #    mlp_ratio=4.0,
-    #    att_drop_rate=0.5,
-    #    drop_path_rate=0.1,
-    #    attention_mode="full",
-    #)
-
-    # models[f"s2t_sc2_layers6_e64"] = partial(
-    #     S2T,
-    #     dataset.num_classes,
-    #     img_size=img_size,
-    #     grid="equiangular",
-    #     in_chans=in_channels,
-    #     num_layers=6,
-    #     scale_factor=2,
-    #     embed_dim=64,
-    #     activation_function="gelu",
-    #     residual_prediction=False,
-    #     pos_embed="spectral",
-    #     use_mlp=True,
-    #     normalization_layer="instance_norm",
-    #     encoder_kernel_shape=(4, 4),
-    #     filter_basis_type="morlet",
-    #     upsample_sht=False,
-    # )
-
-    #models[f"unetplusplus"] = partial(
-    #    UnetPlusPlus,
-    #    in_channels=in_channels,
-    #    classes=dataset.num_classes,
-    #    encoder_name="resnet34",
-    #    encoder_weights="imagenet",
-    #    decoder_attention_type="scse",
-    #    decoder_use_batchnorm=True,
-    #    decoder_channels=(256, 128, 64, 32, 16),
-    #    activation="softmax",
-    #)
+    # specify which models to train here
+    models = ["transformer_sc2_layers4_e128"]
+    models = {k: baseline_models[k] for k in models}
 
     if len(models) == 0:
         raise ValueError("No models selected")
 
     # create the loss object
     loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=label_smoothing).to(device=device)
-    #loss_fn = DiceLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular",  weight=class_weights, smooth=label_smoothing).to(device=device)
+    # loss_fn = DiceLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular",  weight=class_weights, smooth=label_smoothing).to(device=device)
     # loss_fn = FocalLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
 
-    # compile loss function
-    # loss_fn = torch.compile(loss_fn, mode="max-autotune")
-
     # metrics
+    metrics = {}
     metrics_fns = {
-        "mIoU":IntersectionOverUnionS2(
+        "mean IoU": IntersectionOverUnionS2(
             nlat=img_size[0],
             nlon=img_size[1],
             grid="equiangular",
             weight=class_weights,
         ).to(device=device),
-        "mAcc": AccuracyS2(
+        "mean Accuracy": AccuracyS2(
             nlat=img_size[0],
             nlon=img_size[1],
             grid="equiangular",
@@ -628,8 +510,7 @@ def main(
                 run = None
 
             # optimizer:
-            optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01,
-                                          foreach=torch.cuda.is_available())
+            optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01, foreach=torch.cuda.is_available())
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
             gscaler = torch.GradScaler("cuda", enabled=(amp_mode == "fp16"))
 
@@ -685,10 +566,6 @@ def main(
             metrics[model_name]["loss_mean"] = metrics[model_name]["loss_mean"].item()
             for metric in metric_results:
                 metrics[model_name][metric + " mean"] = metrics[model_name][metric + " mean"].item()
-            # metrics[model_name]["loss_mean"] = np.mean(losses)
-            # metrics[model_name]["loss_std"] = np.std(losses)
-            # metrics[model_name]["fno_time_mean"] = np.mean(fno_times)
-            # metrics[model_name]["fno_time_std"] = np.std(fno_times)
             if train:
                 metrics[model_name]["training_time"] = training_time
 
@@ -723,8 +600,8 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", default=8, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--data_downsampling_factor", default=16, type=int, help="Switch for overriding the downsampling factor of the data.")
     parser.add_argument("--learning_rate", default=1e-4, type=float, help="Switch to override learning rate.")
-    parser.add_argument("--max_grad_norm", default=0., type=float, help="Switch to override max grad norm. A value > 0 activates gradient clipping.")
-    parser.add_argument("--label_smoothing_factor", default=0., type=float, help="Label smoothing factor [0, 1].")
+    parser.add_argument("--max_grad_norm", default=0.0, type=float, help="Switch to override max grad norm. A value > 0 activates gradient clipping.")
+    parser.add_argument("--label_smoothing_factor", default=0.0, type=float, help="Label smoothing factor [0, 1].")
     parser.add_argument("--resume", action="store_true", help="Reload checkpoints.")
     parser.add_argument("--amp_mode", default="none", type=str, choices=["none", "bf16", "fp16"], help="Switch to enable AMP.")
     parser.add_argument("--enable_ddp", action="store_true", help="Switch to enable distributed data parallel.")

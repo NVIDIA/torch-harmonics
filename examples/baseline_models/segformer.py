@@ -33,7 +33,6 @@ import math
 
 import torch
 import torch.nn as nn
-import torch.amp as amp
 
 from natten import NeighborhoodAttention2D as NeighborhoodAttention
 from torch_harmonics.examples.models._layers import MLP, LayerNorm, DropPath
@@ -52,9 +51,9 @@ class OverlapPatchMerging(nn.Module):
         bias=False,
     ):
         super().__init__()
-        
-        # conv 
-        stride_h = in_shape[0] // out_shape[0]   
+
+        # conv
+        stride_h = in_shape[0] // out_shape[0]
         stride_w = in_shape[1] // out_shape[1]
         pad_h = math.ceil(((out_shape[0] - 1) * stride_h
                         - in_shape[0]
@@ -85,11 +84,7 @@ class OverlapPatchMerging(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x):
-        dtype = x.dtype
-
-        with amp.autocast(device_type="cuda", enabled=False):
-            x = x.float()
-            x = self.conv(x).to(dtype=dtype)
+        x = self.conv(x).to(dtype=dtype)
 
         # permute
         x = x.permute(0,2,3,1)
@@ -98,7 +93,7 @@ class OverlapPatchMerging(nn.Module):
 
         return out
 
-    
+
 class MixFFN(nn.Module):
     def __init__(
             self,
@@ -115,7 +110,7 @@ class MixFFN(nn.Module):
         super().__init__()
 
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        
+
         self.norm = nn.LayerNorm((inout_channels),
                                  eps=1e-05,
                                  elementwise_affine=True,
@@ -171,12 +166,12 @@ class MixFFN(nn.Module):
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-            
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         residual = x
-        
+
         # norm
         x = x.permute(0,2,3,1)
         x = self.norm(x)
@@ -193,7 +188,7 @@ class MixFFN(nn.Module):
 
         # second linear
         x = self.mlp_out(x)
-        
+
         return residual + self.drop_path(x)
 
 class GlobalAttention(nn.Module):
@@ -203,27 +198,26 @@ class GlobalAttention(nn.Module):
     Input shape: (B, C, H, W)
     Output shape: (B, C, H, W) with residual skip.
     """
-    def __init__(self, chans, num_heads=8, dropout=0.0):
+    def __init__(self, chans, num_heads=8, dropout=0.0, bias=False):
         super().__init__()
-        # normalization on channel dimension
-        self.attn = nn.MultiheadAttention(embed_dim=chans, num_heads=num_heads, dropout=dropout, batch_first=True)
-        self.proj = nn.Linear(chans, chans)
-        self.dropout = nn.Dropout(dropout)
+        self.attn = nn.MultiheadAttention(
+            embed_dim=chans,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+            bias=bias)
 
     def forward(self, x):
         # x: B, C, H, W
-        B, C, H, W = x.shape
+        B, H, W, C = x.shape
         # flatten spatial dims
-        x_flat = x.view(B, C, H * W).permute(0, 2, 1)  # B, N, C
+        x_flat = x.view(B, H * W, C)  # B, N, C
         # self-attention
-        attn_out, _ = self.attn(x_flat, x_flat, x_flat)
-        # projection and dropout
-        out = self.proj(attn_out)
-        out = self.dropout(out)
+        out, _ = self.attn(x_flat, x_flat, x_flat)
         # reshape back
-        out = out.permute(0, 2, 1).view(B, C, H, W)
+        out = out.view(B, H, W, C)
         return out
-    
+
 class AttentionWrapper(nn.Module):
     def __init__(
             self,
@@ -239,7 +233,7 @@ class AttentionWrapper(nn.Module):
 
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.attention_mode = attention_mode
-        
+
         if attention_mode == "neighborhood":
             kernel_shape = int((shape[0] - 1) // (3 * torch.pi))
             if kernel_shape % 2 == 0:
@@ -259,6 +253,7 @@ class AttentionWrapper(nn.Module):
                 channels,
                 num_heads=heads,
                 dropout=attention_drop_rate,
+                bias=False
             )
 
         self.norm = None
@@ -277,21 +272,16 @@ class AttentionWrapper(nn.Module):
 
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-
         residual = x
+        x = x.permute(0,2,3,1)
         if self.norm is not None:
-            x = x.permute(0,2,3,1)
             x = self.norm(x)
-            x = x.permute(0,3,1,2)
 
         if self.attention_mode == "neighborhood":
-            dtype = x.dtype
-            with amp.autocast(device_type="cuda", enabled=False):
-                x = x.float().permute(0,2,3,1)
-                x = self.att(x).to(dtype=dtype).permute(0,3,1,2)
+            x = self.att(x).to(dtype=dtype)
         else:
             x = self.att(x)
-
+        x = x.permute(0,3,1,2)
         return residual + self.drop_path(x)
 
 
@@ -333,7 +323,7 @@ class TransformerBlock(nn.Module):
                 bias=False,
             )
         ]
-        
+
         for i in range(nrep):
             self.fwd.append(
                 AttentionWrapper(
@@ -346,7 +336,7 @@ class TransformerBlock(nn.Module):
                     attention_mode=attention_mode,
                 )
             )
-            
+
             self.fwd.append(
                 MixFFN(
                     out_shape,
@@ -384,10 +374,10 @@ class TransformerBlock(nn.Module):
         x = x.permute(0,2,3,1)
         x = self.norm(x)
         x = x.permute(0,3,1,2)
-        
+
         return x
 
-    
+
 class Upsampling(nn.Module):
     def __init__(self,
                  in_shape,
@@ -425,22 +415,31 @@ class Upsampling(nn.Module):
         k_h, k_w = kernel_shape
 
         # make padding = floor((kernel-1)/2)
-        pad_h = k_h // 2
-        pad_w = k_w // 2
+        pad_h = (k_h-1) // stride_h
+        pad_w = (k_w-1) // stride_w
+
+        # set dialation based on stride to ensure output shape is correct
+        dilation = max(1,stride_h//k_h)
+
+        output_padding_h = max(0,dilation-1)
+        output_padding_w = max(0,dilation-1)
 
         # compute the needed output_padding so that
         #    (H_in−1)*stride_h − 2*pad_h + k_h + out_pad_h == H_out
-        out_pad_h = H_out - ((H_in - 1) * stride_h - 2 * pad_h + k_h)
-        out_pad_w = W_out - ((W_in - 1) * stride_w - 2 * pad_w + k_w)
-        
+        if (H_in-1) * stride_h - 2 * pad_h + dilation*(k_h-1) + output_padding_h + 1 != H_out:
+            raise ValueError(f"Invalid input shape {in_shape} and output shape {out_shape} for kernel shape {kernel_shape} and stride {stride_h}, computed output H: {(H_in-1) * stride_h - 2 * pad_h + dilation * (k_h-1) + output_padding_h + 1}, dilation= {dilation}, pad_h={pad_h}, output_padding_w= {output_padding_h}")
+        if (W_in-1) * stride_w - 2 * pad_w + dilation*(k_w-1) + output_padding_w + 1 != W_out:
+            raise ValueError(f"Invalid input shape {in_shape} and output shape {out_shape} for kernel shape {kernel_shape} and stride {stride_w}, computed output W: {(W_in-1) * stride_w - 2 * pad_w + dilation*(k_w-1) + output_padding_w + 1}, dilation= {dilation}, pad_w={pad_w}, output_padding_w= {output_padding_w}")
+
         self.upsample = nn.ConvTranspose2d(
             in_channels=out_channels,
             out_channels=out_channels,
             kernel_size=kernel_shape,
             stride=(stride_h, stride_w),
             padding=(pad_h, pad_w),
-            output_padding=(out_pad_h, out_pad_w),
             bias=conv_bias,
+            dilation=dilation,
+            output_padding=(output_padding_h, output_padding_w),
         )
 
         self.apply(self._init_weights)
@@ -453,9 +452,10 @@ class Upsampling(nn.Module):
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-        
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+
         x = self.upsample(self.mlp(x))
         return x
 
@@ -473,7 +473,7 @@ class Segformer(nn.Module):
         Scale factor to use, by default 2
     in_chans : int, optional
         Number of input channels, by default 3
-    num_classes : int, optional
+    out_chans : int, optional
         Number of classes, by default 3
     embed_dims : List[int], optional
         Dimension of the embeddings for each block, has to be the same length as heads
@@ -501,7 +501,7 @@ class Segformer(nn.Module):
     >>> model = Segformer(
     ...         img_size=(128, 256),
     ...         in_chans=3,
-    ...         num_classes=3,
+    ...         out_chans=3,
     ...         embed_dims=[64, 128, 256, 512],
     ...         heads=[1, 2, 4, 8],
     ...         depths=[3, 4, 6, 3],
@@ -521,7 +521,7 @@ class Segformer(nn.Module):
         self,
         img_size=(128, 256),
         in_chans=3,
-        num_classes=3,
+        out_chans=3,
         embed_dims=[64, 128, 256, 512],
         heads=[1, 2, 4, 8],
         depths=[3, 4, 6, 3],
@@ -537,7 +537,7 @@ class Segformer(nn.Module):
 
         self.img_size = img_size
         self.in_chans = in_chans
-        self.num_classes = num_classes
+        self.out_chans = out_chans
         self.embed_dims = embed_dims
         self.heads = heads
         self.num_blocks = len(self.embed_dims)
@@ -546,7 +546,7 @@ class Segformer(nn.Module):
 
         assert(len(self.heads) == self.num_blocks)
         assert(len(self.depths) == self.num_blocks)
-        
+
         # activation function
         if activation_function == "relu":
             self.activation_function = nn.ReLU
@@ -609,7 +609,7 @@ class Segformer(nn.Module):
         segmentation_head_dim = sum(self.embed_dims)
         self.segmentation_head = nn.Conv2d(
             in_channels=segmentation_head_dim,
-            out_channels=num_classes,
+            out_channels=out_chans,
             kernel_size=1,
             bias=True)
 
@@ -626,7 +626,7 @@ class Segformer(nn.Module):
 
 
     def forward(self, x):
-                
+
         # encoder:
         features = []
         feat = x
@@ -652,7 +652,7 @@ if __name__ == "__main__":
     model = Segformer(
         img_size=(128, 256),
         in_chans=3,
-        num_classes=3,
+        out_chans=3,
         embed_dims=[64, 128, 256, 512],
         heads=[1, 2, 4, 8],
         depths=[3, 4, 6, 3],

@@ -29,7 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os
+import os, sys
 import time
 import argparse
 
@@ -45,12 +45,21 @@ from torchvision.transforms import v2
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from torch_harmonics.examples import StanfordDepthDataset, Stanford2D3DSDownloader, compute_stats_s2
-from torch_harmonics.examples.losses import W11LossS2, L1LossS2, L2LossS2
-from torch_harmonics.plotting import plot_sphere
+from torch_harmonics.examples import (
+    StanfordDepthDataset,
+    Stanford2D3DSDownloader,
+    compute_stats_s2,
+)
+from torch_harmonics.examples.losses import W11LossS2, L1LossS2, L2LossS2, NormalLossS2
+from torch_harmonics.plotting import plot_sphere, imshow_sphere
+
+# import baseline models
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from model_registry import get_baseline_models
 
 # wandb logging
 import wandb
+
 
 # helper routine for counting number of paramerters in model
 def count_parameters(model):
@@ -77,7 +86,17 @@ def log_weights_and_grads(exp_dir, model, iters=1):
 
 
 # rolls out the FNO and compares to the classical solver
-def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normalization_in=None, normalization_out=None, logging=True, device=torch.device("cpu")):
+def validate_model(
+    model,
+    dataloader,
+    loss_fn,
+    metrics_fns,
+    path_root,
+    normalization_in=None,
+    normalization_out=None,
+    logging=True,
+    device=torch.device("cpu"),
+):
 
     model.eval()
 
@@ -102,16 +121,17 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
 
     with torch.no_grad():
         for idx, (inp, tar) in enumerate(dataloader):
-            inp = inp.to(device)
+            inpd = inp.to(device)
             tar = tar.to(device)
             mask = torch.where(tar == 0, 0.0, 1.0)
+
             if normalization_in is not None:
-                inp = normalization_in(inp)
+                inpd = normalization_in(inpd)
 
             if normalization_out is not None:
                 tar = normalization_out(tar)
 
-            prd = model(inp)
+            prd = model(inpd)
 
             losses[idx] = loss_fn(prd, tar.unsqueeze(-3), mask)
 
@@ -120,36 +140,32 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
                 metric_fn = metrics_fns[metric]
                 metric_buff[idx] = metric_fn(prd, tar, mask)
 
-            # prd = nn.functional.softmax(prd, dim=-3)
-            # prd = torch.argmax(prd, dim=-3).squeeze(0)
-
-            prd = prd.squeeze(1)
-
-            tar = tar * mask
-            prd = prd * mask
-
-            prd = prd.squeeze().cpu().numpy()
-            tar = tar.squeeze().cpu().numpy()
+            tar = (tar * mask).squeeze()
+            prd = (prd * mask).squeeze()
 
             # do plotting
             glob_idx = idx + glob_off
-            fig = plt.figure(layout="constrained", figsize=(12, 6), dpi=150)
-            subfigs = fig.subfigures(1, 2, wspace=0.04)
-
-            # Plot prediction
-            img1 = plot_sphere(prd, fig=subfigs[0], cmap="rainbow")
-            img2 = plot_sphere(tar, fig=subfigs[1], cmap="rainbow")
-            # Find common min/max for consistent colorbar
-            vmin = min(prd.min(), tar.min())
-            vmax = max(prd.max(), tar.max())
-            img1.set_clim(vmin, vmax)
-            img2.set_clim(vmin, vmax)
-
-            cbar_ax = fig.add_axes([0.25, 0.1, 0.5, 0.1])
-            plt.colorbar(img1, orientation='horizontal', cax=cbar_ax)
-            plt.savefig(os.path.join(path_root, f"comparison_{glob_idx}.png"))
+            fig = plt.figure(figsize=(7.5, 6))
+            plot_sphere(prd.cpu(), fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow")
+            plt.savefig(os.path.join(path_root, "pred_" + str(glob_idx) + ".png"))
             plt.close()
-            print(f"saved comparison_{glob_idx}.png")
+
+            fig = plt.figure(figsize=(7.5, 6))
+            plot_sphere(
+                tar.cpu(),
+                fig=fig,
+                vmax=1.0,
+                vmin=0.0,
+                cmap="rainbow",
+                filepath_src=None,
+            )
+            plt.savefig(os.path.join(path_root, "truth_" + str(glob_idx) + ".png"))
+            plt.close()
+
+            fig = plt.figure(figsize=(7.5, 6))
+            imshow_sphere(inp.cpu().squeeze(0).permute(1, 2, 0), fig=fig)
+            plt.savefig(os.path.join(path_root, "input_" + str(glob_idx) + ".png"))
+            plt.close()
 
     return losses, metrics
 
@@ -299,7 +315,13 @@ def train_model(
 
             if wandb.run is not None:
                 current_lr = optimizer.param_groups[0]["lr"]
-                wandb.log({"loss": accumulated_loss, "validation loss": valid_loss, "learning rate": current_lr})
+                wandb.log(
+                    {
+                        "loss": accumulated_loss,
+                        "validation loss": valid_loss,
+                        "learning rate": current_lr,
+                    }
+                )
 
     # wrapping up
     train_time = time.time() - train_start
@@ -351,7 +373,10 @@ def main(
 
     # 2D3DS download & dataset initialization
     downloader = Stanford2D3DSDownloader(base_url="https://cvg-data.inf.ethz.ch/2d3ds/no_xyz/", local_dir=str(data_path))
-    dataset_file = downloader.prepare_dataset(dataset_file=f"stanford_2d3ds_dataset_ds{data_downsampling_factor}.h5", downsampling_factor=data_downsampling_factor)
+    dataset_file = downloader.prepare_dataset(
+        dataset_file=f"stanford_2d3ds_dataset_ds{data_downsampling_factor}.h5",
+        downsampling_factor=data_downsampling_factor,
+    )
 
     # intiialize distributed for ddp
     if dist.is_initialized():
@@ -364,7 +389,12 @@ def main(
     # make sure splitting is consistent across ranks
     rng = torch.Generator().manual_seed(333)
     split_ratios = [0.95, 0.025, 0.025]
-    dataset = StanfordDepthDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel, log_depth=False, exclude_polar_fraction=exclude_polar_fraction)
+    dataset = StanfordDepthDataset(
+        dataset_file=dataset_file,
+        ignore_alpha_channel=ignore_alpha_channel,
+        log_depth=False,
+        exclude_polar_fraction=exclude_polar_fraction,
+    )
     train_dataset, test_dataset, valid_dataset = torch.utils.data.random_split(dataset, split_ratios, generator=rng)
 
     # stats computation
@@ -380,9 +410,27 @@ def main(
 
     # split dataset if distributed
     if dist.is_initialized():
-        train_sampler = DistributedSampler(train_dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank(), shuffle=True, drop_last=True)
-        test_sampler = DistributedSampler(test_dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank(), shuffle=False, drop_last=True)
-        valid_sampler = DistributedSampler(valid_dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank(), shuffle=False, drop_last=True)
+        train_sampler = DistributedSampler(
+            train_dataset,
+            num_replicas=dist.get_world_size(),
+            rank=dist.get_rank(),
+            shuffle=True,
+            drop_last=True,
+        )
+        test_sampler = DistributedSampler(
+            test_dataset,
+            num_replicas=dist.get_world_size(),
+            rank=dist.get_rank(),
+            shuffle=False,
+            drop_last=True,
+        )
+        valid_sampler = DistributedSampler(
+            valid_dataset,
+            num_replicas=dist.get_world_size(),
+            rank=dist.get_rank(),
+            shuffle=False,
+            drop_last=True,
+        )
     else:
         train_sampler = None
         test_sampler = None
@@ -390,11 +438,33 @@ def main(
 
     # create the dataloaders
     train_dataloader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True if train_sampler is None else False, sampler=train_sampler, num_workers=4, persistent_workers=True, pin_memory=True
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True if train_sampler is None else False,
+        sampler=train_sampler,
+        num_workers=4,
+        persistent_workers=True,
+        pin_memory=True,
     )
 
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, sampler=test_sampler, num_workers=4, persistent_workers=True, pin_memory=True)
-    valid_dataloader = DataLoader(valid_dataset, batch_size=1, shuffle=False, sampler=valid_sampler, num_workers=0, persistent_workers=False, pin_memory=True)
+    test_dataloader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        sampler=test_sampler,
+        num_workers=4,
+        persistent_workers=True,
+        pin_memory=True,
+    )
+    valid_dataloader = DataLoader(
+        valid_dataset,
+        batch_size=1,
+        shuffle=False,
+        sampler=valid_sampler,
+        num_workers=0,
+        persistent_workers=False,
+        pin_memory=True,
+    )
 
     # TODO: move augmentation into extra helper module
     normalization_in = v2.Normalize(mean=means_in.tolist(), std=stds_in.tolist())
@@ -402,6 +472,7 @@ def main(
     augmentation = enable_data_augmentation
 
     in_channels = 3 if ignore_alpha_channel else 4
+    out_channels = 1
 
     # print dataset info
     img_size = dataset.input_shape[1:]
@@ -411,99 +482,26 @@ def main(
         print(f"Test dataset initialized with {len(test_dataset)} samples of resolution {img_size}")
         print(f"Validation dataset initialized with {len(valid_dataset)} samples of resolution {img_size}")
 
-    # prepare dicts containing models and corresponding metrics
-    models = {}
-    metrics = {}
+    # get baseline model registry
+    baseline_models = get_baseline_models(img_size=img_size, in_chans=in_channels, out_chans=out_channels)
 
-    from torch_harmonics.examples.models import SphericalFourierNeuralOperator as SFNO
-    from torch_harmonics.examples.models import LocalSphericalNeuralOperator as LSNO
-    from torch_harmonics.examples.models import SphericalTransformer as S2T
-    from torch_harmonics.examples.models import SphericalUNet as S2U
+    # specify which models to train here
+    models = ["transformer_sc2_layers4_e128"]
+    models = {k: baseline_models[k] for k in models}
 
-    nlat = 128
-    nlon = 256
-    grid = "equiangular"
-
-
-    # models[f"sfno_sc2_layers4_e32"] = partial(
-    #     SFNO,
-    #     out_chans=1,
-    #     img_size=(nlat, nlon),
-    #     grid=grid,
-    #     num_layers=4,
-    #     scale_factor=4,
-    #     embed_dim=32,
-    #     activation_function="gelu",
-    #     residual_prediction=False,
-    #     use_mlp=True,
-    #     normalization_layer="layer_norm",
-    # )
-
-    # models[f"lsno_sc1_layers4_e32_zernike_50ep"] = partial(
-    #     LSNO,
-    #     out_chans=1,
-    #     img_size=(nlat, nlon),
-    #     grid=grid,
-    #     num_layers=4,
-    #     scale_factor=1,
-    #     embed_dim=32,
-    #     activation_function="gelu",
-    #     residual_prediction=False,
-    #     use_mlp=True,
-    #     normalization_layer="layer_norm",
-    #     kernel_shape=(4,),
-    #     encoder_kernel_shape=(4,),
-    #     filter_basis_type="zernike",
-    #     upsample_sht = False,
-    # )
-
-    models[f"s2u_W11_lr3_gelu_sc2_norm"] = partial(
-        S2U,
-        img_size=img_size,
-        grid="equiangular",
-        grid_internal="equiangular",
-        in_chans=in_channels,
-        num_classes=1,
-        embed_dims=[32, 64, 128, 256, 512],
-        depths=[2, 2, 2, 2, 2],
-        scale_factor=2,
-        activation_function="gelu",
-        kernel_shape=(3, 3),
-        filter_basis_type="piecewise linear",
-        drop_path_rate=0.1,
-        drop_conv_rate=0.1,
-        drop_dense_rate=0.1,
-        transform_skip=True,
-        upsampling_mode="conv",
-        downsampling_mode="conv"
-    )
-
-    # models[f"s2t_W11_gelu_lr3_6l_e128_pl"] = partial(
-    #     S2T,
-    #     in_chans=3,
-    #     out_chans=1,
-    #     img_size=(nlat, nlon),
-    #     grid="equiangular",
-    #     num_layers=6,
-    #     scale_factor=2,
-    #     embed_dim=128,
-    #     activation_function="gelu",
-    #     residual_prediction=False,
-    #     pos_embed="spectral",
-    #     use_mlp=True,
-    #     encoder_kernel_shape=(6, 6),  # could be 4,4
-    #     normalization_layer="instance_norm",
-    #     filter_basis_type="piecewise linear",
-    #     upsample_sht=False,
-    #     attention_mode="neighborhood"
-    # )
-
+    # initialize Sobolev W11 loss function
     loss_w11 = W11LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
     loss_l1 = L1LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
     loss_fn = lambda prd, tar, mask: 0.1 * loss_w11(prd, tar, mask) + loss_l1(prd, tar, mask)
 
     # metrics
-    metrics_fns = {"l2 error": L2LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)}
+    metrics = {}
+    metrics_fns = {
+        "l2 error": L2LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
+        "l1 error": L1LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
+        "w11 error": W11LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
+        "cosine": NormalLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
+    }
 
     # iterate over models and train each model
     for model_name, model_handle in models.items():
@@ -534,12 +532,22 @@ def main(
         # run the training
         if train:
             if logging:
-                run = wandb.init(project="spherical segmentation 2d3ds", group=model_name, name=model_name + "_" + str(time.time()), config=model_handle.keywords)
+                run = wandb.init(
+                    project="depth estimation 2d3ds - results",
+                    group=model_name,
+                    name=model_name + "_" + str(time.time()),
+                    config=model_handle.keywords,
+                )
             else:
                 run = None
 
             # optimizer:
-            optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01, foreach=torch.cuda.is_available())
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=learning_rate,
+                weight_decay=0.01,
+                foreach=torch.cuda.is_available(),
+            )
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
             gscaler = torch.GradScaler("cuda", enabled=(amp_mode != "none"))
 
@@ -626,7 +634,10 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--output_path", default=os.path.join(os.path.dirname(__file__), "checkpoints"), type=str, help="Override the path where checkpoints and run information are stored"
+        "--output_path",
+        default=os.path.join(os.path.dirname(__file__), "checkpoints"),
+        type=str,
+        help="Override the path where checkpoints and run information are stored",
     )
     parser.add_argument(
         "--data_path",
@@ -634,14 +645,48 @@ if __name__ == "__main__":
         type=str,
         help="Directory to where the dataset is stored. If the dataset is not found in that location, it will be downloaded automatically.",
     )
-    parser.add_argument("--num_epochs", default=100, type=int, help="Switch for overriding batch size in the configuration file.")
-    parser.add_argument("--batch_size", default=8, type=int, help="Switch for overriding batch size in the configuration file.")
-    parser.add_argument("--data_downsampling_factor", default=16, type=int, help="Switch for overriding the downsampling factor of the data.")
-    parser.add_argument("--learning_rate", default=1e-4, type=float, help="Switch to override learning rate.")
+    parser.add_argument(
+        "--num_epochs",
+        default=100,
+        type=int,
+        help="Switch for overriding batch size in the configuration file.",
+    )
+    parser.add_argument(
+        "--batch_size",
+        default=8,
+        type=int,
+        help="Switch for overriding batch size in the configuration file.",
+    )
+    parser.add_argument(
+        "--data_downsampling_factor",
+        default=16,
+        type=int,
+        help="Switch for overriding the downsampling factor of the data.",
+    )
+    parser.add_argument(
+        "--learning_rate",
+        default=1e-3,
+        type=float,
+        help="Switch to override learning rate.",
+    )
     parser.add_argument("--resume", action="store_true", help="Reload checkpoints.")
-    parser.add_argument("--amp_mode", default="none", type=str, choices=["none", "bf16", "fp16"], help="Switch to enable AMP.")
-    parser.add_argument("--enable_ddp", action="store_true", help="Switch to enable distributed data parallel.")
-    parser.add_argument("--enable_data_augmentation", action="store_true", help="Switch to enable data augmentation.")
+    parser.add_argument(
+        "--amp_mode",
+        default="none",
+        type=str,
+        choices=["none", "bf16", "fp16"],
+        help="Switch to enable AMP.",
+    )
+    parser.add_argument(
+        "--enable_ddp",
+        action="store_true",
+        help="Switch to enable distributed data parallel.",
+    )
+    parser.add_argument(
+        "--enable_data_augmentation",
+        action="store_true",
+        help="Switch to enable data augmentation.",
+    )
     args = parser.parse_args()
 
     main(

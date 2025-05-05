@@ -106,10 +106,13 @@ class AttentionS2(nn.Module):
         quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
         # we need to tile and flatten them accordingly
         quad_weights = torch.tile(quad_weights, (1, self.nlon_in)).flatten()
-        # compute log
+
+        # compute log because they are applied as an addition prior to the softmax ('attn_mask'), which includes an exponential.
+        # see https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
+        # for info on how 'attn_mask' is applied to the attention weights
         log_quad_weights = torch.log(quad_weights).reshape(1,1,-1)
         self.register_buffer("log_quad_weights", log_quad_weights, persistent=False)
-        
+
         # learnable parameters
         # TODO: double-check that this gives us the correct initialization magnitudes
         scale = math.sqrt(1.0 / self.in_channels)

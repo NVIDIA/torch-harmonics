@@ -45,6 +45,7 @@ from torch_harmonics.examples.models._layers import MLP, LayerNorm, DropPath
 
 from functools import partial
 
+
 # heuristic for finding theta_cutoff
 def _compute_cutoff_radius(nlat, kernel_shape, basis_type):
     theta_cutoff_factor = {"piecewise linear": 0.5, "morlet": 0.5, "zernike": math.sqrt(2.0)}
@@ -66,8 +67,8 @@ class OverlapPatchMerging(nn.Module):
         bias=False,
     ):
         super().__init__()
-        
-        # conv 
+
+        # convolution for patches, curtoff radius inferred from kernel shape
         theta_cutoff = _compute_cutoff_radius(out_shape[0], kernel_shape, basis_type)
         self.conv = DiscreteContinuousConvS2(
             in_channels,
@@ -79,14 +80,11 @@ class OverlapPatchMerging(nn.Module):
             grid_in=grid_in,
             grid_out=grid_out,
             bias=bias,
-            theta_cutoff=theta_cutoff
+            theta_cutoff=theta_cutoff,
         )
 
         # layer norm
-        self.norm = nn.LayerNorm((out_channels),
-                                 eps=1e-05,
-                                 elementwise_affine=True,
-                                 bias=True)
+        self.norm = nn.LayerNorm((out_channels), eps=1e-05, elementwise_affine=True, bias=True)
 
         self.apply(self._init_weights)
 
@@ -103,51 +101,41 @@ class OverlapPatchMerging(nn.Module):
             x = self.conv(x).to(dtype=dtype)
 
         # permute
-        x = x.permute(0,2,3,1)
+        x = x.permute(0, 2, 3, 1)
         x = self.norm(x)
-        out = x.permute(0,3,1,2)
+        out = x.permute(0, 3, 1, 2)
 
         return out
 
-    
+
 class MixFFN(nn.Module):
     def __init__(
-            self,
-            shape,
-            inout_channels,
-            hidden_channels,
-            mlp_bias=True,
-            grid="equiangular",
-            kernel_shape=(3, 3),
-            basis_type="morlet",
-            conv_bias=False,
-            activation=nn.GELU,
-            use_mlp=False,
-            drop_path=0.,
-            ):
+        self,
+        shape,
+        inout_channels,
+        hidden_channels,
+        mlp_bias=True,
+        grid="equiangular",
+        kernel_shape=(3, 3),
+        basis_type="morlet",
+        conv_bias=False,
+        activation=nn.GELU,
+        use_mlp=False,
+        drop_path=0.0,
+    ):
         super().__init__()
 
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        
-        self.norm = nn.LayerNorm((inout_channels),
-                                 eps=1e-05,
-                                 elementwise_affine=True,
-                                 bias=True)
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+
+        self.norm = nn.LayerNorm((inout_channels), eps=1e-05, elementwise_affine=True, bias=True)
 
         if use_mlp:
             # although the paper says MLP, it uses a single linear layer
-            self.mlp_in = MLP(inout_channels,
-		              hidden_features=hidden_channels,
-                              out_features=inout_channels,
-                              act_layer=activation,
-		              output_bias=False,
-                              drop_rate=0.0)
+            self.mlp_in = MLP(inout_channels, hidden_features=hidden_channels, out_features=inout_channels, act_layer=activation, output_bias=False, drop_rate=0.0)
         else:
-            self.mlp_in = nn.Conv2d(in_channels=inout_channels,
-                                    out_channels=inout_channels,
-                                    kernel_size=1,
-                                    bias=True)
+            self.mlp_in = nn.Conv2d(in_channels=inout_channels, out_channels=inout_channels, kernel_size=1, bias=True)
 
+        # convolution for patches, curtoff radius inferred from kernel shape
         theta_cutoff = _compute_cutoff_radius(shape[0], kernel_shape, basis_type)
         self.conv = DiscreteContinuousConvS2(
             inout_channels,
@@ -160,21 +148,13 @@ class MixFFN(nn.Module):
             grid_out=grid,
             groups=inout_channels,
             bias=conv_bias,
-            theta_cutoff=theta_cutoff
-            )
+            theta_cutoff=theta_cutoff,
+        )
 
         if use_mlp:
-            self.mlp_out = MLP(inout_channels,
-                               hidden_features=hidden_channels,
-                               out_features=inout_channels,
-                               act_layer=activation,
-                               output_bias=False,
-                               drop_rate=0.0)
+            self.mlp_out = MLP(inout_channels, hidden_features=hidden_channels, out_features=inout_channels, act_layer=activation, output_bias=False, drop_rate=0.0)
         else:
-            self.mlp_out = nn.Conv2d(in_channels=inout_channels,
-                                     out_channels=inout_channels,
-                                     kernel_size=1,
-                                     bias=True)
+            self.mlp_out = nn.Conv2d(in_channels=inout_channels, out_channels=inout_channels, kernel_size=1, bias=True)
 
         self.act = activation()
 
@@ -182,22 +162,21 @@ class MixFFN(nn.Module):
 
     def _init_weights(self, m):
         if isinstance(m, nn.Conv2d):
-            nn.init.trunc_normal_(m.weight, std=.02)
+            nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-            
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         residual = x
-        
+
         # norm
-        x = x.permute(0,2,3,1)
+        x = x.permute(0, 2, 3, 1)
         x = self.norm(x)
-        x = x.permute(0,3,1,2)
+        x = x.permute(0, 3, 1, 2)
 
         # NOTE: we add another activation here
         # because in the paper they only use depthwise conv,
@@ -210,39 +189,41 @@ class MixFFN(nn.Module):
 
         # second linear
         x = self.mlp_out(x)
-        
+
         return residual + self.drop_path(x)
 
-    
+
 class AttentionWrapper(nn.Module):
     def __init__(
-            self,
-            channels,
-            shape,
-            grid,
-            heads,
-            pre_norm=False,
-            attention_drop_rate=0.,
-            drop_path=0.,
-            attention_mode="neighborhood",
+        self,
+        channels,
+        shape,
+        grid,
+        heads,
+        pre_norm=False,
+        attention_drop_rate=0.0,
+        drop_path=0.0,
+        attention_mode="neighborhood",
+        theta_cutoff=None,
     ):
         super().__init__()
 
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         self.attention_mode = attention_mode
-        
+
         if attention_mode == "neighborhood":
-            theta_cutoff = _compute_cutoff_radius(shape[0], (1,), "piecewise linear")
+            if theta_cutoff is None:
+                theta_cutoff = 6 * torch.pi / (shape[0] - 1)
             self.att = NeighborhoodAttentionS2(
                 in_channels=channels,
-	        in_shape=shape,
+                in_shape=shape,
                 out_shape=shape,
                 grid_in=grid,
                 grid_out=grid,
                 theta_cutoff=theta_cutoff,
                 out_channels=channels,
                 num_heads=heads,
-                #drop_rate=attention_drop_rate,
+                # drop_rate=attention_drop_rate,
             )
         else:
             self.att = AttentionS2(
@@ -258,10 +239,7 @@ class AttentionWrapper(nn.Module):
 
         self.norm = None
         if pre_norm:
-            self.norm = nn.LayerNorm((channels),
-                                     eps=1e-05,
-                                     elementwise_affine=True,
-                                     bias=True)
+            self.norm = nn.LayerNorm((channels), eps=1e-05, elementwise_affine=True, bias=True)
 
         self.apply(self._init_weights)
 
@@ -270,14 +248,13 @@ class AttentionWrapper(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         residual = x
         if self.norm is not None:
-            x = x.permute(0,2,3,1)
+            x = x.permute(0, 2, 3, 1)
             x = self.norm(x)
-            x = x.permute(0,3,1,2)
+            x = x.permute(0, 3, 1, 2)
 
         if self.attention_mode == "neighborhood":
             dtype = x.dtype
@@ -292,7 +269,7 @@ class AttentionWrapper(nn.Module):
 
 class TransformerBlock(nn.Module):
     def __init__(
-	self,
+        self,
         in_shape,
         out_shape,
         in_channels,
@@ -302,12 +279,13 @@ class TransformerBlock(nn.Module):
         grid_out="equiangular",
         nrep=1,
         heads=1,
-	kernel_shape=(3, 3),
-	basis_type="morlet",
+        kernel_shape=(3, 3),
+        basis_type="morlet",
         activation=nn.GELU,
-        att_drop_rate=0.,
-        drop_path_rates=0.,
+        att_drop_rate=0.0,
+        drop_path_rates=0.0,
         attention_mode="neighborhood",
+        theta_cutoff=None,
     ):
         super().__init__()
 
@@ -319,9 +297,9 @@ class TransformerBlock(nn.Module):
         if isinstance(drop_path_rates, float):
             drop_path_rates = [x.item() for x in torch.linspace(0, drop_path_rates, nrep)]
 
-        assert(len(drop_path_rates) == nrep)
+        assert len(drop_path_rates) == nrep
 
-        self.fwd =[
+        self.fwd = [
             OverlapPatchMerging(
                 in_shape=in_shape,
                 out_shape=out_shape,
@@ -334,7 +312,7 @@ class TransformerBlock(nn.Module):
                 bias=False,
             )
         ]
-        
+
         for i in range(nrep):
             self.fwd.append(
                 AttentionWrapper(
@@ -346,9 +324,10 @@ class TransformerBlock(nn.Module):
                     attention_drop_rate=att_drop_rate,
                     drop_path=drop_path_rates[i],
                     attention_mode=attention_mode,
+                    theta_cutoff=theta_cutoff,
                 )
             )
-            
+
             self.fwd.append(
                 MixFFN(
                     out_shape,
@@ -357,8 +336,8 @@ class TransformerBlock(nn.Module):
                     mlp_bias=True,
                     grid=grid_out,
                     kernel_shape=kernel_shape,
-	            basis_type=basis_type,
-      	            conv_bias=False,
+                    basis_type=basis_type,
+                    conv_bias=False,
                     activation=activation,
                     use_mlp=False,
                     drop_path=drop_path_rates[i],
@@ -369,10 +348,7 @@ class TransformerBlock(nn.Module):
         self.fwd = nn.Sequential(*self.fwd)
 
         # final norm
-        self.norm = nn.LayerNorm((out_channels),
-                                 eps=1e-05,
-                                 elementwise_affine=True,
-                                 bias=True)
+        self.norm = nn.LayerNorm((out_channels), eps=1e-05, elementwise_affine=True, bias=True)
 
         self.apply(self._init_weights)
 
@@ -385,45 +361,36 @@ class TransformerBlock(nn.Module):
         x = self.fwd(x)
 
         # apply norm
-        x = x.permute(0,2,3,1)
+        x = x.permute(0, 2, 3, 1)
         x = self.norm(x)
-        x = x.permute(0,3,1,2)
-        
+        x = x.permute(0, 3, 1, 2)
+
         return x
 
-    
+
 class Upsampling(nn.Module):
-    def __init__(self,
-                 in_shape,
-                 out_shape,
-                 in_channels,
-                 out_channels,
-                 hidden_channels,
-                 mlp_bias=True,
-                 grid_in="equiangular",
-                 grid_out="equiangular",
-                 kernel_shape=(3, 3),
-                 basis_type="morlet",
-                 conv_bias=False,
-                 activation=nn.GELU,
-                 use_mlp=False,
+    def __init__(
+        self,
+        in_shape,
+        out_shape,
+        in_channels,
+        out_channels,
+        hidden_channels,
+        mlp_bias=True,
+        grid_in="equiangular",
+        grid_out="equiangular",
+        kernel_shape=(3, 3),
+        basis_type="morlet",
+        conv_bias=False,
+        activation=nn.GELU,
+        use_mlp=False,
     ):
         super().__init__()
 
         if use_mlp:
-            self.mlp = MLP(
-                in_channels,
-                hidden_features=hidden_channels,
-                out_features=out_channels,
-                act_layer=activation,
-                output_bias=False,
-                drop_rate=0.0
-            )
+            self.mlp = MLP(in_channels, hidden_features=hidden_channels, out_features=out_channels, act_layer=activation, output_bias=False, drop_rate=0.0)
         else:
-            self.mlp = nn.Conv2d(in_channels=in_channels,
-                                 out_channels=out_channels,
-                                 kernel_size=1,
-                                 bias=True)
+            self.mlp = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=1, bias=True)
 
         theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
         self.upsample = DiscreteContinuousConvTransposeS2(
@@ -436,20 +403,19 @@ class Upsampling(nn.Module):
             grid_in=grid_in,
             grid_out=grid_out,
             bias=conv_bias,
-            theta_cutoff=theta_cutoff
-            )
+            theta_cutoff=theta_cutoff,
+        )
 
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Conv2d):
-            nn.init.trunc_normal_(m.weight, std=.02)
+            nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-        
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.upsample(self.mlp(x))
@@ -470,7 +436,7 @@ class SphericalSegformer(nn.Module):
         Scale factor to use, by default 2
     in_chans : int, optional
         Number of input channels, by default 3
-    num_classes : int, optional
+    out_chans : int, optional
         Number of classes, by default 3
     embed_dims : List[int], optional
         Dimension of the embeddings for each block, has to be the same length as heads
@@ -519,7 +485,7 @@ class SphericalSegformer(nn.Module):
         grid="equiangular",
         grid_internal="legendre-gauss",
         in_chans=3,
-        num_classes=3,
+        out_chans=3,
         embed_dims=[64, 128, 256, 512],
         heads=[1, 2, 4, 8],
         depths=[3, 4, 6, 3],
@@ -531,6 +497,7 @@ class SphericalSegformer(nn.Module):
         att_drop_rate=0.0,
         drop_path_rate=0.1,
         attention_mode="neighborhood",
+        theta_cutoff=None,
     ):
         super().__init__()
 
@@ -538,16 +505,16 @@ class SphericalSegformer(nn.Module):
         self.grid = grid
         self.grid_internal = grid_internal
         self.in_chans = in_chans
-        self.num_classes = num_classes
+        self.out_chans = out_chans
         self.embed_dims = embed_dims
         self.heads = heads
         self.num_blocks = len(self.embed_dims)
         self.depths = depths
         self.kernel_shape = kernel_shape
 
-        assert(len(self.heads) == self.num_blocks)
-        assert(len(self.depths) == self.num_blocks)
-        
+        assert len(self.heads) == self.num_blocks
+        assert len(self.depths) == self.num_blocks
+
         # activation function
         if activation_function == "relu":
             self.activation_function = nn.ReLU
@@ -567,7 +534,7 @@ class SphericalSegformer(nn.Module):
         grid_in = grid
         grid_out = grid_internal
         in_channels = in_chans
-        cur=0
+        cur = 0
         for i in range(self.num_blocks):
             out_shape_new = (out_shape[0] // scale_factor, out_shape[1] // scale_factor)
             out_channels = self.embed_dims[i]
@@ -586,8 +553,9 @@ class SphericalSegformer(nn.Module):
                     basis_type=filter_basis_type,
                     activation=self.activation_function,
                     att_drop_rate=att_drop_rate,
-                    drop_path_rates=dpr[cur:cur+self.depths[i]],
+                    drop_path_rates=dpr[cur : cur + self.depths[i]],
                     attention_mode=attention_mode,
+                    theta_cutoff=theta_cutoff,
                 )
             )
             cur += self.depths[i]
@@ -613,30 +581,26 @@ class SphericalSegformer(nn.Module):
                     kernel_shape=kernel_shape,
                     basis_type=filter_basis_type,
                     conv_bias=False,
-                    activation=nn.GELU
+                    activation=nn.GELU,
                 )
             )
 
         segmentation_head_dim = sum(self.embed_dims)
-        self.segmentation_head = nn.Conv2d(in_channels=segmentation_head_dim,
-                                 out_channels=num_classes,
-                                 kernel_size=1,
-                                 bias=True)
+        self.segmentation_head = nn.Conv2d(in_channels=segmentation_head_dim, out_channels=out_chans, kernel_size=1, bias=True)
 
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Conv2d):
-            nn.init.trunc_normal_(m.weight, std=.02)
+            nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-
     def forward(self, x):
-                
+
         # encoder:
         features = []
         feat = x

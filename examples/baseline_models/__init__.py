@@ -29,8 +29,6 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from .sfno import SphericalFourierNeuralOperator
-from .lsno import LocalSphericalNeuralOperator
-from .s2unet import SphericalUNet
-from .s2transformer import SphericalTransformer
-from .s2segformer import SphericalSegformer
+from .transformer import Transformer
+from .segformer import Segformer
+from .unet import UNet

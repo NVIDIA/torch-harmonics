@@ -166,10 +166,11 @@ class SphericalAttentionBlock(nn.Module):
         norm_layer="none",
         use_mlp=True,
         bias=False,
-        attention_mode="neighborhood"
+        attention_mode="neighborhood",
+        theta_cutoff=None,
     ):
         super().__init__()
-    
+
         # normalisation layer
         if norm_layer == "layer_norm":
             self.norm0 = LayerNorm(in_channels=in_chans, eps=1e-6)
@@ -186,8 +187,8 @@ class SphericalAttentionBlock(nn.Module):
         # determine radius for neighborhood attention
         self.attention_mode = attention_mode
         if attention_mode == "neighborhood":
-            theta_cutoff = 3 * torch.pi / (in_shape[0] - 1)
-
+            if theta_cutoff is None:
+                theta_cutoff = 6 * torch.pi / (in_shape[0] - 1)
             self.self_attn = NeighborhoodAttentionS2(
                 in_channels=in_chans,
                 in_shape=in_shape,
@@ -352,9 +353,9 @@ class SphericalTransformer(nn.Module):
         upsample_sht=False,
         attention_mode="neighborhood",
         bias=False,
+        theta_cutoff=None,
     ):
         super().__init__()
-
         self.img_size = img_size
         self.grid = grid
         self.grid_internal = grid_internal
@@ -418,7 +419,6 @@ class SphericalTransformer(nn.Module):
 
         self.blocks = nn.ModuleList([])
         for i in range(self.num_layers):
-
             block = SphericalAttentionBlock(
                 in_shape=(self.h, self.w),
                 out_shape=(self.h, self.w),
@@ -435,6 +435,7 @@ class SphericalTransformer(nn.Module):
                 use_mlp=use_mlp,
                 bias=bias,
                 attention_mode=attention_mode,
+                theta_cutoff=theta_cutoff,
             )
 
             self.blocks.append(block)
