@@ -181,7 +181,7 @@ class GlobalAttention(nn.Module):
 
 
 class AttentionWrapper(nn.Module):
-    def __init__(self, channels, shape, heads, pre_norm=False, attention_drop_rate=0.0, drop_path=0.0, attention_mode="neighborhood", kernel_shape=(13, 13)):
+    def __init__(self, channels, shape, heads, pre_norm=False, attention_drop_rate=0.0, drop_path=0.0, attention_mode="neighborhood", kernel_shape=(7, 7)):
         super().__init__()
 
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
@@ -233,7 +233,7 @@ class TransformerBlock(nn.Module):
         att_drop_rate=0.0,
         drop_path_rates=0.0,
         attention_mode="neighborhood",
-        attn_kernel_shape=(13, 13),
+        attn_kernel_shape=(7, 7),
     ):
         super().__init__()
 
@@ -447,7 +447,7 @@ class Segformer(nn.Module):
         att_drop_rate=0.0,
         drop_path_rate=0.1,
         attention_mode="neighborhood",
-        attn_kernel_shape=(13, 13),
+        attn_kernel_shape=(7, 7),
     ):
         super().__init__()
 

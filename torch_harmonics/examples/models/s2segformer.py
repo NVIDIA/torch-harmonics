@@ -213,7 +213,7 @@ class AttentionWrapper(nn.Module):
 
         if attention_mode == "neighborhood":
             if theta_cutoff is None:
-                theta_cutoff = 6 * torch.pi / (shape[0] - 1)
+                theta_cutoff = (7.0 / math.sqrt(math.pi)) * math.pi / (shape[0] - 1)
             self.att = NeighborhoodAttentionS2(
                 in_channels=channels,
                 in_shape=shape,

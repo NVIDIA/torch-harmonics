@@ -134,7 +134,7 @@ class AttentionBlock(nn.Module):
         use_mlp=True,
         bias=True,
         attention_mode="neighborhood",
-        attn_kernel_shape=(13, 13),
+        attn_kernel_shape=(7,7),
     ):
         super().__init__()
 
@@ -277,7 +277,7 @@ class Transformer(nn.Module):
     ...     pos_embed="spectral",
     ...     bias=True,
     ...     attention_mode="neighborhood",
-    ...     attn_kernel_shape=(13,13),
+    ...     attn_kernel_shape=(7,7),
     ...     upsampling_method="conv"
     ... )
     >>> x = torch.randn(1, 3, 128, 256)
@@ -306,7 +306,7 @@ class Transformer(nn.Module):
         pos_embed="spectral",
         bias=True,
         attention_mode="neighborhood",
-        attn_kernel_shape=(13, 13),
+        attn_kernel_shape=(7, 7),
         upsampling_method="conv",
     ):
         super().__init__()

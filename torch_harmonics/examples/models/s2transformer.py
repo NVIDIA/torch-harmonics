@@ -188,7 +188,7 @@ class SphericalAttentionBlock(nn.Module):
         self.attention_mode = attention_mode
         if attention_mode == "neighborhood":
             if theta_cutoff is None:
-                theta_cutoff = 6 * torch.pi / (in_shape[0] - 1)
+                theta_cutoff = (7.0 / math.sqrt(math.pi)) * math.pi / (in_shape[0] - 1)
             self.self_attn = NeighborhoodAttentionS2(
                 in_channels=in_chans,
                 in_shape=in_shape,
