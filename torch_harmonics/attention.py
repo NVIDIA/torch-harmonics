@@ -125,7 +125,7 @@ class AttentionS2(nn.Module):
             self.q_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
             self.k_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
             self.v_bias = nn.Parameter(torch.zeros(self.num_heads * self.out_channels))
-            self.proj_bias = nn.Parameter(torch.zeros(self.num_heads))
+            self.proj_bias = nn.Parameter(torch.zeros(1))
         else:
             self.q_bias = None
             self.k_bias = None
@@ -305,7 +305,7 @@ class NeighborhoodAttentionS2(nn.Module):
             self.q_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
             self.k_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
             self.v_bias = nn.Parameter(torch.zeros(self.num_heads * self.out_channels))
-            self.proj_bias = nn.Parameter(torch.zeros(self.num_heads))
+            self.proj_bias = nn.Parameter(torch.zeros(1))
         else:
             self.q_bias = None
             self.k_bias = None
