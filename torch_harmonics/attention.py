@@ -85,6 +85,7 @@ class AttentionS2(nn.Module):
             out_shape: Tuple[int],
             grid_in: Optional[str] = "equiangular",
             grid_out: Optional[str] = "equiangular",
+            scale: Optional[Union[torch.Tensor, float]] = None,
             bias: Optional[bool] = True,
             k_channels: Optional[int] = None,
             out_channels: Optional[int] = None,
@@ -100,6 +101,7 @@ class AttentionS2(nn.Module):
         self.k_channels = in_channels if k_channels is None else k_channels
         self.out_channels = in_channels if out_channels is None else out_channels
         self.drop_rate = drop_rate
+        self.scale = scale
     
         # integration weights
         _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
@@ -115,11 +117,13 @@ class AttentionS2(nn.Module):
 
         # learnable parameters
         # TODO: double-check that this gives us the correct initialization magnitudes
-        scale = math.sqrt(1.0 / self.in_channels)
-        self.q_weights = nn.Parameter(scale * torch.randn(self.num_heads * self.k_channels, self.in_channels, 1, 1))
-        self.k_weights = nn.Parameter(scale * torch.randn(self.num_heads * self.k_channels, self.in_channels, 1, 1))
-        self.v_weights = nn.Parameter(scale * torch.randn(self.num_heads * self.out_channels, self.in_channels, 1, 1))
-        self.proj_weights = nn.Parameter(scale * torch.randn(1, self.num_heads, 1, 1, 1))
+        # the standard MHA uses xavier uniform, NATTEN uses kaiming. Let's use that for now
+        scale_qkv = math.sqrt(3.0 / self.in_channels)
+        self.q_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.num_heads * self.k_channels, self.in_channels, 1, 1) - 1))
+        self.k_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.num_heads * self.k_channels, self.in_channels, 1, 1) - 1))
+        self.v_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.num_heads * self.out_channels, self.in_channels, 1, 1) - 1))
+        scale_proj = math.sqrt(3.0 / self.num_heads)
+        self.proj_weights = nn.Parameter(scale_proj * (2 * torch.rand(1, self.num_heads, 1, 1, 1) - 1))
         
         if bias:
             self.q_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
@@ -173,7 +177,7 @@ class AttentionS2(nn.Module):
         value = value.permute(0,1,3,4,2).reshape(B, self.num_heads, H*W, C)
         
         # multiply the query, key and value tensors
-        out = nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=self.log_quad_weights, dropout_p=self.drop_rate)
+        out = nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=self.log_quad_weights, dropout_p=self.drop_rate, scale=self.scale)
         
         # reshape
         B, _, _, C = out.shape
@@ -293,12 +297,13 @@ class NeighborhoodAttentionS2(nn.Module):
 
         # learnable parameters
         # TODO: double-check that this gives us the correct initialization magnitudes
-        scale = math.sqrt(1.0 / self.in_channels)
-        self.q_weights = nn.Parameter(scale * torch.randn(self.num_heads * self.k_channels, self.in_channels, 1, 1))
-        self.k_weights = nn.Parameter(scale * torch.randn(self.num_heads * self.k_channels, self.in_channels, 1, 1))
-        self.v_weights = nn.Parameter(scale * torch.randn(self.num_heads * self.out_channels, self.in_channels, 1, 1))
-        pscale = math.sqrt(1.0 / self.num_heads)
-        self.proj_weight = nn.Parameter(pscale * torch.randn(1, self.num_heads, 1, 1, 1))
+        # the standard MHA uses xavier uniform, NATTEN uses kaiming. Let's use that for now
+        scale_qkv = math.sqrt(3.0 / self.in_channels)
+        self.q_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.num_heads * self.k_channels, self.in_channels, 1, 1) - 1))
+        self.k_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.num_heads * self.k_channels, self.in_channels, 1, 1) - 1))
+        self.v_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.num_heads * self.out_channels, self.in_channels, 1, 1) - 1))
+        scale_proj = math.sqrt(3.0 / self.num_heads)
+        self.proj_weights = nn.Parameter(scale_proj * (2 * torch.rand(1, self.num_heads, 1, 1, 1) - 1))
 
         if scale is not None:
             self.scale = scale
