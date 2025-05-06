@@ -151,14 +151,8 @@ def validate_model(
             plt.close()
 
             fig = plt.figure(figsize=(7.5, 6))
-            plot_sphere(
-                tar.cpu(),
-                fig=fig,
-                vmax=1.0,
-                vmin=0.0,
-                cmap="rainbow",
-                filepath_src=None,
-            )
+
+            plot_sphere(tar.cpu(), fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow", filepath_src=None)
             plt.savefig(os.path.join(path_root, "truth_" + str(glob_idx) + ".png"))
             plt.close()
 
@@ -256,6 +250,7 @@ def train_model(
         # perform validation
         valid_loss = torch.zeros(2, dtype=torch.float32, device=device)
 
+        # prepare metrics buffer for accumulation of validation metrics
         valid_metrics = {}
         for metric in metrics_fns:
             valid_metrics[metric] = torch.zeros(2, dtype=torch.float32, device=device)
@@ -315,13 +310,10 @@ def train_model(
 
             if wandb.run is not None:
                 current_lr = optimizer.param_groups[0]["lr"]
-                wandb.log(
-                    {
-                        "loss": accumulated_loss,
-                        "validation loss": valid_loss,
-                        "learning rate": current_lr,
-                    }
-                )
+                log_dict = {"loss": accumulated_loss, "validation loss": valid_loss, "learning rate": current_lr}
+                for metric in valid_metrics:
+                    log_dict[metric] = valid_metrics[metric]
+                wandb.log(log_dict)
 
     # wrapping up
     train_time = time.time() - train_start
@@ -355,6 +347,7 @@ def main(
     logging = True
     if ddp:
         dist.init_process_group(backend="nccl")
+        world_size = dist.get_world_size()
         local_rank = dist.get_rank() % torch.cuda.device_count()
         logging = dist.get_rank() == 0
 
@@ -373,10 +366,7 @@ def main(
 
     # 2D3DS download & dataset initialization
     downloader = Stanford2D3DSDownloader(base_url="https://cvg-data.inf.ethz.ch/2d3ds/no_xyz/", local_dir=str(data_path))
-    dataset_file = downloader.prepare_dataset(
-        dataset_file=f"stanford_2d3ds_dataset_ds{data_downsampling_factor}.h5",
-        downsampling_factor=data_downsampling_factor,
-    )
+    dataset_file = downloader.prepare_dataset(dataset_file=f"stanford_2d3ds_dataset_ds{data_downsampling_factor}.h5", downsampling_factor=data_downsampling_factor)
 
     # intiialize distributed for ddp
     if dist.is_initialized():
@@ -389,12 +379,7 @@ def main(
     # make sure splitting is consistent across ranks
     rng = torch.Generator().manual_seed(333)
     split_ratios = [0.95, 0.025, 0.025]
-    dataset = StanfordDepthDataset(
-        dataset_file=dataset_file,
-        ignore_alpha_channel=ignore_alpha_channel,
-        log_depth=False,
-        exclude_polar_fraction=exclude_polar_fraction,
-    )
+    dataset = StanfordDepthDataset(dataset_file=dataset_file, ignore_alpha_channel=ignore_alpha_channel, log_depth=False, exclude_polar_fraction=exclude_polar_fraction)
     train_dataset, test_dataset, valid_dataset = torch.utils.data.random_split(dataset, split_ratios, generator=rng)
 
     # stats computation
@@ -410,27 +395,9 @@ def main(
 
     # split dataset if distributed
     if dist.is_initialized():
-        train_sampler = DistributedSampler(
-            train_dataset,
-            num_replicas=dist.get_world_size(),
-            rank=dist.get_rank(),
-            shuffle=True,
-            drop_last=True,
-        )
-        test_sampler = DistributedSampler(
-            test_dataset,
-            num_replicas=dist.get_world_size(),
-            rank=dist.get_rank(),
-            shuffle=False,
-            drop_last=True,
-        )
-        valid_sampler = DistributedSampler(
-            valid_dataset,
-            num_replicas=dist.get_world_size(),
-            rank=dist.get_rank(),
-            shuffle=False,
-            drop_last=True,
-        )
+        train_sampler = DistributedSampler(train_dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank(), shuffle=True, drop_last=True)
+        test_sampler = DistributedSampler(test_dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank(), shuffle=False, drop_last=True)
+        valid_sampler = DistributedSampler(valid_dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank(), shuffle=False, drop_last=True)
     else:
         train_sampler = None
         test_sampler = None
@@ -438,33 +405,11 @@ def main(
 
     # create the dataloaders
     train_dataloader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True if train_sampler is None else False,
-        sampler=train_sampler,
-        num_workers=4,
-        persistent_workers=True,
-        pin_memory=True,
+        train_dataset, batch_size=batch_size, shuffle=True if train_sampler is None else False, sampler=train_sampler, num_workers=4, persistent_workers=True, pin_memory=True
     )
 
-    test_dataloader = DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        sampler=test_sampler,
-        num_workers=4,
-        persistent_workers=True,
-        pin_memory=True,
-    )
-    valid_dataloader = DataLoader(
-        valid_dataset,
-        batch_size=1,
-        shuffle=False,
-        sampler=valid_sampler,
-        num_workers=0,
-        persistent_workers=False,
-        pin_memory=True,
-    )
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, sampler=test_sampler, num_workers=4, persistent_workers=True, pin_memory=True)
+    valid_dataloader = DataLoader(valid_dataset, batch_size=1, shuffle=False, sampler=valid_sampler, num_workers=0, persistent_workers=False, pin_memory=True)
 
     # TODO: move augmentation into extra helper module
     normalization_in = v2.Normalize(mean=means_in.tolist(), std=stds_in.tolist())
@@ -497,10 +442,10 @@ def main(
     # metrics
     metrics = {}
     metrics_fns = {
-        "l2 error": L2LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
-        "l1 error": L1LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
-        "w11 error": W11LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
-        "cosine": NormalLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
+        "L2 error": L2LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
+        "L1 error": L1LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
+        "W11 error": W11LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
+        "Normals error": NormalLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
     }
 
     # iterate over models and train each model
@@ -532,22 +477,12 @@ def main(
         # run the training
         if train:
             if logging:
-                run = wandb.init(
-                    project="depth estimation 2d3ds - results",
-                    group=model_name,
-                    name=model_name + "_" + str(time.time()),
-                    config=model_handle.keywords,
-                )
+                run = wandb.init(project="depth estimation 2d3ds", group=model_name, name=model_name + "_" + str(time.time()), config=model_handle.keywords)
             else:
                 run = None
 
             # optimizer:
-            optimizer = torch.optim.AdamW(
-                model.parameters(),
-                lr=learning_rate,
-                weight_decay=0.01,
-                foreach=torch.cuda.is_available(),
-            )
+            optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01, foreach=torch.cuda.is_available())
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
             gscaler = torch.GradScaler("cuda", enabled=(amp_mode != "none"))
 
@@ -588,6 +523,8 @@ def main(
         torch.cuda.manual_seed(333)
 
         with torch.inference_mode():
+
+            # run the validation
             losses, metric_results = validate_model(
                 model,
                 valid_dataloader,
@@ -599,18 +536,23 @@ def main(
                 logging=logging,
                 device=device,
             )
-            metrics[model_name]["loss_mean"] = torch.mean(losses)
-            for metric in metric_results:
-                metrics[model_name][metric + " mean"] = torch.mean(metric_results[metric])
 
+            # gather losses and metrics into a single tensor
             if dist.is_initialized():
-                dist.all_reduce(metrics[model_name]["loss_mean"], dist.ReduceOp.AVG)
-                for metric in metric_results:
-                    dist.all_reduce(metrics[model_name][metric + " mean"], dist.ReduceOp.AVG)
+                losses_dist = torch.zeros(world_size * losses.shape[0], dtype=losses.dtype, device=device)
+                dist.all_gather_into_tensor(losses_dist, losses)
+                losses = losses_dist
+                for metric_name, metric in metric_results.items():
+                    metric_dist = torch.zeros(world_size * metric.shape[0], dtype=metric.dtype, device=device)
+                    dist.all_gather_into_tensor(metric_dist, metric)
+                    metric_results[metric_name] = metric_dist
 
-            metrics[model_name]["loss_mean"] = metrics[model_name]["loss_mean"].item()
+            # compute statistics
+            metrics[model_name]["loss mean"] = torch.mean(losses).item()
+            metrics[model_name]["loss std"] = torch.std(losses).item()
             for metric in metric_results:
-                metrics[model_name][metric + " mean"] = metrics[model_name][metric + " mean"].item()
+                metrics[model_name][metric + " mean"] = torch.mean(metric_results[metric]).item()
+                metrics[model_name][metric + " std"] = torch.std(metric_results[metric]).item()
 
             if train:
                 metrics[model_name]["training_time"] = training_time
@@ -634,10 +576,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--output_path",
-        default=os.path.join(os.path.dirname(__file__), "checkpoints"),
-        type=str,
-        help="Override the path where checkpoints and run information are stored",
+        "--output_path", default=os.path.join(os.path.dirname(__file__), "checkpoints"), type=str, help="Override the path where checkpoints and run information are stored"
     )
     parser.add_argument(
         "--data_path",
@@ -645,48 +584,14 @@ if __name__ == "__main__":
         type=str,
         help="Directory to where the dataset is stored. If the dataset is not found in that location, it will be downloaded automatically.",
     )
-    parser.add_argument(
-        "--num_epochs",
-        default=100,
-        type=int,
-        help="Switch for overriding batch size in the configuration file.",
-    )
-    parser.add_argument(
-        "--batch_size",
-        default=8,
-        type=int,
-        help="Switch for overriding batch size in the configuration file.",
-    )
-    parser.add_argument(
-        "--data_downsampling_factor",
-        default=16,
-        type=int,
-        help="Switch for overriding the downsampling factor of the data.",
-    )
-    parser.add_argument(
-        "--learning_rate",
-        default=1e-3,
-        type=float,
-        help="Switch to override learning rate.",
-    )
+    parser.add_argument("--num_epochs", default=100, type=int, help="Switch for overriding batch size in the configuration file.")
+    parser.add_argument("--batch_size", default=8, type=int, help="Switch for overriding batch size in the configuration file.")
+    parser.add_argument("--data_downsampling_factor", default=16, type=int, help="Switch for overriding the downsampling factor of the data.")
+    parser.add_argument("--learning_rate", default=1e-3, type=float, help="Switch to override learning rate.")
     parser.add_argument("--resume", action="store_true", help="Reload checkpoints.")
-    parser.add_argument(
-        "--amp_mode",
-        default="none",
-        type=str,
-        choices=["none", "bf16", "fp16"],
-        help="Switch to enable AMP.",
-    )
-    parser.add_argument(
-        "--enable_ddp",
-        action="store_true",
-        help="Switch to enable distributed data parallel.",
-    )
-    parser.add_argument(
-        "--enable_data_augmentation",
-        action="store_true",
-        help="Switch to enable data augmentation.",
-    )
+    parser.add_argument("--amp_mode", default="none", type=str, choices=["none", "bf16", "fp16"], help="Switch to enable AMP.")
+    parser.add_argument("--enable_ddp", action="store_true", help="Switch to enable distributed data parallel.")
+    parser.add_argument("--enable_data_augmentation", action="store_true", help="Switch to enable data augmentation.")
     args = parser.parse_args()
 
     main(

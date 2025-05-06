@@ -37,6 +37,7 @@ from torch_harmonics.examples.models._layers import MLP, LayerNorm, SequencePosi
 from natten import NeighborhoodAttention2D as NeighborhoodAttention
 from functools import partial
 
+
 class Encoder(nn.Module):
     def __init__(
         self,
@@ -51,21 +52,9 @@ class Encoder(nn.Module):
         super().__init__()
         stride_h = in_shape[0] // out_shape[0]
         stride_w = in_shape[1] // out_shape[1]
-        pad_h = math.ceil(((out_shape[0] - 1) * stride_h
-                        - in_shape[0]
-                        + kernel_shape[0]) / 2)
-        pad_w = math.ceil(((out_shape[1] - 1) * stride_w
-                        - in_shape[1]
-                        + kernel_shape[1]) / 2)
-        self.conv = nn.Conv2d(
-                in_chans,
-                out_chans,
-                kernel_size=kernel_shape,
-                bias=bias,
-                stride=(stride_h, stride_w),
-                padding=(pad_h, pad_w),
-                groups=groups
-        )
+        pad_h = math.ceil(((out_shape[0] - 1) * stride_h - in_shape[0] + kernel_shape[0]) / 2)
+        pad_w = math.ceil(((out_shape[1] - 1) * stride_w - in_shape[1] + kernel_shape[1]) / 2)
+        self.conv = nn.Conv2d(in_chans, out_chans, kernel_size=kernel_shape, bias=bias, stride=(stride_h, stride_w), padding=(pad_h, pad_w), groups=groups)
 
     def forward(self, x):
         x = self.conv(x)
@@ -73,17 +62,7 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(
-        self,
-        in_shape=(480, 960),
-        out_shape=(721, 1440),
-        in_chans=2,
-        out_chans=2,
-        kernel_shape=(3, 3),
-        groups=1,
-        bias=False,
-        upsampling_method="conv"
-    ):
+    def __init__(self, in_shape=(480, 960), out_shape=(721, 1440), in_chans=2, out_chans=2, kernel_shape=(3, 3), groups=1, bias=False, upsampling_method="conv"):
         super().__init__()
         self.out_shape = out_shape
         self.upsampling_method = upsampling_method
@@ -94,14 +73,7 @@ class Decoder(nn.Module):
                     size=out_shape,
                     mode="bilinear",
                 ),
-                nn.Conv2d(
-                    in_chans,
-                    out_chans,
-                    kernel_size=kernel_shape,
-                    bias=bias,
-                    padding="same",
-                    groups=groups
-                )
+                nn.Conv2d(in_chans, out_chans, kernel_size=kernel_shape, bias=bias, padding="same", groups=groups),
             )
         elif upsampling_method == "pixel_shuffle":
             # check if it is possible to use PixelShuffle
@@ -109,15 +81,7 @@ class Decoder(nn.Module):
                 raise Exception(f"out_shape {out_shape} and in_shape {in_shape} are incompatible for shuffle decoding")
             upsampling_factor = out_shape[0] // in_shape[0]
             self.upsample = nn.Sequential(
-                nn.Conv2d(
-                    in_chans,
-                    out_chans * (upsampling_factor ** 2),
-                    kernel_size=1,
-                    bias=bias,
-                    padding=0,
-                    groups=groups
-                ),
-                nn.PixelShuffle(upsampling_factor)
+                nn.Conv2d(in_chans, out_chans * (upsampling_factor**2), kernel_size=1, bias=bias, padding=0, groups=groups), nn.PixelShuffle(upsampling_factor)
             )
         else:
             raise ValueError(f"Unknown upsampling method {upsampling_method}")
@@ -126,6 +90,7 @@ class Decoder(nn.Module):
         x = self.upsample(x)
         return x
 
+
 class GlobalAttention(nn.Module):
     """
     Global self-attention block over 2D inputs using MultiheadAttention.
@@ -133,14 +98,10 @@ class GlobalAttention(nn.Module):
     Input shape: (B, C, H, W)
     Output shape: (B, C, H, W) with residual skip.
     """
+
     def __init__(self, chans, num_heads=8, dropout=0.0, bias=True):
         super().__init__()
-        self.attn = nn.MultiheadAttention(
-            embed_dim=chans,
-            num_heads=num_heads,
-            dropout=dropout,
-            batch_first=True,
-            bias=bias)
+        self.attn = nn.MultiheadAttention(embed_dim=chans, num_heads=num_heads, dropout=dropout, batch_first=True, bias=bias)
 
     def forward(self, x):
         # x: B, C, H, W
@@ -152,6 +113,7 @@ class GlobalAttention(nn.Module):
         # reshape back
         out = out.view(B, H, W, C)
         return out
+
 
 class AttentionBlock(nn.Module):
     """
@@ -172,7 +134,7 @@ class AttentionBlock(nn.Module):
         use_mlp=True,
         bias=True,
         attention_mode="neighborhood",
-        attn_kernel_shape=(13,13)
+        attn_kernel_shape=(13, 13),
     ):
         super().__init__()
 
@@ -202,12 +164,7 @@ class AttentionBlock(nn.Module):
                 proj_drop=drop_rate,
             )
         else:
-            self.self_attn = GlobalAttention(
-                chans,
-                num_heads=num_heads,
-                dropout=drop_rate,
-                bias=bias
-            )
+            self.self_attn = GlobalAttention(chans, num_heads=num_heads, dropout=drop_rate, bias=bias)
 
         self.skip0 = nn.Identity()
 
@@ -234,8 +191,8 @@ class AttentionBlock(nn.Module):
 
         x = self.norm0(x)
 
-        x = x.permute(0,2,3,1)
-        x = self.self_attn(x).permute(0,3,1,2)
+        x = x.permute(0, 2, 3, 1)
+        x = self.self_attn(x).permute(0, 3, 1, 2)
 
         if hasattr(self, "skip0"):
             x = x + self.skip0(residual)
@@ -349,8 +306,8 @@ class Transformer(nn.Module):
         pos_embed="spectral",
         bias=True,
         attention_mode="neighborhood",
-        attn_kernel_shape=(13,13),
-        upsampling_method="conv"
+        attn_kernel_shape=(13, 13),
+        upsampling_method="conv",
     ):
         super().__init__()
 
@@ -425,7 +382,7 @@ class Transformer(nn.Module):
                 use_mlp=use_mlp,
                 bias=bias,
                 attention_mode=attention_mode,
-                attn_kernel_shape=attn_kernel_shape
+                attn_kernel_shape=attn_kernel_shape,
             )
 
             self.blocks.append(block)
@@ -439,7 +396,7 @@ class Transformer(nn.Module):
             kernel_shape=self.encoder_kernel_shape,
             groups=1,
             bias=bias,
-            upsampling_method=upsampling_method
+            upsampling_method=upsampling_method,
         )
 
     @torch.jit.ignore
@@ -468,27 +425,3 @@ class Transformer(nn.Module):
             x = x + residual
 
         return x
-
-if __name__ == "__main__":
-    model = Transformer(
-        img_size=(128, 256),
-        scale_factor=2,
-        in_chans=3,
-        out_chans=3,
-        embed_dim=256,
-        num_layers=1,
-        activation_function="gelu",
-        encoder_kernel_shape=(2, 2),
-        num_heads=1,
-        use_mlp=True,
-        mlp_ratio=2.0,
-        drop_rate=0.0,
-        drop_path_rate=0.0,
-        normalization_layer="none",
-        residual_prediction=False,
-        pos_embed="spectral",
-        bias=False,
-        upsampling_method="pixel_shuffle",
-        attn_kernel_shape=(5,5))
-    x = torch.randn(1,3,128,256)
-    print(model(x).shape)

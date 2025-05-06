@@ -55,26 +55,19 @@ class OverlapPatchMerging(nn.Module):
         # conv
         stride_h = in_shape[0] // out_shape[0]
         stride_w = in_shape[1] // out_shape[1]
-        pad_h = math.ceil(((out_shape[0] - 1) * stride_h
-                        - in_shape[0]
-                        + kernel_shape[0]) / 2)
-        pad_w = math.ceil(((out_shape[1] - 1) * stride_w
-                        - in_shape[1]
-                        + kernel_shape[1]) / 2)
+        pad_h = math.ceil(((out_shape[0] - 1) * stride_h - in_shape[0] + kernel_shape[0]) / 2)
+        pad_w = math.ceil(((out_shape[1] - 1) * stride_w - in_shape[1] + kernel_shape[1]) / 2)
         self.conv = nn.Conv2d(
-                in_channels,
-                out_channels,
-                kernel_size=kernel_shape,
-                bias=bias,
-                stride=(stride_h, stride_w),
-                padding=(pad_h, pad_w),
+            in_channels,
+            out_channels,
+            kernel_size=kernel_shape,
+            bias=bias,
+            stride=(stride_h, stride_w),
+            padding=(pad_h, pad_w),
         )
 
         # layer norm
-        self.norm = nn.LayerNorm((out_channels),
-                                 eps=1e-05,
-                                 elementwise_affine=True,
-                                 bias=True)
+        self.norm = nn.LayerNorm((out_channels), eps=1e-05, elementwise_affine=True, bias=True)
 
         self.apply(self._init_weights)
 
@@ -87,72 +80,44 @@ class OverlapPatchMerging(nn.Module):
         x = self.conv(x)
 
         # permute
-        x = x.permute(0,2,3,1)
+        x = x.permute(0, 2, 3, 1)
         x = self.norm(x)
-        out = x.permute(0,3,1,2)
+        out = x.permute(0, 3, 1, 2)
 
         return out
 
 
 class MixFFN(nn.Module):
     def __init__(
-            self,
-            shape,
-            inout_channels,
-            hidden_channels,
-            mlp_bias=True,
-            kernel_shape=(3, 3),
-            conv_bias=False,
-            activation=nn.GELU,
-            use_mlp=False,
-            drop_path=0.,
-            ):
+        self,
+        shape,
+        inout_channels,
+        hidden_channels,
+        mlp_bias=True,
+        kernel_shape=(3, 3),
+        conv_bias=False,
+        activation=nn.GELU,
+        use_mlp=False,
+        drop_path=0.0,
+    ):
         super().__init__()
 
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
-        self.norm = nn.LayerNorm((inout_channels),
-                                 eps=1e-05,
-                                 elementwise_affine=True,
-                                 bias=True)
+        self.norm = nn.LayerNorm((inout_channels), eps=1e-05, elementwise_affine=True, bias=True)
 
         if use_mlp:
             # although the paper says MLP, it uses a single linear layer
-            self.mlp_in = MLP(
-                inout_channels,
-                hidden_features=hidden_channels,
-                out_features=inout_channels,
-                act_layer=activation,
-                output_bias=False,
-                drop_rate=0.0)
+            self.mlp_in = MLP(inout_channels, hidden_features=hidden_channels, out_features=inout_channels, act_layer=activation, output_bias=False, drop_rate=0.0)
         else:
-            self.mlp_in = nn.Conv2d(
-                in_channels=inout_channels,
-                out_channels=inout_channels,
-                kernel_size=1,
-                bias=True)
+            self.mlp_in = nn.Conv2d(in_channels=inout_channels, out_channels=inout_channels, kernel_size=1, bias=True)
 
-        self.conv = nn.Conv2d(
-            inout_channels,
-            inout_channels,
-            kernel_size=kernel_shape,
-            groups=inout_channels,
-            bias=conv_bias,
-            padding="same"
-            )
+        self.conv = nn.Conv2d(inout_channels, inout_channels, kernel_size=kernel_shape, groups=inout_channels, bias=conv_bias, padding="same")
 
         if use_mlp:
-            self.mlp_out = MLP(inout_channels,
-                               hidden_features=hidden_channels,
-                               out_features=inout_channels,
-                               act_layer=activation,
-                               output_bias=False,
-                               drop_rate=0.0)
+            self.mlp_out = MLP(inout_channels, hidden_features=hidden_channels, out_features=inout_channels, act_layer=activation, output_bias=False, drop_rate=0.0)
         else:
-            self.mlp_out = nn.Conv2d(in_channels=inout_channels,
-                                     out_channels=inout_channels,
-                                     kernel_size=1,
-                                     bias=True)
+            self.mlp_out = nn.Conv2d(in_channels=inout_channels, out_channels=inout_channels, kernel_size=1, bias=True)
 
         self.act = activation()
 
@@ -160,22 +125,21 @@ class MixFFN(nn.Module):
 
     def _init_weights(self, m):
         if isinstance(m, nn.Conv2d):
-            nn.init.trunc_normal_(m.weight, std=.02)
+            nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         residual = x
 
         # norm
-        x = x.permute(0,2,3,1)
+        x = x.permute(0, 2, 3, 1)
         x = self.norm(x)
-        x = x.permute(0,3,1,2)
+        x = x.permute(0, 3, 1, 2)
 
         # NOTE: we add another activation here
         # because in the paper they only use depthwise conv,
@@ -191,6 +155,7 @@ class MixFFN(nn.Module):
 
         return residual + self.drop_path(x)
 
+
 class GlobalAttention(nn.Module):
     """
     Global self-attention block over 2D inputs using MultiheadAttention.
@@ -198,14 +163,10 @@ class GlobalAttention(nn.Module):
     Input shape: (B, C, H, W)
     Output shape: (B, C, H, W) with residual skip.
     """
+
     def __init__(self, chans, num_heads=8, dropout=0.0, bias=False):
         super().__init__()
-        self.attn = nn.MultiheadAttention(
-            embed_dim=chans,
-            num_heads=num_heads,
-            dropout=dropout,
-            batch_first=True,
-            bias=bias)
+        self.attn = nn.MultiheadAttention(embed_dim=chans, num_heads=num_heads, dropout=dropout, batch_first=True, bias=bias)
 
     def forward(self, x):
         # x: B, C, H, W
@@ -218,50 +179,26 @@ class GlobalAttention(nn.Module):
         out = out.view(B, H, W, C)
         return out
 
+
 class AttentionWrapper(nn.Module):
-    def __init__(
-            self,
-            channels,
-            shape,
-            heads,
-            pre_norm=False,
-            attention_drop_rate=0.,
-            drop_path=0.,
-            attention_mode="neighborhood",
-            kernel_shape=(13,13)
-    ):
+    def __init__(self, channels, shape, heads, pre_norm=False, attention_drop_rate=0.0, drop_path=0.0, attention_mode="neighborhood", kernel_shape=(13, 13)):
         super().__init__()
 
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         self.attention_mode = attention_mode
 
         if attention_mode == "neighborhood":
             self.att = NeighborhoodAttention(
-                channels,
-                kernel_size=kernel_shape,
-                dilation=1,
-                num_heads=heads,
-                qk_scale=None,
-                attn_drop=attention_drop_rate,
-                proj_drop=0.0,
-                qkv_bias=True
+                channels, kernel_size=kernel_shape, dilation=1, num_heads=heads, qk_scale=None, attn_drop=attention_drop_rate, proj_drop=0.0, qkv_bias=True
             )
         elif attention_mode == "global":
-            self.att = GlobalAttention(
-                channels,
-                num_heads=heads,
-                dropout=attention_drop_rate,
-                bias=True
-            )
+            self.att = GlobalAttention(channels, num_heads=heads, dropout=attention_drop_rate, bias=True)
         else:
             raise ValueError(f"Unknown attention mode function {attention_mode}")
 
         self.norm = None
         if pre_norm:
-            self.norm = nn.LayerNorm((channels),
-                                     eps=1e-05,
-                                     elementwise_affine=True,
-                                     bias=True)
+            self.norm = nn.LayerNorm((channels), eps=1e-05, elementwise_affine=True, bias=True)
 
         self.apply(self._init_weights)
 
@@ -270,24 +207,20 @@ class AttentionWrapper(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
-        x = x.permute(0,2,3,1)
+        x = x.permute(0, 2, 3, 1)
         if self.norm is not None:
             x = self.norm(x)
 
-        if self.attention_mode == "neighborhood":
-            x = self.att(x)
-        else:
-            x = self.att(x)
-        x = x.permute(0,3,1,2)
+        x = self.att(x)
+        x = x.permute(0, 3, 1, 2)
         return residual + self.drop_path(x)
 
 
 class TransformerBlock(nn.Module):
     def __init__(
-	self,
+        self,
         in_shape,
         out_shape,
         in_channels,
@@ -295,12 +228,12 @@ class TransformerBlock(nn.Module):
         mlp_hidden_channels,
         nrep=1,
         heads=1,
-	    kernel_shape=(3, 3),
+        kernel_shape=(3, 3),
         activation=nn.GELU,
-        att_drop_rate=0.,
-        drop_path_rates=0.,
+        att_drop_rate=0.0,
+        drop_path_rates=0.0,
         attention_mode="neighborhood",
-        attn_kernel_shape=(13,13)
+        attn_kernel_shape=(13, 13),
     ):
         super().__init__()
 
@@ -330,7 +263,6 @@ class TransformerBlock(nn.Module):
             if attn_kernel_shape[1] % 2 == 0:
                 attn_kernel_shape[1] -= 1
 
-
         attn_kernel_shape = tuple(attn_kernel_shape)
 
         self.in_shape = in_shape
@@ -341,9 +273,9 @@ class TransformerBlock(nn.Module):
         if isinstance(drop_path_rates, float):
             drop_path_rates = [x.item() for x in torch.linspace(0, drop_path_rates, nrep)]
 
-        assert(len(drop_path_rates) == nrep)
+        assert len(drop_path_rates) == nrep
 
-        self.fwd =[
+        self.fwd = [
             OverlapPatchMerging(
                 in_shape=in_shape,
                 out_shape=out_shape,
@@ -364,7 +296,7 @@ class TransformerBlock(nn.Module):
                     attention_drop_rate=att_drop_rate,
                     drop_path=drop_path_rates[i],
                     attention_mode=attention_mode,
-                    kernel_shape=attn_kernel_shape
+                    kernel_shape=attn_kernel_shape,
                 )
             )
 
@@ -375,7 +307,7 @@ class TransformerBlock(nn.Module):
                     hidden_channels=mlp_hidden_channels,
                     mlp_bias=True,
                     kernel_shape=kernel_shape,
-      	            conv_bias=False,
+                    conv_bias=False,
                     activation=activation,
                     use_mlp=False,
                     drop_path=drop_path_rates[i],
@@ -386,10 +318,7 @@ class TransformerBlock(nn.Module):
         self.fwd = nn.Sequential(*self.fwd)
 
         # final norm
-        self.norm = nn.LayerNorm((out_channels),
-                                 eps=1e-05,
-                                 elementwise_affine=True,
-                                 bias=True)
+        self.norm = nn.LayerNorm((out_channels), eps=1e-05, elementwise_affine=True, bias=True)
 
         self.apply(self._init_weights)
 
@@ -402,48 +331,39 @@ class TransformerBlock(nn.Module):
         x = self.fwd(x)
 
         # apply norm
-        x = x.permute(0,2,3,1)
+        x = x.permute(0, 2, 3, 1)
         x = self.norm(x)
-        x = x.permute(0,3,1,2)
+        x = x.permute(0, 3, 1, 2)
 
         return x
 
 
 class Upsampling(nn.Module):
-    def __init__(self,
-                 in_shape,
-                 out_shape,
-                 in_channels,
-                 out_channels,
-                 hidden_channels,
-                 mlp_bias=True,
-                 kernel_shape=(3, 3),
-                 conv_bias=False,
-                 activation=nn.GELU,
-                 use_mlp=False,
+    def __init__(
+        self,
+        in_shape,
+        out_shape,
+        in_channels,
+        out_channels,
+        hidden_channels,
+        mlp_bias=True,
+        kernel_shape=(3, 3),
+        conv_bias=False,
+        activation=nn.GELU,
+        use_mlp=False,
     ):
         super().__init__()
         self.out_shape = out_shape
         if use_mlp:
-            self.mlp = MLP(
-                in_channels,
-                hidden_features=hidden_channels,
-                out_features=out_channels,
-                act_layer=activation,
-                output_bias=False,
-                drop_rate=0.0
-            )
+            self.mlp = MLP(in_channels, hidden_features=hidden_channels, out_features=out_channels, act_layer=activation, output_bias=False, drop_rate=0.0)
         else:
-            self.mlp = nn.Conv2d(in_channels=in_channels,
-                                 out_channels=out_channels,
-                                 kernel_size=1,
-                                 bias=True)
+            self.mlp = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=1, bias=True)
 
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Conv2d):
-            nn.init.trunc_normal_(m.weight, std=.02)
+            nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
@@ -527,7 +447,7 @@ class Segformer(nn.Module):
         att_drop_rate=0.0,
         drop_path_rate=0.1,
         attention_mode="neighborhood",
-        attn_kernel_shape=(13,13)
+        attn_kernel_shape=(13, 13),
     ):
         super().__init__()
 
@@ -540,8 +460,8 @@ class Segformer(nn.Module):
         self.depths = depths
         self.kernel_shape = kernel_shape
 
-        assert(len(self.heads) == self.num_blocks)
-        assert(len(self.depths) == self.num_blocks)
+        assert len(self.heads) == self.num_blocks
+        assert len(self.depths) == self.num_blocks
 
         # activation function
         if activation_function == "relu":
@@ -560,7 +480,7 @@ class Segformer(nn.Module):
         self.blocks = nn.ModuleList([])
         out_shape = img_size
         in_channels = in_chans
-        cur=0
+        cur = 0
         for i in range(self.num_blocks):
             out_shape_new = (out_shape[0] // scale_factor, out_shape[1] // scale_factor)
             out_channels = self.embed_dims[i]
@@ -576,9 +496,9 @@ class Segformer(nn.Module):
                     kernel_shape=kernel_shape,
                     activation=self.activation_function,
                     att_drop_rate=att_drop_rate,
-                    drop_path_rates=dpr[cur:cur+self.depths[i]],
+                    drop_path_rates=dpr[cur : cur + self.depths[i]],
                     attention_mode=attention_mode,
-                    attn_kernel_shape=attn_kernel_shape
+                    attn_kernel_shape=attn_kernel_shape,
                 )
             )
             cur += self.depths[i]
@@ -599,28 +519,23 @@ class Segformer(nn.Module):
                     mlp_bias=True,
                     kernel_shape=kernel_shape,
                     conv_bias=False,
-                    activation=nn.GELU
+                    activation=nn.GELU,
                 )
             )
 
         segmentation_head_dim = sum(self.embed_dims)
-        self.segmentation_head = nn.Conv2d(
-            in_channels=segmentation_head_dim,
-            out_channels=out_chans,
-            kernel_size=1,
-            bias=True)
+        self.segmentation_head = nn.Conv2d(in_channels=segmentation_head_dim, out_channels=out_chans, kernel_size=1, bias=True)
 
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Conv2d):
-            nn.init.trunc_normal_(m.weight, std=.02)
+            nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-
 
     def forward(self, x):
 
@@ -644,23 +559,3 @@ class Segformer(nn.Module):
         out = self.segmentation_head(upfeats)
 
         return out
-
-if __name__ == "__main__":
-    model = Segformer(
-        img_size=(128, 256),
-        in_chans=3,
-        out_chans=3,
-        embed_dims=[64, 128, 256, 512],
-        heads=[1, 2, 4, 8],
-        depths=[3, 4, 6, 3],
-        scale_factor=2,
-        activation_function="gelu",
-        kernel_shape=(3, 3),
-        mlp_ratio=2.0,
-        att_drop_rate=0.0,
-        drop_path_rate=0.1,
-        attention_mode="global",
-        attn_kernel_shape=(7,7)
-    )
-    x = torch.randn(1,3,128,256)
-    print(model(x).shape)

@@ -104,9 +104,8 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
     if dist.is_initialized():
         dist.barrier(device_ids=[device.index])
 
+    # accumulation buffers for metrics and losses
     losses = torch.zeros(num_examples, dtype=torch.float32, device=device)
-    # fno_times = np.zeros(num_samples)
-
     metrics = {}
     for metric in metrics_fns:
         metrics[metric] = torch.zeros(num_examples, dtype=torch.float32, device=device)
@@ -344,6 +343,7 @@ def main(
     logging = True
     if ddp:
         dist.init_process_group(backend="nccl")
+        world_size = dist.get_world_size()
         local_rank = dist.get_rank() % torch.cuda.device_count()
         logging = dist.get_rank() == 0
 
@@ -450,15 +450,15 @@ def main(
     # specify which models to train here
     models = [
         "transformer_sc2_layers4_e128",
-        "s2segformer_sc2_layers4_e512",
-        "s2nsegformer_sc2_layers4_e512",
-        "segformer_sc2_layers4_e512",
-        "nsegformer_sc2_layers4_e512",
-        "s2transformer_sc2_layers4_e128",
-        "s2ntransformer_sc2_layers4_e128",
-        "transformer_sc2_layers4_e128",
-        "ntransformer_sc2_layers4_e128",
-        "vit_sc2_layers4_e128"
+        # "s2segformer_sc2_layers4_e512",
+        # "s2nsegformer_sc2_layers4_e512",
+        # "segformer_sc2_layers4_e512",
+        # "nsegformer_sc2_layers4_e512",
+        # "s2transformer_sc2_layers4_e128",
+        # "s2ntransformer_sc2_layers4_e128",
+        # "transformer_sc2_layers4_e128",
+        # "ntransformer_sc2_layers4_e128",
+        # "vit_sc2_layers4_e128"
     ]
     models = {k: baseline_models[k] for k in models}
 
@@ -529,6 +529,7 @@ def main(
 
             if logging:
                 print(f"Training {model_name} with config {model_handle}")
+
             train_model(
                 model,
                 train_dataloader,
@@ -562,21 +563,29 @@ def main(
         torch.cuda.manual_seed(333)
 
         with torch.inference_mode():
+
+            # run the validation
             losses, metric_results = validate_model(
                 model, valid_dataloader, loss_fn, metrics_fns, os.path.join(exp_dir, "figures"), normalization=normalization, logging=logging, device=device
             )
-            metrics[model_name]["loss_mean"] = torch.mean(losses)
-            for metric in metric_results:
-                metrics[model_name][metric + " mean"] = torch.mean(metric_results[metric])
 
+            # gather losses and metrics into a single tensor
             if dist.is_initialized():
-                dist.all_reduce(metrics[model_name]["loss_mean"], dist.ReduceOp.AVG)
-                for metric in metric_results:
-                    dist.all_reduce(metrics[model_name][metric + " mean"], dist.ReduceOp.AVG)
+                losses_dist = torch.zeros(world_size * losses.shape[0], dtype=losses.dtype, device=device)
+                dist.all_gather_into_tensor(losses_dist, losses)
+                losses = losses_dist
+                for metric_name, metric in metric_results.items():
+                    metric_dist = torch.zeros(world_size * metric.shape[0], dtype=metric.dtype, device=device)
+                    dist.all_gather_into_tensor(metric_dist, metric)
+                    metric_results[metric_name] = metric_dist
 
-            metrics[model_name]["loss_mean"] = metrics[model_name]["loss_mean"].item()
+            # compute statistics
+            metrics[model_name]["loss mean"] = torch.mean(losses).item()
+            metrics[model_name]["loss std"] = torch.std(losses).item()
             for metric in metric_results:
-                metrics[model_name][metric + " mean"] = metrics[model_name][metric + " mean"].item()
+                metrics[model_name][metric + " mean"] = torch.mean(metric_results[metric]).item()
+                metrics[model_name][metric + " std"] = torch.std(metric_results[metric]).item()
+
             if train:
                 metrics[model_name]["training_time"] = training_time
 

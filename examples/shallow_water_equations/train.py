@@ -29,7 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os
+import os, sys
 import time
 import argparse
 from functools import partial
@@ -46,7 +46,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from torch_harmonics.examples import PdeDataset
+from torch_harmonics.examples.losses import L1LossS2, SquaredL2LossS2, L2LossS2, W11LossS2
 from torch_harmonics import RealSHT
+
+# import baseline models
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from model_registry import get_baseline_models
 
 # wandb logging
 try:
@@ -77,111 +82,20 @@ def log_weights_and_grads(model, iters=1):
     torch.save(store_dict, weights_and_grads_fname)
 
 
-def l2loss_sphere(solver, prd, tar, relative=False, squared=True):
-    loss = solver.integrate_grid((prd - tar) ** 2, dimensionless=True).sum(dim=-1)
-    if relative:
-        loss = loss / solver.integrate_grid(tar**2, dimensionless=True).sum(dim=-1)
-
-    if not squared:
-        loss = torch.sqrt(loss)
-    loss = loss.mean()
-
-    return loss
-
-
-def spectral_l2loss_sphere(solver, prd, tar, relative=False, squared=True):
-    # compute coefficients
-    coeffs = torch.view_as_real(solver.sht(prd - tar))
-    coeffs = coeffs[..., 0] ** 2 + coeffs[..., 1] ** 2
-    norm2 = coeffs[..., :, 0] + 2 * torch.sum(coeffs[..., :, 1:], dim=-1)
-    loss = torch.sum(norm2, dim=(-1, -2))
-
-    if relative:
-        tar_coeffs = torch.view_as_real(solver.sht(tar))
-        tar_coeffs = tar_coeffs[..., 0] ** 2 + tar_coeffs[..., 1] ** 2
-        tar_norm2 = tar_coeffs[..., :, 0] + 2 * torch.sum(tar_coeffs[..., :, 1:], dim=-1)
-        tar_norm2 = torch.sum(tar_norm2, dim=(-1, -2))
-        loss = loss / tar_norm2
-
-    if not squared:
-        loss = torch.sqrt(loss)
-    loss = loss.mean()
-
-    return loss
-
-
-def spectral_loss_sphere(solver, prd, tar, relative=False, squared=True):
-    # gradient weighting factors
-    lmax = solver.sht.lmax
-    ls = torch.arange(lmax).float()
-    spectral_weights = (ls * (ls + 1)).reshape(1, 1, -1, 1).to(prd.device)
-
-    # compute coefficients
-    coeffs = torch.view_as_real(solver.sht(prd - tar))
-    coeffs = coeffs[..., 0] ** 2 + coeffs[..., 1] ** 2
-    coeffs = spectral_weights * coeffs
-    norm2 = coeffs[..., :, 0] + 2 * torch.sum(coeffs[..., :, 1:], dim=-1)
-    loss = torch.sum(norm2, dim=(-1, -2))
-
-    if relative:
-        tar_coeffs = torch.view_as_real(solver.sht(tar))
-        tar_coeffs = tar_coeffs[..., 0] ** 2 + tar_coeffs[..., 1] ** 2
-        tar_coeffs = spectral_weights * tar_coeffs
-        tar_norm2 = tar_coeffs[..., :, 0] + 2 * torch.sum(tar_coeffs[..., :, 1:], dim=-1)
-        tar_norm2 = torch.sum(tar_norm2, dim=(-1, -2))
-        loss = loss / tar_norm2
-
-    if not squared:
-        loss = torch.sqrt(loss)
-    loss = loss.mean()
-
-    return loss
-
-
-def h1loss_sphere(solver, prd, tar, relative=False, squared=True):
-    # gradient weighting factors
-    lmax = solver.sht.lmax
-    ls = torch.arange(lmax).float()
-    spectral_weights = (ls * (ls + 1)).reshape(1, 1, -1, 1).to(prd.device)
-
-    # compute coefficients
-    coeffs = torch.view_as_real(solver.sht(prd - tar))
-    coeffs = coeffs[..., 0] ** 2 + coeffs[..., 1] ** 2
-    h1_coeffs = spectral_weights * coeffs
-    h1_norm2 = h1_coeffs[..., :, 0] + 2 * torch.sum(h1_coeffs[..., :, 1:], dim=-1)
-    l2_norm2 = coeffs[..., :, 0] + 2 * torch.sum(coeffs[..., :, 1:], dim=-1)
-    h1_loss = torch.sum(h1_norm2, dim=(-1, -2))
-    l2_loss = torch.sum(l2_norm2, dim=(-1, -2))
-
-    # strictly speaking this is not exactly h1 loss
-    if not squared:
-        loss = torch.sqrt(h1_loss) + torch.sqrt(l2_loss)
-    else:
-        loss = h1_loss + l2_loss
-
-    if relative:
-        raise NotImplementedError("Relative H1 loss not implemented")
-
-    loss = loss.mean()
-
-    return loss
-
-
-def fluct_l2loss_sphere(solver, prd, tar, inp, relative=False, polar_opt=0):
-    # compute the weighting factor first
-    fluct = solver.integrate_grid((tar - inp) ** 2, dimensionless=True, polar_opt=polar_opt)
-    weight = fluct / torch.sum(fluct, dim=-1, keepdim=True)
-    # weight = weight.reshape(*weight.shape, 1, 1)
-
-    loss = weight * solver.integrate_grid((prd - tar) ** 2, dimensionless=True, polar_opt=polar_opt)
-    if relative:
-        loss = loss / (weight * solver.integrate_grid(tar**2, dimensionless=True, polar_opt=polar_opt))
-    loss = torch.mean(loss)
-    return loss
-
-
 # rolls out the FNO and compares to the classical solver
-def autoregressive_inference(model, dataset, path_root, nsteps, autoreg_steps=10, nskip=1, plot_channel=0, nics=50):
+def autoregressive_inference(
+    model,
+    dataset,
+    loss_fn,
+    metrics_fns,
+    path_root,
+    nsteps,
+    autoreg_steps=10,
+    nskip=1,
+    plot_channel=0,
+    nics=50,
+    device=torch.device("cpu"),
+):
 
     model.eval()
 
@@ -189,9 +103,13 @@ def autoregressive_inference(model, dataset, path_root, nsteps, autoreg_steps=10
     if not os.path.isdir(path_root):
         os.makedirs(path_root, exist_ok=True)
 
-    losses = np.zeros(nics)
-    fno_times = np.zeros(nics)
-    nwp_times = np.zeros(nics)
+    # accumulation buffers for losses, metrics and runtimes
+    losses = torch.zeros(nics, dtype=torch.float32, device=device)
+    metrics = {}
+    for metric in metrics_fns:
+        metrics[metric] = torch.zeros(nics, dtype=torch.float32, device=device)
+    model_times = torch.zeros(nics, dtype=torch.float32, device=device)
+    solver_times = torch.zeros(nics, dtype=torch.float32, device=device)
 
     # accumulation buffers for the power spectrum
     prd_mean_coeffs = []
@@ -226,7 +144,7 @@ def autoregressive_inference(model, dataset, path_root, nsteps, autoreg_steps=10
                 plt.savefig(os.path.join(path_root, "pred_" + str(i // nskip) + ".png"))
                 plt.close()
 
-        fno_times[iic] = time.time() - start_time
+        model_times[iic] = time.time() - start_time
 
         # classical model
         start_time = time.time()
@@ -244,7 +162,7 @@ def autoregressive_inference(model, dataset, path_root, nsteps, autoreg_steps=10
                 plt.savefig(os.path.join(path_root, "truth_" + str(i // nskip) + ".png"))
                 plt.close()
 
-        nwp_times[iic] = time.time() - start_time
+        solver_times[iic] = time.time() - start_time
 
         # compute power spectrum and add it to the buffers
         prd_mean_coeffs.append(torch.stack(prd_coeffs, 0))
@@ -253,7 +171,11 @@ def autoregressive_inference(model, dataset, path_root, nsteps, autoreg_steps=10
         # ref = (dataset.solver.spec2grid(uspec) - inp_mean) / torch.sqrt(inp_var)
         ref = dataset.solver.spec2grid(uspec)
         prd = prd * torch.sqrt(inp_var) + inp_mean
-        losses[iic] = l2loss_sphere(dataset.solver, prd, ref, relative=True).item()
+        losses[iic] = loss_fn(prd, ref)
+        for metric in metrics_fns:
+            metric_buff = metrics[metric]
+            metric_fn = metrics_fns[metric]
+            metric_buff[iic] = metric_fn(prd, ref)
 
     # compute the averaged powerspectra of prediction and reference
     with torch.no_grad():
@@ -281,11 +203,27 @@ def autoregressive_inference(model, dataset, path_root, nsteps, autoreg_steps=10
         fig.clf()
         plt.close()
 
-    return losses, fno_times, nwp_times
+    return losses, metrics, model_times, solver_times
 
 
 # training function
-def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=20, nfuture=0, num_examples=256, num_valid=8, loss_fn="l2", amp_mode="none", log_grads=0):
+def train_model(
+    model,
+    dataloader,
+    loss_fn,
+    metrics_fns,
+    optimizer,
+    gscaler,
+    scheduler=None,
+    nepochs=20,
+    nfuture=0,
+    num_examples=256,
+    num_valid=8,
+    amp_mode="none",
+    log_grads=0,
+    logging=True,
+    device=torch.device("cpu"),
+):
 
     train_start = time.time()
 
@@ -322,18 +260,7 @@ def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=2
                 for _ in range(nfuture):
                     prd = model(prd)
 
-                if loss_fn == "l2":
-                    loss = l2loss_sphere(solver, prd, tar, relative=False)
-                elif loss_fn == "spectral l2":
-                    loss = spectral_l2loss_sphere(solver, prd, tar, relative=False)
-                elif loss_fn == "h1":
-                    loss = h1loss_sphere(solver, prd, tar, relative=False)
-                elif loss_fn == "spectral":
-                    loss = spectral_loss_sphere(solver, prd, tar, relative=False)
-                elif loss_fn == "fluct":
-                    loss = fluct_l2loss_sphere(solver, prd, tar, inp, relative=True)
-                else:
-                    raise NotImplementedError(f"Unknown loss function {loss_fn}")
+                loss = loss_fn(prd, tar)
 
             accumulated_loss += loss.item() * inp.size(0)
 
@@ -353,35 +280,58 @@ def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=2
         dataloader.dataset.set_initial_condition("random")
         dataloader.dataset.set_num_examples(num_valid)
 
-        # perform validation
-        valid_loss = 0
+        # eval mode
         model.eval()
+
+        # prepare loss buffer for validation loss
+        valid_loss = torch.zeros(2, dtype=torch.float32, device=device)
+
+        # prepare metrics buffer for accumulation of validation metrics
+        valid_metrics = {}
+        for metric in metrics_fns:
+            valid_metrics[metric] = torch.zeros(2, dtype=torch.float32, device=device)
+
+        # perform validation
         with torch.no_grad():
             for inp, tar in dataloader:
                 prd = model(inp)
                 for _ in range(nfuture):
                     prd = model(prd)
-                loss = l2loss_sphere(solver, prd, tar, relative=True)
+                loss = loss_fn(prd, tar).item()
 
-                valid_loss += loss.item() * inp.size(0)
+                valid_loss[0] += loss * inp.size(0)
+                valid_loss[1] += inp.size(0)
 
-        valid_loss = valid_loss / len(dataloader.dataset)
+                for metric in metrics_fns:
+                    metric_buff = valid_metrics[metric]
+                    metric_fn = metrics_fns[metric]
+                    metric_buff[0] += metric_fn(prd, tar) * inp.size(0)
+                    metric_buff[1] += inp.size(0)
+
+        valid_loss = (valid_loss[0] / valid_loss[1]).item()
+        for metric in valid_metrics:
+            valid_metrics[metric] = (valid_metrics[metric][0] / valid_metrics[metric][1]).item()
 
         if scheduler is not None:
             scheduler.step(valid_loss)
 
         epoch_time = time.time() - epoch_start
 
-        print(f"--------------------------------------------------------------------------------")
-        print(f"Epoch {epoch} summary:")
-        print(f"time taken: {epoch_time}")
-        print(f"accumulated training loss: {accumulated_loss}")
-        print(f"relative validation loss: {valid_loss}")
+        if logging:
+            print(f"--------------------------------------------------------------------------------")
+            print(f"Epoch {epoch} summary:")
+            print(f"time taken: {epoch_time:.2f}")
+            print(f"accumulated training loss: {accumulated_loss}")
+            print(f"validation loss: {valid_loss}")
+            for metric in valid_metrics:
+                print(f"{metric}: {valid_metrics[metric]}")
 
-        if wandb is not None:
             if wandb.run is not None:
                 current_lr = optimizer.param_groups[0]["lr"]
-                wandb.log({"loss": accumulated_loss, "validation loss": valid_loss, "learning rate": current_lr})
+                log_dict = {"loss": accumulated_loss, "validation loss": valid_loss, "learning rate": current_lr}
+                for metric in valid_metrics:
+                    log_dict[metric] = valid_metrics[metric]
+                wandb.log(log_dict)
 
     train_time = time.time() - train_start
 
@@ -391,6 +341,9 @@ def train_model(model, dataloader, optimizer, gscaler, scheduler=None, nepochs=2
 
 
 def main(root_path, pretrain_epochs=200, finetune_epochs=20, batch_size=1, learning_rate=1e-3, train=True, load_checkpoint=False, amp_mode="none", log_grads=0):
+
+    # enable logging by default
+    logging = True
 
     # set seed
     torch.manual_seed(333)
@@ -418,76 +371,24 @@ def main(root_path, pretrain_epochs=200, finetune_epochs=20, batch_size=1, learn
 
     # prepare dicts containing models and corresponding metrics
     models = {}
+
+    # get baseline model registry
+    baseline_models = get_baseline_models(img_size=(nlat, nlon), in_chans=3, out_chans=3, grid=grid)
+
+    # specify which models to train here
+    models = ["sfno_sc2_layers4_e64"]
+    models = {k: baseline_models[k] for k in models}
+
+    # loss function
+    loss_fn = SquaredL2LossS2(nlat=nlat, nlon=nlon, grid=grid).to(device)
+
+    # dictionary for logging the metrics
     metrics = {}
-
-    from torch_harmonics.examples.models import SphericalFourierNeuralOperator as SFNO
-    from torch_harmonics.examples.models import LocalSphericalNeuralOperator as LSNO
-    from torch_harmonics.examples.models import SphericalTransformer as S2T
-
-    from examples.benchmark_models.transformer import Transformer
-
-    # models[f"sfno_sc2_layers4_e32"] = partial(
-    #     SFNO,
-    #     img_size=(nlat, nlon),
-    #     grid=grid,
-    #     num_layers=4,
-    #     scale_factor=2,
-    #     embed_dim=32,
-    #     activation_function="gelu",
-    #     residual_prediction=True,
-    #     use_mlp=True,
-    #     normalization_layer="none",
-    # )
-
-    # models[f"lsno_sc2_layers4_e32_morlet"] = partial(
-    #     LSNO,
-    #     img_size=(nlat, nlon),
-    #     grid=grid,
-    #     num_layers=4,
-    #     scale_factor=2,
-    #     embed_dim=32,
-    #     activation_function="gelu",
-    #     residual_prediction=False,
-    #     use_mlp=True,
-    #     normalization_layer="none",
-    #     kernel_shape=(4, 4),
-    #     encoder_kernel_shape=(4, 4),
-    #     filter_basis_type="morlet",
-    #     upsample_sht = True,
-    # )
-
-    models[f"t_sc2_layers4_e32_h1"] = partial(
-        Transformer,
-        img_size=(nlat, nlon),
-        num_layers=4,
-        scale_factor=2,
-        embed_dim=32,
-        activation_function="gelu",
-        residual_prediction=False,
-        pos_embed="spectral",
-        num_heads=1,
-        use_mlp=True,
-        normalization_layer="instance_norm",
-        encoder_kernel_shape=(4, 4),
-    )
-
-    models[f"s2t_sc2_layers4_e32_h1"] = partial(
-        S2T,
-        img_size=(nlat, nlon),
-        grid=grid,
-        num_layers=4,
-        scale_factor=2,
-        embed_dim=32,
-        activation_function="gelu",
-        residual_prediction=False,
-        pos_embed="spectral",
-        num_heads=1,
-        use_mlp=True,
-        normalization_layer="instance_norm",
-        encoder_kernel_shape=(4, 4),
-        filter_basis_type="morlet",
-        upsample_sht=True,
-    )
+    metrics_fns = {
+        "L2 error": L2LossS2(nlat=nlat, nlon=nlon, grid=grid).to(device=device),
+        "L1 error": L1LossS2(nlat=nlat, nlon=nlon, grid=grid).to(device=device),
+        "W11 error": W11LossS2(nlat=nlat, nlon=nlon, grid=grid).to(device=device),
+    }
 
     # iterate over models and train each model
     for model_name, model_handle in models.items():
@@ -511,8 +412,10 @@ def main(root_path, pretrain_epochs=200, finetune_epochs=20, batch_size=1, learn
 
         # run the training
         if train:
-            if wandb is not None:
-                run = wandb.init(project="local sno spherical swe", group=model_name, name=model_name + "_" + str(time.time()), config=model_handle.keywords)
+            if logging and wandb is not None:
+                run = wandb.init(project="spherical shallow water equations", group=model_name, name=model_name + "_" + str(time.time()), config=model_handle.keywords)
+            else:
+                run = None
 
             # optimizer:
             optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -521,22 +424,54 @@ def main(root_path, pretrain_epochs=200, finetune_epochs=20, batch_size=1, learn
 
             start_time = time.time()
 
-            print(f"Training {model_name}, single step")
-            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=pretrain_epochs, loss_fn="l2", amp_mode=amp_mode, log_grads=log_grads)
+            if logging:
+                print(f"Training {model_name}, single step")
+
+            train_model(
+                model,
+                dataloader,
+                loss_fn,
+                metrics_fns,
+                optimizer,
+                gscaler,
+                scheduler,
+                nepochs=pretrain_epochs,
+                amp_mode=amp_mode,
+                log_grads=log_grads,
+                logging=logging,
+                device=device,
+            )
 
             if finetune_epochs > 0:
                 nfuture = 1
-                print(f"Finetuning {model_name}, {nfuture} step")
+
+                if logging:
+                    print(f"Finetuning {model_name}, {nfuture} step")
+
                 optimizer = torch.optim.Adam(model.parameters(), lr=0.1 * learning_rate)
                 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
                 gscaler = torch.GradScaler(enabled=(amp_mode != "none"))
                 dataloader.dataset.nsteps = 2 * dt // dt_solver
-                train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=finetune_epochs, loss_fn="l2", nfuture=nfuture, amp_mode=amp_mode, log_grads=log_grads)
+                train_model(
+                    model,
+                    dataloader,
+                    loss_fn,
+                    metrics_fns,
+                    optimizer,
+                    gscaler,
+                    scheduler,
+                    nepochs=finetune_epochs,
+                    nfuture=nfuture,
+                    amp_mode=amp_mode,
+                    log_grads=log_grads,
+                    logging=logging,
+                    device=device,
+                )
                 dataloader.dataset.nsteps = 1 * dt // dt_solver
 
             training_time = time.time() - start_time
 
-            if wandb is not None:
+            if logging and run is not None:
                 run.finish()
 
             torch.save(model.state_dict(), os.path.join(exp_dir, "checkpoint.pt"))
@@ -545,17 +480,28 @@ def main(root_path, pretrain_epochs=200, finetune_epochs=20, batch_size=1, learn
         torch.manual_seed(333)
         torch.cuda.manual_seed(333)
 
+        # run validation
+        print(f"Validating {model_name}")
         with torch.inference_mode():
-            losses, fno_times, nwp_times = autoregressive_inference(model, dataset, os.path.join(exp_dir, "figures"), nsteps=nsteps, autoreg_steps=30, nics=50)
-            metrics[model_name]["loss_mean"] = np.mean(losses)
-            metrics[model_name]["loss_std"] = np.std(losses)
-            metrics[model_name]["fno_time_mean"] = np.mean(fno_times)
-            metrics[model_name]["fno_time_std"] = np.std(fno_times)
-            metrics[model_name]["nwp_time_mean"] = np.mean(nwp_times)
-            metrics[model_name]["nwp_time_std"] = np.std(nwp_times)
+            losses, metric_results, model_times, solver_times = autoregressive_inference(
+                model, dataset, loss_fn, metrics_fns, os.path.join(exp_dir, "figures"), nsteps=nsteps, autoreg_steps=30, nics=50, device=device
+            )
+
+            # compute statistics
+            metrics[model_name]["loss mean"] = torch.mean(losses).item()
+            metrics[model_name]["loss std"] = torch.std(losses).item()
+            metrics[model_name]["model time mean"] = torch.mean(model_times)
+            metrics[model_name]["model time std"] = torch.std(model_times)
+            metrics[model_name]["solver time mean"] = torch.mean(solver_times)
+            metrics[model_name]["solver time std"] = torch.std(solver_times)
+            for metric in metric_results:
+                metrics[model_name][metric + " mean"] = torch.mean(metric_results[metric]).item()
+                metrics[model_name][metric + " std"] = torch.std(metric_results[metric]).item()
+
             if train:
                 metrics[model_name]["training_time"] = training_time
 
+    # output metrics to data frame
     df = pd.DataFrame(metrics)
     if not os.path.isdir(
         os.path.join(
@@ -581,7 +527,7 @@ if __name__ == "__main__":
     parser.add_argument("--pretrain_epochs", default=1, type=int, help="Number of pretraining epochs.")
     parser.add_argument("--finetune_epochs", default=0, type=int, help="Number of fine-tuning epochs.")
     parser.add_argument("--batch_size", default=4, type=int, help="Switch for overriding batch size in the configuration file.")
-    parser.add_argument("--learning_rate", default=1e-4, type=float, help="Switch to override learning rate.")
+    parser.add_argument("--learning_rate", default=1e-3, type=float, help="Switch to override learning rate.")
     parser.add_argument("--resume", action="store_true", help="Reload checkpoints.")
     parser.add_argument("--amp_mode", default="none", type=str, choices=["none", "bf16", "fp16"], help="Switch to enable AMP.")
     args = parser.parse_args()

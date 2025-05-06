@@ -38,13 +38,14 @@ from abc import ABC, abstractmethod
 from torch_harmonics.quadrature import _precompute_latitudes
 
 
-def get_quadrature_weights(nlat: int, nlon: int, grid: str, tile: bool = False) -> torch.Tensor:
+def get_quadrature_weights(nlat: int, nlon: int, grid: str, tile: bool = False, normalized: bool = True) -> torch.Tensor:
     # area weights
     _, q = _precompute_latitudes(nlat=nlat, grid=grid)
     q = q.reshape(-1, 1) * 2 * torch.pi / nlon
 
     # numerical precision can be an issue here, make sure it sums to 1:
-    q = q / torch.sum(q) / float(nlon)
+    if normalized:
+        q = q / torch.sum(q) / float(nlon)
 
     if tile:
         q = torch.tile(q, (1, nlon)).contiguous()
@@ -174,14 +175,15 @@ class FocalLossS2(nn.Module):
 class SphericalLossBase(nn.Module, ABC):
     """Abstract base class for spherical losses that handles common initialization and integration."""
 
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
+    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", normalized: bool = True):
         super().__init__()
 
         self.nlat = nlat
         self.nlon = nlon
         self.grid = grid
 
-        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid)
+        # get quadrature weights - these sum to 1!
+        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid, normalized=normalized)
         self.register_buffer("quad_weights", q)
 
     def _integrate_sphere(self, ugrid, mask=None):
@@ -232,13 +234,16 @@ class SquaredL2LossS2(SphericalLossBase):
     def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
         return torch.square(prd - tar)
 
+
 class L1LossS2(SphericalLossBase):
     def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
         return torch.abs(prd - tar)
 
+
 class L2LossS2(SquaredL2LossS2):
     def _post_integration_hook(self, loss: torch.Tensor) -> torch.Tensor:
         return torch.sqrt(loss)
+
 
 class W11LossS2(SphericalLossBase):
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
@@ -299,7 +304,7 @@ class NormalLossS2(SphericalLossBase):
         # Make sure x is reshaped to have a batch dimension if it's missing
         if x.dim() == 2:
             x = x.unsqueeze(0)  # Add batch dimension
-        
+
         x_prime_fft2_phi_h = torch.fft.ifft2(1j * self.k_phi_mesh * torch.fft.fft2(x)).real
         x_prime_fft2_theta_h = torch.fft.ifft2(1j * self.k_theta_mesh * torch.fft.fft2(x)).real
         return x_prime_fft2_theta_h, x_prime_fft2_phi_h
@@ -309,13 +314,13 @@ class NormalLossS2(SphericalLossBase):
         # Ensure x has a batch dimension
         if x.dim() == 2:
             x = x.unsqueeze(0)
-            
+
         grad_lat, grad_lon = self.compute_gradients(x)
-        
+
         # Create 3D normal vectors
         ones = torch.ones_like(x)
         normals = torch.stack([-grad_lon, -grad_lat, ones], dim=1)
-        
+
         # Normalize along component dimension
         normals = F.normalize(normals, p=2, dim=1)
         return normals
@@ -327,16 +332,16 @@ class NormalLossS2(SphericalLossBase):
             prd = prd.unsqueeze(0)
         if tar.dim() == 2:
             tar = tar.unsqueeze(0)
-            
+
         # For 4D tensors (batch, channel, height, width), remove channel if it's 1
         if prd.dim() == 4 and prd.size(1) == 1:
             prd = prd.squeeze(1)
         if tar.dim() == 4 and tar.size(1) == 1:
             tar = tar.squeeze(1)
-            
+
         pred_normals = self.compute_normals(prd)
         tar_normals = self.compute_normals(tar)
-        
+
         # Compute cosine similarity
         normal_loss = 1 - torch.sum(pred_normals * tar_normals, dim=1, keepdim=True)
         return normal_loss

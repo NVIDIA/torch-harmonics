@@ -38,14 +38,14 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from baseline_models import Transformer, UNet, Segformer
 from torch_harmonics.examples.models import SphericalFourierNeuralOperator, LocalSphericalNeuralOperator, SphericalTransformer, SphericalUNet, SphericalSegformer
 
-def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3):
+def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, grid="equiangular"):
 
     # prepare dicts containing models and corresponding metrics
     model_registry = dict(
         sfno_sc2_layers4_e64 = partial(
             SphericalFourierNeuralOperator,
             img_size=img_size,
-            grid="equiangular",
+            grid=grid,
             in_chans=in_chans,
             out_chans=out_chans,
             num_layers=4,
@@ -59,7 +59,7 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3):
         lsno_sc2_layers4_e64 = partial(
             LocalSphericalNeuralOperator,
             img_size=img_size,
-            grid="equiangular",
+            grid=grid,
             in_chans=in_chans,
             out_chans=out_chans,
             num_layers=4,
@@ -77,7 +77,7 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3):
         s2unet_sc2_layers4_e512 = partial(
             SphericalUNet,
             img_size=img_size,
-            grid="equiangular",
+            grid=grid,
             grid_internal="equiangular",
             in_chans=in_chans,
             out_chans=out_chans,
@@ -97,7 +97,7 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3):
         s2segformer_sc2_layers4_e512 = partial(
             SphericalSegformer,
             img_size=img_size,
-            grid="equiangular",
+            grid=grid,
             grid_internal="equiangular",
             in_chans=in_chans,
             out_chans=out_chans,
@@ -116,7 +116,7 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3):
         s2nsegformer_sc2_layers4_e512 = partial(
             SphericalSegformer,
             img_size=img_size,
-            grid="equiangular",
+            grid=grid,
             grid_internal="equiangular",
             in_chans=in_chans,
             out_chans=out_chans,
@@ -167,7 +167,7 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3):
         s2transformer_sc2_layers4_e128 = partial(
             SphericalTransformer,
             img_size=img_size,
-            grid="equiangular",
+            grid=grid,
             in_chans=in_chans,
             out_chans=out_chans,
             num_layers=4,
@@ -186,7 +186,7 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3):
         s2ntransformer_sc2_layers4_e128 = partial(
             SphericalTransformer,
             img_size=img_size,
-            grid="equiangular",
+            grid=grid,
             in_chans=in_chans,
             out_chans=out_chans,
             num_layers=4,
