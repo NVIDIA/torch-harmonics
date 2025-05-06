@@ -177,7 +177,11 @@ class AttentionS2(nn.Module):
         
         # reshape
         B, _, _, C = out.shape
-        out = out.permute(0,2,3,1).reshape(B, self.num_heads, C, self.nlat_out, self.nlon_out)
+        # (B, heads, H*W, C)
+        out = out.permute(0,1,3,2)
+        # (B, heads, C, H*W)
+        out = out.reshape(B, self.num_heads, C, self.nlat_out, self.nlon_out)
+        # (B, heads, C, H, W)
         out = nn.functional.conv3d(out, self.proj_weights, bias=self.proj_bias).squeeze(1)
         
         return out
