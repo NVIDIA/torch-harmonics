@@ -50,7 +50,7 @@ try:
     _cuda_extension_available = True
 except ImportError as err:
     attention_cuda_extension = None
-    _cuda_extension_available = False 
+    _cuda_extension_available = False
 
 class AttentionS2(nn.Module):
     """
@@ -92,17 +92,17 @@ class AttentionS2(nn.Module):
             drop_rate: Optional[float]=0.0,
     ):
         super().__init__()
-        
+
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
-        
+
         self.in_channels = in_channels
         self.num_heads = num_heads
         self.k_channels = in_channels if k_channels is None else k_channels
         self.out_channels = in_channels if out_channels is None else out_channels
         self.drop_rate = drop_rate
         self.scale = scale
-    
+
         # integration weights
         _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
         quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
@@ -124,7 +124,7 @@ class AttentionS2(nn.Module):
         self.v_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.num_heads * self.out_channels, self.in_channels, 1, 1) - 1))
         scale_proj = math.sqrt(3.0 / self.num_heads)
         self.proj_weights = nn.Parameter(scale_proj * (2 * torch.rand(1, self.num_heads, 1, 1, 1) - 1))
-        
+
         if bias:
             self.q_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
             self.k_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
@@ -135,31 +135,31 @@ class AttentionS2(nn.Module):
             self.k_bias = None
             self.v_bias = None
             self.proj_bias = None
-            
-            
+
+
     def extra_repr(self):
         r"""
             Pretty print module
          """
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}"
-    
+
     def forward(self, query: torch.Tensor, key: Optional[torch.Tensor] = None, value: Optional[torch.Tensor] = None) -> torch.Tensor:
-        
+
         # self attention simplification
         if key is None:
             key = query
-            
+
         if value is None:
             value = query
-                
+
         # change this later to allow arbitrary number of batch dims
         assert (query.dim() == key.dim()) and (key.dim() == value.dim()) and (value.dim() == 4)
-        
+
         # perform MLP
         query = nn.functional.conv2d(query, self.q_weights, bias=self.q_bias)
         key = nn.functional.conv2d(key, self.k_weights, bias=self.k_bias)
         value = nn.functional.conv2d(value, self.v_weights, bias=self.v_bias)
-        
+
         # reshape
         B, _, H, W = query.shape
         query = query.reshape(B, self.num_heads, -1, H, W)
@@ -167,7 +167,7 @@ class AttentionS2(nn.Module):
         key = key.reshape(B, self.num_heads, -1, H, W)
         B, _, H, W = value.shape
         value = value.reshape(B, self.num_heads, -1, H, W)
-        
+
         # reshape to the right dimensions
         B, _, C, H, W = query.shape
         query = query.permute(0,1,3,4,2).reshape(B, self.num_heads, H*W, C)
@@ -175,10 +175,10 @@ class AttentionS2(nn.Module):
         key = key.permute(0,1,3,4,2).reshape(B, self.num_heads, H*W, C)
         B, _, C, H, W = value.shape
         value = value.permute(0,1,3,4,2).reshape(B, self.num_heads, H*W, C)
-        
+
         # multiply the query, key and value tensors
         out = nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=self.log_quad_weights, dropout_p=self.drop_rate, scale=self.scale)
-        
+
         # reshape
         B, _, _, C = out.shape
         # (B, heads, H*W, C)
@@ -187,7 +187,7 @@ class AttentionS2(nn.Module):
         out = out.reshape(B, self.num_heads, C, self.nlat_out, self.nlon_out)
         # (B, heads, C, H, W)
         out = nn.functional.conv3d(out, self.proj_weights, bias=self.proj_bias).squeeze(1)
-        
+
         return out
 
 
@@ -308,7 +308,7 @@ class NeighborhoodAttentionS2(nn.Module):
         if scale is not None:
             self.scale = scale
         else:
-            self.scale = 1 / math.sqrt(k_channels)
+            self.scale = 1 / math.sqrt(self.k_channels)
 
         if bias:
             self.q_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
@@ -390,6 +390,6 @@ class NeighborhoodAttentionS2(nn.Module):
 
         B, _, H, W = out.shape
         out = out.reshape(B, self.num_heads, -1, H, W)
-        out = nn.functional.conv3d(out, self.proj_weight, bias=self.proj_bias).squeeze(1)
+        out = nn.functional.conv3d(out, self.proj_weights, bias=self.proj_bias).squeeze(1)
 
         return out
