@@ -448,7 +448,18 @@ def main(
     baseline_models = get_baseline_models(img_size=img_size, in_chans=in_channels, out_chans=dataset.num_classes)
 
     # specify which models to train here
-    models = ["transformer_sc2_layers4_e128"]
+    models = [
+        "transformer_sc2_layers4_e128",
+        "s2segformer_sc2_layers4_e512",
+        "s2nsegformer_sc2_layers4_e512",
+        "segformer_sc2_layers4_e512",
+        "nsegformer_sc2_layers4_e512",
+        "s2transformer_sc2_layers4_e128",
+        "s2ntransformer_sc2_layers4_e128",
+        "transformer_sc2_layers4_e128",
+        "ntransformer_sc2_layers4_e128",
+        "vit_sc2_layers4_e128"
+    ]
     models = {k: baseline_models[k] for k in models}
 
     if len(models) == 0:
@@ -517,7 +528,7 @@ def main(
             start_time = time.time()
 
             if logging:
-                print(f"Training {model_name}")
+                print(f"Training {model_name} with config {model_handle}")
             train_model(
                 model,
                 train_dataloader,

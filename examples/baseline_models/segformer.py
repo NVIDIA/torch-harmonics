@@ -84,7 +84,7 @@ class OverlapPatchMerging(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x):
-        x = self.conv(x).to(dtype=dtype)
+        x = self.conv(x)
 
         # permute
         x = x.permute(0,2,3,1)
@@ -228,6 +228,7 @@ class AttentionWrapper(nn.Module):
             attention_drop_rate=0.,
             drop_path=0.,
             attention_mode="neighborhood",
+            kernel_shape=(13,13)
     ):
         super().__init__()
 
@@ -235,10 +236,6 @@ class AttentionWrapper(nn.Module):
         self.attention_mode = attention_mode
 
         if attention_mode == "neighborhood":
-            kernel_shape = int((shape[0] - 1) // (3 * torch.pi))
-            if kernel_shape % 2 == 0:
-                kernel_shape += 1
-            kernel_shape = max(3, kernel_shape)
             self.att = NeighborhoodAttention(
                 channels,
                 kernel_size=kernel_shape,
@@ -247,14 +244,17 @@ class AttentionWrapper(nn.Module):
                 qk_scale=None,
                 attn_drop=attention_drop_rate,
                 proj_drop=0.0,
+                qkv_bias=True
             )
-        else:
+        elif attention_mode == "global":
             self.att = GlobalAttention(
                 channels,
                 num_heads=heads,
                 dropout=attention_drop_rate,
-                bias=False
+                bias=True
             )
+        else:
+            raise ValueError(f"Unknown attention mode function {attention_mode}")
 
         self.norm = None
         if pre_norm:
@@ -278,7 +278,7 @@ class AttentionWrapper(nn.Module):
             x = self.norm(x)
 
         if self.attention_mode == "neighborhood":
-            x = self.att(x).to(dtype=dtype)
+            x = self.att(x)
         else:
             x = self.att(x)
         x = x.permute(0,3,1,2)
@@ -300,8 +300,38 @@ class TransformerBlock(nn.Module):
         att_drop_rate=0.,
         drop_path_rates=0.,
         attention_mode="neighborhood",
+        attn_kernel_shape=(13,13)
     ):
         super().__init__()
+
+        # ensure odd
+        if attn_kernel_shape[0] % 2 == 0:
+            raise ValueError(f"Attn Kernel shape {kernel_shape} is even, use odd kernel shape")
+        if attn_kernel_shape[1] % 2 == 0:
+            raise ValueError(f"Kernel shape {kernel_shape} is even, use odd kernel shape")
+
+        attn_kernel_shape = list(attn_kernel_shape)
+        orig_attn_kernel_shape = attn_kernel_shape.copy()
+
+        # ensure that attn kernel shape is smaller than in_shape in both dimensions
+        # if necessary fix kernel_shape to be 1 less (and odd) than in_shape
+        if attn_kernel_shape[0] >= out_shape[0]:
+            attn_kernel_shape[0] = out_shape[0] - 1
+            # ensure odd
+            if attn_kernel_shape[0] % 2 == 0:
+                attn_kernel_shape[0] -= 1
+
+            # make square if original was square
+            if orig_attn_kernel_shape[0] == orig_attn_kernel_shape[1]:
+                attn_kernel_shape[1] = attn_kernel_shape[0]
+        if attn_kernel_shape[1] >= out_shape[1]:
+            attn_kernel_shape[1] = out_shape[1] - 1
+            # ensure odd
+            if attn_kernel_shape[1] % 2 == 0:
+                attn_kernel_shape[1] -= 1
+
+
+        attn_kernel_shape = tuple(attn_kernel_shape)
 
         self.in_shape = in_shape
         self.out_shape = out_shape
@@ -334,6 +364,7 @@ class TransformerBlock(nn.Module):
                     attention_drop_rate=att_drop_rate,
                     drop_path=drop_path_rates[i],
                     attention_mode=attention_mode,
+                    kernel_shape=attn_kernel_shape
                 )
             )
 
@@ -392,7 +423,7 @@ class Upsampling(nn.Module):
                  use_mlp=False,
     ):
         super().__init__()
-
+        self.out_shape = out_shape
         if use_mlp:
             self.mlp = MLP(
                 in_channels,
@@ -408,40 +439,6 @@ class Upsampling(nn.Module):
                                  kernel_size=1,
                                  bias=True)
 
-        H_in, W_in = in_shape
-        H_out, W_out = out_shape
-        stride_h = H_out // H_in
-        stride_w = W_out // W_in
-        k_h, k_w = kernel_shape
-
-        # make padding = floor((kernel-1)/2)
-        pad_h = (k_h-1) // stride_h
-        pad_w = (k_w-1) // stride_w
-
-        # set dialation based on stride to ensure output shape is correct
-        dilation = max(1,stride_h//k_h)
-
-        output_padding_h = max(0,dilation-1)
-        output_padding_w = max(0,dilation-1)
-
-        # compute the needed output_padding so that
-        #    (H_in−1)*stride_h − 2*pad_h + k_h + out_pad_h == H_out
-        if (H_in-1) * stride_h - 2 * pad_h + dilation*(k_h-1) + output_padding_h + 1 != H_out:
-            raise ValueError(f"Invalid input shape {in_shape} and output shape {out_shape} for kernel shape {kernel_shape} and stride {stride_h}, computed output H: {(H_in-1) * stride_h - 2 * pad_h + dilation * (k_h-1) + output_padding_h + 1}, dilation= {dilation}, pad_h={pad_h}, output_padding_w= {output_padding_h}")
-        if (W_in-1) * stride_w - 2 * pad_w + dilation*(k_w-1) + output_padding_w + 1 != W_out:
-            raise ValueError(f"Invalid input shape {in_shape} and output shape {out_shape} for kernel shape {kernel_shape} and stride {stride_w}, computed output W: {(W_in-1) * stride_w - 2 * pad_w + dilation*(k_w-1) + output_padding_w + 1}, dilation= {dilation}, pad_w={pad_w}, output_padding_w= {output_padding_w}")
-
-        self.upsample = nn.ConvTranspose2d(
-            in_channels=out_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_shape,
-            stride=(stride_h, stride_w),
-            padding=(pad_h, pad_w),
-            bias=conv_bias,
-            dilation=dilation,
-            output_padding=(output_padding_h, output_padding_w),
-        )
-
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -453,10 +450,8 @@ class Upsampling(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-
-        x = self.upsample(self.mlp(x))
+        x = nn.functional.interpolate(self.mlp(x), size=self.out_shape, mode="bilinear")
         return x
 
 
@@ -532,6 +527,7 @@ class Segformer(nn.Module):
         att_drop_rate=0.0,
         drop_path_rate=0.1,
         attention_mode="neighborhood",
+        attn_kernel_shape=(13,13)
     ):
         super().__init__()
 
@@ -582,6 +578,7 @@ class Segformer(nn.Module):
                     att_drop_rate=att_drop_rate,
                     drop_path_rates=dpr[cur:cur+self.depths[i]],
                     attention_mode=attention_mode,
+                    attn_kernel_shape=attn_kernel_shape
                 )
             )
             cur += self.depths[i]
@@ -663,6 +660,7 @@ if __name__ == "__main__":
         att_drop_rate=0.0,
         drop_path_rate=0.1,
         attention_mode="global",
+        attn_kernel_shape=(7,7)
     )
     x = torch.randn(1,3,128,256)
     print(model(x).shape)

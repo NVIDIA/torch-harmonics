@@ -111,7 +111,7 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3):
             mlp_ratio=4.0,
             att_drop_rate=0.5,
             drop_path_rate=0.1,
-            attention_mode="full",
+            attention_mode="global",
         ),
         s2nsegformer_sc2_layers4_e512 = partial(
             SphericalSegformer,
@@ -146,13 +146,13 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3):
             mlp_ratio=4.0,
             att_drop_rate=0.5,
             drop_path_rate=0.1,
-            attention_mode="full",
+            attention_mode="global",
         ),
         nsegformer_sc2_layers4_e512 = partial(
             Segformer,
             img_size=img_size,
             in_chans=in_chans,
-            num_classes=out_chans,
+            out_chans=out_chans,
             embed_dims=[64, 128, 256, 512],
             heads=[1, 2, 4, 8],
             depths=[3, 4, 6, 3],
@@ -181,7 +181,7 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3):
             encoder_kernel_shape=(5, 4),
             filter_basis_type="piecewise linear",
             upsample_sht=False,
-            attention_mode="full",
+            attention_mode="global",
         ),
         s2ntransformer_sc2_layers4_e128 = partial(
             SphericalTransformer,
@@ -216,7 +216,8 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3):
             use_mlp=True,
             normalization_layer="instance_norm",
             encoder_kernel_shape=(3, 3),
-            attention_mode="full",
+            attention_mode="global",
+            upsampling_method="conv"
         ),
         ntransformer_sc2_layers4_e128 = partial(
             Transformer,
@@ -233,6 +234,23 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3):
             normalization_layer="instance_norm",
             encoder_kernel_shape=(3, 3),
             attention_mode="neighborhood",
+        ),
+        vit_sc2_layers4_e128 = partial(
+            Transformer,
+            img_size=img_size,
+            in_chans=in_chans,
+            out_chans=out_chans,
+            num_layers=4,
+            scale_factor=2,
+            embed_dim=128,
+            activation_function="gelu",
+            residual_prediction=False,
+            pos_embed="learnable latlon",
+            use_mlp=True,
+            normalization_layer="layer_norm",
+            encoder_kernel_shape=(2, 2),
+            attention_mode="global",
+            upsampling_method="pixel_shuffle"
         ),
     )
 

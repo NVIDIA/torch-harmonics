@@ -384,6 +384,7 @@ class Upsampling(nn.Module):
         conv_bias=False,
         activation=nn.GELU,
         use_mlp=False,
+        upsampling_method="conv"
     ):
         super().__init__()
 
@@ -392,19 +393,24 @@ class Upsampling(nn.Module):
         else:
             self.mlp = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=1, bias=True)
 
-        theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
-        self.upsample = DiscreteContinuousConvTransposeS2(
-            out_channels,
-            out_channels,
-            in_shape=in_shape,
-            out_shape=out_shape,
-            kernel_shape=kernel_shape,
-            basis_type=basis_type,
-            grid_in=grid_in,
-            grid_out=grid_out,
-            bias=conv_bias,
-            theta_cutoff=theta_cutoff,
-        )
+        if upsampling_method == "conv":
+            theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
+            self.upsample = DiscreteContinuousConvTransposeS2(
+                out_channels,
+                out_channels,
+                in_shape=in_shape,
+                out_shape=out_shape,
+                kernel_shape=kernel_shape,
+                basis_type=basis_type,
+                grid_in=grid_in,
+                grid_out=grid_out,
+                bias=conv_bias,
+                theta_cutoff=theta_cutoff,
+            )
+        elif upsampling_method == "bilinear":
+            self.upsample = ResampleS2(*in_shape, *out_shape, grid_in=grid_in, grid_out=grid_out)
+        else:
+            raise ValueError(f"Unknown upsampling method {upsampling_method}")
 
         self.apply(self._init_weights)
 
@@ -462,8 +468,8 @@ class SphericalSegformer(nn.Module):
         Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "instance_norm"
     hard_thresholding_fraction : float, optional
         Fraction of hard thresholding (frequency cutoff) to apply, by default 1.0
-    upsample_sht : bool, optional
-        Use SHT upsampling if true, else linear interpolation
+    upsampling_method : str
+        Conv, bilinear
 
     Example
     -----------
@@ -498,6 +504,7 @@ class SphericalSegformer(nn.Module):
         drop_path_rate=0.1,
         attention_mode="neighborhood",
         theta_cutoff=None,
+        upsampling_method="bilinear"
     ):
         super().__init__()
 
@@ -582,6 +589,7 @@ class SphericalSegformer(nn.Module):
                     basis_type=filter_basis_type,
                     conv_bias=False,
                     activation=nn.GELU,
+                    upsampling_method=upsampling_method
                 )
             )
 

@@ -390,9 +390,9 @@ class LearnablePositionEmbedding(PositionEmbedding):
         super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
 
         if embed_type == "latlon":
-            self.position_embedding = nn.Parameter(torch.zeros(1, self.num_chans, self.img_shape[0], self.img_shape[1]))
+            self.position_embeddings = nn.Parameter(torch.zeros(1, self.num_chans, self.img_shape[0], self.img_shape[1]))
         elif embed_type == "lat":
-            self.position_embedding = nn.Parameter(torch.zeros(1, self.num_chans, self.img_shape[0], 1))
+            self.position_embeddings = nn.Parameter(torch.zeros(1, self.num_chans, self.img_shape[0], 1))
         else:
             raise ValueError(f"Unknown learnable position embedding type {embed_type}")
 

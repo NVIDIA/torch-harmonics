@@ -33,7 +33,6 @@ import math
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch_harmonics.examples.models._layers import MLP, LayerNorm, SequencePositionEmbedding, SpectralPositionEmbedding, LearnablePositionEmbedding
 from natten import NeighborhoodAttention2D as NeighborhoodAttention
 from functools import partial
@@ -83,21 +82,48 @@ class Decoder(nn.Module):
         kernel_shape=(3, 3),
         groups=1,
         bias=False,
+        upsampling_method="conv"
     ):
         super().__init__()
         self.out_shape = out_shape
-        self.conv = nn.Conv2d(
-                in_chans,
-                out_chans,
-                kernel_size=kernel_shape,
-                bias=bias,
-                padding="same",
-                groups=groups
-        )
+        self.upsampling_method = upsampling_method
+
+        if upsampling_method == "conv":
+            self.upsample = nn.Sequential(
+                nn.Upsample(
+                    size=out_shape,
+                    mode="bilinear",
+                ),
+                nn.Conv2d(
+                    in_chans,
+                    out_chans,
+                    kernel_size=kernel_shape,
+                    bias=bias,
+                    padding="same",
+                    groups=groups
+                )
+            )
+        elif upsampling_method == "pixel_shuffle":
+            # check if it is possible to use PixelShuffle
+            if out_shape[0] // in_shape[0] != out_shape[1] // in_shape[1]:
+                raise Exception(f"out_shape {out_shape} and in_shape {in_shape} are incompatible for shuffle decoding")
+            upsampling_factor = out_shape[0] // in_shape[0]
+            self.upsample = nn.Sequential(
+                nn.Conv2d(
+                    in_chans,
+                    out_chans * (upsampling_factor ** 2),
+                    kernel_size=1,
+                    bias=bias,
+                    padding=0,
+                    groups=groups
+                ),
+                nn.PixelShuffle(upsampling_factor)
+            )
+        else:
+            raise ValueError(f"Unknown upsampling method {upsampling_method}")
 
     def forward(self, x):
-        x = F.interpolate(x, size=self.out_shape, mode="bilinear")
-        x = self.conv(x)
+        x = self.upsample(x)
         return x
 
 class GlobalAttention(nn.Module):
@@ -107,7 +133,7 @@ class GlobalAttention(nn.Module):
     Input shape: (B, C, H, W)
     Output shape: (B, C, H, W) with residual skip.
     """
-    def __init__(self, chans, num_heads=8, dropout=0.0, bias=False):
+    def __init__(self, chans, num_heads=8, dropout=0.0, bias=True):
         super().__init__()
         self.attn = nn.MultiheadAttention(
             embed_dim=chans,
@@ -120,7 +146,7 @@ class GlobalAttention(nn.Module):
         # x: B, C, H, W
         B, H, W, C = x.shape
         # flatten spatial dims
-        x_flat = x.view(B, H * W, C)  # B, N, C
+        x_flat = x.reshape(B, H * W, C)  # B, N, C
         # self-attention
         out, _ = self.attn(x_flat, x_flat, x_flat)
         # reshape back
@@ -144,8 +170,9 @@ class AttentionBlock(nn.Module):
         act_layer=nn.GELU,
         norm_layer="none",
         use_mlp=True,
-        bias=False,
-        attention_mode="neighborhood"
+        bias=True,
+        attention_mode="neighborhood",
+        attn_kernel_shape=(13,13)
     ):
         super().__init__()
 
@@ -164,13 +191,9 @@ class AttentionBlock(nn.Module):
 
         # determine shape for neighborhood attention
         if attention_mode == "neighborhood":
-            kernel_shape = int((in_shape[0] - 1) // (3 * torch.pi))
-            if kernel_shape % 2 == 0:
-                kernel_shape += 1
-            kernel_shape = max(3, kernel_shape)
             self.self_attn = NeighborhoodAttention(
                 chans,
-                kernel_size=kernel_shape,
+                kernel_size=attn_kernel_shape,
                 dilation=1,
                 num_heads=num_heads,
                 qkv_bias=bias,
@@ -272,6 +295,9 @@ class Transformer(nn.Module):
         Whether convolution and attention projections include bias.
     attention_mode: str
         "neighborhood" or "global"
+    upsampling_method: str
+        "conv" or "pixel_shuffle"
+    attn_kernel_shape: tuple
 
     Example
     -------
@@ -292,8 +318,10 @@ class Transformer(nn.Module):
     ...     normalization_layer="none",
     ...     residual_prediction=False,
     ...     pos_embed="spectral",
-    ...     bias=False,
-    ...     attention_mode="neighborhood"
+    ...     bias=True,
+    ...     attention_mode="neighborhood",
+    ...     attn_kernel_shape=(13,13),
+    ...     upsampling_method="conv"
     ... )
     >>> x = torch.randn(1, 3, 128, 256)
     >>> print(model(x).shape)
@@ -319,8 +347,10 @@ class Transformer(nn.Module):
         normalization_layer="none",
         residual_prediction=False,
         pos_embed="spectral",
-        bias=False,
-        attention_mode="neighborhood"
+        bias=True,
+        attention_mode="neighborhood",
+        attn_kernel_shape=(13,13),
+        upsampling_method="conv"
     ):
         super().__init__()
 
@@ -394,7 +424,8 @@ class Transformer(nn.Module):
                 norm_layer=self.normalization_layer,
                 use_mlp=use_mlp,
                 bias=bias,
-                attention_mode=attention_mode
+                attention_mode=attention_mode,
+                attn_kernel_shape=attn_kernel_shape
             )
 
             self.blocks.append(block)
@@ -408,6 +439,7 @@ class Transformer(nn.Module):
             kernel_shape=self.encoder_kernel_shape,
             groups=1,
             bias=bias,
+            upsampling_method=upsampling_method
         )
 
     @torch.jit.ignore
@@ -444,9 +476,9 @@ if __name__ == "__main__":
         in_chans=3,
         out_chans=3,
         embed_dim=256,
-        num_layers=4,
+        num_layers=1,
         activation_function="gelu",
-        encoder_kernel_shape=(3, 3),
+        encoder_kernel_shape=(2, 2),
         num_heads=1,
         use_mlp=True,
         mlp_ratio=2.0,
@@ -455,6 +487,8 @@ if __name__ == "__main__":
         normalization_layer="none",
         residual_prediction=False,
         pos_embed="spectral",
-        bias=False,)
+        bias=False,
+        upsampling_method="pixel_shuffle",
+        attn_kernel_shape=(5,5))
     x = torch.randn(1,3,128,256)
     print(model(x).shape)
