@@ -507,10 +507,12 @@ class TestNeighborhoodAttention(unittest.TestCase):
             att_gpu.q_weights.copy_(att_cpu.q_weights)
             att_gpu.k_weights.copy_(att_cpu.k_weights)
             att_gpu.v_weights.copy_(att_cpu.v_weights)
+            att_gpu.proj_weights.copy_(att_cpu.proj_weights)
             att_gpu.q_bias.copy_(att_cpu.q_bias)
             att_gpu.k_bias.copy_(att_cpu.k_bias)
             att_gpu.v_bias.copy_(att_cpu.v_bias)
-            att_gpu.project.copy_(att_cpu.project)
+            att_gpu.proj_bias.copy_(att_cpu.proj_bias)
+            
 
         q_gpu = q_cpu.detach().clone().to(self.device)
         q_gpu.requires_grad = True
@@ -534,12 +536,13 @@ class TestNeighborhoodAttention(unittest.TestCase):
         self.assertTrue(torch.allclose(att_cpu.q_weights.grad.to(self.device), att_gpu.q_weights.grad, atol=atol, rtol=rtol))
         self.assertTrue(torch.allclose(att_cpu.k_weights.grad.to(self.device), att_gpu.k_weights.grad, atol=atol, rtol=rtol))
         self.assertTrue(torch.allclose(att_cpu.v_weights.grad.to(self.device), att_gpu.v_weights.grad, atol=atol, rtol=rtol))
-        self.assertTrue(torch.allclose(att_cpu.project.grad.to(self.device), att_gpu.project.grad, atol=atol, rtol=rtol))
+        self.assertTrue(torch.allclose(att_cpu.proj_weights.grad.to(self.device), att_gpu.proj_weights.grad, atol=atol, rtol=rtol))
 
         # check bias gradients
         self.assertTrue(torch.allclose(att_cpu.q_bias.grad.to(self.device), att_gpu.q_bias.grad, atol=atol, rtol=rtol))
         self.assertTrue(torch.allclose(att_cpu.k_bias.grad.to(self.device), att_gpu.k_bias.grad, atol=atol, rtol=rtol))
         self.assertTrue(torch.allclose(att_cpu.v_bias.grad.to(self.device), att_gpu.v_bias.grad, atol=atol, rtol=rtol))
+        self.assertTrue(torch.allclose(att_cpu.proj_bias.grad.to(self.device), att_gpu.proj_bias.grad, atol=atol, rtol=rtol))
 
     @parameterized.expand(
         [
