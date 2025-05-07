@@ -464,7 +464,7 @@ class TestNeighborhoodAttention(unittest.TestCase):
         [
             # self attention
             [8, 4, 1, (17, 32), (17, 32), "equiangular", "equiangular", 2e-4, 1e-5],
-            [8, 4, 1, (17, 32), (17, 32), "equiangular", "equiangular", 2e-4, 1e-5],
+            [8, 4, 2, (17, 32), (17, 32), "equiangular", "equiangular", 2e-4, 1e-5],
         ]
     )
     def test_full(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol):
@@ -547,24 +547,25 @@ class TestNeighborhoodAttention(unittest.TestCase):
     @parameterized.expand(
         [
             # self attention
-            [8, 4, 3, (17, 32), (17, 32), "equiangular", "equiangular", 2e-4, 1e-5],
-            [8, 4, 3, (17, 32), (17, 32), "legendre-gauss", "legendre-gauss", 2e-4, 1e-5],
-            [8, 4, 3, (17, 32), (17, 32), "lobatto", "lobatto", 2e-4, 1e-5],
+            [8, 8, 8, 2, (17, 32), (17, 32), "equiangular", "equiangular", 2e-4, 1e-5],
+            [8, 8, 8, 2, (17, 32), (17, 32), "legendre-gauss", "legendre-gauss", 2e-4, 1e-5],
+            [8, 8, 8, 2, (17, 32), (17, 32), "lobatto", "lobatto", 2e-4, 1e-5],
+            [8, 8, 4, 2, (17, 32), (17, 32), "equiangular", "equiangular", 2e-4, 1e-5],
         ]
     )
-    def test_full_attention(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol):
+    def test_full_attention(self, batch_size, channels_in, channels_out, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol):
         # extract some parameters
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
-        k_cpu = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device="cpu")
+        k_cpu = torch.randn(batch_size, channels_in, nlat_in, nlon_in, dtype=torch.float32, device="cpu")
         k_cpu.requires_grad = True
-        v_cpu = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device="cpu")
+        v_cpu = torch.randn(batch_size, channels_in, nlat_in, nlon_in, dtype=torch.float32, device="cpu")
         v_cpu.requires_grad = True
-        q_cpu = torch.randn(batch_size, channels, nlat_out, nlon_out, dtype=torch.float32, device="cpu")
+        q_cpu = torch.randn(batch_size, channels_in, nlat_out, nlon_out, dtype=torch.float32, device="cpu")
         q_cpu.requires_grad = True
 
-        att_cpu = AttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True)
+        att_cpu = AttentionS2(in_channels=channels_in, out_channels=channels_out, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True)
 
         out = att_cpu(q_cpu, k_cpu, v_cpu)
 

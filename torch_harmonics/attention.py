@@ -118,18 +118,22 @@ class AttentionS2(nn.Module):
         # learnable parameters
         # TODO: double-check that this gives us the correct initialization magnitudes
         # the standard MHA uses xavier uniform, NATTEN uses kaiming. Let's use that for now
+        if self.k_channels % self.num_heads != 0:
+            raise ValueError(f"Please make sure that number of heads {self.num_heads} divides k_channels {self.k_channels} evenly.")
+        if self.out_channels % self.num_heads != 0:
+            raise ValueError(f"Please make sure that number of heads {self.num_heads} divides out_channels {self.out_channels} evenly.")
         scale_qkv = math.sqrt(3.0 / self.in_channels)
-        self.q_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.num_heads * self.k_channels, self.in_channels, 1, 1) - 1))
-        self.k_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.num_heads * self.k_channels, self.in_channels, 1, 1) - 1))
-        self.v_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.num_heads * self.out_channels, self.in_channels, 1, 1) - 1))
-        scale_proj = math.sqrt(3.0 / self.num_heads)
-        self.proj_weights = nn.Parameter(scale_proj * (2 * torch.rand(1, self.num_heads, 1, 1, 1) - 1))
+        self.q_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
+        self.k_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
+        self.v_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.out_channels, self.in_channels, 1, 1) - 1))
+        scale_proj = math.sqrt(3.0 / self.out_channels)
+        self.proj_weights = nn.Parameter(scale_proj * (2 * torch.rand(self.out_channels, self.out_channels, 1, 1) - 1))
 
         if bias:
-            self.q_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
-            self.k_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
-            self.v_bias = nn.Parameter(torch.zeros(self.num_heads * self.out_channels))
-            self.proj_bias = nn.Parameter(torch.zeros(1))
+            self.q_bias = nn.Parameter(torch.zeros(self.k_channels))
+            self.k_bias = nn.Parameter(torch.zeros(self.k_channels))
+            self.v_bias = nn.Parameter(torch.zeros(self.out_channels))
+            self.proj_bias = nn.Parameter(torch.zeros(self.out_channels))
         else:
             self.q_bias = None
             self.k_bias = None
@@ -184,9 +188,9 @@ class AttentionS2(nn.Module):
         # (B, heads, H*W, C)
         out = out.permute(0,1,3,2)
         # (B, heads, C, H*W)
-        out = out.reshape(B, self.num_heads, C, self.nlat_out, self.nlon_out)
-        # (B, heads, C, H, W)
-        out = nn.functional.conv3d(out, self.proj_weights, bias=self.proj_bias).squeeze(1)
+        out = out.reshape(B, self.num_heads*C, self.nlat_out, self.nlon_out)
+        # (B, heads*C, H, W)
+        out = nn.functional.conv2d(out, self.proj_weights, bias=self.proj_bias)
 
         return out
 
@@ -298,12 +302,16 @@ class NeighborhoodAttentionS2(nn.Module):
         # learnable parameters
         # TODO: double-check that this gives us the correct initialization magnitudes
         # the standard MHA uses xavier uniform, NATTEN uses kaiming. Let's use that for now
+        if self.k_channels % self.num_heads != 0:
+            raise ValueError(f"Please make sure that number of heads {self.num_heads} divides k_channels {self.k_channels} evenly.")
+        if self.out_channels % self.num_heads != 0:
+            raise ValueError(f"Please make sure that number of heads {self.num_heads} divides out_channels {self.out_channels} evenly.")
         scale_qkv = math.sqrt(3.0 / self.in_channels)
-        self.q_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.num_heads * self.k_channels, self.in_channels, 1, 1) - 1))
-        self.k_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.num_heads * self.k_channels, self.in_channels, 1, 1) - 1))
-        self.v_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.num_heads * self.out_channels, self.in_channels, 1, 1) - 1))
+        self.q_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
+        self.k_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
+        self.v_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.out_channels, self.in_channels, 1, 1) - 1))
         scale_proj = math.sqrt(3.0 / self.num_heads)
-        self.proj_weights = nn.Parameter(scale_proj * (2 * torch.rand(1, self.num_heads, 1, 1, 1) - 1))
+        self.proj_weights = nn.Parameter(scale_proj * (2 * torch.rand(self.out_channels, self.out_channels, 1, 1) - 1))
 
         if scale is not None:
             self.scale = scale
@@ -311,10 +319,10 @@ class NeighborhoodAttentionS2(nn.Module):
             self.scale = 1 / math.sqrt(self.k_channels)
 
         if bias:
-            self.q_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
-            self.k_bias = nn.Parameter(torch.zeros(self.num_heads * self.k_channels))
-            self.v_bias = nn.Parameter(torch.zeros(self.num_heads * self.out_channels))
-            self.proj_bias = nn.Parameter(torch.zeros(1))
+            self.q_bias = nn.Parameter(torch.zeros(self.k_channels))
+            self.k_bias = nn.Parameter(torch.zeros(self.k_channels))
+            self.v_bias = nn.Parameter(torch.zeros(self.out_channels))
+            self.proj_bias = nn.Parameter(torch.zeros(self.out_channels))
         else:
             self.q_bias = None
             self.k_bias = None
@@ -388,8 +396,6 @@ class NeighborhoodAttentionS2(nn.Module):
                 self.nlon_out,
             )
 
-        B, _, H, W = out.shape
-        out = out.reshape(B, self.num_heads, -1, H, W)
-        out = nn.functional.conv3d(out, self.proj_weights, bias=self.proj_bias).squeeze(1)
+        out = nn.functional.conv2d(out, self.proj_weights, bias=self.proj_bias)
 
         return out

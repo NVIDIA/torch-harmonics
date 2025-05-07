@@ -403,11 +403,11 @@ class _NeighborhoodAttentionS2(torch.autograd.Function):
 
         # reshape again
         _, C, H, W = dkw.shape
-        dkw = dkw.reshape(B, nh * C, H, W)
+        dkw = dkw.reshape(B, -1, H, W)
         _, C, H, W = dvw.shape
-        dvw = dvw.reshape(B, nh * C, H, W)
+        dvw = dvw.reshape(B, -1, H, W)
         _, C, H, W = dqw.shape
-        dqw = dqw.reshape(B, nh * C, H, W)
+        dqw = dqw.reshape(B, -1, H, W)
         
         # input grads
         dv = torch.nn.functional.conv2d(dvw, weight=wv.permute([1,0,2,3]), bias=None)
@@ -525,11 +525,11 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
 
         # reshape again
         _, C, H, W = dkw.shape
-        dkw = dkw.reshape(B, nh * C, H, W)
+        dkw = dkw.reshape(B, -1, H, W)
         _, C, H, W = dvw.shape
-        dvw = dvw.reshape(B, nh * C, H, W)
+        dvw = dvw.reshape(B, -1, H, W)
         _, C, H, W = dqw.shape
-        dqw = dqw.reshape(B, nh * C, H, W)
+        dqw = dqw.reshape(B, -1, H, W)
 
         # input grads
         dv = torch.nn.functional.conv2d(dvw, weight=wv.permute([1,0,2,3]), bias=None)
