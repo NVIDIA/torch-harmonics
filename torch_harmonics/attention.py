@@ -310,7 +310,7 @@ class NeighborhoodAttentionS2(nn.Module):
         self.q_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
         self.k_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
         self.v_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.out_channels, self.in_channels, 1, 1) - 1))
-        scale_proj = math.sqrt(3.0 / self.num_heads)
+        scale_proj = math.sqrt(3.0 / self.out_channels)
         self.proj_weights = nn.Parameter(scale_proj * (2 * torch.rand(self.out_channels, self.out_channels, 1, 1) - 1))
 
         if scale is not None:
