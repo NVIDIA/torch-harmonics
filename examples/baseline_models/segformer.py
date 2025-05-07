@@ -164,7 +164,7 @@ class GlobalAttention(nn.Module):
     Output shape: (B, C, H, W) with residual skip.
     """
 
-    def __init__(self, chans, num_heads=8, dropout=0.0, bias=False):
+    def __init__(self, chans, num_heads=8, dropout=0.0, bias=True):
         super().__init__()
         self.attn = nn.MultiheadAttention(embed_dim=chans, num_heads=num_heads, dropout=dropout, batch_first=True, bias=bias)
 
@@ -181,7 +181,7 @@ class GlobalAttention(nn.Module):
 
 
 class AttentionWrapper(nn.Module):
-    def __init__(self, channels, shape, heads, pre_norm=False, attention_drop_rate=0.0, drop_path=0.0, attention_mode="neighborhood", kernel_shape=(7, 7)):
+    def __init__(self, channels, shape, heads, pre_norm=False, attention_drop_rate=0.0, drop_path=0.0, attention_mode="neighborhood", kernel_shape=(7, 7), bias=True):
         super().__init__()
 
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
@@ -189,10 +189,10 @@ class AttentionWrapper(nn.Module):
 
         if attention_mode == "neighborhood":
             self.att = NeighborhoodAttention(
-                channels, kernel_size=kernel_shape, dilation=1, num_heads=heads, qk_scale=None, attn_drop=attention_drop_rate, proj_drop=0.0, qkv_bias=True
+                channels, kernel_size=kernel_shape, dilation=1, num_heads=heads, qk_scale=None, attn_drop=attention_drop_rate, proj_drop=0.0, qkv_bias=bias
             )
         elif attention_mode == "global":
-            self.att = GlobalAttention(channels, num_heads=heads, dropout=attention_drop_rate, bias=True)
+            self.att = GlobalAttention(channels, num_heads=heads, dropout=attention_drop_rate, bias=bias)
         else:
             raise ValueError(f"Unknown attention mode function {attention_mode}")
 
@@ -234,6 +234,7 @@ class TransformerBlock(nn.Module):
         drop_path_rates=0.0,
         attention_mode="neighborhood",
         attn_kernel_shape=(7, 7),
+        bias=True
     ):
         super().__init__()
 
@@ -297,6 +298,7 @@ class TransformerBlock(nn.Module):
                     drop_path=drop_path_rates[i],
                     attention_mode=attention_mode,
                     kernel_shape=attn_kernel_shape,
+                    bias=bias
                 )
             )
 
@@ -448,6 +450,7 @@ class Segformer(nn.Module):
         drop_path_rate=0.1,
         attention_mode="neighborhood",
         attn_kernel_shape=(7, 7),
+        bias=True
     ):
         super().__init__()
 
@@ -499,6 +502,7 @@ class Segformer(nn.Module):
                     drop_path_rates=dpr[cur : cur + self.depths[i]],
                     attention_mode=attention_mode,
                     attn_kernel_shape=attn_kernel_shape,
+                    bias=bias
                 )
             )
             cur += self.depths[i]

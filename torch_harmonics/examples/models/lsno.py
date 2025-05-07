@@ -434,7 +434,7 @@ class LocalSphericalNeuralOperator(nn.Module):
             kernel_shape=self.encoder_kernel_shape,
             basis_type=filter_basis_type,
             groups=1,
-            bias=bias,
+            bias=False,
         )
 
         # compute the modes for the sht
@@ -480,7 +480,7 @@ class LocalSphericalNeuralOperator(nn.Module):
             kernel_shape=self.encoder_kernel_shape,
             basis_type=filter_basis_type,
             groups=1,
-            bias=bias,
+            bias=False,
             upsample_sht=upsample_sht,
         )
 

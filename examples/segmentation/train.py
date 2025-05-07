@@ -448,16 +448,15 @@ def main(
 
     # specify which models to train here
     models = [
+        "s2segformer_sc2_layers4_e128",
+        "s2nsegformer_sc2_layers4_e128",
+        "segformer_sc2_layers4_e128",
+        "nsegformer_sc2_layers4_e128",
+        "s2transformer_sc2_layers4_e128",
+        "s2ntransformer_sc2_layers4_e128",
         "transformer_sc2_layers4_e128",
-        # "s2segformer_sc2_layers4_e128",
-        # "s2nsegformer_sc2_layers4_e128",
-        # "segformer_sc2_layers4_e128",
-        # "nsegformer_sc2_layers4_e128",
-        # "s2transformer_sc2_layers4_e128",
-        # "s2ntransformer_sc2_layers4_e128",
-        # "transformer_sc2_layers4_e128",
-        # "ntransformer_sc2_layers4_e128",
-        # "vit_sc2_layers4_e128"
+        "ntransformer_sc2_layers4_e128",
+        "vit_sc2_layers4_e128"
     ]
     models = {k: baseline_models[k] for k in models}
 

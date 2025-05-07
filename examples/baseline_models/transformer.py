@@ -363,7 +363,7 @@ class Transformer(nn.Module):
             out_chans=self.embed_dim,
             kernel_shape=self.encoder_kernel_shape,
             groups=1,
-            bias=bias,
+            bias=False,
         )
 
         self.blocks = nn.ModuleList([])
@@ -395,7 +395,7 @@ class Transformer(nn.Module):
             out_chans=self.out_chans,
             kernel_shape=self.encoder_kernel_shape,
             groups=1,
-            bias=bias,
+            bias=False,
             upsampling_method=upsampling_method,
         )
 

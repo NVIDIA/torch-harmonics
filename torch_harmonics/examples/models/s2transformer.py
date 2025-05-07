@@ -414,7 +414,7 @@ class SphericalTransformer(nn.Module):
             kernel_shape=self.encoder_kernel_shape,
             basis_type=filter_basis_type,
             groups=1,
-            bias=bias,
+            bias=False,
         )
 
         self.blocks = nn.ModuleList([])
@@ -451,7 +451,7 @@ class SphericalTransformer(nn.Module):
             kernel_shape=self.encoder_kernel_shape,
             basis_type=filter_basis_type,
             groups=1,
-            bias=bias,
+            bias=False,
             upsample_sht=upsample_sht,
         )
 

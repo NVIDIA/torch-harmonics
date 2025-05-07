@@ -205,6 +205,7 @@ class AttentionWrapper(nn.Module):
         drop_path=0.0,
         attention_mode="neighborhood",
         theta_cutoff=None,
+        bias=True
     ):
         super().__init__()
 
@@ -223,6 +224,7 @@ class AttentionWrapper(nn.Module):
                 theta_cutoff=theta_cutoff,
                 out_channels=channels,
                 num_heads=heads,
+                bias=bias
                 # drop_rate=attention_drop_rate,
             )
         else:
@@ -235,6 +237,7 @@ class AttentionWrapper(nn.Module):
                 grid_out=grid,
                 out_channels=channels,
                 drop_rate=attention_drop_rate,
+                bias=bias
             )
 
         self.norm = None
@@ -286,6 +289,7 @@ class TransformerBlock(nn.Module):
         drop_path_rates=0.0,
         attention_mode="neighborhood",
         theta_cutoff=None,
+        bias=True
     ):
         super().__init__()
 
@@ -325,6 +329,7 @@ class TransformerBlock(nn.Module):
                     drop_path=drop_path_rates[i],
                     attention_mode=attention_mode,
                     theta_cutoff=theta_cutoff,
+                    bias=bias
                 )
             )
 
@@ -504,7 +509,8 @@ class SphericalSegformer(nn.Module):
         drop_path_rate=0.1,
         attention_mode="neighborhood",
         theta_cutoff=None,
-        upsampling_method="bilinear"
+        upsampling_method="bilinear",
+        bias=True
     ):
         super().__init__()
 
@@ -563,6 +569,7 @@ class SphericalSegformer(nn.Module):
                     drop_path_rates=dpr[cur : cur + self.depths[i]],
                     attention_mode=attention_mode,
                     theta_cutoff=theta_cutoff,
+                    bias=bias
                 )
             )
             cur += self.depths[i]
