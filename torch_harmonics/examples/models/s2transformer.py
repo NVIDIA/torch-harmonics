@@ -174,10 +174,10 @@ class SphericalAttentionBlock(nn.Module):
         # normalisation layer
         if norm_layer == "layer_norm":
             self.norm0 = LayerNorm(in_channels=in_chans, eps=1e-6)
-            self.norm1 = LayerNorm(in_channels=in_chans, eps=1e-6)
+            self.norm1 = LayerNorm(in_channels=out_chans, eps=1e-6)
         elif norm_layer == "instance_norm":
             self.norm0 = nn.InstanceNorm2d(num_features=in_chans, eps=1e-6, affine=True, track_running_stats=False)
-            self.norm1 = nn.InstanceNorm2d(num_features=in_chans, eps=1e-6, affine=True, track_running_stats=False)
+            self.norm1 = nn.InstanceNorm2d(num_features=out_chans, eps=1e-6, affine=True, track_running_stats=False)
         elif norm_layer == "none":
             self.norm0 = nn.Identity()
             self.norm1 = nn.Identity()
@@ -198,7 +198,7 @@ class SphericalAttentionBlock(nn.Module):
                 num_heads=num_heads,
                 theta_cutoff=theta_cutoff,
                 k_channels=None,
-                out_channels=None,
+                out_channels=out_chans,
                 bias=bias,
             )
         else:
@@ -209,8 +209,9 @@ class SphericalAttentionBlock(nn.Module):
                 out_shape=out_shape,
                 grid_in=grid_in,
                 grid_out=grid_out,
-                out_channels=in_chans,
+                out_channels=out_chans,
                 drop_rate=drop_rate,
+                bias=bias,
             )
 
         self.skip0 = nn.Identity()
@@ -237,8 +238,6 @@ class SphericalAttentionBlock(nn.Module):
         residual = x
 
         x = self.norm0(x)
-
-        #x = self.self_attn(x)
 
         if self.attention_mode == "neighborhood":
             dtype = x.dtype
