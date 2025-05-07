@@ -45,6 +45,7 @@ from torch_harmonics.examples.models._layers import MLP, DropPath
 
 from functools import partial
 
+
 # heuristic for finding theta_cutoff
 def _compute_cutoff_radius(nlat, kernel_shape, basis_type):
     theta_cutoff_factor = {"piecewise linear": 0.5, "morlet": 0.5, "zernike": math.sqrt(2.0)}
@@ -52,10 +53,9 @@ def _compute_cutoff_radius(nlat, kernel_shape, basis_type):
     return (kernel_shape[0] + 1) * theta_cutoff_factor[basis_type] * math.pi / float(nlat - 1)
 
 
-
 class DownsamplingBlock(nn.Module):
     def __init__(
-	self,
+        self,
         in_shape,
         out_shape,
         in_channels,
@@ -63,13 +63,13 @@ class DownsamplingBlock(nn.Module):
         grid_in="equiangular",
         grid_out="equiangular",
         nrep=1,
-	kernel_shape=(3, 3),
-	basis_type="morlet",
+        kernel_shape=(3, 3),
+        basis_type="morlet",
         activation=nn.ReLU,
         transform_skip=False,
-        drop_conv_rate=0.,
-        drop_path_rate=0.,
-        drop_dense_rate=0.,
+        drop_conv_rate=0.0,
+        drop_path_rate=0.0,
+        drop_dense_rate=0.0,
         downsampling_mode="bilinear",
     ):
         super().__init__()
@@ -81,15 +81,15 @@ class DownsamplingBlock(nn.Module):
         self.grid_in = grid_in
         self.grid_out = grid_out
 
-        self.drop_path = DropPath(drop_path_rate) if drop_path_rate > 0. else nn.Identity()
+        self.drop_path = DropPath(drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
 
-        self.fwd =[]
+        self.fwd = []
         for i in range(nrep):
             # conv
             theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
             self.fwd.append(
                 DiscreteContinuousConvS2(
-                    in_channels=(in_channels if i==0 else out_channels),
+                    in_channels=(in_channels if i == 0 else out_channels),
                     out_channels=out_channels,
                     in_shape=in_shape,
                     out_shape=in_shape,
@@ -98,27 +98,17 @@ class DownsamplingBlock(nn.Module):
                     grid_in=grid_out,
                     grid_out=grid_out,
                     bias=False,
-                    theta_cutoff=theta_cutoff
+                    theta_cutoff=theta_cutoff,
                 )
             )
 
-            if drop_conv_rate > 0.:
-                self.fwd.append(
-                    nn.Dropout2d(
-                        p=drop_conv_rate
-                    )
-                )
+            if drop_conv_rate > 0.0:
+                self.fwd.append(nn.Dropout2d(p=drop_conv_rate))
 
             # batchnorm
-            self.fwd.append(
-                nn.BatchNorm2d(out_channels,
-                               eps=1e-05,
-                               momentum=0.1,
-                               affine=True,
-                               track_running_stats=True)
-            )
+            self.fwd.append(nn.BatchNorm2d(out_channels, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True))
 
-            # activation  
+            # activation
             self.fwd.append(
                 activation(),
             )
@@ -131,11 +121,11 @@ class DownsamplingBlock(nn.Module):
                 in_shape=in_shape,
                 out_shape=out_shape,
                 kernel_shape=kernel_shape,
-	        basis_type=basis_type,
+                basis_type=basis_type,
                 grid_in=grid_in,
-	        grid_out=grid_out,
+                grid_out=grid_out,
                 bias=False,
-                theta_cutoff=theta_cutoff
+                theta_cutoff=theta_cutoff,
             )
         else:
             self.downsample = ResampleS2(
@@ -153,12 +143,9 @@ class DownsamplingBlock(nn.Module):
 
         # final norm
         if transform_skip or (in_channels != out_channels):
-            self.transform_skip = nn.Conv2d(in_channels,
-                                            out_channels,
-                                            kernel_size=1,
-                                            bias=True)
+            self.transform_skip = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=True)
 
-            if drop_dense_rate >0.:
+            if drop_dense_rate > 0.0:
                 self.transform_skip = nn.Sequential(
                     self.transform_skip,
                     nn.Dropout2d(p=drop_dense_rate),
@@ -168,7 +155,7 @@ class DownsamplingBlock(nn.Module):
 
     def _init_weights(self, m):
         if isinstance(m, nn.Conv2d):
-            nn.init.trunc_normal_(m.weight, std=.02)
+            nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
@@ -186,10 +173,10 @@ class DownsamplingBlock(nn.Module):
 
         # downsample
         x = self.downsample(x)
-        
+
         return x
 
-    
+
 class UpsamplingBlock(nn.Module):
     def __init__(
         self,
@@ -204,9 +191,9 @@ class UpsamplingBlock(nn.Module):
         basis_type="morlet",
         activation=nn.ReLU,
         transform_skip=False,
-        drop_conv_rate=0.,
-        drop_path_rate=0.,
-        drop_dense_rate=0.,
+        drop_conv_rate=0.0,
+        drop_path_rate=0.0,
+        drop_dense_rate=0.0,
         upsampling_mode="bilinear",
     ):
         super().__init__()
@@ -216,7 +203,7 @@ class UpsamplingBlock(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
 
-        self.drop_path = DropPath(drop_path_rate) if drop_path_rate > 0. else nn.Identity()
+        self.drop_path = DropPath(drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
 
         if in_shape != out_shape:
             if upsampling_mode == "conv":
@@ -232,13 +219,9 @@ class UpsamplingBlock(nn.Module):
                         grid_in=grid_in,
                         grid_out=grid_out,
                         bias=False,
-                        theta_cutoff=theta_cutoff
+                        theta_cutoff=theta_cutoff,
                     ),
-                    nn.BatchNorm2d(out_channels,
-                                   eps=1e-05,
-                                   momentum=0.1,
-                                   affine=True,
-                                   track_running_stats=True),
+                    nn.BatchNorm2d(out_channels, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
                     activation(),
                     DiscreteContinuousConvS2(
                         in_channels=out_channels,
@@ -250,10 +233,10 @@ class UpsamplingBlock(nn.Module):
                         grid_in=grid_in,
                         grid_out=grid_out,
                         bias=False,
-                        theta_cutoff=theta_cutoff
+                        theta_cutoff=theta_cutoff,
                     ),
-            )
-                    
+                )
+
             else:
                 self.upsample = ResampleS2(
                     nlat_in=in_shape[0],
@@ -276,17 +259,17 @@ class UpsamplingBlock(nn.Module):
                 grid_in=grid_in,
                 grid_out=grid_out,
                 bias=False,
-                theta_cutoff=theta_cutoff
+                theta_cutoff=theta_cutoff,
             )
 
-        self.fwd =[]
+        self.fwd = []
         for i in range(nrep):
             # conv
             theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
             self.fwd.append(
                 DiscreteContinuousConvS2(
                     in_channels=in_channels,
-                    out_channels=(out_channels if i==nrep-1 else in_channels),
+                    out_channels=(out_channels if i == nrep - 1 else in_channels),
                     in_shape=in_shape,
                     out_shape=in_shape,
                     kernel_shape=kernel_shape,
@@ -294,41 +277,28 @@ class UpsamplingBlock(nn.Module):
                     grid_in=grid_in,
                     grid_out=grid_in,
                     bias=False,
-                    theta_cutoff=theta_cutoff
+                    theta_cutoff=theta_cutoff,
                 )
             )
 
-            if drop_conv_rate > 0.:
-                self.fwd.append(
-                    nn.Dropout2d(
-                        p=drop_conv_rate
-                    )
-                )
-            
+            if drop_conv_rate > 0.0:
+                self.fwd.append(nn.Dropout2d(p=drop_conv_rate))
+
             # batchnorm
-            self.fwd.append(
-                nn.BatchNorm2d((out_channels if i==nrep-1 else in_channels),
-                               eps=1e-05,
-	                       momentum=0.1,
-                               affine=True,
-                               track_running_stats=True)
-            )
+            self.fwd.append(nn.BatchNorm2d((out_channels if i == nrep - 1 else in_channels), eps=1e-05, momentum=0.1, affine=True, track_running_stats=True))
 
             # activation
             self.fwd.append(
                 activation(),
             )
-            
+
         # make sequential
         self.fwd = nn.Sequential(*self.fwd)
 
         # final norm
         if transform_skip or (in_channels != out_channels):
-            self.transform_skip = nn.Conv2d(in_channels,
-                                            out_channels,
-                                            kernel_size=1,
-                                            bias=True)
-            if drop_dense_rate >0.:
+            self.transform_skip = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=True)
+            if drop_dense_rate > 0.0:
                 self.transform_skip = nn.Sequential(
                     self.transform_skip,
                     nn.Dropout2d(p=drop_dense_rate),
@@ -338,7 +308,7 @@ class UpsamplingBlock(nn.Module):
 
     def _init_weights(self, m):
         if isinstance(m, nn.Conv2d):
-            nn.init.trunc_normal_(m.weight, std=.02)
+            nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
@@ -370,7 +340,7 @@ class SphericalUNet(nn.Module):
         Scale factor to use, by default 2
     in_chans : int, optional
         Number of input channels, by default 3
-    num_classes : int, optional
+    out_chans : int, optional
         Number of classes, by default 3
     embed_dims : List[int], optional
         Dimension of the embeddings for each block, has to be the same length as depths
@@ -417,7 +387,7 @@ class SphericalUNet(nn.Module):
         grid="equiangular",
         grid_internal="legendre-gauss",
         in_chans=3,
-        num_classes=3,
+        out_chans=3,
         embed_dims=[64, 128, 256, 512],
         depths=[2, 2, 2, 2],
         scale_factor=2,
@@ -437,14 +407,14 @@ class SphericalUNet(nn.Module):
         self.grid = grid
         self.grid_internal = grid_internal
         self.in_chans = in_chans
-        self.num_classes = num_classes
+        self.out_chans = out_chans
         self.embed_dims = embed_dims
         self.num_blocks = len(self.embed_dims)
         self.depths = depths
         self.kernel_shape = kernel_shape
 
-        assert(len(self.depths) == self.num_blocks)
-        
+        assert len(self.depths) == self.num_blocks
+
         # activation function
         if activation_function == "relu":
             self.activation_function = nn.ReLU
@@ -491,14 +461,14 @@ class SphericalUNet(nn.Module):
             in_channels = out_channels
 
         self.ublocks = nn.ModuleList([])
-        for i in range(self.num_blocks-1, -1, -1):
+        for i in range(self.num_blocks - 1, -1, -1):
             in_shape = self.dblocks[i].out_shape
             out_shape = self.dblocks[i].in_shape
             in_channels = self.dblocks[i].out_channels
-            if i != self.num_blocks-1:
+            if i != self.num_blocks - 1:
                 in_channels = 2 * in_channels
             out_channels = self.dblocks[i].in_channels
-            if i==0:
+            if i == 0:
                 out_channels = self.embed_dims[0]
             grid_in = self.dblocks[i].grid_out
             grid_out = self.dblocks[i].grid_in
@@ -514,29 +484,28 @@ class SphericalUNet(nn.Module):
                     basis_type=filter_basis_type,
                     activation=self.activation_function,
                     drop_conv_rate=drop_conv_rate,
-                    drop_path_rate=0.,
+                    drop_path_rate=0.0,
                     drop_dense_rate=drop_dense_rate,
                     transform_skip=transform_skip,
                     upsampling_mode=upsampling_mode,
                 )
             )
 
-        self.head = nn.Conv2d(self.embed_dims[0], self.num_classes, kernel_size=1, bias=True)
+        self.head = nn.Conv2d(self.embed_dims[0], self.out_chans, kernel_size=1, bias=True)
 
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Conv2d):
-            nn.init.trunc_normal_(m.weight, std=.02)
+            nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-
     def forward(self, x):
-                
+
         # encoder:
         features = []
         feat = x
@@ -546,7 +515,7 @@ class SphericalUNet(nn.Module):
 
         # reverse list
         features = features[::-1]
-        
+
         # perform upsample
         ufeat = self.ublocks[0](features[0])
         for feat, ublock in zip(features[1:], self.ublocks[1:]):

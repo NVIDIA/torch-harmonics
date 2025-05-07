@@ -160,7 +160,7 @@ def autoregressive_inference(
             if iic == nics - 1 and i % nskip == 0 and nskip > 0:
 
                 fig = plt.figure(figsize=(6, 6))
-                plot_sphere(ref[0, plot_channel].cpu(), fig, vmax=4, vmin=-4, central_latitude=30, gridlines=True, projection="orthographic")
+                plot_sphere(ref[plot_channel].cpu(), fig, vmax=4, vmin=-4, central_latitude=30, gridlines=True, projection="orthographic")
                 fig.tight_layout()
                 plt.savefig(os.path.join(path_root, "truth_" + str(i // nskip) + ".png"))
                 plt.close()
@@ -381,13 +381,13 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
 
     # specify which models to train here
     models = [
+        "sfno_sc2_layers4_e64",
+        "lsno_sc2_layers4_e64",
+        "s2unet_sc2_layers4_e128",
         "transformer_sc2_layers4_e128",
         "s2transformer_sc2_layers4_e128",
         "transformer_sc2_layers4_e128",
         "s2ntransformer_sc2_layers4_e128",
-        "sfno_sc2_layers4_e64",
-        "lsno_sc2_layers4_e64",
-        "s2unet_sc2_layers4_e128",
     ]
     models = {k: baseline_models[k] for k in models}
 
