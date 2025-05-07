@@ -144,8 +144,7 @@ def validate_model(model, dataloader, loss_fn, metrics_fns, path_root, normaliza
             plt.close()
 
             fig = plt.figure(figsize=(7.5, 6))
-            # filepath_src = dataloader.dataset.dataset.get_tar_filepath(idx_file)
-            plot_sphere(tar.cpu().squeeze(0) / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow", filepath_src=None)
+            plot_sphere(tar.cpu().squeeze(0) / num_classes, fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow")
             plt.savefig(os.path.join(path_root, "truth_" + str(glob_idx) + ".png"))
             plt.close()
 
@@ -450,10 +449,10 @@ def main(
     # specify which models to train here
     models = [
         "transformer_sc2_layers4_e128",
-        # "s2segformer_sc2_layers4_e512",
-        # "s2nsegformer_sc2_layers4_e512",
-        # "segformer_sc2_layers4_e512",
-        # "nsegformer_sc2_layers4_e512",
+        # "s2segformer_sc2_layers4_e128",
+        # "s2nsegformer_sc2_layers4_e128",
+        # "segformer_sc2_layers4_e128",
+        # "nsegformer_sc2_layers4_e128",
         # "s2transformer_sc2_layers4_e128",
         # "s2ntransformer_sc2_layers4_e128",
         # "transformer_sc2_layers4_e128",

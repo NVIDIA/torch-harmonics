@@ -48,6 +48,7 @@ import matplotlib.pyplot as plt
 from torch_harmonics.examples import PdeDataset
 from torch_harmonics.examples.losses import L1LossS2, SquaredL2LossS2, L2LossS2, W11LossS2
 from torch_harmonics import RealSHT
+from torch_harmonics.plotting import plot_sphere
 
 # import baseline models
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -139,8 +140,9 @@ def autoregressive_inference(
             if iic == nics - 1 and nskip > 0 and i % nskip == 0:
 
                 # do plotting
-                fig = plt.figure(figsize=(7.5, 6))
-                dataset.solver.plot_griddata(prd[0, plot_channel], fig, vmax=4, vmin=-4, projection="robinson")
+                fig = plt.figure(figsize=(6, 6))
+                plot_sphere(prd[0, plot_channel].cpu(), fig, vmax=4, vmin=-4, central_latitude=30, gridlines=True, projection="orthographic")
+                fig.tight_layout()
                 plt.savefig(os.path.join(path_root, "pred_" + str(i // nskip) + ".png"))
                 plt.close()
 
@@ -157,8 +159,9 @@ def autoregressive_inference(
 
             if iic == nics - 1 and i % nskip == 0 and nskip > 0:
 
-                fig = plt.figure(figsize=(7.5, 6))
-                dataset.solver.plot_griddata(ref[plot_channel], fig, vmax=4, vmin=-4, projection="robinson")
+                fig = plt.figure(figsize=(6, 6))
+                plot_sphere(ref[0, plot_channel].cpu(), fig, vmax=4, vmin=-4, central_latitude=30, gridlines=True, projection="orthographic")
+                fig.tight_layout()
                 plt.savefig(os.path.join(path_root, "truth_" + str(i // nskip) + ".png"))
                 plt.close()
 
@@ -199,6 +202,7 @@ def autoregressive_inference(
         plt.xlabel("$l$")
         plt.ylabel("powerspectrum")
         plt.legend()
+        fig.tight_layout()
         plt.savefig(os.path.join(path_root, f"powerspectrum_{step}.png"))
         fig.clf()
         plt.close()
@@ -340,7 +344,7 @@ def train_model(
     return valid_loss
 
 
-def main(root_path, pretrain_epochs=200, finetune_epochs=20, batch_size=1, learning_rate=1e-3, train=True, load_checkpoint=False, amp_mode="none", log_grads=0):
+def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learning_rate=1e-3, train=True, load_checkpoint=False, amp_mode="none", log_grads=0):
 
     # enable logging by default
     logging = True
@@ -350,7 +354,7 @@ def main(root_path, pretrain_epochs=200, finetune_epochs=20, batch_size=1, learn
     torch.cuda.manual_seed(333)
 
     # set device
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
     if torch.cuda.is_available():
         torch.cuda.set_device(device.index)
 
@@ -373,10 +377,18 @@ def main(root_path, pretrain_epochs=200, finetune_epochs=20, batch_size=1, learn
     models = {}
 
     # get baseline model registry
-    baseline_models = get_baseline_models(img_size=(nlat, nlon), in_chans=3, out_chans=3, grid=grid)
+    baseline_models = get_baseline_models(img_size=(nlat, nlon), in_chans=3, out_chans=3, residual_prediction=True, grid=grid)
 
     # specify which models to train here
-    models = ["sfno_sc2_layers4_e64"]
+    models = [
+        "transformer_sc2_layers4_e128",
+        "s2transformer_sc2_layers4_e128",
+        "transformer_sc2_layers4_e128",
+        "s2ntransformer_sc2_layers4_e128",
+        "sfno_sc2_layers4_e64",
+        "lsno_sc2_layers4_e64",
+        "s2unet_sc2_layers4_e128",
+    ]
     models = {k: baseline_models[k] for k in models}
 
     # loss function
@@ -524,8 +536,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--root_path", default=os.path.join(os.path.dirname(__file__), "checkpoints"), type=str, help="Override the path where checkpoints and run information are stored"
     )
-    parser.add_argument("--pretrain_epochs", default=1, type=int, help="Number of pretraining epochs.")
-    parser.add_argument("--finetune_epochs", default=0, type=int, help="Number of fine-tuning epochs.")
+    parser.add_argument("--pretrain_epochs", default=100, type=int, help="Number of pretraining epochs.")
+    parser.add_argument("--finetune_epochs", default=10, type=int, help="Number of fine-tuning epochs.")
     parser.add_argument("--batch_size", default=4, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--learning_rate", default=1e-3, type=float, help="Switch to override learning rate.")
     parser.add_argument("--resume", action="store_true", help="Reload checkpoints.")

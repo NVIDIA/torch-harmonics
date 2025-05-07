@@ -73,7 +73,7 @@ def get_projection(
 
 
 def plot_sphere(
-    data, fig=None, projection="robinson", cmap="RdBu", title=None, filepath_src=None, colorbar=False, coastlines=False, central_latitude=0, central_longitude=0, lon=None, lat=None, **kwargs
+    data, fig=None, projection="robinson", cmap="RdBu", title=None, colorbar=False, coastlines=False, gridlines=False,  central_latitude=0, central_longitude=0, lon=None, lat=None, **kwargs
 ):
     """
     Plots a function defined on the sphere using pcolormesh
@@ -113,12 +113,12 @@ def plot_sphere(
     if colorbar:
         plt.colorbar(im)
 
+    # add gridlines
+    if gridlines:
+        gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False, linewidth=1, color="gray", alpha=0.6, linestyle="--")
+
     # add title with smaller font
     plt.title(title, y=1.05, fontsize=8)
-
-    if filepath_src is not None:
-        directory, filepath = os.path.split(filepath_src)
-        plt.figtext(0.5, 0.15, f"Filepath:\n{directory}\n{filepath}", wrap=True, horizontalalignment="center", fontsize=8)
 
     return im
 

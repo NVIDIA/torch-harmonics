@@ -152,7 +152,7 @@ def validate_model(
 
             fig = plt.figure(figsize=(7.5, 6))
 
-            plot_sphere(tar.cpu(), fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow", filepath_src=None)
+            plot_sphere(tar.cpu(), fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow")
             plt.savefig(os.path.join(path_root, "truth_" + str(glob_idx) + ".png"))
             plt.close()
 
@@ -431,7 +431,10 @@ def main(
     baseline_models = get_baseline_models(img_size=img_size, in_chans=in_channels, out_chans=out_channels)
 
     # specify which models to train here
-    models = ["transformer_sc2_layers4_e128"]
+    models = [
+        # "transformer_sc2_layers4_e128",
+        "s2transformer_sc2_layers4_e128",
+    ]
     models = {k: baseline_models[k] for k in models}
 
     # initialize Sobolev W11 loss function

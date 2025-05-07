@@ -134,7 +134,7 @@ class AttentionBlock(nn.Module):
         use_mlp=True,
         bias=True,
         attention_mode="neighborhood",
-        attn_kernel_shape=(7,7),
+        attn_kernel_shape=(7, 7),
     ):
         super().__init__()
 
