@@ -195,13 +195,18 @@ class InverseRealSHT(nn.Module):
 
         # Evaluate associated Legendre functions on the output nodes
         x = torch.view_as_real(x)
-
-        rl = torch.einsum("...lm, mlk->...km", x[..., 0], self.pct.to(x.dtype))
-        im = torch.einsum("...lm, mlk->...km", x[..., 1], self.pct.to(x.dtype))
-        xs = torch.stack((rl, im), -1)
+        xs = torch.einsum("...lmr, mlk->...kmr", x, self.pct.to(x.dtype)).contiguous()
 
         # apply the inverse (real) FFT
         x = torch.view_as_complex(xs)
+
+        # ensure that imaginary part of 0 and nyquist components are zero
+        # this is important because not all backend algorithms provided through the
+        # irfft interface ensure that
+        x[..., 0].imag = 0.0
+        if (self.nlon % 2 == 0) and (self.nlon // 2 < self.mmax):
+            x[..., self.nlon // 2].imag = 0.0
+        
         x = torch.fft.irfft(x, n=self.nlon, dim=-1, norm="forward")
 
         return x
@@ -395,6 +400,14 @@ class InverseRealVectorSHT(nn.Module):
 
         # apply the inverse (real) FFT
         x = torch.view_as_complex(xs)
+
+        # ensure that imaginary part of 0 and nyquist components are zero
+        # this is important because not all backend algorithms provided through the
+        # irfft interface ensure that
+        x[..., 0].imag = 0.0
+        if (self.nlon % 2 == 0) and (self.nlon // 2 < self.mmax):
+            x[..., self.nlon // 2].imag = 0.0
+        
         x = torch.fft.irfft(x, n=self.nlon, dim=-1, norm="forward")
 
         return x

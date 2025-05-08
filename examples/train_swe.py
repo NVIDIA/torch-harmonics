@@ -50,8 +50,6 @@ from torch_harmonics import RealSHT
 # wandb logging
 import wandb
 
-wandb.login()
-
 
 def l2loss_sphere(solver, prd, tar, relative=False, squared=True):
     loss = solver.integrate_grid((prd - tar) ** 2, dimensionless=True).sum(dim=-1)
@@ -265,7 +263,7 @@ def log_weights_and_grads(model, iters=1):
     """
     Helper routine intended for debugging purposes
     """
-    root_path = os.path.join(os.path.dirname(__file__), "weights_and_grads")
+    root_path = os.path.join(os.getcwd(), "weights_and_grads")
 
     weights_and_grads_fname = os.path.join(root_path, f"weights_and_grads_step{iters:03d}.tar")
     print(weights_and_grads_fname)
@@ -381,6 +379,9 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     torch.manual_seed(333)
     torch.cuda.manual_seed(333)
 
+    # login
+    wandb.login()
+
     # set parameters
     nfuture=0
 
@@ -394,7 +395,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
     dt_solver = 150
     nsteps = dt // dt_solver
     grid = "legendre-gauss"
-    nlat, nlon =(181, 360)
+    nlat, nlon = (257, 512)
     dataset = PdeDataset(dt=dt, nsteps=nsteps, dims=(nlat, nlon), device=device, grid=grid, normalize=True)
     dataset.sht = RealSHT(nlat=nlat, nlon=nlon, grid= grid).to(device=device)
     # There is still an issue with parallel dataloading. Do NOT use it at the moment
@@ -441,8 +442,8 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         pos_embed=False,
         use_mlp=True,
         normalization_layer="none",
-        kernel_shape=[2, 2],
-        encoder_kernel_shape=[2, 2],
+        kernel_shape=(2, 2),
+        encoder_kernel_shape=(2, 2),
         filter_basis_type="morlet",
         upsample_sht = True,
     )
@@ -459,14 +460,14 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
         pos_embed=False,
         use_mlp=True,
         normalization_layer="none",
-        kernel_shape=[4],
-        encoder_kernel_shape=[4],
+        kernel_shape=(4),
+        encoder_kernel_shape=(4),
         filter_basis_type="zernike",
         upsample_sht = True,
     )
 
     # iterate over models and train each model
-    root_path = os.path.dirname(__file__)
+    root_path = os.getcwd()
     for model_name, model_handle in models.items():
 
         model = model_handle().to(device)
@@ -498,7 +499,7 @@ def main(train=True, load_checkpoint=False, enable_amp=False, log_grads=0):
             start_time = time.time()
 
             print(f"Training {model_name}, single step")
-            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=1, loss_fn="l2", enable_amp=enable_amp, log_grads=log_grads)
+            train_model(model, dataloader, optimizer, gscaler, scheduler, nepochs=200, loss_fn="l2", enable_amp=enable_amp, log_grads=log_grads)
 
             if nfuture > 0:
                 print(f'Training {model_name}, {nfuture} step')
