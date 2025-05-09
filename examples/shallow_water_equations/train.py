@@ -432,7 +432,7 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
             # optimizer:
             optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
-            gscaler = torch.GradScaler("cuda", enabled=(amp_mode != "none"))
+            gscaler = torch.GradScaler("cuda", enabled=(amp_mode == "fp16"))
 
             start_time = time.time()
 

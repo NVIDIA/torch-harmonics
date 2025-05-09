@@ -487,7 +487,7 @@ def main(
             # optimizer:
             optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01, foreach=torch.cuda.is_available())
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
-            gscaler = torch.GradScaler("cuda", enabled=(amp_mode != "none"))
+            gscaler = torch.GradScaler("cuda", enabled=(amp_mode == "fp16"))
 
             start_time = time.time()
 
