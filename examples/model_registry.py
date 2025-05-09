@@ -42,7 +42,7 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
 
     # prepare dicts containing models and corresponding metrics
     model_registry = dict(
-        sfno_sc2_layers4_e64 = partial(
+        sfno_sc2_layers4_e32 = partial(
             SphericalFourierNeuralOperator,
             img_size=img_size,
             grid=grid,
@@ -50,13 +50,13 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             out_chans=out_chans,
             num_layers=4,
             scale_factor=2,
-            embed_dim=64,
+            embed_dim=32,
             activation_function="gelu",
             residual_prediction=residual_prediction,
             use_mlp=True,
             normalization_layer="instance_norm",
         ),
-        lsno_sc2_layers4_e64 = partial(
+        lsno_sc2_layers4_e32 = partial(
             LocalSphericalNeuralOperator,
             img_size=img_size,
             grid=grid,
@@ -64,7 +64,7 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             out_chans=out_chans,
             num_layers=4,
             scale_factor=2,
-            embed_dim=64,
+            embed_dim=32,
             activation_function="gelu",
             residual_prediction=residual_prediction,
             use_mlp=True,

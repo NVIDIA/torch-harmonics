@@ -363,7 +363,7 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
     dt_solver = 150
     nsteps = dt // dt_solver
     grid = "legendre-gauss"
-    nlat, nlon = (180, 360)
+    nlat, nlon = (128, 256)
     dataset = PdeDataset(dt=dt, nsteps=nsteps, dims=(nlat, nlon), device=device, grid=grid, normalize=True)
     dataset.sht = RealSHT(nlat=nlat, nlon=nlon, grid=grid).to(device=device)
     # There is still an issue with parallel dataloading. Do NOT use it at the moment
@@ -381,13 +381,16 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
 
     # specify which models to train here
     models = [
-        "sfno_sc2_layers4_e64",
-        "lsno_sc2_layers4_e64",
-        "s2unet_sc2_layers4_e128",
         "transformer_sc2_layers4_e128",
         "s2transformer_sc2_layers4_e128",
-        "transformer_sc2_layers4_e128",
+        "ntransformer_sc2_layers4_e128",
         "s2ntransformer_sc2_layers4_e128",
+        "segformer_sc2_layers4_e128",
+        "s2segformer_sc2_layers4_e128",
+        "nsegformer_sc2_layers4_e128",
+        "s2nsegformer_sc2_layers4_e128",
+        "sfno_sc2_layers4_e32",
+        "lsno_sc2_layers4_e32",
     ]
     models = {k: baseline_models[k] for k in models}
 
@@ -537,9 +540,9 @@ if __name__ == "__main__":
         "--root_path", default=os.path.join(os.path.dirname(__file__), "checkpoints"), type=str, help="Override the path where checkpoints and run information are stored"
     )
     parser.add_argument("--pretrain_epochs", default=100, type=int, help="Number of pretraining epochs.")
-    parser.add_argument("--finetune_epochs", default=10, type=int, help="Number of fine-tuning epochs.")
+    parser.add_argument("--finetune_epochs", default=0, type=int, help="Number of fine-tuning epochs.")
     parser.add_argument("--batch_size", default=4, type=int, help="Switch for overriding batch size in the configuration file.")
-    parser.add_argument("--learning_rate", default=1e-3, type=float, help="Switch to override learning rate.")
+    parser.add_argument("--learning_rate", default=1e-4, type=float, help="Switch to override learning rate.")
     parser.add_argument("--resume", action="store_true", help="Reload checkpoints.")
     parser.add_argument("--amp_mode", default="none", type=str, choices=["none", "bf16", "fp16"], help="Switch to enable AMP.")
     args = parser.parse_args()

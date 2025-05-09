@@ -456,7 +456,9 @@ def main(
         "s2ntransformer_sc2_layers4_e128",
         "transformer_sc2_layers4_e128",
         "ntransformer_sc2_layers4_e128",
-        "vit_sc2_layers4_e128"
+        "vit_sc2_layers4_e128",
+        "sfno_sc2_layers4_e32",
+        "lsno_sc2_layers4_e32",
     ]
     models = {k: baseline_models[k] for k in models}
 
