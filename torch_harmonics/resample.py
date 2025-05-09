@@ -121,14 +121,15 @@ class ResampleS2(nn.Module):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}"
 
     def _upscale_longitudes(self, x: torch.Tensor):
-        # do the interpolation
+        # do the interpolation in precision of x
+        lwgt = self.lon_weights.to(x.dtype)
         if self.mode == "bilinear":
-            x = torch.lerp(x[..., self.lon_idx_left], x[..., self.lon_idx_right], self.lon_weights)
+            x = torch.lerp(x[..., self.lon_idx_left], x[..., self.lon_idx_right], lwgt)
         else:
             omega = x[..., self.lon_idx_right] - x[..., self.lon_idx_left]
             somega = torch.sin(omega)
-            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - self.lon_weights) * omega) / somega, (1.0 - self.lon_weights))
-            end_prefac = torch.where(somega > 1e-4, torch.sin(self.lon_weights * omega) / somega, self.lon_weights)
+            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - lwgt) * omega) / somega, (1.0 - lwgt))
+            end_prefac = torch.where(somega > 1e-4, torch.sin(lwgt * omega) / somega, lwgt)
             x = start_prefac * x[..., self.lon_idx_left] + end_prefac * x[..., self.lon_idx_right]
 
         return x
@@ -142,14 +143,15 @@ class ResampleS2(nn.Module):
         return x
 
     def _upscale_latitudes(self, x: torch.Tensor):
-        # do the interpolation
+        # do the interpolation in precision of x
+        lwgt = self.lat_weights.to(x.dtype)
         if self.mode == "bilinear":
-            x = torch.lerp(x[..., self.lat_idx, :], x[..., self.lat_idx + 1, :], self.lat_weights)
+            x = torch.lerp(x[..., self.lat_idx, :], x[..., self.lat_idx + 1, :], lwgt)
         else:
             omega = x[..., self.lat_idx + 1, :] - x[..., self.lat_idx, :]
             somega = torch.sin(omega)
-            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - self.lat_weights) * omega) / somega, (1.0 - self.lat_weights))
-            end_prefac = torch.where(somega > 1e-4, torch.sin(self.lat_weights * omega) / somega, self.lat_weights)
+            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - lwgt) * omega) / somega, (1.0 - lwgt))
+            end_prefac = torch.where(somega > 1e-4, torch.sin(lwgt * omega) / somega, lwgt)
             x = start_prefac * x[..., self.lat_idx, :] + end_prefac * x[..., self.lat_idx + 1, :]
 
         return x

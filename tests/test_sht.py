@@ -34,8 +34,7 @@ from parameterized import parameterized
 import math
 import torch
 from torch.autograd import gradcheck
-from torch_harmonics import *
-
+import torch_harmonics as th
 
 class TestLegendrePolynomials(unittest.TestCase):
 
@@ -63,10 +62,9 @@ class TestLegendrePolynomials(unittest.TestCase):
     def test_legendre(self, verbose=False):
         if verbose:
             print("Testing computation of associated Legendre polynomials")
-        from torch_harmonics.legendre import legpoly
 
         t = torch.linspace(0, 1, 100, dtype=torch.float64)
-        vdm = legpoly(self.mmax, self.lmax, t)
+        vdm = th.legendre.legpoly(self.mmax, self.lmax, t)
 
         for l in range(self.lmax):
             for m in range(l + 1):
@@ -109,8 +107,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             mmax = nlat
         lmax = mmax
 
-        sht = RealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm).to(self.device)
-        isht = InverseRealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm).to(self.device)
+        sht = th.RealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm).to(self.device)
+        isht = th.InverseRealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm).to(self.device)
 
         with torch.no_grad():
             coeffs = torch.zeros(batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)
@@ -167,8 +165,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             mmax = nlat
         lmax = mmax
 
-        sht = RealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm).to(self.device)
-        isht = InverseRealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm).to(self.device)
+        sht = th.RealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm).to(self.device)
+        isht = th.InverseRealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm).to(self.device)
 
         with torch.no_grad():
             coeffs = torch.zeros(batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)

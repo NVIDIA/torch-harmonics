@@ -1,4 +1,6 @@
-# SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
+# coding=utf-8
+
+# SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 #
 # Redistribution and use in source and binary forms, with or without
@@ -27,21 +29,6 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-# build after cloning in directoy torch_harmonics via
-# docker build . -t torch_harmonics
-
-FROM nvcr.io/nvidia/pytorch:24.12-py3
-
-# we need this for tests
-RUN pip install parameterized
-
-# we install this for the examples
-RUN pip install wandb
-
-# The custom CUDA extension does not suppport architerctures < 7.0
-ENV FORCE_CUDA_EXTENSION=1
-ENV TORCH_CUDA_ARCH_LIST "7.0 7.2 7.5 8.0 8.6 8.7 9.0+PTX"
-ENV TORCH_HARMONICS_DEBUG=1
-COPY . /workspace/torch_harmonics
-RUN cd /workspace/torch_harmonics && pip install --no-build-isolation .
-
+from .transformer import Transformer
+from .segformer import Segformer
+from .unet import UNet
