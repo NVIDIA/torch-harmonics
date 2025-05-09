@@ -248,9 +248,6 @@ class DistributedInverseRealSHT(nn.Module):
 
         # einsum
         xs = torch.einsum('...lmr, mlk->...kmr', x, self.pct.to(x.dtype)).contiguous()
-        #rl = torch.einsum('...lm, mlk->...km', x[..., 0], self.pct.to(x.dtype) )
-        #im = torch.einsum('...lm, mlk->...km', x[..., 1], self.pct.to(x.dtype) )
-        #xs = torch.stack((rl, im), -1).contiguous()
 
         # inverse FFT
         x = torch.view_as_complex(xs)
@@ -263,6 +260,11 @@ class DistributedInverseRealSHT(nn.Module):
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth.apply(x, (-3, -1), self.m_shapes)
 
+        # set DCT and nyquist frequencies to 0:
+        x[..., 0].imag = 0.0
+        if (self.nlon % 2 == 0) and (self.nlon // 2 < x.shape[-1]):
+            x[..., self.nlon // 2].imag = 0.0
+            
         # apply the inverse (real) FFT
         x = torch.fft.irfft(x, n=self.nlon, dim=-1, norm="forward")
 
@@ -527,6 +529,11 @@ class DistributedInverseRealVectorSHT(nn.Module):
         # transpose: after this, channels are split and m is local
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth.apply(x, (-4, -1), self.m_shapes)
+
+        # set DCT and nyquist frequencies to zero
+        x[..., 0].imag = 0.0
+        if (self.nlon % 2 == 0) and (self.nlon // 2 < x.shape[-1]):
+            x[..., self.nlon // 2].imag = 0.0
 
         # apply the inverse (real) FFT
         x = torch.fft.irfft(x, n=self.nlon, dim=-1, norm="forward")
