@@ -36,7 +36,7 @@ from parameterized import parameterized
 import torch
 import torch.nn.functional as F
 import torch.distributed as dist
-import torch_harmonics as harmonics
+import torch_harmonics as th
 import torch_harmonics.distributed as thd
 
 
@@ -218,10 +218,10 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         # set up handles
         if vector:
-            forward_transform_local = harmonics.RealVectorSHT(nlat=H, nlon=W, grid=grid).to(self.device)
+            forward_transform_local = th.RealVectorSHT(nlat=H, nlon=W, grid=grid).to(self.device)
             forward_transform_dist = thd.DistributedRealVectorSHT(nlat=H, nlon=W, grid=grid).to(self.device)
         else:
-            forward_transform_local = harmonics.RealSHT(nlat=H, nlon=W, grid=grid).to(self.device)
+            forward_transform_local = th.RealSHT(nlat=H, nlon=W, grid=grid).to(self.device)
             forward_transform_dist = thd.DistributedRealSHT(nlat=H, nlon=W, grid=grid).to(self.device)
 
         # create tensors
@@ -304,12 +304,12 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         B, C, H, W = batch_size, num_chan, nlat, nlon
 
         if vector:
-            forward_transform_local = harmonics.RealVectorSHT(nlat=H, nlon=W, grid=grid).to(self.device)
-            backward_transform_local = harmonics.InverseRealVectorSHT(nlat=H, nlon=W, grid=grid).to(self.device)
+            forward_transform_local = th.RealVectorSHT(nlat=H, nlon=W, grid=grid).to(self.device)
+            backward_transform_local = th.InverseRealVectorSHT(nlat=H, nlon=W, grid=grid).to(self.device)
             backward_transform_dist = thd.DistributedInverseRealVectorSHT(nlat=H, nlon=W, grid=grid).to(self.device)
         else:
-            forward_transform_local = harmonics.RealSHT(nlat=H, nlon=W, grid=grid).to(self.device)
-            backward_transform_local = harmonics.InverseRealSHT(nlat=H, nlon=W, grid=grid).to(self.device)
+            forward_transform_local = th.RealSHT(nlat=H, nlon=W, grid=grid).to(self.device)
+            backward_transform_local = th.InverseRealSHT(nlat=H, nlon=W, grid=grid).to(self.device)
             backward_transform_dist = thd.DistributedInverseRealSHT(nlat=H, nlon=W, grid=grid).to(self.device)
 
         # create tensors

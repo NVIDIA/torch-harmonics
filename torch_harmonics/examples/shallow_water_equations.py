@@ -32,7 +32,7 @@
 
 import torch
 import torch.nn as nn
-import torch_harmonics as harmonics
+import torch_harmonics as th
 from torch_harmonics.quadrature import _precompute_longitudes
 
 import math
