@@ -2,6 +2,19 @@
 
 ## Versioning
 
+### v0.8.0
+
+* Adding spherical attention and spherical neighborhood attention
+* Custom CUDA kerneles for spherical neighborhood attention
+* New datasets for segmentation and depth estimation on the sphere based on the 2D3DS dataset
+* added new spherical architectures and corresponding baselines
+    * S2 Transformer
+    * S2 Segformer
+    * S2 U-Net
+* Reworked spherical examples for better reproducibility
+* Added spherical loss functions to examples
+* Added plotting module
+
 ### v0.7.6
 
 * Adding cache for precomoputed tensors such as weight tensors for DISCO and SHT
