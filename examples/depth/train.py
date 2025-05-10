@@ -138,21 +138,25 @@ def validate_model(
             for metric in metrics_fns:
                 metric_buff = metrics[metric]
                 metric_fn = metrics_fns[metric]
-                metric_buff[idx] = metric_fn(prd, tar, mask)
+                metric_buff[idx] = metric_fn(prd, tar.unsqueeze(-3), mask)
 
             tar = (tar * mask).squeeze()
             prd = (prd * mask).squeeze()
 
+            # get the minimum
+            vmin = min(tar.min(), prd.min())
+            vmax = min(tar.max(), prd.max())
+
             # do plotting
             glob_idx = idx + glob_off
             fig = plt.figure(figsize=(7.5, 6))
-            plot_sphere(prd.cpu(), fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow")
+            plot_sphere(prd.cpu(), fig=fig, vmax=vmax, vmin=vmin, cmap="plasma")
             plt.savefig(os.path.join(path_root, "pred_" + str(glob_idx) + ".png"))
             plt.close()
 
             fig = plt.figure(figsize=(7.5, 6))
 
-            plot_sphere(tar.cpu(), fig=fig, vmax=1.0, vmin=0.0, cmap="rainbow")
+            plot_sphere(tar.cpu(), fig=fig, vmax=vmax, vmin=vmin, cmap="plasma")
             plt.savefig(os.path.join(path_root, "truth_" + str(glob_idx) + ".png"))
             plt.close()
 
@@ -212,7 +216,7 @@ def train_model(
         if dist.is_initialized():
             train_sampler.set_epoch(epoch)
 
-        for step, (inp, tar) in enumerate(train_dataloader):
+        for inp, tar in train_dataloader:
 
             inp = inp.to(device)
             tar = tar.to(device)
@@ -253,7 +257,7 @@ def train_model(
         # prepare metrics buffer for accumulation of validation metrics
         valid_metrics = {}
         for metric in metrics_fns:
-            valid_metrics[metric] = torch.zeros(2, dtype=torch.float32, device=device)
+            valid_metrics[metric] = torch.zeros(1, dtype=torch.float32, device=device)
 
         model.eval()
 
@@ -261,7 +265,7 @@ def train_model(
             test_sampler.set_epoch(epoch)
 
         with torch.no_grad():
-            for step, (inp, tar) in enumerate(test_dataloader):
+            for inp, tar in test_dataloader:
                 inp = inp.to(device)
                 tar = tar.to(device)
                 mask = torch.where(tar == 0, 0.0, 1.0)
@@ -283,7 +287,6 @@ def train_model(
                     metric_buff = valid_metrics[metric]
                     metric_fn = metrics_fns[metric]
                     metric_buff[0] += metric_fn(prd, tar, mask) * inp.size(0)
-                    metric_buff[1] += inp.size(0)
 
             if dist.is_initialized():
                 dist.all_reduce(valid_loss)
@@ -292,7 +295,7 @@ def train_model(
 
         valid_loss = (valid_loss[0] / valid_loss[1]).item()
         for metric in valid_metrics:
-            valid_metrics[metric] = (valid_metrics[metric][0] / valid_metrics[metric][1]).item()
+            valid_metrics[metric] = (valid_metrics[metric][0] / valid_loss[1]).item()
 
         if scheduler is not None:
             scheduler.step(valid_loss)
@@ -570,9 +573,9 @@ def main(
 
     if logging:
         df = pd.DataFrame(metrics)
-        if not os.path.isdir(os.path.join(exp_dir, "output_data")):
-            os.makedirs(os.path.join(exp_dir, "output_data"), exist_ok=True)
-        df.to_pickle(os.path.join(exp_dir, "output_data", "metrics.pkl"))
+        if not os.path.isdir(os.path.join(root_path, "output_data")):
+            os.makedirs(os.path.join(root_path, "output_data"), exist_ok=True)
+        df.to_pickle(os.path.join(root_path, "output_data", "metrics.pkl"))
 
     if dist.is_initialized():
         dist.barrier(device_ids=[device.index])
@@ -610,7 +613,7 @@ if __name__ == "__main__":
         num_epochs=args.num_epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
-        train=True,
+        train=args.num_epochs > 0,
         load_checkpoint=args.resume,
         amp_mode=args.amp_mode,
         ddp=args.enable_ddp,

@@ -204,7 +204,7 @@ def train_model(
         if dist.is_initialized():
             train_sampler.set_epoch(epoch)
 
-        for step, (inp, tar) in enumerate(train_dataloader):
+        for inp, tar in train_dataloader:
             inp = inp.to(device)
             tar = tar.to(device)
 
@@ -259,7 +259,7 @@ def train_model(
             test_sampler.set_epoch(epoch)
 
         with torch.no_grad():
-            for step, (inp, tar) in enumerate(test_dataloader):
+            for inp, tar in test_dataloader:
                 inp = inp.to(device)
                 tar = tar.to(device)
 
@@ -591,9 +591,9 @@ def main(
 
     if logging:
         df = pd.DataFrame(metrics)
-        if not os.path.isdir(os.path.join(exp_dir, "output_data")):
-            os.makedirs(os.path.join(exp_dir, "output_data"), exist_ok=True)
-        df.to_pickle(os.path.join(exp_dir, "output_data", "metrics.pkl"))
+        if not os.path.isdir(os.path.join(root_path, "output_data")):
+            os.makedirs(os.path.join(root_path, "output_data"), exist_ok=True)
+        df.to_pickle(os.path.join(root_path, "output_data", "metrics.pkl"))
 
     if dist.is_initialized():
         dist.barrier(device_ids=[device.index])
@@ -635,7 +635,7 @@ if __name__ == "__main__":
         learning_rate=args.learning_rate,
         label_smoothing=args.label_smoothing_factor,
         max_grad_norm=args.max_grad_norm,
-        train=True,
+        train=args.num_epochs > 0,
         load_checkpoint=args.resume,
         amp_mode=args.amp_mode,
         ddp=args.enable_ddp,

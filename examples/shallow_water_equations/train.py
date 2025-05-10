@@ -171,10 +171,10 @@ def autoregressive_inference(
         prd_mean_coeffs.append(torch.stack(prd_coeffs, 0))
         ref_mean_coeffs.append(torch.stack(ref_coeffs, 0))
 
-        # ref = (dataset.solver.spec2grid(uspec) - inp_mean) / torch.sqrt(inp_var)
-        ref = dataset.solver.spec2grid(uspec)
-        prd = prd * torch.sqrt(inp_var) + inp_mean
+        ref = (dataset.solver.spec2grid(uspec) - inp_mean) / torch.sqrt(inp_var)
+        # ref = dataset.solver.spec2grid(uspec)
         losses[iic] = loss_fn(prd, ref)
+        # prd = prd * torch.sqrt(inp_var) + inp_mean
         for metric in metrics_fns:
             metric_buff = metrics[metric]
             metric_fn = metrics_fns[metric]
@@ -354,7 +354,7 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
     torch.cuda.manual_seed(333)
 
     # set device
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if torch.cuda.is_available():
         torch.cuda.set_device(device.index)
 
@@ -389,8 +389,8 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
         "s2segformer_sc2_layers4_e128",
         "nsegformer_sc2_layers4_e128",
         "s2nsegformer_sc2_layers4_e128",
-        "sfno_sc2_layers4_e32",
-        "lsno_sc2_layers4_e32",
+        # "sfno_sc2_layers4_e32",
+        # "lsno_sc2_layers4_e32",
     ]
     models = {k: baseline_models[k] for k in models}
 
@@ -499,16 +499,16 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
         print(f"Validating {model_name}")
         with torch.inference_mode():
             losses, metric_results, model_times, solver_times = autoregressive_inference(
-                model, dataset, loss_fn, metrics_fns, os.path.join(exp_dir, "figures"), nsteps=nsteps, autoreg_steps=30, nics=50, device=device
+                model, dataset, loss_fn, metrics_fns, os.path.join(exp_dir, "figures"), nsteps=nsteps, autoreg_steps=1, nics=50, device=device
             )
 
             # compute statistics
             metrics[model_name]["loss mean"] = torch.mean(losses).item()
             metrics[model_name]["loss std"] = torch.std(losses).item()
-            metrics[model_name]["model time mean"] = torch.mean(model_times)
-            metrics[model_name]["model time std"] = torch.std(model_times)
-            metrics[model_name]["solver time mean"] = torch.mean(solver_times)
-            metrics[model_name]["solver time std"] = torch.std(solver_times)
+            metrics[model_name]["model time mean"] = torch.mean(model_times).item()
+            metrics[model_name]["model time std"] = torch.std(model_times).item()
+            metrics[model_name]["solver time mean"] = torch.mean(solver_times).item()
+            metrics[model_name]["solver time std"] = torch.std(solver_times).item()
             for metric in metric_results:
                 metrics[model_name][metric + " mean"] = torch.mean(metric_results[metric]).item()
                 metrics[model_name][metric + " std"] = torch.std(metric_results[metric]).item()
@@ -518,14 +518,9 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
 
     # output metrics to data frame
     df = pd.DataFrame(metrics)
-    if not os.path.isdir(
-        os.path.join(
-            exp_dir,
-            "output_data",
-        )
-    ):
-        os.makedirs(os.path.join(exp_dir, "output_data"), exist_ok=True)
-    df.to_pickle(os.path.join(exp_dir, "output_data", "metrics.pkl"))
+    if not os.path.isdir(os.path.join(root_path, "output_data")):
+        os.makedirs(os.path.join(root_path, "output_data"), exist_ok=True)
+    df.to_pickle(os.path.join(root_path, "output_data", "metrics.pkl"))
 
 
 if __name__ == "__main__":
@@ -554,7 +549,7 @@ if __name__ == "__main__":
         finetune_epochs=args.finetune_epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
-        train=True,
+        train=(args.pretrain_epochs > 0 or args.finetune_epochs > 0),
         load_checkpoint=args.resume,
         amp_mode=args.amp_mode,
         log_grads=0,
