@@ -128,9 +128,6 @@ class BaseMetricS2(nn.Module):
                 fp = torch.mean(fp)
                 fn = torch.mean(fn)
                 tn = torch.mean(tn)
-
-            # compute score
-            score = tp / (tp + fp + fn)
         else:
             tp = torch.mean(tp, dim=0)
             fp = torch.mean(fp, dim=0)
