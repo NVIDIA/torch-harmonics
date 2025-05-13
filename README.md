@@ -56,7 +56,7 @@ The SHT algorithm uses quadrature rules to compute the projection onto the assoc
 
 torch-harmonics uses PyTorch primitives to implement these operations, making it fully differentiable. Moreover, the quadrature can be distributed onto multiple ranks making it spatially distributed.
 
-torch-harmonics has been used to implement a variety of differentiable PDE solvers which generated the animations below. Moreover, it has enabled the development of Spherical Fourier Neural Operators (SFNOs) [1].
+torch-harmonics has been used to implement a variety of differentiable PDE solvers which generated the animations below. Moreover, it has enabled the development of Spherical Fourier Neural Operators  [1].
 
 <div align="center">
 <table border="0" cellspacing="0" cellpadding="0">
