@@ -33,7 +33,7 @@ import math
 
 import torch
 import torch.nn as nn
-from torch_harmonics.examples.models._layers import MLP, LayerNorm, SequencePositionEmbedding, SpectralPositionEmbedding, LearnablePositionEmbedding
+from torch_harmonics.examples.models._layers import MLP, LayerNorm, DropPath, SequencePositionEmbedding, SpectralPositionEmbedding, LearnablePositionEmbedding
 from natten import NeighborhoodAttention2D as NeighborhoodAttention
 from functools import partial
 

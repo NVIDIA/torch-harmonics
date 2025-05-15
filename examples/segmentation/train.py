@@ -289,7 +289,7 @@ def train_model(
             valid_metrics[metric] = (valid_metrics[metric][0] / valid_metrics[metric][1]).item()
 
         if scheduler is not None:
-            scheduler.step(valid_loss)
+            scheduler.step()
 
         epoch_time = time.time() - epoch_start
 
@@ -320,6 +320,7 @@ def train_model(
 
 
 def main(
+        models,
     root_path,
     num_epochs=100,
     batch_size=8,
@@ -444,22 +445,41 @@ def main(
         print(f"Validation dataset initialized with {len(valid_dataset)} samples of resolution {img_size}")
 
     # get baseline model registry
-    baseline_models = get_baseline_models(img_size=img_size, in_chans=in_channels, out_chans=dataset.num_classes)
+    baseline_models = get_baseline_models(img_size=img_size, in_chans=in_channels, out_chans=dataset.num_classes, drop_path_rate=0.1)
 
     # specify which models to train here
-    models = [
-        "s2segformer_sc2_layers4_e128",
-        "s2nsegformer_sc2_layers4_e128",
-        "segformer_sc2_layers4_e128",
-        "nsegformer_sc2_layers4_e128",
-        "s2transformer_sc2_layers4_e128",
-        "s2ntransformer_sc2_layers4_e128",
-        "transformer_sc2_layers4_e128",
-        "ntransformer_sc2_layers4_e128",
-        "vit_sc2_layers4_e128",
-        "sfno_sc2_layers4_e32",
-        "lsno_sc2_layers4_e32",
-    ]
+    if models is None:
+        models = [
+            "s2segformer_sc2_layers4_e128",
+            "s2segformer_sc2_layers4_e256",
+
+            "segformer_sc2_layers4_e128",
+            "segformer_sc2_layers4_e256",
+        
+            "s2nsegformer_sc2_layers4_e128",
+            "s2nsegformer_sc2_layers4_e256",
+        
+            "nsegformer_sc2_layers4_e128",
+            "nsegformer_sc2_layers4_e256",
+        
+            "s2transformer_sc2_layers4_e128",
+            "s2transformer_sc2_layers4_e256",
+        
+            "s2ntransformer_sc2_layers4_e128",
+            "s2ntransformer_sc2_layers4_e256",
+        
+            "transformer_sc2_layers4_e128",
+            "transformer_sc2_layers4_e256",
+            
+            "ntransformer_sc2_layers4_e128",
+            "ntransformer_sc2_layers4_e256",
+            
+            "vit_sc2_layers4_e128",
+            "sfno_sc2_layers4_e32",
+            "lsno_sc2_layers4_e32",
+        ]
+    elif isinstance(models, str):
+        models = [models]
     models = {k: baseline_models[k] for k in models}
 
     if len(models) == 0:
@@ -521,8 +541,8 @@ def main(
                 run = None
 
             # optimizer:
-            optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01, foreach=torch.cuda.is_available())
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
+            optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.1, foreach=torch.cuda.is_available())
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
             gscaler = torch.GradScaler("cuda", enabled=(amp_mode == "fp16"))
 
             start_time = time.time()
@@ -589,11 +609,11 @@ def main(
             if train:
                 metrics[model_name]["training_time"] = training_time
 
-    if logging:
-        df = pd.DataFrame(metrics)
-        if not os.path.isdir(os.path.join(root_path, "output_data")):
-            os.makedirs(os.path.join(root_path, "output_data"), exist_ok=True)
-        df.to_pickle(os.path.join(root_path, "output_data", "metrics.pkl"))
+        if logging:
+            df = pd.DataFrame(metrics)
+            if not os.path.isdir(os.path.join(exp_dir, "output_data")):
+                os.makedirs(os.path.join(exp_dir, "output_data"), exist_ok=True)
+            df.to_pickle(os.path.join(exp_dir, "output_data", "metrics.pkl"))
 
     if dist.is_initialized():
         dist.barrier(device_ids=[device.index])
@@ -616,6 +636,7 @@ if __name__ == "__main__":
         type=str,
         help="Directory to where the dataset is stored. If the dataset is not found in that location, it will be downloaded automatically.",
     )
+    parser.add_argument("--models", default=None, type=str, nargs='+', help="Provide a list of models to run")
     parser.add_argument("--num_epochs", default=100, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--batch_size", default=8, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--data_downsampling_factor", default=16, type=int, help="Switch for overriding the downsampling factor of the data.")
@@ -629,6 +650,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(
+        models=args.models,
         root_path=args.output_path,
         num_epochs=args.num_epochs,
         batch_size=args.batch_size,
