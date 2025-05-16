@@ -129,6 +129,16 @@ def autoregressive_inference(
         prd_coeffs = [dataset.sht(prd[0, plot_channel]).detach().cpu().clone()]
         ref_coeffs = [prd_coeffs[0].clone()]
 
+        # plot the initial condition
+        if iic == nics - 1 and nskip > 0 and i % nskip == 0:
+
+            # do plotting
+            fig = plt.figure(figsize=(6, 6))
+            plot_sphere(prd[0, plot_channel].cpu(), fig, vmax=4, vmin=-4, central_latitude=30, gridlines=True, projection="orthographic")
+            fig.tight_layout()
+            plt.savefig(os.path.join(path_root, "truth_" + str(0) + ".png"))
+            plt.close()
+
         # ML model
         start_time = time.time()
         for i in range(1, autoreg_steps + 1):
