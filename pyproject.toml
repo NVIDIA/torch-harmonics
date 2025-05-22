@@ -60,3 +60,6 @@ dev = [
     "PIL",
     "h5py",
 ]
+
+[tool.black]
+line-length = 180
