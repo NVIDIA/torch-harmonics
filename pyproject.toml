@@ -7,7 +7,10 @@ name = "torch_harmonics"
 authors = [
     { name="Boris Bonev" },
     { name="Thorsten Kurth" },
+    { name="Max Rietmann" },
     { name="Mauro Bisson" },
+    { name="Andrea Paris" },
+    { name="Alberto Carpentieri" },
     { name="Massimiliano Fatica" },
     { name="Jean Kossaifi" },
     { name="Nikola Kovachki" },
@@ -38,6 +41,7 @@ dependencies = [
     "numpy>=1.22.4",
 ]
 
+
 [tool.setuptools.dynamic]
 version = {attr = "torch_harmonics.__version__"}
 
@@ -48,4 +52,11 @@ version = {attr = "torch_harmonics.__version__"}
 dev = [
     "pytest>=6.0.0",
     "coverage>=6.5.0",
+]
+2d3ds = [
+    "requests",
+    "tarfile",
+    "tqdm",
+    "PIL",
+    "h5py",
 ]

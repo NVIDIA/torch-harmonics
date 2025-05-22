@@ -1,6 +1,4 @@
-# coding=utf-8
-
-# SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 #
 # Redistribution and use in source and binary forms, with or without
@@ -29,8 +27,34 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from .pde_sphere import SphereSolver
-from .shallow_water_equations import ShallowWaterSolver
+# build after cloning in directoy torch_harmonics via
+# docker build . -t torch_harmonics
 
-from .pde_dataset import PdeDataset
-from .stanford_2d3ds_dataset import StanfordSegmentationDataset, StanfordDepthDataset, Stanford2D3DSDownloader, compute_stats_s2, StanfordDatasetSubset
+FROM nvcr.io/nvidia/pytorch:24.12-py3
+
+# we need this for tests
+RUN pip install parameterized
+
+# we install this for the examples
+RUN pip install wandb
+
+# cartopy
+RUN pip install cartopy
+
+# h5py
+RUN pip install h5py
+
+# natten
+RUN cd /opt && git clone https://github.com/SHI-Labs/NATTEN natten  && \
+    cd natten && \
+    make WITH_CUDA=1 \
+    	 CUDA_ARCH="7.0;7.2;7.5;8.0;8.6;8.7;9.0" \
+	 WORKERS=4
+
+# install torch harmonics
+COPY . /workspace/torch_harmonics
+
+# The custom CUDA extension does not suppport architerctures < 7.0
+ENV FORCE_CUDA_EXTENSION=1
+ENV TORCH_CUDA_ARCH_LIST="7.0 7.2 7.5 8.0 8.6 8.7 9.0+PTX"
+RUN cd /workspace/torch_harmonics && pip install --no-build-isolation .

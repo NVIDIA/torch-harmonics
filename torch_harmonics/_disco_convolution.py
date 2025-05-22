@@ -36,10 +36,8 @@ from torch.amp import custom_fwd, custom_bwd
 
 try:
     import disco_cuda_extension
-    _cuda_extension_available = True
 except ImportError as err:
     disco_cuda_extension = None
-    _cuda_extension_available = False
 
 
 class _DiscoS2ContractionCuda(torch.autograd.Function):

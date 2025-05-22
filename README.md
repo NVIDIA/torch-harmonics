@@ -56,7 +56,7 @@ The SHT algorithm uses quadrature rules to compute the projection onto the assoc
 
 torch-harmonics uses PyTorch primitives to implement these operations, making it fully differentiable. Moreover, the quadrature can be distributed onto multiple ranks making it spatially distributed.
 
-torch-harmonics has been used to implement a variety of differentiable PDE solvers which generated the animations below. Moreover, it has enabled the development of Spherical Fourier Neural Operators (SFNOs) [1].
+torch-harmonics has been used to implement a variety of differentiable PDE solvers which generated the animations below. Moreover, it has enabled the development of Spherical Fourier Neural Operators  [1].
 
 <div align="center">
 <table border="0" cellspacing="0" cellpadding="0">
@@ -169,9 +169,13 @@ $$
 
 Here, $x_j \in [-1,1]$ are the quadrature nodes with the respective quadrature weights $w_j$.
 
-### Discrete-continuous convolutions
+### Discrete-continuous convolutions on the sphere
 
-torch-harmonics now provides local discrete-continuous (DISCO) convolutions as outlined in [4] on the sphere.
+torch-harmonics now provides local discrete-continuous (DISCO) convolutions as outlined in [4] on the sphere. These are use in local neural operators to generalize convolutions to structured and unstructured meshes on the sphere.
+
+### Spherical (neighborhood) attention
+
+torch-harmonics introducers spherical attention mechanisms which correctly generalize the attention mechanism to the sphere. The use of quadrature rules makes the resulting operations approximately equivariant and equivariant in the continuous limit. Moreover, neighborhood attention is correctly generalized onto the sphere by using the geodesic distance to determine the size of the neighborhood.
 
 ## Getting started
 
@@ -208,6 +212,16 @@ Detailed usage of torch-harmonics, alongside helpful analysis provided in a seri
 8. [Training Spherical Fourier Neural Operators (SFNO)](./notebooks/train_sfno.ipynb)
 9. [Resampling signals on the sphere](./notebooks/resample_sphere.ipynb)
 
+## Examples and reproducibility
+
+The `examples` folder contains training scripts for three distinct tasks:
+
+* [solution of the shallow water equations on the rotating sphere](./examples/shallow_water_equations/train.py)
+* [depth estimation on the sphere](./examples/depth/train.py)
+* [semantic segmentation on the sphere](./examples/segmentation/train.py)
+
+Results from the papers can generally be reproduced by running `python train.py`. In the case of some older results the number of epochs and learning-rate may need to be adjusted by passing the corresponding command line argument.
+
 ## Remarks on automatic mixed precision (AMP) support
 
 Note that torch-harmonics uses Fourier transforms from `torch.fft` which in turn uses kernels from the optimized `cuFFT` library. This library supports fourier transforms of `float32` and `float64` (i.e. `single` and `double` precision) tensors for all input sizes. For `float16` (i.e. `half` precision) and `bfloat16` inputs however, the dimensions which are transformed are restricted to powers of two. Since data is converted to one of these reduced precision floating point formats when `torch.autocast` is used, torch-harmonics will issue an error when the input shapes are not powers of two. For these cases, we recommend disabling autocast for the harmonics transform specifically:
@@ -237,7 +251,7 @@ Depending on the problem, it might be beneficial to upcast data to `float64` ins
 
 ## Contributors
 
-[Boris Bonev](https://bonevbs.github.io) (bbonev@nvidia.com), [Thorsten Kurth](https://github.com/azrael417) (tkurth@nvidia.com), [Mauro Bisson](https://scholar.google.com/citations?hl=en&user=f0JE-0gAAAAJ) , [Massimiliano Fatica](https://scholar.google.com/citations?user=Deaq4uUAAAAJ&hl=en), [Nikola Kovachki](https://kovachki.github.io), [Jean Kossaifi](http://jeankossaifi.com), [Christian Hundt](https://github.com/gravitino)
+[Boris Bonev](https://bonevbs.github.io) (bbonev@nvidia.com), [Thorsten Kurth](https://github.com/azrael417) (tkurth@nvidia.com), [Max Rietmann](https://github.com/rietmann-nv), [Mauro Bisson](https://scholar.google.com/citations?hl=en&user=f0JE-0gAAAAJ), [Andrea Paris](https://github.com/apaaris), [Alberto Carpentieri](https://github.com/albertocarpentieri), [Massimiliano Fatica](https://scholar.google.com/citations?user=Deaq4uUAAAAJ&hl=en), [Nikola Kovachki](https://kovachki.github.io), [Jean Kossaifi](http://jeankossaifi.com), [Christian Hundt](https://github.com/gravitino)
 
 ## Cite us
 

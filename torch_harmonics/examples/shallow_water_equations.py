@@ -32,7 +32,7 @@
 
 import torch
 import torch.nn as nn
-import torch_harmonics as harmonics
+import torch_harmonics as th
 from torch_harmonics.quadrature import _precompute_longitudes
 
 import math
@@ -64,21 +64,21 @@ class ShallowWaterSolver(nn.Module):
         self.register_buffer('hamp', torch.as_tensor(hamp, dtype=torch.float64))
 
         # SHT
-        self.sht = harmonics.RealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.isht = harmonics.InverseRealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.vsht = harmonics.RealVectorSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.ivsht = harmonics.InverseRealVectorSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
+        self.sht = th.RealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
+        self.isht = th.InverseRealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
+        self.vsht = th.RealVectorSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
+        self.ivsht = th.InverseRealVectorSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
 
         self.lmax = lmax or self.sht.lmax
         self.mmax = lmax or self.sht.mmax
 
         # compute gridpoints
         if self.grid == "legendre-gauss":
-            cost, quad_weights = harmonics.quadrature.legendre_gauss_weights(self.nlat, -1, 1)
+            cost, quad_weights = th.quadrature.legendre_gauss_weights(self.nlat, -1, 1)
         elif self.grid == "lobatto":
-            cost, quad_weights = harmonics.quadrature.lobatto_weights(self.nlat, -1, 1)
+            cost, quad_weights = th.quadrature.lobatto_weights(self.nlat, -1, 1)
         elif self.grid == "equiangular":
-            cost, quad_weights = harmonics.quadrature.clenshaw_curtiss_weights(self.nlat, -1, 1)
+            cost, quad_weights = th.quadrature.clenshaw_curtiss_weights(self.nlat, -1, 1)
 
         quad_weights = quad_weights.reshape(-1, 1)
 
