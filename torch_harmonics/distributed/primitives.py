@@ -35,7 +35,7 @@ import torch.distributed as dist
 from torch.amp import custom_fwd, custom_bwd
 
 from .utils import polar_group, azimuth_group, polar_group_size
-from .utils import is_initialized, is_distributed_polar
+from .utils import is_initialized, is_distributed_polar, is_distributed_azimuth
 
 # helper routine to compute uneven splitting in balanced way:
 def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
@@ -262,8 +262,29 @@ class _CopyToPolarRegion(torch.autograd.Function):
             return _reduce(grad_output, group=polar_group())
         else:
             return grad_output, None
-        
-    
+
+
+class _CopyToAzimuthRegion(torch.autograd.Function):
+    """Split the input and keep only the corresponding chunk to the rank."""
+
+    @staticmethod
+    def symbolic(graph, input_):
+        return input_
+
+    @staticmethod
+    @custom_fwd(device_type="cuda")
+    def forward(ctx, input_):
+        return input_
+
+    @staticmethod
+    @custom_bwd(device_type="cuda")
+    def backward(ctx, grad_output):
+        if is_distributed_azimuth():
+            return _reduce(grad_output, group=azimuth_group())
+        else:
+            return grad_output, None
+
+
 class _ScatterToPolarRegion(torch.autograd.Function):
     """Split the input and keep only the corresponding chunk to the rank."""
 
@@ -340,6 +361,30 @@ class _ReduceFromPolarRegion(torch.autograd.Function):
     def backward(ctx, grad_output):
         return grad_output
 
+    
+class _ReduceFromAzimuthRegion(torch.autograd.Function):
+    """All-reduce the input from the azimuth region."""
+
+    @staticmethod
+    def symbolic(graph, input_):
+        if is_distributed_azimuth():
+            return _reduce(input_, group=azimuth_group())
+        else:
+            return input_
+
+    @staticmethod
+    @custom_fwd(device_type="cuda")
+    def forward(ctx, input_):
+        if is_distributed_azimuth():
+            return _reduce(input_, group=azimuth_group())
+        else:
+            return input_
+
+    @staticmethod
+    @custom_bwd(device_type="cuda")
+    def backward(ctx, grad_output):
+        return grad_output
+
 
 class _ReduceFromScatterToPolarRegion(torch.autograd.Function):
     """All-reduce the input from the polar region and scatter back to polar region."""
@@ -403,23 +448,24 @@ class _GatherFromCopyToPolarRegion(torch.autograd.Function):
         
 def copy_to_polar_region(input_):
     return _CopyToPolarRegion.apply(input_)
-    
-    
+
+def copy_to_azimuth_region(input_):
+    return _CopyToAzimuthRegion.apply(input_)
+        
 def reduce_from_polar_region(input_):
     return _ReduceFromPolarRegion.apply(input_)
 
+def reduce_from_azimuth_region(input_):
+    return _ReduceFromAzimuthRegion.apply(input_)
 
 def scatter_to_polar_region(input_, dim_):
     return _ScatterToPolarRegion.apply(input_, dim_)
 
-
 def gather_from_polar_region(input_, dim_, shapes_):
     return _GatherFromPolarRegion.apply(input_, dim_, shapes_)
 
-
 def reduce_from_scatter_to_polar_region(input_, dim_):
     return _ReduceFromScatterToPolarRegion.apply(input_, dim_)
-
 
 def gather_from_copy_to_polar_region(input_, dim_, shapes_):
     return _GatherFromCopyToPolarRegion.apply(input_, dim_, shapes_)
