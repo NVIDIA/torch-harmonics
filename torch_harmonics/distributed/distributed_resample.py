@@ -37,6 +37,7 @@ import torch.nn as nn
 
 from torch_harmonics.quadrature import _precompute_latitudes, _precompute_longitudes
 from torch_harmonics.distributed import polar_group_size, azimuth_group_size, distributed_transpose_azimuth, distributed_transpose_polar
+from torch_harmonics.distributed import reduce_from_azimuth_region, copy_to_azimuth_region
 from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
 from torch_harmonics.distributed import compute_split_shapes
 
@@ -92,8 +93,6 @@ class DistributedResampleS2(nn.Module):
             self.lats_in = torch.cat([torch.tensor([0.], dtype=torch.float64),
                                       self.lats_in,
                                       torch.tensor([math.pi], dtype=torch.float64)]).contiguous()
-            #self.lats_in = np.insert(self.lats_in, 0, 0.0)
-            #self.lats_in = np.append(self.lats_in, np.pi)
 
         # prepare the interpolation by computing indices to the left and right of each output latitude
         lat_idx = torch.searchsorted(self.lats_in, self.lats_out, side="right") - 1
@@ -135,34 +134,50 @@ class DistributedResampleS2(nn.Module):
 
     def _upscale_longitudes(self, x: torch.Tensor):
         # do the interpolation
+        lwgt = self.lon_weights.to(x.dtype)
         if self.mode == "bilinear":
-            x = torch.lerp(x[..., self.lon_idx_left], x[..., self.lon_idx_right], self.lon_weights)
+            x = torch.lerp(x[..., self.lon_idx_left], x[..., self.lon_idx_right], lwgt)
         else:
             omega = x[..., self.lon_idx_right] - x[..., self.lon_idx_left]
             somega = torch.sin(omega)
-            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - self.lon_weights) * omega) / somega, (1.0 - self.lon_weights))
-            end_prefac = torch.where(somega > 1e-4, torch.sin(self.lon_weights * omega) / somega, self.lon_weights)
+            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - lwgt) * omega) / somega, (1.0 - lwgt))
+            end_prefac = torch.where(somega > 1e-4, torch.sin(lwgt * omega) / somega, lwgt)
             x = start_prefac * x[..., self.lon_idx_left] + end_prefac * x[..., self.lon_idx_right]
 
         return x
 
     def _expand_poles(self, x: torch.Tensor):
-        repeats = [1 for _ in x.shape]
-        repeats[-1] = x.shape[-1]
-        x_north = x[..., 0:1, :].mean(dim=-1, keepdim=True).repeat(*repeats)
-        x_south = x[..., -1:, :].mean(dim=-1, keepdim=True).repeat(*repeats)
-        x = torch.concatenate((x_north, x, x_south), dim=-2)
+        x_north = x[...,  0, :].sum(dim=-1, keepdims=True)
+        x_south = x[..., -1, :].sum(dim=-1, keepdims=True)
+        x_count = torch.tensor([x.shape[-1]], dtype=torch.long, device=x.device, requires_grad=False)
+        
+        if self.comm_size_azimuth > 1:
+            x_north = reduce_from_azimuth_region(x_north.contiguous())
+            x_south = reduce_from_azimuth_region(x_south.contiguous())
+            x_count = reduce_from_azimuth_region(x_count)
+        x_north = x_north / x_count
+        x_south = x_south / x_count
+
+        if self.comm_size_azimuth > 1:
+            x_north = copy_to_azimuth_region(x_north)
+            x_south = copy_to_azimuth_region(x_south)
+            
+        x = nn.functional.pad(x, pad=[0, 0, 1, 1], mode='constant')
+        x[..., 0, :] = x_north[...]
+        x[..., -1, :] = x_south[...]
+
         return x
 
     def _upscale_latitudes(self, x: torch.Tensor):
         # do the interpolation
+        lwgt = self.lat_weights.to(x.dtype)
         if self.mode == "bilinear":
-            x = torch.lerp(x[..., self.lat_idx, :], x[..., self.lat_idx + 1, :], self.lat_weights)
+            x = torch.lerp(x[..., self.lat_idx, :], x[..., self.lat_idx + 1, :], lwgt)
         else:
             omega = x[..., self.lat_idx + 1, :] - x[..., self.lat_idx, :]
             somega = torch.sin(omega)
-            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - self.lat_weights) * omega) / somega, (1.0 - self.lat_weights))
-            end_prefac = torch.where(somega > 1e-4, torch.sin(self.lat_weights * omega) / somega, self.lat_weights)
+            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - lwgt) * omega) / somega, (1.0 - lwgt))
+            end_prefac = torch.where(somega > 1e-4, torch.sin(lwgt * omega) / somega, lwgt)
             x = start_prefac * x[..., self.lat_idx, :] + end_prefac * x[..., self.lat_idx + 1, :]
 
         return x
@@ -174,7 +189,7 @@ class DistributedResampleS2(nn.Module):
 
         # transpose data so that h is local, and channels are split
         num_chans = x.shape[-3]
-
+        
         # h and w is split. First we make w local by transposing into channel dim
         if self.comm_size_polar > 1:
             channels_shapes = compute_split_shapes(num_chans, self.comm_size_polar)

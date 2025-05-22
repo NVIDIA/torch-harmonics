@@ -78,8 +78,6 @@ class ResampleS2(nn.Module):
             self.lats_in = torch.cat([torch.tensor([0.], dtype=torch.float64),
                                       self.lats_in,
                                       torch.tensor([math.pi], dtype=torch.float64)]).contiguous()
-            #self.lats_in = np.insert(self.lats_in, 0, 0.0)
-            #self.lats_in = np.append(self.lats_in, np.pi)
 
         # prepare the interpolation by computing indices to the left and right of each output latitude
         lat_idx = torch.searchsorted(self.lats_in, self.lats_out, side="right") - 1
@@ -121,35 +119,38 @@ class ResampleS2(nn.Module):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}"
 
     def _upscale_longitudes(self, x: torch.Tensor):
-        # do the interpolation
+        # do the interpolation in precision of x
+        lwgt = self.lon_weights.to(x.dtype)
         if self.mode == "bilinear":
-            x = torch.lerp(x[..., self.lon_idx_left], x[..., self.lon_idx_right], self.lon_weights)
+            x = torch.lerp(x[..., self.lon_idx_left], x[..., self.lon_idx_right], lwgt)
         else:
             omega = x[..., self.lon_idx_right] - x[..., self.lon_idx_left]
             somega = torch.sin(omega)
-            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - self.lon_weights) * omega) / somega, (1.0 - self.lon_weights))
-            end_prefac = torch.where(somega > 1e-4, torch.sin(self.lon_weights * omega) / somega, self.lon_weights)
+            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - lwgt) * omega) / somega, (1.0 - lwgt))
+            end_prefac = torch.where(somega > 1e-4, torch.sin(lwgt * omega) / somega, lwgt)
             x = start_prefac * x[..., self.lon_idx_left] + end_prefac * x[..., self.lon_idx_right]
 
         return x
 
     def _expand_poles(self, x: torch.Tensor):
-        repeats = [1 for _ in x.shape]
-        repeats[-1] = x.shape[-1]
-        x_north = x[..., 0:1, :].mean(dim=-1, keepdim=True).repeat(*repeats)
-        x_south = x[..., -1:, :].mean(dim=-1, keepdim=True).repeat(*repeats)
-        x = torch.concatenate((x_north, x, x_south), dim=-2).contiguous()
+        x_north = x[...,  0, :].mean(dim=-1, keepdims=True)
+        x_south = x[..., -1, :].mean(dim=-1, keepdims=True)
+        x = nn.functional.pad(x, pad=[0, 0, 1, 1], mode='constant')
+        x[...,  0, :] = x_north[...]
+        x[..., -1, :] = x_south[...]
+
         return x
 
     def _upscale_latitudes(self, x: torch.Tensor):
-        # do the interpolation
+        # do the interpolation in precision of x
+        lwgt = self.lat_weights.to(x.dtype)
         if self.mode == "bilinear":
-            x = torch.lerp(x[..., self.lat_idx, :], x[..., self.lat_idx + 1, :], self.lat_weights)
+            x = torch.lerp(x[..., self.lat_idx, :], x[..., self.lat_idx + 1, :], lwgt)
         else:
             omega = x[..., self.lat_idx + 1, :] - x[..., self.lat_idx, :]
             somega = torch.sin(omega)
-            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - self.lat_weights) * omega) / somega, (1.0 - self.lat_weights))
-            end_prefac = torch.where(somega > 1e-4, torch.sin(self.lat_weights * omega) / somega, self.lat_weights)
+            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - lwgt) * omega) / somega, (1.0 - lwgt))
+            end_prefac = torch.where(somega > 1e-4, torch.sin(lwgt * omega) / somega, lwgt)
             x = start_prefac * x[..., self.lat_idx, :] + end_prefac * x[..., self.lat_idx + 1, :]
 
         return x
@@ -160,6 +161,9 @@ class ResampleS2(nn.Module):
         
         if self.expand_poles:
             x = self._expand_poles(x)
+
         x = self._upscale_latitudes(x)
+
         x = self._upscale_longitudes(x)
+
         return x

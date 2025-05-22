@@ -36,7 +36,7 @@ from parameterized import parameterized
 import torch
 import torch.nn.functional as F
 import torch.distributed as dist
-import torch_harmonics as harmonics
+import torch_harmonics as th
 import torch_harmonics.distributed as thd
 
 
@@ -187,6 +187,10 @@ class TestDistributedResampling(unittest.TestCase):
             [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", "bilinear", 1e-7, False],
             [64, 128, 128, 256, 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-7, False],
             [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-7, False],
+            [129, 256, 65, 128, 32, 8, "equiangular", "equiangular", "bilinear", 1e-7, False],
+            [65, 128, 129, 256, 32, 8, "equiangular", "equiangular", "bilinear", 1e-7, False],
+            [129, 256, 65, 128, 32, 8, "equiangular", "legendre-gauss", "bilinear", 1e-7, False],
+            [65, 128, 129, 256, 32, 8, "legendre-gauss", "equiangular", "bilinear", 1e-7, False],
         ]
     )
     def test_distributed_resampling(
@@ -196,9 +200,9 @@ class TestDistributedResampling(unittest.TestCase):
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
 
         res_args = dict(
-            nlat_in=nlat_in, 
+            nlat_in=nlat_in,
             nlon_in=nlon_in,
-            nlat_out=nlat_out, 
+            nlat_out=nlat_out,
             nlon_out=nlon_out,
             grid_in=grid_in,
             grid_out=grid_out,
@@ -206,7 +210,7 @@ class TestDistributedResampling(unittest.TestCase):
         )
 
         # set up handlesD
-        res_local = harmonics.ResampleS2(**res_args).to(self.device)
+        res_local = th.ResampleS2(**res_args).to(self.device)
         res_dist = thd.DistributedResampleS2(**res_args).to(self.device)
 
         # create tensors
@@ -248,7 +252,7 @@ class TestDistributedResampling(unittest.TestCase):
         with torch.no_grad():
             out_gather_full = self._gather_helper_fwd(out_local, B, C, res_dist)
             err = torch.mean(torch.norm(out_full - out_gather_full, p="fro", dim=(-1, -2)) / torch.norm(out_full, p="fro", dim=(-1, -2)))
-            if verbose and (self.world_rank == )0:
+            if verbose and (self.world_rank == 0):
                 print(f"final relative error of output: {err.item()}")
         self.assertTrue(err.item() <= tol)
 
