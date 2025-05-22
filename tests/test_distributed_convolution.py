@@ -36,7 +36,7 @@ from parameterized import parameterized
 import torch
 import torch.nn.functional as F
 import torch.distributed as dist
-import torch_harmonics as harmonics
+import torch_harmonics as th
 import torch_harmonics.distributed as thd
 
 
@@ -219,10 +219,10 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
         # set up handles
         if transpose:
-            conv_local = harmonics.DiscreteContinuousConvTransposeS2(**disco_args).to(self.device)
+            conv_local = th.DiscreteContinuousConvTransposeS2(**disco_args).to(self.device)
             conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args).to(self.device)
         else:
-            conv_local = harmonics.DiscreteContinuousConvS2(**disco_args).to(self.device)
+            conv_local = th.DiscreteContinuousConvS2(**disco_args).to(self.device)
             conv_dist = thd.DistributedDiscreteContinuousConvS2(**disco_args).to(self.device)
 
         # copy the weights from the local conv into the dist conv

@@ -36,7 +36,7 @@ import math
 import numpy as np
 import torch
 from torch.autograd import gradcheck
-from torch_harmonics import *
+from torch_harmonics import quadrature, DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
 

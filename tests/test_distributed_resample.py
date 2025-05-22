@@ -36,7 +36,7 @@ from parameterized import parameterized
 import torch
 import torch.nn.functional as F
 import torch.distributed as dist
-import torch_harmonics as harmonics
+import torch_harmonics as th
 import torch_harmonics.distributed as thd
 
 
@@ -196,9 +196,9 @@ class TestDistributedResampling(unittest.TestCase):
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
 
         res_args = dict(
-            nlat_in=nlat_in, 
+            nlat_in=nlat_in,
             nlon_in=nlon_in,
-            nlat_out=nlat_out, 
+            nlat_out=nlat_out,
             nlon_out=nlon_out,
             grid_in=grid_in,
             grid_out=grid_out,
@@ -206,7 +206,7 @@ class TestDistributedResampling(unittest.TestCase):
         )
 
         # set up handlesD
-        res_local = harmonics.ResampleS2(**res_args).to(self.device)
+        res_local = th.ResampleS2(**res_args).to(self.device)
         res_dist = thd.DistributedResampleS2(**res_args).to(self.device)
 
         # create tensors

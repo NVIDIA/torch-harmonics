@@ -32,7 +32,7 @@
 
 import torch
 import torch.nn as nn
-import torch_harmonics as harmonics
+import torch_harmonics as th
 from torch_harmonics.quadrature import _precompute_longitudes
 
 import math
@@ -61,19 +61,19 @@ class SphereSolver(nn.Module):
         self.register_buffer('coeff', torch.as_tensor(coeff, dtype=torch.float64))
 
         # SHT
-        self.sht = harmonics.RealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.isht = harmonics.InverseRealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
+        self.sht = th.RealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
+        self.isht = th.InverseRealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
 
         self.lmax = lmax or self.sht.lmax
         self.mmax = lmax or self.sht.mmax
 
         # compute gridpoints
         if self.grid == "legendre-gauss":
-            cost, _ = harmonics.quadrature.legendre_gauss_weights(self.nlat, -1, 1)
+            cost, _ = th.quadrature.legendre_gauss_weights(self.nlat, -1, 1)
         elif self.grid == "lobatto":
-            cost, _ = harmonics.quadrature.lobatto_weights(self.nlat, -1, 1)
+            cost, _ = th.quadrature.lobatto_weights(self.nlat, -1, 1)
         elif self.grid == "equiangular":
-            cost, _ = harmonics.quadrature.clenshaw_curtiss_weights(self.nlat, -1, 1)
+            cost, _ = th.quadrature.clenshaw_curtiss_weights(self.nlat, -1, 1)
 
         # apply cosine transform and flip them
         lats = -torch.arcsin(cost)
