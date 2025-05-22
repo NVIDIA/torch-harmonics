@@ -11,7 +11,7 @@
     * S2 Transformer
     * S2 Segformer
     * S2 U-Net
-* Reworked spherical examples for better reproducibility
+* Reorganized examples folder, including new examples based on the 2d3ds dataset
 * Added spherical loss functions to examples
 * Added plotting module
 
