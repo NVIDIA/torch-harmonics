@@ -76,7 +76,3 @@ torch::Tensor s2_attention_bwd_dv_cuda(at::Tensor kx,
                                        at::Tensor psi_col_idx,
                                        at::Tensor psi_row_off,
                                        int nlon_in, int nlat_out, int nlon_out);
-
-int s2_idx_offset_cuda(const at::Tensor &psi_col_idx,
-                       const at::Tensor &psi_row_idx, at::Tensor &row_offset,
-                       at::Tensor &row_count);

@@ -107,7 +107,7 @@ class AttentionS2(nn.Module):
         _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
         quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
         # we need to tile and flatten them accordingly
-        quad_weights = torch.tile(quad_weights, (1, self.nlon_in)).flatten()
+        quad_weights = torch.tile(quad_weights.reshape(-1, 1), (1, self.nlon_in)).flatten()
 
         # compute log because they are applied as an addition prior to the softmax ('attn_mask'), which includes an exponential.
         # see https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
