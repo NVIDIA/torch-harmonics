@@ -99,7 +99,6 @@ def get_ext_modules():
                     "torch_harmonics/csrc/attention/attention_fwd_cuda.cu",
                     "torch_harmonics/csrc/attention/attention_bwd_cuda.cu",
                     "torch_harmonics/csrc/attention/attention_interface.cu",
-                    "torch_harmonics/csrc/attention/attention_row_offset.cu"
                 ],
                 extra_compile_args=get_compile_args("neighborhood_attention")
             )

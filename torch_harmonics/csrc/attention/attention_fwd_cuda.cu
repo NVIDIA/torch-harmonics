@@ -1,8 +1,8 @@
 // coding=utf-8
 //
-// SPDX-FileCopyrightText: Copyright (c) 2024 The torch-harmonics Authors. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
-// 
+//
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
@@ -172,9 +172,9 @@ __global__ void s2_attention_kernel(int num_channels, int nlon_in, int nlat_out,
 }
 
 
-torch::Tensor s2_attention_fwd_cuda(at::Tensor kx, 
+torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
                                     at::Tensor vx,
-                                    at::Tensor qy, 
+                                    at::Tensor qy,
                                     at::Tensor quad_weights,
                                     at::Tensor psi_col_idx,
                                     at::Tensor psi_row_off,

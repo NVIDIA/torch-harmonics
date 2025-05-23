@@ -1,8 +1,8 @@
 // coding=utf-8
 //
-// SPDX-FileCopyrightText: Copyright (c) 2024 The torch-harmonics Authors. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
-// 
+//
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
@@ -433,7 +433,7 @@ s2_attention_bwd_dq_kernel(int num_channels, int nlon_in, int nlat_out, int nlon
   float qdotk_max = std::numeric_limits<float>::lowest();
   for(int psi_block=0; psi_block<(psi_nnz_ho/blockDim.x)+1; psi_block++) {
     int idz = psi_block*blockDim.x + threadIdx.x;
-    
+
     // skip if index >= length of psi_idx because last loop iteration will have extra threads
     if(idz >= psi_nnz_ho) break;
 
@@ -559,7 +559,7 @@ __global__ void s2_attention_bwd_dkvq_kernel(int num_channels, int nlon_in, int 
   float qdotk_max = std::numeric_limits<float>::lowest();
   for(int psi_block=0; psi_block<(psi_nnz_ho/blockDim.x)+1; psi_block++) {
     int idz = psi_block*blockDim.x + threadIdx.x;
-    
+
     // skip if index >= length of psi_idx because last loop iteration will have extra threads
     if(idz >= psi_nnz_ho) break;
 
@@ -675,7 +675,7 @@ __global__ void s2_attention_bwd_dkvq_kernel(int num_channels, int nlon_in, int 
 }
 
 
-at::Tensor s2_attention_bwd_dk_cuda(at::Tensor kx, 
+at::Tensor s2_attention_bwd_dk_cuda(at::Tensor kx,
                                     at::Tensor vx,
                                     at::Tensor qy,
                                     at::Tensor dy,
@@ -731,7 +731,7 @@ at::Tensor s2_attention_bwd_dk_cuda(at::Tensor kx,
 }
 
 
-at::Tensor s2_attention_bwd_dq_cuda(at::Tensor kx, 
+at::Tensor s2_attention_bwd_dq_cuda(at::Tensor kx,
                                     at::Tensor vx,
                                     at::Tensor qy,
                                     at::Tensor dy,
@@ -782,7 +782,7 @@ at::Tensor s2_attention_bwd_dq_cuda(at::Tensor kx,
 
 
   C10_CUDA_KERNEL_LAUNCH_CHECK();
-  
+
   return dydq;
 }
 
@@ -840,7 +840,7 @@ std::tuple<at::Tensor,at::Tensor,at::Tensor> s2_attention_bwd_dkvq_cuda(at::Tens
 
 
   C10_CUDA_KERNEL_LAUNCH_CHECK();
-  
+
   return std::make_tuple(dydk, dydv, dydq);
 }
 
