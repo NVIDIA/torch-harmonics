@@ -37,9 +37,11 @@ from .primitives import (
     distributed_transpose_azimuth,
     distributed_transpose_polar,
     reduce_from_polar_region,
+    reduce_from_azimuth_region,
     scatter_to_polar_region,
     gather_from_polar_region,
     copy_to_polar_region,
+    copy_to_azimuth_region,
     reduce_from_scatter_to_polar_region,
     gather_from_copy_to_polar_region
 )

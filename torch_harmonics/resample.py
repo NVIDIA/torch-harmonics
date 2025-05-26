@@ -78,8 +78,6 @@ class ResampleS2(nn.Module):
             self.lats_in = torch.cat([torch.tensor([0.], dtype=torch.float64),
                                       self.lats_in,
                                       torch.tensor([math.pi], dtype=torch.float64)]).contiguous()
-            #self.lats_in = np.insert(self.lats_in, 0, 0.0)
-            #self.lats_in = np.append(self.lats_in, np.pi)
 
         # prepare the interpolation by computing indices to the left and right of each output latitude
         lat_idx = torch.searchsorted(self.lats_in, self.lats_out, side="right") - 1
@@ -135,11 +133,12 @@ class ResampleS2(nn.Module):
         return x
 
     def _expand_poles(self, x: torch.Tensor):
-        repeats = [1 for _ in x.shape]
-        repeats[-1] = x.shape[-1]
-        x_north = x[..., 0:1, :].mean(dim=-1, keepdim=True).repeat(*repeats)
-        x_south = x[..., -1:, :].mean(dim=-1, keepdim=True).repeat(*repeats)
-        x = torch.concatenate((x_north, x, x_south), dim=-2).contiguous()
+        x_north = x[...,  0, :].mean(dim=-1, keepdims=True)
+        x_south = x[..., -1, :].mean(dim=-1, keepdims=True)
+        x = nn.functional.pad(x, pad=[0, 0, 1, 1], mode='constant')
+        x[...,  0, :] = x_north[...]
+        x[..., -1, :] = x_south[...]
+
         return x
 
     def _upscale_latitudes(self, x: torch.Tensor):
@@ -162,6 +161,9 @@ class ResampleS2(nn.Module):
         
         if self.expand_poles:
             x = self._expand_poles(x)
+
         x = self._upscale_latitudes(x)
+
         x = self._upscale_longitudes(x)
+
         return x
