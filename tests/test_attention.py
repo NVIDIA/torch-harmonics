@@ -212,5 +212,98 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             self.assertTrue(torch.allclose(grad, grad_ref, atol=atol, rtol=rtol), f"Parameter gradient mismatch")
 
 
+
+    @parameterized.expand(
+        [
+            # self attention
+            [1, 256, 1, (721, 1440), (721, 1440), "equiangular", "equiangular", 1e-5, 1e-5],
+        ]
+    )
+    def test_perf(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol):
+
+        # this test only makes sense when CUDA version is available
+        if torch.cuda.is_available():
+            if not _cuda_extension_available:
+                print("WARNING: Problem loading CUDA attention module")
+                return
+        # extract some parameters
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        # TODO: this test seems hardcoded for GPU. Is this necessary?
+        k_gpu = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device="cuda:0")
+        k_gpu.requires_grad = False
+        v_gpu = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device="cuda:0")
+        v_gpu.requires_grad = False
+        q_gpu = torch.randn(batch_size, channels, nlat_out, nlon_out, dtype=torch.float32, device="cuda:0")
+        q_gpu.requires_grad = False
+
+        # set up layers
+        time_layer_setup_start = torch.cuda.Event(enable_timing=True)
+        time_layer_setup_end = torch.cuda.Event(enable_timing=True)
+        time_layer_setup_start.record()
+        att_gpu = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads,
+                                          in_shape=in_shape, out_shape=out_shape,
+                                          grid_in=grid_in, grid_out=grid_out, bias=True).to("cuda:0")
+        time_layer_setup_end.record()
+        torch.cuda.synchronize()
+        print(f"Layer setup: {time_layer_setup_start.elapsed_time(time_layer_setup_end)} ms")
+
+        # random weights
+        with torch.no_grad():
+            att_gpu.q_weights.normal_()
+            att_gpu.k_weights.normal_()
+            att_gpu.v_weights.normal_()
+            att_gpu.q_bias.normal_()
+            att_gpu.k_bias.normal_()
+            att_gpu.v_bias.normal_()
+
+            # time forward pass
+            for i in range(2):
+                # warmup
+                out_gpu = att_gpu(q_gpu, k_gpu, v_gpu)
+            time_forward_start = torch.cuda.Event(enable_timing=True)
+            time_forward_end = torch.cuda.Event(enable_timing=True)
+            time_forward_start.record()
+            out_gpu = att_gpu(q_gpu, k_gpu, v_gpu)
+            time_forward_end.record()
+            torch.cuda.synchronize()
+            print(f"Forward execution: {time_forward_start.elapsed_time(time_forward_end)} ms")
+
+        # sync weights:
+        with torch.no_grad():
+            att_gpu.q_weights.copy_(att_gpu.q_weights)
+            att_gpu.k_weights.copy_(att_gpu.k_weights)
+            att_gpu.v_weights.copy_(att_gpu.v_weights)
+            att_gpu.q_bias.copy_(att_gpu.q_bias)
+            att_gpu.k_bias.copy_(att_gpu.k_bias)
+            att_gpu.v_bias.copy_(att_gpu.v_bias)
+
+        q_gpu = q_gpu.detach().clone().to(self.device, memory_format=torch.channels_last)
+        q_gpu.requires_grad = True
+        k_gpu = k_gpu.detach().clone().to(self.device, memory_format=torch.channels_last)
+        k_gpu.requires_grad = True
+        v_gpu = v_gpu.detach().clone().to(self.device, memory_format=torch.channels_last)
+        v_gpu.requires_grad = True
+
+        out_gpu = att_gpu(q_gpu, k_gpu, v_gpu)
+        out_grad = torch.randn(out_gpu.shape, dtype=torch.float32, device="cuda:0").to(memory_format=torch.channels_last)
+        time_backward_start = torch.cuda.Event(enable_timing=True)
+        time_backward_end = torch.cuda.Event(enable_timing=True)
+
+        print("q_gpu_stride=",q_gpu.stride())
+
+        for i in range(2):
+            # warmup
+            out_gpu.backward(out_grad, retain_graph=True)
+
+        print("out_grad_stride=",out_grad.stride())
+        time_backward_start.record()
+        out_gpu.backward(out_grad)
+        time_backward_end.record()
+        torch.cuda.synchronize()
+        print(f"Backward execution: {time_backward_start.elapsed_time(time_backward_end)} ms")
+
+
 if __name__ == "__main__":
     unittest.main()
