@@ -1000,7 +1000,7 @@ std::tuple<at::Tensor,at::Tensor,at::Tensor> s2_attention_bwd_dkvq_cuda(at::Tens
   auto version = HOWO_WARP_VERSION;
   // auto version = OLD_VERSION;
   if (version == OLD_VERSION) {
-    printf("old version\n");
+    // printf("old version\n");
     torch::Tensor dydk = torch::zeros_like(qy);
     torch::Tensor dydv = torch::zeros_like(qy);
     torch::Tensor dydq = torch::zeros_like(qy);
@@ -1062,34 +1062,56 @@ std::tuple<at::Tensor,at::Tensor,at::Tensor> s2_attention_bwd_dkvq_cuda(at::Tens
     return std::make_tuple(dydk, dydv, dydq);
 
   } else if (version == HOWO_WARP_VERSION) {
-    ScopeTimer timer("Full s2_attention_bwd_dkvq_kernel_mbT");
+    // ScopeTimer timer("Full s2_attention_bwd_dkvq_kernel_mbT");
     // Time this function via C++
-    time_t start_time, end_time;
-    start_time = clock();
+
+    auto k_channel_first = kx.strides()[1] == 1;
+    auto v_channel_first = vx.strides()[1] == 1;
+    auto q_channel_first = qy.strides()[1] == 1;
+    auto dy_channel_first = dy.strides()[1] == 1;
 
     // Transpose to [batch, ho, wo, channel]
-    // nvtxRangePush("s2_attention_bwd_dkvq_kernel_mbT permute inputs");
+    nvtxRangePush("s2_attention_bwd_dkvq_kernel_mbT permute inputs");
     // auto* permute_timer = new ScopeTimer("permute inputs");
-    // auto kxP = kx.permute({0,2,3,1}).contiguous().permute({0,3,1,2});
-    // auto vxP = vx.permute({0,2,3,1}).contiguous().permute({0,3,1,2});
-    // auto qyP = qy.permute({0,2,3,1}).contiguous().permute({0,3,1,2});
-    // auto dyP = dy.permute({0, 2, 3, 1}).contiguous().permute({0, 3, 1, 2});
 
+    //Permute kx,vx,qy,dy to [batch, ho, wo, channel] in memory layout, but keep the original shape [batch, channel, ho, wo]
+    auto kxP = at::Tensor();
+    if (!k_channel_first) {
+      // printf("Permuting kx from [batch, channel, ho, wo] to [batch, ho, wo, channel]\n");
+      kxP = kx.permute({0, 2, 3, 1}).contiguous().permute({0, 3, 1, 2});
+    } else {
+      kxP = kx;
+    }
+    auto vxP = at::Tensor();
+    if (!v_channel_first) {
+      // printf("Permuting vx from [batch, channel, ho, wo] to [batch, ho, wo, channel]\n");
+      vxP = vx.permute({0, 2, 3, 1}).contiguous().permute({0, 3, 1, 2});
+    } else {
+      vxP = vx;
+    }
+    auto qyP = at::Tensor();
+    if (!q_channel_first) {
+      // printf("Permuting qy from [batch, channel, ho, wo] to [batch, ho, wo, channel]\n");
+      qyP = qy.permute({0, 2, 3, 1}).contiguous().permute({0, 3, 1, 2});
+    } else {
+      qyP = qy;
+    }
+    auto dyP = at::Tensor();
+    if (!dy_channel_first) {
+      // printf("Permuting dy from [batch, channel, ho, wo] to [batch, ho, wo, channel]\n");
+      dyP = dy.permute({0, 2, 3, 1}).contiguous().permute({0, 3, 1, 2});
+    } else {
+      dyP = dy;
+    }
     // cudaDeviceSynchronize();
     // delete permute_timer;
-    // nvtxRangePop();
+    nvtxRangePop();
 
     nvtxRangePush("s2_attention_bwd_dkvq_kernel_mbT output allocation & zero");
-    auto dydkP = torch::zeros_like(qy);
-    auto dydvP = torch::zeros_like(qy);
-    auto dydqP = torch::zeros_like(qy);
+    auto dydkP = torch::zeros_like(qyP);
+    auto dydvP = torch::zeros_like(qyP);
+    auto dydqP = torch::zeros_like(qyP);
     // print strdie of dydkP, dydvP, dydqP
-    printf("dydkP strides: ");
-    for(auto& stride_i :dydkP.strides()) {
-      printf("%ld ", stride_i);
-    }
-    printf("\n");
-    cudaDeviceSynchronize();
     nvtxRangePop();
 
     size_t uo_num_channels = kx.size(1);
@@ -1108,10 +1130,10 @@ std::tuple<at::Tensor,at::Tensor,at::Tensor> s2_attention_bwd_dkvq_cuda(at::Tens
     s2_attention_bwd_dkvq_kernel_mbT<THREADS><<<
       grid, block, shared_size, stream>>>(
                                           uo_num_channels, nlon_in, nlat_out, nlon_out,
-                                          kx.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-                                          vx.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-                                          qy.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-                                          dy.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                                          kxP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                                          vxP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                                          qyP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                                          dyP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
                                           dydkP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
                                           dydvP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
                                           dydqP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
@@ -1125,7 +1147,7 @@ std::tuple<at::Tensor,at::Tensor,at::Tensor> s2_attention_bwd_dkvq_cuda(at::Tens
 
     // [1, 256, 1, (721, 1440), (721, 1440), "equiangular", "equiangular", 1e-5, 1e-5],
     // s2_attention_bwd_kernel_mbT execution time: 63.280128 ms
-    printf("s2_attention_bwd_kernel_mbT execution time: %f ms\n", milliseconds);
+    // printf("s2_attention_bwd_kernel_mbT execution time: %f ms\n", milliseconds);
     CHECK_CUDA(cudaEventDestroy(start));
     CHECK_CUDA(cudaEventDestroy(stop));
   

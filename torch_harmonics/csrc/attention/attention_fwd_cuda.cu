@@ -319,9 +319,12 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
 
   // transpose inputs so that channels are in the last dimension, allowing for
   // coalesced memory access
+  nvtxRangePush("s2_attention_fwd_kernel_mbT permute inputs");
   torch::Tensor kxP = kx.permute({0,2,3,1}).contiguous();
   torch::Tensor vxP = vx.permute({0,2,3,1}).contiguous();
-  torch::Tensor qyP = qy.permute({0,2,3,1}).contiguous();
+  torch::Tensor qyP = qy.permute({0, 2, 3, 1}).contiguous();
+  cudaDeviceSynchronize();
+  nvtxRangePop();
   torch::Tensor y = torch::empty_like(qy);
 
   dim3 block(WARP_SIZE, THREADS/WARP_SIZE);

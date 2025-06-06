@@ -247,7 +247,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
                                           grid_in=grid_in, grid_out=grid_out, bias=True).to("cuda:0")
         time_layer_setup_end.record()
         torch.cuda.synchronize()
-        print(f"Layer setup: {time_layer_setup_start.elapsed_time(time_layer_setup_end)} ms")
+        # print(f"Layer setup: {time_layer_setup_start.elapsed_time(time_layer_setup_end)} ms")
 
         # random weights
         with torch.no_grad():
@@ -268,7 +268,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             out_gpu = att_gpu(q_gpu, k_gpu, v_gpu)
             time_forward_end.record()
             torch.cuda.synchronize()
-            print(f"Forward execution: {time_forward_start.elapsed_time(time_forward_end)} ms")
+
+            elapsed_time = time_forward_start.elapsed_time(time_forward_end)
+            assert elapsed_time < 150, "Forward pass took much too long, there must be a performance regression!"
 
         # sync weights:
         with torch.no_grad():
@@ -279,11 +281,11 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             att_gpu.k_bias.copy_(att_gpu.k_bias)
             att_gpu.v_bias.copy_(att_gpu.v_bias)
 
-        q_gpu = q_gpu.detach().clone().to(self.device, memory_format=torch.channels_last)
+        q_gpu = q_gpu.detach().clone().to(self.device)#, memory_format=torch.channels_last)
         q_gpu.requires_grad = True
-        k_gpu = k_gpu.detach().clone().to(self.device, memory_format=torch.channels_last)
+        k_gpu = k_gpu.detach().clone().to(self.device)#, memory_format=torch.channels_last)
         k_gpu.requires_grad = True
-        v_gpu = v_gpu.detach().clone().to(self.device, memory_format=torch.channels_last)
+        v_gpu = v_gpu.detach().clone().to(self.device)#, memory_format=torch.channels_last)
         v_gpu.requires_grad = True
 
         out_gpu = att_gpu(q_gpu, k_gpu, v_gpu)
@@ -291,18 +293,18 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         time_backward_start = torch.cuda.Event(enable_timing=True)
         time_backward_end = torch.cuda.Event(enable_timing=True)
 
-        print("q_gpu_stride=",q_gpu.stride())
-
         for i in range(2):
             # warmup
             out_gpu.backward(out_grad, retain_graph=True)
 
-        print("out_grad_stride=",out_grad.stride())
+        # print("out_grad_stride=",out_grad.stride())
         time_backward_start.record()
         out_gpu.backward(out_grad)
         time_backward_end.record()
         torch.cuda.synchronize()
-        print(f"Backward execution: {time_backward_start.elapsed_time(time_backward_end)} ms")
+        # print(f"Backward execution: {time_backward_start.elapsed_time(time_backward_end)} ms")
+        elapsed_time = time_backward_start.elapsed_time(time_backward_end)
+        assert elapsed_time < 400, "Backward pass took much too long, there must be a performance regression!"
 
 
 if __name__ == "__main__":
