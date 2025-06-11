@@ -83,18 +83,6 @@ private:
   std::chrono::high_resolution_clock::time_point start_;
 };
 
-__device__ static float atomicMax(float* address, float val)
-{
-  int* address_as_i = (int*) address;
-  int old = *address_as_i, assumed;
-  do {
-    assumed = old;
-    old = ::atomicCAS(address_as_i, assumed,
-                      __float_as_int(::fmaxf(val, __int_as_float(assumed))));
-  } while (assumed != old);
-  return __int_as_float(old);
-}
-
 static __device__ float __warp_sum(float val) {
 #pragma unroll
   for(int i = WARP_SIZE/2; i; i /= 2) {
@@ -105,7 +93,7 @@ static __device__ float __warp_sum(float val) {
 }
 
 // easier to understand version of manual shfl_xor_sync, performance appears similar
-__device__ float __warp_sum_cub(float val) {
+static __device__ float __warp_sum_cub(float val) {
   // use cub to reduce within a warp
   __shared__ typename cub::WarpReduce<float>::TempStorage temp_storage;
   
@@ -303,9 +291,9 @@ std::tuple<at::Tensor,at::Tensor,at::Tensor> s2_attention_bwd_dkvq_cuda(at::Tens
   nvtxRangePop();
 
   nvtxRangePush("s2_attention_bwd_dkvq_kernel_mbT output allocation & zero");
-  auto dydkP = torch::zeros_like(qyP);
-  auto dydvP = torch::zeros_like(qyP);
-  auto dydqP = torch::zeros_like(qyP);
+  auto dydk = torch::zeros_like(qyP);
+  auto dydv = torch::zeros_like(qyP);
+  auto dydq = torch::zeros_like(qyP);
   // print strdie of dydkP, dydvP, dydqP
   nvtxRangePop();
 
@@ -329,9 +317,9 @@ std::tuple<at::Tensor,at::Tensor,at::Tensor> s2_attention_bwd_dkvq_cuda(at::Tens
                                         vxP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
                                         qyP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
                                         dyP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-                                        dydkP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-                                        dydvP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-                                        dydqP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                                        dydk.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                                        dydv.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+                                        dydq.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
                                         psi_col_idx.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
                                         psi_row_off.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
                                         quad_weights.packed_accessor32<float, 1, torch::RestrictPtrTraits>());
@@ -351,13 +339,9 @@ std::tuple<at::Tensor,at::Tensor,at::Tensor> s2_attention_bwd_dkvq_cuda(at::Tens
   // Permute outputs back to memory layout given by input. if input had channels
   // first, leave it in that layout, otherwise permute layout back to [batch,
   // channel, ho, wo]
-  at::Tensor dydk, dydv, dydq;
-  if(!k_channel_first) dydk = dydkP.contiguous();
-  else dydk = dydkP;
-  if(!v_channel_first) dydv = dydvP.contiguous();
-  else dydv = dydvP;
-  if(!q_channel_first) dydq = dydqP.contiguous();
-  else dydq = dydqP;
+  if(!k_channel_first) dydk = dydk.contiguous();
+  if(!v_channel_first) dydv = dydv.contiguous();
+  if(!q_channel_first) dydq = dydq.contiguous();
 
   // printf("dydk strides:[");
   // for(auto& stride : dydk.strides()) {
