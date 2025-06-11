@@ -289,7 +289,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         v_gpu.requires_grad = True
 
         out_gpu = att_gpu(q_gpu, k_gpu, v_gpu)
-        out_grad = torch.randn(out_gpu.shape, dtype=torch.float32, device="cuda:0").to(memory_format=torch.channels_last)
+        out_grad = torch.randn(out_gpu.shape, dtype=torch.float32, device="cuda:0")
         time_backward_start = torch.cuda.Event(enable_timing=True)
         time_backward_end = torch.cuda.Event(enable_timing=True)
 
