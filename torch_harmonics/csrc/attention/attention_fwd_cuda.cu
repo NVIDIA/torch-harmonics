@@ -256,7 +256,7 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
   CHECK_CUDA(cudaEventRecord(stop, stream));
   CHECK_CUDA(cudaEventSynchronize(stop));
   CHECK_CUDA(cudaEventElapsedTime(&milliseconds, start, stop));
-  // printf("s2_attention_kernel_mbT execution time: %f ms\n", milliseconds);
+  // printf("s2_attention_kernel_fwd execution time: %f ms\n", milliseconds);
   CHECK_CUDA(cudaEventDestroy(start));
   CHECK_CUDA(cudaEventDestroy(stop));
 
