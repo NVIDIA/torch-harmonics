@@ -24,4 +24,3 @@ SortIncludes: false
 SpaceBeforeAssignmentOperators: true
 CommentPragmas:  '^\\.+'
 UseTab: Never
-...
