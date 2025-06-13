@@ -43,25 +43,28 @@ except ImportError as err:
     attention_cuda_extension = None
     _cuda_extension_available = False
 
-
+# s2 neighborhood attention forward pass
+# uses qdotk_max update trick to avoid two loops when computing the softmax
+# see e.g., https://arxiv.org/abs/1805.02867
+# and https://alexdremov.me/understanding-flash-attention-writing-the-algorithm-from-scratch-in-triton/
 def _neighborhood_attention_s2_fwd_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor,
-                                         quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-                                         nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+                                            quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+                                            nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
 
 
     # prepare result tensor
     y = torch.zeros_like(qy)
 
     for ho in range(nlat_out):
-
-        # get number of nonzeros
+        
+	# get number of nonzeros
         zstart = row_off[ho]
         zend = row_off[ho+1]
 
         for wo in range(nlon_out):
 
             alpha_sum = torch.zeros((y.shape[0],), dtype=y.dtype, device=y.device)
-            qdotk_nz = torch.zeros((y.shape[0], zend-zstart,), dtype=y.dtype, device=y.device)
+            qdotk_max = torch.zeros((y.shape[0],), dtype=y.dtype, device=y.device)
 
             for idz in range(zstart, zend):
                 nz_col_idx = col_idx[idz]
@@ -75,24 +78,19 @@ def _neighborhood_attention_s2_fwd_torch(kx: torch.Tensor, vx: torch.Tensor, qy:
                 # compute correlation & softmax numerator
                 q_ho_wo = qy[:, :, ho, wo]
                 k_hi_wip = kx[:, :, hi, wip]
-                qdotk_nz[:,idz-zstart] = torch.sum(q_ho_wo * k_hi_wip, dim=1)
+                qdotk = torch.sum(q_ho_wo * k_hi_wip, dim=1)
 
-            qdotk_max, _ = torch.max(qdotk_nz, dim=1)
+                # tmp max
+                qdotk_max_tmp = torch.maximum(qdotk_max, qdotk)
 
-            for idz in range(zstart, zend):
-                nz_col_idx = col_idx[idz]
+                # alpha sum update
+                alpha = torch.exp(qdotk - qdotk_max_tmp) * quad_weights[hi]
+                alpha_sum = alpha + alpha_sum * torch.exp(qdotk_max - qdotk_max_tmp)
+                # update output
+                y[:,:,ho,wo] = y[:,:,ho,wo] * torch.exp(qdotk_max - qdotk_max_tmp).unsqueeze(1) + alpha[:, None] * vx[:,:,hi,wip]
 
-                # compute input indices from psi datastructure
-                hi = nz_col_idx // nlon_in
-                # account for output shift and ensure positive index due to circular condition
-                wi = nz_col_idx % nlon_in
-                wip = (wi + wo) % nlon_in
-                alpha = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max)
-                # softmax denominator
-                alpha_sum[:] += alpha[:] * quad_weights[hi]
-
-                y[:,:,ho,wo] += alpha[:, None] * vx[:,:,hi,wip] * quad_weights[hi]
-
+                # define new max
+                qdotk_max = qdotk_max_tmp
 
             y[:,:,ho,wo] = y[:,:,ho,wo] / alpha_sum[:, None]
 
