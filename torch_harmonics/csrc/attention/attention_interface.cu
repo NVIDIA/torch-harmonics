@@ -31,8 +31,8 @@
 #include "attention.cuh"
 #include <torch/extension.h>
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
+{
   m.def("forward", &s2_attention_fwd_cuda, "(Local) Attention on S2");
   m.def("backward_dkvq", &s2_attention_bwd_dkvq_cuda, "(Local) Attention gradient on S2 (gradient for k,v,&q)");
 }
-

@@ -1,0 +1,9 @@
+# Ignore all Python files
+*.py
+
+# Ignore Dockerfile
+Dockerfile
+
+# Ignore other build specific files
+*.toml
+*.sh
