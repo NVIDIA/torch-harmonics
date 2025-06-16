@@ -2,7 +2,7 @@
 //
 // SPDX-FileCopyrightText: Copyright (c) 2024 The torch-harmonics Authors. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
-// 
+//
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
@@ -36,32 +36,19 @@
 #include <c10/cuda/CUDAStream.h>
 
 #define CHECK_CUDA_TENSOR(x) TORCH_CHECK(x.device().is_cuda(), #x " must be a CUDA tensor")
-#define CHECK_CUDA_INPUT_TENSOR(x) CHECK_CUDA_TENSOR(x); CHECK_CONTIGUOUS_TENSOR(x)
+#define CHECK_CUDA_INPUT_TENSOR(x)                                                                                     \
+  CHECK_CUDA_TENSOR(x);                                                                                                \
+  CHECK_CONTIGUOUS_TENSOR(x)
 
-#define DIV_UP(a,b) (((a)+((b)-1))/(b))
+#define DIV_UP(a, b) (((a) + ((b)-1)) / (b))
 
 #define MIN_THREADS (64)
-#define ELXTH_MAX   (32)
+#define ELXTH_MAX (32)
 
 // forward kernel
-torch::Tensor disco_cuda_fwd(torch::Tensor inp,
-                             torch::Tensor roff_idx,
-                             torch::Tensor ker_idx,
-                             torch::Tensor row_idx,
-                             torch::Tensor col_idx,
-                             torch::Tensor val,
-                             int64_t K,
-                             int64_t Ho,
-                             int64_t Wo);
+torch::Tensor disco_cuda_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
+                             torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo);
 
 // backward kernel
-torch::Tensor disco_cuda_bwd(torch::Tensor inp,
-                             torch::Tensor roff_idx,
-                             torch::Tensor ker_idx,
-                             torch::Tensor row_idx,
-                             torch::Tensor col_idx,
-                             torch::Tensor val,
-                             int64_t K,
-                             int64_t Ho,
-                             int64_t Wo);
-			     
+torch::Tensor disco_cuda_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
+                             torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo);

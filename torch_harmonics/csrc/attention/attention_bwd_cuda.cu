@@ -51,7 +51,7 @@
 #define THREADS (64)
 #endif
 #ifndef DIV_UP
-#define DIV_UP(a, b) (((a) + ((b) - 1)) / (b))
+#define DIV_UP(a, b) (((a) + ((b)-1)) / (b))
 #endif
 #ifndef CHECK_CUDA
 #define CHECK_CUDA(call)                                                                                               \

@@ -2,7 +2,7 @@
 //
 // SPDX-FileCopyrightText: Copyright (c) 2024 The torch-harmonics Authors. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
-// 
+//
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
@@ -31,9 +31,8 @@
 #include "disco.h"
 #include "disco_cuda.cuh"
 
-
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
+{
   m.def("forward", &disco_cuda_fwd, "DISCO forward (CUDA)");
   m.def("backward", &disco_cuda_bwd, "DISCO backward (CUDA)");
 }
-
