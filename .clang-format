@@ -1,0 +1,26 @@
+---
+BasedOnStyle: Webkit
+IndentWidth: 2
+AccessModifierOffset: -2
+AlignAfterOpenBracket: Align
+AlignTrailingComments: true
+AllowShortBlocksOnASingleLine: true
+AllowShortCaseLabelsOnASingleLine : true
+AllowShortIfStatementsOnASingleLine: true
+AllowShortLoopsOnASingleLine: true
+BreakBeforeBraces: Linux
+BreakBeforeTernaryOperators: false
+BreakConstructorInitializers: AfterColon
+ColumnLimit: 120
+ConstructorInitializerAllOnOneLineOrOnePerLine: true
+ConstructorInitializerIndentWidth: 2
+ContinuationIndentWidth: 2
+Cpp11BracedListStyle: true
+FixNamespaceComments: true
+NamespaceIndentation: All
+PenaltyExcessCharacter: 10
+PointerAlignment: Right
+SortIncludes: false
+SpaceBeforeAssignmentOperators: true
+CommentPragmas:  '^\\.+'
+UseTab: Never
