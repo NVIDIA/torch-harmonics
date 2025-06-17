@@ -33,6 +33,6 @@
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
-  m.def("forward", &disco_cuda_fwd, "DISCO forward (CUDA)");
-  m.def("backward", &disco_cuda_bwd, "DISCO backward (CUDA)");
+    m.def("forward", &disco_cuda_fwd, "DISCO forward (CUDA)");
+    m.def("backward", &disco_cuda_bwd, "DISCO backward (CUDA)");
 }
