@@ -56,17 +56,23 @@ except (ImportError, TypeError, AssertionError, AttributeError) as e:
 def get_compile_args(module_name):
     """If user runs build with TORCH_HARMONICS_DEBUG=1 set, it will use debugging flags to build"""
     debug_mode = os.environ.get('TORCH_HARMONICS_DEBUG', '0') == '1'
+    profile_mode = os.environ.get('TORCH_HARMONICS_PROFILE', '0') == '1'
+
+    nvcc_extra_flags = []
+    if profile_mode:
+        nvcc_extra_flags.append("-lineinfo")
+        
     if debug_mode:
         print(f"WARNING: Compiling {module_name} with debugging flags")
         return {
             'cxx': ['-g', '-O0', '-Wall'],
-            'nvcc': ['-g', '-G', '-O0']
+            'nvcc': ['-g', '-G', '-O0'] + nvcc_extra_flags
         }
     else:
         print(f"NOTE: Compiling {module_name} with release flags")
         return {
             'cxx': ['-O3', "-DNDEBUG"],
-            'nvcc': ['-O3', "-DNDEBUG"]
+            'nvcc': ['-O3', "-DNDEBUG"] + nvcc_extra_flags
         }
 
 def get_ext_modules():
