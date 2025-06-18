@@ -51,7 +51,7 @@
 #define THREADS (64)
 #endif
 #ifndef DIV_UP
-#define DIV_UP(a, b) (((a) + ((b) - 1)) / (b))
+#define DIV_UP(a, b) (((a) + ((b)-1)) / (b))
 #endif
 #ifndef CHECK_CUDA
 #define CHECK_CUDA(call)                                                                                                 \
@@ -312,14 +312,10 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Te
     CHECK_CUDA(cudaEventElapsedTime(&milliseconds, start, stop));
 
     // [1, 256, 1, (721, 1440), (721, 1440), "equiangular", "equiangular", 1e-5, 1e-5],
-    // s2_attention_bwd_kernel_mbT execution time: 63.280128 ms
-    // s2_attention_bwd_kernel execution time: 51.231743 ms
-    // s2_attention_bwd_kernel execution time: 52.971519 ms
     // s2_attention_bwd_kernel execution time: 50.724865 ms
-
     // [1, 256, 1, (361, 720), (361, 720), "equiangular", "equiangular", 1e-5, 1e-5],
     // s2_attention_bwd_kernel execution time: 11.679744 ms
-    printf("s2_attention_bwd_kernel execution time: %f ms\n", milliseconds);
+    // printf("s2_attention_bwd_kernel execution time: %f ms\n", milliseconds);
     CHECK_CUDA(cudaEventDestroy(start));
     CHECK_CUDA(cudaEventDestroy(stop));
 

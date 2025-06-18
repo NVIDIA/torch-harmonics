@@ -40,7 +40,7 @@
     CHECK_CUDA_TENSOR(x);                                                                                              \
     CHECK_CONTIGUOUS_TENSOR(x)
 
-#define DIV_UP(a, b) (((a) + ((b) - 1)) / (b))
+#define DIV_UP(a, b) (((a) + ((b)-1)) / (b))
 
 #define MIN_THREADS (64)
 #define ELXTH_MAX (32)

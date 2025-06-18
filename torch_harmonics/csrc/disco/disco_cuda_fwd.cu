@@ -146,11 +146,11 @@ __device__ void disco_fwd_d(const int Hi, const int Wi, const int K, const int H
 
 template <int BDIM_X, int ELXTH, typename REAL_T>
 __global__
-__launch_bounds__(BDIM_X) void disco_fwd_blk_k(const int Hi, const int Wi, const int K, const int Ho, const int Wo,
-                                               const int pscale, const int64_t *__restrict__ roff,
-                                               const int64_t *__restrict__ kers, const int64_t *__restrict__ rows,
-                                               const int64_t *__restrict__ cols, const REAL_T *__restrict__ vals,
-                                               const REAL_T *__restrict__ inp, REAL_T *__restrict__ out)
+    __launch_bounds__(BDIM_X) void disco_fwd_blk_k(const int Hi, const int Wi, const int K, const int Ho, const int Wo,
+                                                   const int pscale, const int64_t *__restrict__ roff,
+                                                   const int64_t *__restrict__ kers, const int64_t *__restrict__ rows,
+                                                   const int64_t *__restrict__ cols, const REAL_T *__restrict__ vals,
+                                                   const REAL_T *__restrict__ inp, REAL_T *__restrict__ out)
 {
 
     disco_fwd_d<BDIM_X, ELXTH>(Hi, Wi, K, Ho, Wo, pscale, roff, kers, rows, cols, vals, inp, out);

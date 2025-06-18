@@ -45,7 +45,7 @@ using BlockReduceFloat512 = cub::BlockReduce<float, 512>;
 #define WARP_SIZE (32)
 #define FULL_MASK (0xFFFFFFFF)
 #define THREADS (64)
-#define DIV_UP(a, b) (((a) + ((b) - 1)) / (b))
+#define DIV_UP(a, b) (((a) + ((b)-1)) / (b))
 
 #define NNZ_TRESH (32)
 

@@ -140,11 +140,11 @@ __device__ void disco_bwd_d(const int Hi, const int Wi, const int K, const int H
 
 template <int BDIM_X, int ELXTH, int PSCALE, typename REAL_T>
 __global__
-__launch_bounds__(BDIM_X) void disco_bwd_blk_k(const int Hi, const int Wi, const int K, const int Ho, const int Wo,
-                                               const int pscale, const int64_t *__restrict__ roff,
-                                               const int64_t *__restrict__ kers, const int64_t *__restrict__ rows,
-                                               const int64_t *__restrict__ cols, const REAL_T *__restrict__ vals,
-                                               const REAL_T *__restrict__ inp, REAL_T *__restrict__ out)
+    __launch_bounds__(BDIM_X) void disco_bwd_blk_k(const int Hi, const int Wi, const int K, const int Ho, const int Wo,
+                                                   const int pscale, const int64_t *__restrict__ roff,
+                                                   const int64_t *__restrict__ kers, const int64_t *__restrict__ rows,
+                                                   const int64_t *__restrict__ cols, const REAL_T *__restrict__ vals,
+                                                   const REAL_T *__restrict__ inp, REAL_T *__restrict__ out)
 {
 
     if constexpr (PSCALE != 0) {
