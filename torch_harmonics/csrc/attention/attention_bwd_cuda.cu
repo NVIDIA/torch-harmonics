@@ -51,17 +51,17 @@
 #define THREADS (64)
 #endif
 #ifndef DIV_UP
-#define DIV_UP(a, b) (((a) + ((b)-1)) / (b))
+#define DIV_UP(a, b) (((a) + ((b) - 1)) / (b))
 #endif
 #ifndef CHECK_CUDA
-#define CHECK_CUDA(call)                                                                                               \
-  {                                                                                                                    \
-    cudaError_t err = call;                                                                                            \
-    if (cudaSuccess != err) {                                                                                          \
-      fprintf(stderr, "Cuda error in file '%s' in line %i : %s.\\n", __FILE__, __LINE__, cudaGetErrorString(err));     \
-      exit(EXIT_FAILURE);                                                                                              \
-    }                                                                                                                  \
-  }
+#define CHECK_CUDA(call)                                                                                                 \
+    {                                                                                                                    \
+        cudaError_t err = call;                                                                                          \
+        if (cudaSuccess != err) {                                                                                        \
+            fprintf(stderr, "Cuda error in file '%s' in line %i : %s.\\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+            exit(EXIT_FAILURE);                                                                                          \
+        }                                                                                                                \
+    }
 #endif
 
 #include <iostream>
@@ -70,41 +70,42 @@
 
 class ScopeTimer
 {
-public:
-  explicit ScopeTimer(const std::string &label = "") : label_(label), start_(std::chrono::high_resolution_clock::now())
-  {
-  }
+  public:
+    explicit ScopeTimer(const std::string &label = "") :
+        label_(label), start_(std::chrono::high_resolution_clock::now())
+    {
+    }
 
-  ~ScopeTimer()
-  {
-    auto end = std::chrono::high_resolution_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start_);
-    std::cout << label_ << "Elapsed time: " << elapsed.count() << " ms" << std::endl;
-  }
+    ~ScopeTimer()
+    {
+        auto end = std::chrono::high_resolution_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start_);
+        std::cout << label_ << "Elapsed time: " << elapsed.count() << " ms" << std::endl;
+    }
 
-private:
-  std::string label_;
-  std::chrono::high_resolution_clock::time_point start_;
+  private:
+    std::string label_;
+    std::chrono::high_resolution_clock::time_point start_;
 };
 
 static __device__ float __warp_sum(float val)
 {
 #pragma unroll
-  for (int i = WARP_SIZE / 2; i; i /= 2) { val += __shfl_xor_sync(FULL_MASK, val, i); }
-  return val;
+    for (int i = WARP_SIZE / 2; i; i /= 2) { val += __shfl_xor_sync(FULL_MASK, val, i); }
+    return val;
 }
 
 // easier to understand version of manual shfl_xor_sync, performance appears similar
 static __device__ float __warp_sum_cub(float val)
 {
-  // use cub to reduce within a warp
-  __shared__ typename cub::WarpReduce<float>::TempStorage temp_storage;
+    // use cub to reduce within a warp
+    __shared__ typename cub::WarpReduce<float>::TempStorage temp_storage;
 
-  // 1. Compute sum (initially only in lane 0)
-  float sum = cub::WarpReduce<float>(temp_storage).Sum(val);
-  // 2. Broadcast sum to all threads
-  sum = __shfl_sync(0xFFFFFFFF, sum, 0);
-  return sum;
+    // 1. Compute sum (initially only in lane 0)
+    float sum = cub::WarpReduce<float>(temp_storage).Sum(val);
+    // 2. Broadcast sum to all threads
+    sum = __shfl_sync(0xFFFFFFFF, sum, 0);
+    return sum;
 }
 
 // This kernel computes the backward pass for the S2 attention mechanism, using
@@ -113,107 +114,107 @@ static __device__ float __warp_sum_cub(float val)
 // memory access.
 template <int BDIM_X>
 __global__ __launch_bounds__(BDIM_X) void s2_attention_bwd_dkvq_kernel(
-  int num_channels, int nlon_in, int nlat_out, int nlon_out,
-  const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> kx,
-  const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> vx,
-  const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> qy,
-  const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dy,
-  torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dydk,
-  torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dydv,
-  torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dydq,
-  const torch::PackedTensorAccessor64<int64_t, 1, torch::RestrictPtrTraits> psi_col_idx,
-  const torch::PackedTensorAccessor64<int64_t, 1, torch::RestrictPtrTraits> psi_row_offset,
-  const torch::PackedTensorAccessor32<float, 1, torch::RestrictPtrTraits> quad_weights)
+    int num_channels, int nlon_in, int nlat_out, int nlon_out,
+    const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> kx,
+    const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> vx,
+    const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> qy,
+    const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dy,
+    torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dydk,
+    torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dydv,
+    torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dydq,
+    const torch::PackedTensorAccessor64<int64_t, 1, torch::RestrictPtrTraits> psi_col_idx,
+    const torch::PackedTensorAccessor64<int64_t, 1, torch::RestrictPtrTraits> psi_row_offset,
+    const torch::PackedTensorAccessor32<float, 1, torch::RestrictPtrTraits> quad_weights)
 {
 
-  extern __shared__ float sh[];
-  float *sh_alpha_k = sh + threadIdx.y * num_channels * 5;
-  float *sh_alpha_vw = sh_alpha_k + num_channels;
-  float *sh_alpha_kvw = sh_alpha_vw + num_channels;
-  float *sh_dy = sh_alpha_kvw + num_channels;
-  float *sh_qy = sh_dy + num_channels;
-  // (optionally, could use more shared memory for other intermediates)
+    extern __shared__ float sh[];
+    float *sh_alpha_k = sh + threadIdx.y * num_channels * 5;
+    float *sh_alpha_vw = sh_alpha_k + num_channels;
+    float *sh_alpha_kvw = sh_alpha_vw + num_channels;
+    float *sh_dy = sh_alpha_kvw + num_channels;
+    float *sh_qy = sh_dy + num_channels;
+    // (optionally, could use more shared memory for other intermediates)
 
-  const uint64_t batchId = blockIdx.y;
-  const uint64_t wid = uint64_t(blockIdx.x) * blockDim.y + threadIdx.y;
-  if (wid >= uint64_t(nlat_out) * nlon_in) return;
-  const int tidx = threadIdx.x;
-  const int ho = wid / nlon_out;
-  const int wo = wid - (ho * nlon_out);
+    const uint64_t batchId = blockIdx.y;
+    const uint64_t wid = uint64_t(blockIdx.x) * blockDim.y + threadIdx.y;
+    if (wid >= uint64_t(nlat_out) * nlon_in) return;
+    const int tidx = threadIdx.x;
+    const int ho = wid / nlon_out;
+    const int wo = wid - (ho * nlon_out);
 
-  // Zero shared memory
-  for (int chan = tidx; chan < num_channels; chan += WARP_SIZE) {
-    sh_alpha_k[chan] = 0.0f;
-    sh_alpha_vw[chan] = 0.0f;
-    sh_alpha_kvw[chan] = 0.0f;
-    sh_dy[chan] = dy[batchId][chan][ho][wo];
-    sh_qy[chan] = qy[batchId][chan][ho][wo];
-  }
-  float alpha_sum = 0.0f;
-  float qdotk_max = -FLT_MAX;
-  float integral = 0.0f;
-  __syncthreads();
-
-  const int64_t rbeg = psi_row_offset[ho];
-  const int64_t rend = psi_row_offset[ho + 1];
-  const int rlen = rend - rbeg;
-
-  // 1st pass: accumulate alpha_sum, integral, and shared stats, along with a progressively computed qdotk_max.
-  for (int off = 0; off < rlen; off++) {
-    const int64_t col = psi_col_idx[rbeg + off];
-    const int hi = col / nlon_in;
-    const int wi = col - (hi * nlon_in);
-    const int wip = (wi + wo) - ((wi + wo) / nlon_in) * nlon_in;
-    float qdotk = 0.0f, gdotv = 0.0f;
+    // Zero shared memory
     for (int chan = tidx; chan < num_channels; chan += WARP_SIZE) {
-      qdotk += sh_qy[chan] * kx[batchId][chan][hi][wip];
-      gdotv += sh_dy[chan] * vx[batchId][chan][hi][wip];
+        sh_alpha_k[chan] = 0.0f;
+        sh_alpha_vw[chan] = 0.0f;
+        sh_alpha_kvw[chan] = 0.0f;
+        sh_dy[chan] = dy[batchId][chan][ho][wo];
+        sh_qy[chan] = qy[batchId][chan][ho][wo];
     }
-    qdotk = __warp_sum_cub(qdotk);
-    gdotv = __warp_sum_cub(gdotv);
-    float qdotk_max_tmp = max(qdotk_max, qdotk);
-    float alpha_inz = expf(qdotk - qdotk_max_tmp) * quad_weights[hi];
-    float max_correction = expf(qdotk_max - qdotk_max_tmp);
-    alpha_sum = alpha_sum * max_correction + alpha_inz;
-    integral = integral * max_correction + alpha_inz * gdotv;
-    for (int chan = tidx; chan < num_channels; chan += WARP_SIZE) {
-      float kxval = kx[batchId][chan][hi][wip];
-      sh_alpha_k[chan] = sh_alpha_k[chan] * max_correction + alpha_inz * kxval;
-      sh_alpha_vw[chan] = sh_alpha_vw[chan] * max_correction + alpha_inz * gdotv;
-      sh_alpha_kvw[chan] = sh_alpha_kvw[chan] * max_correction + alpha_inz * kxval * gdotv;
-    }
-    qdotk_max = qdotk_max_tmp;
-  }
+    float alpha_sum = 0.0f;
+    float qdotk_max = -FLT_MAX;
+    float integral = 0.0f;
+    __syncthreads();
 
-  integral /= alpha_sum;
+    const int64_t rbeg = psi_row_offset[ho];
+    const int64_t rend = psi_row_offset[ho + 1];
+    const int rlen = rend - rbeg;
 
-  // Write dydq
-  for (int chan = tidx; chan < num_channels; chan += WARP_SIZE) {
-    dydq[batchId][chan][ho][wo]
-      = (sh_alpha_kvw[chan] * alpha_sum - sh_alpha_vw[chan] * sh_alpha_k[chan]) / (alpha_sum * alpha_sum);
-  }
+    // 1st pass: accumulate alpha_sum, integral, and shared stats, along with a progressively computed qdotk_max.
+    for (int off = 0; off < rlen; off++) {
+        const int64_t col = psi_col_idx[rbeg + off];
+        const int hi = col / nlon_in;
+        const int wi = col - (hi * nlon_in);
+        const int wip = (wi + wo) - ((wi + wo) / nlon_in) * nlon_in;
+        float qdotk = 0.0f, gdotv = 0.0f;
+        for (int chan = tidx; chan < num_channels; chan += WARP_SIZE) {
+            qdotk += sh_qy[chan] * kx[batchId][chan][hi][wip];
+            gdotv += sh_dy[chan] * vx[batchId][chan][hi][wip];
+        }
+        qdotk = __warp_sum_cub(qdotk);
+        gdotv = __warp_sum_cub(gdotv);
+        float qdotk_max_tmp = max(qdotk_max, qdotk);
+        float alpha_inz = expf(qdotk - qdotk_max_tmp) * quad_weights[hi];
+        float max_correction = expf(qdotk_max - qdotk_max_tmp);
+        alpha_sum = alpha_sum * max_correction + alpha_inz;
+        integral = integral * max_correction + alpha_inz * gdotv;
+        for (int chan = tidx; chan < num_channels; chan += WARP_SIZE) {
+            float kxval = kx[batchId][chan][hi][wip];
+            sh_alpha_k[chan] = sh_alpha_k[chan] * max_correction + alpha_inz * kxval;
+            sh_alpha_vw[chan] = sh_alpha_vw[chan] * max_correction + alpha_inz * gdotv;
+            sh_alpha_kvw[chan] = sh_alpha_kvw[chan] * max_correction + alpha_inz * kxval * gdotv;
+        }
+        qdotk_max = qdotk_max_tmp;
+    }
 
-  // Third pass: accumulate gradients for k and v
-  for (int off = 0; off < rlen; off++) {
-    const int64_t col = psi_col_idx[rbeg + off];
-    const int hi = col / nlon_in;
-    const int wi = col - (hi * nlon_in);
-    const int wip = (wi + wo) - ((wi + wo) / nlon_in) * nlon_in;
-    float qdotk = 0.0f, gdotv = 0.0f;
+    integral /= alpha_sum;
+
+    // Write dydq
     for (int chan = tidx; chan < num_channels; chan += WARP_SIZE) {
-      qdotk += qy[batchId][chan][ho][wo] * kx[batchId][chan][hi][wip];
-      gdotv += sh_dy[chan] * vx[batchId][chan][hi][wip];
+        dydq[batchId][chan][ho][wo]
+            = (sh_alpha_kvw[chan] * alpha_sum - sh_alpha_vw[chan] * sh_alpha_k[chan]) / (alpha_sum * alpha_sum);
     }
-    qdotk = __warp_sum_cub(qdotk);
-    gdotv = __warp_sum_cub(gdotv);
-    float alpha_inz = expf(qdotk - qdotk_max) * quad_weights[hi];
-    for (int chan = tidx; chan < num_channels; chan += WARP_SIZE) {
-      float qyval = qy[batchId][chan][ho][wo];
-      float dyval = sh_dy[chan];
-      atomicAdd(&dydk[batchId][chan][hi][wip], qyval * (alpha_inz / alpha_sum) * (gdotv - integral));
-      atomicAdd(&dydv[batchId][chan][hi][wip], (alpha_inz / alpha_sum) * dyval);
+
+    // Third pass: accumulate gradients for k and v
+    for (int off = 0; off < rlen; off++) {
+        const int64_t col = psi_col_idx[rbeg + off];
+        const int hi = col / nlon_in;
+        const int wi = col - (hi * nlon_in);
+        const int wip = (wi + wo) - ((wi + wo) / nlon_in) * nlon_in;
+        float qdotk = 0.0f, gdotv = 0.0f;
+        for (int chan = tidx; chan < num_channels; chan += WARP_SIZE) {
+            qdotk += qy[batchId][chan][ho][wo] * kx[batchId][chan][hi][wip];
+            gdotv += sh_dy[chan] * vx[batchId][chan][hi][wip];
+        }
+        qdotk = __warp_sum_cub(qdotk);
+        gdotv = __warp_sum_cub(gdotv);
+        float alpha_inz = expf(qdotk - qdotk_max) * quad_weights[hi];
+        for (int chan = tidx; chan < num_channels; chan += WARP_SIZE) {
+            float qyval = qy[batchId][chan][ho][wo];
+            float dyval = sh_dy[chan];
+            atomicAdd(&dydk[batchId][chan][hi][wip], qyval * (alpha_inz / alpha_sum) * (gdotv - integral));
+            atomicAdd(&dydv[batchId][chan][hi][wip], (alpha_inz / alpha_sum) * dyval);
+        }
     }
-  }
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy,
@@ -222,122 +223,122 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Te
                                                                           int nlon_in, int nlat_out, int nlon_out)
 {
 
-  CHECK_CUDA_TENSOR(kx);
-  CHECK_CUDA_TENSOR(vx);
-  CHECK_CUDA_TENSOR(qy);
-  CHECK_CUDA_TENSOR(quad_weights);
-  CHECK_CUDA_TENSOR(psi_col_idx);
-  CHECK_CUDA_TENSOR(psi_row_off);
-  CHECK_CUDA_TENSOR(dy);
+    CHECK_CUDA_TENSOR(kx);
+    CHECK_CUDA_TENSOR(vx);
+    CHECK_CUDA_TENSOR(qy);
+    CHECK_CUDA_TENSOR(quad_weights);
+    CHECK_CUDA_TENSOR(psi_col_idx);
+    CHECK_CUDA_TENSOR(psi_row_off);
+    CHECK_CUDA_TENSOR(dy);
 
-  auto stream = at::cuda::getCurrentCUDAStream().stream();
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
 
-  auto k_channel_first = kx.strides()[1] == 1;
-  auto v_channel_first = vx.strides()[1] == 1;
-  auto q_channel_first = qy.strides()[1] == 1;
-  auto dy_channel_first = dy.strides()[1] == 1;
+    auto k_channel_first = kx.strides()[1] == 1;
+    auto v_channel_first = vx.strides()[1] == 1;
+    auto q_channel_first = qy.strides()[1] == 1;
+    auto dy_channel_first = dy.strides()[1] == 1;
 
-  // Transpose to [batch, ho, wo, channel]
-  nvtxRangePush("s2_attention_bwd_dkvq_kernel_mbT permute inputs");
-  // auto* permute_timer = new ScopeTimer("permute inputs");
+    // Transpose to [batch, ho, wo, channel]
+    nvtxRangePush("s2_attention_bwd_dkvq_kernel_mbT permute inputs");
+    // auto* permute_timer = new ScopeTimer("permute inputs");
 
-  // Permute kx,vx,qy,dy to [batch, ho, wo, channel] in memory layout, but keep the original shape [batch, channel, ho, wo]
-  auto kxP = at::Tensor();
-  if (!k_channel_first) {
-    // printf("Permuting kx from [batch, channel, ho, wo] to [batch, ho, wo, channel]\n");
-    kxP = kx.permute({0, 2, 3, 1}).contiguous().permute({0, 3, 1, 2});
-  } else {
-    kxP = kx;
-  }
-  auto vxP = at::Tensor();
-  if (!v_channel_first) {
-    // printf("Permuting vx from [batch, channel, ho, wo] to [batch, ho, wo, channel]\n");
-    vxP = vx.permute({0, 2, 3, 1}).contiguous().permute({0, 3, 1, 2});
-  } else {
-    vxP = vx;
-  }
-  auto qyP = at::Tensor();
-  if (!q_channel_first) {
-    // printf("Permuting qy from [batch, channel, ho, wo] to [batch, ho, wo, channel]\n");
-    qyP = qy.permute({0, 2, 3, 1}).contiguous().permute({0, 3, 1, 2});
-  } else {
-    qyP = qy;
-  }
-  auto dyP = at::Tensor();
-  if (!dy_channel_first) {
-    // printf("Permuting dy from [batch, channel, ho, wo] to [batch, ho, wo, channel]\n");
-    dyP = dy.permute({0, 2, 3, 1}).contiguous().permute({0, 3, 1, 2});
-  } else {
-    dyP = dy;
-  }
-  // cudaDeviceSynchronize();
-  // delete permute_timer;
-  nvtxRangePop();
+    // Permute kx,vx,qy,dy to [batch, ho, wo, channel] in memory layout, but keep the original shape [batch, channel, ho, wo]
+    auto kxP = at::Tensor();
+    if (!k_channel_first) {
+        // printf("Permuting kx from [batch, channel, ho, wo] to [batch, ho, wo, channel]\n");
+        kxP = kx.permute({0, 2, 3, 1}).contiguous().permute({0, 3, 1, 2});
+    } else {
+        kxP = kx;
+    }
+    auto vxP = at::Tensor();
+    if (!v_channel_first) {
+        // printf("Permuting vx from [batch, channel, ho, wo] to [batch, ho, wo, channel]\n");
+        vxP = vx.permute({0, 2, 3, 1}).contiguous().permute({0, 3, 1, 2});
+    } else {
+        vxP = vx;
+    }
+    auto qyP = at::Tensor();
+    if (!q_channel_first) {
+        // printf("Permuting qy from [batch, channel, ho, wo] to [batch, ho, wo, channel]\n");
+        qyP = qy.permute({0, 2, 3, 1}).contiguous().permute({0, 3, 1, 2});
+    } else {
+        qyP = qy;
+    }
+    auto dyP = at::Tensor();
+    if (!dy_channel_first) {
+        // printf("Permuting dy from [batch, channel, ho, wo] to [batch, ho, wo, channel]\n");
+        dyP = dy.permute({0, 2, 3, 1}).contiguous().permute({0, 3, 1, 2});
+    } else {
+        dyP = dy;
+    }
+    // cudaDeviceSynchronize();
+    // delete permute_timer;
+    nvtxRangePop();
 
-  nvtxRangePush("s2_attention_bwd_dkvq_kernel_mbT output allocation & zero");
-  auto dydk = torch::zeros_like(qyP);
-  auto dydv = torch::zeros_like(qyP);
-  auto dydq = torch::zeros_like(qyP);
-  // print strdie of dydkP, dydvP, dydqP
-  nvtxRangePop();
+    nvtxRangePush("s2_attention_bwd_dkvq_kernel_mbT output allocation & zero");
+    auto dydk = torch::zeros_like(qyP);
+    auto dydv = torch::zeros_like(qyP);
+    auto dydq = torch::zeros_like(qyP);
+    // print strdie of dydkP, dydvP, dydqP
+    nvtxRangePop();
 
-  size_t uo_num_channels = kx.size(1);
-  const int batch_size = kx.size(0);
+    size_t uo_num_channels = kx.size(1);
+    const int batch_size = kx.size(0);
 
-  dim3 block(WARP_SIZE, THREADS / WARP_SIZE);
-  dim3 grid(DIV_UP(nlat_out * nlon_out, block.y), batch_size);
-  size_t shared_size = sizeof(float) * uo_num_channels * 5 * block.y; // 4 arrays per warp
+    dim3 block(WARP_SIZE, THREADS / WARP_SIZE);
+    dim3 grid(DIV_UP(nlat_out * nlon_out, block.y), batch_size);
+    size_t shared_size = sizeof(float) * uo_num_channels * 5 * block.y; // 4 arrays per warp
 
-  cudaEvent_t start, stop;
-  float milliseconds = 0;
-  CHECK_CUDA(cudaEventCreate(&start));
-  CHECK_CUDA(cudaEventCreate(&stop));
-  CHECK_CUDA(cudaEventRecord(start, stream));
+    cudaEvent_t start, stop;
+    float milliseconds = 0;
+    CHECK_CUDA(cudaEventCreate(&start));
+    CHECK_CUDA(cudaEventCreate(&stop));
+    CHECK_CUDA(cudaEventRecord(start, stream));
 
-  s2_attention_bwd_dkvq_kernel<THREADS><<<grid, block, shared_size, stream>>>(
-    uo_num_channels, nlon_in, nlat_out, nlon_out, kxP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-    vxP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-    qyP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-    dyP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-    dydk.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-    dydv.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-    dydq.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-    psi_col_idx.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
-    psi_row_off.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
-    quad_weights.packed_accessor32<float, 1, torch::RestrictPtrTraits>());
+    s2_attention_bwd_dkvq_kernel<THREADS><<<grid, block, shared_size, stream>>>(
+        uo_num_channels, nlon_in, nlat_out, nlon_out, kxP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+        vxP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+        qyP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+        dyP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+        dydk.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+        dydv.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+        dydq.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+        psi_col_idx.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
+        psi_row_off.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
+        quad_weights.packed_accessor32<float, 1, torch::RestrictPtrTraits>());
 
-  CHECK_CUDA(cudaEventRecord(stop, stream));
-  CHECK_CUDA(cudaEventSynchronize(stop));
-  CHECK_CUDA(cudaEventElapsedTime(&milliseconds, start, stop));
+    CHECK_CUDA(cudaEventRecord(stop, stream));
+    CHECK_CUDA(cudaEventSynchronize(stop));
+    CHECK_CUDA(cudaEventElapsedTime(&milliseconds, start, stop));
 
-  // [1, 256, 1, (721, 1440), (721, 1440), "equiangular", "equiangular", 1e-5, 1e-5],
-  // s2_attention_bwd_kernel_mbT execution time: 63.280128 ms
-  // s2_attention_bwd_kernel execution time: 51.231743 ms
-  // s2_attention_bwd_kernel execution time: 52.971519 ms
-  // s2_attention_bwd_kernel execution time: 50.724865 ms
+    // [1, 256, 1, (721, 1440), (721, 1440), "equiangular", "equiangular", 1e-5, 1e-5],
+    // s2_attention_bwd_kernel_mbT execution time: 63.280128 ms
+    // s2_attention_bwd_kernel execution time: 51.231743 ms
+    // s2_attention_bwd_kernel execution time: 52.971519 ms
+    // s2_attention_bwd_kernel execution time: 50.724865 ms
 
-  // [1, 256, 1, (361, 720), (361, 720), "equiangular", "equiangular", 1e-5, 1e-5],
-  // s2_attention_bwd_kernel execution time: 11.679744 ms
-  printf("s2_attention_bwd_kernel execution time: %f ms\n", milliseconds);
-  CHECK_CUDA(cudaEventDestroy(start));
-  CHECK_CUDA(cudaEventDestroy(stop));
+    // [1, 256, 1, (361, 720), (361, 720), "equiangular", "equiangular", 1e-5, 1e-5],
+    // s2_attention_bwd_kernel execution time: 11.679744 ms
+    printf("s2_attention_bwd_kernel execution time: %f ms\n", milliseconds);
+    CHECK_CUDA(cudaEventDestroy(start));
+    CHECK_CUDA(cudaEventDestroy(stop));
 
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
 
-  // Permute outputs back to memory layout given by input. if input had channels
-  // first, leave it in that layout, otherwise permute layout back to [batch,
-  // channel, ho, wo]
-  if (!k_channel_first) dydk = dydk.contiguous();
-  if (!v_channel_first) dydv = dydv.contiguous();
-  if (!q_channel_first) dydq = dydq.contiguous();
+    // Permute outputs back to memory layout given by input. if input had channels
+    // first, leave it in that layout, otherwise permute layout back to [batch,
+    // channel, ho, wo]
+    if (!k_channel_first) dydk = dydk.contiguous();
+    if (!v_channel_first) dydv = dydv.contiguous();
+    if (!q_channel_first) dydq = dydq.contiguous();
 
-  // printf("dydk strides:[");
-  // for(auto& stride : dydk.strides()) {
-  //   printf("%ld,", stride);
-  // }
-  // printf("]\n");
-  // cudaDeviceSynchronize();
-  // delete permute_output_timer;
-  // nvtxRangePop();
-  return std::make_tuple(dydk, dydv, dydq);
+    // printf("dydk strides:[");
+    // for(auto& stride : dydk.strides()) {
+    //   printf("%ld,", stride);
+    // }
+    // printf("]\n");
+    // cudaDeviceSynchronize();
+    // delete permute_output_timer;
+    // nvtxRangePop();
+    return std::make_tuple(dydk, dydv, dydq);
 }

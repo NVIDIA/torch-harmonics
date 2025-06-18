@@ -37,10 +37,10 @@
 
 #define CHECK_CUDA_TENSOR(x) TORCH_CHECK(x.device().is_cuda(), #x " must be a CUDA tensor")
 #define CHECK_CUDA_INPUT_TENSOR(x)                                                                                     \
-  CHECK_CUDA_TENSOR(x);                                                                                                \
-  CHECK_CONTIGUOUS_TENSOR(x)
+    CHECK_CUDA_TENSOR(x);                                                                                              \
+    CHECK_CONTIGUOUS_TENSOR(x)
 
-#define DIV_UP(a, b) (((a) + ((b)-1)) / (b))
+#define DIV_UP(a, b) (((a) + ((b) - 1)) / (b))
 
 #define MIN_THREADS (64)
 #define ELXTH_MAX (32)

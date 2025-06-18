@@ -1,6 +1,6 @@
 ---
 BasedOnStyle: Webkit
-IndentWidth: 2
+IndentWidth: 4
 AccessModifierOffset: -2
 AlignAfterOpenBracket: Align
 AlignTrailingComments: true
@@ -13,8 +13,8 @@ BreakBeforeTernaryOperators: false
 BreakConstructorInitializers: AfterColon
 ColumnLimit: 120
 ConstructorInitializerAllOnOneLineOrOnePerLine: true
-ConstructorInitializerIndentWidth: 2
-ContinuationIndentWidth: 2
+ConstructorInitializerIndentWidth: 4
+ContinuationIndentWidth: 4
 Cpp11BracedListStyle: true
 FixNamespaceComments: true
 NamespaceIndentation: All
