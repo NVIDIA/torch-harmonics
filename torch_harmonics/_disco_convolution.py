@@ -62,11 +62,31 @@ def _get_psi(kernel_size: int, psi_idx: torch.Tensor, psi_vals: torch.Tensor, nl
 
 
 class _DiscoS2ContractionCuda(torch.autograd.Function):
+    r"""
+    CUDA implementation of the discrete-continuous convolution contraction on the sphere.
+    This class provides the forward and backward passes for efficient GPU computation
+    of the S2 convolution operation using custom CUDA kernels.
+    """
+
     @staticmethod
     @custom_fwd(device_type="cuda")
     def forward(ctx, x: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
                 row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
                 kernel_size: int, nlat_out: int, nlon_out: int):
+        r"""
+        Forward pass for CUDA S2 convolution contraction.
+        
+        Parameters:
+        x: input tensor
+        roff_idx: row offset indices for sparse computation
+        ker_idx: kernel indices
+        row_idx: row indices for sparse computation
+        col_idx: column indices for sparse computation
+        vals: values for sparse computation
+        kernel_size: size of the kernel
+        nlat_out: number of output latitude points
+        nlon_out: number of output longitude points
+        """
         ctx.save_for_backward(roff_idx, ker_idx, row_idx, col_idx, vals)
         ctx.kernel_size = kernel_size
         ctx.nlat_in = x.shape[-2]
@@ -81,6 +101,15 @@ class _DiscoS2ContractionCuda(torch.autograd.Function):
     @staticmethod
     @custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
+        r"""
+        Backward pass for CUDA S2 convolution contraction.
+        
+        Parameters:
+        grad_output: gradient of the output
+        
+        Returns:
+        gradient of the input
+        """
         roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
         gtype =	grad_output.dtype
         grad_output = grad_output.to(torch.float32).contiguous()
@@ -92,11 +121,31 @@ class _DiscoS2ContractionCuda(torch.autograd.Function):
 
 
 class _DiscoS2TransposeContractionCuda(torch.autograd.Function):
+    r"""
+    CUDA implementation of the transpose discrete-continuous convolution contraction on the sphere.
+    This class provides the forward and backward passes for efficient GPU computation
+    of the transpose S2 convolution operation using custom CUDA kernels.
+    """
+
     @staticmethod
     @custom_fwd(device_type="cuda")
     def forward(ctx, x: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
                 row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
                 kernel_size: int, nlat_out: int, nlon_out: int):
+        r"""
+        Forward pass for CUDA transpose S2 convolution contraction.
+        
+        Parameters:
+        x: input tensor
+        roff_idx: row offset indices for sparse computation
+        ker_idx: kernel indices
+        row_idx: row indices for sparse computation
+        col_idx: column indices for sparse computation
+        vals: values for sparse computation
+        kernel_size: size of the kernel
+        nlat_out: number of output latitude points
+        nlon_out: number of output longitude points
+        """
         ctx.save_for_backward(roff_idx, ker_idx, row_idx, col_idx, vals)
         ctx.kernel_size = kernel_size
         ctx.nlat_in = x.shape[-2]
@@ -111,6 +160,15 @@ class _DiscoS2TransposeContractionCuda(torch.autograd.Function):
     @staticmethod
     @custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
+        r"""
+        Backward pass for CUDA transpose S2 convolution contraction.
+        
+        Parameters:
+        grad_output: gradient of the output
+        
+        Returns:
+        gradient of the input
+        """
         roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
         gtype = grad_output.dtype
         grad_output = grad_output.to(torch.float32).contiguous()

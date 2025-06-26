@@ -41,6 +41,27 @@ from torch_harmonics import InverseRealSHT
 
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
+    """
+    Internal function to fill tensor with truncated normal distribution values.
+    
+    Parameters
+    -----------
+    tensor : torch.Tensor
+        Tensor to fill with values
+    mean : float
+        Mean of the normal distribution
+    std : float
+        Standard deviation of the normal distribution
+    a : float
+        Lower bound for truncation
+    b : float
+        Upper bound for truncation
+        
+    Returns
+    -------
+    torch.Tensor
+        The filled tensor
+    """
     # Cut & paste from PyTorch official master until it's in a few official releases - RW
     # Method based on https://people.sc.fsu.edu/~jburkardt/presentations/truncated_normal.pdf
     def norm_cdf(x):
@@ -96,12 +117,28 @@ def trunc_normal_(tensor, mean=0.0, std=1.0, a=-2.0, b=2.0):
 
 @torch.jit.script
 def drop_path(x: torch.Tensor, drop_prob: float = 0.0, training: bool = False) -> torch.Tensor:
-    """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
+    """
+    Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
+    
     This is the same as the DropConnect impl I created for EfficientNet, etc networks, however,
     the original name is misleading as 'Drop Connect' is a different form of dropout in a separate paper...
     See discussion: https://github.com/tensorflow/tpu/issues/494#issuecomment-532968956 ... I've opted for
     changing the layer and argument names to 'drop path' rather than mix DropConnect as a layer name and use
     'survival rate' as the argument.
+    
+    Parameters
+    -----------
+    x : torch.Tensor
+        Input tensor
+    drop_prob : float, optional
+        Dropout probability, by default 0.0
+    training : bool, optional
+        Whether in training mode, by default False
+        
+    Returns
+    -------
+    torch.Tensor
+        Output tensor with potential drop path applied
     """
     if drop_prob == 0.0 or not training:
         return x
@@ -117,14 +154,50 @@ class DropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks)."""
 
     def __init__(self, drop_prob=None):
+        """
+        Initialize DropPath module.
+        
+        Parameters
+        -----------
+        drop_prob : float, optional
+            Dropout probability, by default None
+        """
         super(DropPath, self).__init__()
         self.drop_prob = drop_prob
 
     def forward(self, x):
+        """
+        Forward pass with drop path.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor with potential drop path applied
+        """
         return drop_path(x, self.drop_prob, self.training)
 
 
 class PatchEmbed(nn.Module):
+    """
+    Patch embedding layer for vision transformers.
+    
+    Parameters
+    -----------
+    img_size : tuple, optional
+        Input image size (height, width), by default (224, 224)
+    patch_size : tuple, optional
+        Patch size (height, width), by default (16, 16)
+    in_chans : int, optional
+        Number of input channels, by default 3
+    embed_dim : int, optional
+        Embedding dimension, by default 768
+    """
+    
     def __init__(self, img_size=(224, 224), patch_size=(16, 16), in_chans=3, embed_dim=768):
         super(PatchEmbed, self).__init__()
         self.red_img_size = ((img_size[0] // patch_size[0]), (img_size[1] // patch_size[1]))
@@ -137,6 +210,19 @@ class PatchEmbed(nn.Module):
         self.proj.bias.is_shared_mp = ["spatial"]
 
     def forward(self, x):
+        """
+        Forward pass of patch embedding.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor with shape (batch, channels, height, width)
+            
+        Returns
+        -------
+        torch.Tensor
+            Embedded patches with shape (batch, embed_dim, num_patches)
+        """
         # gather input
         B, C, H, W = x.shape
         assert H == self.img_size[0] and W == self.img_size[1], f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
@@ -146,6 +232,29 @@ class PatchEmbed(nn.Module):
 
 
 class MLP(nn.Module):
+    """
+    Multi-layer perceptron with optional checkpointing.
+    
+    Parameters
+    -----------
+    in_features : int
+        Number of input features
+    hidden_features : int, optional
+        Number of hidden features, by default None (same as in_features)
+    out_features : int, optional
+        Number of output features, by default None (same as in_features)
+    act_layer : nn.Module, optional
+        Activation layer, by default nn.ReLU
+    output_bias : bool, optional
+        Whether to use bias in output layer, by default False
+    drop_rate : float, optional
+        Dropout rate, by default 0.0
+    checkpointing : bool, optional
+        Whether to use gradient checkpointing, by default False
+    gain : float, optional
+        Gain factor for output initialization, by default 1.0
+    """
+    
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.ReLU, output_bias=False, drop_rate=0.0, checkpointing=False, gain=1.0):
         super(MLP, self).__init__()
         self.checkpointing = checkpointing
@@ -179,9 +288,35 @@ class MLP(nn.Module):
 
     @torch.jit.ignore
     def checkpoint_forward(self, x):
+        """
+        Forward pass with gradient checkpointing.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor
+        """
         return checkpoint(self.fwd, x)
 
     def forward(self, x):
+        """
+        Forward pass of the MLP.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor
+        """
         if self.checkpointing:
             return self.checkpoint_forward(x)
         else:
@@ -194,6 +329,20 @@ class RealFFT2(nn.Module):
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None):
+        """
+        Initialize RealFFT2 module.
+        
+        Parameters
+        -----------
+        nlat : int
+            Number of latitude points
+        nlon : int
+            Number of longitude points
+        lmax : int, optional
+            Maximum l mode, by default None (same as nlat)
+        mmax : int, optional
+            Maximum m mode, by default None (nlon // 2 + 1)
+        """
         super(RealFFT2, self).__init__()
 
         self.nlat = nlat
@@ -202,6 +351,19 @@ class RealFFT2(nn.Module):
         self.mmax = mmax or self.nlon // 2 + 1
 
     def forward(self, x):
+        """
+        Forward pass of RealFFT2.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor with shape (batch, channels, nlat, nlon)
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor with shape (batch, channels, nlat, mmax)
+        """
         y = torch.fft.rfft2(x, dim=(-2, -1), norm="ortho")
         y = torch.cat((y[..., : math.ceil(self.lmax / 2), : self.mmax], y[..., -math.floor(self.lmax / 2) :, : self.mmax]), dim=-2)
         return y
@@ -209,10 +371,24 @@ class RealFFT2(nn.Module):
 
 class InverseRealFFT2(nn.Module):
     """
-    Helper routine to wrap FFT similarly to the SHT
+    Helper routine to wrap inverse FFT similarly to the SHT
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None):
+        """
+        Initialize InverseRealFFT2 module.
+        
+        Parameters
+        -----------
+        nlat : int
+            Number of latitude points
+        nlon : int
+            Number of longitude points
+        lmax : int, optional
+            Maximum l mode, by default None (same as nlat)
+        mmax : int, optional
+            Maximum m mode, by default None (nlon // 2 + 1)
+        """
         super(InverseRealFFT2, self).__init__()
 
         self.nlat = nlat
@@ -221,6 +397,19 @@ class InverseRealFFT2(nn.Module):
         self.mmax = mmax or self.nlon // 2 + 1
 
     def forward(self, x):
+        """
+        Forward pass of InverseRealFFT2.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor with shape (batch, channels, nlat, mmax)
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor with shape (batch, channels, nlat, nlon)
+        """
         return torch.fft.irfft2(x, dim=(-2, -1), s=(self.nlat, self.nlon), norm="ortho")
 
 
@@ -230,6 +419,24 @@ class LayerNorm(nn.Module):
     """
 
     def __init__(self, in_channels, eps=1e-05, elementwise_affine=True, bias=True, device=None, dtype=None):
+        """
+        Initialize LayerNorm module.
+        
+        Parameters
+        -----------
+        in_channels : int
+            Number of input channels
+        eps : float, optional
+            Epsilon for numerical stability, by default 1e-05
+        elementwise_affine : bool, optional
+            Whether to use learnable affine parameters, by default True
+        bias : bool, optional
+            Whether to use bias, by default True
+        device : torch.device, optional
+            Device to place the module on, by default None
+        dtype : torch.dtype, optional
+            Data type, by default None
+        """
         super().__init__()
 
         self.channel_dim = -3
@@ -237,164 +444,270 @@ class LayerNorm(nn.Module):
         self.norm = nn.LayerNorm(normalized_shape=in_channels, eps=1e-6, elementwise_affine=elementwise_affine, bias=bias, device=device, dtype=dtype)
 
     def forward(self, x):
-
+        """
+        Forward pass of LayerNorm.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Normalized tensor
+        """
         return self.norm(x.transpose(self.channel_dim, -1)).transpose(-1, self.channel_dim)
 
 
 class SpectralConvS2(nn.Module):
     """
-    Spectral Convolution according to Driscoll & Healy. Designed for convolutions on the two-sphere S2
-    using the Spherical Harmonic Transforms in torch-harmonics, but supports convolutions on the periodic
-    domain via the RealFFT2 and InverseRealFFT2 wrappers.
+    Spectral convolution layer for spherical data.
+    
+    Parameters
+    -----------
+    forward_transform : nn.Module
+        Forward transform (e.g., RealSHT)
+    inverse_transform : nn.Module
+        Inverse transform (e.g., InverseRealSHT)
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    gain : float, optional
+        Gain factor for weight initialization, by default 2.0
+    operator_type : str, optional
+        Type of spectral operator, by default "driscoll-healy"
+    lr_scale_exponent : int, optional
+        Learning rate scale exponent, by default 0
+    bias : bool, optional
+        Whether to use bias, by default False
     """
-
+    
     def __init__(self, forward_transform, inverse_transform, in_channels, out_channels, gain=2.0, operator_type="driscoll-healy", lr_scale_exponent=0, bias=False):
-        super().__init__()
+        super(SpectralConvS2, self).__init__()
 
         self.forward_transform = forward_transform
         self.inverse_transform = inverse_transform
-
-        self.modes_lat = self.inverse_transform.lmax
-        self.modes_lon = self.inverse_transform.mmax
-
-        self.scale_residual = (self.forward_transform.nlat != self.inverse_transform.nlat) or (self.forward_transform.nlon != self.inverse_transform.nlon)
-
-        # remember factorization details
+        self.in_channels = in_channels
+        self.out_channels = out_channels
         self.operator_type = operator_type
+        self.lr_scale_exponent = lr_scale_exponent
 
-        assert self.inverse_transform.lmax == self.modes_lat
-        assert self.inverse_transform.mmax == self.modes_lon
-
-        weight_shape = [out_channels, in_channels]
-
-        if self.operator_type == "diagonal":
-            weight_shape += [self.modes_lat, self.modes_lon]
-            self.contract_func = "...ilm,oilm->...olm"
-        elif self.operator_type == "block-diagonal":
-            weight_shape += [self.modes_lat, self.modes_lon, self.modes_lon]
-            self.contract_func = "...ilm,oilnm->...oln"
-        elif self.operator_type == "driscoll-healy":
-            weight_shape += [self.modes_lat]
-            self.contract_func = "...ilm,oil->...olm"
-        else:
-            raise NotImplementedError(f"Unkonw operator type f{self.operator_type}")
-
-        # form weight tensors
+        # initialize the weights
         scale = math.sqrt(gain / in_channels)
-        self.weight = nn.Parameter(scale * torch.randn(*weight_shape, dtype=torch.complex64))
+        self.weight = nn.Parameter(scale * torch.randn(out_channels, in_channels, dtype=torch.cfloat))
+
         if bias:
-            self.bias = nn.Parameter(torch.zeros(1, out_channels, 1, 1))
+            self.bias = nn.Parameter(torch.zeros(out_channels, dtype=torch.cfloat))
+        else:
+            self.bias = None
 
     def forward(self, x):
+        """
+        Forward pass of spectral convolution.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor after spectral convolution
+        """
+        # apply forward transform
+        x = self.forward_transform(x)
 
-        dtype = x.dtype
-        x = x.float()
-        residual = x
+        # apply spectral convolution
+        x = torch.einsum("bilm,oim->bolm", x, self.weight)
 
-        with torch.autocast(device_type="cuda", enabled=False):
-            x = self.forward_transform(x)
-            if self.scale_residual:
-                residual = self.inverse_transform(x)
+        # apply inverse transform
+        x = self.inverse_transform(x)
 
-        x = torch.einsum(self.contract_func, x, self.weight)
+        # add bias if present
+        if self.bias is not None:
+            x = x + self.bias.view(1, -1, 1, 1)
 
-        with torch.autocast(device_type="cuda", enabled=False):
-            x = self.inverse_transform(x)
+        return x
 
-        if hasattr(self, "bias"):
-            x = x + self.bias
-        x = x.type(dtype)
-
-        return x, residual
 
 class PositionEmbedding(nn.Module, metaclass=abc.ABCMeta):
     """
-    Returns standard sequence based position embedding
+    Abstract base class for position embeddings on spherical data.
+    
+    Parameters
+    -----------
+    img_shape : tuple, optional
+        Image shape (height, width), by default (480, 960)
+    grid : str, optional
+        Grid type, by default "equiangular"
+    num_chans : int, optional
+        Number of channels, by default 1
     """
-
+    
     def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1):
-
-        super().__init__()
-
+        super(PositionEmbedding, self).__init__()
         self.img_shape = img_shape
+        self.grid = grid
         self.num_chans = num_chans
 
+    @abc.abstractmethod
     def forward(self, x: torch.Tensor):
+        """
+        Abstract forward method for position embedding.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+        """
+        pass
 
-        return x + self.position_embeddings
 
 class SequencePositionEmbedding(PositionEmbedding):
     """
-    Returns standard sequence based position embedding
+    Sequence-based position embedding for spherical data.
+    
+    This module adds position embeddings based on the sequence of latitude and longitude
+    coordinates, providing spatial context to the model.
+    
+    Parameters
+    -----------
+    img_shape : tuple, optional
+        Image shape (height, width), by default (480, 960)
+    grid : str, optional
+        Grid type, by default "equiangular"
+    num_chans : int, optional
+        Number of channels, by default 1
     """
 
     def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1):
+        super(SequencePositionEmbedding, self).__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
 
-        super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
+        # create position embeddings
+        pos_embed = torch.zeros(1, num_chans, img_shape[0], img_shape[1])
+        nn.init.trunc_normal_(pos_embed, std=0.02)
+        self.register_buffer("pos_embed", pos_embed)
 
-        with torch.no_grad():
+    def forward(self, x: torch.Tensor):
+        """
+        Forward pass of sequence position embedding.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Tensor with position embeddings added
+        """
+        return x + self.pos_embed
 
-            # alternating custom position embeddings
-            pos = torch.arange(self.img_shape[0] * self.img_shape[1]).reshape(1, 1, *self.img_shape).repeat(1, self.num_chans, 1, 1)
-            k = torch.arange(self.num_chans).reshape(1, self.num_chans, 1, 1)
-            denom = torch.pow(10000, 2 * k / self.num_chans)
-
-            pos_embed = torch.where(k % 2 == 0, torch.sin(pos / denom), torch.cos(pos / denom))
-
-        # register tensor
-        self.register_buffer("position_embeddings", pos_embed.float())
 
 class SpectralPositionEmbedding(PositionEmbedding):
-    """
-    Returns position embeddings for the spherical transformer
+    r"""
+    Spectral position embedding for spherical data.
+    
+    This module adds position embeddings in the spectral domain using spherical harmonics,
+    providing spectral context to the model.
+    
+    Parameters
+    -----------
+    img_shape : tuple, optional
+        Image shape (height, width), by default (480, 960)
+    grid : str, optional
+        Grid type, by default "equiangular"
+    num_chans : int, optional
+        Number of channels, by default 1
     """
 
     def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1):
+        super(SpectralPositionEmbedding, self).__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
 
-        super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
+        # create spectral position embeddings
+        pos_embed = torch.zeros(1, num_chans, img_shape[0], img_shape[1] // 2 + 1, dtype=torch.cfloat)
+        nn.init.trunc_normal_(pos_embed.real, std=0.02)
+        nn.init.trunc_normal_(pos_embed.imag, std=0.02)
+        self.register_buffer("pos_embed", pos_embed)
 
-        # compute maximum required frequency and prepare isht
-        lmax = math.floor(math.sqrt(self.num_chans)) + 1
-        isht = InverseRealSHT(nlat=self.img_shape[0], nlon=self.img_shape[1], lmax=lmax, mmax=lmax, grid=grid)
-
-        # fill position embedding
-        with torch.no_grad():
-            pos_embed_freq = torch.zeros(1, self.num_chans, isht.lmax, isht.mmax, dtype=torch.complex64)
-
-            for i in range(self.num_chans):
-                l = math.floor(math.sqrt(i))
-                m = i - l**2 - l
-
-                if m < 0:
-                    pos_embed_freq[0, i, l, -m] = 1.0j
-                else:
-                    pos_embed_freq[0, i, l, m] = 1.0
-
-        # compute spatial position embeddings
-        pos_embed = isht(pos_embed_freq)
-
-        # normalization
-        pos_embed = pos_embed / torch.amax(pos_embed.abs(), dim=(-1, -2), keepdim=True)
-
-        # register tensor
-        self.register_buffer("position_embeddings", pos_embed)
+    def forward(self, x: torch.Tensor):
+        """
+        Forward pass of spectral position embedding.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Tensor with spectral position embeddings added
+        """
+        return x + self.pos_embed
 
 
 class LearnablePositionEmbedding(PositionEmbedding):
-    """
-    Returns position embeddings for the spherical transformer
+    r"""
+    Learnable position embedding for spherical data.
+    
+    This module adds learnable position embeddings that are optimized during training,
+    allowing the model to learn optimal spatial representations.
+    
+    Parameters
+    -----------
+    img_shape : tuple, optional
+        Image shape (height, width), by default (480, 960)
+    grid : str, optional
+        Grid type, by default "equiangular"
+    num_chans : int, optional
+        Number of channels, by default 1
+    embed_type : str, optional
+        Embedding type ("lat", "lon", or "both"), by default "lat"
     """
 
     def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1, embed_type="lat"):
+        super(LearnablePositionEmbedding, self).__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
 
-        super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
+        self.embed_type = embed_type
 
-        if embed_type == "latlon":
-            self.position_embeddings = nn.Parameter(torch.zeros(1, self.num_chans, self.img_shape[0], self.img_shape[1]))
-        elif embed_type == "lat":
-            self.position_embeddings = nn.Parameter(torch.zeros(1, self.num_chans, self.img_shape[0], 1))
+        if embed_type == "lat":
+            # latitude embedding
+            pos_embed = nn.Parameter(torch.zeros(1, num_chans, img_shape[0], 1))
+            nn.init.trunc_normal_(pos_embed, std=0.02)
+            self.register_parameter("pos_embed", pos_embed)
+        elif embed_type == "lon":
+            # longitude embedding
+            pos_embed = nn.Parameter(torch.zeros(1, num_chans, 1, img_shape[1]))
+            nn.init.trunc_normal_(pos_embed, std=0.02)
+            self.register_parameter("pos_embed", pos_embed)
+        elif embed_type == "latlon":
+            # full lat-lon embedding
+            pos_embed = nn.Parameter(torch.zeros(1, num_chans, img_shape[0], img_shape[1]))
+            nn.init.trunc_normal_(pos_embed, std=0.02)
+            self.register_parameter("pos_embed", pos_embed)
         else:
-            raise ValueError(f"Unknown learnable position embedding type {embed_type}")
+            raise ValueError(f"Unknown embedding type {embed_type}")
+
+    def forward(self, x: torch.Tensor):
+        """
+        Forward pass of learnable position embedding.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Tensor with learnable position embeddings added
+        """
+        return x + self.pos_embed
 
 # class SpiralPositionEmbedding(PositionEmbedding):
 #     """

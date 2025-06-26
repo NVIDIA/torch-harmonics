@@ -54,6 +54,46 @@ def _compute_cutoff_radius(nlat, kernel_shape, basis_type):
 
 
 class DownsamplingBlock(nn.Module):
+    """
+    Downsampling block for spherical U-Net architecture.
+    
+    This block performs convolution operations followed by downsampling on spherical data,
+    using discrete-continuous convolutions to maintain spectral properties.
+    
+    Parameters
+    -----------
+    in_shape : tuple
+        Input shape (nlat, nlon)
+    out_shape : tuple
+        Output shape (nlat, nlon)
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    grid_in : str, optional
+        Input grid type, by default "equiangular"
+    grid_out : str, optional
+        Output grid type, by default "equiangular"
+    nrep : int, optional
+        Number of convolution repetitions, by default 1
+    kernel_shape : tuple, optional
+        Kernel shape for convolution, by default (3, 3)
+    basis_type : str, optional
+        Filter basis type, by default "morlet"
+    activation : nn.Module, optional
+        Activation function, by default nn.ReLU
+    transform_skip : bool, optional
+        Whether to transform skip connection, by default False
+    drop_conv_rate : float, optional
+        Dropout rate for convolutions, by default 0.0
+    drop_path_rate : float, optional
+        Drop path rate, by default 0.0
+    drop_dense_rate : float, optional
+        Dropout rate for dense layers, by default 0.0
+    downsampling_mode : str, optional
+        Downsampling mode ("bilinear", "conv"), by default "bilinear"
+    """
+    
     def __init__(
         self,
         in_shape,
@@ -154,12 +194,33 @@ class DownsamplingBlock(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
+        """
+        Initialize weights for the module.
+        
+        Parameters
+        -----------
+        m : nn.Module
+            Module to initialize
+        """
         if isinstance(m, nn.Conv2d):
             nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the downsampling block.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Downsampled tensor
+        """
         # skip connection
         residual = x
         if hasattr(self, "transform_skip"):
@@ -178,6 +239,46 @@ class DownsamplingBlock(nn.Module):
 
 
 class UpsamplingBlock(nn.Module):
+    """
+    Upsampling block for spherical U-Net architecture.
+    
+    This block performs upsampling followed by convolution operations on spherical data,
+    using discrete-continuous convolutions to maintain spectral properties.
+    
+    Parameters
+    -----------
+    in_shape : tuple
+        Input shape (nlat, nlon)
+    out_shape : tuple
+        Output shape (nlat, nlon)
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    grid_in : str, optional
+        Input grid type, by default "equiangular"
+    grid_out : str, optional
+        Output grid type, by default "equiangular"
+    nrep : int, optional
+        Number of convolution repetitions, by default 1
+    kernel_shape : tuple, optional
+        Kernel shape for convolution, by default (3, 3)
+    basis_type : str, optional
+        Filter basis type, by default "morlet"
+    activation : nn.Module, optional
+        Activation function, by default nn.ReLU
+    transform_skip : bool, optional
+        Whether to transform skip connection, by default False
+    drop_conv_rate : float, optional
+        Dropout rate for convolutions, by default 0.0
+    drop_path_rate : float, optional
+        Drop path rate, by default 0.0
+    drop_dense_rate : float, optional
+        Dropout rate for dense layers, by default 0.0
+    upsampling_mode : str, optional
+        Upsampling mode ("bilinear", "conv"), by default "bilinear"
+    """
+
     def __init__(
         self,
         in_shape,
@@ -496,6 +597,14 @@ class SphericalUNet(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
+        """
+        Initialize weights for the module.
+        
+        Parameters
+        -----------
+        m : nn.Module
+            Module to initialize
+        """
         if isinstance(m, nn.Conv2d):
             nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
@@ -505,7 +614,19 @@ class SphericalUNet(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x):
-
+        """
+        Forward pass through the complete spherical U-Net model.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor of shape (batch_size, in_chans, height, width)
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor of shape (batch_size, out_chans, height, width)
+        """
         # encoder:
         features = []
         feat = x
