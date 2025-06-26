@@ -41,6 +41,24 @@ from functools import partial
 
 
 class OverlapPatchMerging(nn.Module):
+    """
+    OverlapPatchMerging layer for merging patches.
+    
+    Parameters
+    -----------
+    in_shape : tuple
+        Input shape (height, width)
+    out_shape : tuple
+        Output shape (height, width)
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    kernel_shape : tuple
+        Kernel shape for convolution
+    bias : bool, optional
+        Whether to use bias, by default False
+    """
     def __init__(
         self,
         in_shape=(721, 1440),
@@ -72,11 +90,32 @@ class OverlapPatchMerging(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
+        """
+        Initialize weights for the module.
+        
+        Parameters
+        -----------
+        m : torch.nn.Module
+            Module to initialize weights for
+        """
         if isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x):
+        """
+        Forward pass through the OverlapPatchMerging layer.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor after patch merging
+        """
         x = self.conv(x)
 
         # permute
@@ -88,6 +127,30 @@ class OverlapPatchMerging(nn.Module):
 
 
 class MixFFN(nn.Module):
+    """
+    MixFFN module combining MLP and depthwise convolution.
+    
+    Parameters
+    -----------
+    shape : tuple
+        Input shape (height, width)
+    inout_channels : int
+        Number of input/output channels
+    hidden_channels : int
+        Number of hidden channels in MLP
+    mlp_bias : bool, optional
+        Whether to use bias in MLP layers, by default True
+    kernel_shape : tuple, optional
+        Kernel shape for depthwise convolution, by default (3, 3)
+    conv_bias : bool, optional
+        Whether to use bias in convolution, by default False
+    activation : callable, optional
+        Activation function, by default nn.GELU
+    use_mlp : bool, optional
+        Whether to use MLP instead of linear layers, by default False
+    drop_path : float, optional
+        Drop path rate, by default 0.0
+    """
     def __init__(
         self,
         shape,
@@ -124,6 +187,14 @@ class MixFFN(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
+        """
+        Initialize weights for the module.
+        
+        Parameters
+        -----------
+        m : torch.nn.Module
+            Module to initialize weights for
+        """
         if isinstance(m, nn.Conv2d):
             nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
@@ -133,7 +204,19 @@ class MixFFN(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-
+        """
+        Forward pass through the MixFFN module.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor after processing
+        """
         residual = x
 
         # norm
@@ -162,6 +245,17 @@ class GlobalAttention(nn.Module):
 
     Input shape: (B, C, H, W)
     Output shape: (B, C, H, W) with residual skip.
+    
+    Parameters
+    -----------
+    chans : int
+        Number of channels
+    num_heads : int, optional
+        Number of attention heads, by default 8
+    dropout : float, optional
+        Dropout rate, by default 0.0
+    bias : bool, optional
+        Whether to use bias, by default True
     """
 
     def __init__(self, chans, num_heads=8, dropout=0.0, bias=True):
@@ -169,6 +263,19 @@ class GlobalAttention(nn.Module):
         self.attn = nn.MultiheadAttention(embed_dim=chans, num_heads=num_heads, dropout=dropout, batch_first=True, bias=bias)
 
     def forward(self, x):
+        """
+        Forward pass through the GlobalAttention module.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor of shape (B, C, H, W)
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor of shape (B, C, H, W)
+        """
         # x: B, C, H, W
         B, H, W, C = x.shape
         # flatten spatial dims
@@ -181,6 +288,30 @@ class GlobalAttention(nn.Module):
 
 
 class AttentionWrapper(nn.Module):
+    """
+    Wrapper for different attention mechanisms.
+    
+    Parameters
+    -----------
+    channels : int
+        Number of channels
+    shape : tuple
+        Input shape (height, width)
+    heads : int
+        Number of attention heads
+    pre_norm : bool, optional
+        Whether to apply normalization before attention, by default False
+    attention_drop_rate : float, optional
+        Attention dropout rate, by default 0.0
+    drop_path : float, optional
+        Drop path rate, by default 0.0
+    attention_mode : str, optional
+        Attention mode ("neighborhood", "global"), by default "neighborhood"
+    kernel_shape : tuple, optional
+        Kernel shape for neighborhood attention, by default (7, 7)
+    bias : bool, optional
+        Whether to use bias, by default True
+    """
     def __init__(self, channels, shape, heads, pre_norm=False, attention_drop_rate=0.0, drop_path=0.0, attention_mode="neighborhood", kernel_shape=(7, 7), bias=True):
         super().__init__()
 
@@ -203,11 +334,32 @@ class AttentionWrapper(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
+        """
+        Initialize weights for the module.
+        
+        Parameters
+        -----------
+        m : torch.nn.Module
+            Module to initialize weights for
+        """
         if isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through the AttentionWrapper.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor with residual connection
+        """
         residual = x
         x = x.permute(0, 2, 3, 1)
         if self.norm is not None:
