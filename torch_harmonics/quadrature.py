@@ -37,6 +37,32 @@ import torch
 
 def _precompute_grid(n: int, grid: Optional[str]="equidistant", a: Optional[float]=0.0, b: Optional[float]=1.0,
                      periodic: Optional[bool]=False) -> Tuple[torch.Tensor, torch.Tensor]:
+    r"""
+    Precompute grid points and weights for various quadrature rules.
+    
+    Parameters
+    -----------
+    n : int
+        Number of grid points
+    grid : str, optional
+        Grid type ("equidistant", "legendre-gauss", "lobatto", "equiangular"), by default "equidistant"
+    a : float, optional
+        Lower bound of interval, by default 0.0
+    b : float, optional
+        Upper bound of interval, by default 1.0
+    periodic : bool, optional
+        Whether the grid is periodic (only for equidistant), by default False
+        
+    Returns
+    -------
+    Tuple[torch.Tensor, torch.Tensor]
+        Grid points and weights
+        
+    Raises
+    ------
+    ValueError
+        If periodic is True for non-equidistant grids or unknown grid type
+    """
 
     if (grid != "equidistant") and periodic:
         raise ValueError(f"Periodic grid is only supported on equidistant grids.")

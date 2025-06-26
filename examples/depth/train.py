@@ -63,13 +63,37 @@ import wandb
 
 # helper routine for counting number of paramerters in model
 def count_parameters(model):
+    """
+    Count the number of trainable parameters in a model.
+    
+    Parameters
+    -----------
+    model : torch.nn.Module
+        The model to count parameters for
+        
+    Returns
+    -------
+    int
+        Total number of trainable parameters
+    """
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 # convenience function for logging weights and gradients
 def log_weights_and_grads(exp_dir, model, iters=1):
     """
-    Helper routine intended for debugging purposes
+    Helper routine intended for debugging purposes.
+    
+    Saves model weights and gradients to a file for analysis.
+    
+    Parameters
+    -----------
+    exp_dir : str
+        Experiment directory to save logs in
+    model : torch.nn.Module
+        Model whose weights and gradients to log
+    iters : int, optional
+        Current iteration number, by default 1
     """
     log_path = os.path.join(exp_dir, "weights_and_grads")
     if not os.path.isdir(log_path):
@@ -97,7 +121,36 @@ def validate_model(
     logging=True,
     device=torch.device("cpu"),
 ):
-
+    """
+    Validate a model on a dataset and compute metrics.
+    
+    Parameters
+    -----------
+    model : torch.nn.Module
+        Model to validate
+    dataloader : torch.utils.data.DataLoader
+        DataLoader for validation data
+    loss_fn : callable
+        Loss function
+    metrics_fns : dict
+        Dictionary of metric functions to compute
+    path_root : str
+        Root path for saving validation outputs
+    normalization_in : callable, optional
+        Normalization function to apply to inputs, by default None
+    normalization_out : callable, optional
+        Normalization function to apply to targets, by default None
+    logging : bool, optional
+        Whether to save validation plots, by default True
+    device : torch.device, optional
+        Device to run validation on, by default torch.device("cpu")
+        
+    Returns
+    -------
+    tuple
+        (losses, metrics) where losses is a tensor of per-sample losses
+        and metrics is a dict of per-sample metric values
+    """
     model.eval()
 
     num_examples = len(dataloader)
@@ -190,7 +243,50 @@ def train_model(
     logging=True,
     device=torch.device("cpu"),
 ):
-
+    """
+    Train a model with the given parameters.
+    
+    Parameters
+    -----------
+    model : torch.nn.Module
+        Model to train
+    train_dataloader : torch.utils.data.DataLoader
+        DataLoader for training data
+    train_sampler : torch.utils.data.Sampler
+        Sampler for training data
+    test_dataloader : torch.utils.data.DataLoader
+        DataLoader for test data
+    test_sampler : torch.utils.data.Sampler
+        Sampler for test data
+    loss_fn : callable
+        Loss function
+    metrics_fns : dict
+        Dictionary of metric functions to compute
+    optimizer : torch.optim.Optimizer
+        Optimizer for training
+    gscaler : torch.cuda.amp.GradScaler
+        Gradient scaler for mixed precision training
+    scheduler : torch.optim.lr_scheduler._LRScheduler, optional
+        Learning rate scheduler, by default None
+    normalization_in : callable, optional
+        Normalization function to apply to inputs, by default None
+    normalization_out : callable, optional
+        Normalization function to apply to targets, by default None
+    augmentation : bool, optional
+        Whether to apply data augmentation, by default False
+    nepochs : int, optional
+        Number of training epochs, by default 20
+    amp_mode : str, optional
+        Mixed precision mode ("none", "fp16", "bf16"), by default "none"
+    log_grads : int, optional
+        Frequency of gradient logging (0 for no logging), by default 0
+    exp_dir : str, optional
+        Experiment directory for logging, by default None
+    logging : bool, optional
+        Whether to enable logging, by default True
+    device : torch.device, optional
+        Device to train on, by default torch.device("cpu")
+    """
     train_start = time.time()
 
     # set AMP type

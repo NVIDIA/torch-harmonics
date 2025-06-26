@@ -41,7 +41,35 @@ import numpy as np
 
 class ShallowWaterSolver(nn.Module):
     """
-    SWE solver class. Interface inspired bu pyspharm and SHTns
+    Shallow Water Equations (SWE) solver class for spherical geometry.
+    
+    Interface inspired by pyspharm and SHTns. Solves the shallow water equations
+    on a rotating sphere using spectral methods.
+    
+    Parameters
+    -----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    dt : float
+        Time step size
+    lmax : int, optional
+        Maximum l mode for spherical harmonics, by default None
+    mmax : int, optional
+        Maximum m mode for spherical harmonics, by default None
+    grid : str, optional
+        Grid type ("equiangular", "legendre-gauss", "lobatto"), by default "equiangular"
+    radius : float, optional
+        Radius of the sphere in meters, by default 6.37122E6 (Earth radius)
+    omega : float, optional
+        Angular velocity of rotation in rad/s, by default 7.292E-5 (Earth)
+    gravity : float, optional
+        Gravitational acceleration in m/s², by default 9.80616
+    havg : float, optional
+        Average height in meters, by default 10.e3
+    hamp : float, optional
+        Height amplitude in meters, by default 120.
     """
 
     def __init__(self, nlat, nlon, dt, lmax=None, mmax=None, grid="equiangular", radius=6.37122E6, \
@@ -115,30 +143,82 @@ class ShallowWaterSolver(nn.Module):
 
     def grid2spec(self, ugrid):
         """
-        spectral coefficients from spatial data
+        Convert spatial data to spectral coefficients.
+        
+        Parameters
+        -----------
+        ugrid : torch.Tensor
+            Spatial data tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Spectral coefficients
         """
         return self.sht(ugrid)
 
     def spec2grid(self, uspec):
         """
-        spatial data from spectral coefficients
+        Convert spectral coefficients to spatial data.
+        
+        Parameters
+        -----------
+        uspec : torch.Tensor
+            Spectral coefficients tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Spatial data
         """
         return self.isht(uspec)
 
     def vrtdivspec(self, ugrid):
-        """spatial data from spectral coefficients"""
+        """
+        Compute vorticity and divergence from velocity field.
+        
+        Parameters
+        -----------
+        ugrid : torch.Tensor
+            Velocity field in spatial coordinates
+            
+        Returns
+        -------
+        torch.Tensor
+            Spectral coefficients of vorticity and divergence
+        """
         vrtdivspec = self.lap * self.radius * self.vsht(ugrid)
         return vrtdivspec
 
     def getuv(self, vrtdivspec):
         """
-        compute wind vector from spectral coeffs of vorticity and divergence
+        Compute wind vector from spectral coefficients of vorticity and divergence.
+        
+        Parameters
+        -----------
+        vrtdivspec : torch.Tensor
+            Spectral coefficients of vorticity and divergence
+            
+        Returns
+        -------
+        torch.Tensor
+            Wind vector field in spatial coordinates
         """
         return self.ivsht( self.invlap * vrtdivspec / self.radius)
 
     def gethuv(self, uspec):
         """
-        compute wind vector from spectral coeffs of vorticity and divergence
+        Compute height and wind vector from spectral coefficients.
+        
+        Parameters
+        -----------
+        uspec : torch.Tensor
+            Spectral coefficients [height, vorticity, divergence]
+            
+        Returns
+        -------
+        torch.Tensor
+            Combined height and wind vector field
         """
         hgrid = self.spec2grid(uspec[:1])
         uvgrid = self.getuv(uspec[1:])
@@ -146,7 +226,17 @@ class ShallowWaterSolver(nn.Module):
 
     def potential_vorticity(self, uspec):
         """
-        Compute potential vorticity
+        Compute potential vorticity from spectral coefficients.
+        
+        Parameters
+        -----------
+        uspec : torch.Tensor
+            Spectral coefficients [height, vorticity, divergence]
+            
+        Returns
+        -------
+        torch.Tensor
+            Potential vorticity field
         """
         ugrid = self.spec2grid(uspec)
         pvrt = (0.5 * self.havg * self.gravity / self.omega) * (ugrid[1] + self.coriolis) / ugrid[0]
@@ -154,7 +244,17 @@ class ShallowWaterSolver(nn.Module):
 
     def dimensionless(self, uspec):
         """
-        Remove dimensions from variables
+        Remove dimensions from variables for dimensionless analysis.
+        
+        Parameters
+        -----------
+        uspec : torch.Tensor
+            Spectral coefficients with dimensions
+            
+        Returns
+        -------
+        torch.Tensor
+            Dimensionless spectral coefficients
         """
         uspec[0] = (uspec[0] - self.havg * self.gravity) / self.hamp / self.gravity
         # vorticity is measured in 1/s so we normalize using sqrt(g h) / r
@@ -163,9 +263,18 @@ class ShallowWaterSolver(nn.Module):
 
     def dudtspec(self, uspec):
         """
-        Compute time derivatives from solution represented in spectral coefficients
+        Compute time derivatives from solution represented in spectral coefficients.
+        
+        Parameters
+        -----------
+        uspec : torch.Tensor
+            Spectral coefficients [height, vorticity, divergence]
+            
+        Returns
+        -------
+        torch.Tensor
+            Time derivatives of spectral coefficients
         """
-
         dudtspec = torch.zeros_like(uspec)
 
         # compute the derivatives - this should be incorporated into the solver:
@@ -191,10 +300,15 @@ class ShallowWaterSolver(nn.Module):
 
     def galewsky_initial_condition(self):
         """
-        Initializes non-linear barotropically unstable shallow water test case of Galewsky et al. (2004, Tellus, 56A, 429-440).
+        Initialize non-linear barotropically unstable shallow water test case of Galewsky et al. (2004, Tellus, 56A, 429-440).
 
         [1] Galewsky; An initial-value problem for testing numerical models of the global shallow-water equations;
             DOI: 10.1111/j.1600-0870.2004.00071.x; http://www-vortex.mcs.st-and.ac.uk/~rks/reprints/galewsky_etal_tellus_2004.pdf
+            
+        Returns
+        -------
+        torch.Tensor
+            Initial spectral coefficients for the Galewsky test case
         """
         device = self.lap.device
 
@@ -234,7 +348,17 @@ class ShallowWaterSolver(nn.Module):
 
     def random_initial_condition(self, mach=0.1) -> torch.Tensor:
         """
-        random initial condition on the sphere
+        Generate random initial condition on the sphere.
+        
+        Parameters
+        -----------
+        mach : float, optional
+            Mach number for scaling the random perturbations, by default 0.1
+            
+        Returns
+        -------
+        torch.Tensor
+            Random initial spectral coefficients
         """
         device = self.lap.device
         ctype = torch.complex128 if self.lap.dtype == torch.float64 else torch.complex64
