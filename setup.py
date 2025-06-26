@@ -54,7 +54,22 @@ except (ImportError, TypeError, AssertionError, AttributeError) as e:
     warnings.warn(f"building custom extensions skipped: {e}")
 
 def get_compile_args(module_name):
-    """If user runs build with TORCH_HARMONICS_DEBUG=1 set, it will use debugging flags to build"""
+    """
+    Get compilation arguments based on environment variables.
+    
+    If user runs build with TORCH_HARMONICS_DEBUG=1 set, it will use debugging flags to build.
+    If TORCH_HARMONICS_PROFILE=1 is set, it will include profiling flags.
+    
+    Parameters
+    -----------
+    module_name : str
+        Name of the module being compiled
+        
+    Returns
+    -------
+    dict
+        Dictionary containing compilation flags for 'cxx' and 'nvcc' compilers
+    """
     debug_mode = os.environ.get('TORCH_HARMONICS_DEBUG', '0') == '1'
     profile_mode = os.environ.get('TORCH_HARMONICS_PROFILE', '0') == '1'
 
@@ -77,7 +92,15 @@ def get_compile_args(module_name):
         }
 
 def get_ext_modules():
-
+    """
+    Get list of extension modules to compile.
+    
+    Returns
+    -------
+    tuple
+        (ext_modules, cmdclass) where ext_modules is a list of extension modules
+        and cmdclass is a dictionary of build commands
+    """
     ext_modules = []
     cmdclass = {}
 

@@ -118,9 +118,20 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         else:
             raise ValueError(f"Unknown skip connection type {outer_skip}")
 
-
     def forward(self, x):
-
+        """
+        Forward pass through the SFNO block.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor after processing through the block
+        """
         x, residual = self.global_conv(x)
 
         x = self.norm(x)
@@ -147,8 +158,12 @@ class SphericalFourierNeuralOperator(nn.Module):
 
     Parameters
     ----------
-    img_shape : tuple, optional
+    img_size : tuple, optional
         Shape of the input channels, by default (128, 256)
+    grid : str, optional
+        Input grid type, by default "equiangular"
+    grid_internal : str, optional
+        Internal grid type for computations, by default "legendre-gauss"
     scale_factor : int, optional
         Scale factor to use, by default 3
     in_chans : int, optional
@@ -172,20 +187,20 @@ class SphericalFourierNeuralOperator(nn.Module):
     drop_path_rate : float, optional
         Dropout path rate, by default 0.0
     normalization_layer : str, optional
-        Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "instance_norm"
+        Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "none"
     hard_thresholding_fraction : float, optional
         Fraction of hard thresholding (frequency cutoff) to apply, by default 1.0
     residual_prediction : bool, optional
-        Whether to add a single large skip connection, by default True
-    pos_embed : bool, optional
-        Whether to use positional embedding, by default True
+        Whether to add a single large skip connection, by default False
+    pos_embed : str, optional
+        Type of positional embedding to use, by default "none"
     bias : bool, optional
         Whether to use a bias, by default False
 
     Example:
     --------
     >>> model = SphericalFourierNeuralOperator(
-    ...         img_shape=(128, 256),
+    ...         img_size=(128, 256),
     ...         scale_factor=4,
     ...         in_chans=2,
     ...         out_chans=2,
@@ -355,10 +370,30 @@ class SphericalFourierNeuralOperator(nn.Module):
 
     @torch.jit.ignore
     def no_weight_decay(self):
-        return {"pos_embed", "cls_token"}
+        """
+        Return a set of parameter names that should not be decayed.
+        
+        Returns
+        -------
+        set
+            Set of parameter names to exclude from weight decay
+        """
+        return {"pos_embed.pos_embed"}
 
     def forward_features(self, x):
-
+        """
+        Forward pass through the feature extraction layers.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Features after processing through the network
+        """
         x = self.pos_drop(x)
 
         for blk in self.blocks:
@@ -367,7 +402,19 @@ class SphericalFourierNeuralOperator(nn.Module):
         return x
 
     def forward(self, x):
-
+        """
+        Forward pass through the complete SFNO model.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor of shape (batch_size, in_chans, height, width)
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor of shape (batch_size, out_chans, height, width)
+        """
         if self.residual_prediction:
             residual = x
 
