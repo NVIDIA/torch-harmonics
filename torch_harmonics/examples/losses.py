@@ -40,6 +40,27 @@ from torch_harmonics.quadrature import _precompute_latitudes
 
 
 def get_quadrature_weights(nlat: int, nlon: int, grid: str, tile: bool = False, normalized: bool = True) -> torch.Tensor:
+    """
+    Get quadrature weights for spherical integration.
+    
+    Parameters
+    -----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    grid : str
+        Grid type ("equiangular", "legendre-gauss", "lobatto")
+    tile : bool, optional
+        Whether to tile weights across longitude dimension, by default False
+    normalized : bool, optional
+        Whether to normalize weights to sum to 1, by default True
+        
+    Returns
+    -------
+    torch.Tensor
+        Quadrature weights tensor
+    """
     # area weights
     _, q = _precompute_latitudes(nlat=nlat, grid=grid)
     q = q.reshape(-1, 1) * 2 * torch.pi / nlon
@@ -55,6 +76,27 @@ def get_quadrature_weights(nlat: int, nlon: int, grid: str, tile: bool = False, 
 
 
 class DiceLossS2(nn.Module):
+    """
+    Dice loss for spherical segmentation tasks.
+    
+    Parameters
+    -----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    grid : str, optional
+        Grid type, by default "equiangular"
+    weight : torch.Tensor, optional
+        Class weights, by default None
+    smooth : float, optional
+        Smoothing factor, by default 0
+    ignore_index : int, optional
+        Index to ignore in loss computation, by default -100
+    mode : str, optional
+        Aggregation mode ("micro" or "macro"), by default "micro"
+    """
+    
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, smooth: float = 0, ignore_index: int = -100, mode: str = "micro"):
 
         super().__init__()
@@ -73,6 +115,21 @@ class DiceLossS2(nn.Module):
             self.register_buffer("weight", weight.unsqueeze(0))
 
     def forward(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the Dice loss.
+        
+        Parameters
+        -----------
+        prd : torch.Tensor
+            Prediction tensor with shape (batch, classes, nlat, nlon)
+        tar : torch.Tensor
+            Target tensor with shape (batch, nlat, nlon)
+            
+        Returns
+        -------
+        torch.Tensor
+            Dice loss value
+        """
         prd = nn.functional.softmax(prd, dim=1)
 
         # mask values
@@ -113,6 +170,24 @@ class DiceLossS2(nn.Module):
 
 
 class CrossEntropyLossS2(nn.Module):
+    """
+    Cross-entropy loss for spherical classification tasks.
+    
+    Parameters
+    -----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    grid : str, optional
+        Grid type, by default "equiangular"
+    weight : torch.Tensor, optional
+        Class weights, by default None
+    smooth : float, optional
+        Label smoothing factor, by default 0
+    ignore_index : int, optional
+        Index to ignore in loss computation, by default -100
+    """
 
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, smooth: float = 0, ignore_index: int = -100):
 
@@ -130,6 +205,21 @@ class CrossEntropyLossS2(nn.Module):
         self.register_buffer("quad_weights", q)
 
     def forward(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the cross-entropy loss.
+        
+        Parameters
+        -----------
+        prd : torch.Tensor
+            Prediction tensor with shape (batch, classes, nlat, nlon)
+        tar : torch.Tensor
+            Target tensor with shape (batch, nlat, nlon)
+            
+        Returns
+        -------
+        torch.Tensor
+            Cross-entropy loss value
+        """
 
         # compute log softmax
         logits = nn.functional.log_softmax(prd, dim=1)
@@ -141,6 +231,24 @@ class CrossEntropyLossS2(nn.Module):
 
 
 class FocalLossS2(nn.Module):
+    """
+    Focal loss for spherical classification tasks.
+    
+    Parameters
+    -----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    grid : str, optional
+        Grid type, by default "equiangular"
+    weight : torch.Tensor, optional
+        Class weights, by default None
+    smooth : float, optional
+        Label smoothing factor, by default 0
+    ignore_index : int, optional
+        Index to ignore in loss computation, by default -100
+    """
 
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, smooth: float = 0, ignore_index: int = -100):
 
@@ -158,6 +266,25 @@ class FocalLossS2(nn.Module):
         self.register_buffer("quad_weights", q)
 
     def forward(self, prd: torch.Tensor, tar: torch.Tensor, alpha: float = 0.25, gamma: float = 2):
+        """
+        Forward pass of the focal loss.
+        
+        Parameters
+        -----------
+        prd : torch.Tensor
+            Prediction tensor with shape (batch, classes, nlat, nlon)
+        tar : torch.Tensor
+            Target tensor with shape (batch, nlat, nlon)
+        alpha : float, optional
+            Alpha parameter for focal loss, by default 0.25
+        gamma : float, optional
+            Gamma parameter for focal loss, by default 2
+            
+        Returns
+        -------
+        torch.Tensor
+            Focal loss value
+        """
 
         # compute logits
         logits = nn.functional.log_softmax(prd, dim=1)
@@ -232,22 +359,101 @@ class SphericalLossBase(nn.Module, ABC):
 
 
 class SquaredL2LossS2(SphericalLossBase):
+    """
+    Squared L2 loss for spherical regression tasks.
+    
+    Computes the squared difference between prediction and target tensors.
+    """
+    
     def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+        """
+        Compute squared L2 loss term.
+        
+        Parameters
+        -----------
+        prd : torch.Tensor
+            Prediction tensor
+        tar : torch.Tensor
+            Target tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Squared difference between prediction and target
+        """
         return torch.square(prd - tar)
 
 
 class L1LossS2(SphericalLossBase):
+    """
+    L1 loss for spherical regression tasks.
+    
+    Computes the absolute difference between prediction and target tensors.
+    """
+    
     def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+        """
+        Compute L1 loss term.
+        
+        Parameters
+        -----------
+        prd : torch.Tensor
+            Prediction tensor
+        tar : torch.Tensor
+            Target tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Absolute difference between prediction and target
+        """
         return torch.abs(prd - tar)
 
 
 class L2LossS2(SquaredL2LossS2):
+    """
+    L2 loss for spherical regression tasks.
+    
+    Computes the square root of the squared L2 loss.
+    """
+    
     def _post_integration_hook(self, loss: torch.Tensor) -> torch.Tensor:
+        """
+        Apply square root to get L2 norm.
+        
+        Parameters
+        -----------
+        loss : torch.Tensor
+            Integrated squared loss
+            
+        Returns
+        -------
+        torch.Tensor
+            Square root of the loss (L2 norm)
+        """
         return torch.sqrt(loss)
 
 
 class W11LossS2(SphericalLossBase):
+    """
+    W11 loss for spherical regression tasks.
+    
+    Computes the L1 norm of the gradient differences between prediction and target.
+    """
+    
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
+        """
+        Initialize W11 loss.
+        
+        Parameters
+        -----------
+        nlat : int
+            Number of latitude points
+        nlon : int
+            Number of longitude points
+        grid : str, optional
+            Grid type, by default "equiangular"
+        """
         super().__init__(nlat=nlat, nlon=nlon, grid=grid)
         # Set up grid and domain for FFT
         l_phi = 2 * torch.pi  # domain size
@@ -305,31 +511,70 @@ class NormalLossS2(SphericalLossBase):
         self.register_buffer("k_theta_mesh", k_theta_mesh)
 
     def compute_gradients(self, x):
+        """
+        Compute gradients of the input tensor using FFT.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor with shape (batch, nlat, nlon) or (nlat, nlon)
+            
+        Returns
+        -------
+        tuple
+            Tuple of (grad_phi, grad_theta) gradients
+        """
         # Make sure x is reshaped to have a batch dimension if it's missing
         if x.dim() == 2:
             x = x.unsqueeze(0)  # Add batch dimension
 
-        x_prime_fft2_phi_h = torch.fft.ifft2(1j * self.k_phi_mesh * torch.fft.fft2(x)).real
-        x_prime_fft2_theta_h = torch.fft.ifft2(1j * self.k_theta_mesh * torch.fft.fft2(x)).real
-        return x_prime_fft2_theta_h, x_prime_fft2_phi_h
+        # Compute gradients using FFT
+        grad_phi = torch.fft.ifft2(1j * self.k_phi_mesh * torch.fft.fft2(x)).real
+        grad_theta = torch.fft.ifft2(1j * self.k_theta_mesh * torch.fft.fft2(x)).real
+
+        return grad_phi, grad_theta
 
     def compute_normals(self, x):
-        x = x.to(torch.float32)
-        # Ensure x has a batch dimension
-        if x.dim() == 2:
-            x = x.unsqueeze(0)
-
-        grad_lat, grad_lon = self.compute_gradients(x)
-
-        # Create 3D normal vectors
-        ones = torch.ones_like(x)
-        normals = torch.stack([-grad_lon, -grad_lat, ones], dim=1)
-
-        # Normalize along component dimension
-        normals = F.normalize(normals, p=2, dim=1)
+        """
+        Compute surface normals from the input tensor.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor with shape (batch, nlat, nlon) or (nlat, nlon)
+            
+        Returns
+        -------
+        torch.Tensor
+            Normal vectors with shape (batch, 3, nlat, nlon)
+        """
+        grad_phi, grad_theta = self.compute_gradients(x)
+        
+        # Construct normal vectors: (-grad_theta, -grad_phi, 1)
+        normals = torch.stack([-grad_theta, -grad_phi, torch.ones_like(x)], dim=1)
+        
+        # Normalize
+        norm = torch.norm(normals, dim=1, keepdim=True)
+        normals = normals / (norm + 1e-8)
+        
         return normals
 
     def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+        """
+        Compute combined L1 and normal consistency loss.
+        
+        Parameters
+        -----------
+        prd : torch.Tensor
+            Prediction tensor
+        tar : torch.Tensor
+            Target tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Combined loss term
+        """
         # Handle dimensions for both prediction and target
         # Ensure we have at least a batch dimension
         if prd.dim() == 2:
@@ -337,15 +582,18 @@ class NormalLossS2(SphericalLossBase):
         if tar.dim() == 2:
             tar = tar.unsqueeze(0)
 
-        # For 4D tensors (batch, channel, height, width), remove channel if it's 1
-        if prd.dim() == 4 and prd.size(1) == 1:
-            prd = prd.squeeze(1)
-        if tar.dim() == 4 and tar.size(1) == 1:
-            tar = tar.squeeze(1)
+        # L1 loss term
+        l1_loss = torch.abs(prd - tar)
 
-        pred_normals = self.compute_normals(prd)
+        # Normal consistency loss
+        prd_normals = self.compute_normals(prd)
         tar_normals = self.compute_normals(tar)
+        
+        # Cosine similarity between normals
+        cos_sim = torch.sum(prd_normals * tar_normals, dim=1)
+        normal_loss = 1 - cos_sim
 
-        # Compute cosine similarity
-        normal_loss = 1 - torch.sum(pred_normals * tar_normals, dim=1, keepdim=True)
-        return normal_loss
+        # Combine losses (equal weighting)
+        combined_loss = l1_loss + normal_loss.unsqueeze(1)
+
+        return combined_loss

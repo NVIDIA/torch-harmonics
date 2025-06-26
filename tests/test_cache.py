@@ -38,6 +38,17 @@ import torch
 class TestCacheConsistency(unittest.TestCase):
 
     def test_consistency(self, verbose=False):
+        """
+        Test that cached values are not modified externally.
+        
+        This test verifies that the LRU cache decorator properly handles
+        deep copying to prevent unintended modifications to cached objects.
+        
+        Parameters
+        -----------
+        verbose : bool, optional
+            Whether to print verbose output, by default False
+        """
         if verbose:
             print("Testing that cache values does not get modified externally")
         from torch_harmonics.legendre import _precompute_legpoly

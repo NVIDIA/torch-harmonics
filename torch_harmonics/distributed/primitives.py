@@ -95,10 +95,23 @@ def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False)
 
 
 class distributed_transpose_azimuth(torch.autograd.Function):
+    r"""
+    Distributed transpose operation for azimuthal dimension.
+    This class provides the forward and backward passes for distributed
+    tensor transposition along the azimuthal dimension.
+    """
 
     @staticmethod
     @custom_fwd(device_type="cuda")
     def forward(ctx, x, dims, dim1_split_sizes):
+        r"""
+        Forward pass for distributed azimuthal transpose.
+        
+        Parameters:
+        x: input tensor
+        dims: dimensions to transpose
+        dim1_split_sizes: split sizes for dimension 1
+        """
         # WAR for a potential contig check torch bug for channels last contig tensors
         xlist, dim0_split_sizes, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=azimuth_group())
         x = torch.cat(xlist, dim=dims[1])
@@ -110,6 +123,15 @@ class distributed_transpose_azimuth(torch.autograd.Function):
     @staticmethod
     @custom_bwd(device_type="cuda")
     def backward(ctx, go):
+        r"""
+        Backward pass for distributed azimuthal transpose.
+        
+        Parameters:
+        go: gradient of the output
+        
+        Returns:
+        gradient of the input
+        """
         dims = ctx.dims
         dim0_split_sizes = ctx.dim0_split_sizes
         # WAR for a potential contig check torch bug for channels last contig tensors 
@@ -120,10 +142,23 @@ class distributed_transpose_azimuth(torch.autograd.Function):
 
     
 class distributed_transpose_polar(torch.autograd.Function):
+    r"""
+    Distributed transpose operation for polar dimension.
+    This class provides the forward and backward passes for distributed
+    tensor transposition along the polar dimension.
+    """
 
     @staticmethod
     @custom_fwd(device_type="cuda")
     def forward(ctx, x, dim, dim1_split_sizes):
+        r"""
+        Forward pass for distributed polar transpose.
+        
+        Parameters:
+        x: input tensor
+        dim: dimensions to transpose
+        dim1_split_sizes: split sizes for dimension 1
+        """
         # WAR for a potential contig check torch bug for channels last contig tensors 
         xlist, dim0_split_sizes, _ = _transpose(x, dim[0], dim[1], dim1_split_sizes, group=polar_group())
         x = torch.cat(xlist, dim=dim[1])
@@ -134,6 +169,15 @@ class distributed_transpose_polar(torch.autograd.Function):
     @staticmethod
     @custom_bwd(device_type="cuda")
     def backward(ctx, go):
+        r"""
+        Backward pass for distributed polar transpose.
+        
+        Parameters:
+        go: gradient of the output
+        
+        Returns:
+        gradient of the input
+        """
         dim = ctx.dim
         dim0_split_sizes = ctx.dim0_split_sizes
         # WAR for a potential contig check torch bug for channels last contig tensors 
@@ -244,7 +288,11 @@ def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
 
 
 class _CopyToPolarRegion(torch.autograd.Function):
-    """Split the input and keep only the corresponding chunk to the rank."""
+    r"""
+    Copy tensor to polar region for distributed computation.
+    This class provides the forward and backward passes for copying
+    tensors to the polar region in distributed settings.
+    """
     
     @staticmethod
     def symbolic(graph, input_):
@@ -253,11 +301,29 @@ class _CopyToPolarRegion(torch.autograd.Function):
     @staticmethod
     @custom_fwd(device_type="cuda")
     def forward(ctx, input_):
+        r"""
+        Forward pass for copying to polar region.
+        
+        Parameters:
+        input_: input tensor
+        
+        Returns:
+        input tensor (no-op in forward pass)
+        """
         return input_
     
     @staticmethod
     @custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
+        r"""
+        Backward pass for copying to polar region.
+        
+        Parameters:
+        grad_output: gradient of the output
+        
+        Returns:
+        gradient of the input
+        """
         if is_distributed_polar():
             return _reduce(grad_output, group=polar_group())
         else:
@@ -265,7 +331,11 @@ class _CopyToPolarRegion(torch.autograd.Function):
 
 
 class _CopyToAzimuthRegion(torch.autograd.Function):
-    """Split the input and keep only the corresponding chunk to the rank."""
+    r"""
+    Copy tensor to azimuth region for distributed computation.
+    This class provides the forward and backward passes for copying
+    tensors to the azimuth region in distributed settings.
+    """
 
     @staticmethod
     def symbolic(graph, input_):
@@ -274,11 +344,29 @@ class _CopyToAzimuthRegion(torch.autograd.Function):
     @staticmethod
     @custom_fwd(device_type="cuda")
     def forward(ctx, input_):
+        r"""
+        Forward pass for copying to azimuth region.
+        
+        Parameters:
+        input_: input tensor
+        
+        Returns:
+        input tensor (no-op in forward pass)
+        """
         return input_
 
     @staticmethod
     @custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
+        r"""
+        Backward pass for copying to azimuth region.
+        
+        Parameters:
+        grad_output: gradient of the output
+        
+        Returns:
+        gradient of the input
+        """
         if is_distributed_azimuth():
             return _reduce(grad_output, group=azimuth_group())
         else:
@@ -286,7 +374,11 @@ class _CopyToAzimuthRegion(torch.autograd.Function):
 
 
 class _ScatterToPolarRegion(torch.autograd.Function):
-    """Split the input and keep only the corresponding chunk to the rank."""
+    r"""
+    Scatter tensor to polar region for distributed computation.
+    This class provides the forward and backward passes for scattering
+    tensors to the polar region in distributed settings.
+    """
 
     @staticmethod
     def symbolic(graph, input_, dim_):

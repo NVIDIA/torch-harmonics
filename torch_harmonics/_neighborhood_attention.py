@@ -50,7 +50,40 @@ except ImportError as err:
 def _neighborhood_attention_s2_fwd_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor,
                                             quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
                                             nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-
+    """
+    Forward pass implementation of neighborhood attention on the sphere (S2).
+    
+    This function computes the neighborhood attention operation using sparse tensor
+    operations. It implements the attention mechanism with softmax normalization
+    and quadrature weights for spherical integration.
+    
+    Parameters
+    -----------
+    kx : torch.Tensor
+        Key tensor with shape (B, C, Hi, Wi) where B is batch size, C is channels,
+        Hi is input height (latitude), Wi is input width (longitude)
+    vx : torch.Tensor
+        Value tensor with shape (B, C, Hi, Wi)
+    qy : torch.Tensor
+        Query tensor with shape (B, C, Ho, Wo) where Ho is output height, Wo is output width
+    quad_weights : torch.Tensor
+        Quadrature weights for spherical integration with shape (Hi,)
+    col_idx : torch.Tensor
+        Column indices for sparse computation
+    row_off : torch.Tensor
+        Row offsets for sparse computation
+    nlon_in : int
+        Number of input longitude points
+    nlat_out : int
+        Number of output latitude points
+    nlon_out : int
+        Number of output longitude points
+        
+    Returns
+    -------
+    torch.Tensor
+        Output tensor with shape (B, C, Ho, Wo) after neighborhood attention computation
+    """
 
     # prepare result tensor
     y = torch.zeros_like(qy)
@@ -102,6 +135,41 @@ def _neighborhood_attention_s2_fwd_torch(kx: torch.Tensor, vx: torch.Tensor, qy:
 def _neighborhood_attention_s2_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
                                             quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
                                             nlon_in: int, nlat_out: int, nlon_out: int):
+    """
+    Backward pass implementation for value gradients in neighborhood attention on S2.
+    
+    This function computes the gradient of the output with respect to the value tensor (vx).
+    It implements the backward pass for the neighborhood attention operation using
+    sparse tensor operations and quadrature weights for spherical integration.
+    
+    Parameters
+    -----------
+    kx : torch.Tensor
+        Key tensor with shape (B, C, Hi, Wi)
+    vx : torch.Tensor
+        Value tensor with shape (B, C, Hi, Wi)
+    qy : torch.Tensor
+        Query tensor with shape (B, C, Ho, Wo)
+    dy : torch.Tensor
+        Gradient of the output with shape (B, C, Ho, Wo)
+    quad_weights : torch.Tensor
+        Quadrature weights for spherical integration with shape (Hi,)
+    col_idx : torch.Tensor
+        Column indices for sparse computation
+    row_off : torch.Tensor
+        Row offsets for sparse computation
+    nlon_in : int
+        Number of input longitude points
+    nlat_out : int
+        Number of output latitude points
+    nlon_out : int
+        Number of output longitude points
+        
+    Returns
+    -------
+    torch.Tensor
+        Gradient of the value tensor with shape (B, C, Hi, Wi)
+    """
 
     # shapes:
     # input
@@ -170,6 +238,41 @@ def _neighborhood_attention_s2_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, 
 def _neighborhood_attention_s2_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
                                             quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
                                             nlon_in: int, nlat_out: int, nlon_out: int):
+    """
+    Backward pass implementation for key gradients in neighborhood attention on S2.
+    
+    This function computes the gradient of the output with respect to the key tensor (kx).
+    It implements the backward pass for the neighborhood attention operation using
+    sparse tensor operations and quadrature weights for spherical integration.
+    
+    Parameters
+    -----------
+    kx : torch.Tensor
+        Key tensor with shape (B, C, Hi, Wi)
+    vx : torch.Tensor
+        Value tensor with shape (B, C, Hi, Wi)
+    qy : torch.Tensor
+        Query tensor with shape (B, C, Ho, Wo)
+    dy : torch.Tensor
+        Gradient of the output with shape (B, C, Ho, Wo)
+    quad_weights : torch.Tensor
+        Quadrature weights for spherical integration with shape (Hi,)
+    col_idx : torch.Tensor
+        Column indices for sparse computation
+    row_off : torch.Tensor
+        Row offsets for sparse computation
+    nlon_in : int
+        Number of input longitude points
+    nlat_out : int
+        Number of output latitude points
+    nlon_out : int
+        Number of output longitude points
+        
+    Returns
+    -------
+    torch.Tensor
+        Gradient of the key tensor with shape (B, C, Hi, Wi)
+    """
 
     # shapes:
     # input
@@ -251,6 +354,41 @@ def _neighborhood_attention_s2_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, 
 def _neighborhood_attention_s2_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
                                             quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
                                             nlon_in: int, nlat_out: int, nlon_out: int):
+    """
+    Backward pass implementation for query gradients in neighborhood attention on S2.
+    
+    This function computes the gradient of the output with respect to the query tensor (qy).
+    It implements the backward pass for the neighborhood attention operation using
+    sparse tensor operations and quadrature weights for spherical integration.
+    
+    Parameters
+    -----------
+    kx : torch.Tensor
+        Key tensor with shape (B, C, Hi, Wi)
+    vx : torch.Tensor
+        Value tensor with shape (B, C, Hi, Wi)
+    qy : torch.Tensor
+        Query tensor with shape (B, C, Ho, Wo)
+    dy : torch.Tensor
+        Gradient of the output with shape (B, C, Ho, Wo)
+    quad_weights : torch.Tensor
+        Quadrature weights for spherical integration with shape (Hi,)
+    col_idx : torch.Tensor
+        Column indices for sparse computation
+    row_off : torch.Tensor
+        Row offsets for sparse computation
+    nlon_in : int
+        Number of input longitude points
+    nlat_out : int
+        Number of output latitude points
+    nlon_out : int
+        Number of output longitude points
+        
+    Returns
+    -------
+    torch.Tensor
+        Gradient of the query tensor with shape (B, C, Ho, Wo)
+    """
 
     # shapes:
     # input
@@ -321,6 +459,11 @@ def _neighborhood_attention_s2_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, 
     return dqy
 
 class _NeighborhoodAttentionS2(torch.autograd.Function):
+    r"""
+    CPU implementation of neighborhood attention on the sphere (S2).
+    This class provides the forward and backward passes for efficient CPU computation
+    of neighborhood attention operations using sparse tensor operations.
+    """
 
     @staticmethod
     @custom_fwd(device_type="cpu")
@@ -329,7 +472,27 @@ class _NeighborhoodAttentionS2(torch.autograd.Function):
                 bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], bq: Union[torch.Tensor, None],
                 quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
                 nh: int, nlon_in: int, nlat_out: int, nlon_out: int):
-
+        r"""
+        Forward pass for CPU neighborhood attention on S2.
+        
+        Parameters:
+        k: key tensor
+        v: value tensor
+        q: query tensor
+        wk: key weight tensor
+        wv: value weight tensor
+        wq: query weight tensor
+        bk: key bias tensor (optional)
+        bv: value bias tensor (optional)
+        bq: query bias tensor (optional)
+        quad_weights: quadrature weights for spherical integration
+        col_idx: column indices for sparse computation
+        row_off: row offsets for sparse computation
+        nh: number of attention heads
+        nlon_in: number of input longitude points
+        nlat_out: number of output latitude points
+        nlon_out: number of output longitude points
+        """
         ctx.save_for_backward(col_idx, row_off, quad_weights, k, v, q, wk, wv, wq, bk, bv, bq)
         ctx.nh = nh
         ctx.nlon_in = nlon_in
@@ -364,6 +527,15 @@ class _NeighborhoodAttentionS2(torch.autograd.Function):
     @staticmethod
     @custom_bwd(device_type="cpu")
     def backward(ctx, grad_output):
+        r"""
+        Backward pass for CPU neighborhood attention on S2.
+        
+        Parameters:
+        grad_output: gradient of the output
+        
+        Returns:
+        gradients for all input tensors and parameters
+        """
         col_idx, row_off, quad_weights, k, v, q, wk, wv, wq, bk, bv, bq = ctx.saved_tensors
         nh = ctx.nh
         nlon_in = ctx.nlon_in
@@ -443,13 +615,63 @@ def _neighborhood_attention_s2_torch(k: torch.Tensor, v: torch.Tensor, q: torch.
                                      bq: Union[torch.Tensor, None], quad_weights: torch.Tensor,
                                      col_idx: torch.Tensor, row_off: torch.Tensor,
                                      nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-
+    """
+    Torch implementation of neighborhood attention on the sphere (S2).
+    
+    This function provides a wrapper around the CPU autograd function for
+    neighborhood attention operations using sparse tensor computations.
+    
+    Parameters
+    -----------
+    k : torch.Tensor
+        Key tensor
+    v : torch.Tensor
+        Value tensor
+    q : torch.Tensor
+        Query tensor
+    wk : torch.Tensor
+        Key weight tensor
+    wv : torch.Tensor
+        Value weight tensor
+    wq : torch.Tensor
+        Query weight tensor
+    bk : torch.Tensor or None
+        Key bias tensor (optional)
+    bv : torch.Tensor or None
+        Value bias tensor (optional)
+    bq : torch.Tensor or None
+        Query bias tensor (optional)
+    quad_weights : torch.Tensor
+        Quadrature weights for spherical integration
+    col_idx : torch.Tensor
+        Column indices for sparse computation
+    row_off : torch.Tensor
+        Row offsets for sparse computation
+    nh : int
+        Number of attention heads
+    nlon_in : int
+        Number of input longitude points
+    nlat_out : int
+        Number of output latitude points
+    nlon_out : int
+        Number of output longitude points
+        
+    Returns
+    -------
+    torch.Tensor
+        Output tensor after neighborhood attention computation
+    """
     return _NeighborhoodAttentionS2.apply(k, v, q, wk, wv, wq, bk, bv, bq,
                                           quad_weights, col_idx, row_off,
                                           nh, nlon_in, nlat_out, nlon_out)
 
 
 class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
+    r"""
+    CUDA implementation of neighborhood attention on the sphere (S2).
+    This class provides the forward and backward passes for efficient GPU computation
+    of neighborhood attention operations using custom CUDA kernels.
+    """
 
     @staticmethod
     @custom_fwd(device_type="cuda")
@@ -458,7 +680,28 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
                 bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], bq: Union[torch.Tensor, None],
                 quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
                 max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int):
-
+        r"""
+        Forward pass for CUDA neighborhood attention on S2.
+        
+        Parameters:
+        k: key tensor
+        v: value tensor
+        q: query tensor
+        wk: key weight tensor
+        wv: value weight tensor
+        wq: query weight tensor
+        bk: key bias tensor (optional)
+        bv: value bias tensor (optional)
+        bq: query bias tensor (optional)
+        quad_weights: quadrature weights for spherical integration
+        col_idx: column indices for sparse computation
+        row_off: row offsets for sparse computation
+        max_psi_nnz: maximum number of non-zero elements in sparse tensor
+        nh: number of attention heads
+        nlon_in: number of input longitude points
+        nlat_out: number of output latitude points
+        nlon_out: number of output longitude points
+        """
         ctx.save_for_backward(col_idx, row_off, quad_weights, k, v, q, wk, wv, wq, bk, bv, bq)
         ctx.nh = nh
         ctx.max_psi_nnz = max_psi_nnz
@@ -499,6 +742,15 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
     @staticmethod
     @custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
+        r"""
+        Backward pass for CUDA neighborhood attention on S2.
+        
+        Parameters:
+        grad_output: gradient of the output
+        
+        Returns:
+        gradients for all input tensors and parameters
+        """
         col_idx, row_off, quad_weights, k, v, q, wk, wv, wq, bk, bv, bq = ctx.saved_tensors
         nh = ctx.nh
         max_psi_nnz = ctx.max_psi_nnz
@@ -584,7 +836,54 @@ def _neighborhood_attention_s2_cuda(k: torch.Tensor, v: torch.Tensor, q: torch.T
                                     bq: Union[torch.Tensor, None], quad_weights: torch.Tensor,
                                     col_idx: torch.Tensor, row_off: torch.Tensor, max_psi_nnz: int,
                                     nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-
+    """
+    CUDA implementation of neighborhood attention on the sphere (S2).
+    
+    This function provides a wrapper around the CUDA autograd function for
+    neighborhood attention operations using custom CUDA kernels for efficient GPU computation.
+    
+    Parameters
+    -----------
+    k : torch.Tensor
+        Key tensor
+    v : torch.Tensor
+        Value tensor
+    q : torch.Tensor
+        Query tensor
+    wk : torch.Tensor
+        Key weight tensor
+    wv : torch.Tensor
+        Value weight tensor
+    wq : torch.Tensor
+        Query weight tensor
+    bk : torch.Tensor or None
+        Key bias tensor (optional)
+    bv : torch.Tensor or None
+        Value bias tensor (optional)
+    bq : torch.Tensor or None
+        Query bias tensor (optional)
+    quad_weights : torch.Tensor
+        Quadrature weights for spherical integration
+    col_idx : torch.Tensor
+        Column indices for sparse computation
+    row_off : torch.Tensor
+        Row offsets for sparse computation
+    max_psi_nnz : int
+        Maximum number of non-zero elements in sparse tensor
+    nh : int
+        Number of attention heads
+    nlon_in : int
+        Number of input longitude points
+    nlat_out : int
+        Number of output latitude points
+    nlon_out : int
+        Number of output longitude points
+        
+    Returns
+    -------
+    torch.Tensor
+        Output tensor after neighborhood attention computation
+    """
     return _NeighborhoodAttentionS2Cuda.apply(k, v, q, wk, wv, wq, bk, bv, bq,
                                               quad_weights, col_idx, row_off, max_psi_nnz,
                                               nh, nlon_in, nlat_out, nlon_out)

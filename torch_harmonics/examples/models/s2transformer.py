@@ -52,6 +52,36 @@ def _compute_cutoff_radius(nlat, kernel_shape, basis_type):
     return (kernel_shape[0] + 1) * theta_cutoff_factor[basis_type] * math.pi / float(nlat - 1)
 
 class DiscreteContinuousEncoder(nn.Module):
+    """
+    Discrete-continuous encoder for spherical transformers.
+    
+    This module performs downsampling using discrete-continuous convolutions on the sphere,
+    reducing the spatial resolution while maintaining the spectral properties of the data.
+    
+    Parameters
+    -----------
+    in_shape : tuple, optional
+        Input shape (nlat, nlon), by default (721, 1440)
+    out_shape : tuple, optional
+        Output shape (nlat, nlon), by default (480, 960)
+    grid_in : str, optional
+        Input grid type, by default "equiangular"
+    grid_out : str, optional
+        Output grid type, by default "equiangular"
+    in_chans : int, optional
+        Number of input channels, by default 2
+    out_chans : int, optional
+        Number of output channels, by default 2
+    kernel_shape : tuple, optional
+        Kernel shape for convolution, by default (3, 3)
+    basis_type : str, optional
+        Filter basis type, by default "morlet"
+    groups : int, optional
+        Number of groups for grouped convolution, by default 1
+    bias : bool, optional
+        Whether to use bias, by default False
+    """
+    
     def __init__(
         self,
         in_shape=(721, 1440),
@@ -83,6 +113,19 @@ class DiscreteContinuousEncoder(nn.Module):
         )
 
     def forward(self, x):
+        """
+        Forward pass of the discrete-continuous encoder.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor with shape (batch, channels, nlat, nlon)
+            
+        Returns
+        -------
+        torch.Tensor
+            Encoded tensor with reduced spatial resolution
+        """
         dtype = x.dtype
 
         with amp.autocast(device_type="cuda", enabled=False):
@@ -94,6 +137,38 @@ class DiscreteContinuousEncoder(nn.Module):
 
 
 class DiscreteContinuousDecoder(nn.Module):
+    """
+    Discrete-continuous decoder for spherical transformers.
+    
+    This module performs upsampling using either spherical harmonic transforms or resampling,
+    followed by discrete-continuous convolutions to restore spatial resolution.
+    
+    Parameters
+    -----------
+    in_shape : tuple, optional
+        Input shape (nlat, nlon), by default (480, 960)
+    out_shape : tuple, optional
+        Output shape (nlat, nlon), by default (721, 1440)
+    grid_in : str, optional
+        Input grid type, by default "equiangular"
+    grid_out : str, optional
+        Output grid type, by default "equiangular"
+    in_chans : int, optional
+        Number of input channels, by default 2
+    out_chans : int, optional
+        Number of output channels, by default 2
+    kernel_shape : tuple, optional
+        Kernel shape for convolution, by default (3, 3)
+    basis_type : str, optional
+        Filter basis type, by default "morlet"
+    groups : int, optional
+        Number of groups for grouped convolution, by default 1
+    bias : bool, optional
+        Whether to use bias, by default False
+    upsample_sht : bool, optional
+        Whether to use SHT for upsampling, by default False
+    """
+    
     def __init__(
         self,
         in_shape=(480, 960),
@@ -134,6 +209,19 @@ class DiscreteContinuousDecoder(nn.Module):
         )
 
     def forward(self, x):
+        """
+        Forward pass of the discrete-continuous decoder.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor with shape (batch, channels, nlat, nlon)
+            
+        Returns
+        -------
+        torch.Tensor
+            Decoded tensor with restored spatial resolution
+        """
         dtype = x.dtype
 
         with amp.autocast(device_type="cuda", enabled=False):
@@ -147,7 +235,45 @@ class DiscreteContinuousDecoder(nn.Module):
 
 class SphericalAttentionBlock(nn.Module):
     """
-    Helper module for a single SFNO/FNO block. Can use both FFTs and SHTs to represent either FNO or SFNO blocks.
+    Spherical attention block for transformers on the sphere.
+    
+    This module implements a single attention block that can use either global attention
+    or neighborhood attention on spherical data, followed by an optional MLP.
+    
+    Parameters
+    -----------
+    in_shape : tuple, optional
+        Input shape (nlat, nlon), by default (480, 960)
+    out_shape : tuple, optional
+        Output shape (nlat, nlon), by default (480, 960)
+    grid_in : str, optional
+        Input grid type, by default "equiangular"
+    grid_out : str, optional
+        Output grid type, by default "equiangular"
+    in_chans : int, optional
+        Number of input channels, by default 2
+    out_chans : int, optional
+        Number of output channels, by default 2
+    num_heads : int, optional
+        Number of attention heads, by default 1
+    mlp_ratio : float, optional
+        Ratio of MLP hidden dimension to output dimension, by default 2.0
+    drop_rate : float, optional
+        Dropout rate, by default 0.0
+    drop_path : float, optional
+        Drop path rate, by default 0.0
+    act_layer : nn.Module, optional
+        Activation layer, by default nn.GELU
+    norm_layer : str, optional
+        Normalization layer type, by default "none"
+    use_mlp : bool, optional
+        Whether to use MLP after attention, by default True
+    bias : bool, optional
+        Whether to use bias, by default False
+    attention_mode : str, optional
+        Attention mode ("neighborhood" or "global"), by default "neighborhood"
+    theta_cutoff : float, optional
+        Cutoff radius for neighborhood attention, by default None
     """
 
     def __init__(
@@ -467,6 +593,19 @@ class SphericalTransformer(nn.Module):
         return x
 
     def forward(self, x):
+        """
+        Forward pass through the complete spherical transformer model.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor of shape (batch_size, in_chans, height, width)
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor of shape (batch_size, out_chans, height, width)
+        """
         if self.residual_prediction:
             residual = x
 

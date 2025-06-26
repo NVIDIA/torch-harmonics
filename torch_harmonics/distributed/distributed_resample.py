@@ -43,6 +43,32 @@ from torch_harmonics.distributed import compute_split_shapes
 
 
 class DistributedResampleS2(nn.Module):
+    r"""
+    Distributed resampling module for spherical data on the 2-sphere.
+    
+    This module performs distributed resampling of spherical data across multiple processes,
+    supporting both upscaling and downscaling operations. The data is distributed across
+    polar and azimuthal directions, and the module handles the necessary communication
+    and interpolation operations.
+    
+    Parameters
+    -----------
+    nlat_in : int
+        Number of input latitude points
+    nlon_in : int
+        Number of input longitude points
+    nlat_out : int
+        Number of output latitude points
+    nlon_out : int
+        Number of output longitude points
+    grid_in : str, optional
+        Input grid type, by default "equiangular"
+    grid_out : str, optional
+        Output grid type, by default "equiangular"
+    mode : str, optional
+        Interpolation mode ("bilinear" or "bilinear-spherical"), by default "bilinear"
+    """
+
     def __init__(
         self,
         nlat_in: int,
@@ -133,6 +159,19 @@ class DistributedResampleS2(nn.Module):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}"
 
     def _upscale_longitudes(self, x: torch.Tensor):
+        """
+        Upscale the longitude dimension using interpolation.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor with shape (..., nlat, nlon)
+            
+        Returns
+        -------
+        torch.Tensor
+            Upscaled tensor in the longitude dimension
+        """
         # do the interpolation
         lwgt = self.lon_weights.to(x.dtype)
         if self.mode == "bilinear":
@@ -147,6 +186,19 @@ class DistributedResampleS2(nn.Module):
         return x
 
     def _expand_poles(self, x: torch.Tensor):
+        """
+        Expand the data to include pole values for interpolation.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor with shape (..., nlat, nlon)
+            
+        Returns
+        -------
+        torch.Tensor
+            Tensor with expanded pole values
+        """
         x_north = x[...,  0, :].sum(dim=-1, keepdims=True)
         x_south = x[..., -1, :].sum(dim=-1, keepdims=True)
         x_count = torch.tensor([x.shape[-1]], dtype=torch.long, device=x.device, requires_grad=False)
@@ -169,6 +221,19 @@ class DistributedResampleS2(nn.Module):
         return x
 
     def _upscale_latitudes(self, x: torch.Tensor):
+        """
+        Upscale the latitude dimension using interpolation.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor with shape (..., nlat, nlon)
+            
+        Returns
+        -------
+        torch.Tensor
+            Upscaled tensor in the latitude dimension
+        """
         # do the interpolation
         lwgt = self.lat_weights.to(x.dtype)
         if self.mode == "bilinear":
@@ -183,6 +248,19 @@ class DistributedResampleS2(nn.Module):
         return x
 
     def forward(self, x: torch.Tensor):
+        """
+        Forward pass for distributed resampling.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor with shape (batch, channels, nlat, nlon)
+            
+        Returns
+        -------
+        torch.Tensor
+            Resampled tensor with shape (batch, channels, nlat_out, nlon_out)
+        """
 
         if self.skip_resampling:
             return x

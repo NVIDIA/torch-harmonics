@@ -39,6 +39,76 @@ from baseline_models import Transformer, UNet, Segformer
 from torch_harmonics.examples.models import SphericalFourierNeuralOperator, LocalSphericalNeuralOperator, SphericalTransformer, SphericalUNet, SphericalSegformer
 
 def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_prediction=False, drop_path_rate=0., grid="equiangular"):
+    """
+    Get a registry of baseline models for spherical and planar neural networks.
+    
+    This function returns a dictionary containing pre-configured model architectures
+    for various tasks including spherical Fourier neural operators (SFNO), local
+    spherical neural operators (LSNO), spherical transformers, U-Nets, and Segformers.
+    Each model is configured with specific hyperparameters optimized for different
+    computational budgets and performance requirements.
+    
+    Parameters
+    -----------
+    img_size : tuple, optional
+        Input image size as (height, width), by default (128, 256)
+    in_chans : int, optional
+        Number of input channels, by default 3
+    out_chans : int, optional
+        Number of output channels, by default 3
+    residual_prediction : bool, optional
+        Whether to use residual prediction (add input to output), by default False
+    drop_path_rate : float, optional
+        Dropout path rate for regularization, by default 0.0
+    grid : str, optional
+        Grid type for spherical models ("equiangular", "legendre-gauss", etc.), by default "equiangular"
+    
+    Returns
+    -------
+    dict
+        Dictionary mapping model names to partial functions that can be called
+        to instantiate the corresponding model with the specified parameters.
+        
+        Available models include:
+        
+        **Spherical Models:**
+        - sfno_sc2_layers4_e32: Spherical Fourier Neural Operator (small)
+        - lsno_sc2_layers4_e32: Local Spherical Neural Operator (small)
+        - s2unet_sc2_layers4_e128: Spherical U-Net (medium)
+        - s2transformer_sc2_layers4_e128: Spherical Transformer (global attention, medium)
+        - s2transformer_sc2_layers4_e256: Spherical Transformer (global attention, large)
+        - s2ntransformer_sc2_layers4_e128: Spherical Transformer (neighborhood attention, medium)
+        - s2ntransformer_sc2_layers4_e256: Spherical Transformer (neighborhood attention, large)
+        - s2segformer_sc2_layers4_e128: Spherical Segformer (global attention, medium)
+        - s2segformer_sc2_layers4_e256: Spherical Segformer (global attention, large)
+        - s2nsegformer_sc2_layers4_e128: Spherical Segformer (neighborhood attention, medium)
+        - s2nsegformer_sc2_layers4_e256: Spherical Segformer (neighborhood attention, large)
+        
+        **Planar Models:**
+        - transformer_sc2_layers4_e128: Planar Transformer (global attention, medium)
+        - transformer_sc2_layers4_e256: Planar Transformer (global attention, large)
+        - ntransformer_sc2_layers4_e128: Planar Transformer (neighborhood attention, medium)
+        - ntransformer_sc2_layers4_e256: Planar Transformer (neighborhood attention, large)
+        - segformer_sc2_layers4_e128: Planar Segformer (global attention, medium)
+        - segformer_sc2_layers4_e256: Planar Segformer (global attention, large)
+        - nsegformer_sc2_layers4_e128: Planar Segformer (neighborhood attention, medium)
+        - nsegformer_sc2_layers4_e256: Planar Segformer (neighborhood attention, large)
+        - vit_sc2_layers4_e128: Vision Transformer variant (medium)
+    
+    Examples
+    --------
+    >>> model_registry = get_baseline_models(img_size=(64, 128), in_chans=2, out_chans=1)
+    >>> model = model_registry['sfno_sc2_layers4_e32']()
+    >>> print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    
+    Notes
+    -----
+    - Model names follow the pattern: {model_type}_{scale_factor}_{layers}_{embed_dim}
+    - 'sc2' indicates scale factor of 2 (downsampling by 2)
+    - 'e32', 'e128', 'e256' indicate embedding dimensions
+    - 'n' prefix indicates neighborhood attention instead of global attention
+    - All models use GELU activation and instance normalization by default
+    """
 
     # prepare dicts containing models and corresponding metrics
     model_registry = dict(

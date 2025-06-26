@@ -50,6 +50,35 @@ def _compute_cutoff_radius(nlat, kernel_shape, basis_type):
     return (kernel_shape[0] + 1) * theta_cutoff_factor[basis_type] * math.pi / float(nlat - 1)
 
 class DiscreteContinuousEncoder(nn.Module):
+    r"""
+    Discrete-continuous encoder for spherical neural operators.
+    
+    This module performs downsampling using discrete-continuous convolutions on the sphere,
+    reducing the spatial resolution while maintaining the spectral properties of the data.
+    
+    Parameters
+    -----------
+    in_shape : tuple, optional
+        Input shape (nlat, nlon), by default (721, 1440)
+    out_shape : tuple, optional
+        Output shape (nlat, nlon), by default (480, 960)
+    grid_in : str, optional
+        Input grid type, by default "equiangular"
+    grid_out : str, optional
+        Output grid type, by default "equiangular"
+    inp_chans : int, optional
+        Number of input channels, by default 2
+    out_chans : int, optional
+        Number of output channels, by default 2
+    kernel_shape : tuple, optional
+        Kernel shape for convolution, by default (3, 3)
+    basis_type : str, optional
+        Filter basis type, by default "morlet"
+    groups : int, optional
+        Number of groups for grouped convolution, by default 1
+    bias : bool, optional
+        Whether to use bias, by default False
+    """
     def __init__(
         self,
         in_shape=(721, 1440),
@@ -81,6 +110,19 @@ class DiscreteContinuousEncoder(nn.Module):
         )
 
     def forward(self, x):
+        """
+        Forward pass of the discrete-continuous encoder.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor with shape (batch, channels, nlat, nlon)
+            
+        Returns
+        -------
+        torch.Tensor
+            Encoded tensor with reduced spatial resolution
+        """
         dtype = x.dtype
 
         with amp.autocast(device_type="cuda", enabled=False):
@@ -92,6 +134,37 @@ class DiscreteContinuousEncoder(nn.Module):
 
 
 class DiscreteContinuousDecoder(nn.Module):
+    r"""
+    Discrete-continuous decoder for spherical neural operators.
+    
+    This module performs upsampling using either spherical harmonic transforms or resampling,
+    followed by discrete-continuous convolutions to restore spatial resolution.
+    
+    Parameters
+    -----------
+    in_shape : tuple, optional
+        Input shape (nlat, nlon), by default (480, 960)
+    out_shape : tuple, optional
+        Output shape (nlat, nlon), by default (721, 1440)
+    grid_in : str, optional
+        Input grid type, by default "equiangular"
+    grid_out : str, optional
+        Output grid type, by default "equiangular"
+    inp_chans : int, optional
+        Number of input channels, by default 2
+    out_chans : int, optional
+        Number of output channels, by default 2
+    kernel_shape : tuple, optional
+        Kernel shape for convolution, by default (3, 3)
+    basis_type : str, optional
+        Filter basis type, by default "morlet"
+    groups : int, optional
+        Number of groups for grouped convolution, by default 1
+    bias : bool, optional
+        Whether to use bias, by default False
+    upsample_sht : bool, optional
+        Whether to use SHT for upsampling, by default False
+    """
     def __init__(
         self,
         in_shape=(480, 960),
@@ -132,6 +205,19 @@ class DiscreteContinuousDecoder(nn.Module):
         )
 
     def forward(self, x):
+        """
+        Forward pass of the discrete-continuous decoder.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor with shape (batch, channels, nlat, nlon)
+            
+        Returns
+        -------
+        torch.Tensor
+            Decoded tensor with restored spatial resolution
+        """
         dtype = x.dtype
 
         with amp.autocast(device_type="cuda", enabled=False):
@@ -274,51 +360,56 @@ class SphericalNeuralOperatorBlock(nn.Module):
 
 
 class LocalSphericalNeuralOperator(nn.Module):
-    """
+    r"""
     LocalSphericalNeuralOperator module. A spherical neural operator which uses both local and global integral
     operators to accureately model both types of solution operators [1]. The architecture is based on the Spherical
     Fourier Neural Operator [2] and improves upon it with local integral operators in both the Neural Operator blocks,
     as well as in the encoder and decoders.
-
+    
     Parameters
     -----------
-    img_shape : tuple, optional
-        Shape of the input channels, by default (128, 256)
-    kernel_shape: tuple, int
+    img_size : tuple, optional
+        Input image size (nlat, nlon), by default (128, 256)
+    grid : str, optional
+        Grid type for input/output, by default "equiangular"
+    grid_internal : str, optional
+        Grid type for internal processing, by default "legendre-gauss"
     scale_factor : int, optional
-        Scale factor to use, by default 3
+        Scale factor for resolution changes, by default 3
     in_chans : int, optional
         Number of input channels, by default 3
     out_chans : int, optional
         Number of output channels, by default 3
     embed_dim : int, optional
-        Dimension of the embeddings, by default 256
+        Embedding dimension, by default 256
     num_layers : int, optional
-        Number of layers in the network, by default 4
+        Number of layers, by default 4
     activation_function : str, optional
-        Activation function to use, by default "gelu"
-    encoder_kernel_shape : int, optional
-        size of the encoder kernel
-    filter_basis_type: Optional[str]: str, optional
-        filter basis type
-    use_mlp : int, optional
-        Whether to use MLPs in the SFNO blocks, by default True
-    mlp_ratio : int, optional
-        Ratio of MLP to use, by default 2.0
+        Activation function name, by default "gelu"
+    kernel_shape : tuple, optional
+        Kernel shape for convolutions, by default (3, 3)
+    encoder_kernel_shape : tuple, optional
+        Kernel shape for encoder, by default (3, 3)
+    filter_basis_type : str, optional
+        Filter basis type, by default "morlet"
+    use_mlp : bool, optional
+        Whether to use MLP layers, by default True
+    mlp_ratio : float, optional
+        MLP expansion ratio, by default 2.0
     drop_rate : float, optional
         Dropout rate, by default 0.0
     drop_path_rate : float, optional
-        Dropout path rate, by default 0.0
+        Drop path rate, by default 0.0
     normalization_layer : str, optional
         Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "instance_norm"
     sfno_block_frequency : int, optional
-        Hopw often a (global) SFNO block is used, by default 2
+        Frequency of SFNO blocks, by default 2
     hard_thresholding_fraction : float, optional
-        Fraction of hard thresholding (frequency cutoff) to apply, by default 1.0
-    big_skip : bool, optional
-        Whether to add a single large skip connection, by default True
-    pos_embed : bool, optional
-        Whether to use positional embedding, by default True
+        Hard thresholding fraction, by default 1.0
+    residual_prediction : bool, optional
+        Whether to use residual prediction, by default False
+    pos_embed : str, optional
+        Position embedding type, by default "none"
     upsample_sht : bool, optional
         Use SHT upsampling if true, else linear interpolation
     bias : bool, optional
@@ -497,6 +588,19 @@ class LocalSphericalNeuralOperator(nn.Module):
         return x
 
     def forward(self, x):
+        """
+        Forward pass through the complete LSNO model.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor of shape (batch_size, in_chans, height, width)
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor of shape (batch_size, out_chans, height, width)
+        """
         if self.residual_prediction:
             residual = x
 
