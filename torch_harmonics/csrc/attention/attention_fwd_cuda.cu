@@ -296,7 +296,7 @@ void launch_gen_attn_kernel(int batch_size,
 
     size_t shsize = sizeof(FLOATV_T)*nchans * block.y;
 
-    auto _row_idx  = col_idx.packed_accessor32<    int, 1, torch::RestrictPtrTraits>();
+    auto _row_idx  = row_idx.packed_accessor32<    int, 1, torch::RestrictPtrTraits>();
     auto _row_off  = row_off.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>();
     auto _col_idx  = col_idx.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>();
     auto _quad_weights = quad_weights.packed_accessor32< float, 1, torch::RestrictPtrTraits>();
