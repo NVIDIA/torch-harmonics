@@ -57,7 +57,7 @@ class DiscreteContinuousEncoder(nn.Module):
     reducing the spatial resolution while maintaining the spectral properties of the data.
     
     Parameters
-    -----------
+    ----------
     in_shape : tuple, optional
         Input shape (nlat, nlon), by default (721, 1440)
     out_shape : tuple, optional
@@ -114,7 +114,7 @@ class DiscreteContinuousEncoder(nn.Module):
         Forward pass of the discrete-continuous encoder.
         
         Parameters
-        -----------
+        ----------
         x : torch.Tensor
             Input tensor with shape (batch, channels, nlat, nlon)
             
@@ -141,7 +141,7 @@ class DiscreteContinuousDecoder(nn.Module):
     followed by discrete-continuous convolutions to restore spatial resolution.
     
     Parameters
-    -----------
+    ----------
     in_shape : tuple, optional
         Input shape (nlat, nlon), by default (480, 960)
     out_shape : tuple, optional
@@ -209,7 +209,7 @@ class DiscreteContinuousDecoder(nn.Module):
         Forward pass of the discrete-continuous decoder.
         
         Parameters
-        -----------
+        ----------
         x : torch.Tensor
             Input tensor with shape (batch, channels, nlat, nlon)
             
@@ -232,6 +232,46 @@ class DiscreteContinuousDecoder(nn.Module):
 class SphericalNeuralOperatorBlock(nn.Module):
     """
     Helper module for a single SFNO/FNO block. Can use both FFTs and SHTs to represent either FNO or SFNO blocks.
+
+    Parameters
+    ----------
+    forward_transform : torch.nn.Module
+        Forward transform to use for the block
+    inverse_transform : torch.nn.Module
+        Inverse transform to use for the block
+    input_dim : int
+        Input dimension
+    output_dim : int
+        Output dimension
+    conv_type : str, optional
+        Type of convolution to use, by default "local"
+    mlp_ratio : float, optional
+        MLP expansion ratio, by default 2.0
+    drop_rate : float, optional
+        Dropout rate, by default 0.0
+    drop_path : float, optional
+        Drop path rate, by default 0.0
+    act_layer : torch.nn.Module, optional
+        Activation function to use, by default nn.GELU
+    norm_layer : str, optional
+        Type of normalization to use, by default "none"
+    inner_skip : str, optional
+        Type of inner skip connection to use, by default "none"
+    outer_skip : str, optional
+        Type of outer skip connection to use, by default "identity"
+    use_mlp : bool, optional
+        Whether to use MLP layers, by default True
+    disco_kernel_shape : tuple, optional
+        Kernel shape for discrete-continuous convolution, by default (3, 3)
+    disco_basis_type : str, optional
+        Filter basis type for discrete-continuous convolution, by default "morlet"
+    bias : bool, optional
+        Whether to use bias, by default False
+
+    Returns
+    -------
+    torch.Tensor
+        Output tensor
     """
 
     def __init__(
@@ -367,7 +407,7 @@ class LocalSphericalNeuralOperator(nn.Module):
     as well as in the encoder and decoders.
     
     Parameters
-    -----------
+    ----------
     img_size : tuple, optional
         Input image size (nlat, nlon), by default (128, 256)
     grid : str, optional
@@ -416,7 +456,7 @@ class LocalSphericalNeuralOperator(nn.Module):
         Whether to use a bias, by default False
 
     Example
-    -----------
+    ----------
     >>> model = LocalSphericalNeuralOperator(
     ...         img_shape=(128, 256),
     ...         scale_factor=4,
@@ -429,7 +469,7 @@ class LocalSphericalNeuralOperator(nn.Module):
     torch.Size([1, 2, 128, 256])
 
     References
-    -----------
+    ----------
     .. [1] Liu-Schiaffini M., Berner J., Bonev B., Kurth T., Azizzadenesheli K., Anandkumar A.;
         "Neural Operators with Localized Integral and Differential Kernels" (2024).
         ICML 2024, https://arxiv.org/pdf/2402.16845.
@@ -592,7 +632,7 @@ class LocalSphericalNeuralOperator(nn.Module):
         Forward pass through the complete LSNO model.
         
         Parameters
-        -----------
+        ----------
         x : torch.Tensor
             Input tensor of shape (batch_size, in_chans, height, width)
             

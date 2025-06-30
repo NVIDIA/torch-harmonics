@@ -58,8 +58,22 @@ class Stanford2D3DSDownloader:
     """
     Convenience class for downloading the 2d3ds dataset [1].
 
+    Parameters
+    ----------
+    base_url : str, optional
+        Base URL for downloading the dataset, by default DEFAULT_BASE_URL
+    local_dir : str, optional
+        Local directory to store downloaded files, by default "data"
+
+    Returns
+    -------
+    data_folders : list
+        List of extracted directory names
+    class_labels : list
+        List of semantic class labels
+
     References
-    -----------
+    ----------
     .. [1] Armeni, I.,  Sax, S.,  Zamir, A. R.,  Savarese, S.;
         "Joint 2D-3D-Semantic Data for Indoor Scene Understanding" (2017).
         https://arxiv.org/abs/1702.01105.
@@ -483,8 +497,24 @@ class StanfordSegmentationDataset(Dataset):
     """
     Spherical segmentation dataset from [1].
 
+    Parameters
+    ----------
+    dataset_file : str
+        Path to the HDF5 dataset file
+    ignore_alpha_channel : bool, optional
+        Whether to ignore the alpha channel in the RGB images, by default True
+    log_depth : bool, optional
+        Whether to log the depth values, by default False
+    exclude_polar_fraction : float, optional
+        Fraction of polar points to exclude, by default 0.0
+
+    Returns
+    -------
+    StanfordSegmentationDataset
+        Dataset object
+
     References
-    -----------
+    ----------
     .. [1] Armeni, I.,  Sax, S.,  Zamir, A. R.,  Savarese, S.;
         "Joint 2D-3D-Semantic Data for Indoor Scene Understanding" (2017).
         https://arxiv.org/abs/1702.01105.
@@ -620,8 +650,19 @@ class StanfordDepthDataset(Dataset):
     """
     Spherical segmentation dataset from [1].
 
+    Parameters
+    ----------
+    dataset_file : str
+        Path to the HDF5 dataset file
+    ignore_alpha_channel : bool, optional
+        Whether to ignore the alpha channel in the RGB images, by default True
+    log_depth : bool, optional
+        Whether to log the depth values, by default False
+    exclude_polar_fraction : float, optional
+        Fraction of polar points to exclude, by default 0.0
+
     References
-    -----------
+    ----------
     .. [1] Armeni, I.,  Sax, S.,  Zamir, A. R.,  Savarese, S.;
         "Joint 2D-3D-Semantic Data for Indoor Scene Understanding" (2017).
         https://arxiv.org/abs/1702.01105.
