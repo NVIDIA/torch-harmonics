@@ -39,6 +39,18 @@ from torch_harmonics.cache import lru_cache
 def clm(l: int, m: int) -> float:
     """
     defines the normalization factor to orthonormalize the Spherical Harmonics
+
+    Parameters
+    -----------
+    l: int
+        Degree of the spherical harmonic
+    m: int
+        Order of the spherical harmonic
+
+    Returns
+    -------
+    out: float
+        Normalization factor
     """
     return math.sqrt((2*l + 1) / 4 / math.pi) * math.sqrt(math.factorial(l-m) / math.factorial(l+m))
 
@@ -48,7 +60,28 @@ def legpoly(mmax: int, lmax: int, x: torch.Tensor, norm: Optional[str]="ortho", 
     The resulting tensor has shape (mmax, lmax, len(x)). The Condon-Shortley Phase (-1)^m
     can be turned off optionally.
 
-    method of computation follows
+    Parameters
+    -----------
+    mmax: int
+        Maximum order of the spherical harmonics
+    lmax: int
+        Maximum degree of the spherical harmonics
+    x: torch.Tensor
+        Tensor of positions at which to evaluate the Legendre polynomials
+    norm: Optional[str]
+        Normalization of the Legendre polynomials
+    inverse: Optional[bool]
+        Whether to compute the inverse Legendre polynomials
+    csphase: Optional[bool]
+        Whether to apply the Condon-Shortley phase (-1)^m
+
+    Returns
+    -------
+    out: torch.Tensor
+        Tensor of Legendre polynomial values
+
+    References
+    ----------
     [1] Schaeffer, N.; Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
     [2] Rapp, R.H.; A Fortran Program for the Computation of Gravimetric Quantities from High Degree Spherical Harmonic Expansions, Ohio State University Columbus; report; 1982;
         https://apps.dtic.mil/sti/citations/ADA123406
@@ -99,7 +132,28 @@ def _precompute_legpoly(mmax: int , lmax: int, t: torch.Tensor,
     The resulting tensor has shape (mmax, lmax, len(x)). The Condon-Shortley Phase (-1)^m
     can be turned off optionally.
 
-    method of computation follows
+    Parameters
+    -----------
+    mmax: int
+        Maximum order of the spherical harmonics
+    lmax: int
+        Maximum degree of the spherical harmonics
+    t: torch.Tensor
+        Tensor of positions at which to evaluate the Legendre polynomials
+    norm: Optional[str]
+        Normalization of the Legendre polynomials
+    inverse: Optional[bool]
+        Whether to compute the inverse Legendre polynomials
+    csphase: Optional[bool]
+        Whether to apply the Condon-Shortley phase (-1)^m
+
+    Returns
+    -------
+    out: torch.Tensor
+        Tensor of Legendre polynomial values
+
+    References
+    ----------
     [1] Schaeffer, N.; Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
     [2] Rapp, R.H.; A Fortran Program for the Computation of Gravimetric Quantities from High Degree Spherical Harmonic Expansions, Ohio State University Columbus; report; 1982;
         https://apps.dtic.mil/sti/citations/ADA123406
@@ -117,7 +171,28 @@ def _precompute_dlegpoly(mmax: int, lmax: int, t: torch.Tensor,
     needed for the computation of the vector spherical harmonics. The resulting tensor has shape
     (2, mmax, lmax, len(t)).
 
-    computation follows
+    Parameters
+    -----------
+    mmax: int
+        Maximum order of the spherical harmonics
+    lmax: int
+        Maximum degree of the spherical harmonics
+    t: torch.Tensor
+        Tensor of positions at which to evaluate the Legendre polynomials
+    norm: Optional[str]
+        Normalization of the Legendre polynomials
+    inverse: Optional[bool]
+        Whether to compute the inverse Legendre polynomials
+    csphase: Optional[bool]
+        Whether to apply the Condon-Shortley phase (-1)^m
+
+    Returns
+    -------
+    out: torch.Tensor
+        Tensor of Legendre polynomial values
+
+    References
+    ----------
     [2] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
     """
 
