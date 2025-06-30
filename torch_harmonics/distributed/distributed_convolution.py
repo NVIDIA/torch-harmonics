@@ -74,6 +74,57 @@ def _split_distributed_convolution_tensor_s2(
     in_shape: Tuple[int],
     out_shape: Tuple[int],
 ):
+    """
+    Precomputes the rotated filters at positions $R^{-1}_j \omega_i = R^{-1}_j R_i \nu = Y(-\theta_j)Z(\phi_i - \phi_j)Y(\theta_j)\nu$.
+    Assumes a tensorized grid on the sphere with an equidistant sampling in longitude as described in Ocampo et al.
+    The output tensor has shape kernel_shape x nlat_out x (nlat_in * nlon_in).
+
+    The rotation of the Euler angles uses the YZY convention, which applied to the northpole $(0,0,1)^T$ yields
+    $$
+    Y(\alpha) Z(\beta) Y(\gamma) n =
+        {\begin{bmatrix}
+            \cos(\gamma)\sin(\alpha) + \cos(\alpha)\cos(\beta)\sin(\gamma) \\
+            \sin(\beta)\sin(\gamma) \\
+            \cos(\alpha)\cos(\gamma)-\cos(\beta)\sin(\alpha)\sin(\gamma)
+        \end{bmatrix}}
+    $$
+
+    Parameters
+    ----------
+    in_shape: Tuple[int]
+        Shape of the input tensor
+    out_shape: Tuple[int]
+        Shape of the output tensor
+    filter_basis: FilterBasis
+        Filter basis to use
+    grid_in: str
+        Grid type for the input tensor
+    grid_out: str
+        Grid type for the output tensor
+    theta_cutoff: float
+        Theta cutoff for the filter basis
+    theta_eps: float
+        Epsilon for the theta cutoff
+    transpose_normalization: bool
+        Whether to transpose the normalization
+    basis_norm_mode: str
+        Normalization mode for the filter basis
+    merge_quadrature: bool
+        Whether to merge the quadrature weights
+
+    Returns
+    -------
+    out_idx: torch.Tensor
+        Indices of the output tensor
+    out_vals: torch.Tensor
+        Values of the output tensor
+    """
+
+    assert len(in_shape) == 2
+    assert len(out_shape) == 2
+
+    kernel_size = filter_basis.kernel_size
+
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
 
@@ -102,10 +153,43 @@ def _split_distributed_convolution_tensor_s2(
 class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
     """
     Distributed version of Discrete-continuous convolutions (DISCO) on the 2-Sphere as described in [1].
-
-    [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
-
     We assume the data can be splitted in polar and azimuthal directions.
+
+    Parameters
+    ----------
+    in_channels: int
+        Number of input channels
+    out_channels: int
+        Number of output channels
+    in_shape: Tuple[int]
+        Shape of the input tensor
+    out_shape: Tuple[int]
+        Shape of the output tensor
+    kernel_shape: Union[int, Tuple[int], Tuple[int, int]]
+        Shape of the kernel
+    basis_type: Optional[str]
+        Type of basis to use
+    basis_norm_mode: Optional[str]
+        Normalization mode for the filter basis
+    groups: Optional[int]
+        Number of groups
+    grid_in: Optional[str]
+        Grid type for the input tensor  
+    grid_out: Optional[str]
+        Grid type for the output tensor
+    bias: Optional[bool]
+        Whether to use bias
+    theta_cutoff: Optional[float]
+        Theta cutoff for the filter basis
+
+    Returns
+    -------
+    out: torch.Tensor
+        Output tensor
+
+    References
+    ----------
+    [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
     """
 
     def __init__(
@@ -247,6 +331,40 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     """
     Discrete-continuous transpose convolutions (DISCO) on the 2-Sphere as described in [1].
 
+    Parameters
+    ----------
+    in_channels: int
+        Number of input channels
+    out_channels: int
+        Number of output channels
+    in_shape: Tuple[int]
+        Shape of the input tensor
+    out_shape: Tuple[int]
+        Shape of the output tensor
+    kernel_shape: Union[int, Tuple[int], Tuple[int, int]]
+        Shape of the kernel
+    basis_type: Optional[str]
+        Type of basis to use
+    basis_norm_mode: Optional[str]
+        Normalization mode for the filter basis
+    groups: Optional[int]
+        Number of groups
+    grid_in: Optional[str]
+        Grid type for the input tensor  
+    grid_out: Optional[str]
+        Grid type for the output tensor
+    bias: Optional[bool]
+        Whether to use bias
+    theta_cutoff: Optional[float]
+        Theta cutoff for the filter basis
+
+    Returns
+    -------
+    out: torch.Tensor
+        Output tensor
+
+    References
+    ----------
     [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
 
     We assume the data can be splitted in polar and azimuthal directions.
