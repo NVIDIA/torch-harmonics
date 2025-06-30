@@ -37,7 +37,14 @@ from torch.autograd import gradcheck
 import torch_harmonics as th
 
 class TestLegendrePolynomials(unittest.TestCase):
+    """
+    Test the associated Legendre polynomials.
 
+    Parameters
+    ----------
+    verbose : bool, optional
+        Whether to print verbose output, by default False
+    """
     def setUp(self):
         self.cml = lambda m, l: math.sqrt((2 * l + 1) / 4 / math.pi) * math.sqrt(math.factorial(l - m) / math.factorial(l + m))
         self.pml = dict()
@@ -60,6 +67,14 @@ class TestLegendrePolynomials(unittest.TestCase):
         self.tol = 1e-9
 
     def test_legendre(self, verbose=False):
+        """
+        Test the computation of associated Legendre polynomials.
+
+        Parameters
+        ----------
+        verbose : bool, optional
+            Whether to print verbose output, by default False
+        """
         if verbose:
             print("Testing computation of associated Legendre polynomials")
 
@@ -73,9 +88,15 @@ class TestLegendrePolynomials(unittest.TestCase):
 
 
 class TestSphericalHarmonicTransform(unittest.TestCase):
+    """
+    Test the spherical harmonic transform.
 
+    Parameters
+    ----------
+    verbose : bool, optional
+        Whether to print verbose output, by default False
+    """
     def setUp(self):
-
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
         else:
@@ -95,6 +116,26 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         ]
     )
     def test_sht(self, nlat, nlon, batch_size, norm, grid, tol, verbose):
+        """
+        Test the spherical harmonic transform.
+
+        Parameters
+        ----------
+        nlat : int
+            Number of latitude points
+        nlon : int
+            Number of longitude points
+        batch_size : int
+            Batch size
+        norm : str
+            Normalization type
+        grid : str
+            Grid type
+        tol : float
+            Tolerance for numerical equivalence
+        verbose : bool, optional
+            Whether to print verbose output, by default False
+        """
         if verbose:
             print(f"Testing real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization on {self.device.type} device")
 
@@ -154,6 +195,27 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         ]
     )
     def test_sht_grads(self, nlat, nlon, batch_size, norm, grid, tol, verbose):
+        """
+        Test the gradients of the spherical harmonic transform.
+
+        Parameters
+        ----------
+        nlat : int
+            Number of latitude points
+        nlon : int
+            Number of longitude points
+        batch_size : int
+            Batch size
+        norm : str
+            Normalization type
+        grid : str
+            Grid type
+        tol : float
+            Tolerance for numerical equivalence
+        verbose : bool, optional
+            Whether to print verbose output, by default False
+        """
+
         if verbose:
             print(f"Testing gradients of real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization")
 
