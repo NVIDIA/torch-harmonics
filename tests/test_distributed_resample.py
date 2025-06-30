@@ -41,6 +41,34 @@ import torch_harmonics.distributed as thd
 
 
 class TestDistributedResampling(unittest.TestCase):
+    """
+    Test the distributed resampling module.
+    
+    Parameters
+    ----------
+    nlat_in : int
+        Number of latitude points in input
+    nlon_in : int
+        Number of longitude points in input 
+    nlat_out : int
+        Number of latitude points in output
+    nlon_out : int
+        Number of longitude points in output
+    batch_size : int
+        Batch size
+    num_chan : int
+        Number of channels
+    grid_in : str
+        Grid type for input
+    grid_out : str
+        Grid type for output
+    mode : str
+        Resampling mode
+    tol : float
+        Tolerance for numerical equivalence
+    verbose : bool
+        Whether to print verbose output
+    """
 
     @classmethod
     def setUpClass(cls):
@@ -118,6 +146,19 @@ class TestDistributedResampling(unittest.TestCase):
         dist.destroy_process_group(None)
 
     def _split_helper(self, tensor):
+        """
+        Split the tensor along the last dimension into chunks along the W dimension, and then along the H dimension.
+        
+        Parameters
+        ----------
+        tensor : torch.Tensor
+            The tensor to split
+
+        Returns
+        -------
+        torch.Tensor
+            The split tensor
+        """
         with torch.no_grad():
             # split in W
             tensor_list_local = thd.split_tensor_along_dim(tensor, dim=-1, num_chunks=self.grid_size_w)
@@ -130,6 +171,25 @@ class TestDistributedResampling(unittest.TestCase):
         return tensor_local
 
     def _gather_helper_fwd(self, tensor, B, C, convolution_dist):
+        """
+        Gather the tensor along the W and H dimensions.
+        
+        Parameters
+        ----------
+        tensor : torch.Tensor
+            The tensor to gather
+        B : int
+            Batch size
+        C : int
+            Number of channels
+        convolution_dist : thd.DistributedResampleS2
+            The distributed resampling object
+
+        Returns
+        -------
+        torch.Tensor
+            The gathered tensor
+        """
         # we need the shapes
         lat_shapes = convolution_dist.lat_out_shapes
         lon_shapes = convolution_dist.lon_out_shapes
@@ -157,6 +217,26 @@ class TestDistributedResampling(unittest.TestCase):
         return tensor_gather
 
     def _gather_helper_bwd(self, tensor, B, C, resampling_dist):
+        """
+        Gather the tensor along the W and H dimensions.
+        
+        Parameters
+        ----------
+        tensor : torch.Tensor
+            The tensor to gather
+        B : int
+            Batch size
+        C : int
+            Number of channels
+        resampling_dist : thd.DistributedResampleS2
+            The distributed resampling object
+
+        Returns
+        -------
+        torch.Tensor
+            The gathered tensor
+        """
+
         # we need the shapes
         lat_shapes = resampling_dist.lat_in_shapes
         lon_shapes = resampling_dist.lon_in_shapes
@@ -196,6 +276,34 @@ class TestDistributedResampling(unittest.TestCase):
     def test_distributed_resampling(
             self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, grid_in, grid_out, mode, tol, verbose
     ):
+        """
+        Test the distributed resampling module.
+
+        Parameters
+        ----------
+        nlat_in : int
+            Number of latitude points in input
+        nlon_in : int
+            Number of longitude points in input
+        nlat_out : int
+            Number of latitude points in output
+        nlon_out : int
+            Number of longitude points in output
+        batch_size : int
+            Batch size
+        num_chan : int
+            Number of channels
+        grid_in : str
+            Grid type for input
+        grid_out : str
+            Grid type for output
+        mode : str
+            Resampling mode
+        tol : float
+            Tolerance for numerical equivalence
+        verbose : bool
+            Whether to print verbose output
+        """
 
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
 
