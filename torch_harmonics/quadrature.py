@@ -85,6 +85,16 @@ def _precompute_grid(n: int, grid: Optional[str]="equidistant", a: Optional[floa
 def _precompute_longitudes(nlon: int):
     r"""
     Convenience routine to precompute longitudes
+
+    Parameters
+    -----------
+    nlon: int
+        Number of longitude points
+
+    Returns
+    -------
+    lons: torch.Tensor
+        Tensor of longitude points
     """
     
     lons = torch.linspace(0, 2 * math.pi, nlon+1, dtype=torch.float64, requires_grad=False)[:-1]
@@ -95,6 +105,20 @@ def _precompute_longitudes(nlon: int):
 def _precompute_latitudes(nlat: int, grid: Optional[str]="equiangular") -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Convenience routine to precompute latitudes
+
+    Parameters
+    -----------
+    nlat: int
+        Number of latitude points
+    grid: Optional[str]
+        Grid type ("equiangular", "legendre-gauss", "lobatto", "equidistant"), by default "equiangular"
+
+    Returns
+    -------
+    lats: torch.Tensor
+        Tensor of latitude points
+    wlg: torch.Tensor
+        Tensor of quadrature weights
     """
         
     # compute coordinates in the cosine theta domain
@@ -112,6 +136,24 @@ def trapezoidal_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0,
     r"""
     Helper routine which returns equidistant nodes with trapezoidal weights
     on the interval [a, b]
+
+    Parameters
+    -----------
+    n: int
+        Number of quadrature nodes
+    a: Optional[float]
+        Lower bound of the interval
+    b: Optional[float]
+        Upper bound of the interval
+    periodic: Optional[bool]
+        Whether the grid is periodic
+
+    Returns
+    ------- 
+    xlg: torch.Tensor
+        Tensor of quadrature nodes  
+    wlg: torch.Tensor
+        Tensor of quadrature weights
     """
 
     xlg = torch.as_tensor(np.linspace(a, b, n, endpoint=periodic))
@@ -128,6 +170,22 @@ def legendre_gauss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1
     r"""
     Helper routine which returns the Legendre-Gauss nodes and weights
     on the interval [a, b]
+
+    Parameters
+    -----------
+    n: int
+        Number of quadrature nodes
+    a: Optional[float]
+        Lower bound of the interval
+    b: Optional[float]
+        Upper bound of the interval
+
+    Returns
+    -------
+    xlg: torch.Tensor
+        Tensor of quadrature nodes  
+    wlg: torch.Tensor
+        Tensor of quadrature weights
     """
 
     xlg, wlg = np.polynomial.legendre.leggauss(n)
@@ -144,6 +202,27 @@ def lobatto_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0,
     r"""
     Helper routine which returns the Legendre-Gauss-Lobatto nodes and weights
     on the interval [a, b]
+
+    Parameters
+    -----------
+    n: int
+        Number of quadrature nodes
+    a: Optional[float]
+        Lower bound of the interval
+    b: Optional[float]
+        Upper bound of the interval
+    tol: Optional[float]
+        Tolerance for the iteration
+    maxiter: Optional[int]
+        Maximum number of iterations
+
+    Returns
+    -------
+    tlg: torch.Tensor
+        Tensor of quadrature nodes
+    wlg: torch.Tensor
+        Tensor of quadrature weights
+
     """
 
     wlg = torch.zeros((n,), dtype=torch.float64, requires_grad=False)
@@ -187,6 +266,24 @@ def clenshaw_curtiss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]
     Computation of the Clenshaw-Curtis quadrature nodes and weights.
     This implementation follows
 
+    Parameters
+    -----------
+    n: int
+        Number of quadrature nodes
+    a: Optional[float]
+        Lower bound of the interval
+    b: Optional[float]
+        Upper bound of the interval
+
+    Returns
+    -------
+    tcc: torch.Tensor
+        Tensor of quadrature nodes
+    wcc: torch.Tensor
+        Tensor of quadrature weights
+
+    References
+    ----------
     [1] Joerg Waldvogel, Fast Construction of the Fejer and Clenshaw-Curtis Quadrature Rules; BIT Numerical Mathematics, Vol. 43, No. 1, pp. 001–018.
     """
 
@@ -224,8 +321,25 @@ def clenshaw_curtiss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]
 def fejer2_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Computation of the Fejer quadrature nodes and weights.
-    This implementation follows
 
+    Parameters
+    -----------
+    n: int
+        Number of quadrature nodes
+    a: Optional[float]
+        Lower bound of the interval
+    b: Optional[float]
+        Upper bound of the interval
+
+    Returns
+    -------
+    tcc: torch.Tensor
+        Tensor of quadrature nodes
+    wcc: torch.Tensor
+        Tensor of quadrature weights
+
+    References
+    ----------
     [1] Joerg Waldvogel, Fast Construction of the Fejer and Clenshaw-Curtis Quadrature Rules; BIT Numerical Mathematics, Vol. 43, No. 1, pp. 001–018.
     """
 
