@@ -43,6 +43,40 @@ from functools import partial
 class SphericalFourierNeuralOperatorBlock(nn.Module):
     """
     Helper module for a single SFNO/FNO block. Can use both FFTs and SHTs to represent either FNO or SFNO blocks.
+
+    Parameters
+    ----------
+    forward_transform : torch.nn.Module
+        Forward transform to use for the block
+    inverse_transform : torch.nn.Module
+        Inverse transform to use for the block
+    input_dim : int
+        Input dimension
+    output_dim : int
+        Output dimension
+    mlp_ratio : float, optional
+        MLP expansion ratio, by default 2.0
+    drop_rate : float, optional
+        Dropout rate, by default 0.0
+    drop_path : float, optional
+        Drop path rate, by default 0.0
+    act_layer : torch.nn.Module, optional
+        Activation function to use, by default nn.GELU
+    norm_layer : str, optional
+        Type of normalization to use, by default "none"
+    inner_skip : str, optional
+        Type of inner skip connection to use, by default "none"
+    outer_skip : str, optional
+        Type of outer skip connection to use, by default "identity"
+    use_mlp : bool, optional
+        Whether to use MLP layers, by default True
+    bias : bool, optional
+        Whether to use bias, by default False
+
+    Returns
+    -------
+    torch.Tensor
+        Output tensor
     """
 
     def __init__(
@@ -123,12 +157,12 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         Forward pass through the SFNO block.
         
         Parameters
-        -----------
+        ----------
         x : torch.Tensor
             Input tensor
             
         Returns
-        -------
+        ----------
         torch.Tensor
             Output tensor after processing through the block
         """
@@ -198,7 +232,7 @@ class SphericalFourierNeuralOperator(nn.Module):
         Whether to use a bias, by default False
 
     Example:
-    --------
+    ----------
     >>> model = SphericalFourierNeuralOperator(
     ...         img_size=(128, 256),
     ...         scale_factor=4,
@@ -211,7 +245,7 @@ class SphericalFourierNeuralOperator(nn.Module):
     torch.Size([1, 2, 128, 256])
 
     References
-    -----------
+    ----------
     .. [1] Bonev B., Kurth T., Hundt C., Pathak, J., Baust M., Kashinath K., Anandkumar A.;
         "Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere" (2023).
         ICML 2023, https://arxiv.org/abs/2306.03838.
@@ -385,12 +419,12 @@ class SphericalFourierNeuralOperator(nn.Module):
         Forward pass through the feature extraction layers.
         
         Parameters
-        -----------
+        ----------
         x : torch.Tensor
             Input tensor
             
         Returns
-        -------
+        ----------
         torch.Tensor
             Features after processing through the network
         """
@@ -406,12 +440,12 @@ class SphericalFourierNeuralOperator(nn.Module):
         Forward pass through the complete SFNO model.
         
         Parameters
-        -----------
+        ----------
         x : torch.Tensor
             Input tensor of shape (batch_size, in_chans, height, width)
             
         Returns
-        -------
+        ----------
         torch.Tensor
             Output tensor of shape (batch_size, out_chans, height, width)
         """

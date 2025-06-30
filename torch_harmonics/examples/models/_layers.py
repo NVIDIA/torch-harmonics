@@ -118,13 +118,21 @@ def trunc_normal_(tensor, mean=0.0, std=1.0, a=-2.0, b=2.0):
     with values outside :math:`[a, b]` redrawn until they are within
     the bounds. The method used for generating the random values works
     best when :math:`a \leq \text{mean} \leq b`.
-    Args:
-    tensor: an n-dimensional `torch.Tensor`
-    mean: the mean of the normal distribution
-    std: the standard deviation of the normal distribution
-    a: the minimum cutoff value
-    b: the maximum cutoff value
-    Examples:
+    
+    Parameters
+    -----------
+    tensor: torch.Tensor
+        an n-dimensional `torch.Tensor`
+    mean: float
+        the mean of the normal distribution
+    std: float
+        the standard deviation of the normal distribution
+    a: float
+        the minimum cutoff value, by default -2.0
+    b: float
+        the maximum cutoff value
+    Examples
+    --------
     >>> w = torch.empty(3, 5)
     >>> nn.init.trunc_normal_(w)
     """
@@ -139,6 +147,20 @@ def drop_path(x: torch.Tensor, drop_prob: float = 0.0, training: bool = False) -
     See discussion: https://github.com/tensorflow/tpu/issues/494#issuecomment-532968956 ... I've opted for
     changing the layer and argument names to 'drop path' rather than mix DropConnect as a layer name and use
     'survival rate' as the argument.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Input tensor
+    drop_prob : float, optional
+        Probability of dropping a path, by default 0.0
+    training : bool, optional
+        Whether the model is in training mode, by default False
+
+    Returns
+    -------
+    torch.Tensor
+        Output tensor
     """
     if drop_prob == 0.0 or not training:
         return x
@@ -159,7 +181,7 @@ class DropPath(nn.Module):
     training of very deep networks.
     
     Parameters
-    -----------
+    ----------
     drop_prob : float, optional
         Probability of dropping a path, by default None
     """
@@ -173,7 +195,7 @@ class DropPath(nn.Module):
         Forward pass with drop path regularization.
         
         Parameters
-        -----------
+    ----------
         x : torch.Tensor
             Input tensor
             
@@ -193,7 +215,7 @@ class PatchEmbed(nn.Module):
     higher dimensional embedding space using convolutional layers.
     
     Parameters
-    -----------
+    ----------
     img_size : tuple, optional
         Input image size (height, width), by default (224, 224)
     patch_size : tuple, optional
@@ -220,7 +242,7 @@ class PatchEmbed(nn.Module):
         Forward pass of patch embedding.
         
         Parameters
-        -----------
+        ----------
         x : torch.Tensor
             Input tensor of shape (batch_size, channels, height, width)
             
@@ -245,7 +267,7 @@ class MLP(nn.Module):
     and an activation function, with optional dropout and gradient checkpointing.
     
     Parameters
-    -----------
+    ----------
     in_features : int
         Number of input features
     hidden_features : int, optional
@@ -301,7 +323,7 @@ class MLP(nn.Module):
         Forward pass with gradient checkpointing.
         
         Parameters
-        -----------
+        ----------
         x : torch.Tensor
             Input tensor
             
@@ -317,7 +339,7 @@ class MLP(nn.Module):
         Forward pass of the MLP.
         
         Parameters
-        -----------
+        ----------
         x : torch.Tensor
             Input tensor
             
@@ -364,7 +386,7 @@ class RealFFT2(nn.Module):
         Forward pass: compute real FFT2D.
         
         Parameters
-        -----------
+        ----------
         x : torch.Tensor
             Input tensor
             
@@ -410,7 +432,7 @@ class InverseRealFFT2(nn.Module):
         Forward pass: compute inverse real FFT2D.
         
         Parameters
-        -----------
+        ----------
         x : torch.Tensor
             Input FFT coefficients
             
@@ -431,7 +453,7 @@ class LayerNorm(nn.Module):
     applying normalization, and then transposing back.
     
     Parameters
-    -----------
+    ----------
     in_channels : int
         Number of input channels
     eps : float, optional
@@ -458,7 +480,7 @@ class LayerNorm(nn.Module):
         Forward pass with channel dimension handling.
         
         Parameters
-        -----------
+        ----------
         x : torch.Tensor
             Input tensor with channel dimension at -3
             
@@ -477,7 +499,7 @@ class SpectralConvS2(nn.Module):
     domain via the RealFFT2 and InverseRealFFT2 wrappers.
     
     Parameters
-    -----------
+    ----------
     forward_transform : nn.Module
         Forward transform (SHT or FFT)
     inverse_transform : nn.Module
@@ -538,7 +560,7 @@ class SpectralConvS2(nn.Module):
         Forward pass of spectral convolution.
         
         Parameters
-        -----------
+        ----------
         x : torch.Tensor
             Input tensor
             
@@ -576,7 +598,7 @@ class PositionEmbedding(nn.Module, metaclass=abc.ABCMeta):
     that add positional information to input tensors.
     
     Parameters
-    -----------
+    ----------
     img_shape : tuple, optional
         Image shape (height, width), by default (480, 960)
     grid : str, optional
@@ -616,7 +638,7 @@ class SequencePositionEmbedding(PositionEmbedding):
     used in the original Transformer paper, adapted for 2D spatial data.
     
     Parameters
-    -----------
+    ----------
     img_shape : tuple, optional
         Image shape (height, width), by default (480, 960)
     grid : str, optional
@@ -696,7 +718,7 @@ class LearnablePositionEmbedding(PositionEmbedding):
     latitude-only or full latitude-longitude embeddings.
     
     Parameters
-    -----------
+    ----------
     img_shape : tuple, optional
         Image shape (height, width), by default (480, 960)
     grid : str, optional
