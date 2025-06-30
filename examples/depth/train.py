@@ -67,7 +67,7 @@ def count_parameters(model):
     Count the number of trainable parameters in a model.
     
     Parameters
-    -----------
+    ----------
     model : torch.nn.Module
         The model to count parameters for
         
@@ -87,7 +87,7 @@ def log_weights_and_grads(exp_dir, model, iters=1):
     Saves model weights and gradients to a file for analysis.
     
     Parameters
-    -----------
+    ----------
     exp_dir : str
         Experiment directory to save logs in
     model : torch.nn.Module
