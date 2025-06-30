@@ -492,10 +492,19 @@ class NormalLossS2(SphericalLossBase):
     Surface normals are computed by calculating gradients in latitude and longitude
     directions using FFT, then constructing 3D normal vectors that are normalized.
 
-    Args:
-        nlat (int): Number of latitude points
-        nlon (int): Number of longitude points
-        grid (str, optional): Grid type. Defaults to "equiangular".
+    Parameters
+    ----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    grid : str, optional
+        Grid type, by default "equiangular"
+
+    Returns
+    -------
+    torch.Tensor
+        Combined loss term
     """
 
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
