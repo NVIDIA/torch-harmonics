@@ -371,6 +371,41 @@ class AttentionWrapper(nn.Module):
 
 
 class TransformerBlock(nn.Module):
+    """
+    Transformer block with attention and MLP.
+    
+    Parameters
+    ----------
+    in_shape : tuple
+        Input shape (height, width)
+    out_shape : tuple
+        Output shape (height, width)
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    mlp_hidden_channels : int
+        Number of hidden channels in MLP
+    nrep : int, optional
+        Number of repetitions of attention and MLP blocks, by default 1
+    heads : int, optional
+        Number of attention heads, by default 1
+    kernel_shape : tuple, optional
+        Kernel shape for neighborhood attention, by default (3, 3)
+    activation : torch.nn.Module, optional
+        Activation function to use, by default nn.GELU
+    att_drop_rate : float, optional
+        Attention dropout rate, by default 0.0
+    drop_path_rates : float or list, optional
+        Drop path rates for each block, by default 0.0
+    attention_mode : str, optional
+        Attention mode ("neighborhood", "global"), by default "neighborhood"
+    attn_kernel_shape : tuple, optional
+        Kernel shape for neighborhood attention, by default (7, 7)
+    bias : bool, optional
+        Whether to use bias, by default True
+    """
+    
     def __init__(
         self,
         in_shape,
@@ -493,6 +528,33 @@ class TransformerBlock(nn.Module):
 
 
 class Upsampling(nn.Module):
+    """
+    Upsampling block for the Segformer model.
+    
+    Parameters
+    ----------
+    in_shape : tuple
+        Input shape (height, width)
+    out_shape : tuple
+        Output shape (height, width)
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    hidden_channels : int
+        Number of hidden channels in MLP
+    mlp_bias : bool, optional
+        Whether to use bias in MLP, by default True
+    kernel_shape : tuple, optional
+        Kernel shape for convolution, by default (3, 3)
+    conv_bias : bool, optional
+        Whether to use bias in convolution, by default False
+    activation : torch.nn.Module, optional
+        Activation function to use, by default nn.GELU
+    use_mlp : bool, optional
+        Whether to use MLP, by default False
+    """
+    
     def __init__(
         self,
         in_shape,
@@ -534,7 +596,7 @@ class Segformer(nn.Module):
     Spherical segformer model designed to approximate mappings from spherical signals to spherical segmentation masks
 
     Parameters
-    -----------
+    ----------
     img_shape : tuple, optional
         Shape of the input channels, by default (128, 256)
     kernel_shape: tuple, int
@@ -566,7 +628,7 @@ class Segformer(nn.Module):
         Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "instance_norm"
 
     Example
-    -----------
+    ----------
     >>> model = Segformer(
     ...         img_size=(128, 256),
     ...         in_chans=3,

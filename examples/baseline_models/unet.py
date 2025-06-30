@@ -43,6 +43,37 @@ from functools import partial
 
 
 class DownsamplingBlock(nn.Module):
+    """
+    Downsampling block for the UNet model.
+    
+    Parameters
+    ----------
+    in_shape : tuple
+        Input shape (height, width)
+    out_shape : tuple
+        Output shape (height, width)
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    nrep : int, optional
+        Number of repetitions of conv blocks, by default 1
+    kernel_shape : tuple, optional
+        Kernel shape for convolutions, by default (3, 3)
+    activation : callable, optional
+        Activation function, by default nn.ReLU
+    transform_skip : bool, optional
+        Whether to transform skip connections, by default False
+    drop_conv_rate : float, optional
+        Dropout rate for convolutions, by default 0.
+    drop_path_rate : float, optional
+        Drop path rate, by default 0.
+    drop_dense_rate : float, optional
+        Dropout rate for dense layers, by default 0.
+    downsampling_mode : str, optional
+        Downsampling mode ("bilinear", "conv"), by default "bilinear"
+    """
+    
     def __init__(
 	    self,
         in_shape,
