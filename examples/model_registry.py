@@ -49,7 +49,7 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
     computational budgets and performance requirements.
     
     Parameters
-    -----------
+    ----------
     img_size : tuple, optional
         Input image size as (height, width), by default (128, 256)
     in_chans : int, optional
@@ -64,7 +64,7 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
         Grid type for spherical models ("equiangular", "legendre-gauss", etc.), by default "equiangular"
     
     Returns
-    -------
+    ----------
     dict
         Dictionary mapping model names to partial functions that can be called
         to instantiate the corresponding model with the specified parameters.
@@ -96,13 +96,13 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
         - vit_sc2_layers4_e128: Vision Transformer variant (medium)
     
     Examples
-    --------
+    ----------
     >>> model_registry = get_baseline_models(img_size=(64, 128), in_chans=2, out_chans=1)
     >>> model = model_registry['sfno_sc2_layers4_e32']()
     >>> print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     Notes
-    -----
+    ----------
     - Model names follow the pattern: {model_type}_{scale_factor}_{layers}_{embed_dim}
     - 'sc2' indicates scale factor of 2 (downsampling by 2)
     - 'e32', 'e128', 'e256' indicate embedding dimensions
