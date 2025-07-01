@@ -62,12 +62,27 @@ class FilterBasis(metaclass=abc.ABCMeta):
         self,
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
     ):
-
+        """
+        Initialize the filter basis.
+        
+        Parameters
+        -----------
+        kernel_shape: Union[int, Tuple[int], Tuple[int, int]]
+            Shape of the kernel, can be an integer or tuple of integers
+        """
         self.kernel_shape = kernel_shape
 
     @property
     @abc.abstractmethod
     def kernel_size(self):
+        """
+        Abstract property that should return the size of the kernel.
+        
+        Returns
+        -------
+        kernel_size: int
+            The size of the kernel
+        """
         raise NotImplementedError
 
     # @abc.abstractmethod
@@ -108,7 +123,12 @@ class PiecewiseLinearFilterBasis(FilterBasis):
         self,
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
     ):
-
+        """
+        Initialize the piecewise linear filter basis.
+        
+        Parameters:
+        kernel_shape: shape of the kernel, can be an integer or tuple of integers
+        """
         if isinstance(kernel_shape, int):
             kernel_shape = [kernel_shape]
         if len(kernel_shape) == 1:
@@ -120,6 +140,14 @@ class PiecewiseLinearFilterBasis(FilterBasis):
 
     @property
     def kernel_size(self):
+        """
+        Compute the kernel size for piecewise linear basis.
+        
+        Returns
+        -------
+        kernel_size: int
+            The size of the kernel
+        """
         return (self.kernel_shape[0] // 2) * self.kernel_shape[1] + self.kernel_shape[0] % 2
 
     def _compute_support_vals_isotropic(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float):
@@ -227,7 +255,14 @@ class MorletFilterBasis(FilterBasis):
         self,
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
     ):
-
+        """
+        Initialize the Morlet filter basis.
+        
+        Parameters
+        -----------
+        kernel_shape: Union[int, Tuple[int], Tuple[int, int]]
+            Shape of the kernel, can be an integer or tuple of integers
+        """
         if isinstance(kernel_shape, int):
             kernel_shape = [kernel_shape, kernel_shape]
         if len(kernel_shape) != 2:
@@ -237,12 +272,50 @@ class MorletFilterBasis(FilterBasis):
 
     @property
     def kernel_size(self):
+        """
+        Compute the kernel size for Morlet basis.
+        
+        Returns
+        -------
+        kernel_size: int
+            The size of the kernel
+        """
         return self.kernel_shape[0] * self.kernel_shape[1]
 
     def gaussian_window(self, r: torch.Tensor, width: float = 1.0):
+        """
+        Compute Gaussian window function.
+        
+        Parameters
+        -----------
+        r: torch.Tensor
+            Radial distance tensor
+        width: float
+            Width parameter of the Gaussian
+        
+        Returns
+        -------
+        out: torch.Tensor
+            Gaussian window values
+        """
         return 1 / (2 * math.pi * width**2) * torch.exp(-0.5 * r**2 / (width**2))
 
     def hann_window(self, r: torch.Tensor, width: float = 1.0):
+        """
+        Compute Hann window function.
+        
+        Parameters
+        -----------
+        r: torch.Tensor
+            Radial distance tensor
+        width: float
+            Width parameter of the Hann window
+        
+        Returns
+        -------
+        out: torch.Tensor
+            Hann window values
+        """
         return torch.cos(0.5 * torch.pi * r / width) ** 2
 
     def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float, width: float = 1.0):
@@ -285,7 +358,14 @@ class ZernikeFilterBasis(FilterBasis):
         self,
         kernel_shape: Union[int, Tuple[int]],
     ):
-
+        """
+        Initialize the Zernike filter basis.
+        
+        Parameters
+        -----------
+        kernel_shape: Union[int, Tuple[int]]
+            Shape of the kernel, can be an integer or tuple of integers
+        """
         if isinstance(kernel_shape, tuple) or isinstance(kernel_shape, list):
             kernel_shape = kernel_shape[0]
         if not isinstance(kernel_shape, int):
@@ -295,9 +375,34 @@ class ZernikeFilterBasis(FilterBasis):
 
     @property
     def kernel_size(self):
+        """
+        Compute the kernel size for Zernike basis.
+        
+        Returns
+        -------
+        kernel_size: int
+            The size of the kernel
+        """
         return (self.kernel_shape * (self.kernel_shape + 1)) // 2
 
     def zernikeradial(self, r: torch.Tensor, n: torch.Tensor, m: torch.Tensor):
+        """
+        Compute radial Zernike polynomials.
+        
+        Parameters
+        -----------
+        r: torch.Tensor
+            Radial distance tensor
+        n: torch.Tensor
+            Principal quantum number
+        m: torch.Tensor
+            Azimuthal quantum number
+        
+        Returns
+        -------
+        out: torch.Tensor
+            Radial Zernike polynomial values
+        """
         out = torch.zeros_like(r)
         bound = (n - m) // 2 + 1
         max_bound = bound.max().item()
@@ -310,6 +415,25 @@ class ZernikeFilterBasis(FilterBasis):
         return out
 
     def zernikepoly(self, r: torch.Tensor, phi: torch.Tensor, n: torch.Tensor, l: torch.Tensor):
+        """
+        Compute Zernike polynomials.
+        
+        Parameters
+        -----------
+        r: torch.Tensor
+            Radial distance tensor
+        phi: torch.Tensor
+            Azimuthal angle tensor
+        n: torch.Tensor
+            Principal quantum number
+        l: torch.Tensor
+            Azimuthal quantum number
+        
+        Returns
+        -------
+        out: torch.Tensor
+            Zernike polynomial values
+        """
         m = 2 * l - n
         return torch.where(m < 0, self.zernikeradial(r, n, -m) * torch.sin(m * phi), self.zernikeradial(r, n, m) * torch.cos(m * phi))
 

@@ -63,13 +63,35 @@ except:
 
 # helper routine for counting number of paramerters in model
 def count_parameters(model):
+    """
+    Count the number of trainable parameters in a model.
+    
+    Parameters
+    -----------
+    model : torch.nn.Module
+        The model to count parameters for
+        
+    Returns
+    -------
+    int
+        Total number of trainable parameters
+    """
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 # convenience function for logging weights and gradients
 def log_weights_and_grads(model, iters=1):
     """
-    Helper routine intended for debugging purposes
+    Helper routine intended for debugging purposes.
+    
+    Saves model weights and gradients to a file for analysis.
+    
+    Parameters
+    -----------
+    model : torch.nn.Module
+        Model whose weights and gradients to log
+    iters : int, optional
+        Current iteration number, by default 1
     """
     root_path = os.path.join(os.path.dirname(__file__), "weights_and_grads")
 
@@ -97,7 +119,40 @@ def autoregressive_inference(
     nics=50,
     device=torch.device("cpu"),
 ):
-
+    """
+    Perform autoregressive inference with a trained model and compare to classical solver.
+    
+    Parameters
+    -----------
+    model : torch.nn.Module
+        Trained model to evaluate
+    dataset : torch.utils.data.Dataset
+        Dataset containing solver and normalization parameters
+    loss_fn : callable
+        Loss function for evaluation
+    metrics_fns : dict
+        Dictionary of metric functions to compute
+    path_root : str
+        Root path for saving inference outputs
+    nsteps : int
+        Number of solver steps per autoregressive step
+    autoreg_steps : int, optional
+        Number of autoregressive steps, by default 10
+    nskip : int, optional
+        Skip interval for plotting, by default 1
+    plot_channel : int, optional
+        Channel to plot, by default 0
+    nics : int, optional
+        Number of initial conditions to test, by default 50
+    device : torch.device, optional
+        Device to run inference on, by default torch.device("cpu")
+        
+    Returns
+    -------
+    tuple
+        (losses, metrics, model_times, solver_times) where losses and metrics are tensors
+        of per-sample values, and model_times and solver_times are timing information
+    """
     model.eval()
 
     # make output
@@ -238,7 +293,42 @@ def train_model(
     logging=True,
     device=torch.device("cpu"),
 ):
-
+    """
+    Train a model with the given parameters.
+    
+    Parameters
+    -----------
+    model : torch.nn.Module
+        Model to train
+    dataloader : torch.utils.data.DataLoader
+        DataLoader for training data
+    loss_fn : callable
+        Loss function
+    metrics_fns : dict
+        Dictionary of metric functions to compute
+    optimizer : torch.optim.Optimizer
+        Optimizer for training
+    gscaler : torch.cuda.amp.GradScaler
+        Gradient scaler for mixed precision training
+    scheduler : torch.optim.lr_scheduler._LRScheduler, optional
+        Learning rate scheduler, by default None
+    nepochs : int, optional
+        Number of training epochs, by default 20
+    nfuture : int, optional
+        Number of future steps to predict, by default 0
+    num_examples : int, optional
+        Number of examples per epoch, by default 256
+    num_valid : int, optional
+        Number of validation examples, by default 8
+    amp_mode : str, optional
+        Mixed precision mode ("none", "fp16", "bf16"), by default "none"
+    log_grads : int, optional
+        Frequency of gradient logging (0 for no logging), by default 0
+    logging : bool, optional
+        Whether to enable logging, by default True
+    device : torch.device, optional
+        Device to train on, by default torch.device("cpu")
+    """
     train_start = time.time()
 
     # set AMP type

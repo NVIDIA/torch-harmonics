@@ -41,9 +41,51 @@ import torch_harmonics.distributed as thd
 
 
 class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
+    """
+    Test the distributed discrete-continuous convolution module.
+    
+    Parameters
+    ----------
+    nlat_in : int
+        Number of latitude points in input
+    nlon_in : int
+        Number of longitude points in input
+    nlat_out : int
+        Number of latitude points in output
+    nlon_out : int
+        Number of longitude points in output
+    batch_size : int
+        Batch size
+    num_chan : int
+        Number of channels
+    kernel_shape : tuple
+        Kernel shape
+    basis_type : str
+        Basis type
+    basis_norm_mode : str
+        Basis normalization mode
+    groups : int
+        Number of groups
+    grid_in : str
+        Grid type for input
+    grid_out : str
+        Grid type for output
+    transpose : bool
+        Whether to transpose the convolution
+    tol : float
+        Tolerance for numerical equivalence
+    """
 
     @classmethod
     def setUpClass(cls):
+        """
+        Set up the distributed convolution test.
+        
+        Parameters
+        ----------
+        cls : TestDistributedDiscreteContinuousConvolution
+            The test class instance
+        """
 
         # set up distributed
         cls.world_rank = int(os.getenv("WORLD_RANK", 0))
@@ -114,10 +156,28 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        """
+        Tear down the distributed convolution test.
+        
+        Parameters
+        ----------
+        cls : TestDistributedDiscreteContinuousConvolution
+            The test class instance
+        """
+
         thd.finalize()
         dist.destroy_process_group(None)
 
     def _split_helper(self, tensor):
+        """
+        Split the tensor along the horizontal and vertical dimensions.
+        
+        Parameters
+        ----------
+        tensor : torch.Tensor
+            The tensor to split
+        """
+
         with torch.no_grad():
             # split in W
             tensor_list_local = thd.split_tensor_along_dim(tensor, dim=-1, num_chunks=self.grid_size_w)
@@ -130,6 +190,21 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         return tensor_local
 
     def _gather_helper_fwd(self, tensor, B, C, convolution_dist):
+        """
+        Gather the tensor along the horizontal and vertical dimensions.
+        
+        Parameters
+        ----------
+        tensor : torch.Tensor
+            The tensor to gather
+        B : int
+            Batch size
+        C : int
+            Number of channels
+        convolution_dist : thd.DistributedDiscreteContinuousConvTransposeS2 or thd.DistributedDiscreteContinuousConvS2
+            The distributed convolution object
+        """
+
         # we need the shapes
         lat_shapes = convolution_dist.lat_out_shapes
         lon_shapes = convolution_dist.lon_out_shapes
@@ -157,6 +232,20 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         return tensor_gather
 
     def _gather_helper_bwd(self, tensor, B, C, convolution_dist):
+        """
+        Gather the tensor along the horizontal and vertical dimensions.
+        
+        Parameters
+        ----------
+        tensor : torch.Tensor
+            The tensor to gather
+        B : int
+            Batch size
+        C : int
+            Number of channels
+        convolution_dist : thd.DistributedDiscreteContinuousConvTransposeS2 or thd.DistributedDiscreteContinuousConvS2
+            The distributed convolution object
+        """
         # we need the shapes
         lat_shapes = convolution_dist.lat_in_shapes
         lon_shapes = convolution_dist.lon_in_shapes
@@ -205,6 +294,41 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, kernel_shape, basis_type, basis_norm_mode, groups, grid_in, grid_out, transpose, tol
     ):
 
+        """
+        Test the distributed discrete-continuous convolution module.
+        
+        Parameters
+        ----------
+        nlat_in : int
+            Number of latitude points in input
+        nlon_in : int
+            Number of longitude points in input
+        nlat_out : int
+            Number of latitude points in output
+        nlon_out : int
+            Number of longitude points in output
+        batch_size : int
+            Batch size
+        num_chan : int
+            Number of channels
+        kernel_shape : tuple
+            Kernel shape
+        basis_type : str
+            Basis type
+        basis_norm_mode : str
+            Basis normalization mode
+        groups : int
+            Number of groups
+        grid_in : str
+            Grid type for input
+        grid_out : str
+            Grid type for output
+        transpose : bool
+            Whether to transpose the convolution
+        tol : float
+            Tolerance for numerical equivalence
+        """
+        
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
 
         disco_args = dict(

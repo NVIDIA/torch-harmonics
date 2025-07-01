@@ -54,6 +54,34 @@ def _compute_cutoff_radius(nlat, kernel_shape, basis_type):
 
 
 class OverlapPatchMerging(nn.Module):
+    """
+    Overlap patch merging module for spherical segformer.
+    
+    This module performs patch merging with overlapping patches using discrete-continuous
+    convolutions on the sphere, followed by layer normalization.
+    
+    Parameters
+    -----------
+    in_shape : tuple, optional
+        Input shape (nlat, nlon), by default (721, 1440)
+    out_shape : tuple, optional
+        Output shape (nlat, nlon), by default (481, 960)
+    grid_in : str, optional
+        Input grid type, by default "equiangular"
+    grid_out : str, optional
+        Output grid type, by default "equiangular"
+    in_channels : int, optional
+        Number of input channels, by default 3
+    out_channels : int, optional
+        Number of output channels, by default 64
+    kernel_shape : tuple, optional
+        Kernel shape for convolution, by default (3, 3)
+    basis_type : str, optional
+        Filter basis type, by default "morlet"
+    bias : bool, optional
+        Whether to use bias, by default False
+    """
+    
     def __init__(
         self,
         in_shape=(721, 1440),
@@ -89,11 +117,32 @@ class OverlapPatchMerging(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
+        """
+        Initialize weights for the module.
+        
+        Parameters
+        -----------
+        m : nn.Module
+            Module to initialize
+        """
         if isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x):
+        """
+        Forward pass of the overlap patch merging module.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Merged patches with layer normalization
+        """
         dtype = x.dtype
 
         with amp.autocast(device_type="cuda", enabled=False):
@@ -109,6 +158,38 @@ class OverlapPatchMerging(nn.Module):
 
 
 class MixFFN(nn.Module):
+    """
+    Mix FFN module for spherical segformer.
+    
+    This module implements a feed-forward network that combines MLP operations
+    with discrete-continuous convolutions on the sphere.
+    
+    Parameters
+    -----------
+    shape : tuple
+        Shape (nlat, nlon) of the input
+    inout_channels : int
+        Number of input/output channels
+    hidden_channels : int
+        Number of hidden channels in MLP
+    mlp_bias : bool, optional
+        Whether to use bias in MLP, by default True
+    grid : str, optional
+        Grid type, by default "equiangular"
+    kernel_shape : tuple, optional
+        Kernel shape for convolution, by default (3, 3)
+    basis_type : str, optional
+        Filter basis type, by default "morlet"
+    conv_bias : bool, optional
+        Whether to use bias in convolution, by default False
+    activation : nn.Module, optional
+        Activation function, by default nn.GELU
+    use_mlp : bool, optional
+        Whether to use MLP instead of linear layers, by default False
+    drop_path : float, optional
+        Drop path rate, by default 0.0
+    """
+    
     def __init__(
         self,
         shape,
@@ -161,6 +242,14 @@ class MixFFN(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
+        """
+        Initialize weights for the module.
+        
+        Parameters
+        -----------
+        m : nn.Module
+            Module to initialize
+        """
         if isinstance(m, nn.Conv2d):
             nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
@@ -170,7 +259,19 @@ class MixFFN(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-
+        """
+        Forward pass of the Mix FFN module.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor after Mix FFN processing
+        """
         residual = x
 
         # norm
@@ -194,6 +295,35 @@ class MixFFN(nn.Module):
 
 
 class AttentionWrapper(nn.Module):
+    """
+    Attention wrapper for spherical segformer.
+    
+    This module wraps attention mechanisms (neighborhood or global) with optional
+    normalization and drop path regularization.
+    
+    Parameters
+    -----------
+    channels : int
+        Number of channels
+    shape : tuple
+        Shape (nlat, nlon) of the input
+    grid : str
+        Grid type
+    heads : int
+        Number of attention heads
+    pre_norm : bool, optional
+        Whether to apply normalization before attention, by default False
+    attention_drop_rate : float, optional
+        Dropout rate for attention, by default 0.0
+    drop_path : float, optional
+        Drop path rate, by default 0.0
+    attention_mode : str, optional
+        Attention mode ("neighborhood" or "global"), by default "neighborhood"
+    theta_cutoff : float, optional
+        Cutoff radius for neighborhood attention, by default None
+    bias : bool, optional
+        Whether to use bias, by default True
+    """
     def __init__(
         self,
         channels,
@@ -252,7 +382,19 @@ class AttentionWrapper(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-
+        """
+        Forward pass of the attention wrapper.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor after attention processing
+        """
         residual = x
         if self.norm is not None:
             x = x.permute(0, 2, 3, 1)
@@ -271,6 +413,49 @@ class AttentionWrapper(nn.Module):
 
 
 class TransformerBlock(nn.Module):
+    """
+    Transformer block for spherical segformer.
+    
+    This block combines patch merging, attention, and Mix FFN operations
+    in a hierarchical structure for processing spherical data.
+    
+    Parameters
+    -----------
+    in_shape : tuple
+        Input shape (nlat, nlon)
+    out_shape : tuple
+        Output shape (nlat, nlon)
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    mlp_hidden_channels : int
+        Number of hidden channels in MLP
+    grid_in : str, optional
+        Input grid type, by default "equiangular"
+    grid_out : str, optional
+        Output grid type, by default "equiangular"
+    nrep : int, optional
+        Number of repetitions, by default 1
+    heads : int, optional
+        Number of attention heads, by default 1
+    kernel_shape : tuple, optional
+        Kernel shape for convolution, by default (3, 3)
+    basis_type : str, optional
+        Filter basis type, by default "morlet"
+    activation : nn.Module, optional
+        Activation function, by default nn.GELU
+    att_drop_rate : float, optional
+        Dropout rate for attention, by default 0.0
+    drop_path_rates : float, optional
+        Drop path rates, by default 0.0
+    attention_mode : str, optional
+        Attention mode ("neighborhood" or "global"), by default "neighborhood"
+    theta_cutoff : float, optional
+        Cutoff radius for neighborhood attention, by default None
+    bias : bool, optional
+        Whether to use bias, by default True
+    """
     def __init__(
         self,
         in_shape,
@@ -363,6 +548,19 @@ class TransformerBlock(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the transformer block.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor after transformer block processing
+        """
         x = self.fwd(x)
 
         # apply norm
@@ -374,6 +572,43 @@ class TransformerBlock(nn.Module):
 
 
 class Upsampling(nn.Module):
+    """
+    Upsampling module for spherical segformer.
+    
+    This module performs upsampling using either discrete-continuous transposed convolutions
+    or bilinear resampling on spherical data.
+    
+    Parameters
+    -----------
+    in_shape : tuple
+        Input shape (nlat, nlon)
+    out_shape : tuple
+        Output shape (nlat, nlon)
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    hidden_channels : int
+        Number of hidden channels in MLP
+    mlp_bias : bool, optional
+        Whether to use bias in MLP, by default True
+    grid_in : str, optional
+        Input grid type, by default "equiangular"
+    grid_out : str, optional
+        Output grid type, by default "equiangular"
+    kernel_shape : tuple, optional
+        Kernel shape for convolution, by default (3, 3)
+    basis_type : str, optional
+        Filter basis type, by default "morlet"
+    conv_bias : bool, optional
+        Whether to use bias in convolution, by default False
+    activation : nn.Module, optional
+        Activation function, by default nn.GELU
+    use_mlp : bool, optional
+        Whether to use MLP instead of linear layers, by default False
+    upsampling_method : str, optional
+        Upsampling method ("conv" or "bilinear"), by default "conv"
+    """
     def __init__(
         self,
         in_shape,
@@ -429,6 +664,19 @@ class Upsampling(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the upsampling module.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Upsampled tensor
+        """
         x = self.upsample(self.mlp(x))
 
         return x
@@ -606,6 +854,14 @@ class SphericalSegformer(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
+        """
+        Initialize weights for the module.
+        
+        Parameters
+        -----------
+        m : nn.Module
+            Module to initialize
+        """
         if isinstance(m, nn.Conv2d):
             nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
@@ -615,7 +871,19 @@ class SphericalSegformer(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x):
-
+        """
+        Forward pass through the complete spherical segformer model.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor of shape (batch_size, in_chans, height, width)
+            
+        Returns
+        -------
+        torch.Tensor
+            Output tensor of shape (batch_size, out_chans, height, width)
+        """
         # encoder:
         features = []
         feat = x

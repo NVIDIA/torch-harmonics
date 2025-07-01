@@ -49,6 +49,31 @@ def _get_stats_multiclass(
     quad_weights: torch.Tensor,
     ignore_index: Optional[int],
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Compute multiclass statistics (TP, FP, FN, TN) on the sphere using quadrature weights.
+    
+    This function computes true positives, false positives, false negatives, and true negatives
+    for multiclass classification on spherical data, properly weighted by quadrature weights
+    to account for the spherical geometry.
+    
+    Parameters
+    -----------
+    output : torch.LongTensor
+        Predicted class labels
+    target : torch.LongTensor
+        Ground truth class labels
+    num_classes : int
+        Number of classes in the classification task
+    quad_weights : torch.Tensor
+        Quadrature weights for spherical integration
+    ignore_index : Optional[int]
+        Index to ignore in the computation (e.g., for padding or invalid regions)
+        
+    Returns
+    -------
+    Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+        Tuple containing (tp_count, fp_count, fn_count, tn_count) for each class
+    """
     batch_size, *dims = output.shape
     num_elements = torch.prod(torch.tensor(dims)).long()
 
@@ -88,10 +113,46 @@ def _get_stats_multiclass(
 
 
 def _predict_classes(logits: torch.Tensor) -> torch.Tensor:
+    """
+    Convert logits to class predictions using softmax and argmax.
+    
+    Parameters
+    -----------
+    logits : torch.Tensor
+        Input logits tensor
+        
+    Returns
+    -------
+    torch.Tensor
+        Predicted class labels
+    """
     return torch.argmax(torch.softmax(logits, dim=1), dim=1, keepdim=False)
 
 
 class BaseMetricS2(nn.Module):
+    """
+    Base class for spherical metrics that properly handle spherical geometry.
+    
+    This class provides the foundation for computing metrics on spherical data
+    by using quadrature weights to account for the non-uniform area distribution
+    on the sphere.
+    
+    Parameters
+    -----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    grid : str, optional
+        Grid type ("equiangular", "legendre-gauss", etc.), by default "equiangular"
+    weight : torch.Tensor, optional
+        Class weights for weighted averaging, by default None
+    ignore_index : int, optional
+        Index to ignore in computations, by default -100
+    mode : str, optional
+        Averaging mode ("micro" or "macro"), by default "micro"
+    """
+    
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
         super().__init__()
 
@@ -108,6 +169,21 @@ class BaseMetricS2(nn.Module):
             self.register_buffer("weight", weight.unsqueeze(0))
 
     def _forward(self, pred: torch.Tensor, truth: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Compute base statistics (TP, FP, FN, TN) for the given predictions and ground truth.
+        
+        Parameters
+        -----------
+        pred : torch.Tensor
+            Predicted logits
+        truth : torch.Tensor
+            Ground truth labels
+            
+        Returns
+        -------
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+            Tuple containing (tp, fp, fn, tn) statistics
+        """
         # convert logits to class predictions
         pred_class = _predict_classes(pred)
 
@@ -138,11 +214,47 @@ class BaseMetricS2(nn.Module):
 
 
 class IntersectionOverUnionS2(BaseMetricS2):
+    """
+    Intersection over Union (IoU) metric for spherical data.
+    
+    Computes the IoU score for multiclass classification on the sphere,
+    properly weighted by quadrature weights to account for spherical geometry.
+    
+    Parameters
+    -----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    grid : str, optional
+        Grid type ("equiangular", "legendre-gauss", etc.), by default "equiangular"
+    weight : torch.Tensor, optional
+        Class weights for weighted averaging, by default None
+    ignore_index : int, optional
+        Index to ignore in computations, by default -100
+    mode : str, optional
+        Averaging mode ("micro" or "macro"), by default "micro"
+    """
+    
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
         super().__init__(nlat, nlon, grid, weight, ignore_index, mode)
 
     def forward(self, pred: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
-
+        """
+        Compute IoU score for the given predictions and ground truth.
+        
+        Parameters
+        -----------
+        pred : torch.Tensor
+            Predicted logits
+        truth : torch.Tensor
+            Ground truth labels
+            
+        Returns
+        -------
+        torch.Tensor
+            IoU score
+        """
         tp, fp, fn, tn = self._forward(pred, truth)
 
         # compute score
@@ -162,11 +274,47 @@ class IntersectionOverUnionS2(BaseMetricS2):
 
 
 class AccuracyS2(BaseMetricS2):
+    """
+    Accuracy metric for spherical data.
+    
+    Computes the accuracy score for multiclass classification on the sphere,
+    properly weighted by quadrature weights to account for spherical geometry.
+    
+    Parameters
+    -----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    grid : str, optional
+        Grid type ("equiangular", "legendre-gauss", etc.), by default "equiangular"
+    weight : torch.Tensor, optional
+        Class weights for weighted averaging, by default None
+    ignore_index : int, optional
+        Index to ignore in computations, by default -100
+    mode : str, optional
+        Averaging mode ("micro" or "macro"), by default "micro"
+    """
+    
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
         super().__init__(nlat, nlon, grid, weight, ignore_index, mode)
 
     def forward(self, pred: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
-
+        """
+        Compute accuracy score for the given predictions and ground truth.
+        
+        Parameters
+        -----------
+        pred : torch.Tensor
+            Predicted logits
+        truth : torch.Tensor
+            Ground truth labels
+            
+        Returns
+        -------
+        torch.Tensor
+            Accuracy score
+        """
         tp, fp, fn, tn = self._forward(pred, truth)
 
         # compute score

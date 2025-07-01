@@ -40,6 +40,30 @@ from torch_harmonics.quadrature import _precompute_latitudes, _precompute_longit
 
 
 class ResampleS2(nn.Module):
+    """
+    Resampling module for signals on the 2-sphere.
+    
+    This module provides functionality to resample spherical signals between different
+    grid resolutions and grid types using bilinear interpolation.
+    
+    Parameters
+    -----------
+    nlat_in : int
+        Number of latitude points in the input grid
+    nlon_in : int
+        Number of longitude points in the input grid
+    nlat_out : int
+        Number of latitude points in the output grid
+    nlon_out : int
+        Number of longitude points in the output grid
+    grid_in : str, optional
+        Input grid type ("equiangular", "legendre-gauss", "lobatto"), by default "equiangular"
+    grid_out : str, optional
+        Output grid type ("equiangular", "legendre-gauss", "lobatto"), by default "equiangular"
+    mode : str, optional
+        Interpolation mode ("bilinear", "bilinear-spherical"), by default "bilinear"
+    """
+    
     def __init__(
         self,
         nlat_in: int,
@@ -119,6 +143,19 @@ class ResampleS2(nn.Module):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}"
 
     def _upscale_longitudes(self, x: torch.Tensor):
+        """
+        Interpolate the input tensor along the longitude dimension.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor with shape (..., nlat, nlon)
+            
+        Returns
+        -------
+        torch.Tensor
+            Interpolated tensor along longitude dimension
+        """
         # do the interpolation in precision of x
         lwgt = self.lon_weights.to(x.dtype)
         if self.mode == "bilinear":
@@ -133,6 +170,19 @@ class ResampleS2(nn.Module):
         return x
 
     def _expand_poles(self, x: torch.Tensor):
+        """
+        Expand the input tensor to include pole points for interpolation.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor with shape (..., nlat, nlon)
+            
+        Returns
+        -------
+        torch.Tensor
+            Expanded tensor with pole points added
+        """
         x_north = x[...,  0, :].mean(dim=-1, keepdims=True)
         x_south = x[..., -1, :].mean(dim=-1, keepdims=True)
         x = nn.functional.pad(x, pad=[0, 0, 1, 1], mode='constant')
@@ -142,6 +192,19 @@ class ResampleS2(nn.Module):
         return x
 
     def _upscale_latitudes(self, x: torch.Tensor):
+        """
+        Interpolate the input tensor along the latitude dimension.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor with shape (..., nlat, nlon)
+            
+        Returns
+        -------
+        torch.Tensor
+            Interpolated tensor along latitude dimension
+        """
         # do the interpolation in precision of x
         lwgt = self.lat_weights.to(x.dtype)
         if self.mode == "bilinear":
@@ -156,6 +219,19 @@ class ResampleS2(nn.Module):
         return x
 
     def forward(self, x: torch.Tensor):
+        """
+        Forward pass of the resampling module.
+        
+        Parameters
+        -----------
+        x : torch.Tensor
+            Input tensor with shape (..., nlat_in, nlon_in)
+            
+        Returns
+        -------
+        torch.Tensor
+            Resampled tensor with shape (..., nlat_out, nlon_out)
+        """
         if self.skip_resampling:
             return x
         
