@@ -81,7 +81,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
-    def test_custom_implementation(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=True):
+    def test_custom_implementation(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
         """Tests numerical equivalence between the custom (CUDA) implementation and the reference torch implementation"""
 
         nlat_in, nlon_in = in_shape
@@ -161,7 +161,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
-    def test_neighborhood_global_equivalence(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=True):
+    def test_neighborhood_global_equivalence(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
         """Tests numerical equivalence between the global spherical attention module and the neighborhood spherical attention module with the neighborhood set ot the whole sphere"""
 
         nlat_in, nlon_in = in_shape
@@ -223,7 +223,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         skip_on_empty=True,
     )
     @unittest.skipUnless((torch.cuda.is_available() and _cuda_extension_available), "skipping performance test because CUDA is not available")
-    def test_perf(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=True):
+    def test_perf(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
 
         # extract some parameters
         nlat_in, nlon_in = in_shape
