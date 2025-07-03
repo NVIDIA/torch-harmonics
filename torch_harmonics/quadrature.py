@@ -78,7 +78,7 @@ def _precompute_latitudes(nlat: int, grid: Optional[str]="equiangular") -> Tuple
     # is formulated in the cosine theta domain, which is designed to integrate functions of cos theta
     lats = torch.flip(torch.arccos(xlg), dims=(0,)).clone()
     wlg = torch.flip(wlg, dims=(0,)).clone()
-
+    
     return lats, wlg
 
 
