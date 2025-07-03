@@ -170,8 +170,7 @@ def _precompute_convolution_tensor_s2(
     kernel_size = filter_basis.kernel_size
 
     nlat_in, nlon_in = in_shape
-    nlat_out, nlon_out = out_shape
-
+    nlat_out, nlon_out = out_shape    
     # precompute input and output grids
     lats_in, win = _precompute_latitudes(nlat_in, grid=grid_in)
     lats_out, wout = _precompute_latitudes(nlat_out, grid=grid_out)
@@ -179,7 +178,7 @@ def _precompute_convolution_tensor_s2(
     # compute the phi differences
     # It's imporatant to not include the 2 pi point in the longitudes, as it is equivalent to lon=0
     lons_in = _precompute_longitudes(nlon_in)
-
+    
     # compute quadrature weights and merge them into the convolution tensor.
     # These quadrature integrate to 1 over the sphere.
     if transpose_normalization:
@@ -222,7 +221,7 @@ def _precompute_convolution_tensor_s2(
 
         # add the output latitude and reshape such that psi has dimensions kernel_shape x nlat_out x (nlat_in*nlon_in)
         idx = torch.stack([iidx[:, 0], t * torch.ones_like(iidx[:, 0]), iidx[:, 1] * nlon_in + iidx[:, 2]], dim=0)
-
+        
         # append indices and values to the COO datastructure
         out_idx.append(idx)
         out_vals.append(vals)
@@ -352,9 +351,14 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         vals = vals.contiguous()
 
         if _cuda_extension_available:
+            device = ker_idx.device
+            ker_idx, row_idx, col_idx, vals = ker_idx.cpu(), row_idx.cpu(), col_idx.cpu(), vals.cpu()
+            
             # preprocessed data-structure for GPU kernel
-            roff_idx = preprocess_psi(self.kernel_size, out_shape[0], ker_idx, row_idx, col_idx, vals).contiguous()
+            roff_idx = preprocess_psi(self.kernel_size, out_shape[0], ker_idx, row_idx, col_idx, vals).contiguous().to(device)
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+            ker_idx, row_idx, col_idx, vals = ker_idx.to(device), row_idx.to(device), col_idx.to(device), vals.to(device)
+            
 
         # save all datastructures
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)

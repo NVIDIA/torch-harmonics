@@ -78,7 +78,7 @@ def _precompute_latitudes(nlat: int, grid: Optional[str]="equiangular") -> Tuple
     # is formulated in the cosine theta domain, which is designed to integrate functions of cos theta
     lats = torch.flip(torch.arccos(xlg), dims=(0,)).clone()
     wlg = torch.flip(wlg, dims=(0,)).clone()
-    
+
     return lats, wlg
 
 
@@ -88,7 +88,7 @@ def trapezoidal_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0,
     on the interval [a, b]
     """
 
-    xlg = torch.from_numpy(np.linspace(a, b, n, endpoint=periodic))
+    xlg = torch.as_tensor(np.linspace(a, b, n, endpoint=periodic))
     wlg = (b - a) / (n - periodic * 1) * torch.ones(n, requires_grad=False)
 
     if not periodic:
@@ -105,8 +105,8 @@ def legendre_gauss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1
     """
 
     xlg, wlg = np.polynomial.legendre.leggauss(n)
-    xlg = torch.from_numpy(xlg).clone()
-    wlg = torch.from_numpy(wlg).clone()
+    xlg = torch.as_tensor(xlg).clone()
+    wlg = torch.as_tensor(wlg).clone()
     xlg = (b - a) * 0.5 * xlg + (b + a) * 0.5
     wlg = wlg * (b - a) * 0.5
 
