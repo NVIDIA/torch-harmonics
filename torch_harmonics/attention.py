@@ -291,7 +291,7 @@ class NeighborhoodAttentionS2(nn.Module):
 
         # set the last value
         row_offset[row + 1] = idz + 1
-        row_offset = torch.from_numpy(row_offset)
+        row_offset = torch.from_numpy(row_offset).contiguous()
         self.max_psi_nnz = col_idx.max().item() + 1
 
         self.register_buffer("psi_row_idx", row_idx, persistent=False)

@@ -479,9 +479,10 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
         qw = qw.reshape(B*nh, -1, H, W)
 
         # convert to float32
-        kw = kw.to(torch.float32)
-        vw = vw.to(torch.float32)
-        qw = qw.to(torch.float32)
+        inp_dtype = kw.dtype
+        kw = kw.to(torch.float32).contiguous()
+        vw = vw.to(torch.float32).contiguous()
+        qw = qw.to(torch.float32).contiguous()
 
         output = attention_cuda_extension.forward(kw, vw, qw, quad_weights,
                                                   col_idx, row_off,
@@ -489,6 +490,9 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
 
         _, C, H, W = output.shape
         output = output.reshape(B, -1, H, W)
+
+        # convert back precision
+        output = output.to(dtype=inp_dtype)
 
         return output
 
