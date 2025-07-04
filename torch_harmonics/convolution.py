@@ -352,9 +352,14 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         vals = vals.contiguous()
 
         if _cuda_extension_available:
+            device = ker_idx.device
+            ker_idx, row_idx, col_idx, vals = ker_idx.cpu(), row_idx.cpu(), col_idx.cpu(), vals.cpu()
+            
             # preprocessed data-structure for GPU kernel
-            roff_idx = preprocess_psi(self.kernel_size, out_shape[0], ker_idx, row_idx, col_idx, vals).contiguous()
+            roff_idx = preprocess_psi(self.kernel_size, out_shape[0], ker_idx, row_idx, col_idx, vals).contiguous().to(device)
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+            ker_idx, row_idx, col_idx, vals = ker_idx.to(device), row_idx.to(device), col_idx.to(device), vals.to(device)
+            
 
         # save all datastructures
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
