@@ -284,7 +284,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.register_buffer("psi_vals", vals, persistent=False)
 
         # store psi jic:
-        self.psi = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlon_in_local, self.nlat_out_local)
+        self.psi = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local)
 
     def extra_repr(self):
         r"""
@@ -295,10 +295,6 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
     @property
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
-
-    #def get_psi(self):
-    #    psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out_local, self.nlat_in_local * self.nlon_in)).coalesce()
-    #    return psi
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
@@ -428,8 +424,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.register_buffer("psi_vals", vals, persistent=False)
 
         # store psi as COO
-        #self.psi_st = self.get_psi(semi_transposed=True)
-        self.psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlon_in_local, self.nlat_out_local, semi_transposed=True)
+        self.psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local, semi_transposed=True)
 
     def extra_repr(self):
         r"""
@@ -440,21 +435,6 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     @property
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
-
-    #def get_psi(self, semi_transposed: bool = False):
-    #    if semi_transposed:
-    #        # do partial transpose
-    #        # we do a semi-transposition to faciliate the computation
-    #        tout = self.psi_idx[2] // self.nlon_out
-    #        pout = self.psi_idx[2] % self.nlon_out
-    #        # flip the axis of longitudes
-    #        pout = self.nlon_out - 1 - pout
-    #        tin = self.psi_idx[1]
-    #        idx = torch.stack([self.psi_idx[0], tout, tin * self.nlon_out + pout], dim=0)
-    #        psi = torch.sparse_coo_tensor(idx, self.psi_vals, size=(self.kernel_size, self.nlat_out_local, self.nlat_in_local * self.nlon_out)).coalesce()
-    #    else:
-    #        psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_in_local, self.nlat_out_local * self.nlon_out)).coalesce()
-    #    return psi
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 

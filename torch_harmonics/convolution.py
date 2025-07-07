@@ -375,9 +375,6 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
-    #def get_psi(self):
-    #    return torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_in)).coalesce()
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         if x.is_cuda and _cuda_extension_available:
@@ -482,21 +479,6 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     @property
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
-
-    #def get_psi(self, semi_transposed: bool = False):
-    #    if semi_transposed:
-    #        # we do a semi-transposition to faciliate the computation
-    #        tout = self.psi_idx[2] // self.nlon_out
-    #        pout = self.psi_idx[2] % self.nlon_out
-    #        # flip the axis of longitudes
-    #        pout = self.nlon_out - 1 - pout
-    #        tin = self.psi_idx[1]
-    #        idx = torch.stack([self.psi_idx[0], tout, tin * self.nlon_out + pout], dim=0)
-    #        psi = torch.sparse_coo_tensor(idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_out)).coalesce()
-    #    else:
-    #        psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_in, self.nlat_out * self.nlon_out)).coalesce()
-    #
-    #    return psi
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # extract shape
