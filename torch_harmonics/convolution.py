@@ -42,7 +42,7 @@ from functools import partial
 
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
-from torch_harmonics._disco_convolution import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
+from torch_harmonics._disco_convolution import _get_psi, _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from torch_harmonics._disco_convolution import _disco_s2_contraction_cuda, _disco_s2_transpose_contraction_cuda
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
 
@@ -362,6 +362,9 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
 
+        # also store psi as COO matrix just in case for torch input
+        self.psi = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out)
+
     def extra_repr(self):
         r"""
         Pretty print module
@@ -372,9 +375,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
-    def get_psi(self):
-        psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_in)).coalesce()
-        return psi
+    #def get_psi(self):
+    #    return torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_in)).coalesce()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
@@ -385,8 +387,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         else:
             if x.is_cuda:
                 warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
-            psi = self.get_psi()
-            x = _disco_s2_contraction_torch(x, psi, self.nlon_out)
+            x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
 
         # extract shape
         B, C, K, H, W = x.shape
@@ -469,6 +470,9 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
 
+        # also store psi just in case
+        self.psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, semi_transposed=True)
+
     def extra_repr(self):
         r"""
         Pretty print module
@@ -479,20 +483,20 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
-    def get_psi(self, semi_transposed: bool = False):
-        if semi_transposed:
-            # we do a semi-transposition to faciliate the computation
-            tout = self.psi_idx[2] // self.nlon_out
-            pout = self.psi_idx[2] % self.nlon_out
-            # flip the axis of longitudes
-            pout = self.nlon_out - 1 - pout
-            tin = self.psi_idx[1]
-            idx = torch.stack([self.psi_idx[0], tout, tin * self.nlon_out + pout], dim=0)
-            psi = torch.sparse_coo_tensor(idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_out)).coalesce()
-        else:
-            psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_in, self.nlat_out * self.nlon_out)).coalesce()
-
-        return psi
+    #def get_psi(self, semi_transposed: bool = False):
+    #    if semi_transposed:
+    #        # we do a semi-transposition to faciliate the computation
+    #        tout = self.psi_idx[2] // self.nlon_out
+    #        pout = self.psi_idx[2] % self.nlon_out
+    #        # flip the axis of longitudes
+    #        pout = self.nlon_out - 1 - pout
+    #        tin = self.psi_idx[1]
+    #        idx = torch.stack([self.psi_idx[0], tout, tin * self.nlon_out + pout], dim=0)
+    #        psi = torch.sparse_coo_tensor(idx, self.psi_vals, size=(self.kernel_size, self.nlat_out, self.nlat_in * self.nlon_out)).coalesce()
+    #    else:
+    #        psi = torch.sparse_coo_tensor(self.psi_idx, self.psi_vals, size=(self.kernel_size, self.nlat_in, self.nlat_out * self.nlon_out)).coalesce()
+    #
+    #    return psi
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # extract shape
@@ -510,8 +514,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         else:
             if x.is_cuda:
                 warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
-            psi = self.get_psi(semi_transposed=True)
-            out = _disco_s2_transpose_contraction_torch(x, psi, self.nlon_out)
+            out = _disco_s2_transpose_contraction_torch(x, self.psi_st.to(x.device), self.nlon_out)
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)

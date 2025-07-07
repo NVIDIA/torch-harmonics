@@ -29,6 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+from typing import Optional
 import math
 
 import torch
@@ -38,6 +39,27 @@ try:
     import disco_cuda_extension
 except ImportError as err:
     disco_cuda_extension = None
+
+# some helper functions
+def _get_psi(kernel_size: int, psi_idx: torch.Tensor, psi_vals: torch.Tensor, nlat_in: int, nlon_in: int, nlat_out: int, nlon_out: int, nlat_in_local: Optional[int] = None, nlon_in_local: Optional[int] = None, nlat_out_local: Optional[int] = None, semi_transposed: Optional[bool] = False):
+
+    nlat_in_local = nlat_in_local if nlat_in_local is not None else nlat_in
+    nlon_in_local = nlon_in_local if nlon_in_local is not None else nlon_in
+    nlat_out_local = nlat_out_local if nlat_out_local is not None else nlat_out
+    
+    if semi_transposed:
+        # do partial transpose
+        # we do a semi-transposition to faciliate the computation
+        tout = psi_idx[2] // nlon_out
+        pout = psi_idx[2] % nlon_out
+        # flip the axis of longitudes
+        pout = nlon_out - 1 - pout
+        tin = psi_idx[1]
+        idx = torch.stack([psi_idx[0], tout, tin * nlon_out + pout], dim=0)
+        psi = torch.sparse_coo_tensor(idx, psi_vals, size=(kernel_size, nlat_out_local, nlat_in_local * nlon_out)).coalesce()
+    else:
+        psi = torch.sparse_coo_tensor(psi_idx, psi_vals, size=(kernel_size, nlat_out_local, nlat_in_local * nlon_in)).coalesce()
+    return psi
 
 
 class _DiscoS2ContractionCuda(torch.autograd.Function):
