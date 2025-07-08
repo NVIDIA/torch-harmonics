@@ -30,7 +30,7 @@
 #
 
 import unittest
-from parameterized import parameterized
+from parameterized import parameterized, parameterized_class
 
 # import math
 import numpy as np
@@ -58,17 +58,19 @@ except ImportError as err:
     attention_cuda_extension = None
     _cuda_extension_available = False
 
+_devices = [(torch.device("cpu"),)]
+if torch.cuda.is_available():
+    _devices.append((torch.device("cuda"),))
+
 _perf_test_thresholds = {"fwd_ms": 50, "bwd_ms": 150}
 
+
+@parameterized_class(("device"), _devices)
 class TestNeighborhoodAttentionS2(unittest.TestCase):
     def setUp(self):
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda:0")
-            torch.cuda.set_device(self.device.index)
-            torch.cuda.manual_seed(333)
-        else:
-            self.device = torch.device("cpu")
         torch.manual_seed(333)
+        if self.device.type == "cuda":
+            torch.cuda.manual_seed(333)
 
     @parameterized.expand(
         [
@@ -107,7 +109,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         model.load_state_dict(model_ref.state_dict())
         model = model.to(self.device)
         for (name_ref, p_ref), (name, p) in zip(model_ref.named_parameters(), model.named_parameters()):
-            assert torch.allclose(p_ref, p), f"Parameter mismatch: {name_ref} vs {name}"
+            self.assertTrue(torch.allclose(p_ref, p))
 
         # reference forward passes
         out_ref = _neighborhood_attention_s2_torch(
@@ -187,7 +189,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         model.load_state_dict(model_ref.state_dict())
         model = model.to(self.device)
         for (name_ref, p_ref), (name, p) in zip(model_ref.named_parameters(), model.named_parameters()):
-            assert torch.allclose(p_ref, p), f"Parameter mismatch: {name_ref} vs {name}"
+            self.assertTrue(torch.allclose(p_ref, p))
 
         # reference forward passes
         out_ref = model_ref(inputs_ref["q"], inputs_ref["k"], inputs_ref["v"])
@@ -217,7 +219,6 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     @parameterized.expand(
         [
             # self attention
-            #[1, 256, 1, (721, 1440), (721, 1440), "equiangular", "equiangular", 1e-5, 1e-5],
             [1, 256, 1, (361, 720), (361, 720), "equiangular", "equiangular", 1e-5, 1e-5],
         ],
         skip_on_empty=True,
@@ -225,6 +226,11 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     @unittest.skipUnless((torch.cuda.is_available() and _cuda_extension_available), "skipping performance test because CUDA is not available")
     def test_perf(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
 
+        # skip this test if we are not running on GPU, it will take very long otherwise
+        if self.device.type != "cuda":
+            self.assertFalse(False)
+            return
+        
         # extract some parameters
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
@@ -280,11 +286,11 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             att_gpu.k_bias.copy_(att_gpu.k_bias)
             att_gpu.v_bias.copy_(att_gpu.v_bias)
 
-        q_gpu = q_gpu.detach().clone().to(self.device)#, memory_format=torch.channels_last)
+        q_gpu = q_gpu.detach().clone().to(self.device)
         q_gpu.requires_grad = True
-        k_gpu = k_gpu.detach().clone().to(self.device)#, memory_format=torch.channels_last)
+        k_gpu = k_gpu.detach().clone().to(self.device)
         k_gpu.requires_grad = True
-        v_gpu = v_gpu.detach().clone().to(self.device)#, memory_format=torch.channels_last)
+        v_gpu = v_gpu.detach().clone().to(self.device)
         v_gpu.requires_grad = True
 
         out_gpu = att_gpu(q_gpu, k_gpu, v_gpu)
