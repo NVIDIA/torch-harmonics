@@ -109,7 +109,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         model.load_state_dict(model_ref.state_dict())
         model = model.to(self.device)
         for (name_ref, p_ref), (name, p) in zip(model_ref.named_parameters(), model.named_parameters()):
-            assert torch.allclose(p_ref, p), f"Parameter mismatch: {name_ref} vs {name}"
+            self.assertTrue(torch.allclose(p_ref, p))
 
         # reference forward passes
         out_ref = _neighborhood_attention_s2_torch(
@@ -156,8 +156,8 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         [
             # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
             [4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-2, 0],
-            #[4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            #[4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
+            # [4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
+            # [4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
             [4, 4, 1, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-2, 0],
             [4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-2, 0],
         ],
@@ -165,7 +165,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     )
     def test_neighborhood_global_equivalence(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
         """Tests numerical equivalence between the global spherical attention module and the neighborhood spherical attention module with the neighborhood set ot the whole sphere"""
-        
+
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
@@ -189,7 +189,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         model.load_state_dict(model_ref.state_dict())
         model = model.to(self.device)
         for (name_ref, p_ref), (name, p) in zip(model_ref.named_parameters(), model.named_parameters()):
-            assert torch.allclose(p_ref, p), f"Parameter mismatch: {name_ref} vs {name}"
+            self.assertTrue(torch.allclose(p_ref, p))
 
         # reference forward passes
         out_ref = model_ref(inputs_ref["q"], inputs_ref["k"], inputs_ref["v"])
