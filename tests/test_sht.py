@@ -30,11 +30,16 @@
 #
 
 import unittest
-from parameterized import parameterized
+from parameterized import parameterized, parameterized_class
 import math
 import torch
 from torch.autograd import gradcheck
 import torch_harmonics as th
+
+_devices = [(torch.device("cpu"),)]
+if torch.cuda.is_available():
+    _devices.append((torch.device("cuda"),))
+
 
 class TestLegendrePolynomials(unittest.TestCase):
 
@@ -72,28 +77,36 @@ class TestLegendrePolynomials(unittest.TestCase):
                 self.assertTrue(diff.max() <= self.tol)
 
 
+@parameterized_class(("device"), _devices)
 class TestSphericalHarmonicTransform(unittest.TestCase):
 
     def setUp(self):
-
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda")
-            torch.cuda.manual_seed(333)
-        else:
-            self.device = torch.device("cpu")
         torch.manual_seed(333)
+        if self.device.type == "cuda":
+            torch.cuda.manual_seed(333)
 
     @parameterized.expand(
         [
-            [256, 512, 32, "ortho", "equiangular", 1e-9, False],
-            [256, 512, 32, "ortho", "legendre-gauss", 1e-9, False],
-            [256, 512, 32, "ortho", "lobatto", 1e-9, False],
-            [256, 512, 32, "four-pi", "equiangular", 1e-9, False],
-            [256, 512, 32, "four-pi", "legendre-gauss", 1e-9, False],
-            [256, 512, 32, "four-pi", "lobatto", 1e-9, False],
-            [256, 512, 32, "schmidt", "equiangular", 1e-9, False],
-            [256, 512, 32, "schmidt", "legendre-gauss", 1e-9, False],
-            [256, 512, 32, "schmidt", "lobatto", 1e-9, False],
+            # even-even
+            [32, 64, 32, "ortho", "equiangular", 1e-9, False],
+            [32, 64, 32, "ortho", "legendre-gauss", 1e-9, False],
+            [32, 64, 32, "ortho", "lobatto", 1e-9, False],
+            [32, 64, 32, "four-pi", "equiangular", 1e-9, False],
+            [32, 64, 32, "four-pi", "legendre-gauss", 1e-9, False],
+            [32, 64, 32, "four-pi", "lobatto", 1e-9, False],
+            [32, 64, 32, "schmidt", "equiangular", 1e-9, False],
+            [32, 64, 32, "schmidt", "legendre-gauss", 1e-9, False],
+            [32, 64, 32, "schmidt", "lobatto", 1e-9, False],
+            # odd-even
+            [33, 64, 32, "ortho", "equiangular", 1e-9, False],
+            [33, 64, 32, "ortho", "legendre-gauss", 1e-9, False],
+            [33, 64, 32, "ortho", "lobatto", 1e-9, False],
+	    [33, 64, 32, "four-pi", "equiangular", 1e-9, False],
+            [33, 64, 32, "four-pi", "legendre-gauss", 1e-9, False],
+            [33, 64, 32, "four-pi", "lobatto", 1e-9, False],
+            [33, 64, 32, "schmidt", "equiangular", 1e-9, False],
+            [33, 64, 32, "schmidt", "legendre-gauss", 1e-9, False],
+            [33, 64, 32, "schmidt", "lobatto", 1e-9, False],
         ]
     )
     def test_sht(self, nlat, nlon, batch_size, norm, grid, tol, verbose):
@@ -135,6 +148,7 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
 
     @parameterized.expand(
         [
+            # even-even
             [12, 24, 2, "ortho", "equiangular", 1e-5, False],
             [12, 24, 2, "ortho", "legendre-gauss", 1e-5, False],
             [12, 24, 2, "ortho", "lobatto", 1e-5, False],
@@ -144,6 +158,7 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             [12, 24, 2, "schmidt", "equiangular", 1e-5, False],
             [12, 24, 2, "schmidt", "legendre-gauss", 1e-5, False],
             [12, 24, 2, "schmidt", "lobatto", 1e-5, False],
+            # odd-even
             [15, 30, 2, "ortho", "equiangular", 1e-5, False],
             [15, 30, 2, "ortho", "legendre-gauss", 1e-5, False],
             [15, 30, 2, "ortho", "lobatto", 1e-5, False],

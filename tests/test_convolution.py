@@ -30,7 +30,7 @@
 #
 
 import unittest
-from parameterized import parameterized
+from parameterized import parameterized, parameterized_class
 from functools import partial
 import math
 import numpy as np
@@ -39,6 +39,11 @@ from torch.autograd import gradcheck
 from torch_harmonics import quadrature, DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
+
+
+_devices = [(torch.device("cpu"),)]
+if torch.cuda.is_available():
+    _devices.append((torch.device("cuda"),))
 
 
 def _normalize_convolution_tensor_dense(psi, quad_weights, transpose_normalization=False, basis_norm_mode="none", merge_quadrature=False, eps=1e-9):
@@ -161,15 +166,12 @@ def _precompute_convolution_tensor_dense(
     return out
 
 
+@parameterized_class(("device"), _devices)
 class TestDiscreteContinuousConvolution(unittest.TestCase):
     def setUp(self):
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda:0")
-            torch.cuda.set_device(self.device.index)
-            torch.cuda.manual_seed(333)
-        else:
-            self.device = torch.device("cpu")
         torch.manual_seed(333)
+        if self.device.type == "cuda":
+            torch.cuda.manual_seed(333)
 
     @parameterized.expand(
         [
