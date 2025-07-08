@@ -169,6 +169,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             torch.cuda.manual_seed(333)
         else:
             self.device = torch.device("cpu")
+        torch.manual_seed(333)
 
     @parameterized.expand(
         [

@@ -78,8 +78,10 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
 
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
+            torch.cuda.manual_seed(333)
         else:
             self.device = torch.device("cpu")
+        torch.manual_seed(333)
 
     @parameterized.expand(
         [
