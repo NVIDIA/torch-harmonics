@@ -47,7 +47,6 @@ from torch_harmonics._disco_convolution import _disco_s2_contraction_cuda, _disc
 from torch_harmonics.filter_basis import get_filter_basis
 from torch_harmonics.convolution import (
     _precompute_convolution_tensor_s2,
-    _normalize_convolution_tensor_s2,
     DiscreteContinuousConv,
 )
 
@@ -69,122 +68,15 @@ except ImportError as err:
     _cuda_extension_available = False
 
 
-def _precompute_distributed_convolution_tensor_s2(
-    in_shape,
-    out_shape,
-    filter_basis,
-    grid_in="equiangular",
-    grid_out="equiangular",
-    theta_cutoff=0.01 * math.pi,
-    theta_eps = 1e-3,
-    transpose_normalization=False,
-    basis_norm_mode="mean",
-    merge_quadrature=False,
+def _split_distributed_convolution_tensor_s2(
+    idx: torch.Tensor,
+    vals: torch.Tensor,
+    in_shape: Tuple[int],
+    out_shape: Tuple[int],
 ):
-    """
-    Precomputes the rotated filters at positions $R^{-1}_j \omega_i = R^{-1}_j R_i \nu = Y(-\theta_j)Z(\phi_i - \phi_j)Y(\theta_j)\nu$.
-    Assumes a tensorized grid on the sphere with an equidistant sampling in longitude as described in Ocampo et al.
-    The output tensor has shape kernel_shape x nlat_out x (nlat_in * nlon_in).
-
-    The rotation of the Euler angles uses the YZY convention, which applied to the northpole $(0,0,1)^T$ yields
-    $$
-    Y(\alpha) Z(\beta) Y(\gamma) n =
-        {\begin{bmatrix}
-            \cos(\gamma)\sin(\alpha) + \cos(\alpha)\cos(\beta)\sin(\gamma) \\
-            \sin(\beta)\sin(\gamma) \\
-            \cos(\alpha)\cos(\gamma)-\cos(\beta)\sin(\alpha)\sin(\gamma)
-        \end{bmatrix}}
-    $$
-    """
-
-    assert len(in_shape) == 2
-    assert len(out_shape) == 2
-
-    kernel_size = filter_basis.kernel_size
-
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
 
-    # precompute input and output grids
-    lats_in, win = _precompute_latitudes(nlat_in, grid=grid_in)
-    lats_out, wout = _precompute_latitudes(nlat_out, grid=grid_out)
-
-    # compute the phi differences
-    # It's imporatant to not include the 2 pi point in the longitudes, as it is equivalent to lon=0
-    lons_in = _precompute_longitudes(nlon_in)
-
-    # compute quadrature weights and merge them into the convolution tensor.
-    # These quadrature integrate to 1 over the sphere.
-    if transpose_normalization:
-        quad_weights = wout.reshape(-1, 1) / nlon_in / 2.0
-    else:
-        quad_weights = win.reshape(-1, 1) / nlon_in / 2.0
-
-    # effective theta cutoff if multiplied with a fudge factor to avoid aliasing with grid width (especially near poles)
-    theta_cutoff_eff = (1.0 + theta_eps) * theta_cutoff
-
-    out_idx = []
-    out_vals = []
-    beta = lons_in
-    gamma = lats_in.reshape(-1, 1)
-
-    # compute trigs
-    cbeta = torch.cos(beta)
-    sbeta = torch.sin(beta)
-    cgamma = torch.cos(gamma)
-    sgamma = torch.sin(gamma)
-
-    for t in range(nlat_out):
-        # the last angle has a negative sign as it is a passive rotation, which rotates the filter around the y-axis
-        alpha = -lats_out[t]
-
-        # compute cartesian coordinates of the rotated position
-        # This uses the YZY convention of Euler angles, where the last angle (alpha) is a passive rotation,
-        # and therefore applied with a negative sign
-        x = torch.cos(alpha) * cbeta * sgamma + cgamma * torch.sin(alpha)
-        y = sbeta * sgamma
-        z = -cbeta * torch.sin(alpha) * sgamma + torch.cos(alpha) * cgamma
-
-        # normalization is important to avoid NaNs when arccos and atan are applied
-        # this can otherwise lead to spurious artifacts in the solution
-        norm = torch.sqrt(x * x + y * y + z * z)
-        x = x / norm
-        y = y / norm
-        z = z / norm
-
-        # compute spherical coordinates, where phi needs to fall into the [0, 2pi) range
-        theta = torch.arccos(z)
-        phi = torch.arctan2(y, x)
-        phi = torch.where(phi < 0.0, phi + 2 * torch.pi, phi)
-
-        # find the indices where the rotated position falls into the support of the kernel
-        iidx, vals = filter_basis.compute_support_vals(theta, phi, r_cutoff=theta_cutoff_eff)
-
-        # add the output latitude and reshape such that psi has dimensions kernel_shape x nlat_out x (nlat_in*nlon_in)
-        idx = torch.stack([iidx[:, 0], t * torch.ones_like(iidx[:, 0]), iidx[:, 1] * nlon_in + iidx[:, 2]], dim=0)
-
-        # append indices and values to the COO datastructure
-        out_idx.append(idx)
-        out_vals.append(vals)
-
-    # concatenate the indices and values
-    out_idx = torch.cat(out_idx, dim=-1)
-    out_vals = torch.cat(out_vals, dim=-1)
-
-    out_vals = _normalize_convolution_tensor_s2(
-        out_idx,
-        out_vals,
-        in_shape,
-        out_shape,
-        kernel_size,
-        quad_weights,
-        transpose_normalization=transpose_normalization,
-        basis_norm_mode=basis_norm_mode,
-        merge_quadrature=merge_quadrature,
-    )
-
-    # TODO: this part can be split off into it's own function
-    # split the latitude indices:
     comm_size_polar = polar_group_size()
     comm_rank_polar = polar_group_rank()
     split_shapes = compute_split_shapes(nlat_in, num_chunks=comm_size_polar)
@@ -193,17 +85,18 @@ def _precompute_distributed_convolution_tensor_s2(
     end_idx = offsets[comm_rank_polar + 1]
 
     # once normalization is done we can throw away the entries which correspond to input latitudes we do not care about
-    lats = out_idx[2] // nlon_in
-    lons = out_idx[2] % nlon_in
+    lats = idx[2] // nlon_in
+    lons = idx[2] % nlon_in
     ilats = torch.argwhere((lats < end_idx) & (lats >= start_idx)).squeeze()
-    out_vals = out_vals[ilats]
+    vals = vals[ilats]
     # for the indices we need to recompute them to refer to local indices of the input tenor
-    out_idx = torch.stack([out_idx[0, ilats], out_idx[1, ilats], (lats[ilats] - start_idx) * nlon_in + lons[ilats]], dim=0)
+    idx = torch.stack([idx[0, ilats], idx[1, ilats], (lats[ilats] - start_idx) * nlon_in + lons[ilats]], dim=0)
 
-    out_idx = out_idx.contiguous()
-    out_vals = out_vals.to(dtype=torch.float32).contiguous()
+    # make results contiguous
+    idx = idx.contiguous()
+    vals = vals.to(dtype=torch.float32).contiguous()
 
-    return out_idx, out_vals
+    return idx, vals
 
 
 class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
@@ -262,7 +155,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.nlat_in_local = self.lat_in_shapes[self.comm_rank_polar]
         self.nlat_out_local = self.nlat_out
 
-        idx, vals = _precompute_distributed_convolution_tensor_s2(
+        # compute global convolution tensor
+        idx, vals, _ = _precompute_convolution_tensor_s2(
             in_shape,
             out_shape,
             self.filter_basis,
@@ -272,7 +166,11 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             transpose_normalization=False,
             basis_norm_mode=basis_norm_mode,
             merge_quadrature=True,
+            support_only=False,
         )
+
+        # split the convolution tensor along latitude
+        idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, in_shape, out_shape)
 
         # sort the values
         ker_idx = idx[0, ...].contiguous()
@@ -400,9 +298,10 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.nlat_in_local = self.nlat_in
         self.nlat_out_local = self.lat_out_shapes[self.comm_rank_polar]
 
+        # compute global convolution tensor
         # switch in_shape and out_shape since we want transpose conv
         # distributed mode here is swapped because of the transpose
-        idx, vals = _precompute_distributed_convolution_tensor_s2(
+        idx, vals, _ = _precompute_convolution_tensor_s2(
             out_shape,
             in_shape,
             self.filter_basis,
@@ -412,9 +311,14 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             transpose_normalization=True,
             basis_norm_mode=basis_norm_mode,
             merge_quadrature=True,
+            support_only=False,
         )
 
-        # sort the values
+        # split the convolution tensor along latitude, again, we need to swap the meaning
+        # of in_shape and out_shape
+        idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, out_shape, in_shape)
+
+        # sort the values   
         ker_idx = idx[0, ...].contiguous()
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()
