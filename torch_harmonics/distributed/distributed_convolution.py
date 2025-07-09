@@ -46,6 +46,7 @@ from torch_harmonics._disco_convolution import _get_psi, _disco_s2_contraction_t
 from torch_harmonics._disco_convolution import _disco_s2_contraction_cuda, _disco_s2_transpose_contraction_cuda
 from torch_harmonics.filter_basis import get_filter_basis
 from torch_harmonics.convolution import (
+    _precompute_convolution_tensor_s2,
     _normalize_convolution_tensor_s2,
     DiscreteContinuousConv,
 )
@@ -124,18 +125,25 @@ def _precompute_distributed_convolution_tensor_s2(
 
     out_idx = []
     out_vals = []
+    beta = lons_in
+    gamma = lats_in.reshape(-1, 1)
+
+    # compute trigs
+    cbeta = torch.cos(beta)
+    sbeta = torch.sin(beta)
+    cgamma = torch.cos(gamma)
+    sgamma = torch.sin(gamma)
+
     for t in range(nlat_out):
         # the last angle has a negative sign as it is a passive rotation, which rotates the filter around the y-axis
         alpha = -lats_out[t]
-        beta = lons_in
-        gamma = lats_in.reshape(-1, 1)
 
         # compute cartesian coordinates of the rotated position
         # This uses the YZY convention of Euler angles, where the last angle (alpha) is a passive rotation,
         # and therefore applied with a negative sign
-        x = torch.cos(alpha) * torch.cos(beta) * torch.sin(gamma) + torch.cos(gamma) * torch.sin(alpha)
-        y = torch.sin(beta) * torch.sin(gamma)
-        z = -torch.cos(beta) * torch.sin(alpha) * torch.sin(gamma) + torch.cos(alpha) * torch.cos(gamma)
+        x = torch.cos(alpha) * cbeta * sgamma + cgamma * torch.sin(alpha)
+        y = sbeta * sgamma
+        z = -cbeta * torch.sin(alpha) * sgamma + torch.cos(alpha) * cgamma
 
         # normalization is important to avoid NaNs when arccos and atan are applied
         # this can otherwise lead to spurious artifacts in the solution

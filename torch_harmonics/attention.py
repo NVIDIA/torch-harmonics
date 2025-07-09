@@ -263,7 +263,7 @@ class NeighborhoodAttentionS2(nn.Module):
         fb = get_filter_basis(kernel_shape=1, basis_type="zernike")
 
         # precompute the neighborhood sparsity pattern
-        idx, vals = _precompute_convolution_tensor_s2(
+        idx, _, roff = _precompute_convolution_tensor_s2(
             in_shape,
             out_shape,
             fb,
@@ -273,31 +273,19 @@ class NeighborhoodAttentionS2(nn.Module):
             transpose_normalization=False,
             basis_norm_mode="none",
             merge_quadrature=True,
+            support_only=True,
         )
 
         # this is kept for legacy resons in case we want to resuse sorting of these entries
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()
+        roff_idx = roff.contiguous()
 
-        # compute row offsets for more structured traversal.
-        # only works if rows are sorted but they are by construction
-        row_offset = np.empty(self.nlat_out + 1, dtype=np.int64)
-        row_offset[0] = 0
-        row = row_idx[0]
-        for idz, z in enumerate(range(col_idx.shape[0])):
-            if row_idx[z] != row:
-                row_offset[row + 1] = idz
-                row = row_idx[z]
-
-        # set the last value
-        row_offset[row + 1] = idz + 1
-        row_offset = torch.from_numpy(row_offset).contiguous()
+        # store some metadata
         self.max_psi_nnz = col_idx.max().item() + 1
-
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
-        self.register_buffer("psi_roff_idx", row_offset, persistent=False)
-        # self.register_buffer("psi_vals", vals, persistent=False)
+        self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
         # learnable parameters
         # TODO: double-check that this gives us the correct initialization magnitudes
