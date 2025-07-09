@@ -249,6 +249,8 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     Discrete-continuous transpose convolutions (DISCO) on the 2-Sphere as described in [1].
 
     [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
+
+    We assume the data can be splitted in polar and azimuthal directions.
     """
 
     def __init__(
