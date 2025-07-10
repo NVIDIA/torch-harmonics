@@ -102,6 +102,7 @@ def get_ext_modules():
             CUDAExtension(
                 name="attention_cuda_extension",
                 sources=[
+                    "torch_harmonics/csrc/attention/attention_utils.cu",
                     "torch_harmonics/csrc/attention/attention_fwd_cuda.cu",
                     "torch_harmonics/csrc/attention/attention_bwd_cuda.cu",
                     "torch_harmonics/csrc/attention/attention_interface.cu",
