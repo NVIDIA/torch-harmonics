@@ -279,7 +279,7 @@ class MorletFilterBasis(FilterBasis):
             harmonic *= torch.where(m % 2 == 1, torch.sin(torch.ceil(m / 2) * math.pi * y / width), torch.cos(torch.ceil(m / 2) * math.pi * y / width))
 
             # computes the envelope. To ensure that the curve is roughly 0 at the boundary, we rescale the Gaussian by 0.25
-            vals = self.gaussian_window(r, width=width) * harmonic
+            vals = self.hann_window(r, width=width) * harmonic
         else:
             vals = torch.ones_like(iidx[:, 0])
 
