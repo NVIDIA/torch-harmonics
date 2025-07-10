@@ -80,7 +80,8 @@ class FilterBasis(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float, support_only: bool):
         """
-        Computes the index set that falls into the kernel's support and returns both indices and values. This routine is designed for sparse evaluations of the filter basis
+        Computes the index set that falls into the kernel's support and returns both indices and values (if support_only is False, otherwise it will return 1 as values).
+        This routine is designed for sparse evaluations of the filter basis.
         """
         raise NotImplementedError
 
@@ -124,7 +125,7 @@ class PiecewiseLinearFilterBasis(FilterBasis):
 
     def _compute_support_vals_isotropic(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float, support_only: bool):
         """
-        Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
+        Computes the index set that falls into the isotropic kernel's support and returns both indices and values (if support_only is False, otherwise it will return 1 as values).
         """
 
         # enumerator for basis function
@@ -152,7 +153,7 @@ class PiecewiseLinearFilterBasis(FilterBasis):
 
     def _compute_support_vals_anisotropic(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float, support_only: bool):
         """
-        Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
+        Computes the index set that falls into the anisotropic kernel's support and returns both indices and values (if support_only is False, otherwise it will return 1 as values).
         """
 
         # enumerator for basis function
@@ -255,7 +256,7 @@ class MorletFilterBasis(FilterBasis):
 
     def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float, width: float = 1.0, support_only: Optional[bool] = False):
         """
-        Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
+        Computes the index set that falls into the isotropic kernel's support and returns both indices and values (if support_only is False, otherwise it will return 1 as values).
         """
 
         # enumerator for basis function
@@ -325,7 +326,7 @@ class ZernikeFilterBasis(FilterBasis):
 
     def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float, width: float = 0.25, support_only: Optional[bool] = False):
         """
-        Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
+        Computes the index set that falls into the isotropic kernel's support and returns both indices and values (if support_only is False, otherwise it will return 1 as values).
         """
 
         # enumerator for basis function
