@@ -429,7 +429,7 @@ def main(
 
     # print dataset info
     img_size = dataset.input_shape[1:]
-    class_histogram = torch.from_numpy(dataset.class_histogram)
+    class_histogram = torch.as_tensor(dataset.class_histogram)
 
     # various class weights where tried such as inverse frequency
     # No class weights seem to work best
