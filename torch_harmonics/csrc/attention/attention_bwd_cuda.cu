@@ -715,6 +715,8 @@ void launch_gen_attn_bwd(int batch_size,
                              <<<grid, block, shsize, stream>>>(nchans, nlat_in, nlon_in, nlat_out, nlon_out,
                                                                _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx,
                                                                _quad_weights, _dkxp, _dvxp, _dqyp);
+    CHECK_ERROR("s2_attn_bwd_generic_vec_k");
+
     return;
 }
 
@@ -754,6 +756,8 @@ void launch_spc_attn_bwd(int batch_size,
                                  <<<grid, block, shsize, stream>>>(nchans, nlat_in, nlon_in, nlat_out, nlon_out,
                                                                    _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx,
                                                                    _quad_weights, _dkxp, _dvxp, _dqyp);
+        CHECK_ERROR("s2_attn_bwd_special_vec_k");
+
         return;
     }
     if constexpr(CUR_LOC_SIZE < MAX_LOC_SIZE) {

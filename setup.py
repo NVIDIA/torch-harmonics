@@ -61,6 +61,7 @@ def get_compile_args(module_name):
     nvcc_extra_flags = []
     if profile_mode:
         nvcc_extra_flags.append("-lineinfo")
+        nvcc_extra_flags.append("-Xptxas=-v")
         
     if debug_mode:
         print(f"WARNING: Compiling {module_name} with debugging flags")
