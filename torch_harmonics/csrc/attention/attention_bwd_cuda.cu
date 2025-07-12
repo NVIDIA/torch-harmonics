@@ -1007,9 +1007,9 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Te
 
     if (!dy_channel_first) { dyP = permute_4D_floatT_to0231(dy, stream); }
 
-    torch::Tensor dkxP = torch::zeros_like(kxP); // dkx: [batch][hi][wi][chan]
-    torch::Tensor dvxP = torch::zeros_like(vxP); // dvx: [batch][hi][wi][chan]
-    torch::Tensor dqyP = torch::zeros_like(qyP); // dqy: [batch][ho][wo][chan]  
+    torch::Tensor dkxP = torch::zeros_like(kxP);
+    torch::Tensor dvxP = torch::zeros_like(vxP);
+    torch::Tensor dqyP = torch::zeros_like(qyP);
 
     s2_attn_bwd_dispatch(batch_size,
                          uo_num_channels,
@@ -1023,22 +1023,14 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Te
                          dkxP, dvxP, dqyP, // out tensors
                          stream);
 
-    torch::Tensor dkx = dkxP; // dkx: [batch][hi][wi][chan]
-    torch::Tensor dvx = dvxP; // dvx: [batch][hi][wi][chan]
-    torch::Tensor dqy = dqyP; // dqy: [batch][ho][wo][chan]  
+    torch::Tensor dkx = dkxP;
+    torch::Tensor dvx = dvxP;
+    torch::Tensor dqy = dqyP;
 
     if (!kx_channel_first) { dkx = permute_4D_floatT_to0312(dkxP, stream); }
     if (!vx_channel_first) { dvx = permute_4D_floatT_to0312(dvxP, stream); }
     if (!qy_channel_first) { dqy = permute_4D_floatT_to0312(dqyP, stream); }
 
-    // printf("dydk strides:[");
-    // for(auto& stride : dydk.strides()) {
-    //   printf("%ld,", stride);
-    // }
-    // printf("]\n");
-    // cudaDeviceSynchronize();
-    // delete permute_output_timer;
-    // nvtxRangePop();
     return std::make_tuple(dkx, dvx, dqy);
 #endif
 }
