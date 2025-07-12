@@ -206,6 +206,7 @@ at::Tensor permute_4D_floatT_to0231(at::Tensor src, cudaStream_t stream) {
                                                      src.size(3),
                                                      src.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
                                                      dst.packed_accessor32<float, 4, torch::RestrictPtrTraits>());
+        CHECK_ERROR("permute_to0231_k_tile_generic");
     } else {
         block.y = TRANSP_WARPS_X_TILE_SM100;
         permute_to0231_k<WARP_SIZE, TRANSP_WARPS_X_TILE_SM100>
@@ -214,6 +215,7 @@ at::Tensor permute_4D_floatT_to0231(at::Tensor src, cudaStream_t stream) {
                                                      src.size(3),
                                                      src.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
                                                      dst.packed_accessor32<float, 4, torch::RestrictPtrTraits>());
+        CHECK_ERROR("permute_to0231_k_tile_sm100");
     }
 
     return dst;
@@ -306,6 +308,7 @@ at::Tensor permute_4D_floatT_to0312(at::Tensor src, cudaStream_t stream) {
                                                      src.size(2),
                                                      src.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
                                                      dst.packed_accessor32<float, 4, torch::RestrictPtrTraits>());
+        CHECK_ERROR("permute_to0312_k_tile_generic");
     } else {
         block.y = TRANSP_WARPS_X_TILE_SM100;
         permute_to0312_k<WARP_SIZE, TRANSP_WARPS_X_TILE_SM100>
@@ -314,6 +317,7 @@ at::Tensor permute_4D_floatT_to0312(at::Tensor src, cudaStream_t stream) {
                                                      src.size(2),
                                                      src.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
                                                      dst.packed_accessor32<float, 4, torch::RestrictPtrTraits>());
+        CHECK_ERROR("permute_to0312_k_tile_sm100");
     }
 
     return dst;

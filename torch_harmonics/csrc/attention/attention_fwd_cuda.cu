@@ -311,6 +311,8 @@ void launch_gen_attn_fwd(int batch_size,
     s2_attn_fwd_generic_vec_k<THREADS>
                              <<<grid, block, shsize, stream>>>(nchans, nlat_in, nlon_in, nlat_out, nlon_out,
                                                                _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp);
+    CHECK_ERROR("s2_attn_fwd_generic_vec_k");
+
     return;
 }
 
@@ -346,6 +348,8 @@ void launch_spc_attn_fwd(int batch_size,
         s2_attn_fwd_special_vec_k<BDIM_X, BDIM_Y, CUR_LOC_SIZE>
                                  <<<grid, block, shsize, stream>>>(nchans, nlat_in, nlon_in, nlat_out, nlon_out,
                                                                    _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp);
+        CHECK_ERROR("s2_attn_fwd_special_vec_k");
+
         return;
     }
     if constexpr(CUR_LOC_SIZE < MAX_LOC_SIZE) {
