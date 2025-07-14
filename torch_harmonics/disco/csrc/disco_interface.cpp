@@ -39,7 +39,7 @@ extern "C" {
     {
         static struct PyModuleDef module_def = {
             PyModuleDef_HEAD_INIT,
-            "_C_disco",   /* name of module */
+            "_C",   /* name of module */
             NULL,   /* module documentation, may be NULL */
             -1,     /* size of per-interpreter state of the module,
                        or -1 if the module keeps state in global variables. */
