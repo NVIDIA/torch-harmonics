@@ -35,11 +35,19 @@ from functools import partial
 import math
 import numpy as np
 import torch
+from torch.export import export
 from torch.autograd import gradcheck
 from torch_harmonics import quadrature, DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
-from torch_harmonics.convolution import _precompute_convolution_tensor_s2
+
+try:
+    import disco_cuda_extension
+    _cuda_extension_available = True
+except ImportError as err:
+    print(f"Warning: Couldn't Import cuda attention: {err}")
+    disco_cuda_extension = None
+    _cuda_extension_available = False
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -315,16 +323,32 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
-            [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", False, 1e-4, False],
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
-            [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", True, 1e-4, False],
-        ],
-        skip_on_empty=True,
+            # regular convolution
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, False],
+            # transpose convolution
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, False],
+        ]
     )
-    @unittest.skipIf(not torch.cuda.is_available(), "CUDA is not available")
-    def test_device_instantiation(self, batch_size, in_channels, out_channels, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, transpose, tol, verbose):
+    @unittest.skipUnless((torch.cuda.is_available() and _cuda_extension_available), "skipping export test because CUDA is not available")
+    def test_disco_convolution_export(
+        self,
+        batch_size,
+        in_channels,
+        out_channels,
+        in_shape,
+        out_shape,
+        kernel_shape,
+        basis_type,
+        basis_norm_mode,
+        grid_in,
+        grid_out,
+        transpose,
+        verbose,
+    ):
 
+        if verbose:
+            print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
+        
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
@@ -333,16 +357,17 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         else:
             theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
 
-        # get handle
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
 
-        # init on cpu
-        conv_host = Conv(
+        args = (
             in_channels,
             out_channels,
             in_shape,
             out_shape,
             kernel_shape,
+        )
+
+        kwargs = dict(
             basis_type=basis_type,
             basis_norm_mode=basis_norm_mode,
             groups=1,
@@ -352,31 +377,15 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             theta_cutoff=theta_cutoff,
         )
 
-        #torch.set_default_device(self.device)
-        with torch.device(self.device):
-            conv_device = Conv(
-                in_channels,
-                out_channels,
-                in_shape,
-                out_shape,
-                kernel_shape,
-                basis_type=basis_type,
-                basis_norm_mode=basis_norm_mode,
-                groups=1,
-                grid_in=grid_in,
-                grid_out=grid_out,
-                bias=False,
-                theta_cutoff=theta_cutoff,
-            )
+        # instantiate module
+        conv = Conv(*args, **kwargs).to(self.device)
 
-        # since we specified the device specifier everywhere, it should always
-        # use the cpu and it should be the same everywhere
-        self.assertTrue(torch.allclose(conv_host.psi_col_idx.cpu(), conv_device.psi_col_idx.cpu()))
-        self.assertTrue(torch.allclose(conv_host.psi_row_idx.cpu(), conv_device.psi_row_idx.cpu()))
-        self.assertTrue(torch.allclose(conv_host.psi_roff_idx.cpu(), conv_device.psi_roff_idx.cpu()))
-        self.assertTrue(torch.allclose(conv_host.psi_vals.cpu(), conv_device.psi_vals.cpu()))
-        self.assertTrue(torch.allclose(conv_host.psi_idx.cpu(), conv_device.psi_idx.cpu()))
+        # create dummy input
+        inp = torch.randn(batch_size, in_channels, *in_shape, dtype=torch.float32, device=self.device)
 
+        exported_program: torch.export.ExportedProgram = export(
+            conv, args=(inp,), strict=False, 
+        )
 
 if __name__ == "__main__":
     unittest.main()

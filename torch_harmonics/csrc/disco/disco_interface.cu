@@ -31,8 +31,15 @@
 #include "disco.h"
 #include "disco_cuda.cuh"
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
+//PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
+//{
+//    m.def("forward", &disco_cuda_fwd, "DISCO forward (CUDA)");
+//    m.def("backward", &disco_cuda_bwd, "DISCO backward (CUDA)");
+//}
+
+TORCH_LIBRARY_IMPL("torch_harmonics::disco", CUDA, m)
 {
-    m.def("forward", &disco_cuda_fwd, "DISCO forward (CUDA)");
-    m.def("backward", &disco_cuda_bwd, "DISCO backward (CUDA)");
+    m.impl("forward",  &disco_cuda_fwd, "DISCO forward (CUDA)");
+    m.impl("backward",  &disco_cuda_bwd, "DISCO backward (CUDA)");
 }
+
