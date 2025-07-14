@@ -80,7 +80,8 @@ class FilterBasis(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float):
         """
-        Computes the index set that falls into the kernel's support and returns both indices and values. This routine is designed for sparse evaluations of the filter basis
+        Computes the index set that falls into the kernel's support and returns both indices and values.
+        This routine is designed for sparse evaluations of the filter basis.
         """
         raise NotImplementedError
 
@@ -128,7 +129,7 @@ class PiecewiseLinearFilterBasis(FilterBasis):
         """
 
         # enumerator for basis function
-        ikernel = torch.arange(self.kernel_size).reshape(-1, 1, 1)
+        ikernel = torch.arange(self.kernel_size, device=r.device).reshape(-1, 1, 1)
 
         # collocation points
         nr = self.kernel_shape[0]
@@ -148,11 +149,11 @@ class PiecewiseLinearFilterBasis(FilterBasis):
 
     def _compute_support_vals_anisotropic(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float):
         """
-        Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
+        Computes the index set that falls into the anisotropic kernel's support and returns both indices and values.
         """
 
         # enumerator for basis function
-        ikernel = torch.arange(self.kernel_size).reshape(-1, 1, 1)
+        ikernel = torch.arange(self.kernel_size, device=r.device).reshape(-1, 1, 1)
 
         # collocation points
         nr = self.kernel_shape[0]
@@ -179,12 +180,8 @@ class PiecewiseLinearFilterBasis(FilterBasis):
             dist_r = (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs()
             dist_phi = _circle_dist(phi[iidx[:, 1], iidx[:, 2]], iphi[iidx[:, 0], 0, 0])
             # compute the value of the basis functions
-            vals = 1 - dist_r / dr
-            vals *= torch.where(
-                (iidx[:, 0] > 0),
-                (1 - dist_phi / dphi),
-                1.0,
-            )
+            vals  = 1 - dist_r / dr
+            vals *= torch.where((iidx[:, 0] > 0), (1 - dist_phi / dphi), 1.0)
 
         else:
             # in the even case, the inner basis functions overlap into areas with a negative areas
@@ -197,6 +194,7 @@ class PiecewiseLinearFilterBasis(FilterBasis):
             cond_phin = _circle_dist(phin, iphi) <= dphi
             # find indices where conditions are met
             iidx = torch.argwhere((cond_r & cond_phi) | (cond_rn & cond_phin))
+
             dist_r = (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs()
             dist_phi = _circle_dist(phi[iidx[:, 1], iidx[:, 2]], iphi[iidx[:, 0], 0, 0])
             dist_rn = (rn[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs()
@@ -251,7 +249,7 @@ class MorletFilterBasis(FilterBasis):
         """
 
         # enumerator for basis function
-        ikernel = torch.arange(self.kernel_size).reshape(-1, 1, 1)
+        ikernel = torch.arange(self.kernel_size, device=r.device).reshape(-1, 1, 1)
         nkernel = ikernel % self.kernel_shape[1]
         mkernel = ikernel // self.kernel_shape[1]
 
@@ -270,7 +268,6 @@ class MorletFilterBasis(FilterBasis):
         harmonic *= torch.where(m % 2 == 1, torch.sin(torch.ceil(m / 2) * math.pi * y / width), torch.cos(torch.ceil(m / 2) * math.pi * y / width))
 
         # computes the envelope. To ensure that the curve is roughly 0 at the boundary, we rescale the Gaussian by 0.25
-        # vals = self.gaussian_window(r, width=width) * harmonic
         vals = self.hann_window(r, width=width) * harmonic
 
         return iidx, vals
@@ -327,7 +324,7 @@ class ZernikeFilterBasis(FilterBasis):
         # indexing logic for zernike polynomials
         # the total index is given by (n * (n + 2) + l ) // 2 which needs to be reversed
         # precompute shifts in the level of the "pyramid"
-        nshifts = torch.arange(self.kernel_shape)
+        nshifts = torch.arange(self.kernel_shape, device=r.device)
         nshifts = (nshifts + 1) * nshifts // 2
         # find the level and position within the pyramid
         nkernel = torch.searchsorted(nshifts, ikernel, right=True) - 1

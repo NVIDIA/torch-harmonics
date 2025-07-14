@@ -67,6 +67,10 @@ def _normalize_convolution_tensor_s2(
     - "mean": the norm is computed for each output latitude and then averaged over the output latitudes. Each basis function is then normalized by this mean.
     """
 
+    # exit here if no normalization is needed
+    if basis_norm_mode == "none":
+        return psi_vals
+
     # reshape the indices implicitly to be ikernel, out_shape[0], in_shape[0], in_shape[1]
     idx = torch.stack([psi_idx[0], psi_idx[1], psi_idx[2] // in_shape[1], psi_idx[2] % in_shape[1]], dim=0)
 
@@ -192,18 +196,29 @@ def _precompute_convolution_tensor_s2(
 
     out_idx = []
     out_vals = []
+
+    beta = lons_in
+    gamma = lats_in.reshape(-1, 1)
+
+    # compute trigs
+    cbeta = torch.cos(beta)
+    sbeta = torch.sin(beta)
+    cgamma = torch.cos(gamma)
+    sgamma = torch.sin(gamma)
+
+    # compute row offsets
+    out_roff = torch.zeros(nlat_out + 1, dtype=torch.int64)
+    out_roff[0] = 0
     for t in range(nlat_out):
         # the last angle has a negative sign as it is a passive rotation, which rotates the filter around the y-axis
         alpha = -lats_out[t]
-        beta = lons_in
-        gamma = lats_in.reshape(-1, 1)
 
         # compute cartesian coordinates of the rotated position
         # This uses the YZY convention of Euler angles, where the last angle (alpha) is a passive rotation,
         # and therefore applied with a negative sign
-        x = torch.cos(alpha) * torch.cos(beta) * torch.sin(gamma) + torch.cos(gamma) * torch.sin(alpha)
-        y = torch.sin(beta) * torch.sin(gamma)
-        z = -torch.cos(beta) * torch.sin(alpha) * torch.sin(gamma) + torch.cos(alpha) * torch.cos(gamma)
+        x = torch.cos(alpha) * cbeta * sgamma + cgamma * torch.sin(alpha)
+        y = sbeta * sgamma
+        z = -cbeta * torch.sin(alpha) * sgamma + torch.cos(alpha) * cgamma
 
         # normalization is important to avoid NaNs when arccos and atan are applied
         # this can otherwise lead to spurious artifacts in the solution
@@ -223,9 +238,10 @@ def _precompute_convolution_tensor_s2(
         # add the output latitude and reshape such that psi has dimensions kernel_shape x nlat_out x (nlat_in*nlon_in)
         idx = torch.stack([iidx[:, 0], t * torch.ones_like(iidx[:, 0]), iidx[:, 1] * nlon_in + iidx[:, 2]], dim=0)
 
-        # append indices and values to the COO datastructure
+        # append indices and values to the COO datastructure, compute row offsets
         out_idx.append(idx)
         out_vals.append(vals)
+        out_roff[t + 1] = out_roff[t] + iidx.shape[0]
 
     # concatenate the indices and values
     out_idx = torch.cat(out_idx, dim=-1)
@@ -246,7 +262,7 @@ def _precompute_convolution_tensor_s2(
     out_idx = out_idx.contiguous()
     out_vals = out_vals.to(dtype=torch.float32).contiguous()
 
-    return out_idx, out_vals
+    return out_idx, out_vals, out_roff
 
 
 class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
@@ -333,7 +349,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         if theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
 
-        idx, vals = _precompute_convolution_tensor_s2(
+        idx, vals, _ = _precompute_convolution_tensor_s2(
             in_shape,
             out_shape,
             self.filter_basis,
@@ -353,7 +369,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         if _cuda_extension_available:
             # preprocessed data-structure for GPU kernel
-            roff_idx = preprocess_psi(self.kernel_size, out_shape[0], ker_idx, row_idx, col_idx, vals).contiguous()
+            roff_idx = preprocess_psi(self.kernel_size, self.nlat_out, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
         # save all datastructures
@@ -438,7 +454,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             raise ValueError("Error, theta_cutoff has to be positive.")
 
         # switch in_shape and out_shape since we want the transpose convolution
-        idx, vals = _precompute_convolution_tensor_s2(
+        idx, vals, _ = _precompute_convolution_tensor_s2(
             out_shape,
             in_shape,
             self.filter_basis,
@@ -458,7 +474,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         if _cuda_extension_available:
             # preprocessed data-structure for GPU kernel
-            roff_idx = preprocess_psi(self.kernel_size, in_shape[0], ker_idx, row_idx, col_idx, vals).contiguous()
+            roff_idx = preprocess_psi(self.kernel_size, self.nlat_in, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
         # save all datastructures
