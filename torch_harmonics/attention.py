@@ -273,7 +273,6 @@ class NeighborhoodAttentionS2(nn.Module):
             transpose_normalization=False,
             basis_norm_mode="none",
             merge_quadrature=True,
-            support_only=True,
         )
 
         # this is kept for legacy resons in case we want to resuse sorting of these entries

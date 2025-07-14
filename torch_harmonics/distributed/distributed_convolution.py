@@ -166,7 +166,6 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             transpose_normalization=False,
             basis_norm_mode=basis_norm_mode,
             merge_quadrature=True,
-            support_only=False,
         )
 
         # split the convolution tensor along latitude
@@ -313,14 +312,13 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             transpose_normalization=True,
             basis_norm_mode=basis_norm_mode,
             merge_quadrature=True,
-            support_only=False,
         )
 
         # split the convolution tensor along latitude, again, we need to swap the meaning
         # of in_shape and out_shape
         idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, out_shape, in_shape)
 
-        # sort the values   
+        # sort the values
         ker_idx = idx[0, ...].contiguous()
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()

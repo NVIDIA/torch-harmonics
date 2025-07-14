@@ -67,6 +67,10 @@ def _normalize_convolution_tensor_s2(
     - "mean": the norm is computed for each output latitude and then averaged over the output latitudes. Each basis function is then normalized by this mean.
     """
 
+    # exit here if no normalization is needed
+    if basis_norm_mode == "none":
+        return psi_vals
+
     # reshape the indices implicitly to be ikernel, out_shape[0], in_shape[0], in_shape[1]
     idx = torch.stack([psi_idx[0], psi_idx[1], psi_idx[2] // in_shape[1], psi_idx[2] % in_shape[1]], dim=0)
 
@@ -147,7 +151,6 @@ def _precompute_convolution_tensor_s2(
     transpose_normalization: Optional[bool]=False,
     basis_norm_mode: Optional[str]="mean",
     merge_quadrature: Optional[bool]=False,
-    support_only: Optional[bool]=False,
 ):
     """
     Precomputes the rotated filters at positions $R^{-1}_j \omega_i = R^{-1}_j R_i \nu = Y(-\theta_j)Z(\phi_i - \phi_j)Y(\theta_j)\nu$.
@@ -230,7 +233,7 @@ def _precompute_convolution_tensor_s2(
         phi = torch.where(phi < 0.0, phi + 2 * torch.pi, phi)
 
         # find the indices where the rotated position falls into the support of the kernel
-        iidx, vals = filter_basis.compute_support_vals(theta, phi, r_cutoff=theta_cutoff_eff, support_only=support_only)
+        iidx, vals = filter_basis.compute_support_vals(theta, phi, r_cutoff=theta_cutoff_eff)
 
         # add the output latitude and reshape such that psi has dimensions kernel_shape x nlat_out x (nlat_in*nlon_in)
         idx = torch.stack([iidx[:, 0], t * torch.ones_like(iidx[:, 0]), iidx[:, 1] * nlon_in + iidx[:, 2]], dim=0)
@@ -244,18 +247,17 @@ def _precompute_convolution_tensor_s2(
     out_idx = torch.cat(out_idx, dim=-1)
     out_vals = torch.cat(out_vals, dim=-1)
 
-    if not support_only:
-        out_vals = _normalize_convolution_tensor_s2(
-            out_idx,
-            out_vals,
-            in_shape,
-            out_shape,
-            kernel_size,
-            quad_weights,
-            transpose_normalization=transpose_normalization,
-            basis_norm_mode=basis_norm_mode,
-            merge_quadrature=merge_quadrature,
-        )
+    out_vals = _normalize_convolution_tensor_s2(
+        out_idx,
+        out_vals,
+        in_shape,
+        out_shape,
+        kernel_size,
+        quad_weights,
+        transpose_normalization=transpose_normalization,
+        basis_norm_mode=basis_norm_mode,
+        merge_quadrature=merge_quadrature,
+    )
 
     out_idx = out_idx.contiguous()
     out_vals = out_vals.to(dtype=torch.float32).contiguous()
