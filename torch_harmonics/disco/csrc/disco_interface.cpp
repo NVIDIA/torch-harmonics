@@ -28,27 +28,34 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#pragma once
-
 #include "disco.h"
 
-#include <cuda_runtime.h>
-#include <c10/cuda/CUDAStream.h>
+extern "C" {
+    /* Creates a dummy empty _C module that can be imported from Python.
+       The import from Python will load the .so consisting of this file
+       in this extension, so that the TORCH_LIBRARY static initializers
+       below are run. */
+    PyObject* PyInit__C(void)
+    {
+        static struct PyModuleDef module_def = {
+            PyModuleDef_HEAD_INIT,
+            "_C_disco",   /* name of module */
+            NULL,   /* module documentation, may be NULL */
+            -1,     /* size of per-interpreter state of the module,
+                       or -1 if the module keeps state in global variables. */
+            NULL,   /* methods */
+        };
+        return PyModule_Create(&module_def);
+    }
+}
 
-#define CHECK_CUDA_TENSOR(x) TORCH_CHECK(x.device().is_cuda(), #x " must be a CUDA tensor")
-#define CHECK_CUDA_INPUT_TENSOR(x)                                                                                     \
-    CHECK_CUDA_TENSOR(x);                                                                                              \
-    CHECK_CONTIGUOUS_TENSOR(x)
+namespace disco_kernels {
 
-#define DIV_UP(a, b) (((a) + ((b)-1)) / (b))
+    // Declare the operators
+    TORCH_LIBRARY(disco_kernels, m) {
+        m.def("forward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor");
+        m.def("backward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor");
+    }
 
-#define MIN_THREADS (64)
-#define ELXTH_MAX (32)
+}
 
-// forward kernel
-torch::Tensor disco_cuda_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-                             torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo);
-
-// backward kernel
-torch::Tensor disco_cuda_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-                             torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo);

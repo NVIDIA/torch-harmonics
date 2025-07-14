@@ -36,9 +36,9 @@ import torch
 from torch.amp import custom_fwd, custom_bwd
 
 try:
-    import disco_cuda_extension
+    from torch.ops import disco_kernels
 except ImportError as err:
-    disco_cuda_extension = None
+    disco_kernels = None
 
 from torch.library import custom_op
 
@@ -80,7 +80,7 @@ class _DiscoS2ContractionCuda(torch.autograd.Function):
         xtype = x.dtype
         x = x.to(torch.float32).contiguous()
         #output = disco_cuda_extension.forward(x, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
-        output = torch.ops.torch_harmonics.disco.forward(x, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+        output = disco_kernels.forward(x, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
         output = output.to(xtype)
 
         return output
@@ -94,7 +94,7 @@ class _DiscoS2ContractionCuda(torch.autograd.Function):
         grad_output = grad_output.to(torch.float32).contiguous()
         #grad_input = disco_cuda_extension.backward(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
         #                                 ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
-        grad_input = torch.ops.torch_harmonics.disco.backward(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
+        grad_input = disco_kernels.backward(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
                                             ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
         grad_input = grad_input.to(gtype)
 
@@ -114,7 +114,7 @@ class _DiscoS2TransposeContractionCuda(torch.autograd.Function):
         ctx.nlon_in = x.shape[-1]
         xtype =	x.dtype
         x = x.to(torch.float32).contiguous()
-        output = torch.ops.torch_harmonics.disco.backward.backward(x, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+        output = disco_kernels.backward(x, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
         output = output.to(xtype)
 
         return output
@@ -126,7 +126,7 @@ class _DiscoS2TransposeContractionCuda(torch.autograd.Function):
         roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
         gtype = grad_output.dtype
         grad_output = grad_output.to(torch.float32).contiguous()
-        grad_input = torch.ops.torch_harmonics.disco.forward(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
+        grad_input = disco_kernels.forward(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
                                         ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
         grad_input = grad_input.to(gtype)
 

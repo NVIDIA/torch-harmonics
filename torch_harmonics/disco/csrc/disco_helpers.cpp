@@ -95,14 +95,15 @@ void preprocess_psi_kernel(int64_t nnz, int64_t K, int64_t Ho, int64_t *ker_h, i
     return;
 }
 
+
 torch::Tensor preprocess_psi(const int64_t K, const int64_t Ho, torch::Tensor ker_idx, torch::Tensor row_idx,
                              torch::Tensor col_idx, torch::Tensor val)
 {
 
-    CHECK_INPUT_TENSOR(ker_idx);
-    CHECK_INPUT_TENSOR(row_idx);
-    CHECK_INPUT_TENSOR(col_idx);
-    CHECK_INPUT_TENSOR(val);
+    CHECK_CPU_INPUT_TENSOR(ker_idx);
+    CHECK_CPU_INPUT_TENSOR(row_idx);
+    CHECK_CPU_INPUT_TENSOR(col_idx);
+    CHECK_CPU_INPUT_TENSOR(val);
 
     // get the input device and make sure all tensors are on the same device
     auto device = ker_idx.device();
@@ -143,7 +144,8 @@ torch::Tensor preprocess_psi(const int64_t K, const int64_t Ho, torch::Tensor ke
     return roff_idx;
 }
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
+PYBIND11_MODULE(disco_helpers, m)
 {
-    m.def("preprocess_psi", &preprocess_psi, "Sort psi matrix, required for using disco_cuda.");
+    m.def("preprocess_psi", &preprocess_psi, "Sort psi matrix, required for using CUDA kernels.");
 }
+

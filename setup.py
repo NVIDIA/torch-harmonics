@@ -85,18 +85,33 @@ def get_ext_modules():
 
     if BUILD_CPP:
         print(f"Compiling helper routines for torch-harmonics.")
-        ext_modules.append(CppExtension("disco_helpers", ["torch_harmonics/csrc/disco/disco_helpers.cpp"]))
+        ext_modules.append(
+            CppExtension(
+                 "disco_helpers", 
+                [
+                    "torch_harmonics/disco/csrc/disco_helpers.cpp",
+                ]
+            )
+        )
+        ext_modules.append(
+            CppExtension(
+                "torch_harmonics.disco._C", 
+                [   
+                    "torch_harmonics/disco/csrc/disco_interface.cpp",
+                    "torch_harmonics/disco/csrc/disco_cpu.cpp"
+                ]
+            )
+        )
         cmdclass["build_ext"] = BuildExtension
 
     if BUILD_CUDA:
         print(f"Compiling custom CUDA kernels for torch-harmonics.")
         ext_modules.append(
             CUDAExtension(
-                "disco_cuda_extension",
+                "torch_harmonics.disco._C",
                 [
-                    "torch_harmonics/csrc/disco/disco_interface.cu",
-                    "torch_harmonics/csrc/disco/disco_cuda_fwd.cu",
-                    "torch_harmonics/csrc/disco/disco_cuda_bwd.cu",
+                    "torch_harmonics/disco/csrc/disco_cuda_fwd.cu",
+                    "torch_harmonics/disco/csrc/disco_cuda_bwd.cu",
                 ],
                 extra_compile_args=get_compile_args("disco")
             )

@@ -28,18 +28,31 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#pragma once
+
 #include "disco.h"
-#include "disco_cuda.cuh"
 
-//PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
-//{
-//    m.def("forward", &disco_cuda_fwd, "DISCO forward (CUDA)");
-//    m.def("backward", &disco_cuda_bwd, "DISCO backward (CUDA)");
-//}
+#include <cuda_runtime.h>
+#include <c10/cuda/CUDAStream.h>
 
-TORCH_LIBRARY_IMPL("torch_harmonics::disco", CUDA, m)
-{
-    m.impl("forward",  &disco_cuda_fwd, "DISCO forward (CUDA)");
-    m.impl("backward",  &disco_cuda_bwd, "DISCO backward (CUDA)");
+#define CHECK_CUDA_TENSOR(x) TORCH_INTERNAL_ASSERT(x.device().type() == torch::kCUDA)
+#define CHECK_CUDA_INPUT_TENSOR(x)                                                                                     \
+    CHECK_CUDA_TENSOR(x);                                                                                              \
+    CHECK_CONTIGUOUS_TENSOR(x)
+
+#define DIV_UP(a, b) (((a) + ((b)-1)) / (b))
+
+#define MIN_THREADS (64)
+#define ELXTH_MAX (32)
+
+namespace disco_kernels {
+
+    // forward kernel
+    torch::Tensor disco_cuda_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
+                                 torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo);
+
+    // backward kernel
+    torch::Tensor disco_cuda_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
+                                torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo);
+
 }
-

@@ -1,6 +1,6 @@
 // coding=utf-8
 //
-// SPDX-FileCopyrightText: Copyright (c) 2024 The torch-harmonics Authors. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
 //
 // Redistribution and use in source and binary forms, with or without
@@ -28,13 +28,28 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#pragma once
+#include "disco_cpu.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <torch/extension.h>
-#include <torch/library.h>
-#include <cassert>
+namespace disco_kernels {
 
-#define CHECK_CONTIGUOUS_TENSOR(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
-#define CHECK_INPUT_TENSOR(x) CHECK_CONTIGUOUS_TENSOR(x)
+    // These are fake operators, needed in order to compile graphs with disco kernels in them
+    torch::Tensor disco_meta_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
+        torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo) {
+        auto out = torch::empty({inp.size(0), inp.size(1), K, Ho, Wo}, inp.options());
+        return out;
+    }
+
+    torch::Tensor disco_meta_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
+        torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo) {
+        auto out = torch::empty({inp.size(0), inp.size(1), Ho, Wo}, inp.options());
+        return out;
+    }
+
+    // Implement the operators: Meta
+    TORCH_LIBRARY_IMPL(disco_kernels, Meta, m)
+    {
+        m.impl("forward",  &disco_meta_fwd);
+        m.impl("backward",  &disco_meta_bwd);
+    }
+
+}
