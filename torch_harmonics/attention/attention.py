@@ -40,7 +40,7 @@ import numpy as np
 
 from torch_harmonics.quadrature import _precompute_latitudes
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
-from torch_harmonics._neighborhood_attention import _neighborhood_attention_s2_torch, _neighborhood_attention_s2_cuda
+from torch_harmonics.attention._neighborhood_attention import _neighborhood_attention_s2_torch, _neighborhood_attention_s2_cuda
 from torch_harmonics.filter_basis import get_filter_basis
 
 # import custom C++/CUDA extensions
