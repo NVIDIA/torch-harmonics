@@ -589,6 +589,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
+        self.optimized_kernel = optimized_kernel
 
         # make sure the p-shift works by checking that longitudes are divisible
         assert self.nlon_out % self.nlon_in == 0

@@ -321,6 +321,120 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         self.assertTrue(torch.allclose(x_grad, x_ref_grad, rtol=tol, atol=tol))
         self.assertTrue(torch.allclose(conv.weight.grad, w_ref.grad, rtol=tol, atol=tol))
 
+
+    @parameterized.expand(
+        [
+            # regular convolution
+            [8, 4, 2, (81, 160), (81, 160), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
+            [8, 4, 2, (81, 160), (81, 160), (2, 2), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, False],
+            [8, 4, 2, (81, 160), (81, 160), (3), "zernike", "mean", "equiangular", "equiangular", False, 1e-4, False],
+            [8, 4, 2, (81, 160), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
+            [8, 4, 2, (81, 160), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, False],
+            [8, 4, 2, (81, 160), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", False, 1e-4, False],
+            # transpose convolution
+            [8, 4, 2, (81, 160), (81, 160), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
+            [8, 4, 2, (81, 160), (81, 160), (2, 2), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, False],
+            [8, 4, 2, (81, 160), (81, 160), (3), "zernike", "mean", "equiangular", "equiangular", True, 1e-4, False],
+            [8, 4, 2, (41, 80),  (81, 160), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
+            [8, 4, 2, (41, 80),  (81, 160), (2, 2), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, False],
+            [8, 4, 2, (41, 80),  (81, 160), (3), "zernike", "mean", "equiangular", "equiangular", True, 1e-4, False],
+        ],
+        skip_on_empty=True,
+    )
+    def test_optimized_disco_convolution_against_torch(
+        self,
+        batch_size,
+        in_channels,
+        out_channels,
+        in_shape,
+        out_shape,
+        kernel_shape,
+        basis_type,
+        basis_norm_mode,
+        grid_in,
+        grid_out,
+        transpose,
+        tol,
+        verbose,
+    ):
+
+        # this test only makes sense on GPU at the moment
+        if self.device.type != "cuda":
+            return
+
+        if verbose:
+            print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
+        
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        if isinstance(kernel_shape, int):
+            theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
+        else:
+            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
+
+        Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
+
+        conv_naive = Conv(
+            in_channels,
+            out_channels,
+            in_shape,
+            out_shape,
+            kernel_shape,
+            basis_type=basis_type,
+            basis_norm_mode=basis_norm_mode,
+            groups=1,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            bias=False,
+            theta_cutoff=theta_cutoff,
+            optimized_kernel=False,
+        ).to(self.device)
+
+        conv_opt = Conv(
+            in_channels,
+            out_channels,
+            in_shape,
+            out_shape,
+            kernel_shape,
+            basis_type=basis_type,
+            basis_norm_mode=basis_norm_mode,
+            groups=1,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            bias=False,
+            theta_cutoff=theta_cutoff,
+            optimized_kernel=True,
+        ).to(self.device)
+
+        # create a copy of the weight
+        with torch.no_grad():
+            conv_naive.weight.copy_(conv_opt.weight)
+
+        # create an input signal
+        inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
+
+        # FWD and BWD pass
+        inp.requires_grad = True
+        out_naive = conv_naive(inp)
+        grad_input = torch.randn_like(out_naive)
+        out_naive.backward(grad_input)
+        inp_grad_naive = inp.grad.clone()
+
+        # perform the reference computation
+        inp.grad = None
+        out_opt = conv_opt(inp)
+        grad_input = torch.randn_like(out_opt)
+        out_opt.backward(grad_input)
+        inp_grad_opt = inp.grad.clone()
+
+        # compare results
+        self.assertTrue(torch.allclose(out_naive, out_opt, rtol=tol, atol=tol))
+
+        # compare
+        self.assertTrue(torch.allclose(inp_grad_naive, inp_grad_opt, rtol=tol, atol=tol))
+        self.assertTrue(torch.allclose(conv_naive.weight.grad, conv_opt.weight.grad, rtol=tol, atol=tol))
+
     # @parameterized.expand(
     #     [
     #         [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
