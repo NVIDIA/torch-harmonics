@@ -325,19 +325,19 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
     @parameterized.expand(
         [
             # regular convolution
-            [8, 4, 2, (81, 160), (81, 160), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
-            [8, 4, 2, (81, 160), (81, 160), (2, 2), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, False],
-            [8, 4, 2, (81, 160), (81, 160), (3), "zernike", "mean", "equiangular", "equiangular", False, 1e-4, False],
-            [8, 4, 2, (81, 160), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
-            [8, 4, 2, (81, 160), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, False],
-            [8, 4, 2, (81, 160), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", False, 1e-4, False],
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, False],
+            [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", False, 1e-4, False],
+            [8, 4, 2, (41, 80), (21, 40), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
+            [8, 4, 2, (41, 80), (21, 40), (2, 2), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, False],
+            [8, 4, 2, (41, 80), (21, 40), (3), "zernike", "mean", "equiangular", "equiangular", False, 1e-4, False],
             # transpose convolution
-            [8, 4, 2, (81, 160), (81, 160), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
-            [8, 4, 2, (81, 160), (81, 160), (2, 2), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, False],
-            [8, 4, 2, (81, 160), (81, 160), (3), "zernike", "mean", "equiangular", "equiangular", True, 1e-4, False],
-            [8, 4, 2, (41, 80),  (81, 160), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
-            [8, 4, 2, (41, 80),  (81, 160), (2, 2), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, False],
-            [8, 4, 2, (41, 80),  (81, 160), (3), "zernike", "mean", "equiangular", "equiangular", True, 1e-4, False],
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, False],
+            [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", True, 1e-4, False],
+            [8, 4, 2, (21, 40), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
+            [8, 4, 2, (21, 40), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, False],
+            [8, 4, 2, (21, 40), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", True, 1e-4, False],
         ],
         skip_on_empty=True,
     )
@@ -357,10 +357,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         tol,
         verbose,
     ):
-
-        # this test only makes sense on GPU at the moment
-        if self.device.type != "cuda":
-            return
 
         if verbose:
             print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
@@ -424,7 +420,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # perform the reference computation
         inp.grad = None
         out_opt = conv_opt(inp)
-        grad_input = torch.randn_like(out_opt)
         out_opt.backward(grad_input)
         inp_grad_opt = inp.grad.clone()
 
@@ -435,134 +430,73 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         self.assertTrue(torch.allclose(inp_grad_naive, inp_grad_opt, rtol=tol, atol=tol))
         self.assertTrue(torch.allclose(conv_naive.weight.grad, conv_opt.weight.grad, rtol=tol, atol=tol))
 
-    # @parameterized.expand(
-    #     [
-    #         [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
-    #     ]
-    # )
-    # def test_ops_cuda(
-    #     self,
-    #     batch_size,
-    #     in_channels,
-    #     out_channels,
-    #     in_shape,
-    #     out_shape,
-    #     kernel_shape,
-    #     basis_type,
-    #     basis_norm_mode,
-    #     grid_in,
-    #     grid_out,
-    #     transpose,
-    #     tol,
-    #     verbose,
-    # ):
-    #     if self.device.type == "cuda":
-    #         return
+    @parameterized.expand(
+        [
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
+            [8, 4, 2, (16, 32), (8,  16), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
+            [8, 4, 2, (8,  16), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
+        ]
+    )
+    def test_optimized_disco_pt2_compatibility(
+        self,
+        batch_size,
+        in_channels,
+        out_channels,
+        in_shape,
+        out_shape,
+        kernel_shape,
+        basis_type,
+        basis_norm_mode,
+        grid_in,
+        grid_out,
+        transpose,
+        tol,
+        verbose,
+    ):  
+        if verbose:
+            print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
         
-    #     if verbose:
-    #         print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        if isinstance(kernel_shape, int):
+            theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
+        else:
+            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
+
+        Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
+        conv = Conv(
+            in_channels,
+            out_channels,
+            in_shape,
+            out_shape,
+            kernel_shape,
+            basis_type=basis_type,
+            basis_norm_mode=basis_norm_mode,
+            groups=1,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            bias=False,
+            theta_cutoff=theta_cutoff,
+        ).to(self.device)
+
+        # create an input signal
+        inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
+
+        test_inputs = (inp, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals, 
+                conv.kernel_size, conv.nlat_out, conv.nlon_out)
         
-    #     nlat_in, nlon_in = in_shape
-    #     nlat_out, nlon_out = out_shape
-
-    #     if isinstance(kernel_shape, int):
-    #         theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
-    #     else:
-    #         theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
-
-    #     Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
-    #     conv = Conv(
-    #         in_channels,
-    #         out_channels,
-    #         in_shape,
-    #         out_shape,
-    #         kernel_shape,
-    #         basis_type=basis_type,
-    #         basis_norm_mode=basis_norm_mode,
-    #         groups=1,
-    #         grid_in=grid_in,
-    #         grid_out=grid_out,
-    #         bias=False,
-    #         theta_cutoff=theta_cutoff,
-    #     ).to(self.device)
-
-    #     # create an input signal
-    #     inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
-
-    #     test_inputs = (inp, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals, 
-    #             conv.kernel_size, conv.nlat_out, conv.nlon_out)
-        
-    #     # do opchecks
-    #     # schema
-    #     opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_schema")
-    #     # fake tensor
-    #     opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_fake_tensor")
-
-    # @parameterized.expand(
-    #     [
-    #         # regular convolution
-    #         [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, False],
-    #         # transpose convolution
-    #         [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, False],
-    #     ]
-    # )
-    # @unittest.skipUnless((torch.cuda.is_available() and _cuda_extension_available), "skipping export test because CUDA is not available")
-    # def test_disco_convolution_export(
-    #     self,
-    #     batch_size,
-    #     in_channels,
-    #     out_channels,
-    #     in_shape,
-    #     out_shape,
-    #     kernel_shape,
-    #     basis_type,
-    #     basis_norm_mode,
-    #     grid_in,
-    #     grid_out,
-    #     transpose,
-    #     verbose,
-    # ):
-
-    #     if verbose:
-    #         print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
-        
-    #     nlat_in, nlon_in = in_shape
-    #     nlat_out, nlon_out = out_shape
-
-    #     if isinstance(kernel_shape, int):
-    #         theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
-    #     else:
-    #         theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
-
-    #     Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
-
-    #     args = (
-    #         in_channels,
-    #         out_channels,
-    #         in_shape,
-    #         out_shape,
-    #         kernel_shape,
-    #     )
-
-    #     kwargs = dict(
-    #         basis_type=basis_type,
-    #         basis_norm_mode=basis_norm_mode,
-    #         groups=1,
-    #         grid_in=grid_in,
-    #         grid_out=grid_out,
-    #         bias=False,
-    #         theta_cutoff=theta_cutoff,
-    #     )
-
-    #     # instantiate module
-    #     conv = Conv(*args, **kwargs).to(self.device)
-
-    #     # create dummy input
-    #     inp = torch.randn(batch_size, in_channels, *in_shape, dtype=torch.float32, device=self.device)
-
-    #     exported_program: torch.export.ExportedProgram = export(
-    #         conv, args=(inp,), strict=False, 
-    #     )
+        # do opchecks
+        # schema
+        opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_schema")
+        # autograd
+        opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_autograd_registration")
+        # fake tensor
+        opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_faketensor")
+        # test AOT stuff
+        opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_aot_dispatch_static")
+        opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_aot_dispatch_dynamic")
 
 if __name__ == "__main__":
     unittest.main()

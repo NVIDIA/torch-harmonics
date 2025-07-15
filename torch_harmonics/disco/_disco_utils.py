@@ -61,8 +61,8 @@ def _conv_backward(ctx, grad_output):
     if ctx.needs_input_grad[0]:
         gtype =	grad_output.dtype
         grad_output = grad_output.to(torch.float32).contiguous()
-        grad_input = disco_kernels.backward(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
-                                            ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
+        grad_input = disco_kernels.backward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
+                                                    ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
         grad_input = grad_input.to(gtype)
     else:
         grad_input = None
@@ -78,7 +78,7 @@ def _disco_s2_contraction_optimized(
     kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
     itype = inp.dtype
     inp = inp.to(torch.float32).contiguous()
-    out = disco_kernels.forward(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+    out = disco_kernels.forward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
     out = out.to(itype)
     return out
 
@@ -103,8 +103,8 @@ def _conv_transpose_backward(ctx, grad_output):
     if ctx.needs_input_grad[0]:
         gtype = grad_output.dtype
         grad_output = grad_output.to(torch.float32).contiguous()
-        grad_input = disco_kernels.forward(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
-                                            ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
+        grad_input = disco_kernels.forward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
+                                                    ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
         grad_input = grad_input.to(gtype)
     else:
         grad_input = None
@@ -120,11 +120,11 @@ def _disco_s2_transpose_contraction_optimized(
     kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
     itype = inp.dtype
     inp = inp.to(torch.float32).contiguous()
-    out = disco_kernels.backward(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+    out = disco_kernels.backward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
     out = out.to(itype)
     return out
 
-# some helper functions
+# torch kernel functions
 def _get_psi(kernel_size: int, psi_idx: torch.Tensor, psi_vals: torch.Tensor, nlat_in: int, nlon_in: int, nlat_out: int, nlon_out: int, nlat_in_local: Optional[int] = None, nlat_out_local: Optional[int] = None, semi_transposed: Optional[bool] = False):
     """Creates a sparse tensor for spherical harmonic convolution operations."""
     nlat_in_local = nlat_in_local if nlat_in_local is not None else nlat_in
