@@ -32,7 +32,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <torch/extension.h>
+#include <torch/all.h>
 #include <torch/library.h>
 #include <cassert>
 

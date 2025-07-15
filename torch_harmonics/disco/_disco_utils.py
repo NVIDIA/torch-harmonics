@@ -40,8 +40,6 @@ try:
 except ImportError as err:
     disco_kernels = None
 
-from torch.library import custom_op
-
 # Convolution related
 @torch.library.register_fake("disco_kernels::forward")
 def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
