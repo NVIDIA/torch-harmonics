@@ -185,19 +185,7 @@ class DownsamplingBlock(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass through the DownsamplingBlock.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor after downsampling
-        """
+
         # skip connection
         residual = x
         if hasattr(self, "transform_skip"):
@@ -370,19 +358,7 @@ class UpsamplingBlock(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass through the UpsamplingBlock.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor after upsampling
-        """
+
         # skip connection
         residual = x
         if hasattr(self, "transform_skip"):
@@ -545,14 +521,6 @@ class UNet(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
-        """
-        Initialize weights for the module.
-        
-        Parameters
-        -----------
-        m : torch.nn.Module
-            Module to initialize weights for
-        """
         if isinstance(m, nn.Conv2d):
             nn.init.trunc_normal_(m.weight, std=.02)
             if m.bias is not None:
@@ -563,19 +531,7 @@ class UNet(nn.Module):
 
 
     def forward(self, x):
-        """
-        Forward pass through the UNet model.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor of shape (batch_size, in_chans, height, width)
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor of shape (batch_size, num_classes, height, width)
-        """
+
         # encoder:
         features = []
         feat = x

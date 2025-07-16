@@ -219,19 +219,7 @@ class ResampleS2(nn.Module):
         return x
 
     def forward(self, x: torch.Tensor):
-        """
-        Forward pass of the resampling module.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor with shape (..., nlat_in, nlon_in)
-            
-        Returns
-        -------
-        torch.Tensor
-            Resampled tensor with shape (..., nlat_out, nlon_out)
-        """
+
         if self.skip_resampling:
             return x
         

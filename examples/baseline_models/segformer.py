@@ -90,14 +90,6 @@ class OverlapPatchMerging(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
-        """
-        Initialize weights for the module.
-        
-        Parameters
-        -----------
-        m : torch.nn.Module
-            Module to initialize weights for
-        """
         if isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
@@ -174,14 +166,6 @@ class MixFFN(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
-        """
-        Initialize weights for the module.
-        
-        Parameters
-        -----------
-        m : torch.nn.Module
-            Module to initialize weights for
-        """
         if isinstance(m, nn.Conv2d):
             nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
@@ -238,19 +222,7 @@ class GlobalAttention(nn.Module):
         self.attn = nn.MultiheadAttention(embed_dim=chans, num_heads=num_heads, dropout=dropout, batch_first=True, bias=bias)
 
     def forward(self, x):
-        """
-        Forward pass through the GlobalAttention module.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor of shape (B, C, H, W)
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor of shape (B, C, H, W)
-        """
+
         # x: B, C, H, W
         B, H, W, C = x.shape
         # flatten spatial dims
@@ -309,32 +281,13 @@ class AttentionWrapper(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
-        """
-        Initialize weights for the module.
-        
-        Parameters
-        -----------
-        m : torch.nn.Module
-            Module to initialize weights for
-        """
+
         if isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass through the AttentionWrapper.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor with residual connection
-        """
+
         residual = x
         x = x.permute(0, 2, 3, 1)
         if self.norm is not None:
