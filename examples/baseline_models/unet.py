@@ -171,14 +171,6 @@ class DownsamplingBlock(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
-        """
-        Initialize weights for the module.
-        
-        Parameters
-        -----------
-        m : torch.nn.Module
-            Module to initialize weights for
-        """
         if isinstance(m, nn.Conv2d):
             nn.init.trunc_normal_(m.weight, std=.02)
             if m.bias is not None:
@@ -344,14 +336,6 @@ class UpsamplingBlock(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
-        """
-        Initialize weights for the module.
-        
-        Parameters
-        -----------
-        m : torch.nn.Module
-            Module to initialize weights for
-        """
         if isinstance(m, nn.Conv2d):
             nn.init.trunc_normal_(m.weight, std=.02)
             if m.bias is not None:
