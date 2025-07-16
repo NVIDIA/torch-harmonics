@@ -194,14 +194,7 @@ class DownsamplingBlock(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
-        """
-        Initialize weights for the module.
-        
-        Parameters
-        -----------
-        m : nn.Module
-            Module to initialize
-        """
+
         if isinstance(m, nn.Conv2d):
             nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
@@ -585,14 +578,7 @@ class SphericalUNet(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
-        """
-        Initialize weights for the module.
-        
-        Parameters
-        -----------
-        m : nn.Module
-            Module to initialize
-        """
+
         if isinstance(m, nn.Conv2d):
             nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
