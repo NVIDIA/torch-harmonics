@@ -60,39 +60,30 @@ except ImportError as err:
 def _normalize_convolution_tensor_s2(
     psi_idx, psi_vals, in_shape, out_shape, kernel_size, quad_weights, transpose_normalization=False, basis_norm_mode="mean", merge_quadrature=False, eps=1e-9
 ):
-    """
-    Discretely normalizes the convolution tensor and pre-applies quadrature weights. Supports the following three normalization modes:
-    - "none": No normalization is applied.
-    - "individual": for each output latitude and filter basis function the filter is numerically integrated over the sphere and normalized so that it yields 1.
-    - "mean": the norm is computed for each output latitude and then averaged over the output latitudes. Each basis function is then normalized by this mean.
-
-    Parameters
-    -----------
-    psi_idx: torch.Tensor
-        Index tensor of the convolution tensor
-    psi_vals: torch.Tensor
-        Values tensor of the convolution tensor
-    in_shape: Tuple[int]
-        Input shape of the convolution tensor
-    out_shape: Tuple[int]
-        Output shape of the convolution tensor
-    kernel_size: int
-        Size of the kernel
-    quad_weights: torch.Tensor
-        Quadrature weights
-    transpose_normalization: bool
-        Whether to normalize the convolution tensor in the transpose direction
-    basis_norm_mode: str
-        Mode for basis normalization
-    merge_quadrature: bool
-        Whether to merge the quadrature weights into the convolution tensor
-    eps: float
-        Small epsilon to avoid division by zero
-
-    Returns
-    -------
-    psi_vals: torch.Tensor
-        Normalized convolution tensor
+    """Normalizes convolution tensor values based on specified normalization mode.
+    
+    This function applies different normalization strategies to the convolution tensor
+    values based on the basis_norm_mode parameter. It can normalize individual basis
+    functions, compute mean normalization across all basis functions, or use support
+    weights. The function also optionally merges quadrature weights into the tensor.
+    
+    Args:
+        psi_idx: Index tensor for the sparse convolution tensor.
+        psi_vals: Value tensor for the sparse convolution tensor.
+        in_shape: Tuple of (nlat_in, nlon_in) representing input grid dimensions.
+        out_shape: Tuple of (nlat_out, nlon_out) representing output grid dimensions.
+        kernel_size: Number of kernel basis functions.
+        quad_weights: Quadrature weights for numerical integration.
+        transpose_normalization: If True, applies normalization in transpose direction.
+        basis_norm_mode: Normalization mode, one of ["none", "individual", "mean", "support"].
+        merge_quadrature: If True, multiplies values by quadrature weights.
+        eps: Small epsilon value to prevent division by zero.
+    
+    Returns:
+        torch.Tensor: Normalized convolution tensor values.
+    
+    Raises:
+        ValueError: If basis_norm_mode is not one of the supported modes.
     """
 
     # exit here if no normalization is needed

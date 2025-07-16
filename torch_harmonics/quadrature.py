@@ -83,43 +83,13 @@ def _precompute_grid(n: int, grid: Optional[str]="equidistant", a: Optional[floa
 
 @lru_cache(typed=True, copy=True)
 def _precompute_longitudes(nlon: int):
-    r"""
-    Convenience routine to precompute longitudes
-
-    Parameters
-    -----------
-    nlon: int
-        Number of longitude points
-
-    Returns
-    -------
-    lons: torch.Tensor
-        Tensor of longitude points
-    """
-    
+   
     lons = torch.linspace(0, 2 * math.pi, nlon+1, dtype=torch.float64, requires_grad=False)[:-1]
     return lons
 
 
 @lru_cache(typed=True, copy=True)
 def _precompute_latitudes(nlat: int, grid: Optional[str]="equiangular") -> Tuple[torch.Tensor, torch.Tensor]:
-    r"""
-    Convenience routine to precompute latitudes
-
-    Parameters
-    -----------
-    nlat: int
-        Number of latitude points
-    grid: Optional[str]
-        Grid type ("equiangular", "legendre-gauss", "lobatto", "equidistant"), by default "equiangular"
-
-    Returns
-    -------
-    lats: torch.Tensor
-        Tensor of latitude points
-    wlg: torch.Tensor
-        Tensor of quadrature weights
-    """
         
     # compute coordinates in the cosine theta domain
     xlg, wlg = _precompute_grid(nlat, grid=grid, a=-1.0, b=1.0, periodic=False)

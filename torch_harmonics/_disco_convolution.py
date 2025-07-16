@@ -42,7 +42,35 @@ except ImportError as err:
 
 # some helper functions
 def _get_psi(kernel_size: int, psi_idx: torch.Tensor, psi_vals: torch.Tensor, nlat_in: int, nlon_in: int, nlat_out: int, nlon_out: int, nlat_in_local: Optional[int] = None, nlat_out_local: Optional[int] = None, semi_transposed: Optional[bool] = False):
-
+    """Creates a sparse tensor for spherical harmonic convolution operations.
+    
+    This function constructs a sparse COO tensor from indices and values, with optional
+    semi-transposition for computational efficiency in spherical harmonic convolutions.
+    
+    Args:
+        kernel_size: Number of kernel elements.
+        psi_idx: Tensor of shape (3, n_nonzero) containing the indices for the sparse tensor.
+            The three dimensions represent [kernel_idx, lat_idx, combined_lat_lon_idx].
+        psi_vals: Tensor of shape (n_nonzero,) containing the values for the sparse tensor.
+        nlat_in: Number of input latitude points.
+        nlon_in: Number of input longitude points.
+        nlat_out: Number of output latitude points.
+        nlon_out: Number of output longitude points.
+        nlat_in_local: Local number of input latitude points. If None, defaults to nlat_in.
+        nlat_out_local: Local number of output latitude points. If None, defaults to nlat_out.
+        semi_transposed: If True, performs a semi-transposition to facilitate computation
+            by flipping the longitude axis and reorganizing indices.
+    
+    Returns:
+        torch.Tensor: A sparse COO tensor of shape (kernel_size, nlat_out_local, nlat_in_local * nlon)
+            where nlon is either nlon_in or nlon_out depending on semi_transposed flag.
+            The tensor is coalesced to remove duplicate indices.
+    
+    Note:
+        When semi_transposed=True, the function performs a partial transpose operation
+        that flips the longitude axis and reorganizes the indices to facilitate
+        efficient spherical harmonic convolution computations.
+    """
     nlat_in_local = nlat_in_local if nlat_in_local is not None else nlat_in
     nlat_out_local = nlat_out_local if nlat_out_local is not None else nlat_out
     
@@ -141,25 +169,7 @@ def _disco_s2_transpose_contraction_cuda(x: torch.Tensor, roff_idx: torch.Tensor
 
 
 def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
-    """
-    Reference implementation of the custom contraction as described in [1]. This requires repeated
-    shifting of the input tensor, which can potentially be costly. For an efficient implementation
-    on GPU, make sure to use the custom kernel written in CUDA.
 
-    Parameters
-    -----------
-    x: torch.Tensor
-        Input tensor
-    psi: torch.Tensor
-        Kernel tensor
-    nlon_out: int   
-        Number of output longitude points
-
-    Returns
-    --------
-    y: torch.Tensor
-        Output tensor
-    """
     assert len(psi.shape) == 3
     assert len(x.shape) == 4
     psi = psi.to(x.device)
@@ -191,25 +201,6 @@ def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: in
 
 
 def _disco_s2_transpose_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
-    """
-    Reference implementation of the custom contraction as described in [1]. This requires repeated
-    shifting of the input tensor, which can potentially be costly. For an efficient implementation
-    on GPU, make sure to use the custom kernel written in CUDA.
-
-    Parameters
-    -----------
-    x: torch.Tensor
-        Input tensor
-    psi: torch.Tensor
-        Kernel tensor   
-    nlon_out: int
-        Number of output longitude points
-
-    Returns
-    --------
-    y: torch.Tensor
-        Output tensor
-    """
     assert len(psi.shape) == 3
     assert len(x.shape) == 5
     psi = psi.to(x.device)
