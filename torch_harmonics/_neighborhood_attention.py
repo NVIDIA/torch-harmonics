@@ -459,11 +459,6 @@ def _neighborhood_attention_s2_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, 
     return dqy
 
 class _NeighborhoodAttentionS2(torch.autograd.Function):
-    r"""
-    CPU implementation of neighborhood attention on the sphere (S2).
-    This class provides the forward and backward passes for efficient CPU computation
-    of neighborhood attention operations using sparse tensor operations.
-    """
 
     @staticmethod
     @custom_fwd(device_type="cpu")
@@ -472,44 +467,7 @@ class _NeighborhoodAttentionS2(torch.autograd.Function):
                 bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], bq: Union[torch.Tensor, None],
                 quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
                 nh: int, nlon_in: int, nlat_out: int, nlon_out: int):
-        r"""
-        Forward pass for CPU neighborhood attention on S2.
         
-        Parameters
-        -----------
-        k: torch.Tensor
-            Key tensor
-        v: torch.Tensor
-            Value tensor
-        q: torch.Tensor
-            Query tensor
-        wk: torch.Tensor
-            Key weight tensor
-        wv: torch.Tensor
-            Value weight tensor
-        wq: torch.Tensor
-            Query weight tensor
-        bk: torch.Tensor or None
-            Key bias tensor (optional)
-        bv: torch.Tensor or None
-            Value bias tensor (optional)
-        bq: torch.Tensor or None
-            Query bias tensor (optional)
-        quad_weights: torch.Tensor
-            Quadrature weights for spherical integration
-        col_idx: torch.Tensor
-            Column indices for sparse computation
-        row_off: torch.Tensor
-            Row offsets for sparse computation
-        nh: int
-            Number of attention heads
-        nlon_in: int
-            Number of input longitude points
-        nlat_out: int
-            Number of output latitude points
-        nlon_out: int
-            Number of output longitude points
-        """
         ctx.save_for_backward(col_idx, row_off, quad_weights, k, v, q, wk, wv, wq, bk, bv, bq)
         ctx.nh = nh
         ctx.nlon_in = nlon_in
@@ -704,11 +662,7 @@ def _neighborhood_attention_s2_torch(k: torch.Tensor, v: torch.Tensor, q: torch.
 
 
 class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
-    r"""
-    CUDA implementation of neighborhood attention on the sphere (S2).
-    This class provides the forward and backward passes for efficient GPU computation
-    of neighborhood attention operations using custom CUDA kernels.
-    """
+
 
     @staticmethod
     @custom_fwd(device_type="cuda")
@@ -717,46 +671,7 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
                 bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], bq: Union[torch.Tensor, None],
                 quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
                 max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int):
-        r"""
-        Forward pass for CUDA neighborhood attention on S2.
         
-        Parameters
-        -----------
-        k: torch.Tensor
-            Key tensor
-        v: torch.Tensor
-            Value tensor
-        q: torch.Tensor
-            Query tensor
-        wk: torch.Tensor
-            Key weight tensor
-        wv: torch.Tensor
-            Value weight tensor
-        wq: torch.Tensor
-            Query weight tensor
-        bk: torch.Tensor or None
-            Key bias tensor (optional)
-        bv: torch.Tensor or None
-            Value bias tensor (optional)
-        bq: torch.Tensor or None
-            Query bias tensor (optional)
-        quad_weights: torch.Tensor
-            Quadrature weights for spherical integration
-        col_idx: torch.Tensor
-            Column indices for sparse computation
-        row_off: torch.Tensor
-            Row offsets for sparse computation
-        max_psi_nnz: int
-            Maximum number of non-zero elements in sparse tensor
-        nh: int
-            Number of attention heads
-        nlon_in: int
-            Number of input longitude points
-        nlat_out: int
-            Number of output latitude points
-        nlon_out: int
-            Number of output longitude points
-        """
         ctx.save_for_backward(col_idx, row_off, quad_weights, k, v, q, wk, wv, wq, bk, bv, bq)
         ctx.nh = nh
         ctx.max_psi_nnz = max_psi_nnz
