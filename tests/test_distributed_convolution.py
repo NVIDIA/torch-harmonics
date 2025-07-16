@@ -156,27 +156,10 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        """
-        Tear down the distributed convolution test.
-        
-        Parameters
-        ----------
-        cls : TestDistributedDiscreteContinuousConvolution
-            The test class instance
-        """
-
         thd.finalize()
         dist.destroy_process_group(None)
 
     def _split_helper(self, tensor):
-        """
-        Split the tensor along the horizontal and vertical dimensions.
-        
-        Parameters
-        ----------
-        tensor : torch.Tensor
-            The tensor to split
-        """
 
         with torch.no_grad():
             # split in W
@@ -190,20 +173,6 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         return tensor_local
 
     def _gather_helper_fwd(self, tensor, B, C, convolution_dist):
-        """
-        Gather the tensor along the horizontal and vertical dimensions.
-        
-        Parameters
-        ----------
-        tensor : torch.Tensor
-            The tensor to gather
-        B : int
-            Batch size
-        C : int
-            Number of channels
-        convolution_dist : thd.DistributedDiscreteContinuousConvTransposeS2 or thd.DistributedDiscreteContinuousConvS2
-            The distributed convolution object
-        """
 
         # we need the shapes
         lat_shapes = convolution_dist.lat_out_shapes
@@ -232,20 +201,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         return tensor_gather
 
     def _gather_helper_bwd(self, tensor, B, C, convolution_dist):
-        """
-        Gather the tensor along the horizontal and vertical dimensions.
-        
-        Parameters
-        ----------
-        tensor : torch.Tensor
-            The tensor to gather
-        B : int
-            Batch size
-        C : int
-            Number of channels
-        convolution_dist : thd.DistributedDiscreteContinuousConvTransposeS2 or thd.DistributedDiscreteContinuousConvS2
-            The distributed convolution object
-        """
+
         # we need the shapes
         lat_shapes = convolution_dist.lat_in_shapes
         lon_shapes = convolution_dist.lon_in_shapes
