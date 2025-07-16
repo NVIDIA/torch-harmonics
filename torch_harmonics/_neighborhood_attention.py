@@ -502,35 +502,6 @@ class _NeighborhoodAttentionS2(torch.autograd.Function):
     @staticmethod
     @custom_bwd(device_type="cpu")
     def backward(ctx, grad_output):
-        r"""
-        Backward pass for CPU neighborhood attention on S2.
-        
-        Parameters
-        -----------
-        grad_output: torch.Tensor
-            Gradient of the output
-        
-        Returns
-        --------
-        dk: torch.Tensor
-            Gradient of the key tensor
-        dv: torch.Tensor
-            Gradient of the value tensor
-        dq: torch.Tensor
-            Gradient of the query tensor
-        dwk: torch.Tensor
-            Gradient of the key weight tensor
-        dwv: torch.Tensor
-            Gradient of the value weight tensor
-        dwq: torch.Tensor
-            Gradient of the query weight tensor
-        dbk: torch.Tensor or None
-            Gradient of the key bias tensor
-        dbv: torch.Tensor or None
-            Gradient of the value bias tensor
-        dbq: torch.Tensor or None
-            Gradient of the query bias tensor
-        """
         col_idx, row_off, quad_weights, k, v, q, wk, wv, wq, bk, bv, bq = ctx.saved_tensors
         nh = ctx.nh
         nlon_in = ctx.nlon_in
@@ -712,35 +683,6 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
     @staticmethod
     @custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
-        r"""
-        Backward pass for CUDA neighborhood attention on S2.
-        
-        Parameters
-        -----------
-        grad_output: torch.Tensor
-            Gradient of the output
-        
-        Returns
-        --------
-        dk: torch.Tensor
-            Gradient of the key tensor
-        dv: torch.Tensor
-            Gradient of the value tensor
-        dq: torch.Tensor
-            Gradient of the query tensor
-        dwk: torch.Tensor
-            Gradient of the key weight tensor
-        dwv: torch.Tensor
-            Gradient of the value weight tensor
-        dwq: torch.Tensor
-            Gradient of the query weight tensor
-        dbk: torch.Tensor or None
-            Gradient of the key bias tensor
-        dbv: torch.Tensor or None
-            Gradient of the value bias tensor
-        dbq: torch.Tensor or None
-            Gradient of the query bias tensor
-        """
         col_idx, row_off, quad_weights, k, v, q, wk, wv, wq, bk, bv, bq = ctx.saved_tensors
         nh = ctx.nh
         max_psi_nnz = ctx.max_psi_nnz
