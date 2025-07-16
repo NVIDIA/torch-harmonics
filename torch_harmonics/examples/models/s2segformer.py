@@ -117,14 +117,7 @@ class OverlapPatchMerging(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
-        """
-        Initialize weights for the module.
-        
-        Parameters
-        -----------
-        m : nn.Module
-            Module to initialize
-        """
+
         if isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
@@ -230,14 +223,7 @@ class MixFFN(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
-        """
-        Initialize weights for the module.
-        
-        Parameters
-        -----------
-        m : nn.Module
-            Module to initialize
-        """
+
         if isinstance(m, nn.Conv2d):
             nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
@@ -792,14 +778,7 @@ class SphericalSegformer(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
-        """
-        Initialize weights for the module.
-        
-        Parameters
-        -----------
-        m : nn.Module
-            Module to initialize
-        """
+
         if isinstance(m, nn.Conv2d):
             nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
