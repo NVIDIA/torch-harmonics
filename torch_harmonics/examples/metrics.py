@@ -113,7 +113,7 @@ def _get_stats_multiclass(
 
 
 def _predict_classes(logits: torch.Tensor) -> torch.Tensor:
-    """
+ """
     Convert logits to class predictions using softmax and argmax.
     
     Parameters

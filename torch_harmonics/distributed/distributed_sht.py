@@ -77,27 +77,7 @@ class DistributedRealSHT(nn.Module):
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
-        """
-        Distribtued SHT layer. Expects the last 3 dimensions of the input tensor to be channels, latitude, longitude.
-
-        Parameters
-        ----------
-        nlat: int
-            Number of latitude points
-        nlon: int
-            Number of longitude points
-        lmax: int
-            Maximum spherical harmonic degree
-        mmax: int
-            Maximum spherical harmonic order
-        grid: str
-            Grid type ("equiangular", "legendre-gauss", "lobatto", "equidistant"), by default "equiangular"
-        norm: str
-            Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
-        csphase: bool
-            Whether to apply the Condon-Shortley phase factor, by default True
-        """
-
+        
         super().__init__()
 
         self.nlat = nlat
@@ -369,22 +349,6 @@ class DistributedRealVectorSHT(nn.Module):
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
-        """
-        Initializes the vector SHT Layer, precomputing the necessary quadrature weights
-
-        Parameters
-        ----------
-        nlat: int
-            Number of latitude points
-        nlon: int
-            Number of longitude points
-        grid: str
-            Grid type ("equiangular", "legendre-gauss", "lobatto", "equidistant"), by default "equiangular"
-        norm: str
-            Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
-        csphase: bool
-            Whether to apply the Condon-Shortley phase factor, by default True
-        """
 
         super().__init__()
 

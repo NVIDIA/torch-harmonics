@@ -102,25 +102,6 @@ def split_tensor_along_dim(tensor, dim, num_chunks):
 
 
 def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False):
-    """
-    Transpose a tensor along two dimensions.
-    
-    Parameters
-    ----------
-    tensor: torch.Tensor
-        The tensor to transpose
-    dim0: int
-        The first dimension to transpose
-    dim1: int
-        The second dimension to transpose
-    dim1_split_sizes: List[int]
-        The split sizes for the second dimension
-
-    Returns
-    -------
-    tensor_list: List[torch.Tensor]
-        The split tensors
-    """
     
     # get comm params
     comm_size = dist.get_world_size(group=group)
@@ -198,7 +179,6 @@ class distributed_transpose_polar(torch.autograd.Function):
     
 # we need those additional primitives for distributed matrix multiplications
 def _reduce(input_, use_fp32=True, group=None):
-    """All-reduce the input tensor across model parallel group."""
 
     # Bypass the function if we are using only 1 GPU.
     if dist.get_world_size(group=group) == 1:
@@ -219,7 +199,6 @@ def _reduce(input_, use_fp32=True, group=None):
     
 
 def _split(input_, dim_, group=None):
-    """Split the tensor along its last dimension and keep the corresponding slice."""
     # Bypass the function if we are using only 1 GPU.
     comm_size = dist.get_world_size(group=group)
     if comm_size == 1:
@@ -236,7 +215,6 @@ def _split(input_, dim_, group=None):
 
 
 def _gather(input_, dim_, shapes_, group=None):
-    """Gather unevenly split tensors across ranks"""
     
     comm_size = dist.get_world_size(group=group)
 
@@ -269,7 +247,6 @@ def _gather(input_, dim_, shapes_, group=None):
 
 
 def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
-    """All-reduce the input tensor across model parallel group and scatter it back."""
 
     # Bypass the function if we are using only 1 GPU.
     if dist.get_world_size(group=group) == 1:
