@@ -34,7 +34,11 @@
 #include <cstdint>
 #include <torch/torch.h>
 
-#define CHECK_CUDA_TENSOR(x) TORCH_CHECK(x.device().is_cuda(), #x " must be a CUDA tensor")
+#define CHECK_CUDA_TENSOR(x) TORCH_INTERNAL_ASSERT(x.device().type() == torch::kCUDA)
+#define CHECK_CONTIGUOUS_TENSOR(x) TORCH_INTERNAL_ASSERT(x.is_contiguous() || x.is_contiguous(at::MemoryFormat::ChannelsLast))
+#define CHECK_CUDA_INPUT_TENSOR(x)                                                                                     \
+    CHECK_CUDA_TENSOR(x);                                                                                              \
+    CHECK_CONTIGUOUS_TENSOR(x)
 
 torch::Tensor s2_attention_fwd_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor quad_weights,
                                     at::Tensor psi_col_idx, at::Tensor psi_row_off, int nlon_in, int nlat_out,

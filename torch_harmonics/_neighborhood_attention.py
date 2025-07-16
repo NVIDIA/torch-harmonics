@@ -520,6 +520,16 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
         B, _, H, W  = grad_output.shape
         grad_output = grad_output.reshape(B*nh, -1, H, W)
 
+        # save type and convert to float32
+        kw_dtype = kw.dtype
+        vw_dtype = vw.dtype
+        qw_dtype = qw.dtype
+
+        kw = kw.to(torch.float32).contiguous()
+        vw = vw.to(torch.float32).contiguous()
+        qw = qw.to(torch.float32).contiguous()
+        grad_output = grad_output.to(torch.float32).contiguous()
+
         dkw,dvw,dqw = attention_cuda_extension.backward_dkvq(kw, vw, qw, grad_output,
                                                              quad_weights,
                                                              col_idx, row_off,
@@ -532,6 +542,11 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
         dvw = dvw.reshape(B, -1, H, W)
         _, C, H, W = dqw.shape
         dqw = dqw.reshape(B, -1, H, W)
+
+        # convert precision
+        dkw = dkw.to(dtype=kw_dtype)
+        dvw = dvw.to(dtype=vw_dtype)
+        dqw = dqw.to(dtype=qw_dtype)
 
         # input grads
         dv = torch.nn.functional.conv2d(dvw, weight=wv.permute([1,0,2,3]), bias=None)

@@ -785,10 +785,12 @@ static void s2_attn_bwd_dispatch(int batch_size,
                                  at::Tensor quad_weights,
                                  at::Tensor dkxP,
                                  at::Tensor dvxP,
-                                 at::Tensor dqyP,
-                                 cudaStream_t stream) {
+                                 at::Tensor dqyP) {
 
     static_assert(0 == (MAX_LOCAL_ARR_LEN & (MAX_LOCAL_ARR_LEN-1)));
+
+    // get stream
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
 
     // sort row indices (ho-s) in descending order
     // based on (row_off[ho+1]-row_off[ho])
@@ -890,122 +892,129 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Te
                                                                           int nlon_in, int nlat_out, int nlon_out)
 {
 
-    CHECK_CUDA_TENSOR(kx);
-    CHECK_CUDA_TENSOR(vx);
-    CHECK_CUDA_TENSOR(qy);
+    CHECK_CUDA_INPUT_TENSOR(kx);
+    CHECK_CUDA_INPUT_TENSOR(vx);
+    CHECK_CUDA_INPUT_TENSOR(qy);
+    CHECK_CUDA_INPUT_TENSOR(dy);
     CHECK_CUDA_TENSOR(quad_weights);
     CHECK_CUDA_TENSOR(psi_col_idx);
     CHECK_CUDA_TENSOR(psi_row_off);
-    CHECK_CUDA_TENSOR(dy);
 
-    auto stream = at::cuda::getCurrentCUDAStream().stream();
-#if 0
+// #if 0
+//     // extract dtype
+//     auto kx_type = kx.dtype();
+//     auto vx_type = vx.dtype();
+//     auto qy_type = qy.dtype();
+//     auto dy_type = dy.dtype();
+
+//     // exract memory format
+//     auto kx_is_channels_last = kx.is_contiguous(at::MemoryFormat::ChannelsLast);
+//     auto vx_is_channels_last = vx.is_contiguous(at::MemoryFormat::ChannelsLast);
+//     auto qy_is_channels_last = qy.is_contiguous(at::MemoryFormat::ChannelsLast);
+//     auto dy_is_channels_last = dy.is_contiguous(at::MemoryFormat::ChannelsLast);
+
+//     // convert to channels-last
+//     auto kxP = kx.to(torch::kFloat32).to(at::MemoryFormat::ChannelsLast);
+//     auto vxP = vx.to(torch::kFloat32).to(at::MemoryFormat::ChannelsLast);
+//     auto qyP = qy.to(torch::kFloat32).to(at::MemoryFormat::ChannelsLast);
+//     auto dyP = dy.to(torch::kFloat32).to(at::MemoryFormat::ChannelsLast);
+
+//     // create output arrays
+//     auto dydk = torch::zeros_like(qyP);
+//     auto dydv = torch::zeros_like(qyP);
+//     auto dydq = torch::zeros_like(qyP);
+
+//     size_t uo_num_channels = kx.size(1);
+//     const int batch_size = kx.size(0);
+
+//     dim3 block(WARP_SIZE, THREADS / WARP_SIZE);
+//     dim3 grid(DIV_UP(nlat_out * nlon_out, block.y), batch_size);
+//     size_t shared_size = sizeof(float) * uo_num_channels * 5 * block.y; // 4 arrays per warp
+
+//     cudaEvent_t start, stop;
+//     float milliseconds = 0;
+//     CHECK_CUDA(cudaEventCreate(&start));
+//     CHECK_CUDA(cudaEventCreate(&stop));
+//     CHECK_CUDA(cudaEventRecord(start, stream));
+
+//     s2_attention_bwd_dkvq_kernel<THREADS><<<grid, block, shared_size, stream>>>(
+//         uo_num_channels, nlon_in, nlat_out, nlon_out, kxP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+//         vxP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+//         qyP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+//         dyP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+//         dydk.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+//         dydv.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+//         dydq.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+//         psi_col_idx.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
+//         psi_row_off.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
+//         quad_weights.packed_accessor32<float, 1, torch::RestrictPtrTraits>());
+
+//     CHECK_CUDA(cudaEventRecord(stop, stream));
+//     CHECK_CUDA(cudaEventSynchronize(stop));
+//     CHECK_CUDA(cudaEventElapsedTime(&milliseconds, start, stop));
+
+//     // [1, 256, 1, (721, 1440), (721, 1440), "equiangular", "equiangular", 1e-5, 1e-5],
+//     // s2_attention_bwd_kernel_mbT execution time: 63.280128 ms
+//     CHECK_CUDA(cudaEventDestroy(start));
+//     CHECK_CUDA(cudaEventDestroy(stop));
+
+//     C10_CUDA_KERNEL_LAUNCH_CHECK();
+
+//     // Permute outputs back to memory layout given by input. if input had channels
+//     // first, leave it in that layout, otherwise permute layout back to [batch,
+//     // channel, ho, wo]
+
+//     // convert back to original dtype
+//     dydk = dydk.to(kx_type);
+//     dydv = dydv.to(vx_type);
+//     dydq = dydq.to(qy_type);
+
+//     // permute back to original layout
+//     if (!kx_is_channels_last) {
+//         dydk = dydk.to(kx_type).to(at::MemoryFormat::Contiguous);
+//     } else {
+//         dydk = dydk.to(kx_type);
+//     }
+//     if (!vx_is_channels_last) {
+//         dydv = dydv.to(vx_type).to(at::MemoryFormat::Contiguous);
+//     } else {
+//         dydv = dydv.to(vx_type);
+//     }
+//     if (!qy_is_channels_last) {
+//         dydq = dydq.to(qy_type).to(at::MemoryFormat::Contiguous);
+//     } else {
+//         dydq = dydq.to(qy_type);
+//     }
+
+//     return std::make_tuple(dydk, dydv, dydq);
+// #else
+    
+    const size_t uo_num_channels = kx.size(1);
+    const int batch_size = kx.size(0);
+
     // extract dtype
     auto kx_type = kx.dtype();
     auto vx_type = vx.dtype();
     auto qy_type = qy.dtype();
     auto dy_type = dy.dtype();
 
-    // exract memory format
-    auto kx_is_channels_last = kx.is_contiguous(at::MemoryFormat::ChannelsLast);
-    auto vx_is_channels_last = vx.is_contiguous(at::MemoryFormat::ChannelsLast);
-    auto qy_is_channels_last = qy.is_contiguous(at::MemoryFormat::ChannelsLast);
-    auto dy_is_channels_last = dy.is_contiguous(at::MemoryFormat::ChannelsLast);
+    torch::Tensor kxP = kx.to(torch::kFloat32);
+    torch::Tensor vxP = vx.to(torch::kFloat32);
+    torch::Tensor qyP = qy.to(torch::kFloat32);
+    torch::Tensor dyP = dy.to(torch::kFloat32);
 
-    // convert to channels-last
-    auto kxP = kx.to(torch::kFloat32).to(at::MemoryFormat::ChannelsLast);
-    auto vxP = vx.to(torch::kFloat32).to(at::MemoryFormat::ChannelsLast);
-    auto qyP = qy.to(torch::kFloat32).to(at::MemoryFormat::ChannelsLast);
-    auto dyP = dy.to(torch::kFloat32).to(at::MemoryFormat::ChannelsLast);
+    // exract memory format: this is much safer than checking is_contiguous(at::MemoryFormat::ChannelsLast)
+    // the former fails for num_channels == 1
+    bool kx_is_channels_last = kxP.strides()[1] == 1;
+    bool vx_is_channels_last = vxP.strides()[1] == 1;
+    bool qy_is_channels_last = qyP.strides()[1] == 1;
+    bool dy_is_channels_last = dyP.strides()[1] == 1;
 
-    // create output arrays
-    auto dydk = torch::zeros_like(qyP);
-    auto dydv = torch::zeros_like(qyP);
-    auto dydq = torch::zeros_like(qyP);
-
-    size_t uo_num_channels = kx.size(1);
-    const int batch_size = kx.size(0);
-
-    dim3 block(WARP_SIZE, THREADS / WARP_SIZE);
-    dim3 grid(DIV_UP(nlat_out * nlon_out, block.y), batch_size);
-    size_t shared_size = sizeof(float) * uo_num_channels * 5 * block.y; // 4 arrays per warp
-
-    cudaEvent_t start, stop;
-    float milliseconds = 0;
-    CHECK_CUDA(cudaEventCreate(&start));
-    CHECK_CUDA(cudaEventCreate(&stop));
-    CHECK_CUDA(cudaEventRecord(start, stream));
-
-    s2_attention_bwd_dkvq_kernel<THREADS><<<grid, block, shared_size, stream>>>(
-        uo_num_channels, nlon_in, nlat_out, nlon_out, kxP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-        vxP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-        qyP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-        dyP.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-        dydk.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-        dydv.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-        dydq.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-        psi_col_idx.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
-        psi_row_off.packed_accessor64<int64_t, 1, torch::RestrictPtrTraits>(),
-        quad_weights.packed_accessor32<float, 1, torch::RestrictPtrTraits>());
-
-    CHECK_CUDA(cudaEventRecord(stop, stream));
-    CHECK_CUDA(cudaEventSynchronize(stop));
-    CHECK_CUDA(cudaEventElapsedTime(&milliseconds, start, stop));
-
-    // [1, 256, 1, (721, 1440), (721, 1440), "equiangular", "equiangular", 1e-5, 1e-5],
-    // s2_attention_bwd_kernel_mbT execution time: 63.280128 ms
-    CHECK_CUDA(cudaEventDestroy(start));
-    CHECK_CUDA(cudaEventDestroy(stop));
-
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
-
-    // Permute outputs back to memory layout given by input. if input had channels
-    // first, leave it in that layout, otherwise permute layout back to [batch,
-    // channel, ho, wo]
-
-    // convert back to original dtype
-    dydk = dydk.to(kx_type);
-    dydv = dydv.to(vx_type);
-    dydq = dydq.to(qy_type);
-
-    // permute back to original layout
-    if (!kx_is_channels_last) {
-        dydk = dydk.to(kx_type).to(at::MemoryFormat::Contiguous);
-    } else {
-        dydk = dydk.to(kx_type);
-    }
-    if (!vx_is_channels_last) {
-        dydv = dydv.to(vx_type).to(at::MemoryFormat::Contiguous);
-    } else {
-        dydv = dydv.to(vx_type);
-    }
-    if (!qy_is_channels_last) {
-        dydq = dydq.to(qy_type).to(at::MemoryFormat::Contiguous);
-    } else {
-        dydq = dydq.to(qy_type);
-    }
-
-    return std::make_tuple(dydk, dydv, dydq);
-#else
-    
-    const size_t uo_num_channels = kx.size(1);
-    const int batch_size = kx.size(0);
-
-    torch::Tensor kxP = kx;
-    torch::Tensor vxP = vx;
-    torch::Tensor qyP = qy;
-    torch::Tensor dyP = dy;
-
-    auto kx_channel_first = kx.strides()[1] == 1;
-    auto vx_channel_first = vx.strides()[1] == 1;
-    auto qy_channel_first = qy.strides()[1] == 1;
-    auto dy_channel_first = dy.strides()[1] == 1;
-
-    if (!kx_channel_first) { kxP = permute_4D_floatT_to0231(kx, stream); }
-    if (!vx_channel_first) { vxP = permute_4D_floatT_to0231(vx, stream); }
-    if (!qy_channel_first) { qyP = permute_4D_floatT_to0231(qy, stream); }
-
-    if (!dy_channel_first) { dyP = permute_4D_floatT_to0231(dy, stream); }
+    // transpose if required
+    if (!kx_is_channels_last) { kxP = permute_4D_to0231(kxP); }
+    if (!vx_is_channels_last) { vxP = permute_4D_to0231(vxP); }
+    if (!qy_is_channels_last) { qyP = permute_4D_to0231(qyP); }
+    if (!dy_is_channels_last) { dyP = permute_4D_to0231(dyP); }
 
     torch::Tensor dkxP = torch::zeros_like(kxP);
     torch::Tensor dvxP = torch::zeros_like(vxP);
@@ -1020,17 +1029,21 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Te
                          psi_row_off,
                          psi_col_idx,
                          quad_weights,
-                         dkxP, dvxP, dqyP, // out tensors
-                         stream);
+                         dkxP, dvxP, dqyP);
 
     torch::Tensor dkx = dkxP;
     torch::Tensor dvx = dvxP;
     torch::Tensor dqy = dqyP;
 
-    if (!kx_channel_first) { dkx = permute_4D_floatT_to0312(dkxP, stream); }
-    if (!vx_channel_first) { dvx = permute_4D_floatT_to0312(dvxP, stream); }
-    if (!qy_channel_first) { dqy = permute_4D_floatT_to0312(dqyP, stream); }
+    if (!kx_is_channels_last) { dkx = permute_4D_to0312(dkx); }
+    if (!vx_is_channels_last) { dvx = permute_4D_to0312(dvx); }
+    if (!qy_is_channels_last) { dqy = permute_4D_to0312(dqy); }
+
+    // convert precision back to starting
+    dkx = dkx.to(kx_type);
+    dvx = dvx.to(vx_type);
+    dqy = dqy.to(qy_type);
 
     return std::make_tuple(dkx, dvx, dqy);
-#endif
+// #endif
 }

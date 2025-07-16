@@ -111,66 +111,6 @@ at::Tensor sortRows(int nlat_out, at::Tensor row_off, cudaStream_t stream) {
 
 
 // BEGIN - 4D tensor permutation kernels and functions
-template<int BDIM_X,
-         int BDIM_Y,
-         typename VAL_T>
-__global__
-__launch_bounds__(BDIM_X*BDIM_Y)
-void  permute_to0231_k(const int nchn,
-                       const int nlat,
-                       const int nlon,
-                       const torch::PackedTensorAccessor32<VAL_T, 4, torch::RestrictPtrTraits> src,
-                             torch::PackedTensorAccessor32<VAL_T, 4, torch::RestrictPtrTraits> dst) {
-
-    static_assert(!(BDIM_X & (BDIM_X-1)));
-    static_assert(!(BDIM_Y & (BDIM_Y-1)));
-    static_assert(BDIM_X >= BDIM_Y);
-
-    __shared__ VAL_T sh[BDIM_X][BDIM_X+1];
-
-    const int tidx = threadIdx.x;
-    const int tidy = threadIdx.y;
-
-    const int coff  = blockIdx.x*BDIM_X;           // channel offset
-    const int woff  = blockIdx.y*BDIM_X;           // width offset
-    const int batch = blockIdx.z / nlat;           // batch (same for all block)
-    const int h     = blockIdx.z - (batch * nlat); // height (same for all block)
-
-    const int nchn_full = (nchn-coff) >= BDIM_X;
-    const int nlon_full = (nlon-woff) >= BDIM_X;
-
-    if (nchn_full && nlon_full) {
-        #pragma unroll
-        for(int j = 0; j < BDIM_X; j += BDIM_Y) {
-            sh[j+tidy][tidx] = src[batch][coff + j+tidy][h][woff+tidx];
-        }
-        __syncthreads();
-
-        #pragma unroll
-        for(int j = 0; j < BDIM_X; j += BDIM_Y) {
-            dst[batch][h][woff + j+tidy][coff+tidx] = sh[tidx][j+tidy];
-        }
-    } else {
-        if (woff+tidx < nlon) {
-            #pragma unroll
-            for(int j = 0; j < BDIM_X; j += BDIM_Y) {
-                sh[j+tidy][tidx] = (coff + j+tidy < nchn) ? src[batch][coff + j+tidy][h][woff+tidx] : 0.f;
-            }
-        }
-        __syncthreads();
-
-        if (coff+tidx < nchn) {
-            #pragma unroll
-            for(int j = 0; j < BDIM_X; j += BDIM_Y) {
-                if (woff + j+tidy < nlon) {
-                    dst[batch][h][woff + j+tidy][coff+tidx] = sh[tidx][j+tidy];
-                }
-            }
-        }
-    }
-    return;
-}
-
 __global__ void empty_k() {}
 
 static int getPtxver() {
@@ -179,144 +119,96 @@ static int getPtxver() {
     return attrs.ptxVersion*10;
 }
 
-at::Tensor permute_4D_floatT_to0231(at::Tensor src, cudaStream_t stream) {
+at::Tensor permute_4D_to0231(at::Tensor src) {
 
-    dim3 block;
-    dim3 grid;
+    //dim3 block;
+    //dim3 grid;
 
-    block.x = WARP_SIZE;
-    grid.x = DIV_UP(src.size(1), block.x);
-    grid.y = DIV_UP(src.size(3), block.x);
-    grid.z = src.size(2)*src.size(0);
+    //block.x = WARP_SIZE;
+    //grid.x = DIV_UP(src.size(1), block.x);
+    //grid.y = DIV_UP(src.size(3), block.x);
+    //grid.z = src.size(2)*src.size(0);
 
-    assert(grid.y < 65536);
-    assert(grid.z < 65536);
+    //assert(grid.y < 65536);
+    //assert(grid.z < 65536);
 
-    auto options = torch::TensorOptions().dtype(torch::kFloat32).device(src.device());
+    auto options = torch::TensorOptions().dtype(src.dtype()).device(src.device());
     torch::Tensor dst = torch::empty({src.size(0), src.size(2), src.size(3), src.size(1)}, options);
 
     const int ptxv = getPtxver();
 
     // to be further specialized for additional archs, if necessary
     if (ptxv < 100) {
-        block.y = TRANSP_WARPS_X_TILE_GENERIC;
-        permute_to0231_k<WARP_SIZE, TRANSP_WARPS_X_TILE_GENERIC>
-                        <<<grid, block, 0, stream>>>(src.size(1),
-                                                     src.size(2),
-                                                     src.size(3),
-                                                     src.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-                                                     dst.packed_accessor32<float, 4, torch::RestrictPtrTraits>());
+        AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0231_k_tile_generic", ([&] {
+            launch_permute_to0231<TRANSP_WARPS_X_TILE_GENERIC, scalar_t>(src, dst);
+        }));
+        //block.y = TRANSP_WARPS_X_TILE_GENERIC;
+        //permute_to0231_k<WARP_SIZE, TRANSP_WARPS_X_TILE_GENERIC>
+        //                <<<grid, block, 0, stream>>>(src.size(1),
+        //                                             src.size(2),
+        //                                             src.size(3),
+        //                                             src.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+        //                                             dst.packed_accessor32<float, 4, torch::RestrictPtrTraits>());
         CHECK_ERROR("permute_to0231_k_tile_generic");
     } else {
-        block.y = TRANSP_WARPS_X_TILE_SM100;
-        permute_to0231_k<WARP_SIZE, TRANSP_WARPS_X_TILE_SM100>
-                        <<<grid, block, 0, stream>>>(src.size(1),
-                                                     src.size(2),
-                                                     src.size(3),
-                                                     src.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-                                                     dst.packed_accessor32<float, 4, torch::RestrictPtrTraits>());
+        AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0231_k_tile_sm100", ([&] {
+            launch_permute_to0231<TRANSP_WARPS_X_TILE_SM100, scalar_t>(src, dst);
+        }));
+        //block.y = TRANSP_WARPS_X_TILE_SM100;
+        //permute_to0231_k<WARP_SIZE, TRANSP_WARPS_X_TILE_SM100>
+        //                <<<grid, block, 0, stream>>>(src.size(1),
+        //                                             src.size(2),
+        //                                             src.size(3),
+        //                                             src.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+        //                                             dst.packed_accessor32<float, 4, torch::RestrictPtrTraits>());
         CHECK_ERROR("permute_to0231_k_tile_sm100");
     }
 
     return dst;
 }
 
-template<int BDIM_X,
-         int BDIM_Y,
-         typename VAL_T>
-__global__
-__launch_bounds__(BDIM_X*BDIM_Y)
-void  permute_to0312_k(const int nchn,
-                       const int nlat,
-                       const int nlon,
-                       const torch::PackedTensorAccessor32<VAL_T, 4, torch::RestrictPtrTraits> src,
-                             torch::PackedTensorAccessor32<VAL_T, 4, torch::RestrictPtrTraits> dst) {
+at::Tensor permute_4D_to0312(at::Tensor src) {
 
-    static_assert(!(BDIM_X & (BDIM_X-1)));
-    static_assert(!(BDIM_Y & (BDIM_Y-1)));
-    static_assert(BDIM_X >= BDIM_Y);
+    //dim3 block;
+    //dim3 grid;
 
-    __shared__ VAL_T sh[BDIM_X][BDIM_X+1];
+    //block.x = WARP_SIZE;
+    //grid.x = DIV_UP(src.size(2), block.x);
+    //grid.y = DIV_UP(src.size(3), block.x);
+    //grid.z = src.size(1)*src.size(0);
 
-    const int tidx = threadIdx.x;
-    const int tidy = threadIdx.y;
+    //assert(grid.y < 65536);
+    //assert(grid.z < 65536);
 
-    const int woff  = blockIdx.x*BDIM_X;           // width offset
-    const int coff  = blockIdx.y*BDIM_X;           // channel offset
-    const int batch = blockIdx.z / nlat;           // batch (same for all block)
-    const int h     = blockIdx.z - (batch * nlat); // height (same for all block)
-
-    const int nchn_full = (nchn-coff) >= BDIM_X;
-    const int nlon_full = (nlon-woff) >= BDIM_X;
-
-    if (nchn_full && nlon_full) {
-        #pragma unroll
-        for(int j = 0; j < BDIM_X; j += BDIM_Y) {
-            sh[j+tidy][tidx] = src[batch][h][woff + j+tidy][coff+tidx];
-        }
-        __syncthreads();
-
-        #pragma unroll
-        for(int j = 0; j < BDIM_X; j += BDIM_Y) {
-            dst[batch][coff + j+tidy][h][woff+tidx] = sh[tidx][j+tidy];
-        }
-    } else {
-        if (coff+tidx < nchn) {
-            #pragma unroll
-            for(int j = 0; j < BDIM_X; j += BDIM_Y) {
-                sh[j+tidy][tidx] = (woff + j+tidy < nlon) ? src[batch][h][woff + j+tidy][coff+tidx] : 0.f;
-            }
-        }
-        __syncthreads();
-
-        if (woff+tidx < nlon) {
-            #pragma unroll
-            for(int j = 0; j < BDIM_X; j += BDIM_Y) {
-                if (coff + j+tidy < nchn) {
-                    dst[batch][coff + j+tidy][h][woff+tidx] = sh[tidx][j+tidy];;
-                }
-            }
-        }
-    }
-    return;
-}
-
-at::Tensor permute_4D_floatT_to0312(at::Tensor src, cudaStream_t stream) {
-
-    dim3 block;
-    dim3 grid;
-
-    block.x = WARP_SIZE;
-    grid.x = DIV_UP(src.size(2), block.x);
-    grid.y = DIV_UP(src.size(3), block.x);
-    grid.z = src.size(1)*src.size(0);
-
-    assert(grid.y < 65536);
-    assert(grid.z < 65536);
-
-    auto options = torch::TensorOptions().dtype(torch::kFloat32).device(src.device());
+    auto options = torch::TensorOptions().dtype(src.dtype()).device(src.device());
     torch::Tensor dst = torch::empty({src.size(0), src.size(3), src.size(1), src.size(2)}, options);
 
     const int ptxv = getPtxver();
 
     // to be further specialized for additional archs, if necessary
     if (ptxv < 100) {
-        block.y = TRANSP_WARPS_X_TILE_GENERIC;
-        permute_to0312_k<WARP_SIZE, TRANSP_WARPS_X_TILE_GENERIC>
-                        <<<grid, block, 0, stream>>>(src.size(3),
-                                                     src.size(1),
-                                                     src.size(2),
-                                                     src.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-                                                     dst.packed_accessor32<float, 4, torch::RestrictPtrTraits>());
+        //block.y = TRANSP_WARPS_X_TILE_GENERIC;
+        AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0312_k_tile_generic", ([&] {
+            launch_permute_to0312<TRANSP_WARPS_X_TILE_GENERIC, scalar_t>(src, dst);
+        }));
+        //permute_to0312_k<WARP_SIZE, TRANSP_WARPS_X_TILE_GENERIC>
+        //                <<<grid, block, 0, stream>>>(src.size(3),
+        //                                             src.size(1),
+        //                                             src.size(2),
+        //                                             src.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+        //                                             dst.packed_accessor32<float, 4, torch::RestrictPtrTraits>());
         CHECK_ERROR("permute_to0312_k_tile_generic");
     } else {
-        block.y = TRANSP_WARPS_X_TILE_SM100;
-        permute_to0312_k<WARP_SIZE, TRANSP_WARPS_X_TILE_SM100>
-                        <<<grid, block, 0, stream>>>(src.size(3),
-                                                     src.size(1),
-                                                     src.size(2),
-                                                     src.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-                                                     dst.packed_accessor32<float, 4, torch::RestrictPtrTraits>());
+        AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0312_k_tile_sm100", ([&] {
+            launch_permute_to0312<TRANSP_WARPS_X_TILE_SM100, scalar_t>(src, dst);
+        }));
+        //block.y = TRANSP_WARPS_X_TILE_SM100;
+        //permute_to0312_k<WARP_SIZE, TRANSP_WARPS_X_TILE_SM100>
+        //                <<<grid, block, 0, stream>>>(src.size(3),
+        //                                             src.size(1),
+        //                                             src.size(2),
+        //                                             src.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
+        //                                             dst.packed_accessor32<float, 4, torch::RestrictPtrTraits>());
         CHECK_ERROR("permute_to0312_k_tile_sm100");
     }
 

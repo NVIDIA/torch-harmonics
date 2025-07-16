@@ -40,8 +40,8 @@
 at::Tensor sortRows(int nlat_out, at::Tensor row_off, cudaStream_t stream);
 
 // 4D tensor permutation kernels and functions
-at::Tensor permute_4D_floatT_to0231(at::Tensor src, cudaStream_t stream);
-at::Tensor permute_4D_floatT_to0312(at::Tensor src, cudaStream_t stream);
+at::Tensor permute_4D_to0231(at::Tensor src);
+at::Tensor permute_4D_to0312(at::Tensor src);
 
 // Host tensor dump and CSR manipulation functions
 void dump_tensor(const char *fname, at::Tensor t);
@@ -199,4 +199,175 @@ __device__ VAL_T __block_sum(VAL_T val) {
         __syncthreads();
     }
     return val;
+}
+
+// transpose utils
+template<int BDIM_X,
+         int BDIM_Y,
+         typename VAL_T>
+__global__
+__launch_bounds__(BDIM_X*BDIM_Y)
+void  permute_to0231_k(const int nchn,
+                       const int nlat,
+                       const int nlon,
+                       const at::PackedTensorAccessor32<VAL_T, 4, at::RestrictPtrTraits> src,
+                             at::PackedTensorAccessor32<VAL_T, 4, at::RestrictPtrTraits> dst) {
+
+    static_assert(!(BDIM_X & (BDIM_X-1)));
+    static_assert(!(BDIM_Y & (BDIM_Y-1)));
+    static_assert(BDIM_X >= BDIM_Y);
+
+    __shared__ VAL_T sh[BDIM_X][BDIM_X+1];
+
+    const int tidx = threadIdx.x;
+    const int tidy = threadIdx.y;
+
+    const int coff  = blockIdx.x*BDIM_X;           // channel offset
+    const int woff  = blockIdx.y*BDIM_X;           // width offset
+    const int batch = blockIdx.z / nlat;           // batch (same for all block)
+    const int h     = blockIdx.z - (batch * nlat); // height (same for all block)
+
+    const int nchn_full = (nchn-coff) >= BDIM_X;
+    const int nlon_full = (nlon-woff) >= BDIM_X;
+
+    if (nchn_full && nlon_full) {
+        #pragma unroll
+        for(int j = 0; j < BDIM_X; j += BDIM_Y) {
+            sh[j+tidy][tidx] = src[batch][coff + j+tidy][h][woff+tidx];
+        }
+        __syncthreads();
+
+        #pragma unroll
+        for(int j = 0; j < BDIM_X; j += BDIM_Y) {
+            dst[batch][h][woff + j+tidy][coff+tidx] = sh[tidx][j+tidy];
+        }
+    } else {
+        if (woff+tidx < nlon) {
+            #pragma unroll
+            for(int j = 0; j < BDIM_X; j += BDIM_Y) {
+                sh[j+tidy][tidx] = (coff + j+tidy < nchn) ? src[batch][coff + j+tidy][h][woff+tidx] : VAL_T(0);
+            }
+        }
+        __syncthreads();
+
+        if (coff+tidx < nchn) {
+            #pragma unroll
+            for(int j = 0; j < BDIM_X; j += BDIM_Y) {
+                if (woff + j+tidy < nlon) {
+                    dst[batch][h][woff + j+tidy][coff+tidx] = sh[tidx][j+tidy];
+                }
+            }
+        }
+    }
+    return;
+}
+
+template<int TRANSP_WARPS_X_TILE_SIZE, typename VAL_T>
+void launch_permute_to0231(at::Tensor src, at::Tensor dst){
+    dim3 block;
+    dim3 grid;
+
+    block.x = WARP_SIZE;
+    block.y = TRANSP_WARPS_X_TILE_SIZE;
+    grid.x = DIV_UP(src.size(1), block.x);
+    grid.y = DIV_UP(src.size(3), block.x);
+    grid.z = src.size(2)*src.size(0);
+
+    assert(grid.y < 65536);
+    assert(grid.z < 65536);
+
+    // get stream
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+    permute_to0231_k<WARP_SIZE, TRANSP_WARPS_X_TILE_SIZE>
+                        <<<grid, block, 0, stream>>>(src.size(1),
+                                                     src.size(2),
+                                                     src.size(3),
+                                                     src.packed_accessor32<VAL_T, 4, at::RestrictPtrTraits>(),
+                                                     dst.packed_accessor32<VAL_T, 4, at::RestrictPtrTraits>());
+}
+
+template<int BDIM_X,
+         int BDIM_Y,
+         typename VAL_T>
+__global__
+__launch_bounds__(BDIM_X*BDIM_Y)
+void  permute_to0312_k(const int nchn,
+                       const int nlat,
+                       const int nlon,
+                       const at::PackedTensorAccessor32<VAL_T, 4, at::RestrictPtrTraits> src,
+                             at::PackedTensorAccessor32<VAL_T, 4, at::RestrictPtrTraits> dst) {
+
+    static_assert(!(BDIM_X & (BDIM_X-1)));
+    static_assert(!(BDIM_Y & (BDIM_Y-1)));
+    static_assert(BDIM_X >= BDIM_Y);
+
+    __shared__ VAL_T sh[BDIM_X][BDIM_X+1];
+
+    const int tidx = threadIdx.x;
+    const int tidy = threadIdx.y;
+
+    const int woff  = blockIdx.x*BDIM_X;           // width offset
+    const int coff  = blockIdx.y*BDIM_X;           // channel offset
+    const int batch = blockIdx.z / nlat;           // batch (same for all block)
+    const int h     = blockIdx.z - (batch * nlat); // height (same for all block)
+
+    const int nchn_full = (nchn-coff) >= BDIM_X;
+    const int nlon_full = (nlon-woff) >= BDIM_X;
+
+    if (nchn_full && nlon_full) {
+        #pragma unroll
+        for(int j = 0; j < BDIM_X; j += BDIM_Y) {
+            sh[j+tidy][tidx] = src[batch][h][woff + j+tidy][coff+tidx];
+        }
+        __syncthreads();
+
+        #pragma unroll
+        for(int j = 0; j < BDIM_X; j += BDIM_Y) {
+            dst[batch][coff + j+tidy][h][woff+tidx] = sh[tidx][j+tidy];
+        }
+    } else {
+        if (coff+tidx < nchn) {
+            #pragma unroll
+            for(int j = 0; j < BDIM_X; j += BDIM_Y) {
+                sh[j+tidy][tidx] = (woff + j+tidy < nlon) ? src[batch][h][woff + j+tidy][coff+tidx] : VAL_T(0);
+            }
+        }
+        __syncthreads();
+
+        if (woff+tidx < nlon) {
+            #pragma unroll
+            for(int j = 0; j < BDIM_X; j += BDIM_Y) {
+                if (coff + j+tidy < nchn) {
+                    dst[batch][coff + j+tidy][h][woff+tidx] = sh[tidx][j+tidy];;
+                }
+            }
+        }
+    }
+    return;
+}
+
+template<int TRANSP_WARPS_X_TILE_SIZE, typename VAL_T>
+void launch_permute_to0312(at::Tensor src, at::Tensor dst){
+    dim3 block;
+    dim3 grid;
+
+    block.x = WARP_SIZE;
+    block.y = TRANSP_WARPS_X_TILE_SIZE;
+    grid.x = DIV_UP(src.size(2), block.x);
+    grid.y = DIV_UP(src.size(3), block.x);
+    grid.z = src.size(1)*src.size(0);
+
+    assert(grid.y < 65536);
+    assert(grid.z < 65536);
+
+    // get stream
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+    permute_to0312_k<WARP_SIZE, TRANSP_WARPS_X_TILE_SIZE>
+                        <<<grid, block, 0, stream>>>(src.size(3),
+                                                     src.size(1),
+                                                     src.size(2),
+                                                     src.packed_accessor32<VAL_T, 4, at::RestrictPtrTraits>(),
+                                                     dst.packed_accessor32<VAL_T, 4, at::RestrictPtrTraits>());
 }

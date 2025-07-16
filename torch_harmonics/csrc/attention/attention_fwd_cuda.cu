@@ -374,10 +374,12 @@ static void s2_attn_fwd_dispatch(int batch_size,
                                  at::Tensor row_off,
                                  at::Tensor col_idx,
                                  at::Tensor quad_weights,
-                                 at::Tensor yP,
-                                 cudaStream_t stream) {
+                                 at::Tensor yP) {
 
     static_assert(0 == (MAX_LOCAL_ARR_LEN & (MAX_LOCAL_ARR_LEN-1)));
+
+    // get stream
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
 
     // sort row indices (ho-s) in descending order
     // based on (row_off[ho+1]-row_off[ho])
@@ -470,32 +472,33 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
                                     int nlon_in,
                                     int nlat_out,
                                     int nlon_out) {
-    CHECK_CUDA_TENSOR(kx);
-    CHECK_CUDA_TENSOR(vx);
-    CHECK_CUDA_TENSOR(qy);
+    CHECK_CUDA_INPUT_TENSOR(kx);
+    CHECK_CUDA_INPUT_TENSOR(vx);
+    CHECK_CUDA_INPUT_TENSOR(qy);
     CHECK_CUDA_TENSOR(quad_weights);
     CHECK_CUDA_TENSOR(psi_col_idx);
     CHECK_CUDA_TENSOR(psi_row_off);
-
-    // TODO: check sizes
-
-    auto stream = at::cuda::getCurrentCUDAStream().stream();
 
     size_t uo_num_channels = kx.size(1);
 
     const int batch_size = kx.size(0);
 
-    torch::Tensor kxP = kx;
-    torch::Tensor vxP = vx;
-    torch::Tensor qyP = qy;
+     // extract dtype
+     auto qy_type = qy.dtype();
 
-    auto k_channel_first = kx.strides()[1] == 1;
-    auto v_channel_first = vx.strides()[1] == 1;
-    auto q_channel_first = qy.strides()[1] == 1;
+    torch::Tensor kxP = kx.to(torch::kFloat32);
+    torch::Tensor vxP = vx.to(torch::kFloat32);
+    torch::Tensor qyP = qy.to(torch::kFloat32);
 
-    if (!k_channel_first) { kxP = permute_4D_floatT_to0231(kx, stream); }
-    if (!v_channel_first) { vxP = permute_4D_floatT_to0231(vx, stream); }
-    if (!q_channel_first) { qyP = permute_4D_floatT_to0231(qy, stream); }
+    // these are much safer than checking is_contiguous(at::MemoryFormat::ChannelsLast)
+    // the former fails for num_channels == 1
+    bool kx_is_channels_last = kxP.strides()[1] == 1;
+    bool vx_is_channels_last = vxP.strides()[1] == 1;
+    bool qy_is_channels_last = qyP.strides()[1] == 1;
+
+    if (!kx_is_channels_last) { kxP = permute_4D_to0231(kxP); }
+    if (!vx_is_channels_last) { vxP = permute_4D_to0231(vxP); }
+    if (!qy_is_channels_last) { qyP = permute_4D_to0231(qyP); }
 
     torch::Tensor yP = torch::empty_like(qyP);
 
@@ -508,11 +511,13 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
                          psi_row_off,
                          psi_col_idx,
                          quad_weights,
-                         yP, // out tensor
-                         stream);
+                         yP);
 
     torch::Tensor y = yP;
-    if (!q_channel_first) { y = permute_4D_floatT_to0312(yP, stream); }
+    if (!qy_is_channels_last) { y = permute_4D_to0312(y); }
+
+    // convert precision back to starting
+    y = y.to(qy_type);
 
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 
