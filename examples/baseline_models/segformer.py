@@ -225,7 +225,7 @@ class MixFFN(nn.Module):
         x = x.permute(0, 3, 1, 2)
 
         # NOTE: we add another activation here
-        # because in the paper they only use depthwise conv,
+        # because in the paper the authors only use depthwise conv,
         # but without this activation it would just be a fused MM
         # with the disco conv
         x = self.mlp_in(x)
