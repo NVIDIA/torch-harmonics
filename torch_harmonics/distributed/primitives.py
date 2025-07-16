@@ -162,19 +162,6 @@ class distributed_transpose_azimuth(torch.autograd.Function):
     @staticmethod
     @custom_bwd(device_type="cuda")
     def backward(ctx, go):
-        r"""
-        Backward pass for distributed azimuthal transpose.
-        
-        Parameters
-        ----------
-        go: torch.Tensor
-            The gradient of the output
-        
-        Returns
-        -------
-        gi: torch.Tensor
-            The gradient of the input
-        """
         dims = ctx.dims
         dim0_split_sizes = ctx.dim0_split_sizes
         # WAR for a potential contig check torch bug for channels last contig tensors 
@@ -200,19 +187,7 @@ class distributed_transpose_polar(torch.autograd.Function):
     @staticmethod
     @custom_bwd(device_type="cuda")
     def backward(ctx, go):
-        r"""
-        Backward pass for distributed polar transpose.
-        
-        Parameters
-        ----------
-        go: torch.Tensor
-            The gradient of the output
-        
-        Returns
-        -------
-        gi: torch.Tensor
-            The gradient of the input
-        """
+
         dim = ctx.dim
         dim0_split_sizes = ctx.dim0_split_sizes
         # WAR for a potential contig check torch bug for channels last contig tensors 
@@ -337,19 +312,7 @@ class _CopyToPolarRegion(torch.autograd.Function):
     @staticmethod
     @custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
-        r"""
-        Backward pass for copying to polar region.
-        
-        Parameters
-        ----------
-        grad_output: torch.Tensor
-            The gradient of the output
-        
-        Returns
-        -------
-        grad_output: torch.Tensor
-            The gradient of the output
-        """
+
         if is_distributed_polar():
             return _reduce(grad_output, group=polar_group())
         else:
@@ -371,19 +334,7 @@ class _CopyToAzimuthRegion(torch.autograd.Function):
     @staticmethod
     @custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
-        r"""
-        Backward pass for copying to azimuth region.
-        
-        Parameters
-        ----------
-        grad_output: torch.Tensor
-            The gradient of the output
-        
-        Returns
-        -------
-        grad_output: torch.Tensor
-            The gradient of the output
-        """
+
         if is_distributed_azimuth():
             return _reduce(grad_output, group=azimuth_group())
         else:
