@@ -121,17 +121,6 @@ static int getPtxver() {
 
 at::Tensor permute_4D_to0231(at::Tensor src) {
 
-    //dim3 block;
-    //dim3 grid;
-
-    //block.x = WARP_SIZE;
-    //grid.x = DIV_UP(src.size(1), block.x);
-    //grid.y = DIV_UP(src.size(3), block.x);
-    //grid.z = src.size(2)*src.size(0);
-
-    //assert(grid.y < 65536);
-    //assert(grid.z < 65536);
-
     auto options = torch::TensorOptions().dtype(src.dtype()).device(src.device());
     torch::Tensor dst = torch::empty({src.size(0), src.size(2), src.size(3), src.size(1)}, options);
 
@@ -142,25 +131,11 @@ at::Tensor permute_4D_to0231(at::Tensor src) {
         AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0231_k_tile_generic", ([&] {
             launch_permute_to0231<TRANSP_WARPS_X_TILE_GENERIC, scalar_t>(src, dst);
         }));
-        //block.y = TRANSP_WARPS_X_TILE_GENERIC;
-        //permute_to0231_k<WARP_SIZE, TRANSP_WARPS_X_TILE_GENERIC>
-        //                <<<grid, block, 0, stream>>>(src.size(1),
-        //                                             src.size(2),
-        //                                             src.size(3),
-        //                                             src.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-        //                                             dst.packed_accessor32<float, 4, torch::RestrictPtrTraits>());
         CHECK_ERROR("permute_to0231_k_tile_generic");
     } else {
         AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0231_k_tile_sm100", ([&] {
             launch_permute_to0231<TRANSP_WARPS_X_TILE_SM100, scalar_t>(src, dst);
         }));
-        //block.y = TRANSP_WARPS_X_TILE_SM100;
-        //permute_to0231_k<WARP_SIZE, TRANSP_WARPS_X_TILE_SM100>
-        //                <<<grid, block, 0, stream>>>(src.size(1),
-        //                                             src.size(2),
-        //                                             src.size(3),
-        //                                             src.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-        //                                             dst.packed_accessor32<float, 4, torch::RestrictPtrTraits>());
         CHECK_ERROR("permute_to0231_k_tile_sm100");
     }
 
@@ -169,17 +144,6 @@ at::Tensor permute_4D_to0231(at::Tensor src) {
 
 at::Tensor permute_4D_to0312(at::Tensor src) {
 
-    //dim3 block;
-    //dim3 grid;
-
-    //block.x = WARP_SIZE;
-    //grid.x = DIV_UP(src.size(2), block.x);
-    //grid.y = DIV_UP(src.size(3), block.x);
-    //grid.z = src.size(1)*src.size(0);
-
-    //assert(grid.y < 65536);
-    //assert(grid.z < 65536);
-
     auto options = torch::TensorOptions().dtype(src.dtype()).device(src.device());
     torch::Tensor dst = torch::empty({src.size(0), src.size(3), src.size(1), src.size(2)}, options);
 
@@ -187,28 +151,14 @@ at::Tensor permute_4D_to0312(at::Tensor src) {
 
     // to be further specialized for additional archs, if necessary
     if (ptxv < 100) {
-        //block.y = TRANSP_WARPS_X_TILE_GENERIC;
         AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0312_k_tile_generic", ([&] {
             launch_permute_to0312<TRANSP_WARPS_X_TILE_GENERIC, scalar_t>(src, dst);
         }));
-        //permute_to0312_k<WARP_SIZE, TRANSP_WARPS_X_TILE_GENERIC>
-        //                <<<grid, block, 0, stream>>>(src.size(3),
-        //                                             src.size(1),
-        //                                             src.size(2),
-        //                                             src.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-        //                                             dst.packed_accessor32<float, 4, torch::RestrictPtrTraits>());
         CHECK_ERROR("permute_to0312_k_tile_generic");
     } else {
         AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0312_k_tile_sm100", ([&] {
             launch_permute_to0312<TRANSP_WARPS_X_TILE_SM100, scalar_t>(src, dst);
         }));
-        //block.y = TRANSP_WARPS_X_TILE_SM100;
-        //permute_to0312_k<WARP_SIZE, TRANSP_WARPS_X_TILE_SM100>
-        //                <<<grid, block, 0, stream>>>(src.size(3),
-        //                                             src.size(1),
-        //                                             src.size(2),
-        //                                             src.packed_accessor32<float, 4, torch::RestrictPtrTraits>(),
-        //                                             dst.packed_accessor32<float, 4, torch::RestrictPtrTraits>());
         CHECK_ERROR("permute_to0312_k_tile_sm100");
     }
 
