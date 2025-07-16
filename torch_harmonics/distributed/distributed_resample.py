@@ -153,9 +153,6 @@ class DistributedResampleS2(nn.Module):
         self.skip_resampling = (nlon_in == nlon_out) and (nlat_in == nlat_out) and (grid_in == grid_out)
 
     def extra_repr(self):
-        r"""
-        Pretty print module
-        """
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}"
 
     def _upscale_longitudes(self, x: torch.Tensor):
