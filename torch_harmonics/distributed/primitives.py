@@ -146,31 +146,6 @@ def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False)
 
 
 class distributed_transpose_azimuth(torch.autograd.Function):
-    r"""
-    Distributed transpose operation for azimuthal dimension.
-    This class provides the forward and backward passes for distributed
-    tensor transposition along the azimuthal dimension.
-    
-    Parameters
-    ----------
-    tensor: torch.Tensor
-        The tensor to transpose
-    dim0: int
-        The first dimension to transpose
-    dim1: int
-        The second dimension to transpose
-    dim1_split_sizes: List[int]
-        The split sizes for the second dimension
-
-    Returns
-    -------
-    x_recv: List[torch.Tensor]
-        The split tensors
-    dim0_split_sizes: List[int]
-        The split sizes for the first dimension
-    req: dist.Request
-        The request object
-    """
 
     @staticmethod
     @custom_fwd(device_type="cuda")
@@ -226,29 +201,6 @@ class distributed_transpose_azimuth(torch.autograd.Function):
 
     
 class distributed_transpose_polar(torch.autograd.Function):
-    r"""
-    Distributed transpose operation for polar dimension.
-    This class provides the forward and backward passes for distributed
-    tensor transposition along the polar dimension.
-
-    Parameters
-    ----------
-    x: torch.Tensor
-        The tensor to transpose
-    dims: List[int]
-        The dimensions to transpose
-    dim1_split_sizes: List[int]
-        The split sizes for the second dimension
-
-    Returns
-    -------
-    x: torch.Tensor
-        The transposed tensor
-    dim0_split_sizes: List[int]
-        The split sizes for the first dimension
-    req: dist.Request
-        The request object
-    """
 
     @staticmethod
     @custom_fwd(device_type="cuda")
@@ -403,21 +355,6 @@ def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
 
 
 class _CopyToPolarRegion(torch.autograd.Function):
-    r"""
-    Copy tensor to polar region for distributed computation.
-    This class provides the forward and backward passes for copying
-    tensors to the polar region in distributed settings.
-
-    Parameters
-    ----------
-    input_: torch.Tensor
-        The tensor to copy
-        
-    Returns
-    -------
-    output: torch.Tensor
-        The reduced and scattered tensor
-    """
     
     @staticmethod
     def symbolic(graph, input_):
@@ -464,12 +401,6 @@ class _CopyToPolarRegion(torch.autograd.Function):
 
 
 class _CopyToAzimuthRegion(torch.autograd.Function):
-    r"""
-    Copy tensor to azimuth region for distributed computation.
-    This class provides the forward and backward passes for copying
-    tensors to the azimuth region in distributed settings.
-    
-    """
 
     @staticmethod
     def symbolic(graph, input_):
@@ -516,23 +447,6 @@ class _CopyToAzimuthRegion(torch.autograd.Function):
 
 
 class _ScatterToPolarRegion(torch.autograd.Function):
-    r"""
-    Scatter tensor to polar region for distributed computation.
-    This class provides the forward and backward passes for scattering
-    tensors to the polar region in distributed settings.
-    
-    Parameters
-    ----------
-    input_: torch.Tensor
-        The tensor to scatter
-    dim_: int
-        The dimension to scatter along
-            
-    Returns
-    -------
-    output: torch.Tensor
-        The scattered tensor
-    """
 
     @staticmethod
     def symbolic(graph, input_, dim_):
@@ -560,23 +474,7 @@ class _ScatterToPolarRegion(torch.autograd.Function):
 
 
 class _GatherFromPolarRegion(torch.autograd.Function):
-    r"""
-    Gather the input and keep it on the rank.
-    
-    Parameters
-    ----------
-    input_: torch.Tensor
-        The tensor to gather
-    dim_: int
-        The dimension to gather along
-    shapes_: List[int]
-        The split sizes for the dimension to gather along
-        
-    Returns
-    -------
-    output: torch.Tensor
-        The gathered tensor
-    """
+
     @staticmethod
     def symbolic(graph, input_, dim_, shapes_):
         return _gather(input_, dim_, shapes_, polar_group())
@@ -600,19 +498,6 @@ class _GatherFromPolarRegion(torch.autograd.Function):
 
     
 class _ReduceFromPolarRegion(torch.autograd.Function):
-    r"""
-    All-reduce the input from the polar region.
-    
-    Parameters
-    ----------
-    input_: torch.Tensor
-        The tensor to reduce
-        
-    Returns
-    -------
-    output: torch.Tensor
-        The reduced tensor
-    """
     
     @staticmethod
     def symbolic(graph, input_):
@@ -636,19 +521,7 @@ class _ReduceFromPolarRegion(torch.autograd.Function):
 
     
 class _ReduceFromAzimuthRegion(torch.autograd.Function):
-    r"""
-    All-reduce the input from the azimuth region.
-    
-    Parameters
-    ----------
-    input_: torch.Tensor
-        The tensor to reduce
-        
-    Returns
-    -------
-    output: torch.Tensor
-        The reduced tensor
-    """
+ 
     @staticmethod
     def symbolic(graph, input_):
         if is_distributed_azimuth():
@@ -671,21 +544,7 @@ class _ReduceFromAzimuthRegion(torch.autograd.Function):
 
 
 class _ReduceFromScatterToPolarRegion(torch.autograd.Function):
-    r"""
-    All-reduce the input from the polar region and scatter back to polar region.
-    
-    Parameters
-    ----------
-    input_: torch.Tensor
-        The tensor to reduce
-    dim_: int
-        The dimension to reduce along
-        
-    Returns
-    -------
-    output: torch.Tensor
-        The reduced tensor
-    """
+
     @staticmethod
     def symbolic(graph, input_, dim_):
         if is_distributed_polar():
@@ -715,23 +574,6 @@ class _ReduceFromScatterToPolarRegion(torch.autograd.Function):
 
 
 class _GatherFromCopyToPolarRegion(torch.autograd.Function):
-    r"""
-    Gather the input from the polar region and register BWD AR, basically the inverse of reduce-scatter
-    
-    Parameters
-    ----------
-    input_: torch.Tensor
-        The tensor to gather
-    dim_: int
-        The dimension to gather along
-    shapes_: List[int]
-        The split sizes for the dimension to gather along
-        
-    Returns
-    -------
-    output: torch.Tensor
-        The gathered tensor
-    """
 
     @staticmethod
     def symbolic(graph, input_, dim_, shapes_):
