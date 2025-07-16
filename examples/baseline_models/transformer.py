@@ -57,19 +57,7 @@ class Encoder(nn.Module):
         self.conv = nn.Conv2d(in_chans, out_chans, kernel_size=kernel_shape, bias=bias, stride=(stride_h, stride_w), padding=(pad_h, pad_w), groups=groups)
 
     def forward(self, x):
-        """
-        Forward pass through the Encoder layer.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor after encoding
-        """
+
         x = self.conv(x)
         return x
 
@@ -122,19 +110,7 @@ class Decoder(nn.Module):
             raise ValueError(f"Unknown upsampling method {upsampling_method}")
 
     def forward(self, x):
-        """
-        Forward pass through the Decoder layer.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor after decoding and upsampling
-        """
+
         x = self.upsample(x)
         return x
 
@@ -163,19 +139,7 @@ class GlobalAttention(nn.Module):
         self.attn = nn.MultiheadAttention(embed_dim=chans, num_heads=num_heads, dropout=dropout, batch_first=True, bias=bias)
 
     def forward(self, x):
-        """
-        Forward pass through the GlobalAttention module.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor of shape (B, C, H, W)
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor of shape (B, C, H, W)
-        """
+
         # x: B, C, H, W
         B, H, W, C = x.shape
         # flatten spatial dims
@@ -286,19 +250,7 @@ class AttentionBlock(nn.Module):
         self.skip1 = nn.Identity()
 
     def forward(self, x):
-        """
-        Forward pass through the AttentionBlock.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor with residual connections
-        """
+
         residual = x
 
         x = self.norm0(x)
