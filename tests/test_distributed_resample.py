@@ -146,19 +146,7 @@ class TestDistributedResampling(unittest.TestCase):
         dist.destroy_process_group(None)
 
     def _split_helper(self, tensor):
-        """
-        Split the tensor along the last dimension into chunks along the W dimension, and then along the H dimension.
-        
-        Parameters
-        ----------
-        tensor : torch.Tensor
-            The tensor to split
 
-        Returns
-        -------
-        torch.Tensor
-            The split tensor
-        """
         with torch.no_grad():
             # split in W
             tensor_list_local = thd.split_tensor_along_dim(tensor, dim=-1, num_chunks=self.grid_size_w)
@@ -171,25 +159,7 @@ class TestDistributedResampling(unittest.TestCase):
         return tensor_local
 
     def _gather_helper_fwd(self, tensor, B, C, convolution_dist):
-        """
-        Gather the tensor along the W and H dimensions.
-        
-        Parameters
-        ----------
-        tensor : torch.Tensor
-            The tensor to gather
-        B : int
-            Batch size
-        C : int
-            Number of channels
-        convolution_dist : thd.DistributedResampleS2
-            The distributed resampling object
 
-        Returns
-        -------
-        torch.Tensor
-            The gathered tensor
-        """
         # we need the shapes
         lat_shapes = convolution_dist.lat_out_shapes
         lon_shapes = convolution_dist.lon_out_shapes
@@ -217,25 +187,6 @@ class TestDistributedResampling(unittest.TestCase):
         return tensor_gather
 
     def _gather_helper_bwd(self, tensor, B, C, resampling_dist):
-        """
-        Gather the tensor along the W and H dimensions.
-        
-        Parameters
-        ----------
-        tensor : torch.Tensor
-            The tensor to gather
-        B : int
-            Batch size
-        C : int
-            Number of channels
-        resampling_dist : thd.DistributedResampleS2
-            The distributed resampling object
-
-        Returns
-        -------
-        torch.Tensor
-            The gathered tensor
-        """
 
         # we need the shapes
         lat_shapes = resampling_dist.lat_in_shapes

@@ -139,19 +139,6 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         dist.destroy_process_group(None)
 
     def _split_helper(self, tensor):
-        """
-        Split the tensor along the W and H dimensions.
-
-        Parameters
-        ----------
-        tensor : torch.Tensor
-            The tensor to split
-
-        Returns
-        -------
-        torch.Tensor
-            The split tensor
-        """
         with torch.no_grad():
             # split in W
             tensor_list_local = thd.split_tensor_along_dim(tensor, dim=-1, num_chunks=self.grid_size_w)
@@ -164,27 +151,6 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         return tensor_local
 
     def _gather_helper_fwd(self, tensor, B, C, transform_dist, vector):
-        """
-        Gather the tensor along the W and H dimensions.
-
-        Parameters
-        ----------
-        tensor : torch.Tensor
-            The tensor to gather
-        B : int
-            Batch size
-        C : int
-            Number of channels
-        transform_dist : thd.DistributedRealSHT or thd.DistributedRealVectorSHT
-            The distributed transform
-        vector : bool
-            Whether to use vector spherical harmonic transform
-
-        Returns
-        -------
-        torch.Tensor
-            The gathered tensor
-        """
         # we need the shapes
         l_shapes = transform_dist.l_shapes
         m_shapes = transform_dist.m_shapes
@@ -216,27 +182,6 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         return tensor_gather
 
     def _gather_helper_bwd(self, tensor, B, C, transform_dist, vector):
-        """
-        Gather the tensor along the W and H dimensions.
-
-        Parameters
-        ----------
-        tensor : torch.Tensor
-            The tensor to gather
-        B : int
-            Batch size
-        C : int
-            Number of channels
-        transform_dist : thd.DistributedRealSHT or thd.DistributedRealVectorSHT
-            The distributed transform
-        vector : bool
-            Whether to use vector spherical harmonic transform
-
-        Returns
-        -------
-        torch.Tensor
-            The gathered tensor
-        """
         
         # we need the shapes
         lat_shapes = transform_dist.lat_shapes

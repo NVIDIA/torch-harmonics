@@ -47,30 +47,7 @@ if torch.cuda.is_available():
 
 
 def _normalize_convolution_tensor_dense(psi, quad_weights, transpose_normalization=False, basis_norm_mode="none", merge_quadrature=False, eps=1e-9):
-    """
-    Discretely normalizes the convolution tensor.
-
-    Parameters
-    ----------
-    psi : torch.Tensor
-        Convolution tensor
-    quad_weights : torch.Tensor
-        Quadrature weights
-    transpose_normalization : bool, optional
-        Whether to transpose the normalization, by default False
-    basis_norm_mode : str, optional
-        Basis normalization mode, by default "none"
-    merge_quadrature : bool, optional
-        Whether to merge the quadrature, by default False
-    eps : float, optional
-        Epsilon for numerical stability, by default 1e-9
-
-    Returns
-    -------
-    torch.Tensor
-        Normalized convolution tensor
-    """
-
+    
     kernel_size, nlat_out, nlon_out, nlat_in, nlon_in = psi.shape
     correction_factor = nlon_out / nlon_in
 
@@ -118,38 +95,6 @@ def _precompute_convolution_tensor_dense(
     basis_norm_mode="none",
     merge_quadrature=False,
 ):
-    """
-    Helper routine to compute the convolution Tensor in a dense fashion
-
-    Parameters
-    ----------
-    in_shape : tuple
-        Input shape (height, width)
-    out_shape : tuple
-        Output shape (height, width)
-    filter_basis : FilterBasis
-        Filter basis
-    grid_in : str
-        Grid type for input
-    grid_out : str
-        Grid type for output
-    theta_cutoff : float, optional
-        Theta cutoff
-    theta_eps : float, optional
-        Theta epsilon
-    transpose_normalization : bool, optional
-        Whether to transpose the normalization, by default False
-    basis_norm_mode : str, optional
-        Basis normalization mode, by default "none"
-    merge_quadrature : bool, optional
-        Whether to merge the quadrature, by default False
-
-    Returns
-    -------
-    torch.Tensor
-        Convolution tensor
-    """
-
     assert len(in_shape) == 2
     assert len(out_shape) == 2
 
