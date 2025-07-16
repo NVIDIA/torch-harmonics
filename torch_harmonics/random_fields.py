@@ -94,24 +94,7 @@ class GaussianRandomFieldS2(torch.nn.Module):
         self.gaussian_noise = torch.distributions.normal.Normal(self.mean, self.var)
 
     def forward(self, N, xi=None):
-        r"""
-        Sample random functions from a spherical GRF.
-    
-        Parameters
-        ----------
-        N : int
-            Number of functions to sample.
-        xi : torch.Tensor, default is None
-            Noise is a complex tensor of size (N, nlat, nlat+1).
-            If None, new Gaussian noise is sampled.
-            If xi is provided, N is ignored.
-        
-        Output
-        -------
-        u : torch.Tensor
-           N random samples from the GRF returned as a 
-           tensor of size (N, nlat, 2*nlat) on a equiangular grid.
-        """
+
         #Sample Gaussian noise.
         if xi is None:
             xi = self.gaussian_noise.sample(torch.Size((N, self.nlat, self.nlat + 1, 2))).squeeze()

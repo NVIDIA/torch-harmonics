@@ -153,19 +153,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
             raise ValueError(f"Unknown skip connection type {outer_skip}")
 
     def forward(self, x):
-        """
-        Forward pass through the SFNO block.
-        
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        ----------
-        torch.Tensor
-            Output tensor after processing through the block
-        """
+
         x, residual = self.global_conv(x)
 
         x = self.norm(x)
@@ -415,19 +403,7 @@ class SphericalFourierNeuralOperator(nn.Module):
         return {"pos_embed.pos_embed"}
 
     def forward_features(self, x):
-        """
-        Forward pass through the feature extraction layers.
-        
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        ----------
-        torch.Tensor
-            Features after processing through the network
-        """
+
         x = self.pos_drop(x)
 
         for blk in self.blocks:
@@ -436,19 +412,7 @@ class SphericalFourierNeuralOperator(nn.Module):
         return x
 
     def forward(self, x):
-        """
-        Forward pass through the complete SFNO model.
-        
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor of shape (batch_size, in_chans, height, width)
-            
-        Returns
-        ----------
-        torch.Tensor
-            Output tensor of shape (batch_size, out_chans, height, width)
-        """
+
         if self.residual_prediction:
             residual = x
 

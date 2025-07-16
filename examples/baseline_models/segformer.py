@@ -103,19 +103,6 @@ class OverlapPatchMerging(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x):
-        """
-        Forward pass through the OverlapPatchMerging layer.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor after patch merging
-        """
         x = self.conv(x)
 
         # permute
@@ -204,19 +191,7 @@ class MixFFN(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass through the MixFFN module.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor after processing
-        """
+
         residual = x
 
         # norm

@@ -208,19 +208,7 @@ class DownsamplingBlock(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the downsampling block.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Downsampled tensor
-        """
+
         # skip connection
         residual = x
         if hasattr(self, "transform_skip"):
@@ -614,19 +602,7 @@ class SphericalUNet(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x):
-        """
-        Forward pass through the complete spherical U-Net model.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor of shape (batch_size, in_chans, height, width)
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor of shape (batch_size, out_chans, height, width)
-        """
+
         # encoder:
         features = []
         feat = x

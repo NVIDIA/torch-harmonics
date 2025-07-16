@@ -130,19 +130,7 @@ class OverlapPatchMerging(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x):
-        """
-        Forward pass of the overlap patch merging module.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Merged patches with layer normalization
-        """
+
         dtype = x.dtype
 
         with amp.autocast(device_type="cuda", enabled=False):
@@ -259,19 +247,6 @@ class MixFFN(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the Mix FFN module.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor after Mix FFN processing
-        """
         residual = x
 
         # norm
@@ -382,19 +357,7 @@ class AttentionWrapper(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the attention wrapper.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor after attention processing
-        """
+
         residual = x
         if self.norm is not None:
             x = x.permute(0, 2, 3, 1)
@@ -548,19 +511,6 @@ class TransformerBlock(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the transformer block.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor after transformer block processing
-        """
         x = self.fwd(x)
 
         # apply norm
@@ -664,19 +614,7 @@ class Upsampling(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the upsampling module.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Upsampled tensor
-        """
+
         x = self.upsample(self.mlp(x))
 
         return x
@@ -871,19 +809,7 @@ class SphericalSegformer(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x):
-        """
-        Forward pass through the complete spherical segformer model.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor of shape (batch_size, in_chans, height, width)
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor of shape (batch_size, out_chans, height, width)
-        """
+
         # encoder:
         features = []
         feat = x

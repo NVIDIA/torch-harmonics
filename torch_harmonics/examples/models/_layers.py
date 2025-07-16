@@ -191,19 +191,7 @@ class DropPath(nn.Module):
         self.drop_prob = drop_prob
 
     def forward(self, x):
-        """
-        Forward pass with drop path regularization.
-        
-        Parameters
-    ----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor with potential path dropping
-        """
+
         return drop_path(x, self.drop_prob, self.training)
 
 
@@ -238,19 +226,7 @@ class PatchEmbed(nn.Module):
         self.proj.bias.is_shared_mp = ["spatial"]
 
     def forward(self, x):
-        """
-        Forward pass of patch embedding.
-        
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor of shape (batch_size, channels, height, width)
-            
-        Returns
-        -------
-        torch.Tensor
-            Patch embeddings of shape (batch_size, embed_dim, num_patches)
-        """
+
         # gather input
         B, C, H, W = x.shape
         assert H == self.img_size[0] and W == self.img_size[1], f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
@@ -319,35 +295,11 @@ class MLP(nn.Module):
 
     @torch.jit.ignore
     def checkpoint_forward(self, x):
-        """
-        Forward pass with gradient checkpointing.
-        
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor
-        """
+
         return checkpoint(self.fwd, x)
 
     def forward(self, x):
-        """
-        Forward pass of the MLP.
-        
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor
-        """
+
         if self.checkpointing:
             return self.checkpoint_forward(x)
         else:
@@ -382,19 +334,7 @@ class RealFFT2(nn.Module):
         self.mmax = mmax or self.nlon // 2 + 1
 
     def forward(self, x):
-        """
-        Forward pass: compute real FFT2D.
-        
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            FFT coefficients
-        """
+
         y = torch.fft.rfft2(x, dim=(-2, -1), norm="ortho")
         y = torch.cat((y[..., : math.ceil(self.lmax / 2), : self.mmax], y[..., -math.floor(self.lmax / 2) :, : self.mmax]), dim=-2)
         return y
@@ -428,19 +368,7 @@ class InverseRealFFT2(nn.Module):
         self.mmax = mmax or self.nlon // 2 + 1
 
     def forward(self, x):
-        """
-        Forward pass: compute inverse real FFT2D.
-        
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input FFT coefficients
-            
-        Returns
-        -------
-        torch.Tensor
-            Reconstructed spatial signal
-        """
+
         return torch.fft.irfft2(x, dim=(-2, -1), s=(self.nlat, self.nlon), norm="ortho")
 
 
@@ -476,19 +404,7 @@ class LayerNorm(nn.Module):
         self.norm = nn.LayerNorm(normalized_shape=in_channels, eps=1e-6, elementwise_affine=elementwise_affine, bias=bias, device=device, dtype=dtype)
 
     def forward(self, x):
-        """
-        Forward pass with channel dimension handling.
-        
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor with channel dimension at -3
-            
-        Returns
-        -------
-        torch.Tensor
-            Normalized tensor with same shape as input
-        """
+
         return self.norm(x.transpose(self.channel_dim, -1)).transpose(-1, self.channel_dim)
 
 
@@ -556,19 +472,7 @@ class SpectralConvS2(nn.Module):
             self.bias = nn.Parameter(torch.zeros(1, out_channels, 1, 1))
 
     def forward(self, x):
-        """
-        Forward pass of spectral convolution.
-        
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        tuple
-            Tuple containing (output, residual) tensors
-        """
+
         dtype = x.dtype
         x = x.float()
         residual = x
@@ -614,19 +518,7 @@ class PositionEmbedding(nn.Module, metaclass=abc.ABCMeta):
         self.num_chans = num_chans
 
     def forward(self, x: torch.Tensor):
-        """
-        Forward pass: add position embeddings to input.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Input tensor with position embeddings added
-        """
+
         return x + self.position_embeddings
 
 

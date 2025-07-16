@@ -115,21 +115,7 @@ class DiceLossS2(nn.Module):
             self.register_buffer("weight", weight.unsqueeze(0))
 
     def forward(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the Dice loss.
-        
-        Parameters
-        -----------
-        prd : torch.Tensor
-            Prediction tensor with shape (batch, classes, nlat, nlon)
-        tar : torch.Tensor
-            Target tensor with shape (batch, nlat, nlon)
-            
-        Returns
-        -------
-        torch.Tensor
-            Dice loss value
-        """
+
         prd = nn.functional.softmax(prd, dim=1)
 
         # mask values
@@ -205,21 +191,6 @@ class CrossEntropyLossS2(nn.Module):
         self.register_buffer("quad_weights", q)
 
     def forward(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the cross-entropy loss.
-        
-        Parameters
-        -----------
-        prd : torch.Tensor
-            Prediction tensor with shape (batch, classes, nlat, nlon)
-        tar : torch.Tensor
-            Target tensor with shape (batch, nlat, nlon)
-            
-        Returns
-        -------
-        torch.Tensor
-            Cross-entropy loss value
-        """
 
         # compute log softmax
         logits = nn.functional.log_softmax(prd, dim=1)
@@ -266,25 +237,6 @@ class FocalLossS2(nn.Module):
         self.register_buffer("quad_weights", q)
 
     def forward(self, prd: torch.Tensor, tar: torch.Tensor, alpha: float = 0.25, gamma: float = 2):
-        """
-        Forward pass of the focal loss.
-        
-        Parameters
-        -----------
-        prd : torch.Tensor
-            Prediction tensor with shape (batch, classes, nlat, nlon)
-        tar : torch.Tensor
-            Target tensor with shape (batch, nlat, nlon)
-        alpha : float, optional
-            Alpha parameter for focal loss, by default 0.25
-        gamma : float, optional
-            Gamma parameter for focal loss, by default 2
-            
-        Returns
-        -------
-        torch.Tensor
-            Focal loss value
-        """
 
         # compute logits
         logits = nn.functional.log_softmax(prd, dim=1)
@@ -339,16 +291,7 @@ class SphericalLossBase(nn.Module, ABC):
         return loss
 
     def forward(self, prd: torch.Tensor, tar: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Common forward pass that handles masking and reduction.
 
-        Args:
-            prd (torch.Tensor): Prediction tensor
-            tar (torch.Tensor): Target tensor
-            mask (Optional[torch.Tensor], optional): Mask tensor. Defaults to None.
-
-        Returns:
-            torch.Tensor: Final loss value
-        """
         loss_term = self._compute_loss_term(prd, tar)
         # Integrate over the sphere for each item in the batch
         loss = self._integrate_sphere(loss_term, mask)
