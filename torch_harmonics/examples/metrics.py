@@ -169,21 +169,7 @@ class BaseMetricS2(nn.Module):
             self.register_buffer("weight", weight.unsqueeze(0))
 
     def _forward(self, pred: torch.Tensor, truth: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Compute base statistics (TP, FP, FN, TN) for the given predictions and ground truth.
-        
-        Parameters
-        -----------
-        pred : torch.Tensor
-            Predicted logits
-        truth : torch.Tensor
-            Ground truth labels
-            
-        Returns
-        -------
-        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
-            Tuple containing (tp, fp, fn, tn) statistics
-        """
+
         # convert logits to class predictions
         pred_class = _predict_classes(pred)
 
@@ -240,21 +226,7 @@ class IntersectionOverUnionS2(BaseMetricS2):
         super().__init__(nlat, nlon, grid, weight, ignore_index, mode)
 
     def forward(self, pred: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
-        """
-        Compute IoU score for the given predictions and ground truth.
-        
-        Parameters
-        -----------
-        pred : torch.Tensor
-            Predicted logits
-        truth : torch.Tensor
-            Ground truth labels
-            
-        Returns
-        -------
-        torch.Tensor
-            IoU score
-        """
+
         tp, fp, fn, tn = self._forward(pred, truth)
 
         # compute score
@@ -300,21 +272,7 @@ class AccuracyS2(BaseMetricS2):
         super().__init__(nlat, nlon, grid, weight, ignore_index, mode)
 
     def forward(self, pred: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
-        """
-        Compute accuracy score for the given predictions and ground truth.
-        
-        Parameters
-        -----------
-        pred : torch.Tensor
-            Predicted logits
-        truth : torch.Tensor
-            Ground truth labels
-            
-        Returns
-        -------
-        torch.Tensor
-            Accuracy score
-        """
+
         tp, fp, fn, tn = self._forward(pred, truth)
 
         # compute score

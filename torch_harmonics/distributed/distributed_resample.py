@@ -248,19 +248,6 @@ class DistributedResampleS2(nn.Module):
         return x
 
     def forward(self, x: torch.Tensor):
-        """
-        Forward pass for distributed resampling.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor with shape (batch, channels, nlat, nlon)
-            
-        Returns
-        -------
-        torch.Tensor
-            Resampled tensor with shape (batch, channels, nlat_out, nlon_out)
-        """
 
         if self.skip_resampling:
             return x

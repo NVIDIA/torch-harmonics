@@ -110,19 +110,7 @@ class DiscreteContinuousEncoder(nn.Module):
         )
 
     def forward(self, x):
-        """
-        Forward pass of the discrete-continuous encoder.
-        
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor with shape (batch, channels, nlat, nlon)
-            
-        Returns
-        -------
-        torch.Tensor
-            Encoded tensor with reduced spatial resolution
-        """
+
         dtype = x.dtype
 
         with amp.autocast(device_type="cuda", enabled=False):
@@ -205,19 +193,7 @@ class DiscreteContinuousDecoder(nn.Module):
         )
 
     def forward(self, x):
-        """
-        Forward pass of the discrete-continuous decoder.
-        
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor with shape (batch, channels, nlat, nlon)
-            
-        Returns
-        -------
-        torch.Tensor
-            Decoded tensor with restored spatial resolution
-        """
+
         dtype = x.dtype
 
         with amp.autocast(device_type="cuda", enabled=False):
@@ -628,19 +604,7 @@ class LocalSphericalNeuralOperator(nn.Module):
         return x
 
     def forward(self, x):
-        """
-        Forward pass through the complete LSNO model.
-        
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor of shape (batch_size, in_chans, height, width)
-            
-        Returns
-        -------
-        torch.Tensor
-            Output tensor of shape (batch_size, out_chans, height, width)
-        """
+
         if self.residual_prediction:
             residual = x
 

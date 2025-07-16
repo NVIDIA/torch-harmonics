@@ -150,23 +150,7 @@ class distributed_transpose_azimuth(torch.autograd.Function):
     @staticmethod
     @custom_fwd(device_type="cuda")
     def forward(ctx, x, dims, dim1_split_sizes):
-        r"""
-        Forward pass for distributed azimuthal transpose.
-        
-        Parameters
-        ----------
-        x: torch.Tensor
-            The tensor to transpose
-        dims: List[int]
-            The dimensions to transpose
-        dim1_split_sizes: List[int]
-            The split sizes for the second dimension
 
-        Returns
-        -------
-        x: torch.Tensor
-            The transposed tensor
-        """
         # WAR for a potential contig check torch bug for channels last contig tensors
         xlist, dim0_split_sizes, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=azimuth_group())
         x = torch.cat(xlist, dim=dims[1])
@@ -205,23 +189,7 @@ class distributed_transpose_polar(torch.autograd.Function):
     @staticmethod
     @custom_fwd(device_type="cuda")
     def forward(ctx, x, dim, dim1_split_sizes):
-        r"""
-        Forward pass for distributed polar transpose.
-        
-        Parameters
-        ----------
-        x: torch.Tensor
-            The tensor to transpose
-        dim: List[int]
-            The dimensions to transpose
-        dim1_split_sizes: List[int]
-            The split sizes for the second dimension
 
-        Returns
-        -------
-        x: torch.Tensor
-            The transposed tensor
-        """
         # WAR for a potential contig check torch bug for channels last contig tensors 
         xlist, dim0_split_sizes, _ = _transpose(x, dim[0], dim[1], dim1_split_sizes, group=polar_group())
         x = torch.cat(xlist, dim=dim[1])
@@ -363,19 +331,7 @@ class _CopyToPolarRegion(torch.autograd.Function):
     @staticmethod
     @custom_fwd(device_type="cuda")
     def forward(ctx, input_):
-        r"""
-        Forward pass for copying to polar region.
         
-        Parameters
-        ----------
-        input_: torch.Tensor
-            The tensor to copy
-        
-        Returns
-        -------
-        input_: torch.Tensor
-            The tensor to copy
-        """
         return input_
     
     @staticmethod
@@ -409,19 +365,7 @@ class _CopyToAzimuthRegion(torch.autograd.Function):
     @staticmethod
     @custom_fwd(device_type="cuda")
     def forward(ctx, input_):
-        r"""
-        Forward pass for copying to azimuth region.
-        
-        Parameters
-        ----------
-        input_: torch.Tensor
-            The tensor to copy
-        
-        Returns
-        -------
-        input_: torch.Tensor
-            The tensor to copy
-        """
+
         return input_
 
     @staticmethod

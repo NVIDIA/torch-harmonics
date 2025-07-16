@@ -693,19 +693,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         return psi
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass
-
-        Parameters
-        -----------
-        x: torch.Tensor
-            Input tensor
-
-        Returns
-        -------
-        out: torch.Tensor
-            Output tensor
-        """
+        
         # extract shape
         B, C, H, W = x.shape
         x = x.reshape(B, self.groups, self.groupsize, H, W)
