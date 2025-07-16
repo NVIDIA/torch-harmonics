@@ -262,13 +262,13 @@ void  permute_to0231_k(const int nchn,
     return;
 }
 
-template<int TRANSP_WARPS_X_TILE_SIZE, typename VAL_T>
+template<int WARPS_X_TILE, typename VAL_T>
 void launch_permute_to0231(at::Tensor src, at::Tensor dst){
     dim3 block;
     dim3 grid;
 
     block.x = WARP_SIZE;
-    block.y = TRANSP_WARPS_X_TILE_SIZE;
+    block.y = WARPS_X_TILE;
     grid.x = DIV_UP(src.size(1), block.x);
     grid.y = DIV_UP(src.size(3), block.x);
     grid.z = src.size(2)*src.size(0);
@@ -279,7 +279,7 @@ void launch_permute_to0231(at::Tensor src, at::Tensor dst){
     // get stream
     auto stream = at::cuda::getCurrentCUDAStream().stream();
 
-    permute_to0231_k<WARP_SIZE, TRANSP_WARPS_X_TILE_SIZE>
+    permute_to0231_k<WARP_SIZE, WARPS_X_TILE>
                         <<<grid, block, 0, stream>>>(src.size(1),
                                                      src.size(2),
                                                      src.size(3),
@@ -347,13 +347,13 @@ void  permute_to0312_k(const int nchn,
     return;
 }
 
-template<int TRANSP_WARPS_X_TILE_SIZE, typename VAL_T>
+template<int WARPS_X_TILE, typename VAL_T>
 void launch_permute_to0312(at::Tensor src, at::Tensor dst){
     dim3 block;
     dim3 grid;
 
     block.x = WARP_SIZE;
-    block.y = TRANSP_WARPS_X_TILE_SIZE;
+    block.y = WARPS_X_TILE;
     grid.x = DIV_UP(src.size(2), block.x);
     grid.y = DIV_UP(src.size(3), block.x);
     grid.z = src.size(1)*src.size(0);
@@ -364,7 +364,7 @@ void launch_permute_to0312(at::Tensor src, at::Tensor dst){
     // get stream
     auto stream = at::cuda::getCurrentCUDAStream().stream();
 
-    permute_to0312_k<WARP_SIZE, TRANSP_WARPS_X_TILE_SIZE>
+    permute_to0312_k<WARP_SIZE, WARPS_X_TILE>
                         <<<grid, block, 0, stream>>>(src.size(3),
                                                      src.size(1),
                                                      src.size(2),
