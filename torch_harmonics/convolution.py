@@ -663,8 +663,6 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
-<<<<<<< HEAD
-=======
     def get_psi(self, semi_transposed: bool = False):
         """
         Get the convolution tensor
@@ -694,7 +692,6 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         return psi
 
->>>>>>> 4578beb (Improved docstrings in convolution)
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass
