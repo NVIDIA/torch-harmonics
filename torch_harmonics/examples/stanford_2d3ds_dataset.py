@@ -80,34 +80,13 @@ class Stanford2D3DSDownloader:
     """
 
     def __init__(self, base_url: str = DEFAULT_BASE_URL, local_dir: str = "data"):
-        """
-        Initialize the Stanford 2D3DS dataset downloader.
-        
-        Parameters
-        -----------
-        base_url : str, optional
-            Base URL for downloading the dataset, by default DEFAULT_BASE_URL
-        local_dir : str, optional
-            Local directory to store downloaded files, by default "data"
-        """
+       
         self.base_url = base_url
         self.local_dir = local_dir
         os.makedirs(self.local_dir, exist_ok=True)
 
     def _download_file(self, filename):
-        """
-        Download a single file with progress bar and resume capability.
         
-        Parameters
-        -----------
-        filename : str
-            Name of the file to download
-            
-        Returns
-        -------
-        str
-            Local path to the downloaded file
-        """
         import requests
         from tqdm import tqdm
 
@@ -141,19 +120,7 @@ class Stanford2D3DSDownloader:
         return local_path
 
     def _extract_tar(self, tar_path):
-        """
-        Extract a tar file and return the extracted directory name.
         
-        Parameters
-        -----------
-        tar_path : str
-            Path to the tar file to extract
-            
-        Returns
-        -------
-        str
-            Name of the extracted directory
-        """
         import tarfile
 
         with tarfile.open(tar_path) as tar:
@@ -194,23 +161,7 @@ class Stanford2D3DSDownloader:
         return data_folders, class_labels
 
     def _rgb_to_id(self, img, class_labels_map, class_labels_indices):
-        """
-        Convert RGB image to class ID using color mapping.
         
-        Parameters
-        -----------
-        img : numpy.ndarray
-            RGB image array
-        class_labels_map : list
-            Mapping from color values to class labels
-        class_labels_indices : list
-            List of class label indices
-            
-        Returns
-        -------
-        numpy.ndarray
-            Class ID array
-        """
         # Convert to int32 first to avoid overflow
         r = img[..., 0].astype(np.int32)
         g = img[..., 1].astype(np.int32)

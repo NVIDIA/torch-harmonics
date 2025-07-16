@@ -41,46 +41,11 @@ from torch_harmonics import InverseRealSHT
 
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
-    """
-    Initialize tensor with truncated normal distribution without gradients.
-    
-    This is a helper function for trunc_normal_ that performs the actual initialization
-    without requiring gradients to be tracked.
-    
-    Parameters
-    -----------
-    tensor : torch.Tensor
-        Tensor to initialize
-    mean : float
-        Mean of the normal distribution
-    std : float
-        Standard deviation of the normal distribution
-    a : float
-        Lower bound for truncation
-    b : float
-        Upper bound for truncation
-        
-    Returns
-    -------
-    torch.Tensor
-        Initialized tensor
-    """
+   
     # Cut & paste from PyTorch official master until it's in a few official releases - RW
     # Method based on https://people.sc.fsu.edu/~jburkardt/presentations/truncated_normal.pdf
     def norm_cdf(x):
-        """
-        Compute standard normal cumulative distribution function.
-        
-        Parameters
-        -----------
-        x : float
-            Input value
-            
-        Returns
-        -------
-        float
-            CDF value
-        """
+       
         # Computes standard normal cumulative distribution function
         return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
 

@@ -275,19 +275,10 @@ class SphericalLossBase(nn.Module, ABC):
 
     @abstractmethod
     def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
-        """Abstract method that must be implemented by child classes to compute loss terms.
-
-        Args:
-            prd (torch.Tensor): Prediction tensor
-            tar (torch.Tensor): Target tensor
-
-        Returns:
-            torch.Tensor: Computed loss term before integration
-        """
+       
         pass
 
     def _post_integration_hook(self, loss: torch.Tensor) -> torch.Tensor:
-        """Post-integration hook. Commonly used for the roots in Lp norms"""
         return loss
 
     def forward(self, prd: torch.Tensor, tar: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -309,21 +300,7 @@ class SquaredL2LossS2(SphericalLossBase):
     """
     
     def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
-        """
-        Compute squared L2 loss term.
         
-        Parameters
-        -----------
-        prd : torch.Tensor
-            Prediction tensor
-        tar : torch.Tensor
-            Target tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Squared difference between prediction and target
-        """
         return torch.square(prd - tar)
 
 
@@ -335,21 +312,7 @@ class L1LossS2(SphericalLossBase):
     """
     
     def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
-        """
-        Compute L1 loss term.
         
-        Parameters
-        -----------
-        prd : torch.Tensor
-            Prediction tensor
-        tar : torch.Tensor
-            Target tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Absolute difference between prediction and target
-        """
         return torch.abs(prd - tar)
 
 
@@ -361,19 +324,7 @@ class L2LossS2(SquaredL2LossS2):
     """
     
     def _post_integration_hook(self, loss: torch.Tensor) -> torch.Tensor:
-        """
-        Apply square root to get L2 norm.
         
-        Parameters
-        -----------
-        loss : torch.Tensor
-            Integrated squared loss
-            
-        Returns
-        -------
-        torch.Tensor
-            Square root of the loss (L2 norm)
-        """
         return torch.sqrt(loss)
 
 
@@ -385,18 +336,7 @@ class W11LossS2(SphericalLossBase):
     """
     
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
-        """
-        Initialize W11 loss.
         
-        Parameters
-        -----------
-        nlat : int
-            Number of latitude points
-        nlon : int
-            Number of longitude points
-        grid : str, optional
-            Grid type, by default "equiangular"
-        """
         super().__init__(nlat=nlat, nlon=nlon, grid=grid)
         # Set up grid and domain for FFT
         l_phi = 2 * torch.pi  # domain size
@@ -512,21 +452,7 @@ class NormalLossS2(SphericalLossBase):
         return normals
 
     def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
-        """
-        Compute combined L1 and normal consistency loss.
         
-        Parameters
-        -----------
-        prd : torch.Tensor
-            Prediction tensor
-        tar : torch.Tensor
-            Target tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Combined loss term
-        """
         # Handle dimensions for both prediction and target
         # Ensure we have at least a batch dimension
         if prd.dim() == 2:

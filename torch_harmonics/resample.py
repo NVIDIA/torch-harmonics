@@ -137,25 +137,11 @@ class ResampleS2(nn.Module):
         
 
     def extra_repr(self):
-        r"""
-        Pretty print module
-        """
+        
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}"
 
     def _upscale_longitudes(self, x: torch.Tensor):
-        """
-        Interpolate the input tensor along the longitude dimension.
         
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor with shape (..., nlat, nlon)
-            
-        Returns
-        -------
-        torch.Tensor
-            Interpolated tensor along longitude dimension
-        """
         # do the interpolation in precision of x
         lwgt = self.lon_weights.to(x.dtype)
         if self.mode == "bilinear":
@@ -192,19 +178,7 @@ class ResampleS2(nn.Module):
         return x
 
     def _upscale_latitudes(self, x: torch.Tensor):
-        """
-        Interpolate the input tensor along the latitude dimension.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor with shape (..., nlat, nlon)
-            
-        Returns
-        -------
-        torch.Tensor
-            Interpolated tensor along latitude dimension
-        """
+       
         # do the interpolation in precision of x
         lwgt = self.lat_weights.to(x.dtype)
         if self.mode == "bilinear":

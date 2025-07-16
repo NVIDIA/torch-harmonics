@@ -72,31 +72,7 @@ class RealSHT(nn.Module):
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
-        r"""
-        Initializes the SHT Layer, precomputing the necessary quadrature weights
-
-        Parameters
-        -----------
-        nlat: int
-            Number of latitude points
-        nlon: int
-            Number of longitude points
-        lmax: int
-            Maximum spherical harmonic degree
-        mmax: int
-            Maximum spherical harmonic order
-        grid: str
-            Grid type ("equiangular", "legendre-gauss", "lobatto", "equidistant"), by default "equiangular"
-        norm: str
-            Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
-        csphase: bool
-            Whether to apply the Condon-Shortley phase factor, by default True
-
-        Returns
-        -------
-        x: torch.Tensor
-            Tensor of shape (..., lmax, mmax)
-        """
+        
 
         super().__init__()
 
@@ -314,31 +290,7 @@ class RealVectorSHT(nn.Module):
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
-        r"""
-        Initializes the vector SHT Layer, precomputing the necessary quadrature weights
-
-        Parameters
-        -----------
-        nlat: int
-            Number of latitude points
-        nlon: int
-            Number of longitude points
-        lmax: int
-            Maximum spherical harmonic degree
-        mmax: int
-            Maximum spherical harmonic order
-        grid: str
-            Grid type ("equiangular", "legendre-gauss", "lobatto", "equidistant"), by default "equiangular"
-        norm: str
-            Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
-        csphase: bool
-            Whether to apply the Condon-Shortley phase factor, by default True
-
-        Returns
-        -------
-        x: torch.Tensor
-            Tensor of shape (..., lmax, mmax)
-        """
+        
 
         super().__init__()
 
