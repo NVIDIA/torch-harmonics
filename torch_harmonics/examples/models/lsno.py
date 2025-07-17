@@ -50,7 +50,7 @@ def _compute_cutoff_radius(nlat, kernel_shape, basis_type):
     return (kernel_shape[0] + 1) * theta_cutoff_factor[basis_type] * math.pi / float(nlat - 1)
 
 class DiscreteContinuousEncoder(nn.Module):
-    r"""
+    """
     Discrete-continuous encoder for spherical neural operators.
     
     This module performs downsampling using discrete-continuous convolutions on the sphere,
@@ -122,7 +122,7 @@ class DiscreteContinuousEncoder(nn.Module):
 
 
 class DiscreteContinuousDecoder(nn.Module):
-    r"""
+    """
     Discrete-continuous decoder for spherical neural operators.
     
     This module performs upsampling using either spherical harmonic transforms or resampling,
@@ -376,7 +376,7 @@ class SphericalNeuralOperatorBlock(nn.Module):
 
 
 class LocalSphericalNeuralOperator(nn.Module):
-    r"""
+    """
     LocalSphericalNeuralOperator module. A spherical neural operator which uses both local and global integral
     operators to accureately model both types of solution operators [1]. The architecture is based on the Spherical
     Fourier Neural Operator [2] and improves upon it with local integral operators in both the Neural Operator blocks,
