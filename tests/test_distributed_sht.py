@@ -215,27 +215,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         ]
     )
     def test_distributed_sht(self, nlat, nlon, batch_size, num_chan, grid, vector, tol):
-        """
-        Test the distributed spherical harmonic transform.
-
-        Parameters
-        ----------
-        nlat : int
-            Number of latitude points
-        nlon : int
-            Number of longitude points
-        batch_size : int
-            Batch size
-        num_chan : int
-            Number of channels
-        grid : str
-            Grid type
-        vector : bool
-            Whether to use vector spherical harmonic transform
-        tol : float
-            Tolerance for numerical equivalence
-        """
-
+    
         B, C, H, W = batch_size, num_chan, nlat, nlon
 
         # set up handles
@@ -252,9 +232,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         else:
             inp_full = torch.randn((B, C, H, W), dtype=torch.float32, device=self.device)
 
-        #############################################################
         # local transform
-        #############################################################
         # FWD pass
         inp_full.requires_grad = True
         out_full = forward_transform_local(inp_full)
@@ -268,9 +246,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         out_full.backward(ograd_full)
         igrad_full = inp_full.grad.clone()
 
-        #############################################################
         # distributed transform
-        #############################################################
         # FWD pass
         inp_local = self._split_helper(inp_full)
         inp_local.requires_grad = True
@@ -282,9 +258,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
 
-        #############################################################
         # evaluate FWD pass
-        #############################################################
         with torch.no_grad():
             out_gather_full = self._gather_helper_fwd(out_local, B, C, forward_transform_dist, vector)
             err = torch.mean(torch.norm(out_full - out_gather_full, p="fro", dim=(-1, -2)) / torch.norm(out_full, p="fro", dim=(-1, -2)))
@@ -292,9 +266,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
                 print(f"final relative error of output: {err.item()}")
         self.assertTrue(err.item() <= tol)
 
-        #############################################################
         # evaluate BWD pass
-        #############################################################
         with torch.no_grad():
             igrad_gather_full = self._gather_helper_bwd(igrad_local, B, C, forward_transform_dist, vector)
             err = torch.mean(torch.norm(igrad_full - igrad_gather_full, p="fro", dim=(-1, -2)) / torch.norm(igrad_full, p="fro", dim=(-1, -2)))
@@ -323,26 +295,6 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         ]
     )
     def test_distributed_isht(self, nlat, nlon, batch_size, num_chan, grid, vector, tol):
-        """
-        Test the distributed inverse spherical harmonic transform.
-
-        Parameters
-        ----------
-        nlat : int
-            Number of latitude points
-        nlon : int
-            Number of longitude points
-        batch_size : int
-            Batch size
-        num_chan : int
-            Number of channels
-        grid : str
-            Grid type
-        vector : bool
-            Whether to use vector spherical harmonic transform
-        tol : float
-            Tolerance for numerical equivalence
-        """
         
         B, C, H, W = batch_size, num_chan, nlat, nlon
 
@@ -383,9 +335,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         out_full.backward(ograd_full)
         igrad_full = inp_full.grad.clone()
 
-        #############################################################
         # distributed transform
-        #############################################################
         # FWD pass
         inp_local = self._split_helper(inp_full)
         inp_local.requires_grad = True
@@ -397,9 +347,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
 
-        #############################################################
         # evaluate FWD pass
-        #############################################################
         with torch.no_grad():
             out_gather_full = self._gather_helper_bwd(out_local, B, C, backward_transform_dist, vector)
             err = torch.mean(torch.norm(out_full - out_gather_full, p="fro", dim=(-1, -2)) / torch.norm(out_full, p="fro", dim=(-1, -2)))
@@ -407,9 +355,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
                 print(f"final relative error of output: {err.item()}")
         self.assertTrue(err.item() <= tol)
 
-        #############################################################
         # evaluate BWD pass
-        #############################################################
         with torch.no_grad():
             igrad_gather_full = self._gather_helper_fwd(igrad_local, B, C, backward_transform_dist, vector)
             err = torch.mean(torch.norm(igrad_full - igrad_gather_full, p="fro", dim=(-1, -2)) / torch.norm(igrad_full, p="fro", dim=(-1, -2)))
