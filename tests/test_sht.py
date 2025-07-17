@@ -65,14 +65,6 @@ class TestLegendrePolynomials(unittest.TestCase):
         self.tol = 1e-9
 
     def test_legendre(self, verbose=False):
-        """
-        Test the computation of associated Legendre polynomials.
-
-        Parameters
-        ----------
-        verbose : bool, optional
-            Whether to print verbose output, by default False
-        """
         if verbose:
             print("Testing computation of associated Legendre polynomials")
 
