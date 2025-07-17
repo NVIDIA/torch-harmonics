@@ -47,14 +47,6 @@ except ImportError as err:
 
 
 def check_plotting_dependencies():
-    """
-    Check if required plotting dependencies (matplotlib and cartopy) are available.
-    
-    Raises
-    ------
-    ImportError
-        If matplotlib or cartopy is not installed
-    """
     if plt is None:
         raise ImportError("matplotlib is required for plotting functions. Install it with 'pip install matplotlib'")
     if cartopy is None:
