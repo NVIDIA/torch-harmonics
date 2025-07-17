@@ -41,40 +41,7 @@ import torch_harmonics.distributed as thd
 
 
 class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
-    """
-    Test the distributed discrete-continuous convolution module.
-    
-    Parameters
-    ----------
-    nlat_in : int
-        Number of latitude points in input
-    nlon_in : int
-        Number of longitude points in input
-    nlat_out : int
-        Number of latitude points in output
-    nlon_out : int
-        Number of longitude points in output
-    batch_size : int
-        Batch size
-    num_chan : int
-        Number of channels
-    kernel_shape : tuple
-        Kernel shape
-    basis_type : str
-        Basis type
-    basis_norm_mode : str
-        Basis normalization mode
-    groups : int
-        Number of groups
-    grid_in : str
-        Grid type for input
-    grid_out : str
-        Grid type for output
-    transpose : bool
-        Whether to transpose the convolution
-    tol : float
-        Tolerance for numerical equivalence
-    """
+    """Test the distributed discrete-continuous convolution module."""
 
     @classmethod
     def setUpClass(cls):

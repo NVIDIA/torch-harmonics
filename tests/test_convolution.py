@@ -161,38 +161,7 @@ def _precompute_convolution_tensor_dense(
 
 @parameterized_class(("device"), _devices)
 class TestDiscreteContinuousConvolution(unittest.TestCase):
-    """
-    Test the discrete-continuous convolution module.
-
-    Parameters
-    ----------
-    batch_size : int
-        Batch size
-    in_channels : int
-        Number of input channels
-    out_channels : int
-        Number of output channels
-    in_shape : tuple
-        Input shape (height, width)
-    out_shape : tuple
-        Output shape (height, width)
-    kernel_shape : tuple
-        Kernel shape
-    basis_type : str
-        Basis type
-    basis_norm_mode : str
-        Basis normalization mode
-    grid_in : str
-        Grid type for input
-    grid_out : str
-        Grid type for output
-    transpose : bool
-        Whether to transpose the convolution
-    tol : float
-        Tolerance for numerical equivalence
-    verbose : bool, optional
-        Whether to print verbose output, by default False
-    """
+    """Test the discrete-continuous convolution module (CPU/CUDA if available)."""
     
     def setUp(self):
         torch.manual_seed(333)
