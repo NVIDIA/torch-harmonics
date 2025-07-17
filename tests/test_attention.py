@@ -67,31 +67,7 @@ _perf_test_thresholds = {"fwd_ms": 50, "bwd_ms": 150}
 
 @parameterized_class(("device"), _devices)
 class TestNeighborhoodAttentionS2(unittest.TestCase):
-    """
-    Test the neighborhood attention module.
-    Parameters
-    ----------
-    batch_size : int
-        Batch size
-    channels : int
-        Number of channels
-    heads : int
-        Number of heads
-    in_shape : tuple
-        Input shape (height, width)
-    out_shape : tuple
-        Output shape (height, width)
-    grid_in : str
-        Grid type for input
-    grid_out : str
-        Grid type for output
-    atol : float
-        Absolute tolerance for numerical equivalence
-    rtol : float
-        Relative tolerance for numerical equivalence
-    verbose : bool, optional
-        Whether to print verbose output, by default True
-    """
+    """Test the neighborhood attention module (CPU/CUDA if available)."""
     
     def setUp(self):
         torch.manual_seed(333)

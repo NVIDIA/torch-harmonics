@@ -42,14 +42,7 @@ if torch.cuda.is_available():
 
 
 class TestLegendrePolynomials(unittest.TestCase):
-    """
-    Test the associated Legendre polynomials.
-
-    Parameters
-    ----------
-    verbose : bool, optional
-        Whether to print verbose output, by default False
-    """
+    """Test the associated Legendre polynomials (CPU/CUDA if available)."""
     def setUp(self):
         self.cml = lambda m, l: math.sqrt((2 * l + 1) / 4 / math.pi) * math.sqrt(math.factorial(l - m) / math.factorial(l + m))
         self.pml = dict()
@@ -94,14 +87,7 @@ class TestLegendrePolynomials(unittest.TestCase):
 
 @parameterized_class(("device"), _devices)
 class TestSphericalHarmonicTransform(unittest.TestCase):
-    """
-    Test the spherical harmonic transform.
-
-    Parameters
-    ----------
-    verbose : bool, optional
-        Whether to print verbose output, by default False
-    """
+    """Test the spherical harmonic transform (CPU/CUDA if available)."""
     def setUp(self):
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
