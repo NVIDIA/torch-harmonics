@@ -45,15 +45,6 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        """
-        Set up the distributed convolution test.
-        
-        Parameters
-        ----------
-        cls : TestDistributedDiscreteContinuousConvolution
-            The test class instance
-        """
-
         # set up distributed
         cls.world_rank = int(os.getenv("WORLD_RANK", 0))
         cls.grid_size_h = int(os.getenv("GRID_H", 1))
@@ -216,41 +207,6 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
     def test_distributed_disco_conv(
         self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, kernel_shape, basis_type, basis_norm_mode, groups, grid_in, grid_out, transpose, tol
     ):
-
-        """
-        Test the distributed discrete-continuous convolution module.
-        
-        Parameters
-        ----------
-        nlat_in : int
-            Number of latitude points in input
-        nlon_in : int
-            Number of longitude points in input
-        nlat_out : int
-            Number of latitude points in output
-        nlon_out : int
-            Number of longitude points in output
-        batch_size : int
-            Batch size
-        num_chan : int
-            Number of channels
-        kernel_shape : tuple
-            Kernel shape
-        basis_type : str
-            Basis type
-        basis_norm_mode : str
-            Basis normalization mode
-        groups : int
-            Number of groups
-        grid_in : str
-            Grid type for input
-        grid_out : str
-            Grid type for output
-        transpose : bool
-            Whether to transpose the convolution
-        tol : float
-            Tolerance for numerical equivalence
-        """
         
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
 
@@ -285,9 +241,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         # create tensors
         inp_full = torch.randn((B, C, H, W), dtype=torch.float32, device=self.device)
 
-        #############################################################
         # local conv
-        #############################################################
         # FWD pass
         inp_full.requires_grad = True
         out_full = conv_local(inp_full)
@@ -301,9 +255,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         out_full.backward(ograd_full)
         igrad_full = inp_full.grad.clone()
 
-        #############################################################
         # distributed conv
-        #############################################################
         # FWD pass
         inp_local = self._split_helper(inp_full)
         inp_local.requires_grad = True
@@ -315,9 +267,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
 
-        #############################################################
         # evaluate FWD pass
-        #############################################################
         with torch.no_grad():
             out_gather_full = self._gather_helper_fwd(out_local, B, C, conv_dist)
             err = torch.mean(torch.norm(out_full - out_gather_full, p="fro", dim=(-1, -2)) / torch.norm(out_full, p="fro", dim=(-1, -2)))
@@ -325,9 +275,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
                 print(f"final relative error of output: {err.item()}")
         self.assertTrue(err.item() <= tol)
 
-        #############################################################
         # evaluate BWD pass
-        #############################################################
         with torch.no_grad():
             igrad_gather_full = self._gather_helper_bwd(igrad_local, B, C, conv_dist)
 
