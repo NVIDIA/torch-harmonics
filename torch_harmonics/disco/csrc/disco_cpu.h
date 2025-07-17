@@ -45,7 +45,7 @@ namespace disco_kernels {
         const torch::PackedTensorAccessor32<scalar_t, 1> vals,
         torch::PackedTensorAccessor32<scalar_t, 5> out) {
 
-        int64_t pscale = static_cast<int64_t>(Wi / Wo);
+        const int64_t pscale = static_cast<int64_t>(Wi / Wo);
 
         // loop over matrix entries
         #pragma omp parallel for collapse(3)
@@ -90,7 +90,7 @@ namespace disco_kernels {
         const torch::PackedTensorAccessor32<scalar_t, 1> vals,
         torch::PackedTensorAccessor32<scalar_t, 4> out) {
 
-        int64_t pscale = static_cast<int64_t>(Wo / Wi);
+        const int64_t pscale = static_cast<int64_t>(Wo / Wi);
 
         // loop over matrix entries
         #pragma omp parallel for collapse(2)

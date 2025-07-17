@@ -98,5 +98,5 @@ namespace disco_kernels {
         m.impl("forward",  &disco_cpu_fwd);
         m.impl("backward",  &disco_cpu_bwd);
     }
-  
+
 }
