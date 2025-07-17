@@ -40,7 +40,7 @@ import torch.nn as nn
 # from torch.autograd import gradcheck
 from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
 
-from torch_harmonics._neighborhood_attention import (
+from torch_harmonics.attention._neighborhood_attention import (
     _neighborhood_attention_s2_torch,
     _neighborhood_attention_s2_fwd_torch,
     _neighborhood_attention_s2_bwd_dv_torch,
