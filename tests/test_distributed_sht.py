@@ -41,26 +41,7 @@ import torch_harmonics.distributed as thd
 
 
 class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
-    """
-    Test the distributed spherical harmonic transform module.
-
-    Parameters
-    ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
-    batch_size : int
-        Batch size
-    num_chan : int
-        Number of channels
-    grid : str
-        Grid type
-    vector : bool
-        Whether to use vector spherical harmonic transform
-    tol : float
-        Tolerance for numerical equivalence
-    """
+    """Test the distributed spherical harmonic transform module (CPU/CUDA if available)."""
 
     @classmethod
     def setUpClass(cls):

@@ -41,34 +41,7 @@ import torch_harmonics.distributed as thd
 
 
 class TestDistributedResampling(unittest.TestCase):
-    """
-    Test the distributed resampling module.
-    
-    Parameters
-    ----------
-    nlat_in : int
-        Number of latitude points in input
-    nlon_in : int
-        Number of longitude points in input 
-    nlat_out : int
-        Number of latitude points in output
-    nlon_out : int
-        Number of longitude points in output
-    batch_size : int
-        Batch size
-    num_chan : int
-        Number of channels
-    grid_in : str
-        Grid type for input
-    grid_out : str
-        Grid type for output
-    mode : str
-        Resampling mode
-    tol : float
-        Tolerance for numerical equivalence
-    verbose : bool
-        Whether to print verbose output
-    """
+    """Test the distributed resampling module (CPU/CUDA if available)."""
 
     @classmethod
     def setUpClass(cls):
