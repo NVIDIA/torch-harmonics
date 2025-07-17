@@ -49,7 +49,8 @@ namespace disco_kernels {
 
         AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cpu", ([&] {
             disco_fwd_cpu<scalar_t>(
-                inp.size(0), inp.size(1), K, inp.size(2), inp.size(3), Ho, Wo, vals.size(0), 
+                inp.size(0), inp.size(1), K, inp.size(2), inp.size(3), 
+                Ho, Wo, vals.size(0), roff_idx.size(0) - 1,
                 inp.packed_accessor32<scalar_t, 4>(), 
                 roff_idx.packed_accessor64<int64_t, 1>(), 
                 ker_idx.packed_accessor64<int64_t, 1>(), 

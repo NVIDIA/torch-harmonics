@@ -223,6 +223,10 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         if verbose:
             print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
+
+        use_optimized_kernels = optimized_kernels_is_available()
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            use_optimized_kernels = False
         
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
@@ -246,6 +250,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             grid_out=grid_out,
             bias=False,
             theta_cutoff=theta_cutoff,
+            optimized_kernel=use_optimized_kernels,
         ).to(self.device)
 
         filter_basis = conv.filter_basis
@@ -386,7 +391,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             theta_cutoff=theta_cutoff,
             optimized_kernel=False,
         ).to(self.device)
-
+    
         conv_opt = Conv(
             in_channels,
             out_channels,
@@ -434,7 +439,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         [
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
             [8, 4, 2, (16, 32), (8,  16), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
-        ]
+        ], 
+        skip_on_empty=True,
     )
     @unittest.skipUnless((optimized_kernels_is_available()), "skipping test because optimized kernels are not available")
     def test_optimized_pt2_compatibility(
@@ -506,7 +512,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # fake tensor
         #opcheck(torch.ops.disco_kernels.forward, test_inputs_fwd, test_utils="test_faketensor")
         # test AOT stuff
+        # this is expected to fail if the output shapes are dependent on input shapes (which is the case for DISCO)
         #opcheck(torch.ops.disco_kernels.forward, test_inputs_fwd, test_utils="test_aot_dispatch_static")
+        # this one should pass
         #opcheck(torch.ops.disco_kernels.forward, test_inputs_fwd, test_utils="test_aot_dispatch_dynamic")
 
 if __name__ == "__main__":

@@ -34,16 +34,9 @@
 
 namespace disco_kernels {
 
-    // forward kernel
-    torch::Tensor disco_meta_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-        torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo);
-
-    // backward kernel
-    torch::Tensor disco_meta_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-        torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo);
-
     template <typename scalar_t>
-    static void disco_fwd_cpu(int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi, int64_t Ho, int64_t Wo, int64_t nnz,
+    static void disco_fwd_cpu(int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi, 
+        int64_t Ho, int64_t Wo, int64_t nnz, int64_t nnr,
         const torch::PackedTensorAccessor32<scalar_t, 4> inp,
         const torch::PackedTensorAccessor64<int64_t, 1> roff_idx,
         const torch::PackedTensorAccessor64<int64_t, 1> ker_idx,
@@ -55,24 +48,32 @@ namespace disco_kernels {
         int64_t pscale = static_cast<int64_t>(Wi / Wo);
 
         // loop over matrix entries
+        #pragma omp parallel for collapse(3)
         for (int64_t b = 0; b < B; b++) {
             for (int64_t c = 0; c < C; c++) {
+                for (int64_t row = 0; row < nnr; row++) {
 
-                for (int64_t z = 0; z < nnz; z++) {
+                    // since the rows are ordered accordingly, we can compute ho and ker in here
+                    int64_t ho = row_idx[roff_idx[row]];
+                    int64_t ker = ker_idx[roff_idx[row]];
+                        
+                    //scalar_t tmp = scalar_t(0);
+                    for (int64_t z = roff_idx[row]; z < roff_idx[row + 1]; z++) {
+                    
+                        // COO format, we can optimize later
+                        int64_t col = col_idx[z];
+                        scalar_t val = vals[z];
 
-                    // COO format, we can optimize later
-                    int64_t ho = row_idx[z];
-                    int64_t ker = ker_idx[z];
-                    int64_t col = col_idx[z];
-                    scalar_t val = vals[z];
+                        int64_t wi = static_cast<int64_t>(col % Wi);
+                        int64_t hi = static_cast<int64_t>(col / Wi);
 
-                    int64_t wi = static_cast<int64_t>(col % Wi);
-                    int64_t hi = static_cast<int64_t>(col / Wi);
-
-                    for (int64_t wo = 0; wo < Wo; wo++) {
-                        // compute shifted w
-                        int64_t wipp = static_cast<int64_t>((wi + pscale * wo) % Wi);
-                        out[b][c][ker][ho][wo] += val * inp[b][c][hi][wipp];
+                        // sum wo
+                        #pragma omp vector shared(inp, out)
+                        for (int64_t wo = 0; wo < Wo; wo++) {
+                            // compute shifted w
+                            int64_t wipp = static_cast<int64_t>((wi + pscale * wo) % Wi);
+                            out[b][c][ker][ho][wo] += val * inp[b][c][hi][wipp];
+                        }
                     }
                 }
             }
@@ -92,6 +93,7 @@ namespace disco_kernels {
         int64_t pscale = static_cast<int64_t>(Wo / Wi);
 
         // loop over matrix entries
+        #pragma omp parallel for collapse(2)
         for (int64_t b = 0; b < B; b++) {
             for (int64_t c = 0; c < C; c++) {
 
