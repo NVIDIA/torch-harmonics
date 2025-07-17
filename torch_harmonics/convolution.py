@@ -66,24 +66,39 @@ def _normalize_convolution_tensor_s2(
     values based on the basis_norm_mode parameter. It can normalize individual basis
     functions, compute mean normalization across all basis functions, or use support
     weights. The function also optionally merges quadrature weights into the tensor.
-    
-    Args:
-        psi_idx: Index tensor for the sparse convolution tensor.
-        psi_vals: Value tensor for the sparse convolution tensor.
-        in_shape: Tuple of (nlat_in, nlon_in) representing input grid dimensions.
-        out_shape: Tuple of (nlat_out, nlon_out) representing output grid dimensions.
-        kernel_size: Number of kernel basis functions.
-        quad_weights: Quadrature weights for numerical integration.
-        transpose_normalization: If True, applies normalization in transpose direction.
-        basis_norm_mode: Normalization mode, one of ["none", "individual", "mean", "support"].
-        merge_quadrature: If True, multiplies values by quadrature weights.
-        eps: Small epsilon value to prevent division by zero.
-    
-    Returns:
-        torch.Tensor: Normalized convolution tensor values.
-    
-    Raises:
-        ValueError: If basis_norm_mode is not one of the supported modes.
+
+    Parameters
+    -----------
+    psi_idx: torch.Tensor
+        Index tensor for the sparse convolution tensor.
+    psi_vals: torch.Tensor
+        Value tensor for the sparse convolution tensor.
+    in_shape: Tuple[int]
+        Tuple of (nlat_in, nlon_in) representing input grid dimensions.
+    out_shape: Tuple[int]
+        Tuple of (nlat_out, nlon_out) representing output grid dimensions.
+    kernel_size: int
+        Number of kernel basis functions.
+    quad_weights: torch.Tensor
+        Quadrature weights for numerical integration.
+    transpose_normalization: bool
+        If True, applies normalization in transpose direction.
+    basis_norm_mode: str
+        Normalization mode, one of ["none", "individual", "mean", "support"].
+    merge_quadrature: bool
+        If True, multiplies values by quadrature weights.
+    eps: float
+        Small epsilon value to prevent division by zero.
+
+    Returns
+    -------
+    torch.Tensor
+        Normalized convolution tensor values.
+
+    Raises
+    ------
+    ValueError
+        If basis_norm_mode is not one of the supported modes.
     """
 
     # exit here if no normalization is needed
