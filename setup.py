@@ -61,6 +61,7 @@ def get_compile_args(module_name):
     nvcc_extra_flags = []
     if profile_mode:
         nvcc_extra_flags.append("-lineinfo")
+        nvcc_extra_flags.append("-Xptxas=-v")
         
     if debug_mode:
         print(f"WARNING: Compiling {module_name} with debugging flags")
@@ -102,6 +103,7 @@ def get_ext_modules():
             CUDAExtension(
                 name="attention_cuda_extension",
                 sources=[
+                    "torch_harmonics/csrc/attention/attention_utils.cu",
                     "torch_harmonics/csrc/attention/attention_fwd_cuda.cu",
                     "torch_harmonics/csrc/attention/attention_bwd_cuda.cu",
                     "torch_harmonics/csrc/attention/attention_interface.cu",
