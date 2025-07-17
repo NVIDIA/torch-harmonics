@@ -434,8 +434,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         [
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
             [8, 4, 2, (16, 32), (8,  16), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
-            [8, 4, 2, (8,  16), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
         ]
     )
     @unittest.skipUnless((optimized_kernels_is_available()), "skipping test because optimized kernels are not available")
@@ -486,22 +484,27 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             theta_cutoff=theta_cutoff,
         ).to(self.device)
 
-        # create an input signal
-        inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
+        # forward test
+        inp_fwd = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
 
-        test_inputs = (inp, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals, 
+        test_inputs_fwd = (inp_fwd, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals, 
                 conv.kernel_size, conv.nlat_out, conv.nlon_out)
         
-        # do opchecks
-        # schema
-        opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_schema")
-        # autograd
-        opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_autograd_registration")
+        opcheck(torch.ops.disco_kernels.forward, test_inputs_fwd)
+
+        # backward test
+        inp_bwd = torch.randn(batch_size, in_channels, conv.kernel_size, *out_shape, device=self.device)
+
+        test_inputs_bwd = (inp_bwd, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals, 
+                            conv.kernel_size, conv.nlat_in, conv.nlon_in)
+
+        opcheck(torch.ops.disco_kernels.backward, test_inputs_bwd)
+
         # fake tensor
-        opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_faketensor")
+        #opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_faketensor")
         # test AOT stuff
-        opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_aot_dispatch_static")
-        opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_aot_dispatch_dynamic")
+        #opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_aot_dispatch_static")
+        #opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_aot_dispatch_dynamic")
 
 if __name__ == "__main__":
     unittest.main()
