@@ -1,6 +1,6 @@
 // coding=utf-8
 //
-// SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2024 The torch-harmonics Authors. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
 //
 // Redistribution and use in source and binary forms, with or without
@@ -28,11 +28,34 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//#include "attention.cuh"
-//#include <torch/extension.h>
+#include "attention.h"
+#include <torch/extension.h>
 
-//PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
-//{
-//    m.def("forward", &s2_attention_fwd_cuda, "(Local) Attention on S2");
-//    m.def("backward_dkvq", &s2_attention_bwd_dkvq_cuda, "(Local) Attention gradient on S2 (gradient for k,v,&q)");
-//}
+// set default values for BUILD_CPP and BUILD_CUDA
+#ifndef BUILD_CPP
+#define BUILD_CPP 0
+#endif
+
+#ifndef BUILD_CUDA
+#define BUILD_CUDA 0
+#endif
+
+bool cpp_kernels_is_available() {
+    //return static_cast<bool>(BUILD_CPP);
+    // not implemented yet
+    return false;
+}
+
+bool cuda_kernels_is_available() {
+    return static_cast<bool>(BUILD_CUDA);
+}
+
+bool optimized_kernels_is_available() {
+    return cuda_kernels_is_available() || cpp_kernels_is_available();
+}
+
+PYBIND11_MODULE(attention_helpers, m)
+{
+    m.def("cuda_kernels_is_available", &cuda_kernels_is_available, "Check if CUDA kernels are available.");
+    m.def("optimized_kernels_is_available", &optimized_kernels_is_available, "Check if optimized kernels (CUDA or C++) are available.");
+}

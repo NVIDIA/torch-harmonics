@@ -1,6 +1,6 @@
 // coding=utf-8
 //
-// SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2024 The torch-harmonics Authors. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
 //
 // Redistribution and use in source and binary forms, with or without
@@ -28,11 +28,17 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//#include "attention.cuh"
-//#include <torch/extension.h>
+#pragma once
 
-//PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
-//{
-//    m.def("forward", &s2_attention_fwd_cuda, "(Local) Attention on S2");
-//    m.def("backward_dkvq", &s2_attention_bwd_dkvq_cuda, "(Local) Attention gradient on S2 (gradient for k,v,&q)");
-//}
+#include <stdio.h>
+#include <stdlib.h>
+#include <torch/all.h>
+#include <torch/library.h>
+#include <cassert>
+
+#define CHECK_CPU_TENSOR(x) TORCH_INTERNAL_ASSERT(x.device().type() == torch::kCPU)
+#define CHECK_CONTIGUOUS_TENSOR(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
+#define CHECK_INPUT_TENSOR(x) CHECK_CONTIGUOUS_TENSOR(x)
+#define CHECK_CPU_INPUT_TENSOR(x)                                                                                     \
+    CHECK_CPU_TENSOR(x);                                                                                              \
+    CHECK_CONTIGUOUS_TENSOR(x)

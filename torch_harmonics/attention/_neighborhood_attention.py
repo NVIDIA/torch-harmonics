@@ -35,13 +35,8 @@ from typing import Union
 import torch
 import torch.nn.functional as F
 from torch.amp import custom_fwd, custom_bwd
-
-try:
-    import attention_cuda_extension
-    _cuda_extension_available = True
-except ImportError as err:
-    attention_cuda_extension = None
-    _cuda_extension_available = False
+from attention_helpers import optimized_kernels_is_available
+from . import attention_kernels
 
 # s2 neighborhood attention forward pass
 # uses qdotk_max update trick to avoid two loops when computing the softmax
@@ -483,7 +478,7 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
         vw = vw.to(torch.float32).contiguous()
         qw = qw.to(torch.float32).contiguous()
 
-        output = attention_cuda_extension.forward(kw, vw, qw, quad_weights,
+        output = attention_kernels.forward.default(kw, vw, qw, quad_weights,
                                                   col_idx, row_off,
                                                   nlon_in, nlat_out, nlon_out)
 
@@ -529,10 +524,10 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
         qw = qw.to(torch.float32).contiguous()
         grad_output = grad_output.to(torch.float32).contiguous()
 
-        dkw,dvw,dqw = attention_cuda_extension.backward_dkvq(kw, vw, qw, grad_output,
-                                                             quad_weights,
-                                                             col_idx, row_off,
-                                                             nlon_in, nlat_out, nlon_out)
+        dkw,dvw,dqw = attention_kernels.backward.default(kw, vw, qw, grad_output,
+                                                         quad_weights,
+                                                         col_idx, row_off,
+                                                         nlon_in, nlat_out, nlon_out)
 
         # reshape again
         _, C, H, W = dkw.shape

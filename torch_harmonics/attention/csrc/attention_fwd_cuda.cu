@@ -48,6 +48,8 @@
 
 // BEGIN - forward kernels and functions
 
+namespace attention_kernels {
+
 // called with (blockDim.x=32 and blockDim.y>1, BDIM_X=blockDim.x*blockDim.y)
 template<int BDIM_X,
          typename FLOATV_T> // either float or float4
@@ -363,11 +365,11 @@ void launch_spc_attn_fwd(int batch_size,
     return;
 }
 
-static void s2_attn_fwd_dispatch(int batch_size,
-                                 int nchans,
-                                 int nlon_in,
-                                 int nlat_out,
-                                 int nlon_out,
+static void s2_attn_fwd_dispatch(int64_t batch_size,
+                                 int64_t nchans,
+                                 int64_t nlon_in,
+                                 int64_t nlat_out,
+                                 int64_t nlon_out,
                                  at::Tensor kxP,
                                  at::Tensor vxP,
                                  at::Tensor qyP,
@@ -469,9 +471,9 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
                                     at::Tensor quad_weights,
                                     at::Tensor psi_col_idx,
                                     at::Tensor psi_row_off,
-                                    int nlon_in,
-                                    int nlat_out,
-                                    int nlon_out) {
+                                    int64_t nlon_in,
+                                    int64_t nlat_out,
+                                    int64_t nlon_out) {
     CHECK_CUDA_INPUT_TENSOR(kx);
     CHECK_CUDA_INPUT_TENSOR(vx);
     CHECK_CUDA_INPUT_TENSOR(qy);
@@ -522,4 +524,11 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 
     return y;
+}
+
+TORCH_LIBRARY_IMPL(attention_kernels, CUDA, m)
+{
+    m.impl("forward",  &s2_attention_fwd_cuda);
+}
+
 }

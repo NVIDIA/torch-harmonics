@@ -1,6 +1,6 @@
 // coding=utf-8
 //
-// SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2024 The torch-harmonics Authors. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
 //
 // Redistribution and use in source and binary forms, with or without
@@ -28,11 +28,34 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//#include "attention.cuh"
-//#include <torch/extension.h>
+#include <Python.h>
+#include "attention.h"
 
-//PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
-//{
-//    m.def("forward", &s2_attention_fwd_cuda, "(Local) Attention on S2");
-//    m.def("backward_dkvq", &s2_attention_bwd_dkvq_cuda, "(Local) Attention gradient on S2 (gradient for k,v,&q)");
-//}
+extern "C" {
+    /* Creates a dummy empty _C module that can be imported from Python.
+       The import from Python will load the .so consisting of this file
+       in this extension, so that the TORCH_LIBRARY static initializers
+       below are run. */
+    PyMODINIT_FUNC PyInit__C(void)
+    {
+        static struct PyModuleDef module_def = {
+            PyModuleDef_HEAD_INIT,
+            "_C",   /* name of module */
+            NULL,   /* module documentation, may be NULL */
+            -1,     /* size of per-interpreter state of the module,
+                       or -1 if the module keeps state in global variables. */
+            NULL,   /* methods */
+        };
+        return PyModule_Create(&module_def);
+    }
+}
+
+namespace attention_kernels {
+
+    // Declare the operators
+    TORCH_LIBRARY(attention_kernels, m) {
+        m.def("forward(Tensor kx, Tensor vx, Tensor qy, Tensor quad_weights, Tensor col_idx, Tensor row_off, int nlon_in, int nlat_out, int nlon_out) -> Tensor");
+        m.def("backward(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor quad_weights, Tensor col_idx, Tensor row_off, int nlon_in, int nlat_out, int nlon_out) -> Tuple[Tensor, Tensor, Tensor]");
+    }
+
+}

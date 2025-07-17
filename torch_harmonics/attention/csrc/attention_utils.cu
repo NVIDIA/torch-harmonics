@@ -47,6 +47,8 @@
 #define TRANSP_WARPS_X_TILE_GENERIC (32)
 #define TRANSP_WARPS_X_TILE_SM100    (4)
 
+namespace attention_kernels {
+
 // BEGIN - CSR rows sorting kernels and functions
 __global__ void set_rlen_rids_k(const int n,
                                 const int64_t *__restrict__ offs,
@@ -178,3 +180,5 @@ unsigned int next_pow2(unsigned int x) {
     return x+1;
 }
 // END - general host-side functions
+
+}
