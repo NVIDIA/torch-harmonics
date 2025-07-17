@@ -142,9 +142,6 @@ class AttentionS2(nn.Module):
 
 
     def extra_repr(self):
-        r"""
-            Pretty print module
-         """
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}"
 
     def forward(self, query: torch.Tensor, key: Optional[torch.Tensor] = None, value: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -317,9 +314,6 @@ class NeighborhoodAttentionS2(nn.Module):
             self.proj_bias = None
 
     def extra_repr(self):
-        r"""
-        Pretty print module
-        """
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}"
 
     def forward(self, query: torch.Tensor, key: Optional[torch.Tensor] = None, value: Optional[torch.Tensor] = None) -> torch.Tensor:
