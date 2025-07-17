@@ -77,29 +77,58 @@ def get_compile_args(module_name):
             'nvcc': ['-O3', "-DNDEBUG"] + nvcc_extra_flags
         }
 
+def get_helpers_compile_args():
+    return {
+        'cxx': [
+            f'-DBUILD_CPP={1 if BUILD_CPP else 0}', 
+            f'-DBUILD_CUDA={1 if BUILD_CUDA else 0}'
+        ], 
+    }
+
 def get_ext_modules():
     """Get list of extension modules to compile."""
     
     ext_modules = []
     cmdclass = {}
 
-    if BUILD_CPP:
-        print(f"Compiling helper routines for torch-harmonics.")
-        ext_modules.append(
-            CppExtension(
-                 "disco_helpers", 
-                [
-                    "torch_harmonics/disco/csrc/disco_helpers.cpp",
-                ]
-            )
+    print(f"Compiling helper routines for torch-harmonics.")
+    ext_modules.append(
+        CppExtension(
+            "disco_helpers", 
+            [
+                "torch_harmonics/disco/csrc/disco_helpers.cpp",
+            ],
+            extra_compile_args=get_helpers_compile_args(),
         )
-        ext_modules.append(
-            CppExtension(
-                "torch_harmonics.disco._C", 
-                [   
-                    "torch_harmonics/disco/csrc/disco_interface.cpp",
-                    "torch_harmonics/disco/csrc/disco_cpu.cpp"
-                ]
+    )
+
+    if BUILD_CPP:
+        # Create a single extension that includes both CPU and CUDA code
+        sources = [
+            "torch_harmonics/disco/csrc/disco_interface.cpp",
+            "torch_harmonics/disco/csrc/disco_cpu.cpp"
+        ]
+        
+        if BUILD_CUDA:
+            print(f"Compiling custom CUDA kernels for torch-harmonics.")
+            sources.extend([
+                "torch_harmonics/disco/csrc/disco_cuda_fwd.cu",
+                "torch_harmonics/disco/csrc/disco_cuda_bwd.cu",
+            ])
+            ext_modules.append(
+                CUDAExtension(
+                    "torch_harmonics.disco._C",
+                    sources,
+                    extra_compile_args=get_compile_args("disco")
+                )
+            )
+        else:
+            ext_modules.append(
+                CppExtension(
+                    "torch_harmonics.disco._C", 
+                    sources,
+                    extra_compile_args=get_compile_args("disco")
+                )
             )
         )
         cmdclass["build_ext"] = BuildExtension

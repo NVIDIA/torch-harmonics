@@ -40,14 +40,11 @@ from torch.autograd import gradcheck
 from torch_harmonics import quadrature, DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
+from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
 
-try:
-    from torch.ops import disco_kernels
-    _cuda_extension_available = True
-except ImportError as err:
-    print(f"Warning: Couldn't Import cuda convolution: {err}")
-    disco_kernels = None
-    _cuda_extension_available = False
+if not optimized_kernels_is_available():
+    print(f"Warning: Couldn't import optimized disco convolution kernels")
+
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -207,7 +204,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
-    def test_forward_backward(
+    def test_sparse_against_dense(
         self,
         batch_size,
         in_channels,
@@ -341,7 +338,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
-    def test_optimized_disco_convolution_against_torch(
+    @unittest.skipUnless((optimized_kernels_is_available()), "skipping test because optimized kernels are not available")
+    def test_optimized_against_torch(
         self,
         batch_size,
         in_channels,
@@ -357,6 +355,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         tol,
         verbose,
     ):
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
 
         if verbose:
             print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
@@ -438,7 +438,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (8,  16), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
         ]
     )
-    def test_optimized_disco_pt2_compatibility(
+    @unittest.skipUnless((optimized_kernels_is_available()), "skipping test because optimized kernels are not available")
+    def test_optimized_pt2_compatibility(
         self,
         batch_size,
         in_channels,
@@ -454,6 +455,10 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         tol,
         verbose,
     ):  
+
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+        
         if verbose:
             print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
         

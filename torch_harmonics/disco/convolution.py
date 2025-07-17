@@ -45,15 +45,8 @@ from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, 
 from ._disco_utils import _get_psi, _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from ._disco_utils import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
+from disco_helpers import optimized_kernels_is_available, preprocess_psi
 
-# import custom C++/CUDA extensions if available
-from disco_helpers import preprocess_psi
-try:
-    from torch.ops import disco_kernels
-    _cuda_extension_available = True
-except ImportError as err:
-    disco_kernels = None
-    _cuda_extension_available = False
 
 
 def _normalize_convolution_tensor_s2(
@@ -365,7 +358,7 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
         super().__init__()
 
         self.kernel_shape = kernel_shape
-        self.optimized_kernel = optimized_kernel and _optimized_extension_available
+        self.optimized_kernel = optimized_kernel and optimized_kernels_is_available()
 
         # get the filter basis functions
         self.filter_basis = get_filter_basis(kernel_shape=kernel_shape, basis_type=basis_type)
@@ -485,11 +478,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         col_idx = idx[2, ...].contiguous()
         vals = vals.contiguous()
 
-<<<<<<< HEAD
-        if _cuda_extension_available:
-=======
         if self.optimized_kernel:
->>>>>>> renaming files
             # preprocessed data-structure for GPU kernel
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_out, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
@@ -512,13 +501,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
-<<<<<<< HEAD
-        if x.is_cuda and _cuda_extension_available:
-            x = _disco_s2_contraction_cuda(
-=======
         if self.optimized_kernel:
             x = _disco_s2_contraction_optimized(
->>>>>>> renaming files
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
             )
         else:
@@ -630,11 +614,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         col_idx = idx[2, ...].contiguous()
         vals = vals.contiguous()
 
-<<<<<<< HEAD
-        if _cuda_extension_available:
-=======
         if self.optimized_kernel:
->>>>>>> renaming files
             # preprocessed data-structure for GPU kernel
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_in, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
@@ -666,13 +646,8 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
         x = x.reshape(B, -1, x.shape[-3], H, W)
 
-<<<<<<< HEAD
-        if x.is_cuda and _cuda_extension_available:
-            out = _disco_s2_transpose_contraction_cuda(
-=======
         if self.optimized_kernel:
             out = _disco_s2_transpose_contraction_optimized(
->>>>>>> renaming files
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
             )
         else:

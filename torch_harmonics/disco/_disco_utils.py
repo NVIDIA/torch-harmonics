@@ -34,19 +34,17 @@ import math
 
 import torch
 from torch.amp import custom_fwd, custom_bwd
-
-try:
-    from torch.ops import disco_kernels
-except ImportError as err:
-    disco_kernels = None
+from disco_helpers import optimized_kernels_is_available
+from . import disco_kernels
 
 # Convolution related
-@torch.library.register_fake("disco_kernels::forward")
-def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
-      row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
-      kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-    out_shape = (inp.shape[0], inp.shape[1], kernel_size, nlat_out, nlon_out)
-    return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
+if optimized_kernels_is_available():
+    @torch.library.register_fake("disco_kernels::forward")
+    def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
+          row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
+          kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        out_shape = (inp.shape[0], inp.shape[1], kernel_size, nlat_out, nlon_out)
+        return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
 def _setup_context_conv_backward(ctx, inputs, output):
     inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out = inputs
@@ -69,8 +67,9 @@ def _conv_backward(ctx, grad_output):
 
     return grad_input, None, None, None, None, None, None, None, None
 
-torch.library.register_autograd(
-    "disco_kernels::forward", _conv_backward, setup_context=_setup_context_conv_backward)
+if optimized_kernels_is_available():
+    torch.library.register_autograd(
+        "disco_kernels::forward", _conv_backward, setup_context=_setup_context_conv_backward)
 
 def _disco_s2_contraction_optimized(
     inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
@@ -83,12 +82,13 @@ def _disco_s2_contraction_optimized(
     return out
 
 # Transpose convolution related
-@torch.library.register_fake("disco_kernels::backward")
-def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
-      row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
-      kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-    out_shape = (inp.shape[0], inp.shape[1], nlat_out, nlon_out)
-    return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
+if optimized_kernels_is_available():
+    @torch.library.register_fake("disco_kernels::backward")
+    def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
+          row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
+        kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        out_shape = (inp.shape[0], inp.shape[1], nlat_out, nlon_out)
+        return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
 def _setup_context_transpose_conv_backward(ctx, inputs, output):
     inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out = inputs
@@ -111,8 +111,9 @@ def _conv_transpose_backward(ctx, grad_output):
 
     return grad_input, None, None, None, None, None, None, None, None
 
-torch.library.register_autograd(
-    "disco_kernels::backward", _conv_transpose_backward, setup_context=_setup_context_transpose_conv_backward)
+if optimized_kernels_is_available():
+    torch.library.register_autograd(
+        "disco_kernels::backward", _conv_transpose_backward, setup_context=_setup_context_transpose_conv_backward)
 
 def _disco_s2_transpose_contraction_optimized(
     inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
