@@ -68,14 +68,13 @@ import wandb
 
 # helper routine for counting number of paramerters in model
 def count_parameters(model):
+
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 # convenience function for logging weights and gradients
 def log_weights_and_grads(exp_dir, model, iters=1):
-    """
-    Helper routine intended for debugging purposes
-    """
+
     log_path = os.path.join(exp_dir, "weights_and_grads")
     if not os.path.isdir(log_path):
         os.makedirs(log_path, exist_ok=True)
@@ -178,7 +177,7 @@ def train_model(
     logging=True,
     device=torch.device("cpu"),
 ):
-
+    
     train_start = time.time()
 
     # set AMP type

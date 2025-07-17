@@ -41,6 +41,7 @@ import torch_harmonics.distributed as thd
 
 
 class TestDistributedResampling(unittest.TestCase):
+    """Test the distributed resampling module (CPU/CUDA if available)."""
 
     @classmethod
     def setUpClass(cls):
@@ -118,6 +119,7 @@ class TestDistributedResampling(unittest.TestCase):
         dist.destroy_process_group(None)
 
     def _split_helper(self, tensor):
+
         with torch.no_grad():
             # split in W
             tensor_list_local = thd.split_tensor_along_dim(tensor, dim=-1, num_chunks=self.grid_size_w)
@@ -130,6 +132,7 @@ class TestDistributedResampling(unittest.TestCase):
         return tensor_local
 
     def _gather_helper_fwd(self, tensor, B, C, convolution_dist):
+
         # we need the shapes
         lat_shapes = convolution_dist.lat_out_shapes
         lon_shapes = convolution_dist.lon_out_shapes
@@ -157,6 +160,7 @@ class TestDistributedResampling(unittest.TestCase):
         return tensor_gather
 
     def _gather_helper_bwd(self, tensor, B, C, resampling_dist):
+
         # we need the shapes
         lat_shapes = resampling_dist.lat_in_shapes
         lon_shapes = resampling_dist.lon_in_shapes
@@ -196,7 +200,7 @@ class TestDistributedResampling(unittest.TestCase):
     def test_distributed_resampling(
             self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, grid_in, grid_out, mode, tol, verbose
     ):
-
+        
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
 
         res_args = dict(
@@ -216,9 +220,7 @@ class TestDistributedResampling(unittest.TestCase):
         # create tensors
         inp_full = torch.randn((B, C, H, W), dtype=torch.float32, device=self.device)
 
-        #############################################################
         # local conv
-        #############################################################
         # FWD pass
         inp_full.requires_grad = True
         out_full = res_local(inp_full)
@@ -232,9 +234,7 @@ class TestDistributedResampling(unittest.TestCase):
         out_full.backward(ograd_full)
         igrad_full = inp_full.grad.clone()
 
-        #############################################################
         # distributed conv
-        #############################################################
         # FWD pass
         inp_local = self._split_helper(inp_full)
         inp_local.requires_grad = True
@@ -246,9 +246,7 @@ class TestDistributedResampling(unittest.TestCase):
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
 
-        #############################################################
         # evaluate FWD pass
-        #############################################################
         with torch.no_grad():
             out_gather_full = self._gather_helper_fwd(out_local, B, C, res_dist)
             err = torch.mean(torch.norm(out_full - out_gather_full, p="fro", dim=(-1, -2)) / torch.norm(out_full, p="fro", dim=(-1, -2)))
@@ -256,9 +254,7 @@ class TestDistributedResampling(unittest.TestCase):
                 print(f"final relative error of output: {err.item()}")
         self.assertTrue(err.item() <= tol)
 
-        #############################################################
         # evaluate BWD pass
-        #############################################################
         with torch.no_grad():
             igrad_gather_full = self._gather_helper_bwd(igrad_local, B, C, res_dist)
 

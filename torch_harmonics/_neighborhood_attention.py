@@ -50,8 +50,6 @@ except ImportError as err:
 def _neighborhood_attention_s2_fwd_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor,
                                             quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
                                             nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-
-
     # prepare result tensor
     y = torch.zeros_like(qy)
 
@@ -170,7 +168,6 @@ def _neighborhood_attention_s2_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, 
 def _neighborhood_attention_s2_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
                                             quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
                                             nlon_in: int, nlat_out: int, nlon_out: int):
-
     # shapes:
     # input
     # kx: B, C, Hi, Wi
@@ -252,6 +249,7 @@ def _neighborhood_attention_s2_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, 
                                             quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
                                             nlon_in: int, nlat_out: int, nlon_out: int):
 
+
     # shapes:
     # input
     # kx: B, C, Hi, Wi
@@ -329,7 +327,7 @@ class _NeighborhoodAttentionS2(torch.autograd.Function):
                 bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], bq: Union[torch.Tensor, None],
                 quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
                 nh: int, nlon_in: int, nlat_out: int, nlon_out: int):
-
+        
         ctx.save_for_backward(col_idx, row_off, quad_weights, k, v, q, wk, wv, wq, bk, bv, bq)
         ctx.nh = nh
         ctx.nlon_in = nlon_in
@@ -443,13 +441,14 @@ def _neighborhood_attention_s2_torch(k: torch.Tensor, v: torch.Tensor, q: torch.
                                      bq: Union[torch.Tensor, None], quad_weights: torch.Tensor,
                                      col_idx: torch.Tensor, row_off: torch.Tensor,
                                      nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-
+   
     return _NeighborhoodAttentionS2.apply(k, v, q, wk, wv, wq, bk, bv, bq,
                                           quad_weights, col_idx, row_off,
                                           nh, nlon_in, nlat_out, nlon_out)
 
 
 class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
+
 
     @staticmethod
     @custom_fwd(device_type="cuda")
@@ -458,7 +457,7 @@ class _NeighborhoodAttentionS2Cuda(torch.autograd.Function):
                 bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], bq: Union[torch.Tensor, None],
                 quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
                 max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int):
-
+        
         ctx.save_for_backward(col_idx, row_off, quad_weights, k, v, q, wk, wv, wq, bk, bv, bq)
         ctx.nh = nh
         ctx.max_psi_nnz = max_psi_nnz
@@ -584,7 +583,7 @@ def _neighborhood_attention_s2_cuda(k: torch.Tensor, v: torch.Tensor, q: torch.T
                                     bq: Union[torch.Tensor, None], quad_weights: torch.Tensor,
                                     col_idx: torch.Tensor, row_off: torch.Tensor, max_psi_nnz: int,
                                     nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-
+   
     return _NeighborhoodAttentionS2Cuda.apply(k, v, q, wk, wv, wq, bk, bv, bq,
                                               quad_weights, col_idx, row_off, max_psi_nnz,
                                               nh, nlon_in, nlat_out, nlon_out)

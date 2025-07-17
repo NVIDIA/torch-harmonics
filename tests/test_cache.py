@@ -36,7 +36,6 @@ import torch
 
 
 class TestCacheConsistency(unittest.TestCase):
-
     def test_consistency(self, verbose=False):
         if verbose:
             print("Testing that cache values does not get modified externally")

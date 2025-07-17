@@ -48,20 +48,36 @@ class DistributedRealSHT(nn.Module):
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
     The SHT is applied to the last two dimensions of the input
 
+    Parameters
+    ----------
+    nlat: int
+        Number of latitude points
+    nlon: int
+        Number of longitude points
+    lmax: int
+        Maximum spherical harmonic degree
+    mmax: int
+        Maximum spherical harmonic order
+    grid: str
+        Grid type ("equiangular", "legendre-gauss", "lobatto", "equidistant"), by default "equiangular"
+    norm: str
+        Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
+    csphase: bool
+        Whether to apply the Condon-Shortley phase factor, by default True
+
+    Returns
+    -------
+    x: torch.Tensor
+        Tensor of shape (..., lmax, mmax)
+
+    References
+    ----------
     [1] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
     [2] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
-        """
-        Distribtued SHT layer. Expects the last 3 dimensions of the input tensor to be channels, latitude, longitude.
-
-        Parameters:
-        nlat: input grid resolution in the latitudinal direction
-        nlon: input grid resolution in the longitudinal direction
-        grid: grid in the latitude direction (for now only tensor product grids are supported)
-        """
-
+        
         super().__init__()
 
         self.nlat = nlat
@@ -115,9 +131,6 @@ class DistributedRealSHT(nn.Module):
         self.register_buffer('weights', weights, persistent=False)
 
     def extra_repr(self):
-        """
-        Pretty print module
-        """
         return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
 
     def forward(self, x: torch.Tensor):
@@ -168,9 +181,31 @@ class DistributedInverseRealSHT(nn.Module):
     """
     Defines a module for computing the inverse (real-valued) SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
-    nlat, nlon: Output dimensions
-    lmax, mmax: Input dimensions (spherical coefficients). For convenience, these are inferred from the output dimensions
 
+    Parameters
+    ----------
+    nlat: int
+        Number of latitude points
+    nlon: int
+        Number of longitude points
+    lmax: int
+        Maximum spherical harmonic degree
+    mmax: int
+        Maximum spherical harmonic order
+    grid: str
+        Grid type ("equiangular", "legendre-gauss", "lobatto", "equidistant"), by default "equiangular"
+    norm: str
+        Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
+    csphase: bool
+        Whether to apply the Condon-Shortley phase factor, by default True
+
+    Returns
+    -------
+    x: torch.Tensor
+        Tensor of shape (..., lmax, mmax)
+
+    References
+    ----------
     [1] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
     [2] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
     """
@@ -226,9 +261,6 @@ class DistributedInverseRealSHT(nn.Module):
         self.register_buffer('pct', pct, persistent=False)
 
     def extra_repr(self):
-        """
-        Pretty print module
-        """
         return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
 
     def forward(self, x: torch.Tensor):
@@ -282,19 +314,35 @@ class DistributedRealVectorSHT(nn.Module):
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
     The SHT is applied to the last three dimensions of the input.
 
+    Parameters
+    ----------
+    nlat: int
+        Number of latitude points
+    nlon: int
+        Number of longitude points  
+    lmax: int
+        Maximum spherical harmonic degree
+    mmax: int
+        Maximum spherical harmonic order
+    grid: str
+        Grid type ("equiangular", "legendre-gauss", "lobatto", "equidistant"), by default "equiangular"
+    norm: str
+        Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
+    csphase: bool
+        Whether to apply the Condon-Shortley phase factor, by default True
+
+    Returns
+    -------
+    x: torch.Tensor
+        Tensor of shape (..., lmax, mmax)
+
+    References
+    ----------
     [1] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
     [2] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
-        """
-        Initializes the vector SHT Layer, precomputing the necessary quadrature weights
-
-        Parameters:
-        nlat: input grid resolution in the latitudinal direction
-        nlon: input grid resolution in the longitudinal direction
-        grid: type of grid the data lives on
-        """
 
         super().__init__()
 
@@ -355,9 +403,6 @@ class DistributedRealVectorSHT(nn.Module):
 
 
     def extra_repr(self):
-        """
-        Pretty print module
-        """
         return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
 
     def forward(self, x: torch.Tensor):
@@ -425,6 +470,30 @@ class DistributedInverseRealVectorSHT(nn.Module):
     Defines a module for computing the inverse (real-valued) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
 
+    Parameters
+    ----------
+    nlat: int
+        Number of latitude points
+    nlon: int
+        Number of longitude points
+    lmax: int
+        Maximum spherical harmonic degree
+    mmax: int
+        Maximum spherical harmonic order
+    grid: str
+        Grid type ("equiangular", "legendre-gauss", "lobatto", "equidistant"), by default "equiangular"
+    norm: str
+        Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
+    csphase: bool
+        Whether to apply the Condon-Shortley phase factor, by default True
+
+    Returns
+    -------
+    x: torch.Tensor
+        Tensor of shape (..., lmax, mmax)
+
+    References
+    ----------
     [1] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
     [2] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
     """
@@ -478,9 +547,6 @@ class DistributedInverseRealVectorSHT(nn.Module):
         self.register_buffer('dpct', dpct, persistent=False)
 
     def extra_repr(self):
-        """
-        Pretty print module
-        """
         return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
 
     def forward(self, x: torch.Tensor):

@@ -43,6 +43,37 @@ from functools import partial
 
 
 class DownsamplingBlock(nn.Module):
+    """
+    Downsampling block for the UNet model.
+    
+    Parameters
+    ----------
+    in_shape : tuple
+        Input shape (height, width)
+    out_shape : tuple
+        Output shape (height, width)
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    nrep : int, optional
+        Number of repetitions of conv blocks, by default 1
+    kernel_shape : tuple, optional
+        Kernel shape for convolutions, by default (3, 3)
+    activation : callable, optional
+        Activation function, by default nn.ReLU
+    transform_skip : bool, optional
+        Whether to transform skip connections, by default False
+    drop_conv_rate : float, optional
+        Dropout rate for convolutions, by default 0.
+    drop_path_rate : float, optional
+        Drop path rate, by default 0.
+    drop_dense_rate : float, optional
+        Dropout rate for dense layers, by default 0.
+    downsampling_mode : str, optional
+        Downsampling mode ("bilinear", "conv"), by default "bilinear"
+    """
+    
     def __init__(
 	    self,
         in_shape,
@@ -146,6 +177,7 @@ class DownsamplingBlock(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+
         # skip connection
         residual = x
         if hasattr(self, "transform_skip"):
@@ -166,6 +198,36 @@ class DownsamplingBlock(nn.Module):
 
     
 class UpsamplingBlock(nn.Module):
+    """
+    Upsampling block for UNet architecture.
+    
+    Parameters
+    -----------
+    in_shape : tuple
+        Input shape (height, width)
+    out_shape : tuple
+        Output shape (height, width)
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    nrep : int, optional
+        Number of repetitions of conv blocks, by default 1
+    kernel_shape : tuple, optional
+        Kernel shape for convolutions, by default (3, 3)
+    activation : callable, optional
+        Activation function, by default nn.ReLU
+    transform_skip : bool, optional
+        Whether to transform skip connections, by default False
+    drop_conv_rate : float, optional
+        Dropout rate for convolutions, by default 0.
+    drop_path_rate : float, optional
+        Drop path rate, by default 0.
+    drop_dense_rate : float, optional
+        Dropout rate for dense layers, by default 0.
+    upsampling_mode : str, optional
+        Upsampling mode ("bilinear", "conv"), by default "bilinear"
+    """
     def __init__(
         self,
         in_shape,
@@ -280,6 +342,7 @@ class UpsamplingBlock(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+
         # skip connection
         residual = x
         if hasattr(self, "transform_skip"):
@@ -304,6 +367,7 @@ class UNet(nn.Module):
     img_shape : tuple, optional
         Shape of the input channels, by default (128, 256)
     kernel_shape: tuple, int
+        Kernel shape for convolutions
     scale_factor: int, optional
         Scale factor to use, by default 2
     in_chans : int, optional
@@ -336,11 +400,12 @@ class UNet(nn.Module):
     ...         scale_factor=4,
     ...         in_chans=2,
     ...         num_classes=2,
-    ...         embed_dims=[64, 128, 256, 512],)
+    ...         embed_dims=[16, 32, 64, 128],
+    ...         depths=[2, 2, 2, 2],
+    ...         use_mlp=True,)
     >>> model(torch.randn(1, 2, 128, 256)).shape
     torch.Size([1, 2, 128, 256])
     """
-
     def __init__(
         self,
         img_shape=(128, 256),
@@ -450,7 +515,7 @@ class UNet(nn.Module):
 
 
     def forward(self, x):
-                
+
         # encoder:
         features = []
         feat = x

@@ -39,7 +39,7 @@ from baseline_models import Transformer, UNet, Segformer
 from torch_harmonics.examples.models import SphericalFourierNeuralOperator, LocalSphericalNeuralOperator, SphericalTransformer, SphericalUNet, SphericalSegformer
 
 def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_prediction=False, drop_path_rate=0., grid="equiangular"):
-
+    
     # prepare dicts containing models and corresponding metrics
     model_registry = dict(
         sfno_sc2_layers4_e32 = partial(
