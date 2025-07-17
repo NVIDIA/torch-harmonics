@@ -24,7 +24,7 @@ jobs:
 
     - name: Install package
       run: |
-        python3 -m pip install -e .
+        python3 -m pip install --no-build-isolation -e .
 
     - name: Test with pytest
       run: |
