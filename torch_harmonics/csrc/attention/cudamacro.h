@@ -30,21 +30,18 @@
 
 #pragma once
 
-#include <cmath>
-#include <cstdint>
-#include <torch/torch.h>
+#define CHECK_CUDA(call) {                                                   \
+    cudaError_t err = call;                                                  \
+    if( cudaSuccess != err) {                                                \
+        fprintf(stderr, "Cuda error in file '%s' in line %i : %s.\n",        \
+                __FILE__, __LINE__, cudaGetErrorString( err) );              \
+        exit(EXIT_FAILURE);                                                  \
+    }}
 
-#define CHECK_CUDA_TENSOR(x) TORCH_INTERNAL_ASSERT(x.device().type() == torch::kCUDA)
-#define CHECK_CONTIGUOUS_TENSOR(x) TORCH_INTERNAL_ASSERT(x.is_contiguous() || x.is_contiguous(at::MemoryFormat::ChannelsLast))
-#define CHECK_CUDA_INPUT_TENSOR(x)                                                                                     \
-    CHECK_CUDA_TENSOR(x);                                                                                              \
-    CHECK_CONTIGUOUS_TENSOR(x)
-
-torch::Tensor s2_attention_fwd_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor quad_weights,
-                                    at::Tensor psi_col_idx, at::Tensor psi_row_off, int nlon_in, int nlat_out,
-                                    int nlon_out);
-
-std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy,
-                                                                          at::Tensor dy, at::Tensor quad_weights,
-                                                                          at::Tensor psi_col_idx, at::Tensor psi_row_off,
-                                                                          int nlon_in, int nlat_out, int nlon_out);
+#define CHECK_ERROR(errorMessage) {                                          \
+    cudaError_t err = cudaGetLastError();                                    \
+    if( cudaSuccess != err) {                                                \
+        fprintf(stderr, "Cuda error: %s in file '%s' in line %i : %s.\n",    \
+                errorMessage, __FILE__, __LINE__, cudaGetErrorString( err) );\
+        exit(EXIT_FAILURE);                                                  \
+    }}
