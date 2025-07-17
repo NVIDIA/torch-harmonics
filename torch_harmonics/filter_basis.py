@@ -117,12 +117,12 @@ class PiecewiseLinearFilterBasis(FilterBasis):
     @property
     def kernel_size(self):
         """
-        Compute the kernel size for piecewise linear basis.
+        Compute the number of basis functions in the kernel.
         
         Returns
         -------
         kernel_size: int
-            The size of the kernel
+            The number of basis functions in the kernel
         """
         return (self.kernel_shape[0] // 2) * self.kernel_shape[1] + self.kernel_shape[0] % 2
 
