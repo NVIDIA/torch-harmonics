@@ -33,6 +33,27 @@ import torch
 from .sht import InverseRealSHT
 
 class GaussianRandomFieldS2(torch.nn.Module):
+    """
+    Gaussian random field on the sphere.
+
+    Parameters
+    ----------
+    nlat : int
+        Number of latitudinal modes.
+    alpha : float, optional
+        Exponent of the power spectrum.
+    tau : float, optional
+        Cutoff scale of the power spectrum.
+    sigma : float, optional
+        Standard deviation of the power spectrum.
+    radius : float, optional
+        Radius of the sphere.
+    grid : str, optional
+        Grid type.
+    dtype : torch.dtype, optional
+        Data type.
+    """
+
     def __init__(self, nlat, alpha=2.0, tau=3.0, sigma=None, radius=1.0, grid="equiangular", dtype=torch.float32):
         super().__init__()
 
