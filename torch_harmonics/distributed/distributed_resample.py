@@ -43,7 +43,7 @@ from torch_harmonics.distributed import compute_split_shapes
 
 
 class DistributedResampleS2(nn.Module):
-    r"""
+    """
     Distributed resampling module for spherical data on the 2-sphere.
     
     This module performs distributed resampling of spherical data across multiple processes,
@@ -156,19 +156,7 @@ class DistributedResampleS2(nn.Module):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}"
 
     def _upscale_longitudes(self, x: torch.Tensor):
-        """
-        Upscale the longitude dimension using interpolation.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor with shape (..., nlat, nlon)
-            
-        Returns
-        -------
-        torch.Tensor
-            Upscaled tensor in the longitude dimension
-        """
+        """Upscale the longitude dimension using interpolation."""
         # do the interpolation
         lwgt = self.lon_weights.to(x.dtype)
         if self.mode == "bilinear":
@@ -183,19 +171,7 @@ class DistributedResampleS2(nn.Module):
         return x
 
     def _expand_poles(self, x: torch.Tensor):
-        """
-        Expand the data to include pole values for interpolation.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor with shape (..., nlat, nlon)
-            
-        Returns
-        -------
-        torch.Tensor
-            Tensor with expanded pole values
-        """
+        """Expand the data to include pole values for interpolation."""
         x_north = x[...,  0, :].sum(dim=-1, keepdims=True)
         x_south = x[..., -1, :].sum(dim=-1, keepdims=True)
         x_count = torch.tensor([x.shape[-1]], dtype=torch.long, device=x.device, requires_grad=False)
@@ -218,19 +194,7 @@ class DistributedResampleS2(nn.Module):
         return x
 
     def _upscale_latitudes(self, x: torch.Tensor):
-        """
-        Upscale the latitude dimension using interpolation.
-        
-        Parameters
-        -----------
-        x : torch.Tensor
-            Input tensor with shape (..., nlat, nlon)
-            
-        Returns
-        -------
-        torch.Tensor
-            Upscaled tensor in the latitude dimension
-        """
+        """Upscale the latitude dimension using interpolation."""
         # do the interpolation
         lwgt = self.lat_weights.to(x.dtype)
         if self.mode == "bilinear":
