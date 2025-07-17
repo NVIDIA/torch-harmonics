@@ -117,58 +117,15 @@ class SphereSolver(nn.Module):
         self.register_buffer('invlap', invlap)
 
     def grid2spec(self, u):
-        """
-        Convert spatial data to spectral coefficients.
-        
-        Parameters
-        -----------
-        u : torch.Tensor
-            Spatial data tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Spectral coefficients
-        """
         return self.sht(u)
 
     def spec2grid(self, uspec):
-        """
-        Convert spectral coefficients to spatial data.
-        
-        Parameters
-        -----------
-        uspec : torch.Tensor
-            Spectral coefficients tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Spatial data
-        """
+        """Convert spectral coefficients to spatial data."""
         return self.isht(uspec)
 
     def dudtspec(self, uspec, pde='allen-cahn'):
-        """
-        Compute the time derivative of spectral coefficients for different PDEs.
-        
-        Parameters
-        -----------
-        uspec : torch.Tensor
-            Spectral coefficients
-        pde : str, optional
-            PDE type ("allen-cahn", "ginzburg-landau"), by default "allen-cahn"
+        """Compute the time derivative of spectral coefficients for different PDEs."""
             
-        Returns
-        -------
-        torch.Tensor
-            Time derivative of spectral coefficients
-            
-        Raises
-        ------
-        NotImplementedError
-            If PDE type is not supported
-        """
         if pde == 'allen-cahn':
             ugrid = self.spec2grid(uspec)
             u3spec  = self.grid2spec(ugrid**3)
@@ -183,14 +140,7 @@ class SphereSolver(nn.Module):
         return dudtspec
 
     def randspec(self):
-        """
-        Generate random spectral data on the sphere.
-        
-        Returns
-        -------
-        torch.Tensor
-            Random spectral coefficients
-        """
+        """Generate random spectral data on the sphere."""
         rspec = torch.randn_like(self.lap) / 4 / torch.pi
         return rspec
 
@@ -273,21 +223,5 @@ class SphereSolver(nn.Module):
         return im
 
     def plot_specdata(self, data, fig, **kwargs):
-        """
-        Plot spectral data by converting to spatial data first.
-        
-        Parameters
-        -----------
-        data : torch.Tensor
-            Spectral data to plot
-        fig : matplotlib.figure.Figure
-            Figure to plot on
-        **kwargs
-            Additional arguments passed to plot_griddata
-            
-        Returns
-        -------
-        matplotlib.collections.QuadMesh
-            The plotted image object
-        """
+        """Plot spectral data by converting to spatial data first."""
         return self.plot_griddata(self.isht(data), fig, **kwargs)

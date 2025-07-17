@@ -39,19 +39,7 @@ from .utils import is_initialized, is_distributed_polar, is_distributed_azimuth
 
 # helper routine to compute uneven splitting in balanced way:
 def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
-    """
-    Compute the split shapes for a given size and number of chunks.
-    
-    Parameters
-    ----------
-    size: int
-        The size of the tensor to split
-    
-    Returns
-    -------
-    List[int]
-        The split shapes
-    """
+    """Compute the split shapes for a given size and number of chunks."""
     
     # treat trivial case first
     if num_chunks == 1:
@@ -72,23 +60,7 @@ def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
 
     
 def split_tensor_along_dim(tensor, dim, num_chunks):
-    """
-    Split a tensor along a given dimension into a given number of chunks.
-    
-    Parameters
-    ----------
-    tensor: torch.Tensor
-        The tensor to split
-    dim: int
-        The dimension to split along
-    num_chunks: int
-        The number of chunks to split into
-        
-    Returns
-    -------
-    tensor_list: List[torch.Tensor]  
-        The split tensors
-    """
+    """Split a tensor along a given dimension into a given number of chunks."""
     
     assert dim < tensor.dim(), f"Error, tensor dimension is {tensor.dim()} which cannot be split along {dim}"
     assert (tensor.shape[dim] >= num_chunks), f"Error, cannot split dim {dim} of size {tensor.shape[dim]} into \
