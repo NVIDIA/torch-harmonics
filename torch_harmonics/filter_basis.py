@@ -51,9 +51,7 @@ def _factorial(x: torch.Tensor):
 
 
 class FilterBasis(metaclass=abc.ABCMeta):
-    """
-    Abstract base class for a filter basis
-    """
+    """Abstract base class for a filter basis"""
 
     def __init__(
         self,
@@ -96,9 +94,7 @@ def get_filter_basis(kernel_shape: Union[int, Tuple[int], Tuple[int, int]], basi
 
 
 class PiecewiseLinearFilterBasis(FilterBasis):
-    """
-    Tensor-product basis on a disk constructed from piecewise linear basis functions.
-    """
+    """Tensor-product basis on a disk constructed from piecewise linear basis functions."""
 
     def __init__(
         self,
@@ -116,14 +112,7 @@ class PiecewiseLinearFilterBasis(FilterBasis):
 
     @property
     def kernel_size(self):
-        """
-        Compute the number of basis functions in the kernel.
-        
-        Returns
-        -------
-        kernel_size: int
-            The number of basis functions in the kernel
-        """
+        """Compute the number of basis functions in the kernel."""
         return (self.kernel_shape[0] // 2) * self.kernel_shape[1] + self.kernel_shape[0] % 2
 
     def _compute_support_vals_isotropic(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float):
@@ -214,9 +203,7 @@ class PiecewiseLinearFilterBasis(FilterBasis):
 
 
 class MorletFilterBasis(FilterBasis):
-    """
-    Morlet-style filter basis on the disk. A Gaussian is multiplied with a Fourier basis in x and y directions
-    """
+    """Morlet-style filter basis on the disk. A Gaussian is multiplied with a Fourier basis in x and y directions."""
 
     def __init__(
         self,
@@ -271,9 +258,7 @@ class MorletFilterBasis(FilterBasis):
 
 
 class ZernikeFilterBasis(FilterBasis):
-    """
-    Zernike polynomials which are defined on the disk. See https://en.wikipedia.org/wiki/Zernike_polynomials
-    """
+    """Zernike polynomials which are defined on the disk. See https://en.wikipedia.org/wiki/Zernike_polynomials"""
 
     def __init__(
         self,

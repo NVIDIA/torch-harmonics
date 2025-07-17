@@ -38,7 +38,7 @@ from torch_harmonics.legendre import _precompute_legpoly, _precompute_dlegpoly
 
 
 class RealSHT(nn.Module):
-    r"""
+    """
     Defines a module for computing the forward (real-valued) SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
     The SHT is applied to the last two dimensions of the input
@@ -149,7 +149,7 @@ class RealSHT(nn.Module):
 
 
 class InverseRealSHT(nn.Module):
-    r"""
+    """
     Defines a module for computing the inverse (real-valued) SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
 
@@ -250,7 +250,7 @@ class InverseRealSHT(nn.Module):
 
 
 class RealVectorSHT(nn.Module):
-    r"""
+    """
     Defines a module for computing the forward (real) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
     The SHT is applied to the last three dimensions of the input.
@@ -373,7 +373,7 @@ class RealVectorSHT(nn.Module):
 
 
 class InverseRealVectorSHT(nn.Module):
-    r"""
+    """
     Defines a module for computing the inverse (real-valued) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
 

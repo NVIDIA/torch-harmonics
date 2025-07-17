@@ -37,7 +37,7 @@ import torch
 
 def _precompute_grid(n: int, grid: Optional[str]="equidistant", a: Optional[float]=0.0, b: Optional[float]=1.0,
                      periodic: Optional[bool]=False) -> Tuple[torch.Tensor, torch.Tensor]:
-    r"""
+    """
     Precompute grid points and weights for various quadrature rules.
     
     Parameters
@@ -103,7 +103,7 @@ def _precompute_latitudes(nlat: int, grid: Optional[str]="equiangular") -> Tuple
 
 
 def trapezoidal_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0, periodic: Optional[bool]=False) -> Tuple[torch.Tensor, torch.Tensor]:
-    r"""
+    """
     Helper routine which returns equidistant nodes with trapezoidal weights
     on the interval [a, b]
 
@@ -137,7 +137,7 @@ def trapezoidal_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0,
 
 
 def legendre_gauss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0) -> Tuple[torch.Tensor, torch.Tensor]:
-    r"""
+    """
     Helper routine which returns the Legendre-Gauss nodes and weights
     on the interval [a, b]
 
@@ -169,7 +169,7 @@ def legendre_gauss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1
 
 def lobatto_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0,
                     tol: Optional[float]=1e-16, maxiter: Optional[int]=100) -> Tuple[torch.Tensor, torch.Tensor]:
-    r"""
+    """
     Helper routine which returns the Legendre-Gauss-Lobatto nodes and weights
     on the interval [a, b]
 
@@ -232,7 +232,7 @@ def lobatto_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0,
 
 
 def clenshaw_curtiss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0) -> Tuple[torch.Tensor, torch.Tensor]:
-    r"""
+    """
     Computation of the Clenshaw-Curtis quadrature nodes and weights.
     This implementation follows
 
@@ -289,7 +289,7 @@ def clenshaw_curtiss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]
 
 
 def fejer2_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0) -> Tuple[torch.Tensor, torch.Tensor]:
-    r"""
+    """
     Computation of the Fejer quadrature nodes and weights.
 
     Parameters

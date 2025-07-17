@@ -664,20 +664,6 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
     def get_psi(self, semi_transposed: bool = False):
-        """
-        Get the convolution tensor
-
-        Parameters
-        -----------
-        semi_transposed: bool
-            Whether to semi-transpose the convolution tensor
-
-        Returns
-        -------
-        psi: torch.Tensor
-            Convolution tensor
-        """
-
         if semi_transposed:
             # we do a semi-transposition to faciliate the computation
             tout = self.psi_idx[2] // self.nlon_out
