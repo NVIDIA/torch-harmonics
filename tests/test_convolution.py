@@ -500,11 +500,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         opcheck(torch.ops.disco_kernels.backward, test_inputs_bwd)
 
+        # if a test fails, those help to disambiguate the error
+        # schema
+        #opcheck(torch.ops.disco_kernels.forward, test_inputs_fwd, test_utils="test_schema")
         # fake tensor
-        #opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_faketensor")
+        #opcheck(torch.ops.disco_kernels.forward, test_inputs_fwd, test_utils="test_faketensor")
         # test AOT stuff
-        #opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_aot_dispatch_static")
-        #opcheck(torch.ops.disco_kernels.forward, test_inputs, test_utils="test_aot_dispatch_dynamic")
+        #opcheck(torch.ops.disco_kernels.forward, test_inputs_fwd, test_utils="test_aot_dispatch_static")
+        #opcheck(torch.ops.disco_kernels.forward, test_inputs_fwd, test_utils="test_aot_dispatch_dynamic")
 
 if __name__ == "__main__":
     unittest.main()
