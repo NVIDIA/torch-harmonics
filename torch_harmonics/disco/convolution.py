@@ -48,7 +48,6 @@ from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
 from disco_helpers import optimized_kernels_is_available, preprocess_psi
 
 
-
 def _normalize_convolution_tensor_s2(
     psi_idx, psi_vals, in_shape, out_shape, kernel_size, quad_weights, transpose_normalization=False, basis_norm_mode="mean", merge_quadrature=False, eps=1e-9
 ):

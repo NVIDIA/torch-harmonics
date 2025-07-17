@@ -42,30 +42,21 @@ import torch.nn as nn
 from functools import partial
 
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
-from torch_harmonics._disco_convolution import _get_psi, _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
-from torch_harmonics._disco_convolution import _disco_s2_contraction_cuda, _disco_s2_transpose_contraction_cuda
-from torch_harmonics.filter_basis import get_filter_basis
-from torch_harmonics.convolution import (
+from torch_harmonics.disco._disco_convolution import _get_psi, _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
+from torch_harmonics.disco._disco_convolution import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
+from torch_harmonics.disco.filter_basis import get_filter_basis
+from disco_helpers import optimized_kernels_is_available, preprocess_psi
+from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
     DiscreteContinuousConv,
 )
 
-
+# distirbuted stuff
 from torch_harmonics.distributed import polar_group_size, azimuth_group_size
 from torch_harmonics.distributed import distributed_transpose_azimuth, distributed_transpose_polar
 from torch_harmonics.distributed import reduce_from_polar_region, scatter_to_polar_region, gather_from_polar_region, copy_to_polar_region
 from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
 from torch_harmonics.distributed import compute_split_shapes, split_tensor_along_dim
-
-# import custom C++/CUDA extensions if available
-try:
-    from disco_helpers import preprocess_psi
-    import disco_cuda_extension
-
-    _cuda_extension_available = True
-except ImportError as err:
-    disco_cuda_extension = None
-    _cuda_extension_available = False
 
 
 def _split_distributed_convolution_tensor_s2(
@@ -181,8 +172,9 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         grid_out: Optional[str] = "equiangular",
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
+        optimized_kernel: Optional[bool] = True,
     ):
-        super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias)
+        super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
@@ -236,7 +228,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         col_idx = idx[2, ...].contiguous()
         vals = vals.contiguous()
 
-        if _cuda_extension_available:
+        if self.optimized_kernel:
             # preprocessed data-structure for GPU kernel
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_out_local, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
@@ -248,7 +240,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.register_buffer("psi_vals", vals, persistent=False)
 
         # store psi jic:
-        self.psi = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local)
+        if not self.optimized_kernel:
+            self.psi = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local)
 
     def extra_repr(self):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
@@ -266,14 +259,11 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth.apply(x, (1, -1), self.lon_in_shapes)
 
-        if x.is_cuda and _cuda_extension_available:
-            x = _disco_s2_contraction_cuda(
+        if self.optimized_kernel:
+            x = _disco_s2_contraction_optimized(
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out_local, self.nlon_out
             )
         else:
-            if x.is_cuda:
-                warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
-
             x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
 
         # perform reduce scatter in polar region
@@ -356,8 +346,9 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         grid_out: Optional[str] = "equiangular",
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
+        optimized_kernel: Optional[bool] = True,
     ):
-        super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias)
+        super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
@@ -414,7 +405,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         col_idx = idx[2, ...].contiguous()
         vals = vals.contiguous()
 
-        if _cuda_extension_available:
+        if self.optimized_kernel:
             # preprocessed data-structure for GPU kernel
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_in_local, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
@@ -426,7 +417,8 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.register_buffer("psi_vals", vals, persistent=False)
 
         # store psi as COO
-        self.psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local, semi_transposed=True)
+        if not self.optimized_kernel:
+            self.psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local, semi_transposed=True)
 
     def extra_repr(self):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
@@ -454,13 +446,11 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = gather_from_polar_region(x, -2, self.lat_in_shapes)
         x = copy_to_polar_region(x)
 
-        if x.is_cuda and _cuda_extension_available:
-            out = _disco_s2_transpose_contraction_cuda(
+        if self.optimized_kernel:
+            out = _disco_s2_transpose_contraction_optimized(
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out_local, self.nlon_out
             )
         else:
-            if x.is_cuda:
-                warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
             out = _disco_s2_transpose_contraction_torch(x, self.psi_st.to(x.device), self.nlon_out)
 
         # now we can transpose back the result, so that lon is split and channels are local
