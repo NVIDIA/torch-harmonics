@@ -704,7 +704,8 @@ class StanfordDepthDataset(Dataset):
 
 def compute_stats_s2(dataset: Dataset, normalize_target: bool = False):
     """
-    Compute stats using parallel welford reduction and quadrature on the sphere. The parallel welford reduction follows this article (parallel algorithm): https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
+    Compute stats using parallel welford reduction and quadrature on the sphere. 
+    The parallel welford reduction follows this article (parallel algorithm): https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
     """
 
     nexamples = len(dataset)

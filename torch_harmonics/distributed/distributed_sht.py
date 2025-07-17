@@ -131,9 +131,6 @@ class DistributedRealSHT(nn.Module):
         self.register_buffer('weights', weights, persistent=False)
 
     def extra_repr(self):
-        """
-        Pretty print module
-        """
         return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
 
     def forward(self, x: torch.Tensor):
@@ -264,9 +261,6 @@ class DistributedInverseRealSHT(nn.Module):
         self.register_buffer('pct', pct, persistent=False)
 
     def extra_repr(self):
-        """
-        Pretty print module
-        """
         return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
 
     def forward(self, x: torch.Tensor):
@@ -409,9 +403,6 @@ class DistributedRealVectorSHT(nn.Module):
 
 
     def extra_repr(self):
-        """
-        Pretty print module
-        """
         return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
 
     def forward(self, x: torch.Tensor):
@@ -556,9 +547,6 @@ class DistributedInverseRealVectorSHT(nn.Module):
         self.register_buffer('dpct', dpct, persistent=False)
 
     def extra_repr(self):
-        """
-        Pretty print module
-        """
         return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
 
     def forward(self, x: torch.Tensor):

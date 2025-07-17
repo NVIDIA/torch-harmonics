@@ -293,11 +293,7 @@ class SphericalLossBase(nn.Module, ABC):
 
 
 class SquaredL2LossS2(SphericalLossBase):
-    """
-    Squared L2 loss for spherical regression tasks.
-    
-    Computes the squared difference between prediction and target tensors.
-    """
+    """Squared L2 loss for spherical regression tasks."""
     
     def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
         
@@ -305,11 +301,7 @@ class SquaredL2LossS2(SphericalLossBase):
 
 
 class L1LossS2(SphericalLossBase):
-    """
-    L1 loss for spherical regression tasks.
-    
-    Computes the absolute difference between prediction and target tensors.
-    """
+    """L1 loss for spherical regression tasks."""
     
     def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
         
@@ -317,11 +309,7 @@ class L1LossS2(SphericalLossBase):
 
 
 class L2LossS2(SquaredL2LossS2):
-    """
-    L2 loss for spherical regression tasks.
-    
-    Computes the square root of the squared L2 loss.
-    """
+    """L2 loss for spherical regression tasks."""
     
     def _post_integration_hook(self, loss: torch.Tensor) -> torch.Tensor:
         
@@ -329,11 +317,7 @@ class L2LossS2(SquaredL2LossS2):
 
 
 class W11LossS2(SphericalLossBase):
-    """
-    W11 loss for spherical regression tasks.
-    
-    Computes the L1 norm of the gradient differences between prediction and target.
-    """
+    """W11 loss for spherical regression tasks."""
     
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
         
