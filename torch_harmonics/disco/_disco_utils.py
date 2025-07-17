@@ -33,7 +33,6 @@ from typing import Optional
 import math
 
 import torch
-from torch.amp import custom_fwd, custom_bwd
 from disco_helpers import optimized_kernels_is_available
 from . import disco_kernels
 
@@ -125,7 +124,7 @@ def _disco_s2_transpose_contraction_optimized(
     out = out.to(itype)
     return out
 
-# torch kernel functions
+# torch kernel related functions
 def _get_psi(kernel_size: int, psi_idx: torch.Tensor, psi_vals: torch.Tensor, nlat_in: int, nlon_in: int, nlat_out: int, nlon_out: int, nlat_in_local: Optional[int] = None, nlat_out_local: Optional[int] = None, semi_transposed: Optional[bool] = False):
     """Creates a sparse tensor for spherical harmonic convolution operations."""
     nlat_in_local = nlat_in_local if nlat_in_local is not None else nlat_in
