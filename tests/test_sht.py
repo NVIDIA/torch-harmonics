@@ -101,15 +101,16 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             [33, 64, 32, "ortho", "equiangular", 1e-9, False],
             [33, 64, 32, "ortho", "legendre-gauss", 1e-9, False],
             [33, 64, 32, "ortho", "lobatto", 1e-9, False],
-	    [33, 64, 32, "four-pi", "equiangular", 1e-9, False],
+            [33, 64, 32, "four-pi", "equiangular", 1e-9, False],
             [33, 64, 32, "four-pi", "legendre-gauss", 1e-9, False],
             [33, 64, 32, "four-pi", "lobatto", 1e-9, False],
             [33, 64, 32, "schmidt", "equiangular", 1e-9, False],
             [33, 64, 32, "schmidt", "legendre-gauss", 1e-9, False],
             [33, 64, 32, "schmidt", "lobatto", 1e-9, False],
-        ]
+        ],
+        skip_on_empty=True,
     )
-    def test_sht(self, nlat, nlon, batch_size, norm, grid, tol, verbose):
+    def test_forward_inverse(self, nlat, nlon, batch_size, norm, grid, tol, verbose):
         if verbose:
             print(f"Testing real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization on {self.device.type} device")
 
@@ -168,9 +169,10 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             [15, 30, 2, "schmidt", "equiangular", 1e-5, False],
             [15, 30, 2, "schmidt", "legendre-gauss", 1e-5, False],
             [15, 30, 2, "schmidt", "lobatto", 1e-5, False],
-        ]
+        ],
+        skip_on_empty=True,
     )
-    def test_sht_grads(self, nlat, nlon, batch_size, norm, grid, tol, verbose):
+    def test_grads(self, nlat, nlon, batch_size, norm, grid, tol, verbose):
         if verbose:
             print(f"Testing gradients of real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization")
 
@@ -201,6 +203,40 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         err_handle = lambda x: torch.mean(torch.norm(isht(x) - signal, p="fro", dim=(-1, -2)) / torch.norm(signal, p="fro", dim=(-1, -2)))
         test_result = gradcheck(err_handle, grad_input, eps=1e-6, atol=tol)
         self.assertTrue(test_result)
+
+    @parameterized.expand(
+        [
+            # even-even
+            [12, 24, 2, "ortho", "equiangular", 1e-5, False],
+            [12, 24, 2, "ortho", "legendre-gauss", 1e-5, False],
+            [12, 24, 2, "ortho", "lobatto", 1e-5, False],
+        ],
+        skip_on_empty=True,
+    )
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA is not available")
+    def test_device_instantiation(self, nlat, nlon, batch_size, norm, grid, tol, verbose):
+        if verbose:
+            print(f"Testing device instantiation of real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization")
+
+        if grid == "equiangular":
+            mmax = nlat // 2
+        elif grid == "lobatto":
+            mmax = nlat - 1
+        else:
+            mmax = nlat
+        lmax = mmax
+
+        # init on cpu
+        sht_host = th.RealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm)
+        isht_host = th.InverseRealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm)
+
+        # init on device
+        with torch.device(self.device):
+            sht_device = th.RealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm)
+            isht_device = th.InverseRealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm)
+
+        self.assertTrue(torch.allclose(sht_host.weights.cpu(), sht_device.weights.cpu()))
+        self.assertTrue(torch.allclose(isht_host.pct.cpu(), isht_device.pct.cpu()))
 
 
 if __name__ == "__main__":

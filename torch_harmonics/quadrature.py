@@ -169,7 +169,7 @@ def clenshaw_curtiss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]
     tcc = torch.cos(torch.linspace(math.pi, 0, n, dtype=torch.float64, requires_grad=False))
 
     if n == 2:
-        wcc = torch.tensor([1.0, 1.0], dtype=torch.float64)
+        wcc = torch.as_tensor([1.0, 1.0], dtype=torch.float64)
     else:
 
         n1 = n - 1

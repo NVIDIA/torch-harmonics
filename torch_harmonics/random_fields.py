@@ -77,7 +77,7 @@ class GaussianRandomFieldS2(torch.nn.Module):
         self.isht = InverseRealSHT(self.nlat, 2*self.nlat, grid=grid, norm='backward').to(dtype=dtype)
 
         #Square root of the eigenvalues of C.
-        sqrt_eig = torch.tensor([j*(j+1) for j in range(self.nlat)]).view(self.nlat,1).repeat(1, self.nlat+1)
+        sqrt_eig = torch.as_tensor([j*(j+1) for j in range(self.nlat)]).view(self.nlat,1).repeat(1, self.nlat+1)
         sqrt_eig = torch.tril(sigma*(((sqrt_eig/radius**2) + tau**2)**(-alpha/2.0)))
         sqrt_eig[0,0] = 0.0
         sqrt_eig = sqrt_eig.unsqueeze(0)
@@ -85,8 +85,8 @@ class GaussianRandomFieldS2(torch.nn.Module):
 
         #Save mean and var of the standard Gaussian.
         #Need these to re-initialize distribution on a new device.
-        mean = torch.tensor([0.0]).to(dtype=dtype)
-        var = torch.tensor([1.0]).to(dtype=dtype)
+        mean = torch.as_tensor([0.0]).to(dtype=dtype)
+        var = torch.as_tensor([1.0]).to(dtype=dtype)
         self.register_buffer('mean', mean)
         self.register_buffer('var', var)
 

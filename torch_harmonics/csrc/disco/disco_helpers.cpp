@@ -104,13 +104,22 @@ torch::Tensor preprocess_psi(const int64_t K, const int64_t Ho, torch::Tensor ke
     CHECK_INPUT_TENSOR(col_idx);
     CHECK_INPUT_TENSOR(val);
 
+    // get the input device and make sure all tensors are on the same device
+    auto device = ker_idx.device();
+    TORCH_INTERNAL_ASSERT(device.type() == row_idx.device().type() && (device.type() == col_idx.device().type()) && (device.type() == val.device().type()));
+
+    // move to cpu
+    ker_idx = ker_idx.to(torch::kCPU);
+    row_idx = row_idx.to(torch::kCPU);
+    col_idx = col_idx.to(torch::kCPU);
+    val = val.to(torch::kCPU);
+
     int64_t nnz = val.size(0);
     int64_t *ker_h = ker_idx.data_ptr<int64_t>();
     int64_t *row_h = row_idx.data_ptr<int64_t>();
     int64_t *col_h = col_idx.data_ptr<int64_t>();
     int64_t *roff_h = new int64_t[Ho * K + 1];
     int64_t nrows;
-    // float *val_h = val.data_ptr<float>();
 
     AT_DISPATCH_FLOATING_TYPES(val.scalar_type(), "preprocess_psi", ([&] {
                                    preprocess_psi_kernel<scalar_t>(nnz, K, Ho, ker_h, row_h, col_h, roff_h,
@@ -118,12 +127,18 @@ torch::Tensor preprocess_psi(const int64_t K, const int64_t Ho, torch::Tensor ke
                                }));
 
     // create output tensor
-    auto options = torch::TensorOptions().dtype(row_idx.dtype());
-    auto roff_idx = torch::empty({nrows + 1}, options);
+    auto roff_idx = torch::empty({nrows + 1}, row_idx.options());
     int64_t *roff_out_h = roff_idx.data_ptr<int64_t>();
 
     for (int64_t i = 0; i < (nrows + 1); i++) { roff_out_h[i] = roff_h[i]; }
     delete[] roff_h;
+
+    // move to original device
+    ker_idx = ker_idx.to(device);
+    row_idx = row_idx.to(device);
+    col_idx = col_idx.to(device);
+    val = val.to(device);
+    roff_idx = roff_idx.to(device);
 
     return roff_idx;
 }

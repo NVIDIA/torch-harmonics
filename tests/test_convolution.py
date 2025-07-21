@@ -39,7 +39,7 @@ from torch.autograd import gradcheck
 from torch_harmonics import quadrature, DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
-
+from torch_harmonics.convolution import _precompute_convolution_tensor_s2
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -127,7 +127,7 @@ def _precompute_convolution_tensor_dense(
         quad_weights = win.reshape(-1, 1) / nlon_in / 2.0
 
     # array for accumulating non-zero indices
-    out = torch.zeros(kernel_size, nlat_out, nlon_out, nlat_in, nlon_in, dtype=torch.float64)
+    out = torch.zeros(kernel_size, nlat_out, nlon_out, nlat_in, nlon_in, dtype=torch.float64, device=lons_in.device)
 
     for t in range(nlat_out):
         for p in range(nlon_out):
@@ -199,9 +199,10 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "equiangular", "legendre-gauss", True, 1e-4, False],
             [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "legendre-gauss", "equiangular", True, 1e-4, False],
             [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", True, 1e-4, False],
-        ]
+        ],
+        skip_on_empty=True,
     )
-    def test_disco_convolution(
+    def test_forward_backward(
         self,
         batch_size,
         in_channels,
@@ -314,6 +315,70 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # compare
         self.assertTrue(torch.allclose(x_grad, x_ref_grad, rtol=tol, atol=tol))
         self.assertTrue(torch.allclose(conv.weight.grad, w_ref.grad, rtol=tol, atol=tol))
+
+    @parameterized.expand(
+        [
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
+            [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", False, 1e-4, False],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
+            [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", True, 1e-4, False],
+        ],
+        skip_on_empty=True,
+    )
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA is not available")
+    def test_device_instantiation(self, batch_size, in_channels, out_channels, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, transpose, tol, verbose):
+
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        if isinstance(kernel_shape, int):
+            theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
+        else:
+            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
+
+        # get handle
+        Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
+
+        # init on cpu
+        conv_host = Conv(
+            in_channels,
+            out_channels,
+            in_shape,
+            out_shape,
+            kernel_shape,
+            basis_type=basis_type,
+            basis_norm_mode=basis_norm_mode,
+            groups=1,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            bias=False,
+            theta_cutoff=theta_cutoff,
+        )
+
+        #torch.set_default_device(self.device)
+        with torch.device(self.device):
+            conv_device = Conv(
+                in_channels,
+                out_channels,
+                in_shape,
+                out_shape,
+                kernel_shape,
+                basis_type=basis_type,
+                basis_norm_mode=basis_norm_mode,
+                groups=1,
+                grid_in=grid_in,
+                grid_out=grid_out,
+                bias=False,
+                theta_cutoff=theta_cutoff,
+            )
+
+        # since we specified the device specifier everywhere, it should always
+        # use the cpu and it should be the same everywhere
+        self.assertTrue(torch.allclose(conv_host.psi_col_idx.cpu(), conv_device.psi_col_idx.cpu()))
+        self.assertTrue(torch.allclose(conv_host.psi_row_idx.cpu(), conv_device.psi_row_idx.cpu()))
+        self.assertTrue(torch.allclose(conv_host.psi_roff_idx.cpu(), conv_device.psi_roff_idx.cpu()))
+        self.assertTrue(torch.allclose(conv_host.psi_vals.cpu(), conv_device.psi_vals.cpu()))
+        self.assertTrue(torch.allclose(conv_host.psi_idx.cpu(), conv_device.psi_idx.cpu()))
 
 
 if __name__ == "__main__":

@@ -254,7 +254,7 @@ class MorletFilterBasis(FilterBasis):
         mkernel = ikernel // self.kernel_shape[1]
 
         # get relevant indices
-        iidx = torch.argwhere((r <= r_cutoff) & torch.full_like(ikernel, True, dtype=torch.bool))
+        iidx = torch.argwhere((r <= r_cutoff) & torch.full_like(ikernel, True, dtype=torch.bool, device=r.device))
 
         # get corresponding r, phi, x and y coordinates
         r = r[iidx[:, 1], iidx[:, 2]] / r_cutoff
@@ -316,10 +316,10 @@ class ZernikeFilterBasis(FilterBasis):
         """
 
         # enumerator for basis function
-        ikernel = torch.arange(self.kernel_size).reshape(-1, 1, 1)
+        ikernel = torch.arange(self.kernel_size, device=r.device).reshape(-1, 1, 1)
 
         # get relevant indices
-        iidx = torch.argwhere((r <= r_cutoff) & torch.full_like(ikernel, True, dtype=torch.bool))
+        iidx = torch.argwhere((r <= r_cutoff) & torch.full_like(ikernel, True, dtype=torch.bool, device=r.device))
 
         # indexing logic for zernike polynomials
         # the total index is given by (n * (n + 2) + l ) // 2 which needs to be reversed
