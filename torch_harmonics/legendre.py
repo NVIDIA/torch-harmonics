@@ -57,10 +57,10 @@ def legpoly(mmax: int, lmax: int, x: torch.Tensor, norm: Optional[str]="ortho", 
 
     # compute the tensor P^m_n:
     nmax = max(mmax,lmax)
-    vdm = torch.zeros((nmax, nmax, len(x)), dtype=torch.float64, requires_grad=False)
+    vdm = torch.zeros((nmax, nmax, len(x)), dtype=torch.float64, device=x.device, requires_grad=False)
         
-    norm_factor = 1. if norm == "ortho" else math.sqrt(4 * math.pi)
-    norm_factor = 1. / norm_factor if inverse else norm_factor
+    norm_factor = 1.0 if norm == "ortho" else math.sqrt(4 * math.pi)
+    norm_factor = 1.0 / norm_factor if inverse else norm_factor
 
     # initial values to start the recursion
     vdm[0,0,:] = norm_factor / math.sqrt(4 * math.pi)

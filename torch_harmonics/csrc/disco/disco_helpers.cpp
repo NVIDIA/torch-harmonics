@@ -110,7 +110,6 @@ torch::Tensor preprocess_psi(const int64_t K, const int64_t Ho, torch::Tensor ke
     int64_t *col_h = col_idx.data_ptr<int64_t>();
     int64_t *roff_h = new int64_t[Ho * K + 1];
     int64_t nrows;
-    // float *val_h = val.data_ptr<float>();
 
     AT_DISPATCH_FLOATING_TYPES(val.scalar_type(), "preprocess_psi", ([&] {
                                    preprocess_psi_kernel<scalar_t>(nnz, K, Ho, ker_h, row_h, col_h, roff_h,
