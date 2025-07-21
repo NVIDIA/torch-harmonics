@@ -517,7 +517,7 @@ class _NeighborhoodAttentionS2(torch.autograd.Function):
         vw = vw.to(torch.float32)
         qw = qw.to(torch.float32)
 
-        output = _neighborhood_attention_s2_fwd_torch(kw, vw, qw, quad_weights,
+        output = _neighborhood_s2_attention_fwd_torch(kw, vw, qw, quad_weights,
                                                       col_idx, row_off,
                                                       nlon_in, nlat_out, nlon_out)
 
@@ -549,17 +549,17 @@ class _NeighborhoodAttentionS2(torch.autograd.Function):
         B, _, H, W  = grad_output.shape
         grad_output = grad_output.reshape(B*nh, -1, H, W)
 
-        dvw = _neighborhood_attention_s2_bwd_dv_torch(kw, vw, qw, grad_output,
+        dvw = _neighborhood_s2_attention_bwd_dv_torch(kw, vw, qw, grad_output,
                                                       quad_weights,
                                                       col_idx, row_off,
                                                       nlon_in, nlat_out, nlon_out)
 
-        dkw = _neighborhood_attention_s2_bwd_dk_torch(kw, vw, qw, grad_output,
+        dkw = _neighborhood_s2_attention_bwd_dk_torch(kw, vw, qw, grad_output,
                                                       quad_weights,
                                                       col_idx, row_off,
                                                       nlon_in, nlat_out, nlon_out)
 
-        dqw = _neighborhood_attention_s2_bwd_dq_torch(kw, vw, qw, grad_output,
+        dqw = _neighborhood_s2_attention_bwd_dq_torch(kw, vw, qw, grad_output,
                                                       quad_weights,
                                                       col_idx, row_off,
                                                       nlon_in, nlat_out, nlon_out)

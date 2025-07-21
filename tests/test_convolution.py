@@ -497,7 +497,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         if not transpose:
             inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
         else:
-            inp = torch.randn(batch_size, conv.kernel_size,in_channels, *in_shape, device=self.device)
+            inp = torch.randn(batch_size, conv.kernel_size, in_channels, *in_shape, device=self.device)
 
         test_inputs = (inp, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals, 
                        conv.kernel_size, conv.nlat_out, conv.nlon_out)
