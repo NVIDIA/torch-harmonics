@@ -81,10 +81,9 @@ class TestLegendrePolynomials(unittest.TestCase):
 class TestSphericalHarmonicTransform(unittest.TestCase):
     """Test the spherical harmonic transform (CPU/CUDA if available)."""
     def setUp(self):
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda")
-        else:
-            self.device = torch.device("cpu")
+        torch.manual_seed(333)
+        if self.device.type == "cuda":
+            torch.cuda.manual_seed(333)
 
     @parameterized.expand(
         [
