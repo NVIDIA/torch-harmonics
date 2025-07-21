@@ -33,7 +33,6 @@
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/cuda/detail/KernelUtils.h>
 #include <ATen/cuda/detail/IndexUtils.cuh>
-#include <ATen/cuda/CUDAUtils.h>
 
 #include <cuda_runtime.h>
 
