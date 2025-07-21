@@ -78,9 +78,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_dkvq_cp
                 int64_t wip = (wi+wo) % nlon_in;
 
                 // compute correlation & softmax numerator
-                auto q_ho_wo = qy.index({Slice(0, -1), Slice(0, -1), ho, wo});
-                auto k_hi_wi = kx.index({Slice(0, -1), Slice(0, -1), hi, wip});
-                qdotk_nz.index({Slice(0, -1), idz-zstart}) = torch::sum(q_ho_wo * k_hi_wi, 1);
+                auto q_ho_wo = qy.index({Slice(), Slice(), ho, wo});
+                auto k_hi_wi = kx.index({Slice(), Slice(), hi, wip});
+                qdotk_nz.index({Slice(), idz-zstart}) = torch::sum(q_ho_wo * k_hi_wi, 1);
             }
 
             auto qdotk_max = std::get<0>(torch::max(qdotk_nz, 1));
@@ -95,18 +95,18 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_dkvq_cp
                 int64_t wip = (wi+wo) % nlon_in;
             
                 // alpha update
-                alpha_nz.index({Slice(0, -1), idz-zstart}) = torch::exp(qdotk_nz.index({Slice(0, -1), idz-zstart}) - qdotk_max) * quad_weights.index({hi});
+                alpha_nz.index({Slice(), idz-zstart}) = torch::exp(qdotk_nz.index({Slice(), idz-zstart}) - qdotk_max) * quad_weights.index({hi});
                 alpha_sum = alpha_nz + alpha_sum;
 
                 // input dot
-                auto gdotv = torch::sum(dy.index({Slice(0, -1), Slice(0, -1), ho, wo}) * vx.index({Slice(0, -1), Slice(0, -1), hi, wip}), 1);
-                alpha_gdotv += alpha_nz.index({Slice(0, -1), idz-zstart}) * gdotv;
+                auto gdotv = torch::sum(dy.index({Slice(), Slice(), ho, wo}) * vx.index({Slice(), Slice(), hi, wip}), 1);
+                alpha_gdotv += alpha_nz.index({Slice(), idz-zstart}) * gdotv;
 
                 // alpha_k
-                auto k_hi_wi = kx.index({Slice(0, -1), Slice(0, -1), hi, wip});
-                alpha_k += alpha_nz.unsqueeze(1).index({Slice(0, -1), Slice(0, -1), idz-zstart}) * k_hi_wi;
+                auto k_hi_wi = kx.index({Slice(), Slice(), hi, wip});
+                alpha_k += alpha_nz.unsqueeze(1).index({Slice(), Slice(), idz-zstart}) * k_hi_wi;
                 // alpha_k_gdotv
-                alpha_k_gdotv += alpha_gdotv.unsqueeze(1).index({Slice(0, -1), Slice(0, -1), idz-zstart}) * k_hi_wi;
+                alpha_k_gdotv += alpha_gdotv.unsqueeze(1).index({Slice(), Slice(), idz-zstart}) * k_hi_wi;
             }
 
             alpha_gdotv = alpha_gdotv / alpha_sum;
@@ -114,7 +114,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_dkvq_cp
             alpha_k_gdotv = alpha_k_gdotv / alpha_sum.unsqueeze(1);
 
             // dqy update
-            dqy.index({Slice(0, -1), Slice(0, -1), ho, wo}) = (alpha_k_gdotv - alpha_gdotv.unsqueeze(1) * alpha_k);
+            dqy.index({Slice(), Slice(), ho, wo}) = (alpha_k_gdotv - alpha_gdotv.unsqueeze(1) * alpha_k);
 
             for (int64_t idz = zstart; idz < zend; idz++) {
                 int64_t nz_col_idx = col_idx.index({idz}).item<int64_t>();
@@ -126,11 +126,11 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_dkvq_cp
                 int64_t wip = (wi+wo) % nlon_in;
 
                 // dvx update
-                dvx.index({Slice(0, -1), Slice(0, -1), hi, wip}) += (alpha_nz.unsqueeze(1).index({Slice(0, -1), Slice(0, -1), idz-zstart}) / alpha_sum.unsqueeze(1)) * dy.index({Slice(0, -1), Slice(0, -1), ho, wo});
+                dvx.index({Slice(), Slice(), hi, wip}) += (alpha_nz.unsqueeze(1).index({Slice(), Slice(), idz-zstart}) / alpha_sum.unsqueeze(1)) * dy.index({Slice(), Slice(), ho, wo});
 
                 // dkx update
-                auto gdotv = torch::sum(dy.index({Slice(0, -1), Slice(0, -1), ho, wo}) * vx.index({Slice(0, -1), Slice(0, -1), hi, wip}), 1);
-                dkx.index({Slice(0, -1), Slice(0, -1), hi, wip}) += qy.index({Slice(0, -1), Slice(0, -1), ho, wo}) * (alpha_nz.unsqueeze(1).index({Slice(0, -1), Slice(0, -1), idz-zstart}) / alpha_sum.unsqueeze(1)) * (gdotv - alpha_gdotv).unsqueeze(1);
+                auto gdotv = torch::sum(dy.index({Slice(), Slice(), ho, wo}) * vx.index({Slice(), Slice(), hi, wip}), 1);
+                dkx.index({Slice(), Slice(), hi, wip}) += qy.index({Slice(), Slice(), ho, wo}) * (alpha_nz.unsqueeze(1).index({Slice(), Slice(), idz-zstart}) / alpha_sum.unsqueeze(1)) * (gdotv - alpha_gdotv).unsqueeze(1);
             }
         }
     }

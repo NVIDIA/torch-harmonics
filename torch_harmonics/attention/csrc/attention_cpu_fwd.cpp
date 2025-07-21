@@ -69,8 +69,8 @@ namespace attention_kernels {
                     int64_t wip = (wi + wo) % nlon_in;
 
                     // compute correlation & softmax numerator
-                    auto q_ho_wo = qy.index({Slice(0, -1), Slice(0, -1), ho, wo});
-                    auto k_hi_wip = kx.index({Slice(0, -1), Slice(0, -1), hi, wip});
+                    auto q_ho_wo = qy.index({Slice(), Slice(), ho, wo});
+                    auto k_hi_wip = kx.index({Slice(), Slice(), hi, wip});
                     auto qdotk = torch::sum(q_ho_wo * k_hi_wip, 1);
 
                     // tmp max
@@ -81,12 +81,12 @@ namespace attention_kernels {
                     alpha_sum = alpha + alpha_sum * torch::exp(qdotk_max - qdotk_max_tmp);
 
                     // update output
-                    y.index({Slice(0, -1), Slice(0, -1), ho, wo}) = y.index({Slice(0, -1), Slice(0, -1), ho, wo}) * torch::exp(qdotk_max - qdotk_max_tmp).unsqueeze(1) + alpha.unsqueeze(1) * vx.index({Slice(0, -1), Slice(0, -1), hi, wip});
+                    y.index({Slice(), Slice(), ho, wo}) = y.index({Slice(), Slice(), ho, wo}) * torch::exp(qdotk_max - qdotk_max_tmp).unsqueeze(1) + alpha.unsqueeze(1) * vx.index({Slice(), Slice(), hi, wip});
 
                     // define new max
                     qdotk_max = qdotk_max_tmp;
                 }
-                y.index({Slice(0, -1), Slice(0, -1), ho, wo}) = y.index({Slice(0, -1), Slice(0, -1), ho, wo}) / alpha_sum.unsqueeze(1);
+                y.index({Slice(), Slice(), ho, wo}) = y.index({Slice(), Slice(), ho, wo}) / alpha_sum.unsqueeze(1);
             }
         }
         return y;
