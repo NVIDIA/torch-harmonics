@@ -195,6 +195,7 @@ class PiecewiseLinearFilterBasis(FilterBasis):
         return iidx, vals
 
     def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float):
+        """Computes the index set that falls into the kernel's support and returns both indices and values."""
 
         if self.kernel_shape[1] > 1:
             return self._compute_support_vals_anisotropic(r, phi, r_cutoff=r_cutoff)
