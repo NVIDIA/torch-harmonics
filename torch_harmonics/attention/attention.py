@@ -324,7 +324,7 @@ class NeighborhoodAttentionS2(nn.Module):
         query_scaled = query * self.scale
 
         # TODO: insert dimension checks for input
-        if query.is_cuda and optimized_kernels_is_available():
+        if optimized_kernels_is_available():
 
             out = _neighborhood_s2_attention_optimized(
                 key,
