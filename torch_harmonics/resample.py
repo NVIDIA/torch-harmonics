@@ -75,9 +75,9 @@ class ResampleS2(nn.Module):
         # we need to expand the solution to the poles before interpolating
         self.expand_poles = (self.lats_out > self.lats_in[-1]).any() or (self.lats_out < self.lats_in[0]).any()
         if self.expand_poles:
-            self.lats_in = torch.cat([torch.tensor([0.], dtype=torch.float64),
+            self.lats_in = torch.cat([torch.as_tensor([0.], dtype=torch.float64),
                                       self.lats_in,
-                                      torch.tensor([math.pi], dtype=torch.float64)]).contiguous()
+                                      torch.as_tensor([math.pi], dtype=torch.float64)]).contiguous()
 
         # prepare the interpolation by computing indices to the left and right of each output latitude
         lat_idx = torch.searchsorted(self.lats_in, self.lats_out, side="right") - 1
