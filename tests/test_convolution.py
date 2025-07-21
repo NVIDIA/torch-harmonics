@@ -48,7 +48,7 @@ if torch.cuda.is_available():
 
 def _normalize_convolution_tensor_dense(psi, quad_weights, transpose_normalization=False, basis_norm_mode="none", merge_quadrature=False, eps=1e-9):
     """Discretely normalizes the convolution tensor."""
-    
+
     kernel_size, nlat_out, nlon_out, nlat_in, nlon_in = psi.shape
     correction_factor = nlon_out / nlon_in
 
@@ -96,6 +96,7 @@ def _precompute_convolution_tensor_dense(
     basis_norm_mode="none",
     merge_quadrature=False,
 ):
+"""Helper routine to compute the convolution Tensor in a dense fashion."""
     assert len(in_shape) == 2
     assert len(out_shape) == 2
 
