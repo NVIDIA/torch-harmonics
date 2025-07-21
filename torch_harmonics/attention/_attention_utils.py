@@ -185,12 +185,12 @@ def _neighborhood_s2_attention_bwd_optimized(ctx, grad_output):
         dq = None
 
     # bias grads:
-    if bv_needs_grad
+    if bv_needs_grad:
         dbv = torch.sum(dvw, dim=(0,2,3))
     else:
         dbv = None
 
-    if bk_needs_grad
+    if bk_needs_grad:
         dbk = torch.sum(dkw, dim=(0,2,3))
     else:
         dbk = None
