@@ -40,12 +40,8 @@ import torch.nn as nn
 # from torch.autograd import gradcheck
 from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
 
-from torch_harmonics.attention._neighborhood_attention import (
-    _neighborhood_attention_s2_torch,
-    _neighborhood_attention_s2_fwd_torch,
-    _neighborhood_attention_s2_bwd_dv_torch,
-    _neighborhood_attention_s2_bwd_dk_torch,
-    _neighborhood_attention_s2_bwd_dq_torch,
+from torch_harmonics.attention._attention_utils import (
+    _neighborhood_s2_attention_torch,
 )
 
 # import custom C++/CUDA extensions
@@ -101,21 +97,18 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         inputs = {k: v.detach().clone().to(self.device).requires_grad_() for k, v in inputs_ref.items()}
 
         # reference input and model
-        model_ref = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True).to(
-            self.device
-        )
+        model_ref = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, optimized_kernel=False).to(self.device)
 
         # Device model and inputs
-        model = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True)
+        model = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, optimized_kernel=True)
 
         # Synchronize parameters of model
         model.load_state_dict(model_ref.state_dict())
-        model = model.to(self.device)
         for (name_ref, p_ref), (name, p) in zip(model_ref.named_parameters(), model.named_parameters()):
             self.assertTrue(torch.allclose(p_ref, p))
 
         # reference forward passes
-        out_ref = _neighborhood_attention_s2_torch(
+        out_ref = _neighborhood_s2_attention_torch(
             inputs_ref["k"],
             inputs_ref["v"],
             inputs_ref["q"] * model_ref.scale,
