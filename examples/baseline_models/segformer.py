@@ -41,6 +41,24 @@ from functools import partial
 
 
 class OverlapPatchMerging(nn.Module):
+    """
+    OverlapPatchMerging layer for merging patches.
+    
+    Parameters
+    -----------
+    in_shape : tuple
+        Input shape (height, width)
+    out_shape : tuple
+        Output shape (height, width)
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    kernel_shape : tuple
+        Kernel shape for convolution
+    bias : bool, optional
+        Whether to use bias, by default False
+    """
     def __init__(
         self,
         in_shape=(721, 1440),
@@ -88,6 +106,30 @@ class OverlapPatchMerging(nn.Module):
 
 
 class MixFFN(nn.Module):
+    """
+    MixFFN module combining MLP and depthwise convolution.
+    
+    Parameters
+    -----------
+    shape : tuple
+        Input shape (height, width)
+    inout_channels : int
+        Number of input/output channels
+    hidden_channels : int
+        Number of hidden channels in MLP
+    mlp_bias : bool, optional
+        Whether to use bias in MLP layers, by default True
+    kernel_shape : tuple, optional
+        Kernel shape for depthwise convolution, by default (3, 3)
+    conv_bias : bool, optional
+        Whether to use bias in convolution, by default False
+    activation : callable, optional
+        Activation function, by default nn.GELU
+    use_mlp : bool, optional
+        Whether to use MLP instead of linear layers, by default False
+    drop_path : float, optional
+        Drop path rate, by default 0.0
+    """
     def __init__(
         self,
         shape,
@@ -142,7 +184,7 @@ class MixFFN(nn.Module):
         x = x.permute(0, 3, 1, 2)
 
         # NOTE: we add another activation here
-        # because in the paper they only use depthwise conv,
+        # because in the paper the authors only use depthwise conv,
         # but without this activation it would just be a fused MM
         # with the disco conv
         x = self.mlp_in(x)
@@ -162,6 +204,17 @@ class GlobalAttention(nn.Module):
 
     Input shape: (B, C, H, W)
     Output shape: (B, C, H, W) with residual skip.
+    
+    Parameters
+    -----------
+    chans : int
+        Number of channels
+    num_heads : int, optional
+        Number of attention heads, by default 8
+    dropout : float, optional
+        Dropout rate, by default 0.0
+    bias : bool, optional
+        Whether to use bias, by default True
     """
 
     def __init__(self, chans, num_heads=8, dropout=0.0, bias=True):
@@ -169,6 +222,7 @@ class GlobalAttention(nn.Module):
         self.attn = nn.MultiheadAttention(embed_dim=chans, num_heads=num_heads, dropout=dropout, batch_first=True, bias=bias)
 
     def forward(self, x):
+
         # x: B, C, H, W
         B, H, W, C = x.shape
         # flatten spatial dims
@@ -181,6 +235,30 @@ class GlobalAttention(nn.Module):
 
 
 class AttentionWrapper(nn.Module):
+    """
+    Wrapper for different attention mechanisms.
+    
+    Parameters
+    -----------
+    channels : int
+        Number of channels
+    shape : tuple
+        Input shape (height, width)
+    heads : int
+        Number of attention heads
+    pre_norm : bool, optional
+        Whether to apply normalization before attention, by default False
+    attention_drop_rate : float, optional
+        Attention dropout rate, by default 0.0
+    drop_path : float, optional
+        Drop path rate, by default 0.0
+    attention_mode : str, optional
+        Attention mode ("neighborhood", "global"), by default "neighborhood"
+    kernel_shape : tuple, optional
+        Kernel shape for neighborhood attention, by default (7, 7)
+    bias : bool, optional
+        Whether to use bias, by default True
+    """
     def __init__(self, channels, shape, heads, pre_norm=False, attention_drop_rate=0.0, drop_path=0.0, attention_mode="neighborhood", kernel_shape=(7, 7), bias=True):
         super().__init__()
 
@@ -203,11 +281,13 @@ class AttentionWrapper(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
+
         if isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+
         residual = x
         x = x.permute(0, 2, 3, 1)
         if self.norm is not None:
@@ -219,6 +299,41 @@ class AttentionWrapper(nn.Module):
 
 
 class TransformerBlock(nn.Module):
+    """
+    Transformer block with attention and MLP.
+    
+    Parameters
+    ----------
+    in_shape : tuple
+        Input shape (height, width)
+    out_shape : tuple
+        Output shape (height, width)
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    mlp_hidden_channels : int
+        Number of hidden channels in MLP
+    nrep : int, optional
+        Number of repetitions of attention and MLP blocks, by default 1
+    heads : int, optional
+        Number of attention heads, by default 1
+    kernel_shape : tuple, optional
+        Kernel shape for neighborhood attention, by default (3, 3)
+    activation : torch.nn.Module, optional
+        Activation function to use, by default nn.GELU
+    att_drop_rate : float, optional
+        Attention dropout rate, by default 0.0
+    drop_path_rates : float or list, optional
+        Drop path rates for each block, by default 0.0
+    attention_mode : str, optional
+        Attention mode ("neighborhood", "global"), by default "neighborhood"
+    attn_kernel_shape : tuple, optional
+        Kernel shape for neighborhood attention, by default (7, 7)
+    bias : bool, optional
+        Whether to use bias, by default True
+    """
+    
     def __init__(
         self,
         in_shape,
@@ -341,6 +456,33 @@ class TransformerBlock(nn.Module):
 
 
 class Upsampling(nn.Module):
+    """
+    Upsampling block for the Segformer model.
+    
+    Parameters
+    ----------
+    in_shape : tuple
+        Input shape (height, width)
+    out_shape : tuple
+        Output shape (height, width)
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    hidden_channels : int
+        Number of hidden channels in MLP
+    mlp_bias : bool, optional
+        Whether to use bias in MLP, by default True
+    kernel_shape : tuple, optional
+        Kernel shape for convolution, by default (3, 3)
+    conv_bias : bool, optional
+        Whether to use bias in convolution, by default False
+    activation : torch.nn.Module, optional
+        Activation function to use, by default nn.GELU
+    use_mlp : bool, optional
+        Whether to use MLP, by default False
+    """
+    
     def __init__(
         self,
         in_shape,
@@ -382,7 +524,7 @@ class Segformer(nn.Module):
     Spherical segformer model designed to approximate mappings from spherical signals to spherical segmentation masks
 
     Parameters
-    -----------
+    ----------
     img_shape : tuple, optional
         Shape of the input channels, by default (128, 256)
     kernel_shape: tuple, int
@@ -414,7 +556,7 @@ class Segformer(nn.Module):
         Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "instance_norm"
 
     Example
-    -----------
+    ----------
     >>> model = Segformer(
     ...         img_size=(128, 256),
     ...         in_chans=3,

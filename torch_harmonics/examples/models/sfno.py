@@ -43,6 +43,40 @@ from functools import partial
 class SphericalFourierNeuralOperatorBlock(nn.Module):
     """
     Helper module for a single SFNO/FNO block. Can use both FFTs and SHTs to represent either FNO or SFNO blocks.
+
+    Parameters
+    ----------
+    forward_transform : torch.nn.Module
+        Forward transform to use for the block
+    inverse_transform : torch.nn.Module
+        Inverse transform to use for the block
+    input_dim : int
+        Input dimension
+    output_dim : int
+        Output dimension
+    mlp_ratio : float, optional
+        MLP expansion ratio, by default 2.0
+    drop_rate : float, optional
+        Dropout rate, by default 0.0
+    drop_path : float, optional
+        Drop path rate, by default 0.0
+    act_layer : torch.nn.Module, optional
+        Activation function to use, by default nn.GELU
+    norm_layer : str, optional
+        Type of normalization to use, by default "none"
+    inner_skip : str, optional
+        Type of inner skip connection to use, by default "none"
+    outer_skip : str, optional
+        Type of outer skip connection to use, by default "identity"
+    use_mlp : bool, optional
+        Whether to use MLP layers, by default True
+    bias : bool, optional
+        Whether to use bias, by default False
+
+    Returns
+    -------
+    torch.Tensor
+        Output tensor
     """
 
     def __init__(
@@ -118,7 +152,6 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         else:
             raise ValueError(f"Unknown skip connection type {outer_skip}")
 
-
     def forward(self, x):
 
         x, residual = self.global_conv(x)
@@ -147,8 +180,12 @@ class SphericalFourierNeuralOperator(nn.Module):
 
     Parameters
     ----------
-    img_shape : tuple, optional
+    img_size : tuple, optional
         Shape of the input channels, by default (128, 256)
+    grid : str, optional
+        Input grid type, by default "equiangular"
+    grid_internal : str, optional
+        Internal grid type for computations, by default "legendre-gauss"
     scale_factor : int, optional
         Scale factor to use, by default 3
     in_chans : int, optional
@@ -172,20 +209,20 @@ class SphericalFourierNeuralOperator(nn.Module):
     drop_path_rate : float, optional
         Dropout path rate, by default 0.0
     normalization_layer : str, optional
-        Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "instance_norm"
+        Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "none"
     hard_thresholding_fraction : float, optional
         Fraction of hard thresholding (frequency cutoff) to apply, by default 1.0
     residual_prediction : bool, optional
-        Whether to add a single large skip connection, by default True
-    pos_embed : bool, optional
-        Whether to use positional embedding, by default True
+        Whether to add a single large skip connection, by default False
+    pos_embed : str, optional
+        Type of positional embedding to use, by default "none"
     bias : bool, optional
         Whether to use a bias, by default False
 
     Example:
-    --------
+    ----------
     >>> model = SphericalFourierNeuralOperator(
-    ...         img_shape=(128, 256),
+    ...         img_size=(128, 256),
     ...         scale_factor=4,
     ...         in_chans=2,
     ...         out_chans=2,
@@ -196,7 +233,7 @@ class SphericalFourierNeuralOperator(nn.Module):
     torch.Size([1, 2, 128, 256])
 
     References
-    -----------
+    ----------
     .. [1] Bonev B., Kurth T., Hundt C., Pathak, J., Baust M., Kashinath K., Anandkumar A.;
         "Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere" (2023).
         ICML 2023, https://arxiv.org/abs/2306.03838.

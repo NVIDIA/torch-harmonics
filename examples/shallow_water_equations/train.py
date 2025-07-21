@@ -68,9 +68,6 @@ def count_parameters(model):
 
 # convenience function for logging weights and gradients
 def log_weights_and_grads(model, iters=1):
-    """
-    Helper routine intended for debugging purposes
-    """
     root_path = os.path.join(os.path.dirname(__file__), "weights_and_grads")
 
     weights_and_grads_fname = os.path.join(root_path, f"weights_and_grads_step{iters:03d}.tar")
@@ -238,7 +235,7 @@ def train_model(
     logging=True,
     device=torch.device("cpu"),
 ):
-
+   
     train_start = time.time()
 
     # set AMP type

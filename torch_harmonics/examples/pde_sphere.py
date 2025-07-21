@@ -42,7 +42,27 @@ import numpy as np
 class SphereSolver(nn.Module):
     """
     Solver class on the sphere. Can solve the following PDEs:
-    - Allen-Cahn eq
+    - Allen-Cahn equation
+    - Ginzburg-Landau equation
+    
+    Parameters
+    -----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    dt : float
+        Time step size
+    lmax : int, optional
+        Maximum l mode for spherical harmonics, by default None
+    mmax : int, optional
+        Maximum m mode for spherical harmonics, by default None
+    grid : str, optional
+        Grid type ("equiangular", "legendre-gauss", "lobatto"), by default "equiangular"
+    radius : float, optional
+        Radius of the sphere, by default 1.0
+    coeff : float, optional
+        Coefficient for the PDE, by default 0.001
     """
 
     def __init__(self, nlat, nlon, dt, lmax=None, mmax=None, grid="equiangular", radius=1.0, coeff=0.001):
@@ -97,17 +117,15 @@ class SphereSolver(nn.Module):
         self.register_buffer('invlap', invlap)
 
     def grid2spec(self, u):
-        """spectral coefficients from spatial data"""
-
         return self.sht(u)
 
     def spec2grid(self, uspec):
-        """spatial data from spectral coefficients"""
-
+        """Convert spectral coefficients to spatial data."""
         return self.isht(uspec)
 
     def dudtspec(self, uspec, pde='allen-cahn'):
-
+        """Compute the time derivative of spectral coefficients for different PDEs."""
+            
         if pde == 'allen-cahn':
             ugrid = self.spec2grid(uspec)
             u3spec  = self.grid2spec(ugrid**3)
@@ -117,20 +135,48 @@ class SphereSolver(nn.Module):
             u3spec  = self.grid2spec(ugrid**3)
             dudtspec = uspec + (1. + 2.j)*self.coeff*self.lap*uspec - (1. + 2.j)*u3spec
         else:
-            NotImplementedError
+            raise NotImplementedError(f"PDE type {pde} not implemented")
 
         return dudtspec
 
     def randspec(self):
-        """random data on the sphere"""
-
+        """Generate random spectral data on the sphere."""
         rspec = torch.randn_like(self.lap) / 4 / torch.pi
         return rspec
 
 
     def plot_griddata(self, data, fig, cmap='twilight_shifted', vmax=None, vmin=None, projection='3d', title=None, antialiased=False):
         """
-        plotting routine for data on the grid. Requires cartopy for 3d plots.
+        Plot data on the sphere grid. Requires cartopy for 3d plots.
+        
+        Parameters
+        -----------
+        data : torch.Tensor
+            Data to plot
+        fig : matplotlib.figure.Figure
+            Figure to plot on
+        cmap : str, optional
+            Colormap name, by default 'twilight_shifted'
+        vmax : float, optional
+            Maximum value for color scaling, by default None
+        vmin : float, optional
+            Minimum value for color scaling, by default None
+        projection : str, optional
+            Projection type ("mollweide", "3d"), by default "3d"
+        title : str, optional
+            Plot title, by default None
+        antialiased : bool, optional
+            Whether to use antialiasing, by default False
+            
+        Returns
+        -------
+        matplotlib.collections.QuadMesh
+            The plotted image object
+            
+        Raises
+        ------
+        NotImplementedError
+            If projection type is not supported
         """
         import matplotlib.pyplot as plt
 
@@ -172,9 +218,10 @@ class SphereSolver(nn.Module):
             plt.title(title, y=1.05)
 
         else:
-            raise NotImplementedError
+            raise NotImplementedError(f"Projection {projection} not implemented")
 
         return im
 
     def plot_specdata(self, data, fig, **kwargs):
+        """Plot spectral data by converting to spatial data first."""
         return self.plot_griddata(self.isht(data), fig, **kwargs)

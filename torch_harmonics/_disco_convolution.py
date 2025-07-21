@@ -42,7 +42,7 @@ except ImportError as err:
 
 # some helper functions
 def _get_psi(kernel_size: int, psi_idx: torch.Tensor, psi_vals: torch.Tensor, nlat_in: int, nlon_in: int, nlat_out: int, nlon_out: int, nlat_in_local: Optional[int] = None, nlat_out_local: Optional[int] = None, semi_transposed: Optional[bool] = False):
-
+    """Creates a sparse tensor for spherical harmonic convolution operations."""
     nlat_in_local = nlat_in_local if nlat_in_local is not None else nlat_in
     nlat_out_local = nlat_out_local if nlat_out_local is not None else nlat_out
     
@@ -67,6 +67,7 @@ class _DiscoS2ContractionCuda(torch.autograd.Function):
     def forward(ctx, x: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
                 row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
                 kernel_size: int, nlat_out: int, nlon_out: int):
+        
         ctx.save_for_backward(roff_idx, ker_idx, row_idx, col_idx, vals)
         ctx.kernel_size = kernel_size
         ctx.nlat_in = x.shape[-2]
@@ -81,6 +82,7 @@ class _DiscoS2ContractionCuda(torch.autograd.Function):
     @staticmethod
     @custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
+
         roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
         gtype =	grad_output.dtype
         grad_output = grad_output.to(torch.float32).contiguous()
@@ -97,6 +99,7 @@ class _DiscoS2TransposeContractionCuda(torch.autograd.Function):
     def forward(ctx, x: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
                 row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
                 kernel_size: int, nlat_out: int, nlon_out: int):
+        
         ctx.save_for_backward(roff_idx, ker_idx, row_idx, col_idx, vals)
         ctx.kernel_size = kernel_size
         ctx.nlat_in = x.shape[-2]
@@ -111,6 +114,7 @@ class _DiscoS2TransposeContractionCuda(torch.autograd.Function):
     @staticmethod
     @custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
+       
         roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
         gtype = grad_output.dtype
         grad_output = grad_output.to(torch.float32).contiguous()
@@ -140,6 +144,7 @@ def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: in
     shifting of the input tensor, which can potentially be costly. For an efficient implementation
     on GPU, make sure to use the custom kernel written in CUDA.
     """
+    
     assert len(psi.shape) == 3
     assert len(x.shape) == 4
     psi = psi.to(x.device)
@@ -171,11 +176,6 @@ def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: in
 
 
 def _disco_s2_transpose_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
-    """
-    Reference implementation of the custom contraction as described in [1]. This requires repeated
-    shifting of the input tensor, which can potentially be costly. For an efficient implementation
-    on GPU, make sure to use the custom kernel written in CUDA.
-    """
     assert len(psi.shape) == 3
     assert len(x.shape) == 5
     psi = psi.to(x.device)

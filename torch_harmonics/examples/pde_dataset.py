@@ -37,7 +37,38 @@ from .shallow_water_equations import ShallowWaterSolver
 
 
 class PdeDataset(torch.utils.data.Dataset):
-    """Custom Dataset class for PDE training data"""
+    """Custom Dataset class for PDE training data
+
+    Parameters
+    ----------
+    dt : float
+        Time step
+    nsteps : int
+        Number of solver steps
+    dims : tuple, optional
+        Number of latitude and longitude points, by default (384, 768)
+    grid : str, optional
+        Grid type, by default "equiangular"
+    pde : str, optional
+        PDE type, by default "shallow water equations"
+    initial_condition : str, optional
+        Initial condition type, by default "random"
+    num_examples : int, optional
+        Number of examples, by default 32
+    device : torch.device, optional
+        Device to use, by default torch.device("cpu")
+    normalize : bool, optional
+        Whether to normalize the input and target, by default True
+    stream : torch.cuda.Stream, optional
+        CUDA stream to use, by default None
+
+    Returns
+    -------
+    inp : torch.Tensor
+        Input tensor
+    tar : torch.Tensor
+        Target tensor
+    """
 
     def __init__(
         self,

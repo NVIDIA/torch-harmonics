@@ -57,11 +57,34 @@ class Encoder(nn.Module):
         self.conv = nn.Conv2d(in_chans, out_chans, kernel_size=kernel_shape, bias=bias, stride=(stride_h, stride_w), padding=(pad_h, pad_w), groups=groups)
 
     def forward(self, x):
+
         x = self.conv(x)
         return x
 
 
 class Decoder(nn.Module):
+    """
+    Decoder module for upsampling and feature processing.
+    
+    Parameters
+    -----------
+    in_shape : tuple, optional
+        Input shape (height, width), by default (480, 960)
+    out_shape : tuple, optional
+        Output shape (height, width), by default (721, 1440)
+    in_chans : int, optional
+        Number of input channels, by default 2
+    out_chans : int, optional
+        Number of output channels, by default 2
+    kernel_shape : tuple, optional
+        Kernel shape for convolution, by default (3, 3)
+    groups : int, optional
+        Number of groups for convolution, by default 1
+    bias : bool, optional
+        Whether to use bias, by default False
+    upsampling_method : str, optional
+        Upsampling method ("conv", "pixel_shuffle"), by default "conv"
+    """
     def __init__(self, in_shape=(480, 960), out_shape=(721, 1440), in_chans=2, out_chans=2, kernel_shape=(3, 3), groups=1, bias=False, upsampling_method="conv"):
         super().__init__()
         self.out_shape = out_shape
@@ -87,6 +110,7 @@ class Decoder(nn.Module):
             raise ValueError(f"Unknown upsampling method {upsampling_method}")
 
     def forward(self, x):
+
         x = self.upsample(x)
         return x
 
@@ -97,6 +121,17 @@ class GlobalAttention(nn.Module):
 
     Input shape: (B, C, H, W)
     Output shape: (B, C, H, W) with residual skip.
+    
+    Parameters
+    -----------
+    chans : int
+        Number of channels
+    num_heads : int, optional
+        Number of attention heads, by default 8
+    dropout : float, optional
+        Dropout rate, by default 0.0
+    bias : bool, optional
+        Whether to use bias, by default True
     """
 
     def __init__(self, chans, num_heads=8, dropout=0.0, bias=True):
@@ -104,6 +139,7 @@ class GlobalAttention(nn.Module):
         self.attn = nn.MultiheadAttention(embed_dim=chans, num_heads=num_heads, dropout=dropout, batch_first=True, bias=bias)
 
     def forward(self, x):
+
         # x: B, C, H, W
         B, H, W, C = x.shape
         # flatten spatial dims
@@ -118,8 +154,36 @@ class GlobalAttention(nn.Module):
 class AttentionBlock(nn.Module):
     """
     Neighborhood attention block based on Natten.
+    
+    Parameters
+    -----------
+    in_shape : tuple, optional
+        Input shape (height, width), by default (480, 960)
+    out_shape : tuple, optional
+        Output shape (height, width), by default (480, 960)
+    chans : int, optional
+        Number of channels, by default 2
+    num_heads : int, optional
+        Number of attention heads, by default 1
+    mlp_ratio : float, optional
+        Ratio of MLP hidden dim to input dim, by default 2.0
+    drop_rate : float, optional
+        Dropout rate, by default 0.0
+    drop_path : float, optional
+        Drop path rate, by default 0.0
+    act_layer : callable, optional
+        Activation function, by default nn.GELU
+    norm_layer : str, optional
+        Normalization layer type, by default "none"
+    use_mlp : bool, optional
+        Whether to use MLP, by default True
+    bias : bool, optional
+        Whether to use bias, by default True
+    attention_mode : str, optional
+        Attention mode ("neighborhood", "global"), by default "neighborhood"
+    attn_kernel_shape : tuple, optional
+        Kernel shape for neighborhood attention, by default (7, 7)
     """
-
     def __init__(
         self,
         in_shape=(480, 960),

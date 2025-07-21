@@ -58,21 +58,35 @@ class Stanford2D3DSDownloader:
     """
     Convenience class for downloading the 2d3ds dataset [1].
 
+    Parameters
+    ----------
+    base_url : str, optional
+        Base URL for downloading the dataset, by default DEFAULT_BASE_URL
+    local_dir : str, optional
+        Local directory to store downloaded files, by default "data"
+
+    Returns
+    -------
+    data_folders : list
+        List of extracted directory names
+    class_labels : list
+        List of semantic class labels
+
     References
-    -----------
+    ----------
     .. [1] Armeni, I.,  Sax, S.,  Zamir, A. R.,  Savarese, S.;
         "Joint 2D-3D-Semantic Data for Indoor Scene Understanding" (2017).
         https://arxiv.org/abs/1702.01105.
     """
 
     def __init__(self, base_url: str = DEFAULT_BASE_URL, local_dir: str = "data"):
-
+       
         self.base_url = base_url
         self.local_dir = local_dir
         os.makedirs(self.local_dir, exist_ok=True)
 
     def _download_file(self, filename):
-
+        
         import requests
         from tqdm import tqdm
 
@@ -106,6 +120,7 @@ class Stanford2D3DSDownloader:
         return local_path
 
     def _extract_tar(self, tar_path):
+        
         import tarfile
 
         with tarfile.open(tar_path) as tar:
@@ -116,7 +131,20 @@ class Stanford2D3DSDownloader:
             return extracted_dir
 
     def download_dataset(self, file_extracted_directory_pairs=DEFAULT_TAR_FILE_PAIRS):
-
+        """
+        Download and extract the complete dataset.
+        
+        Parameters
+        -----------
+        file_extracted_directory_pairs : list, optional
+            List of (filename, extracted_folder_name) pairs, by default DEFAULT_TAR_FILE_PAIRS
+            
+        Returns
+        -------
+        tuple
+            (data_folders, class_labels) where data_folders is a list of extracted directory names
+            and class_labels is the semantic label mapping
+        """
         import requests
 
         data_folders = []
@@ -133,6 +161,7 @@ class Stanford2D3DSDownloader:
         return data_folders, class_labels
 
     def _rgb_to_id(self, img, class_labels_map, class_labels_indices):
+        
         # Convert to int32 first to avoid overflow
         r = img[..., 0].astype(np.int32)
         g = img[..., 1].astype(np.int32)
@@ -167,7 +196,35 @@ class Stanford2D3DSDownloader:
         downsampling_factor: int = 16,
         remove_alpha_channel: bool = True,
     ):
-
+        """
+        Convert the downloaded dataset to HDF5 format for efficient loading.
+        
+        Parameters
+        -----------
+        data_folders : list
+            List of extracted data folder names
+        class_labels : list
+            List of semantic class labels
+        rgb_path : str, optional
+            Relative path to RGB images within each data folder, by default "pano/rgb"
+        semantic_path : str, optional
+            Relative path to semantic labels within each data folder, by default "pano/semantic"
+        depth_path : str, optional
+            Relative path to depth images within each data folder, by default "pano/depth"
+        output_filename : str, optional
+            Suffix for semantic label files, by default "semantic"
+        dataset_file : str, optional
+            Output HDF5 filename, by default "stanford_2d3ds_dataset.h5"
+        downsampling_factor : int, optional
+            Factor by which to downsample images, by default 16
+        remove_alpha_channel : bool, optional
+            Whether to remove alpha channel from RGB images, by default True
+            
+        Returns
+        -------
+        str
+            Path to the created HDF5 dataset file
+        """
         converted_dataset_path = os.path.join(self.local_dir, dataset_file)
 
         from PIL import Image
@@ -391,8 +448,24 @@ class StanfordSegmentationDataset(Dataset):
     """
     Spherical segmentation dataset from [1].
 
+    Parameters
+    ----------
+    dataset_file : str
+        Path to the HDF5 dataset file
+    ignore_alpha_channel : bool, optional
+        Whether to ignore the alpha channel in the RGB images, by default True
+    log_depth : bool, optional
+        Whether to log the depth values, by default False
+    exclude_polar_fraction : float, optional
+        Fraction of polar points to exclude, by default 0.0
+
+    Returns
+    -------
+    StanfordSegmentationDataset
+        Dataset object
+
     References
-    -----------
+    ----------
     .. [1] Armeni, I.,  Sax, S.,  Zamir, A. R.,  Savarese, S.;
         "Joint 2D-3D-Semantic Data for Indoor Scene Understanding" (2017).
         https://arxiv.org/abs/1702.01105.
@@ -528,8 +601,19 @@ class StanfordDepthDataset(Dataset):
     """
     Spherical segmentation dataset from [1].
 
+    Parameters
+    ----------
+    dataset_file : str
+        Path to the HDF5 dataset file
+    ignore_alpha_channel : bool, optional
+        Whether to ignore the alpha channel in the RGB images, by default True
+    log_depth : bool, optional
+        Whether to log the depth values, by default False
+    exclude_polar_fraction : float, optional
+        Fraction of polar points to exclude, by default 0.0
+
     References
-    -----------
+    ----------
     .. [1] Armeni, I.,  Sax, S.,  Zamir, A. R.,  Savarese, S.;
         "Joint 2D-3D-Semantic Data for Indoor Scene Understanding" (2017).
         https://arxiv.org/abs/1702.01105.
@@ -620,7 +704,8 @@ class StanfordDepthDataset(Dataset):
 
 def compute_stats_s2(dataset: Dataset, normalize_target: bool = False):
     """
-    Compute stats using parallel welford reduction and quadrature on the sphere. The parallel welford reduction follows this article (parallel algorithm): https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
+    Compute stats using parallel welford reduction and quadrature on the sphere. 
+    The parallel welford reduction follows this article (parallel algorithm): https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
     """
 
     nexamples = len(dataset)

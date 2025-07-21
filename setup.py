@@ -55,6 +55,7 @@ except (ImportError, TypeError, AssertionError, AttributeError) as e:
 
 def get_compile_args(module_name):
     """If user runs build with TORCH_HARMONICS_DEBUG=1 set, it will use debugging flags to build"""
+    
     debug_mode = os.environ.get('TORCH_HARMONICS_DEBUG', '0') == '1'
     profile_mode = os.environ.get('TORCH_HARMONICS_PROFILE', '0') == '1'
 
@@ -77,7 +78,8 @@ def get_compile_args(module_name):
         }
 
 def get_ext_modules():
-
+    """Get list of extension modules to compile."""
+    
     ext_modules = []
     cmdclass = {}
 

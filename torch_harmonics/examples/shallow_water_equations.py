@@ -41,7 +41,35 @@ import numpy as np
 
 class ShallowWaterSolver(nn.Module):
     """
-    SWE solver class. Interface inspired bu pyspharm and SHTns
+    Shallow Water Equations (SWE) solver class for spherical geometry.
+    
+    Interface inspired by pyspharm and SHTns. Solves the shallow water equations
+    on a rotating sphere using spectral methods.
+    
+    Parameters
+    -----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    dt : float
+        Time step size
+    lmax : int, optional
+        Maximum l mode for spherical harmonics, by default None
+    mmax : int, optional
+        Maximum m mode for spherical harmonics, by default None
+    grid : str, optional
+        Grid type ("equiangular", "legendre-gauss", "lobatto"), by default "equiangular"
+    radius : float, optional
+        Radius of the sphere in meters, by default 6.37122E6 (Earth radius)
+    omega : float, optional
+        Angular velocity of rotation in rad/s, by default 7.292E-5 (Earth)
+    gravity : float, optional
+        Gravitational acceleration in m/s², by default 9.80616
+    havg : float, optional
+        Average height in meters, by default 10.e3
+    hamp : float, optional
+        Height amplitude in meters, by default 120.
     """
 
     def __init__(self, nlat, nlon, dt, lmax=None, mmax=None, grid="equiangular", radius=6.37122E6, \
@@ -114,58 +142,43 @@ class ShallowWaterSolver(nn.Module):
         self.register_buffer('quad_weights', quad_weights)
 
     def grid2spec(self, ugrid):
-        """
-        spectral coefficients from spatial data
-        """
+        """Convert spatial data to spectral coefficients."""
         return self.sht(ugrid)
 
     def spec2grid(self, uspec):
-        """
-        spatial data from spectral coefficients
-        """
+        """Convert spectral coefficients to spatial data."""
         return self.isht(uspec)
 
     def vrtdivspec(self, ugrid):
-        """spatial data from spectral coefficients"""
+        """Compute vorticity and divergence from velocity field."""
         vrtdivspec = self.lap * self.radius * self.vsht(ugrid)
         return vrtdivspec
 
     def getuv(self, vrtdivspec):
-        """
-        compute wind vector from spectral coeffs of vorticity and divergence
-        """
+        """Compute wind vector from spectral coefficients of vorticity and divergence."""
         return self.ivsht( self.invlap * vrtdivspec / self.radius)
 
     def gethuv(self, uspec):
-        """
-        compute wind vector from spectral coeffs of vorticity and divergence
-        """
+        """Compute height and wind vector from spectral coefficients."""
         hgrid = self.spec2grid(uspec[:1])
         uvgrid = self.getuv(uspec[1:])
         return torch.cat((hgrid, uvgrid), dim=-3)
 
     def potential_vorticity(self, uspec):
-        """
-        Compute potential vorticity
-        """
+        """Compute potential vorticity from spectral coefficients."""
         ugrid = self.spec2grid(uspec)
         pvrt = (0.5 * self.havg * self.gravity / self.omega) * (ugrid[1] + self.coriolis) / ugrid[0]
         return pvrt
 
     def dimensionless(self, uspec):
-        """
-        Remove dimensions from variables
-        """
+        """Remove dimensions from variables for dimensionless analysis."""
         uspec[0] = (uspec[0] - self.havg * self.gravity) / self.hamp / self.gravity
         # vorticity is measured in 1/s so we normalize using sqrt(g h) / r
         uspec[1:] = uspec[1:] * self.radius / torch.sqrt(self.gravity * self.havg)
         return uspec
 
     def dudtspec(self, uspec):
-        """
-        Compute time derivatives from solution represented in spectral coefficients
-        """
-
+        """Compute time derivatives from solution represented in spectral coefficients."""
         dudtspec = torch.zeros_like(uspec)
 
         # compute the derivatives - this should be incorporated into the solver:
@@ -190,12 +203,7 @@ class ShallowWaterSolver(nn.Module):
         return dudtspec
 
     def galewsky_initial_condition(self):
-        """
-        Initializes non-linear barotropically unstable shallow water test case of Galewsky et al. (2004, Tellus, 56A, 429-440).
-
-        [1] Galewsky; An initial-value problem for testing numerical models of the global shallow-water equations;
-            DOI: 10.1111/j.1600-0870.2004.00071.x; http://www-vortex.mcs.st-and.ac.uk/~rks/reprints/galewsky_etal_tellus_2004.pdf
-        """
+        """Initialize non-linear barotropically unstable shallow water test case."""
         device = self.lap.device
 
         umax = 80.
@@ -233,9 +241,7 @@ class ShallowWaterSolver(nn.Module):
         return torch.tril(uspec)
 
     def random_initial_condition(self, mach=0.1) -> torch.Tensor:
-        """
-        random initial condition on the sphere
-        """
+        """Generate random initial condition on the sphere."""
         device = self.lap.device
         ctype = torch.complex128 if self.lap.dtype == torch.float64 else torch.complex64
 
@@ -281,10 +287,7 @@ class ShallowWaterSolver(nn.Module):
         return torch.tril(uspec)
 
     def timestep(self, uspec: torch.Tensor, nsteps: int) -> torch.Tensor:
-        """
-        Integrate the solution using Adams-Bashforth / forward Euler for nsteps steps.
-        """
-
+        """Integrate the solution using Adams-Bashforth / forward Euler for nsteps steps."""
         dudtspec = torch.zeros(3, 3, self.lmax, self.mmax, dtype=uspec.dtype, device=uspec.device)
 
         # pointers to indicate the most current result
@@ -316,6 +319,7 @@ class ShallowWaterSolver(nn.Module):
         return uspec
 
     def integrate_grid(self, ugrid, dimensionless=False, polar_opt=0):
+        """Integrate the solution on the grid."""
         dlon = 2 * torch.pi / self.nlon
         radius = 1 if dimensionless else self.radius
         if polar_opt > 0:
@@ -326,9 +330,7 @@ class ShallowWaterSolver(nn.Module):
 
 
     def plot_griddata(self, data, fig, cmap='twilight_shifted', vmax=None, vmin=None, projection='3d', title=None, antialiased=False):
-        """
-        plotting routine for data on the grid. Requires cartopy for 3d plots.
-        """
+        """Plotting routine for data on the grid. Requires cartopy for 3d plots."""
         import matplotlib.pyplot as plt
 
         lons = self.lons.squeeze() - torch.pi

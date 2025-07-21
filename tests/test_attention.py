@@ -67,6 +67,8 @@ _perf_test_thresholds = {"fwd_ms": 50, "bwd_ms": 150}
 
 @parameterized_class(("device"), _devices)
 class TestNeighborhoodAttentionS2(unittest.TestCase):
+    """Test the neighborhood attention module (CPU/CUDA if available)."""
+    
     def setUp(self):
         torch.manual_seed(333)
         if self.device.type == "cuda":

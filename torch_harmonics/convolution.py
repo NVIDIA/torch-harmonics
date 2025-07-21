@@ -60,11 +60,45 @@ except ImportError as err:
 def _normalize_convolution_tensor_s2(
     psi_idx, psi_vals, in_shape, out_shape, kernel_size, quad_weights, transpose_normalization=False, basis_norm_mode="mean", merge_quadrature=False, eps=1e-9
 ):
-    """
-    Discretely normalizes the convolution tensor and pre-applies quadrature weights. Supports the following three normalization modes:
-    - "none": No normalization is applied.
-    - "individual": for each output latitude and filter basis function the filter is numerically integrated over the sphere and normalized so that it yields 1.
-    - "mean": the norm is computed for each output latitude and then averaged over the output latitudes. Each basis function is then normalized by this mean.
+    """Normalizes convolution tensor values based on specified normalization mode.
+
+    This function applies different normalization strategies to the convolution tensor
+    values based on the basis_norm_mode parameter. It can normalize individual basis
+    functions, compute mean normalization across all basis functions, or use support
+    weights. The function also optionally merges quadrature weights into the tensor.
+
+    Parameters
+    -----------
+    psi_idx: torch.Tensor
+        Index tensor for the sparse convolution tensor.
+    psi_vals: torch.Tensor
+        Value tensor for the sparse convolution tensor.
+    in_shape: Tuple[int]
+        Tuple of (nlat_in, nlon_in) representing input grid dimensions.
+    out_shape: Tuple[int]
+        Tuple of (nlat_out, nlon_out) representing output grid dimensions.
+    kernel_size: int
+        Number of kernel basis functions.
+    quad_weights: torch.Tensor
+        Quadrature weights for numerical integration.
+    transpose_normalization: bool
+        If True, applies normalization in transpose direction.
+    basis_norm_mode: str
+        Normalization mode, one of ["none", "individual", "mean", "support"].
+    merge_quadrature: bool
+        If True, multiplies values by quadrature weights.
+    eps: float
+        Small epsilon value to prevent division by zero.
+
+    Returns
+    -------
+    torch.Tensor
+        Normalized convolution tensor values.
+
+    Raises
+    ------
+    ValueError
+        If basis_norm_mode is not one of the supported modes.
     """
 
     # exit here if no normalization is needed
@@ -109,7 +143,6 @@ def _normalize_convolution_tensor_s2(
             # compute the support
             support[ik, ilat] = torch.sum(q[iidx])
 
-
     # loop over values and renormalize
     for ik in range(kernel_size):
         for ilat in range(nlat_out):
@@ -132,7 +165,6 @@ def _normalize_convolution_tensor_s2(
             if merge_quadrature:
                 psi_vals[iidx] = psi_vals[iidx] * q[iidx]
 
-
     if transpose_normalization and merge_quadrature:
         psi_vals = psi_vals / correction_factor
 
@@ -144,13 +176,13 @@ def _precompute_convolution_tensor_s2(
     in_shape: Tuple[int],
     out_shape: Tuple[int],
     filter_basis: FilterBasis,
-    grid_in: Optional[str]="equiangular",
-    grid_out: Optional[str]="equiangular",
-    theta_cutoff: Optional[float]=0.01 * math.pi,
-    theta_eps: Optional[float]=1e-3,
-    transpose_normalization: Optional[bool]=False,
-    basis_norm_mode: Optional[str]="mean",
-    merge_quadrature: Optional[bool]=False,
+    grid_in: Optional[str] = "equiangular",
+    grid_out: Optional[str] = "equiangular",
+    theta_cutoff: Optional[float] = 0.01 * math.pi,
+    theta_eps: Optional[float] = 1e-3,
+    transpose_normalization: Optional[bool] = False,
+    basis_norm_mode: Optional[str] = "mean",
+    merge_quadrature: Optional[bool] = False,
 ):
     """
     Precomputes the rotated filters at positions $R^{-1}_j \omega_i = R^{-1}_j R_i \nu = Y(-\theta_j)Z(\phi_i - \phi_j)Y(\theta_j)\nu$.
@@ -166,6 +198,37 @@ def _precompute_convolution_tensor_s2(
             \cos(\alpha)\cos(\gamma)-\cos(\beta)\sin(\alpha)\sin(\gamma)
         \end{bmatrix}}
     $$
+
+    Parameters
+    -----------
+    in_shape: Tuple[int]
+        Input shape of the convolution tensor
+    out_shape: Tuple[int]
+        Output shape of the convolution tensor
+    filter_basis: FilterBasis
+        Filter basis functions
+    grid_in: str
+        Input grid type
+    grid_out: str
+        Output grid type
+    theta_cutoff: float
+        Theta cutoff for the filter basis functions
+    theta_eps: float
+        Epsilon for the theta cutoff
+    transpose_normalization: bool
+        Whether to normalize the convolution tensor in the transpose direction
+    basis_norm_mode: str
+        Mode for basis normalization
+    merge_quadrature: bool
+        Whether to merge the quadrature weights into the convolution tensor
+
+    Returns
+    -------
+    out_idx: torch.Tensor
+        Index tensor of the convolution tensor
+    out_vals: torch.Tensor
+        Values tensor of the convolution tensor
+
     """
 
     assert len(in_shape) == 2
@@ -268,6 +331,26 @@ def _precompute_convolution_tensor_s2(
 class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
     """
     Abstract base class for discrete-continuous convolutions
+
+    Parameters
+    -----------
+    in_channels: int
+        Number of input channels
+    out_channels: int
+        Number of output channels
+    kernel_shape: Union[int, Tuple[int], Tuple[int, int]]
+        Shape of the kernel
+    basis_type: Optional[str]
+        Type of the basis functions
+    groups: Optional[int]
+        Number of groups
+    bias: Optional[bool]
+        Whether to use bias
+
+    Returns
+    -------
+    out: torch.Tensor
+        Output tensor
     """
 
     def __init__(
@@ -316,6 +399,40 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
     """
     Discrete-continuous (DISCO) convolutions on the 2-Sphere as described in [1].
 
+    Parameters
+    -----------
+    in_channels: int
+        Number of input channels
+    out_channels: int
+        Number of output channels
+    in_shape: Tuple[int]
+        Input shape of the convolution tensor
+    out_shape: Tuple[int]
+        Output shape of the convolution tensor
+    kernel_shape: Union[int, Tuple[int], Tuple[int, int]]
+        Shape of the kernel
+    basis_type: Optional[str]
+        Type of the basis functions
+    basis_norm_mode: Optional[str]
+        Mode for basis normalization
+    groups: Optional[int]
+        Number of groups
+    grid_in: Optional[str]
+        Input grid type
+    grid_out: Optional[str]
+        Output grid type
+    bias: Optional[bool]
+        Whether to use bias
+    theta_cutoff: Optional[float]
+        Theta cutoff for the filter basis functions
+
+    Returns
+    -------
+    out: torch.Tensor
+        Output tensor
+
+    References
+    ----------
     [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
     """
 
@@ -382,9 +499,6 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self.psi = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out)
 
     def extra_repr(self):
-        r"""
-        Pretty print module
-        """
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
 
     @property
@@ -420,6 +534,40 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     """
     Discrete-continuous (DISCO) transpose convolutions on the 2-Sphere as described in [1].
 
+    Parameters
+    -----------
+    in_channels: int
+        Number of input channels
+    out_channels: int
+        Number of output channels
+    in_shape: Tuple[int]
+        Input shape of the convolution tensor
+    out_shape: Tuple[int]
+        Output shape of the convolution tensor
+    kernel_shape: Union[int, Tuple[int], Tuple[int, int]]
+        Shape of the kernel
+    basis_type: Optional[str]
+        Type of the basis functions
+    basis_norm_mode: Optional[str]
+        Mode for basis normalization
+    groups: Optional[int]
+        Number of groups
+    grid_in: Optional[str]
+        Input grid type
+    grid_out: Optional[str]
+        Output grid type
+    bias: Optional[bool]
+        Whether to use bias
+    theta_cutoff: Optional[float]
+        Theta cutoff for the filter basis functions
+
+    Returns
+    --------
+    out: torch.Tensor
+        Output tensor
+
+    References
+    ----------
     [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
     """
 
@@ -487,9 +635,6 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, semi_transposed=True)
 
     def extra_repr(self):
-        r"""
-        Pretty print module
-        """
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
 
     @property
@@ -497,6 +642,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+
         # extract shape
         B, C, H, W = x.shape
         x = x.reshape(B, self.groups, self.groupsize, H, W)

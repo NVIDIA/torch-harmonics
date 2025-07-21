@@ -41,9 +41,11 @@ from torch_harmonics import InverseRealSHT
 
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
+   
     # Cut & paste from PyTorch official master until it's in a few official releases - RW
     # Method based on https://people.sc.fsu.edu/~jburkardt/presentations/truncated_normal.pdf
     def norm_cdf(x):
+       
         # Computes standard normal cumulative distribution function
         return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
 
@@ -75,19 +77,27 @@ def _no_grad_trunc_normal_(tensor, mean, std, a, b):
 
 
 def trunc_normal_(tensor, mean=0.0, std=1.0, a=-2.0, b=2.0):
-    r"""Fills the input Tensor with values drawn from a truncated
+    """Fills the input Tensor with values drawn from a truncated
     normal distribution. The values are effectively drawn from the
     normal distribution :math:`\mathcal{N}(\text{mean}, \text{std}^2)`
     with values outside :math:`[a, b]` redrawn until they are within
     the bounds. The method used for generating the random values works
     best when :math:`a \leq \text{mean} \leq b`.
-    Args:
-    tensor: an n-dimensional `torch.Tensor`
-    mean: the mean of the normal distribution
-    std: the standard deviation of the normal distribution
-    a: the minimum cutoff value
-    b: the maximum cutoff value
-    Examples:
+    
+    Parameters
+    -----------
+    tensor: torch.Tensor
+        an n-dimensional `torch.Tensor`
+    mean: float
+        the mean of the normal distribution
+    std: float
+        the standard deviation of the normal distribution
+    a: float
+        the minimum cutoff value, by default -2.0
+    b: float
+        the maximum cutoff value
+    Examples
+    --------
     >>> w = torch.empty(3, 5)
     >>> nn.init.trunc_normal_(w)
     """
@@ -102,6 +112,20 @@ def drop_path(x: torch.Tensor, drop_prob: float = 0.0, training: bool = False) -
     See discussion: https://github.com/tensorflow/tpu/issues/494#issuecomment-532968956 ... I've opted for
     changing the layer and argument names to 'drop path' rather than mix DropConnect as a layer name and use
     'survival rate' as the argument.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Input tensor
+    drop_prob : float, optional
+        Probability of dropping a path, by default 0.0
+    training : bool, optional
+        Whether the model is in training mode, by default False
+
+    Returns
+    -------
+    torch.Tensor
+        Output tensor
     """
     if drop_prob == 0.0 or not training:
         return x
@@ -114,17 +138,47 @@ def drop_path(x: torch.Tensor, drop_prob: float = 0.0, training: bool = False) -
 
 
 class DropPath(nn.Module):
-    """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks)."""
-
+    """
+    Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
+    
+    This module implements stochastic depth regularization by randomly dropping
+    entire residual paths during training, which helps with regularization and
+    training of very deep networks.
+    
+    Parameters
+    ----------
+    drop_prob : float, optional
+        Probability of dropping a path, by default None
+    """
+    
     def __init__(self, drop_prob=None):
         super(DropPath, self).__init__()
         self.drop_prob = drop_prob
 
     def forward(self, x):
+
         return drop_path(x, self.drop_prob, self.training)
 
 
 class PatchEmbed(nn.Module):
+    """
+    Patch embedding layer for vision transformers.
+    
+    This module splits input images into patches and projects them to a
+    higher dimensional embedding space using convolutional layers.
+    
+    Parameters
+    ----------
+    img_size : tuple, optional
+        Input image size (height, width), by default (224, 224)
+    patch_size : tuple, optional
+        Patch size (height, width), by default (16, 16)
+    in_chans : int, optional
+        Number of input channels, by default 3
+    embed_dim : int, optional
+        Embedding dimension, by default 768
+    """
+    
     def __init__(self, img_size=(224, 224), patch_size=(16, 16), in_chans=3, embed_dim=768):
         super(PatchEmbed, self).__init__()
         self.red_img_size = ((img_size[0] // patch_size[0]), (img_size[1] // patch_size[1]))
@@ -137,6 +191,7 @@ class PatchEmbed(nn.Module):
         self.proj.bias.is_shared_mp = ["spatial"]
 
     def forward(self, x):
+
         # gather input
         B, C, H, W = x.shape
         assert H == self.img_size[0] and W == self.img_size[1], f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
@@ -146,6 +201,32 @@ class PatchEmbed(nn.Module):
 
 
 class MLP(nn.Module):
+    """
+    Multi-layer perceptron with optional checkpointing.
+    
+    This module implements a feed-forward network with two linear layers
+    and an activation function, with optional dropout and gradient checkpointing.
+    
+    Parameters
+    ----------
+    in_features : int
+        Number of input features
+    hidden_features : int, optional
+        Number of hidden features, by default None (same as in_features)
+    out_features : int, optional
+        Number of output features, by default None (same as in_features)
+    act_layer : nn.Module, optional
+        Activation layer, by default nn.ReLU
+    output_bias : bool, optional
+        Whether to use bias in output layer, by default False
+    drop_rate : float, optional
+        Dropout rate, by default 0.0
+    checkpointing : bool, optional
+        Whether to use gradient checkpointing, by default False
+    gain : float, optional
+        Gain factor for weight initialization, by default 1.0
+    """
+    
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.ReLU, output_bias=False, drop_rate=0.0, checkpointing=False, gain=1.0):
         super(MLP, self).__init__()
         self.checkpointing = checkpointing
@@ -179,9 +260,11 @@ class MLP(nn.Module):
 
     @torch.jit.ignore
     def checkpoint_forward(self, x):
+
         return checkpoint(self.fwd, x)
 
     def forward(self, x):
+
         if self.checkpointing:
             return self.checkpoint_forward(x)
         else:
@@ -190,9 +273,23 @@ class MLP(nn.Module):
 
 class RealFFT2(nn.Module):
     """
-    Helper routine to wrap FFT similarly to the SHT
+    Helper routine to wrap FFT similarly to the SHT.
+    
+    This module provides a wrapper around PyTorch's real FFT2D that mimics
+    the interface of spherical harmonic transforms for consistency.
+    
+    Parameters
+    -----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    lmax : int, optional
+        Maximum spherical harmonic degree, by default None (same as nlat)
+    mmax : int, optional
+        Maximum spherical harmonic order, by default None (nlon//2 + 1)
     """
-
+    
     def __init__(self, nlat, nlon, lmax=None, mmax=None):
         super(RealFFT2, self).__init__()
 
@@ -202,6 +299,7 @@ class RealFFT2(nn.Module):
         self.mmax = mmax or self.nlon // 2 + 1
 
     def forward(self, x):
+
         y = torch.fft.rfft2(x, dim=(-2, -1), norm="ortho")
         y = torch.cat((y[..., : math.ceil(self.lmax / 2), : self.mmax], y[..., -math.floor(self.lmax / 2) :, : self.mmax]), dim=-2)
         return y
@@ -209,9 +307,23 @@ class RealFFT2(nn.Module):
 
 class InverseRealFFT2(nn.Module):
     """
-    Helper routine to wrap FFT similarly to the SHT
+    Helper routine to wrap inverse FFT similarly to the SHT.
+    
+    This module provides a wrapper around PyTorch's inverse real FFT2D that mimics
+    the interface of inverse spherical harmonic transforms for consistency.
+    
+    Parameters
+    -----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    lmax : int, optional
+        Maximum spherical harmonic degree, by default None (same as nlat)
+    mmax : int, optional
+        Maximum spherical harmonic order, by default None (nlon//2 + 1)
     """
-
+    
     def __init__(self, nlat, nlon, lmax=None, mmax=None):
         super(InverseRealFFT2, self).__init__()
 
@@ -221,14 +333,34 @@ class InverseRealFFT2(nn.Module):
         self.mmax = mmax or self.nlon // 2 + 1
 
     def forward(self, x):
+
         return torch.fft.irfft2(x, dim=(-2, -1), s=(self.nlat, self.nlon), norm="ortho")
 
 
 class LayerNorm(nn.Module):
     """
-    Wrapper class that moves the channel dimension to the end
+    Wrapper class that moves the channel dimension to the end.
+    
+    This module provides a layer normalization that works with channel-first
+    tensors by temporarily transposing the channel dimension to the end,
+    applying normalization, and then transposing back.
+    
+    Parameters
+    ----------
+    in_channels : int
+        Number of input channels
+    eps : float, optional
+        Epsilon for numerical stability, by default 1e-05
+    elementwise_affine : bool, optional
+        Whether to use learnable affine parameters, by default True
+    bias : bool, optional
+        Whether to use bias, by default True
+    device : torch.device, optional
+        Device to place the module on, by default None
+    dtype : torch.dtype, optional
+        Data type for the module, by default None
     """
-
+    
     def __init__(self, in_channels, eps=1e-05, elementwise_affine=True, bias=True, device=None, dtype=None):
         super().__init__()
 
@@ -246,8 +378,27 @@ class SpectralConvS2(nn.Module):
     Spectral Convolution according to Driscoll & Healy. Designed for convolutions on the two-sphere S2
     using the Spherical Harmonic Transforms in torch-harmonics, but supports convolutions on the periodic
     domain via the RealFFT2 and InverseRealFFT2 wrappers.
+    
+    Parameters
+    ----------
+    forward_transform : nn.Module
+        Forward transform (SHT or FFT)
+    inverse_transform : nn.Module
+        Inverse transform (ISHT or IFFT)
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    gain : float, optional
+        Gain factor for weight initialization, by default 2.0
+    operator_type : str, optional
+        Type of spectral operator ("driscoll-healy", "diagonal", "block-diagonal"), by default "driscoll-healy"
+    lr_scale_exponent : int, optional
+        Learning rate scaling exponent, by default 0
+    bias : bool, optional
+        Whether to use bias, by default False
     """
-
+    
     def __init__(self, forward_transform, inverse_transform, in_channels, out_channels, gain=2.0, operator_type="driscoll-healy", lr_scale_exponent=0, bias=False):
         super().__init__()
 
@@ -307,13 +458,25 @@ class SpectralConvS2(nn.Module):
 
         return x, residual
 
+
 class PositionEmbedding(nn.Module, metaclass=abc.ABCMeta):
     """
-    Returns standard sequence based position embedding
+    Abstract base class for position embeddings.
+    
+    This class defines the interface for position embedding modules
+    that add positional information to input tensors.
+    
+    Parameters
+    ----------
+    img_shape : tuple, optional
+        Image shape (height, width), by default (480, 960)
+    grid : str, optional
+        Grid type, by default "equiangular"
+    num_chans : int, optional
+        Number of channels, by default 1
     """
-
+    
     def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1):
-
         super().__init__()
 
         self.img_shape = img_shape
@@ -323,17 +486,28 @@ class PositionEmbedding(nn.Module, metaclass=abc.ABCMeta):
 
         return x + self.position_embeddings
 
+
 class SequencePositionEmbedding(PositionEmbedding):
     """
-    Returns standard sequence based position embedding
+    Standard sequence-based position embedding.
+    
+    This module implements sinusoidal position embeddings similar to those
+    used in the original Transformer paper, adapted for 2D spatial data.
+    
+    Parameters
+    ----------
+    img_shape : tuple, optional
+        Image shape (height, width), by default (480, 960)
+    grid : str, optional
+        Grid type, by default "equiangular"
+    num_chans : int, optional
+        Number of channels, by default 1
     """
-
+    
     def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1):
-
         super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
 
         with torch.no_grad():
-
             # alternating custom position embeddings
             pos = torch.arange(self.img_shape[0] * self.img_shape[1]).reshape(1, 1, *self.img_shape).repeat(1, self.num_chans, 1, 1)
             k = torch.arange(self.num_chans).reshape(1, self.num_chans, 1, 1)
@@ -344,13 +518,26 @@ class SequencePositionEmbedding(PositionEmbedding):
         # register tensor
         self.register_buffer("position_embeddings", pos_embed.float())
 
+
 class SpectralPositionEmbedding(PositionEmbedding):
     """
-    Returns position embeddings for the spherical transformer
+    Spectral position embeddings for spherical transformers.
+    
+    This module creates position embeddings in the spectral domain using
+    spherical harmonic functions, which are particularly suitable for
+    spherical data processing.
+    
+    Parameters
+    -----------
+    img_shape : tuple, optional
+        Image shape (height, width), by default (480, 960)
+    grid : str, optional
+        Grid type, by default "equiangular"
+    num_chans : int, optional
+        Number of channels, by default 1
     """
-
+    
     def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1):
-
         super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
 
         # compute maximum required frequency and prepare isht
@@ -382,11 +569,24 @@ class SpectralPositionEmbedding(PositionEmbedding):
 
 class LearnablePositionEmbedding(PositionEmbedding):
     """
-    Returns position embeddings for the spherical transformer
+    Learnable position embeddings for spherical transformers.
+    
+    This module provides learnable position embeddings that can be either
+    latitude-only or full latitude-longitude embeddings.
+    
+    Parameters
+    ----------
+    img_shape : tuple, optional
+        Image shape (height, width), by default (480, 960)
+    grid : str, optional
+        Grid type, by default "equiangular"
+    num_chans : int, optional
+        Number of channels, by default 1
+    embed_type : str, optional
+        Embedding type ("lat" or "latlon"), by default "lat"
     """
-
+    
     def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1, embed_type="lat"):
-
         super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
 
         if embed_type == "latlon":

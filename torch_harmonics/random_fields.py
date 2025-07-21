@@ -33,37 +33,29 @@ import torch
 from .sht import InverseRealSHT
 
 class GaussianRandomFieldS2(torch.nn.Module):
+    """
+    Gaussian random field on the sphere.
+
+    Parameters
+    ----------
+    nlat : int
+        Number of latitudinal modes.
+    alpha : float, optional
+        Exponent of the power spectrum.
+    tau : float, optional
+        Cutoff scale of the power spectrum.
+    sigma : float, optional
+        Standard deviation of the power spectrum.
+    radius : float, optional
+        Radius of the sphere.
+    grid : str, optional
+        Grid type.
+    dtype : torch.dtype, optional
+        Data type.
+    """
+
     def __init__(self, nlat, alpha=2.0, tau=3.0, sigma=None, radius=1.0, grid="equiangular", dtype=torch.float32):
         super().__init__()
-        r"""
-        A mean-zero Gaussian Random Field on the sphere with Matern covariance:
-        C = sigma^2 (-Lap + tau^2 I)^(-alpha).
-        
-        Lap is the Laplacian on the sphere, I the identity operator,
-        and sigma, tau, alpha are scalar parameters.
-
-        Note: C is trace-class on L^2 if and only if alpha > 1.
-    
-        Parameters
-        ----------
-        nlat : int
-            Number of latitudinal modes;
-            longitudinal modes are 2*nlat.
-        alpha : float, default is 2
-            Regularity parameter. Larger means smoother.
-        tau : float, default is 3
-            Lenght-scale parameter. Larger means more scales.
-        sigma : float, default is None
-            Scale parameter. Larger means bigger.
-            If None, sigma = tau**(0.5*(2*alpha - 2.0)).
-        radius : float, default is 1
-            Radius of the sphere.
-        grid : string, default is "equiangular"
-            Grid type. Currently supports "equiangular" and
-            "legendre-gauss".
-        dtype : torch.dtype, default is torch.float32
-            Numerical type for the calculations.
-        """
 
         #Number of latitudinal modes.
         self.nlat = nlat
@@ -94,24 +86,7 @@ class GaussianRandomFieldS2(torch.nn.Module):
         self.gaussian_noise = torch.distributions.normal.Normal(self.mean, self.var)
 
     def forward(self, N, xi=None):
-        r"""
-        Sample random functions from a spherical GRF.
-    
-        Parameters
-        ----------
-        N : int
-            Number of functions to sample.
-        xi : torch.Tensor, default is None
-            Noise is a complex tensor of size (N, nlat, nlat+1).
-            If None, new Gaussian noise is sampled.
-            If xi is provided, N is ignored.
-        
-        Output
-        -------
-        u : torch.Tensor
-           N random samples from the GRF returned as a 
-           tensor of size (N, nlat, 2*nlat) on a equiangular grid.
-        """
+
         #Sample Gaussian noise.
         if xi is None:
             xi = self.gaussian_noise.sample(torch.Size((N, self.nlat, self.nlat + 1, 2))).squeeze()

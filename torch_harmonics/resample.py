@@ -40,6 +40,30 @@ from torch_harmonics.quadrature import _precompute_latitudes, _precompute_longit
 
 
 class ResampleS2(nn.Module):
+    """
+    Resampling module for signals on the 2-sphere.
+    
+    This module provides functionality to resample spherical signals between different
+    grid resolutions and grid types using bilinear interpolation.
+    
+    Parameters
+    -----------
+    nlat_in : int
+        Number of latitude points in the input grid
+    nlon_in : int
+        Number of longitude points in the input grid
+    nlat_out : int
+        Number of latitude points in the output grid
+    nlon_out : int
+        Number of longitude points in the output grid
+    grid_in : str, optional
+        Input grid type ("equiangular", "legendre-gauss", "lobatto"), by default "equiangular"
+    grid_out : str, optional
+        Output grid type ("equiangular", "legendre-gauss", "lobatto"), by default "equiangular"
+    mode : str, optional
+        Interpolation mode ("bilinear", "bilinear-spherical"), by default "bilinear"
+    """
+    
     def __init__(
         self,
         nlat_in: int,
@@ -113,9 +137,6 @@ class ResampleS2(nn.Module):
         
 
     def extra_repr(self):
-        r"""
-        Pretty print module
-        """
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}"
 
     def _upscale_longitudes(self, x: torch.Tensor):

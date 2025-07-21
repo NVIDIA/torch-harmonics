@@ -55,6 +55,27 @@ def get_quadrature_weights(nlat: int, nlon: int, grid: str, tile: bool = False, 
 
 
 class DiceLossS2(nn.Module):
+    """
+    Dice loss for spherical segmentation tasks.
+
+    Parameters
+    -----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    grid : str, optional
+        Grid type, by default "equiangular"
+    weight : torch.Tensor, optional
+        Class weights, by default None
+    smooth : float, optional
+        Smoothing factor, by default 0
+    ignore_index : int, optional
+        Index to ignore in loss computation, by default -100
+    mode : str, optional
+        Aggregation mode ("micro" or "macro"), by default "micro"
+    """
+
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, smooth: float = 0, ignore_index: int = -100, mode: str = "micro"):
 
         super().__init__()
@@ -113,6 +134,24 @@ class DiceLossS2(nn.Module):
 
 
 class CrossEntropyLossS2(nn.Module):
+    """
+    Cross-entropy loss for spherical classification tasks.
+
+    Parameters
+    -----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    grid : str, optional
+        Grid type, by default "equiangular"
+    weight : torch.Tensor, optional
+        Class weights, by default None
+    smooth : float, optional
+        Label smoothing factor, by default 0
+    ignore_index : int, optional
+        Index to ignore in loss computation, by default -100
+    """
 
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, smooth: float = 0, ignore_index: int = -100):
 
@@ -141,6 +180,24 @@ class CrossEntropyLossS2(nn.Module):
 
 
 class FocalLossS2(nn.Module):
+    """
+    Focal loss for spherical classification tasks.
+
+    Parameters
+    -----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    grid : str, optional
+        Grid type, by default "equiangular"
+    weight : torch.Tensor, optional
+        Class weights, by default None
+    smooth : float, optional
+        Label smoothing factor, by default 0
+    ignore_index : int, optional
+        Index to ignore in loss computation, by default -100
+    """
 
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, smooth: float = 0, ignore_index: int = -100):
 
@@ -286,10 +343,19 @@ class NormalLossS2(SphericalLossBase):
     Surface normals are computed by calculating gradients in latitude and longitude
     directions using FFT, then constructing 3D normal vectors that are normalized.
 
-    Args:
-        nlat (int): Number of latitude points
-        nlon (int): Number of longitude points
-        grid (str, optional): Grid type. Defaults to "equiangular".
+    Parameters
+    ----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    grid : str, optional
+        Grid type, by default "equiangular"
+
+    Returns
+    -------
+    torch.Tensor
+        Combined loss term
     """
 
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):

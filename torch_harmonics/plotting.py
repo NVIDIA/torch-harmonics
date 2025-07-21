@@ -58,6 +58,28 @@ def get_projection(
     central_latitude=0,
     central_longitude=0,
 ):
+    """
+    Get a cartopy projection object for map plotting.
+    
+    Parameters
+    -----------
+    projection : str
+        Projection type ("orthographic", "robinson", "platecarree", "mollweide")
+    central_latitude : float, optional
+        Central latitude for the projection, by default 0
+    central_longitude : float, optional
+        Central longitude for the projection, by default 0
+        
+    Returns
+    -------
+    cartopy.crs.Projection
+        Cartopy projection object
+        
+    Raises
+    ------
+    ValueError
+        If projection type is not supported
+    """
     if projection == "orthographic":
         proj = ccrs.Orthographic(central_latitude=central_latitude, central_longitude=central_longitude)
     elif projection == "robinson":
@@ -77,6 +99,40 @@ def plot_sphere(
 ):
     """
     Plots a function defined on the sphere using pcolormesh
+    
+    Parameters
+    -----------
+    data : numpy.ndarray or torch.Tensor
+        Data to plot with shape (nlat, nlon)
+    fig : matplotlib.figure.Figure, optional
+        Figure to plot on, by default None (creates new figure)
+    projection : str, optional
+        Map projection type, by default "robinson"
+    cmap : str, optional
+        Colormap name, by default "RdBu"
+    title : str, optional
+        Plot title, by default None
+    colorbar : bool, optional
+        Whether to add a colorbar, by default False
+    coastlines : bool, optional
+        Whether to add coastlines, by default False
+    gridlines : bool, optional
+        Whether to add gridlines, by default False
+    central_latitude : float, optional
+        Central latitude for projection, by default 0
+    central_longitude : float, optional
+        Central longitude for projection, by default 0
+    lon : numpy.ndarray, optional
+        Longitude coordinates, by default None (auto-generated)
+    lat : numpy.ndarray, optional
+        Latitude coordinates, by default None (auto-generated)
+    **kwargs
+        Additional arguments passed to pcolormesh
+        
+    Returns
+    -------
+    matplotlib.collections.QuadMesh
+        The plotted image object
     """
 
     # make sure cartopy exist
@@ -126,6 +182,28 @@ def plot_sphere(
 def imshow_sphere(data, fig=None, projection="robinson", title=None, central_latitude=0, central_longitude=0, **kwargs):
     """
     Displays an image on the sphere
+    
+    Parameters
+    -----------
+    data : numpy.ndarray or torch.Tensor
+        Data to display with shape (nlat, nlon)
+    fig : matplotlib.figure.Figure, optional
+        Figure to plot on, by default None (creates new figure)
+    projection : str, optional
+        Map projection type, by default "robinson"
+    title : str, optional
+        Plot title, by default None
+    central_latitude : float, optional
+        Central latitude for projection, by default 0
+    central_longitude : float, optional
+        Central longitude for projection, by default 0
+    **kwargs
+        Additional arguments passed to imshow
+        
+    Returns
+    -------
+    matplotlib.image.AxesImage
+        The displayed image object
     """
 
     # make sure cartopy exist

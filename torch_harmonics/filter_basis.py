@@ -39,24 +39,19 @@ from torch_harmonics.cache import lru_cache
 
 
 def _circle_dist(x1: torch.Tensor, x2: torch.Tensor):
-    """Helper function to compute the distance on a circle"""
     return torch.minimum(torch.abs(x1 - x2), torch.abs(2 * math.pi - torch.abs(x1 - x2)))
 
 
 def _log_factorial(x: torch.Tensor):
-    """Helper function to compute the log factorial on a torch tensor"""
     return torch.lgamma(x + 1)
 
 
 def _factorial(x: torch.Tensor):
-    """Helper function to compute the factorial on a torch tensor"""
     return torch.exp(_log_factorial(x))
 
 
 class FilterBasis(metaclass=abc.ABCMeta):
-    """
-    Abstract base class for a filter basis
-    """
+    """Abstract base class for a filter basis"""
 
     def __init__(
         self,
@@ -68,6 +63,7 @@ class FilterBasis(metaclass=abc.ABCMeta):
     @property
     @abc.abstractmethod
     def kernel_size(self):
+
         raise NotImplementedError
 
     # @abc.abstractmethod
@@ -79,10 +75,7 @@ class FilterBasis(metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float):
-        """
-        Computes the index set that falls into the kernel's support and returns both indices and values.
-        This routine is designed for sparse evaluations of the filter basis.
-        """
+
         raise NotImplementedError
 
 
@@ -101,9 +94,7 @@ def get_filter_basis(kernel_shape: Union[int, Tuple[int], Tuple[int, int]], basi
 
 
 class PiecewiseLinearFilterBasis(FilterBasis):
-    """
-    Tensor-product basis on a disk constructed from piecewise linear basis functions.
-    """
+    """Tensor-product basis on a disk constructed from piecewise linear basis functions."""
 
     def __init__(
         self,
@@ -121,12 +112,10 @@ class PiecewiseLinearFilterBasis(FilterBasis):
 
     @property
     def kernel_size(self):
+        """Compute the number of basis functions in the kernel."""
         return (self.kernel_shape[0] // 2) * self.kernel_shape[1] + self.kernel_shape[0] % 2
 
     def _compute_support_vals_isotropic(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float):
-        """
-        Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
-        """
 
         # enumerator for basis function
         ikernel = torch.arange(self.kernel_size, device=r.device).reshape(-1, 1, 1)
@@ -148,9 +137,6 @@ class PiecewiseLinearFilterBasis(FilterBasis):
         return iidx, vals
 
     def _compute_support_vals_anisotropic(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float):
-        """
-        Computes the index set that falls into the anisotropic kernel's support and returns both indices and values.
-        """
 
         # enumerator for basis function
         ikernel = torch.arange(self.kernel_size, device=r.device).reshape(-1, 1, 1)
@@ -209,6 +195,7 @@ class PiecewiseLinearFilterBasis(FilterBasis):
         return iidx, vals
 
     def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float):
+        """Computes the index set that falls into the kernel's support and returns both indices and values."""
 
         if self.kernel_shape[1] > 1:
             return self._compute_support_vals_anisotropic(r, phi, r_cutoff=r_cutoff)
@@ -217,9 +204,7 @@ class PiecewiseLinearFilterBasis(FilterBasis):
 
 
 class MorletFilterBasis(FilterBasis):
-    """
-    Morlet-style filter basis on the disk. A Gaussian is multiplied with a Fourier basis in x and y directions
-    """
+    """Morlet-style filter basis on the disk. A Gaussian is multiplied with a Fourier basis in x and y directions."""
 
     def __init__(
         self,
@@ -235,18 +220,18 @@ class MorletFilterBasis(FilterBasis):
 
     @property
     def kernel_size(self):
+
         return self.kernel_shape[0] * self.kernel_shape[1]
 
     def gaussian_window(self, r: torch.Tensor, width: float = 1.0):
+
         return 1 / (2 * math.pi * width**2) * torch.exp(-0.5 * r**2 / (width**2))
 
     def hann_window(self, r: torch.Tensor, width: float = 1.0):
+
         return torch.cos(0.5 * torch.pi * r / width) ** 2
 
     def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float, width: float = 1.0):
-        """
-        Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
-        """
 
         # enumerator for basis function
         ikernel = torch.arange(self.kernel_size, device=r.device).reshape(-1, 1, 1)
@@ -274,9 +259,7 @@ class MorletFilterBasis(FilterBasis):
 
 
 class ZernikeFilterBasis(FilterBasis):
-    """
-    Zernike polynomials which are defined on the disk. See https://en.wikipedia.org/wiki/Zernike_polynomials
-    """
+    """Zernike polynomials which are defined on the disk. See https://en.wikipedia.org/wiki/Zernike_polynomials"""
 
     def __init__(
         self,
@@ -292,9 +275,11 @@ class ZernikeFilterBasis(FilterBasis):
 
     @property
     def kernel_size(self):
+
         return (self.kernel_shape * (self.kernel_shape + 1)) // 2
 
     def zernikeradial(self, r: torch.Tensor, n: torch.Tensor, m: torch.Tensor):
+
         out = torch.zeros_like(r)
         bound = (n - m) // 2 + 1
         max_bound = bound.max().item()
@@ -307,13 +292,11 @@ class ZernikeFilterBasis(FilterBasis):
         return out
 
     def zernikepoly(self, r: torch.Tensor, phi: torch.Tensor, n: torch.Tensor, l: torch.Tensor):
+
         m = 2 * l - n
         return torch.where(m < 0, self.zernikeradial(r, n, -m) * torch.sin(m * phi), self.zernikeradial(r, n, m) * torch.cos(m * phi))
 
     def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float, width: float = 0.25):
-        """
-        Computes the index set that falls into the isotropic kernel's support and returns both indices and values.
-        """
 
         # enumerator for basis function
         ikernel = torch.arange(self.kernel_size, device=r.device).reshape(-1, 1, 1)

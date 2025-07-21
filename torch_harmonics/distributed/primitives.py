@@ -39,6 +39,7 @@ from .utils import is_initialized, is_distributed_polar, is_distributed_azimuth
 
 # helper routine to compute uneven splitting in balanced way:
 def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
+    """Compute the split shapes for a given size and number of chunks."""
     
     # treat trivial case first
     if num_chunks == 1:
@@ -59,6 +60,8 @@ def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
 
     
 def split_tensor_along_dim(tensor, dim, num_chunks):
+    """Split a tensor along a given dimension into a given number of chunks."""
+    
     assert dim < tensor.dim(), f"Error, tensor dimension is {tensor.dim()} which cannot be split along {dim}"
     assert (tensor.shape[dim] >= num_chunks), f"Error, cannot split dim {dim} of size {tensor.shape[dim]} into \
                                               {num_chunks} chunks. Empty slices are currently not supported."
@@ -71,6 +74,7 @@ def split_tensor_along_dim(tensor, dim, num_chunks):
 
 
 def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False):
+    
     # get comm params
     comm_size = dist.get_world_size(group=group)
     comm_rank = dist.get_rank(group=group)
@@ -99,6 +103,7 @@ class distributed_transpose_azimuth(torch.autograd.Function):
     @staticmethod
     @custom_fwd(device_type="cuda")
     def forward(ctx, x, dims, dim1_split_sizes):
+
         # WAR for a potential contig check torch bug for channels last contig tensors
         xlist, dim0_split_sizes, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=azimuth_group())
         x = torch.cat(xlist, dim=dims[1])
@@ -124,6 +129,7 @@ class distributed_transpose_polar(torch.autograd.Function):
     @staticmethod
     @custom_fwd(device_type="cuda")
     def forward(ctx, x, dim, dim1_split_sizes):
+
         # WAR for a potential contig check torch bug for channels last contig tensors 
         xlist, dim0_split_sizes, _ = _transpose(x, dim[0], dim[1], dim1_split_sizes, group=polar_group())
         x = torch.cat(xlist, dim=dim[1])
@@ -134,6 +140,7 @@ class distributed_transpose_polar(torch.autograd.Function):
     @staticmethod
     @custom_bwd(device_type="cuda")
     def backward(ctx, go):
+
         dim = ctx.dim
         dim0_split_sizes = ctx.dim0_split_sizes
         # WAR for a potential contig check torch bug for channels last contig tensors 
@@ -144,7 +151,6 @@ class distributed_transpose_polar(torch.autograd.Function):
     
 # we need those additional primitives for distributed matrix multiplications
 def _reduce(input_, use_fp32=True, group=None):
-    """All-reduce the input tensor across model parallel group."""
 
     # Bypass the function if we are using only 1 GPU.
     if dist.get_world_size(group=group) == 1:
@@ -165,7 +171,6 @@ def _reduce(input_, use_fp32=True, group=None):
     
 
 def _split(input_, dim_, group=None):
-    """Split the tensor along its last dimension and keep the corresponding slice."""
     # Bypass the function if we are using only 1 GPU.
     comm_size = dist.get_world_size(group=group)
     if comm_size == 1:
@@ -182,7 +187,6 @@ def _split(input_, dim_, group=None):
 
 
 def _gather(input_, dim_, shapes_, group=None):
-    """Gather unevenly split tensors across ranks"""
     
     comm_size = dist.get_world_size(group=group)
 
@@ -215,7 +219,6 @@ def _gather(input_, dim_, shapes_, group=None):
 
 
 def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
-    """All-reduce the input tensor across model parallel group and scatter it back."""
 
     # Bypass the function if we are using only 1 GPU.
     if dist.get_world_size(group=group) == 1:
@@ -244,7 +247,6 @@ def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
 
 
 class _CopyToPolarRegion(torch.autograd.Function):
-    """Split the input and keep only the corresponding chunk to the rank."""
     
     @staticmethod
     def symbolic(graph, input_):
@@ -253,11 +255,13 @@ class _CopyToPolarRegion(torch.autograd.Function):
     @staticmethod
     @custom_fwd(device_type="cuda")
     def forward(ctx, input_):
+        
         return input_
     
     @staticmethod
     @custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
+
         if is_distributed_polar():
             return _reduce(grad_output, group=polar_group())
         else:
@@ -265,7 +269,6 @@ class _CopyToPolarRegion(torch.autograd.Function):
 
 
 class _CopyToAzimuthRegion(torch.autograd.Function):
-    """Split the input and keep only the corresponding chunk to the rank."""
 
     @staticmethod
     def symbolic(graph, input_):
@@ -274,11 +277,13 @@ class _CopyToAzimuthRegion(torch.autograd.Function):
     @staticmethod
     @custom_fwd(device_type="cuda")
     def forward(ctx, input_):
+
         return input_
 
     @staticmethod
     @custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
+
         if is_distributed_azimuth():
             return _reduce(grad_output, group=azimuth_group())
         else:
@@ -286,7 +291,6 @@ class _CopyToAzimuthRegion(torch.autograd.Function):
 
 
 class _ScatterToPolarRegion(torch.autograd.Function):
-    """Split the input and keep only the corresponding chunk to the rank."""
 
     @staticmethod
     def symbolic(graph, input_, dim_):
@@ -314,7 +318,6 @@ class _ScatterToPolarRegion(torch.autograd.Function):
 
 
 class _GatherFromPolarRegion(torch.autograd.Function):
-    """Gather the input and keep it on the rank."""
 
     @staticmethod
     def symbolic(graph, input_, dim_, shapes_):
@@ -339,7 +342,6 @@ class _GatherFromPolarRegion(torch.autograd.Function):
 
     
 class _ReduceFromPolarRegion(torch.autograd.Function):
-    """All-reduce the input from the polar region."""
     
     @staticmethod
     def symbolic(graph, input_):
@@ -363,8 +365,7 @@ class _ReduceFromPolarRegion(torch.autograd.Function):
 
     
 class _ReduceFromAzimuthRegion(torch.autograd.Function):
-    """All-reduce the input from the azimuth region."""
-
+ 
     @staticmethod
     def symbolic(graph, input_):
         if is_distributed_azimuth():
@@ -387,7 +388,6 @@ class _ReduceFromAzimuthRegion(torch.autograd.Function):
 
 
 class _ReduceFromScatterToPolarRegion(torch.autograd.Function):
-    """All-reduce the input from the polar region and scatter back to polar region."""
 
     @staticmethod
     def symbolic(graph, input_, dim_):
@@ -418,7 +418,6 @@ class _ReduceFromScatterToPolarRegion(torch.autograd.Function):
 
 
 class _GatherFromCopyToPolarRegion(torch.autograd.Function):
-    """Gather the input from the polar region and register BWD AR, basically the inverse of reduce-scatter"""
 
     @staticmethod
     def symbolic(graph, input_, dim_, shapes_):
