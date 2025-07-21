@@ -392,15 +392,7 @@ class SphericalFourierNeuralOperator(nn.Module):
 
     @torch.jit.ignore
     def no_weight_decay(self):
-        """
-        Return a set of parameter names that should not be decayed.
-        
-        Returns
-        -------
-        set
-            Set of parameter names to exclude from weight decay
-        """
-        return {"pos_embed.pos_embed"}
+        return {"pos_embed", "cls_token"}
 
     def forward_features(self, x):
 
