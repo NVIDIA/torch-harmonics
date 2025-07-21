@@ -96,7 +96,7 @@ def _precompute_convolution_tensor_dense(
     basis_norm_mode="none",
     merge_quadrature=False,
 ):
-"""Helper routine to compute the convolution Tensor in a dense fashion."""
+    """Helper routine to compute the convolution Tensor in a dense fashion."""
     assert len(in_shape) == 2
     assert len(out_shape) == 2
 
