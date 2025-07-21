@@ -388,7 +388,7 @@ class NormalLossS2(SphericalLossBase):
 
     def compute_gradients(self, x):
         """
-        Compute gradients of the input tensor using FFT.
+        Compute spatial gradients of the input tensor using FFT.
         
         Parameters
         -----------
