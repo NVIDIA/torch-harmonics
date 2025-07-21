@@ -92,8 +92,8 @@ def _normalize_convolution_tensor_s2(
     q = quad_weights[ilat_in].reshape(-1)
 
     # buffer to store intermediate values
-    vnorm = torch.zeros(kernel_size, nlat_out)
-    support = torch.zeros(kernel_size, nlat_out)
+    vnorm = torch.zeros(kernel_size, nlat_out, device=psi_vals.device)
+    support = torch.zeros(kernel_size, nlat_out, device=psi_vals.device)
 
     # loop through dimensions to compute the norms
     for ik in range(kernel_size):
@@ -207,7 +207,7 @@ def _precompute_convolution_tensor_s2(
     sgamma = torch.sin(gamma)
 
     # compute row offsets
-    out_roff = torch.zeros(nlat_out + 1, dtype=torch.int64)
+    out_roff = torch.zeros(nlat_out + 1, dtype=torch.int64, device=lons_in.device)
     out_roff[0] = 0
     for t in range(nlat_out):
         # the last angle has a negative sign as it is a passive rotation, which rotates the filter around the y-axis

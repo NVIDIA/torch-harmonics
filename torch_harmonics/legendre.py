@@ -123,7 +123,7 @@ def _precompute_dlegpoly(mmax: int, lmax: int, t: torch.Tensor,
 
     pct = _precompute_legpoly(mmax+1, lmax+1, t, norm=norm, inverse=inverse, csphase=False)
 
-    dpct = torch.zeros((2, mmax, lmax, len(t)), dtype=torch.float64, requires_grad=False)
+    dpct = torch.zeros((2, mmax, lmax, len(t)), dtype=torch.float64, device=t.device, requires_grad=False)
 
     # fill the derivative terms wrt theta
     for l in range(0, lmax):
