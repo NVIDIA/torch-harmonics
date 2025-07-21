@@ -503,14 +503,6 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
     @property
     def psi_idx(self):
-        """
-        Get the convolution tensor index
-
-        Returns
-        -------
-        psi_idx: torch.Tensor
-            Convolution tensor index
-        """
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
