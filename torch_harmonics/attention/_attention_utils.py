@@ -173,7 +173,6 @@ def _neighborhood_s2_attention_bwd_optimized(ctx, grad_output):
         dv = torch.nn.functional.conv2d(dvw, weight=wv.permute([1,0,2,3]), bias=None)
     else:
         dv = None
-    if q_needs_grad:
 
     if k_needs_grad:
         dk = torch.nn.functional.conv2d(dkw, weight=wk.permute([1,0,2,3]), bias=None)
