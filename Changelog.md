@@ -14,6 +14,7 @@
 * Reorganized examples folder, including new examples based on the 2d3ds dataset
 * Added spherical loss functions to examples
 * Added plotting module
+* Updated docstrings
 
 ### v0.7.6
 
