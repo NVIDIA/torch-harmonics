@@ -54,7 +54,7 @@ except (ImportError, TypeError, AssertionError, AttributeError) as e:
     warnings.warn(f"building custom extensions skipped: {e}")
 
 def get_compile_args(module_name):
-    """Get compilation arguments based on environment variables."""
+    """If user runs build with TORCH_HARMONICS_DEBUG=1 set, it will use debugging flags to build"""
     
     debug_mode = os.environ.get('TORCH_HARMONICS_DEBUG', '0') == '1'
     profile_mode = os.environ.get('TORCH_HARMONICS_PROFILE', '0') == '1'
