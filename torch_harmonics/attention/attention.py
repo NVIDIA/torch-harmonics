@@ -39,7 +39,7 @@ import torch.nn as nn
 
 from torch_harmonics.quadrature import _precompute_latitudes
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
-from torch_harmonics.attention._neighborhood_attention import _neighborhood_attention_s2_torch, _neighborhood_attention_s2_cuda
+from torch_harmonics.attention._attention_utils import _neighborhood_s2_attention_torch, _neighborhood_s2_attention_optimized
 from torch_harmonics.filter_basis import get_filter_basis
 from attention_helpers import optimized_kernels_is_available
 
@@ -326,7 +326,7 @@ class NeighborhoodAttentionS2(nn.Module):
         # TODO: insert dimension checks for input
         if query.is_cuda and optimized_kernels_is_available():
 
-            out = _neighborhood_attention_s2_cuda(
+            out = _neighborhood_s2_attention_optimized(
                 key,
                 value,
                 query_scaled,
@@ -350,7 +350,7 @@ class NeighborhoodAttentionS2(nn.Module):
                 warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
 
             # call attention
-            out = _neighborhood_attention_s2_torch(
+            out = _neighborhood_s2_attention_torch(
                 key,
                 value,
                 query_scaled,

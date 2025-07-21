@@ -28,7 +28,8 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "attention.cuh"
+#include "attention_cuda_utils.cuh"
+
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/cuda/detail/KernelUtils.h>
 #include <ATen/cuda/detail/IndexUtils.cuh>
@@ -40,7 +41,7 @@
 #include <limits>
 
 #include "cudamacro.h"
-#include "attention_utils.cuh"
+#include "attention_cuda.cuh"
 
 #define THREADS (64)
 

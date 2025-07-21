@@ -31,10 +31,14 @@
 #pragma once
 
 #include <ATen/ATen.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <ATen/cuda/CUDAUtils.h>
 
 #define WARP_SIZE (32)
 #define FULL_MASK (0xFFFFFFFF)
 #define DIV_UP(a,b) (((a)+((b)-1))/(b))
+
+namespace attention_kernels {
 
 // CSR rows sorting kernels and functions
 at::Tensor sortRows(int nlat_out, at::Tensor row_off, cudaStream_t stream);
@@ -370,4 +374,6 @@ void launch_permute_to0312(at::Tensor src, at::Tensor dst){
                                                      src.size(2),
                                                      src.packed_accessor32<VAL_T, 4, at::RestrictPtrTraits>(),
                                                      dst.packed_accessor32<VAL_T, 4, at::RestrictPtrTraits>());
+}
+
 }

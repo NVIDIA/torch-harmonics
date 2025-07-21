@@ -439,6 +439,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         [
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
             [8, 4, 2, (16, 32), (8,  16), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
+            [8, 4, 2, (8,  16), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
+
         ], 
         skip_on_empty=True,
     )
@@ -491,20 +494,15 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         ).to(self.device)
 
         # forward test
-        inp_fwd = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
+        inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
 
-        test_inputs_fwd = (inp_fwd, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals, 
-                conv.kernel_size, conv.nlat_out, conv.nlon_out)
-        
-        opcheck(torch.ops.disco_kernels.forward, test_inputs_fwd)
+        test_inputs = (inp, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals, 
+                       conv.kernel_size, conv.nlat_out, conv.nlon_out)
 
-        # backward test
-        inp_bwd = torch.randn(batch_size, in_channels, conv.kernel_size, *out_shape, device=self.device)
-
-        test_inputs_bwd = (inp_bwd, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals, 
-                            conv.kernel_size, conv.nlat_in, conv.nlon_in)
-
-        opcheck(torch.ops.disco_kernels.backward, test_inputs_bwd)
+        if not transpose:
+            opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs)
+        else:
+            opcheck(torch.ops.disco_kernels._disco_s2_transpose_contraction_optimized, test_inputs)
 
         # if a test fails, those help to disambiguate the error
         # schema

@@ -28,7 +28,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "attention.cuh"
+#include "attention_cuda.cuh"
 #include "c10/core/MemoryFormat.h"
 
 #include <ATen/core/TensorAccessor.h>
@@ -42,7 +42,7 @@
 #include <limits>
 
 #include "cudamacro.h"
-#include "attention_utils.cuh"
+#include "attention_cuda_utils.cuh"
 
 #include <iostream>
 #include <chrono>

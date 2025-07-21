@@ -92,7 +92,7 @@ namespace disco_kernels {
         return out;
     }
 
-    // Implement the operators: Meta
+    // Implement the operators: CPU
     TORCH_LIBRARY_IMPL(disco_kernels, CPU, m)
     {
         m.impl("forward",  &disco_cpu_fwd);
