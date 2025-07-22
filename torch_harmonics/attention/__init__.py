@@ -41,5 +41,4 @@ else:
     attention_kernels = None
     warnings.warn("No optimized kernels are available. Please compile the extension first setting BUILD_CPP and BUILD_CUDA to 1.")
 
-from . import _C
 from .attention import AttentionS2, NeighborhoodAttentionS2
