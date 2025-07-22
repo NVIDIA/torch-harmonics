@@ -28,6 +28,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#include <Python.h>
 #include "disco.h"
 
 extern "C" {
@@ -35,7 +36,7 @@ extern "C" {
        The import from Python will load the .so consisting of this file
        in this extension, so that the TORCH_LIBRARY static initializers
        below are run. */
-    PyObject* PyInit__C(void)
+    PyMODINIT_FUNC PyInit__C(void)
     {
         static struct PyModuleDef module_def = {
             PyModuleDef_HEAD_INIT,

@@ -31,6 +31,8 @@
 #include "disco.h"
 #include "disco_cuda.cuh"
 
+namespace disco_kernels {
+
 template <int BDIM_X, int ELXTH, typename REAL_T>
 __device__ void disco_fwd_d(const int Hi, const int Wi, const int K, const int Ho, const int Wo, const int pscale,
                             const int64_t *__restrict__ roff, const int64_t *__restrict__ kers,
@@ -40,7 +42,7 @@ __device__ void disco_fwd_d(const int Hi, const int Wi, const int K, const int H
 
     const int tid = threadIdx.x;
 
-    const int64_t bidx = blockIdx.x; // gloabl row
+    const int64_t bidx = blockIdx.x; // global row
     const int64_t bidy = blockIdx.y; // bc
 
     int64_t soff = roff[bidx];
@@ -182,8 +184,6 @@ static void launch_kernel(int BC, int Hi, int Wi, int K, int Ho, int Wo, int64_t
     }
     return;
 }
-
-namespace disco_kernels {
 
     torch::Tensor disco_cuda_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
                                  torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo)

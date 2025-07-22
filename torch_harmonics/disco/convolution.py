@@ -489,7 +489,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self.register_buffer("psi_vals", vals, persistent=False)
 
         # also store psi as COO matrix just in case for torch input
-        self.psi = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out)
+        if not self.optimized_kernel:
+            self.psi = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out)
 
     def extra_repr(self):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
@@ -505,8 +506,6 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
             )
         else:
-            if x.is_cuda:
-                warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
             x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
 
         # extract shape
@@ -650,8 +649,6 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
             )
         else:
-            if x.is_cuda:
-                warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
             out = _disco_s2_transpose_contraction_torch(x, self.psi_st.to(x.device), self.nlon_out)
 
         if self.bias is not None:

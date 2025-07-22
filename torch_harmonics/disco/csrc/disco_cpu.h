@@ -117,5 +117,5 @@ namespace disco_kernels {
             }
         }
     }
-  
+
 }

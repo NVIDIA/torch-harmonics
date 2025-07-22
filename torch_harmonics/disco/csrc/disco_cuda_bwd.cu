@@ -31,6 +31,8 @@
 #include "disco.h"
 #include "disco_cuda.cuh"
 
+namespace disco_kernels {
+
 template <int BDIM_X, int ELXTH, typename REAL_T>
 __device__ void disco_bwd_d(const int Hi, const int Wi, const int K, const int Ho, const int Wo, const int pscale,
                             const int64_t *__restrict__ roff, const int64_t *__restrict__ kers,
@@ -195,8 +197,6 @@ static void launch_kernel(int BC, int Hi, int Wi, int K, int Ho, int Wo, int64_t
     }
     return;
 }
-
-namespace disco_kernels {
 
     torch::Tensor disco_cuda_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
                                  torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo)
