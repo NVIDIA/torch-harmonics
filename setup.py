@@ -146,7 +146,6 @@ def get_ext_modules():
                     extra_compile_args=get_compile_args("disco")
                 )
             )
-        )
         cmdclass["build_ext"] = BuildExtension
 
         # ATTENTION
