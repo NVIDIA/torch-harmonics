@@ -208,6 +208,8 @@ class NeighborhoodAttentionS2(nn.Module):
         number of dimensions for interior inner product in the attention matrix (corresponds to kdim in MHA in PyTorch)
     out_channels: int, optional
         number of dimensions for interior inner product in the attention matrix (corresponds to vdim in MHA in PyTorch)
+    optimized_kernel: Optional[bool]
+        Whether to use the optimized kernel (if available)
     """
 
     def __init__(
@@ -272,7 +274,7 @@ class NeighborhoodAttentionS2(nn.Module):
         roff_idx = roff.contiguous()
 
         # store some metadata
-        self.max_psi_nnz = col_idx.max().item() + 1
+        self.psi_max_nnz = col_idx.max().item() + 1
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
@@ -307,6 +309,11 @@ class NeighborhoodAttentionS2(nn.Module):
             self.v_bias = None
             self.proj_bias = None
 
+        if self.optimized_kernel:
+            self.attention_handle = _neighborhood_s2_attention_optimized
+        else:
+            self.attention_handle = _neighborhood_s2_attention_torch
+
     def extra_repr(self):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}"
 
@@ -326,47 +333,25 @@ class NeighborhoodAttentionS2(nn.Module):
         query_scaled = query * self.scale
 
         # TODO: insert dimension checks for input
-        if self.optimized_kernel:
-
-            out = _neighborhood_s2_attention_optimized(
-                key,
-                value,
-                query_scaled,
-                self.k_weights,
-                self.v_weights,
-                self.q_weights,
-                self.k_bias,
-                self.v_bias,
-                self.q_bias,
-                self.quad_weights,
-                self.psi_col_idx,
-                self.psi_roff_idx,
-                self.max_psi_nnz,
-                self.num_heads,
-                self.nlon_in,
-                self.nlat_out,
-                self.nlon_out,
-            )
-        else:
-            # call attention
-            out = _neighborhood_s2_attention_torch(
-                key,
-                value,
-                query_scaled,
-                self.k_weights,
-                self.v_weights,
-                self.q_weights,
-                self.k_bias,
-                self.v_bias,
-                self.q_bias,
-                self.quad_weights,
-                self.psi_col_idx,
-                self.psi_roff_idx,
-                self.num_heads,
-                self.nlon_in,
-                self.nlat_out,
-                self.nlon_out,
-            )
+        out = self.attention_handle(
+            key,
+            value,
+            query_scaled,
+            self.k_weights,
+            self.v_weights,
+            self.q_weights,
+            self.k_bias,
+            self.v_bias,
+            self.q_bias,
+            self.quad_weights,
+            self.psi_col_idx,
+            self.psi_roff_idx,
+            self.psi_max_nnz,
+            self.num_heads,
+            self.nlon_in,
+            self.nlat_out,
+            self.nlon_out,
+        )
 
         out = nn.functional.conv2d(out, self.proj_weights, bias=self.proj_bias)
 

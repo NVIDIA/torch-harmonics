@@ -418,6 +418,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         Whether to use bias
     theta_cutoff: Optional[float]
         Theta cutoff for the filter basis functions
+    optimized_kernel: Optional[bool]
+        Whether to use the optimized kernel (if available)
 
     Returns
     -------
@@ -443,6 +445,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         grid_out: Optional[str] = "equiangular",
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
+        optimized_kernel: Optional[bool] = True,
     ):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
@@ -552,6 +555,8 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         Whether to use bias
     theta_cutoff: Optional[float]
         Theta cutoff for the filter basis functions
+    optimized_kernel: Optional[bool]
+        Whether to use the optimized kernel (if available)
 
     Returns
     --------
@@ -577,6 +582,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         grid_out: Optional[str] = "equiangular",
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
+        optimized_kernel: Optional[bool] = True,
     ):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 

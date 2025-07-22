@@ -41,9 +41,7 @@
 #endif
 
 bool cpp_kernels_is_available() {
-    //return static_cast<bool>(BUILD_CPP);
-    // not implemented yet
-    return false;
+    return static_cast<bool>(BUILD_CPP);
 }
 
 bool cuda_kernels_is_available() {
