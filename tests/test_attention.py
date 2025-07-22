@@ -46,11 +46,12 @@ if not optimized_kernels_is_available():
     print(f"Warning: Couldn't import optimized disco convolution kernels")
 
 _devices = [(torch.device("cpu"),)]
-#if torch.cuda.is_available():
-#    _devices.append((torch.device("cuda"),))
+if torch.cuda.is_available():
+    _devices.append((torch.device("cuda"),))
 
 # perf thresholds
-_perf_test_thresholds = {"fwd_ms": 50, "bwd_ms": 150}
+_perf_test_thresholds = {"cpu": {"fwd_ms": 50, "bwd_ms": 150}, 
+                         "cuda": {"fwd_ms": 50, "bwd_ms": 150}}
 
 
 @parameterized_class(("device"), _devices)
@@ -92,34 +93,17 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         model_ref = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, optimized_kernel=False).to(self.device)
 
         # Device model and inputs
-        model = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, optimized_kernel=True)
+        model = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, optimized_kernel=True).to(self.device)
 
         # Synchronize parameters of model
         model.load_state_dict(model_ref.state_dict())
         for (name_ref, p_ref), (name, p) in zip(model_ref.named_parameters(), model.named_parameters()):
-            self.assertTrue(torch.allclose(p_ref, p))
+            self.assertTrue(torch.allclose(p_ref.cpu(), p.cpu()))
 
         # reference forward passes
-        out_ref = _neighborhood_s2_attention_torch(
-            inputs_ref["k"],
-            inputs_ref["v"],
-            inputs_ref["q"] * model_ref.scale,
-            model_ref.k_weights,
-            model_ref.v_weights,
-            model_ref.q_weights,
-            model_ref.k_bias,
-            model_ref.v_bias,
-            model_ref.q_bias,
-            model_ref.quad_weights,
-            model_ref.psi_col_idx,
-            model_ref.psi_roff_idx,
-            model_ref.psi_max_nnz,
-            model_ref.num_heads,
-            model_ref.nlon_in,
-            model_ref.nlat_out,
-            model_ref.nlon_out,
-        )
-        out_ref = nn.functional.conv2d(out_ref, model_ref.proj_weights, bias=model_ref.proj_bias)
+        out_ref = model_ref(inputs_ref["q"], inputs_ref["k"], inputs_ref["v"])
+
+        # Device output
         out = model(inputs["q"], inputs["k"], inputs["v"])
 
         # Check forward equivalence
@@ -128,7 +112,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         # Backward passes
         grad = torch.randn_like(out_ref)
         out_ref.backward(grad)
-        out.backward(grad.to(self.device))
+        out.backward(grad)
 
         # Check input gradient equivalence
         for inp in ["q", "k", "v"]:
@@ -212,13 +196,8 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
-    @unittest.skipUnless((torch.cuda.is_available() and cuda_kernels_is_available()), "skipping performance test because CUDA is not available")
+    @unittest.skipUnless(optimized_kernels_is_available(), "skipping performance test because optimized kernels are not available")
     def test_perf(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
-
-        # skip this test if we are not running on GPU, it will take very long otherwise
-        if self.device.type != "cuda":
-            self.assertFalse(False)
-            return
         
         # extract some parameters
         nlat_in, nlon_in = in_shape

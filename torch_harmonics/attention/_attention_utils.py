@@ -48,51 +48,52 @@ def _setup_context_attention_backward(ctx, inputs, output):
     ctx.nlon_out = nlon_out
 
 # define NA op for CUDA
-@torch.library.custom_op("attention_kernels::_neighborhood_s2_attention_optimized", mutates_args=())
-def _neighborhood_s2_attention_optimized(k: torch.Tensor, v: torch.Tensor, q: torch.Tensor,
-                                         wk: torch.Tensor, wv: torch.Tensor, wq: torch.Tensor,
-                                         bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], bq: Union[torch.Tensor, None],
-                                         quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-                                         max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+if optimized_kernels_is_available():
+    @torch.library.custom_op("attention_kernels::_neighborhood_s2_attention_optimized", mutates_args=())
+    def _neighborhood_s2_attention_optimized(k: torch.Tensor, v: torch.Tensor, q: torch.Tensor,
+                                             wk: torch.Tensor, wv: torch.Tensor, wq: torch.Tensor,
+                                             bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], bq: Union[torch.Tensor, None],
+                                             quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+                                             max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
 
-    kw = F.conv2d(k, weight=wk, bias=bk)
-    vw = F.conv2d(v, weight=wv, bias=bv)
-    qw = F.conv2d(q, weight=wq, bias=bq)
+        kw = F.conv2d(k, weight=wk, bias=bk)
+        vw = F.conv2d(v, weight=wv, bias=bv)
+        qw = F.conv2d(q, weight=wq, bias=bq)
 
-    # reshape, folding num heads into batch dim
-    B, _, H, W = kw.shape
-    kw = kw.reshape(B*nh, -1, H, W)
-    B, _, H, W = vw.shape
-    vw = vw.reshape(B*nh, -1, H, W)
-    B, _, H, W = qw.shape
-    qw = qw.reshape(B*nh, -1, H, W)
+        # reshape, folding num heads into batch dim
+        B, _, H, W = kw.shape
+        kw = kw.reshape(B*nh, -1, H, W)
+        B, _, H, W = vw.shape
+        vw = vw.reshape(B*nh, -1, H, W)
+        B, _, H, W = qw.shape
+        qw = qw.reshape(B*nh, -1, H, W)
 
-    # convert to float32
-    inp_dtype = kw.dtype
-    kw = kw.to(torch.float32).contiguous()
-    vw = vw.to(torch.float32).contiguous()
-    qw = qw.to(torch.float32).contiguous()
+        # convert to float32
+        inp_dtype = kw.dtype
+        kw = kw.to(torch.float32).contiguous()
+        vw = vw.to(torch.float32).contiguous()
+        qw = qw.to(torch.float32).contiguous()
 
-    output = attention_kernels.forward.default(kw, vw, qw, quad_weights,
-                                               col_idx, row_off,
-                                               nlon_in, nlat_out, nlon_out)
+        output = attention_kernels.forward.default(kw, vw, qw, quad_weights,
+                                                   col_idx, row_off,
+                                                   nlon_in, nlat_out, nlon_out)
 
-    _, C, H, W = output.shape
-    output = output.reshape(B, -1, H, W)
+        _, C, H, W = output.shape
+        output = output.reshape(B, -1, H, W)
 
-    # convert back precision
-    output = output.to(dtype=inp_dtype)
+        # convert back precision
+        output = output.to(dtype=inp_dtype)
 
-    return output
+        return output
 
-@torch.library.register_fake("attention_kernels::_neighborhood_s2_attention_optimized")
-def _(k: torch.Tensor, v: torch.Tensor, q: torch.Tensor,
-      wk: torch.Tensor, wv: torch.Tensor, wq: torch.Tensor,
-      bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], bq: Union[torch.Tensor, None],
-      quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-      max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-    out_shape = (k.shape[0], wv.shape[0], nlat_out, nlon_out)
-    return torch.empty(out_shape, dtype=k.dtype, device=k.device)
+    @torch.library.register_fake("attention_kernels::_neighborhood_s2_attention_optimized")
+    def _(k: torch.Tensor, v: torch.Tensor, q: torch.Tensor,
+          wk: torch.Tensor, wv: torch.Tensor, wq: torch.Tensor,
+        bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], bq: Union[torch.Tensor, None],
+        quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+        max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        out_shape = (k.shape[0], wv.shape[0], nlat_out, nlon_out)
+        return torch.empty(out_shape, dtype=k.dtype, device=k.device)
 
 def _neighborhood_s2_attention_bwd_optimized(ctx, grad_output):
     col_idx, row_off, quad_weights, k, v, q, wk, wv, wq, bk, bv, bq = ctx.saved_tensors
