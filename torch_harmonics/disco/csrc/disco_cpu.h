@@ -38,13 +38,13 @@ namespace disco_kernels {
     static void disco_fwd_cpu(
         int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi, 
         int64_t Ho, int64_t Wo, int64_t nnz, int64_t nnr,
-        const torch::PackedTensorAccessor32<scalar_t, 4> inp,
+        const torch::PackedTensorAccessor64<scalar_t, 4> inp,
         const torch::PackedTensorAccessor64<int64_t, 1> roff_idx,
         const torch::PackedTensorAccessor64<int64_t, 1> ker_idx,
         const torch::PackedTensorAccessor64<int64_t, 1> row_idx,
         const torch::PackedTensorAccessor64<int64_t, 1> col_idx,
-        const torch::PackedTensorAccessor32<scalar_t, 1> vals,
-        torch::PackedTensorAccessor32<scalar_t, 5> out) {
+        const torch::PackedTensorAccessor64<scalar_t, 1> vals,
+        torch::PackedTensorAccessor64<scalar_t, 5> out) {
 
         const int64_t pscale = static_cast<int64_t>(Wi / Wo);
 
@@ -83,14 +83,14 @@ namespace disco_kernels {
     template <typename scalar_t>
     static void disco_bwd_cpu(
         int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi, 
-        int64_t Ho, int64_t Wo, int64_t nnz,
-        const torch::PackedTensorAccessor32<scalar_t, 5> inp,
+        int64_t Ho, int64_t Wo, int64_t nnz, int64_t nnr,
+        const torch::PackedTensorAccessor64<scalar_t, 5> inp,
         const torch::PackedTensorAccessor64<int64_t, 1> roff_idx,
         const torch::PackedTensorAccessor64<int64_t, 1> ker_idx,
         const torch::PackedTensorAccessor64<int64_t, 1> row_idx,
         const torch::PackedTensorAccessor64<int64_t, 1> col_idx,
-        const torch::PackedTensorAccessor32<scalar_t, 1> vals,
-        torch::PackedTensorAccessor32<scalar_t, 4> out) {
+        const torch::PackedTensorAccessor64<scalar_t, 1> vals,
+        torch::PackedTensorAccessor64<scalar_t, 4> out) {
 
         const int64_t pscale = static_cast<int64_t>(Wo / Wi);
 
@@ -99,21 +99,28 @@ namespace disco_kernels {
         for (int64_t b = 0; b < B; b++) {
             for (int64_t c = 0; c < C; c++) {
 
-                for (int64_t z = 0; z < nnz; z++) {
+                // we cannot simply collapse on this loop
+                // because we sum over ker, and row defines ker
+                for (int64_t row = 0; row < nnr; row++) {
 
-                    // COO format, we can optimize later
-                    int64_t hi = row_idx[z];
-                    int64_t ker = ker_idx[z];
-                    int64_t col = col_idx[z];
-                    scalar_t val = vals[z];
+                    // since the rows are ordered accordingly, we can compute ho and ker in here
+                    int64_t hi = row_idx[roff_idx[row]];
+                    int64_t ker = ker_idx[roff_idx[row]];
+                        
+                    for (int64_t z = roff_idx[row]; z < roff_idx[row + 1]; z++) {
 
-                    int64_t wo = static_cast<int64_t>(col % Wo);
-                    int64_t ho = static_cast<int64_t>(col / Wo);
+                        // COO format, we can optimize later
+                        int64_t col = col_idx[z];
+                        scalar_t val = vals[z];
 
-                    for (int64_t wi = 0; wi < Wi; wi++) {
-                        // compute shifted w
-                        int64_t wopp = static_cast<int64_t>((wo + pscale * wi) % Wo);
-                        out[b][c][ho][wopp] += val * inp[b][c][ker][hi][wi];
+                        int64_t wo = static_cast<int64_t>(col % Wo);
+                        int64_t ho = static_cast<int64_t>(col / Wo);
+
+                        for (int64_t wi = 0; wi < Wi; wi++) {
+                            // compute shifted w
+                            int64_t wopp = static_cast<int64_t>((wo + pscale * wi) % Wo);
+                            out[b][c][ho][wopp] += val * inp[b][c][ker][hi][wi];
+                        }
                     }
                 }
             }

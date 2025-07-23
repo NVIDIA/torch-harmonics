@@ -53,7 +53,7 @@ if torch.cuda.is_available():
 # CPU results normalized to 16 OpenMP threads,
 # GPU results normalized to V100 16 GB GPU
 # this is just to detect performance regressions, not for absolute performance
-_perf_test_thresholds = {"cpu": {"fwd_ms": 650, "bwd_ms": 150}, 
+_perf_test_thresholds = {"cpu": {"fwd_ms": 100, "bwd_ms": 90}, 
                          "cuda": {"fwd_ms": 50, "bwd_ms": 150}}
 
 
@@ -592,7 +592,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [8, 4, 2, (81, 160), (81, 160), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4],
+            [8, 4, 2, (91, 180), (91, 180), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4],
         ],
         skip_on_empty=True,
     )
