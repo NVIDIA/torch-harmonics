@@ -32,6 +32,8 @@
 
 #include "disco.h"
 
+#define CACHE_BLOCK_SIZE (64)
+
 namespace disco_kernels {
 
     template <typename scalar_t>
@@ -47,32 +49,52 @@ namespace disco_kernels {
         torch::PackedTensorAccessor64<scalar_t, 5> out) {
 
         const int64_t pscale = static_cast<int64_t>(Wi / Wo);
+        
+        // some parameters
+        const int64_t block_wo = CACHE_BLOCK_SIZE;
+        const int64_t nblock_wo = static_cast<int64_t>((Wo + block_wo - 1) / block_wo);
 
         // loop over matrix entries
-        #pragma omp parallel for collapse(3)
+        #pragma omp parallel for collapse(4)
         for (int64_t b = 0; b < B; b++) {
             for (int64_t c = 0; c < C; c++) {
                 for (int64_t row = 0; row < nnr; row++) {
+                    for (int64_t bwo = 0; bwo < nblock_wo; bwo++) {
 
-                    // since the rows are ordered accordingly, we can compute ho and ker in here
-                    int64_t ho = row_idx[roff_idx[row]];
-                    int64_t ker = ker_idx[roff_idx[row]];
+                        // compute block start and end
+                        int64_t wo_start = bwo * block_wo;
+                        int64_t wo_end = std::min(Wo, wo_start + block_wo);
+
+                        // since the rows are ordered accordingly, we can compute ho and ker in here
+                        int64_t ho = row_idx[roff_idx[row]];
+                        int64_t ker = ker_idx[roff_idx[row]];
+
+                        std::array<scalar_t, block_wo> out_tmp;
+                        for (int64_t wob = 0; wob < block_wo; wob++) {
+                            out_tmp[wob] = scalar_t(0);
+                        }
                         
-                    //scalar_t tmp = scalar_t(0);
-                    for (int64_t z = roff_idx[row]; z < roff_idx[row + 1]; z++) {
+                        // loop over input rows
+                        for (int64_t z = roff_idx[row]; z < roff_idx[row + 1]; z++) {
                     
-                        // COO format, we can optimize later
-                        int64_t col = col_idx[z];
-                        scalar_t val = vals[z];
+                            // COO format, we can optimize later
+                            int64_t col = col_idx[z];
+                            scalar_t val = vals[z];
 
-                        int64_t wi = static_cast<int64_t>(col % Wi);
-                        int64_t hi = static_cast<int64_t>(col / Wi);
+                            int64_t wi = static_cast<int64_t>(col % Wi);
+                            int64_t hi = static_cast<int64_t>(col / Wi);
 
-                        // sum wo
-                        for (int64_t wo = 0; wo < Wo; wo++) {
-                            // compute shifted w
-                            int64_t wipp = static_cast<int64_t>((wi + pscale * wo) % Wi);
-                            out[b][c][ker][ho][wo] += val * inp[b][c][hi][wipp];
+                            // sum wo
+                            for (int64_t wo = wo_start; wo < wo_end; wo++) {
+                                // compute shifted w
+                                int64_t wipp = static_cast<int64_t>((wi + pscale * wo) % Wi);
+                                out_tmp[wo-wo_start] += val * inp[b][c][hi][wipp];
+                            }
+                        }
+
+                        // write out
+                        for (int64_t wo = wo_start; wo < wo_end; wo++) {
+                            out[b][c][ker][ho][wo] = out_tmp[wo-wo_start];
                         }
                     }
                 }
