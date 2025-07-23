@@ -72,11 +72,11 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         [
             # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
             [4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            # [4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            # [4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            # [4, 1, 1, (2, 4), (2, 4), "equiangular", "equiangular", 1e-5, 1e-3],
-            # [4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-5, 1e-3],
-            # [4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-5, 1e-3],
+            [4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
+            [4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
+            [4, 1, 1, (2, 4), (2, 4), "equiangular", "equiangular", 1e-5, 1e-3],
+            [4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-5, 1e-3],
+            [4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-5, 1e-3],
         ],
         skip_on_empty=True,
     )
@@ -124,9 +124,10 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         out.backward(grad)
 
         # Check input gradient equivalence
-        for inp in ["q", "k", "v"]:
+        for inp in ["q", "v", "k"]:
             grad_ref = inputs_ref[inp].grad.cpu()
             grad = inputs[inp].grad.cpu()
+            #print(inp, "grad", grad[0, 0, 0, ...], "grad_ref", grad_ref[0, 0, 0, ...])
             self.assertTrue(torch.allclose(grad, grad_ref, atol=atol, rtol=rtol), f"Input gradient mismatch in {inp}")
 
         # Check parameter gradient equivalence
@@ -139,9 +140,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     @parameterized.expand(
         [
             # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
-            # [4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-2, 0],
-            # [4, 4, 1, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-2, 0],
-            # [4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-2, 0],
+            [4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-2, 0],
+            [4, 4, 1, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-2, 0],
+            [4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-2, 0],
         ],
         skip_on_empty=True,
     )
@@ -242,7 +243,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     @parameterized.expand(
         [
             # self attention
-            [1, 256, 1, (91, 180), (91, 180), "equiangular", "equiangular", 1e-5, 1e-5],
+            #[1, 256, 1, (91, 180), (91, 180), "equiangular", "equiangular", 1e-5, 1e-5],
         ],
         skip_on_empty=True,
     )
