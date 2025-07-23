@@ -38,6 +38,22 @@ from . import disco_kernels
 
 # custom kernels
 if optimized_kernels_is_available():
+    # raw forward fake
+    @torch.library.register_fake("disco_kernels::forward")
+    def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
+          row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
+          kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        out_shape = (inp.shape[0], inp.shape[1], kernel_size, nlat_out, nlon_out)
+        return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
+
+    # raw backward fake
+    @torch.library.register_fake("disco_kernels::backward")
+    def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
+          row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
+          kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        out_shape = (inp.shape[0], inp.shape[1], nlat_out, nlon_out)
+        return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
+
     # forward
     @torch.library.custom_op("disco_kernels::_disco_s2_contraction_optimized", mutates_args=())
     def _disco_s2_contraction_optimized(

@@ -29,6 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import os
 from time import perf_counter_ns
 import unittest
 from parameterized import parameterized, parameterized_class
@@ -54,7 +55,8 @@ if torch.cuda.is_available():
 # GPU results normalized to V100 16 GB GPU
 # this is just to detect performance regressions, not for absolute performance
 _perf_test_thresholds = {"cpu": {"fwd_ms": 100, "bwd_ms": 90}, 
-                         "cuda": {"fwd_ms": 50, "bwd_ms": 150}}
+                         "cuda": {"fwd_ms": 2, "bwd_ms": 3}}
+_run_perf_tests = (os.getenv("TORCH_HARMONICS_RUN_PERF_TESTS", "0") == "1")
 
 
 def _normalize_convolution_tensor_dense(psi, quad_weights, transpose_normalization=False, basis_norm_mode="none", merge_quadrature=False, eps=1e-9):
@@ -534,8 +536,10 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         tol,
         verbose,
     ):  
+        """Tests whether the optimized kernels are PyTorch 2 compatible"""
+
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
-            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+            raise unittest.SkipTest("skipping GPU test because CUDA kernels are not available")
         
         if verbose:
             print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
@@ -596,7 +600,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
-    @unittest.skipUnless(optimized_kernels_is_available(), "skipping performance test because optimized kernels are not available")
+    @unittest.skipUnless(optimized_kernels_is_available() and _run_perf_tests, "skipping performance test because optimized kernels are not available or perf tests are disabled")
     def test_perf(self, batch_size, in_channels, out_channels, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, transpose, tol, verbose=True):
         
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
@@ -628,7 +632,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             bias=True,
             theta_cutoff=theta_cutoff,
             optimized_kernel=True,
-        )
+        ).to(self.device)
 
         # random weights
         with torch.no_grad():

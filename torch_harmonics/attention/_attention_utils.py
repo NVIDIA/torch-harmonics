@@ -49,6 +49,25 @@ def _setup_context_attention_backward(ctx, inputs, output):
 
 # define NA op for CUDA
 if optimized_kernels_is_available():
+    # raw forward fake
+    @torch.library.register_fake("attention_kernels::forward")
+    def _(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor,
+          quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+          nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        out_shape = (kw.shape[0], vw.shape[1], nlat_out, nlon_out)
+        return torch.empty(out_shape, dtype=kw.dtype, device=kw.device)
+    
+    # raw backward fake
+    @torch.library.register_fake("attention_kernels::backward")
+    def _(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor, grad_output: torch.Tensor,
+          quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+          nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        dk = torch.empty_like(kw)
+        dv = torch.empty_like(vw)
+        dq = torch.empty_like(qw)
+        return dk, dv, dq
+
+    # forward
     @torch.library.custom_op("attention_kernels::_neighborhood_s2_attention_optimized", mutates_args=())
     def _neighborhood_s2_attention_optimized(k: torch.Tensor, v: torch.Tensor, q: torch.Tensor,
                                              wk: torch.Tensor, wv: torch.Tensor, wq: torch.Tensor,

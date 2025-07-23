@@ -59,16 +59,16 @@ namespace disco_kernels {
         for (int64_t b = 0; b < B; b++) {
             for (int64_t c = 0; c < C; c++) {
                 for (int64_t row = 0; row < nnr; row++) {
-                    
+
+                    // since the rows are ordered accordingly, we can compute ho and ker in here
+                    int64_t ho = row_idx[roff_idx[row]];
+                    int64_t ker = ker_idx[roff_idx[row]];
+
                     for (int64_t bwo = 0; bwo < nblock_wo; bwo++) {
 
                         // compute block start and end
                         int64_t wo_start = bwo * block_wo;
                         int64_t wo_end = std::min(Wo, wo_start + block_wo);
-
-                        // since the rows are ordered accordingly, we can compute ho and ker in here
-                        int64_t ho = row_idx[roff_idx[row]];
-                        int64_t ker = ker_idx[roff_idx[row]];
 
                         std::array<scalar_t, block_wo> out_tmp;
                         for (int64_t wob = 0; wob < block_wo; wob++) {
@@ -92,7 +92,6 @@ namespace disco_kernels {
                                 out_tmp[wo-wo_start] += val * inp[b][c][hi][wipp];
                             }
                         }
-
                         // write out
                         for (int64_t wo = wo_start; wo < wo_end; wo++) {
                             out[b][c][ker][ho][wo] = out_tmp[wo-wo_start];
@@ -130,6 +129,7 @@ namespace disco_kernels {
                     int64_t hi = row_idx[roff_idx[row]];
                     int64_t ker = ker_idx[roff_idx[row]];
                         
+                    // loop over input rows
                     for (int64_t z = roff_idx[row]; z < roff_idx[row + 1]; z++) {
 
                         // COO format, we can optimize later

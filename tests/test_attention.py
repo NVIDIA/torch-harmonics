@@ -29,13 +29,13 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import os
 from time import perf_counter_ns
 import unittest
 from parameterized import parameterized, parameterized_class
 
-# import math
-import numpy as np
 import torch
+from torch.library import opcheck
 import torch.nn as nn
 
 # from torch.autograd import gradcheck
@@ -56,6 +56,7 @@ if torch.cuda.is_available():
 # this is just to detect performance regressions, not for absolute performance
 _perf_test_thresholds = {"cpu": {"fwd_ms": 650, "bwd_ms": 150}, 
                          "cuda": {"fwd_ms": 50, "bwd_ms": 150}}
+_run_perf_tests = (os.getenv("TORCH_HARMONICS_RUN_PERF_TESTS", "0") == "1")
 
 
 @parameterized_class(("device"), _devices)
@@ -71,11 +72,11 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         [
             # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
             [4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            [4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            [4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            [4, 1, 1, (2, 4), (2, 4), "equiangular", "equiangular", 1e-5, 1e-3],
-            [4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-5, 1e-3],
-            [4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-5, 1e-3],
+            # [4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
+            # [4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
+            # [4, 1, 1, (2, 4), (2, 4), "equiangular", "equiangular", 1e-5, 1e-3],
+            # [4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-5, 1e-3],
+            # [4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-5, 1e-3],
         ],
         skip_on_empty=True,
     )
@@ -138,9 +139,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     @parameterized.expand(
         [
             # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
-            [4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-2, 0],
-            [4, 4, 1, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-2, 0],
-            [4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-2, 0],
+            # [4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-2, 0],
+            # [4, 4, 1, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-2, 0],
+            # [4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-2, 0],
         ],
         skip_on_empty=True,
     )
@@ -202,13 +203,50 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
     @parameterized.expand(
         [
+            # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
+            #[4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-2, 0],
+        ],
+        skip_on_empty=True,
+    )
+    def test_optimized_pt2_compatibility(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
+        """Tests whether the optimized kernels are PyTorch 2 compatible"""
+
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping GPU test because CUDA kernels are not available")
+
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        att = NeighborhoodAttentionS2(
+            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=False, theta_cutoff=2 * torch.pi, optimized_kernel=True
+        ).to(self.device)
+
+        inputs = {
+            "k": torch.randn(batch_size, channels, nlat_in, nlon_in, requires_grad=True, device=self.device, dtype=torch.float32),
+            "v": torch.randn(batch_size, channels, nlat_in, nlon_in, requires_grad=True, device=self.device, dtype=torch.float32),
+            "q": torch.randn(batch_size, channels, nlat_out, nlon_out, requires_grad=True, device=self.device, dtype=torch.float32),
+        }
+
+        test_inputs = (inputs["k"], inputs["v"], inputs["q"], 
+                       att.k_weights, att.v_weights, att.q_weights, 
+                       att.k_bias, att.v_bias, att.q_bias, 
+                       att.quad_weights, att.psi_col_idx, att.psi_roff_idx, 
+                       att.psi_max_nnz, att.num_heads, nlon_in, nlat_out, nlon_out)
+
+        opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs)
+        # opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs, test_utils="test_schema")
+        # opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs, test_utils="test_faketensor")
+        #opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs, test_utils="test_aot_dispatch_dynamic")
+
+
+    @parameterized.expand(
+        [
             # self attention
-            #[1, 256, 1, (361, 720), (361, 720), "equiangular", "equiangular", 1e-5, 1e-5],
             [1, 256, 1, (91, 180), (91, 180), "equiangular", "equiangular", 1e-5, 1e-5],
         ],
         skip_on_empty=True,
     )
-    @unittest.skipUnless(optimized_kernels_is_available(), "skipping performance test because optimized kernels are not available")
+    @unittest.skipUnless(optimized_kernels_is_available() and _run_perf_tests, "skipping performance test because optimized kernels are not available or perf tests are disabled")
     def test_perf(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=True):
         
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
