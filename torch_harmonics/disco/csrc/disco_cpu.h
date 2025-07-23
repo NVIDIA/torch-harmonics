@@ -55,10 +55,11 @@ namespace disco_kernels {
         const int64_t nblock_wo = static_cast<int64_t>((Wo + block_wo - 1) / block_wo);
 
         // loop over matrix entries
-        #pragma omp parallel for collapse(4)
+        #pragma omp parallel for collapse(3)
         for (int64_t b = 0; b < B; b++) {
             for (int64_t c = 0; c < C; c++) {
                 for (int64_t row = 0; row < nnr; row++) {
+                    
                     for (int64_t bwo = 0; bwo < nblock_wo; bwo++) {
 
                         // compute block start and end
