@@ -29,15 +29,14 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+from time import perf_counter_ns
 import unittest
 from parameterized import parameterized, parameterized_class
-from functools import partial
 import math
-import numpy as np
+
 import torch
 from torch.library import opcheck
-from torch.autograd import gradcheck
-from torch_harmonics import quadrature, DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
+from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
@@ -49,6 +48,13 @@ if not optimized_kernels_is_available():
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
     _devices.append((torch.device("cuda"),))
+
+# perf thresholds
+# CPU results normalized to 16 OpenMP threads,
+# GPU results normalized to V100 16 GB GPU
+# this is just to detect performance regressions, not for absolute performance
+_perf_test_thresholds = {"cpu": {"fwd_ms": 650, "bwd_ms": 150}, 
+                         "cuda": {"fwd_ms": 50, "bwd_ms": 150}}
 
 
 def _normalize_convolution_tensor_dense(psi, quad_weights, transpose_normalization=False, basis_norm_mode="none", merge_quadrature=False, eps=1e-9):
@@ -110,8 +116,8 @@ def _precompute_convolution_tensor_dense(
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
 
-    lats_in, win = quadrature._precompute_latitudes(nlat_in, grid=grid_in)
-    lats_out, wout = quadrature._precompute_latitudes(nlat_out, grid=grid_out)
+    lats_in, win = _precompute_latitudes(nlat_in, grid=grid_in)
+    lats_out, wout = _precompute_latitudes(nlat_out, grid=grid_out)
 
     # compute the phi differences.
     lons_in = _precompute_longitudes(nlon_in)
@@ -574,14 +580,103 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # if a test fails, those help to disambiguate the error
         # schema
-        #opcheck(torch.ops.disco_kernels.forward, test_inputs_fwd, test_utils="test_schema")
+        #opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_schema")
         # fake tensor
-        #opcheck(torch.ops.disco_kernels.forward, test_inputs_fwd, test_utils="test_faketensor")
+        #opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_faketensor")
         # test AOT stuff
         # this is expected to fail if the output shapes are dependent on input shapes (which is the case for DISCO)
-        #opcheck(torch.ops.disco_kernels.forward, test_inputs_fwd, test_utils="test_aot_dispatch_static")
+        #opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_aot_dispatch_static")
         # this one should pass
-        #opcheck(torch.ops.disco_kernels.forward, test_inputs_fwd, test_utils="test_aot_dispatch_dynamic")
+        #opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_aot_dispatch_dynamic")
+
+
+    @parameterized.expand(
+        [
+            [8, 4, 2, (81, 160), (81, 160), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4],
+        ],
+        skip_on_empty=True,
+    )
+    @unittest.skipUnless(optimized_kernels_is_available(), "skipping performance test because optimized kernels are not available")
+    def test_perf(self, batch_size, in_channels, out_channels, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, transpose, tol, verbose=True):
+        
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+        
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        if isinstance(kernel_shape, int):
+            theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
+        else:
+            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
+
+        # get handle
+        Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
+
+        # init on cpu
+        conv_optimized = Conv(
+            in_channels,
+            out_channels,
+            in_shape,
+            out_shape,
+            kernel_shape,
+            basis_type=basis_type,
+            basis_norm_mode=basis_norm_mode,
+            groups=1,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            bias=True,
+            theta_cutoff=theta_cutoff,
+            optimized_kernel=True,
+        )
+
+        # random weights
+        with torch.no_grad():
+            conv_optimized.weight.normal_()
+            conv_optimized.bias.normal_()
+
+        # create an input signal
+        inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
+        inp.requires_grad = True
+
+        # forward test
+        # warmup
+        for i in range(2):
+            out_optimized = conv_optimized(inp)
+
+        # start timer
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        start = perf_counter_ns()
+        out_optimized = conv_optimized(inp)
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        end = perf_counter_ns()
+        duration = (end - start) / 1e6
+        if verbose:
+            print(f"Forward execution time on device {self.device.type}: {duration:.2f} ms")
+        self.assertTrue(duration <= _perf_test_thresholds[self.device.type]["fwd_ms"])
+
+        # backward test
+        out_optimized = conv_optimized(inp)
+        out_grad = torch.randn(out_optimized.shape, dtype=torch.float32, device=self.device)
+        
+        # warmup
+        for _ in range(2):
+            out_optimized.backward(out_grad, retain_graph=True)
+
+        # start timer
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        start = perf_counter_ns()
+        out_optimized.backward(out_grad)
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        end = perf_counter_ns()
+        duration = (end - start) / 1e6
+        if verbose:
+            print(f"Backward execution time on device {self.device.type}: {duration:.2f} ms")
+        self.assertTrue(duration <= _perf_test_thresholds[self.device.type]["bwd_ms"])
 
 if __name__ == "__main__":
     unittest.main()

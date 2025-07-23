@@ -45,50 +45,38 @@ namespace attention_kernels {
         CHECK_CPU_INPUT_TENSOR(psi_col_idx);
         CHECK_CPU_INPUT_TENSOR(psi_row_off);
 
+        // change to channels first:
+        bool kx_is_channels_last = kx.strides()[1] == 1;
+        bool vx_is_channels_last = vx.strides()[1] == 1;
+        bool qy_is_channels_last = qy.strides()[1] == 1;
+
+        if (!kx_is_channels_last) { kx = kx.contiguous(at::MemoryFormat::ChannelsLast); }
+        if (!vx_is_channels_last) { vx = vx.contiguous(at::MemoryFormat::ChannelsLast); }
+        if (!qy_is_channels_last) { qy = qy.contiguous(at::MemoryFormat::ChannelsLast); }
+
         // prepare result tensor
         auto y = torch::zeros_like(qy);
 
-        for (int64_t ho = 0; ho < nlat_out; ho++) {
-        
-	        // get number of nonzeros
-            int64_t zstart = psi_row_off.index({ho}).item<int64_t>();
-            int64_t zend = psi_row_off.index({ho+1}).item<int64_t>();
+        // some parameters
+        const int64_t batch_size = kx.size(0);
+        const int64_t nchannels_out = vx.size(1);
+        const int64_t nchannels_in = qy.size(1);
 
-            for (int64_t wo = 0; wo < nlon_out; wo++) {
+        // extract accessors
+        auto roff_arr = psi_row_off.packed_accessor64<int64_t, 1>();
+        auto col_idx_arr = psi_col_idx.packed_accessor64<int64_t, 1>();
+        auto quad_weights_arr = quad_weights.packed_accessor64<float, 1>();
+        auto vx_arr = vx.packed_accessor64<float, 4>();
+        auto qy_arr = qy.packed_accessor64<float, 4>();
+        auto kx_arr = kx.packed_accessor64<float, 4>();
+        auto y_arr = y.packed_accessor64<float, 4>();
 
-                auto alpha_sum = torch::zeros({y.size(0)}, y.options());
-                auto qdotk_max = torch::zeros({y.size(0)}, y.options());
+        s2_attn_fwd_kernel<float>(kx_arr, vx_arr, qy_arr, quad_weights_arr, col_idx_arr, roff_arr, y_arr, 
+            nlon_in, nlat_out, nlon_out, batch_size, nchannels_in, nchannels_out);
 
-                for (int64_t idz = zstart; idz < zend; idz++) {
-                    int64_t nz_col_idx = psi_col_idx.index({idz}).item<int64_t>();
+        // permute back
+        if (!qy_is_channels_last) { y = y.contiguous(at::MemoryFormat::Contiguous); }
 
-                    // compute input indices from psi datastructure
-                    int64_t hi = static_cast<int64_t>(nz_col_idx / nlon_in);
-                    // account for output shift and ensure positive index due to circular condition
-                    int64_t wi = nz_col_idx % nlon_in;
-                    int64_t wip = (wi + wo) % nlon_in;
-
-                    // compute correlation & softmax numerator
-                    auto q_ho_wo = qy.index({Slice(), Slice(), ho, wo});
-                    auto k_hi_wip = kx.index({Slice(), Slice(), hi, wip});
-                    auto qdotk = torch::sum(q_ho_wo * k_hi_wip, 1);
-
-                    // tmp max
-                    auto qdotk_max_tmp = torch::maximum(qdotk_max, qdotk);
-
-                    // alpha sum update
-                    auto alpha = torch::exp(qdotk - qdotk_max_tmp) * quad_weights.index({hi});
-                    alpha_sum = alpha + alpha_sum * torch::exp(qdotk_max - qdotk_max_tmp);
-
-                    // update output
-                    y.index({Slice(), Slice(), ho, wo}) = y.index({Slice(), Slice(), ho, wo}) * torch::exp(qdotk_max - qdotk_max_tmp).unsqueeze(1) + alpha.unsqueeze(1) * vx.index({Slice(), Slice(), hi, wip});
-
-                    // define new max
-                    qdotk_max = qdotk_max_tmp;
-                }
-                y.index({Slice(), Slice(), ho, wo}) = y.index({Slice(), Slice(), ho, wo}) / alpha_sum.unsqueeze(1);
-            }
-        }
         return y;
     }
 

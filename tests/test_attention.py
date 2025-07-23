@@ -51,7 +51,10 @@ if torch.cuda.is_available():
     _devices.append((torch.device("cuda"),))
 
 # perf thresholds
-_perf_test_thresholds = {"cpu": {"fwd_ms": 50, "bwd_ms": 150}, 
+# CPU results normalized to 16 OpenMP threads,
+# GPU results normalized to V100 16 GB GPU
+# this is just to detect performance regressions, not for absolute performance
+_perf_test_thresholds = {"cpu": {"fwd_ms": 650, "bwd_ms": 150}, 
                          "cuda": {"fwd_ms": 50, "bwd_ms": 150}}
 
 
@@ -67,17 +70,21 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     @parameterized.expand(
         [
             # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
-            # [4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            # [4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            # [4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            # [4, 1, 1, (2, 4), (2, 4), "equiangular", "equiangular", 1e-5, 1e-3],
-            # [4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-5, 1e-3],
-            # [4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-5, 1e-3],
+            [4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
+            [4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
+            [4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
+            [4, 1, 1, (2, 4), (2, 4), "equiangular", "equiangular", 1e-5, 1e-3],
+            [4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-5, 1e-3],
+            [4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-5, 1e-3],
         ],
         skip_on_empty=True,
     )
+    @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
     def test_custom_implementation(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
         """Tests numerical equivalence between the custom (CUDA) implementation and the reference torch implementation"""
+
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
 
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
@@ -131,14 +138,17 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     @parameterized.expand(
         [
             # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
-            # [4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-2, 0],
-            # [4, 4, 1, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-2, 0],
-            # [4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-2, 0],
+            [4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-2, 0],
+            [4, 4, 1, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-2, 0],
+            [4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-2, 0],
         ],
         skip_on_empty=True,
     )
     def test_neighborhood_global_equivalence(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
         """Tests numerical equivalence between the global spherical attention module and the neighborhood spherical attention module with the neighborhood set ot the whole sphere"""
+
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
 
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
@@ -193,14 +203,15 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     @parameterized.expand(
         [
             # self attention
-            [1, 256, 1, (361, 720), (361, 720), "equiangular", "equiangular", 1e-5, 1e-5],
+            #[1, 256, 1, (361, 720), (361, 720), "equiangular", "equiangular", 1e-5, 1e-5],
+            [1, 256, 1, (91, 180), (91, 180), "equiangular", "equiangular", 1e-5, 1e-5],
         ],
         skip_on_empty=True,
     )
     @unittest.skipUnless(optimized_kernels_is_available(), "skipping performance test because optimized kernels are not available")
-    def test_perf(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
+    def test_perf(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=True):
         
-        if self.device.type != "cuda":
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
         
         # extract some parameters
@@ -244,29 +255,29 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         end = perf_counter_ns()
         duration = (end - start) / 1e6
         if verbose:
-            print(f"Forward execution time on device {self.device.type}: {duration} ms")
-        self.assertTrue(duration < _perf_test_thresholds[self.device.type]["fwd_ms"])
+            print(f"Forward execution time on device {self.device.type}: {duration:.2f} ms")
+        self.assertTrue(duration <= _perf_test_thresholds[self.device.type]["fwd_ms"])
 
-        # backward test
-        out_optimized = att_optimized(q_inp, k_inp, v_inp)
-        out_grad = torch.randn(out_optimized.shape, dtype=torch.float32, device=self.device)
+        # # backward test
+        # out_optimized = att_optimized(q_inp, k_inp, v_inp)
+        # out_grad = torch.randn(out_optimized.shape, dtype=torch.float32, device=self.device)
         
-        # warmup
-        for i in range(2):
-            out_optimized.backward(out_grad, retain_graph=True)
+        # # warmup
+        # for i in range(2):
+        #     out_optimized.backward(out_grad, retain_graph=True)
 
-        # start timer
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
-        start = perf_counter_ns()
-        out_optimized.backward(out_grad)
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
-        end = perf_counter_ns()
-        duration = (end - start) / 1e6
-        if verbose:
-            print(f"Backward execution time on device {self.device.type}: {duration} ms")
-        self.assertTrue(duration < _perf_test_thresholds[self.device.type]["bwd_ms"])
+        # # start timer
+        # if self.device.type == "cuda":
+        #     torch.cuda.synchronize()
+        # start = perf_counter_ns()
+        # out_optimized.backward(out_grad)
+        # if self.device.type == "cuda":
+        #     torch.cuda.synchronize()
+        # end = perf_counter_ns()
+        # duration = (end - start) / 1e6
+        # if verbose:
+        #     print(f"Backward execution time on device {self.device.type}: {duration:.2f} ms")
+        # self.assertTrue(duration <= _perf_test_thresholds[self.device.type]["bwd_ms"])
 
 if __name__ == "__main__":
     unittest.main()

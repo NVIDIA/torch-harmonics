@@ -35,7 +35,8 @@
 namespace disco_kernels {
 
     template <typename scalar_t>
-    static void disco_fwd_cpu(int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi, 
+    static void disco_fwd_cpu(
+        int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi, 
         int64_t Ho, int64_t Wo, int64_t nnz, int64_t nnr,
         const torch::PackedTensorAccessor32<scalar_t, 4> inp,
         const torch::PackedTensorAccessor64<int64_t, 1> roff_idx,
@@ -68,7 +69,6 @@ namespace disco_kernels {
                         int64_t hi = static_cast<int64_t>(col / Wi);
 
                         // sum wo
-                        #pragma omp vector shared(inp, out)
                         for (int64_t wo = 0; wo < Wo; wo++) {
                             // compute shifted w
                             int64_t wipp = static_cast<int64_t>((wi + pscale * wo) % Wi);
@@ -81,7 +81,9 @@ namespace disco_kernels {
     }
 
     template <typename scalar_t>
-    static void disco_bwd_cpu(int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi, int64_t Ho, int64_t Wo, int64_t nnz,
+    static void disco_bwd_cpu(
+        int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi, 
+        int64_t Ho, int64_t Wo, int64_t nnz,
         const torch::PackedTensorAccessor32<scalar_t, 5> inp,
         const torch::PackedTensorAccessor64<int64_t, 1> roff_idx,
         const torch::PackedTensorAccessor64<int64_t, 1> ker_idx,

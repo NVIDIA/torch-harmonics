@@ -485,8 +485,8 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
 
     const int batch_size = kx.size(0);
 
-     // extract dtype
-     auto qy_type = qy.dtype();
+    // extract dtype
+    auto qy_type = qy.dtype();
 
     torch::Tensor kxP = kx.to(torch::kFloat32);
     torch::Tensor vxP = vx.to(torch::kFloat32);

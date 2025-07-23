@@ -78,7 +78,7 @@ def get_compile_args(module_name):
     else:
         print(f"NOTE: Compiling {module_name} with release flags")
         return {
-            'cxx': ['-O3', "-DNDEBUG"] + cpp_extra_flags,
+            'cxx': ['-O3', "-ffast-math", "-DNDEBUG"] + cpp_extra_flags,
             'nvcc': ['-O3', "-DNDEBUG"] + nvcc_extra_flags
         }
 
