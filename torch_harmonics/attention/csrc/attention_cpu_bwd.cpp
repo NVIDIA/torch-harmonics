@@ -34,7 +34,7 @@ using namespace torch::indexing;
 
 namespace attention_kernels {
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_dkvq_cpu(torch::Tensor kx, torch::Tensor vx, torch::Tensor qy, torch::Tensor dy,
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_cpu(torch::Tensor kx, torch::Tensor vx, torch::Tensor qy, torch::Tensor dy,
                                                       torch::Tensor quad_weights, torch::Tensor col_idx, torch::Tensor row_off,
                                                       int64_t nlon_in, int64_t nlat_out, int64_t nlon_out) {
 
@@ -48,6 +48,15 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_dkvq_cp
     // dkx: B, C, Hi, Wi
     // dvx: B, C, Hi, Wi
     // dqy: B, C, Ho, Wo
+
+    // sanity checks
+    CHECK_CPU_INPUT_TENSOR(kx);
+    CHECK_CPU_INPUT_TENSOR(vx);
+    CHECK_CPU_INPUT_TENSOR(qy);
+    CHECK_CPU_INPUT_TENSOR(dy);
+    CHECK_CPU_INPUT_TENSOR(quad_weights);
+    CHECK_CPU_INPUT_TENSOR(col_idx);
+    CHECK_CPU_INPUT_TENSOR(row_off);
 
     // change to channels first:
     bool kx_is_channels_last = kx.strides()[1] == 1;
@@ -69,96 +78,24 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_dkvq_cp
     const int64_t nchannels_out = vx.size(1);
     const int64_t nchannels_in = qy.size(1);
 
-    for (int64_t b = 0; b < batch_size; b++) {
-        for (int64_t co = 0; co < nchannels_out; co++) {
-            for (int64_t ho = 0; ho < nlat_out; ho++) {
+    // extract accessors
+    auto kx_arr = kx.packed_accessor64<float, 4>();
+    auto vx_arr = vx.packed_accessor64<float, 4>();
+    auto qy_arr = qy.packed_accessor64<float, 4>();
+    auto dy_arr = dy.packed_accessor64<float, 4>();
 
-                // get number of nonzeros
-                int64_t zstart = row_off.index({ho}).item<int64_t>();
-                int64_t zend = row_off.index({ho+1}).item<int64_t>();
+    auto quad_weights_arr = quad_weights.packed_accessor64<float, 1>();
+    auto col_idx_arr = col_idx.packed_accessor64<int64_t, 1>();
+    auto roff_arr = row_off.packed_accessor64<int64_t, 1>();
 
-                for (int64_t wo = 0; wo < nlon_out; wo++) {
+    auto dqy_arr = dqy.packed_accessor64<float, 4>();
+    auto dvx_arr = dvx.packed_accessor64<float, 4>();
+    auto dkx_arr = dkx.packed_accessor64<float, 4>();
 
-                    // required for all grads
-                    auto qdotk_nz = torch::zeros({zend-zstart}, dy.options());
-                    float qdotk_max = -std::numeric_limits<float>::max();
-                    auto alpha_nz = torch::zeros({zend-zstart}, dy.options());
-                    float alpha_sum = 0.0;
-
-                    // required for dkx
-                    float alpha_gdotv = 0.0;
-                    //auto qy_alpha_gdotv = torch::zeros({dy.size(0), dy.size(1)}, dy.options());
-
-                    // required for dqy
-                    float alpha_k = 0.0;
-                    float alpha_k_gdotv = 0.0;
-
-                    for (int64_t idz = zstart; idz < zend; idz++) {
-                        int64_t nz_col_idx = col_idx.index({idz}).item<int64_t>();
-
-                        // compute input indices from psi datastructure
-                        int64_t hi = static_cast<int64_t>(nz_col_idx / nlon_in);
-                        // account for output shift and ensure positive index due to circular condition
-                        int64_t wi = nz_col_idx % nlon_in;
-                        int64_t wip = (wi+wo) % nlon_in;
-
-                        // compute correlation & softmax numerator
-                        auto q_ho_wo = qy.index({b, Slice(), ho, wo});
-                        auto k_hi_wi = kx.index({b, Slice(), hi, wip});
-                        qdotk_nz.index({idz-zstart}) = torch::sum(q_ho_wo * k_hi_wi, 0);
-
-                        // tmp max and discount
-                        float qdotk_max_tmp = std::max(qdotk_max, qdotk_nz.index({idz-zstart}).item<float>());
-                        float discount = std::exp(qdotk_max - qdotk_max_tmp);
-
-                        // alpha update
-                        alpha_nz.index({idz-zstart}) = std::exp(qdotk_nz.index({idz-zstart}).item<float>() - qdotk_max_tmp) * quad_weights.index({hi}).item<float>();
-                        alpha_sum = alpha_nz.index({idz-zstart}).item<float>() + alpha_sum * discount;
-
-                        // dkx: input dot
-                        float gdotv = torch::sum(dy.index({b, Slice(), ho, wo}) * vx.index({b, Slice(), hi, wip}), 0).item<float>();
-                        float alpha_gdotv_tmp = alpha_nz.index({idz-zstart}).item<float>() * gdotv;
-                        alpha_gdotv = alpha_gdotv_tmp + alpha_gdotv * discount;
-
-                        // dqy: alpha_k
-                        alpha_k = alpha_nz.index({idz-zstart}).item<float>() * k_hi_wi.index({co}).item<float>() + alpha_k * discount;
-
-                        // dqy: alpha_k_gdotv
-                        alpha_k_gdotv = alpha_gdotv_tmp * k_hi_wi.index({co}).item<float>() + alpha_k_gdotv * discount;
-
-                        // define new max
-                        qdotk_max = qdotk_max_tmp;
-                    }
-
-                    // normalization
-                    alpha_gdotv = alpha_gdotv / alpha_sum;
-                    alpha_k = alpha_k / alpha_sum;
-                    alpha_k_gdotv = alpha_k_gdotv / alpha_sum;
-
-                    // dqy: update
-                    dqy.index({b, co, ho, wo}) = (alpha_k_gdotv - alpha_gdotv * alpha_k);
-
-                    for (int64_t idz = zstart; idz < zend; idz++) {
-                        int64_t nz_col_idx = col_idx.index({idz}).item<int64_t>();
-
-                        // compute input indices from psi datastructure
-                        int64_t hi = static_cast<int64_t>(nz_col_idx / nlon_in);
-                        // account for output shift and ensure positive index due to circular condition
-                        int64_t wi = nz_col_idx % nlon_in;
-                        int64_t wip = (wi+wo) % nlon_in;
-
-                        // recompute alpha
-                        float alpha_norm = std::exp(qdotk_nz.index({idz-zstart}).item<float>() - qdotk_max) * quad_weights.index({hi}).item<float>() / alpha_sum;
-                        dvx.index({b, co, hi, wip}) += alpha_norm * dy.index({b, co, ho, wo});
-
-                        // dkx: update
-                        float gdotv = torch::sum(dy.index({b, Slice(), ho, wo}) * vx.index({b, Slice(), hi, wip}), 0).item<float>();
-                        dkx.index({b, co, hi, wip}) += qy.index({b, co, ho, wo}) * alpha_norm * (gdotv - alpha_gdotv);
-                    }
-                }
-            }
-        }
-    }
+    s2_attn_bwd_kernel<float>(kx_arr, vx_arr, qy_arr, dy_arr,
+        quad_weights_arr, col_idx_arr, roff_arr, dqy_arr, dvx_arr, dkx_arr,
+        nlon_in, nlat_out, nlon_out,
+        batch_size, nchannels_in, nchannels_out);
 
     // permute back
     if (!qy_is_channels_last) { dqy = dqy.contiguous(at::MemoryFormat::Contiguous); }
@@ -170,7 +107,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_dkvq_cp
 
 TORCH_LIBRARY_IMPL(attention_kernels, CPU, m)
 {
-    m.impl("backward",  &s2_attention_bwd_dkvq_cpu);
+    m.impl("backward",  &s2_attention_bwd_cpu);
 }
 
 }

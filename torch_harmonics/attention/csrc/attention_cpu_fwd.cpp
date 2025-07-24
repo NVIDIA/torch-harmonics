@@ -35,15 +35,15 @@ using namespace torch::indexing;
 namespace attention_kernels {
 
     torch::Tensor s2_attention_fwd_cpu(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor quad_weights,
-                                       at::Tensor psi_col_idx, at::Tensor psi_row_off, 
+                                       at::Tensor col_idx, at::Tensor row_off, 
                                        int64_t nlon_in, int64_t nlat_out, int64_t nlon_out) {
         // sanity checks
         CHECK_CPU_INPUT_TENSOR(kx);
         CHECK_CPU_INPUT_TENSOR(vx);
         CHECK_CPU_INPUT_TENSOR(qy);
         CHECK_CPU_INPUT_TENSOR(quad_weights);
-        CHECK_CPU_INPUT_TENSOR(psi_col_idx);
-        CHECK_CPU_INPUT_TENSOR(psi_row_off);
+        CHECK_CPU_INPUT_TENSOR(col_idx);
+        CHECK_CPU_INPUT_TENSOR(row_off);
 
         // change to channels first:
         bool kx_is_channels_last = kx.strides()[1] == 1;
@@ -63,8 +63,8 @@ namespace attention_kernels {
         const int64_t nchannels_in = qy.size(1);
 
         // extract accessors
-        auto roff_arr = psi_row_off.packed_accessor64<int64_t, 1>();
-        auto col_idx_arr = psi_col_idx.packed_accessor64<int64_t, 1>();
+        auto roff_arr = row_off.packed_accessor64<int64_t, 1>();
+        auto col_idx_arr = col_idx.packed_accessor64<int64_t, 1>();
         auto quad_weights_arr = quad_weights.packed_accessor64<float, 1>();
         auto vx_arr = vx.packed_accessor64<float, 4>();
         auto qy_arr = qy.packed_accessor64<float, 4>();
