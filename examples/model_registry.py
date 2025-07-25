@@ -32,10 +32,11 @@
 import os, sys
 
 from functools import partial
+import torch.nn as nn
 
 # import baseline models
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from baseline_models import Transformer, UNet, Segformer
+from baseline_models import Transformer, UNet, Segformer, EGTransformer
 from torch_harmonics.examples.models import SphericalFourierNeuralOperator, LocalSphericalNeuralOperator, SphericalTransformer, SphericalUNet, SphericalSegformer
 
 def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_prediction=False, drop_path_rate=0., grid="equiangular"):
@@ -430,6 +431,23 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             attention_mode="global",
             upsampling_method="pixel_shuffle",
             bias=False
+        ),
+        
+        egformer = partial(
+            EGTransformer,
+            img_size=img_size,
+            in_chans=in_chans,
+            out_chans=out_chans,
+            embed_dim=32,
+            depth=[2, 2, 2, 2, 2, 2, 2, 2, 2],
+            split_size=[1, 1, 1, 1, 1, 1, 1, 1, 1],
+            num_heads=[1, 2, 4, 8, 16, 16, 8, 4, 2],
+            mlp_ratio=4.0,
+            qkv_bias=True,
+            drop_rate=0.0,
+            attn_drop_rate=0.0,
+            drop_path_rate=drop_path_rate,
+            norm_layer=nn.LayerNorm,
         ),
     )
 

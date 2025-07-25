@@ -544,8 +544,13 @@ class PanoformerBlock(nn.Module):
         x = self.norm1(x)
         x = x.view(B, H, W, C)
         # W-MSA/SW-MSA
-        self.ref_point = self.ref_point.cuda(x.get_device())
-        x = self.dattn(x, x.unsqueeze(0), self.ref_point.repeat(B, 1, 1, 1, 1))  # nW*B, win_size*win_size, C
+        if self.ref_point is not None:
+            self.ref_point = self.ref_point.to(x.get_device())
+            x = self.dattn(x, x.unsqueeze(0), self.ref_point.repeat(B, 1, 1, 1, 1))  # nW*B, win_size*win_size, C
+        else:
+            # Fallback: create a simple reference point grid
+            ref_point = torch.zeros(1, 1, H, W, 2, device=x.get_device())
+            x = self.dattn(x, x.unsqueeze(0), ref_point.repeat(B, 1, 1, 1, 1))
 
         x = x.view(B, H * W, C)
 
@@ -900,7 +905,7 @@ class EGTransformer(nn.Module):
         num_heads   : Number of heads in each stage
         hybrid      : Whether to use hybrid patch embedding (ResNet50)/ Not used
     """
-    def __init__(self, img_size=[512, 1024], patch_size=16, in_chans=3, num_classes=1000, embed_dim=96, depth=[2,2,6,2], split_size = [3,5,7],
+    def __init__(self, img_size=[512, 1024], patch_size=16, in_chans=3, out_chans=1, num_classes=1000, embed_dim=96, depth=[2,2,6,2], split_size = [3,5,7],
                  num_heads=[1, 2, 4, 8, 16, 16, 8, 4, 2], mlp_ratio=2., qkv_bias=True, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
                  drop_path_rate=0., hybrid_backbone=None, norm_layer=nn.LayerNorm, use_chk=False, hybrid=False):
         super().__init__()
@@ -934,11 +939,18 @@ class EGTransformer(nn.Module):
         self.mlp = token_mlp
         self.win_size = win_size
         ## Fine until here
-        self.ref_point256x512 = genSamplingPattern(256, 512, 3, 3).cuda()
-        self.ref_point128x256 = genSamplingPattern(128, 256, 3, 3).cuda()
-        self.ref_point64x128 = genSamplingPattern(64, 128, 3, 3).cuda()
-        self.ref_point32x64 = genSamplingPattern(32, 64, 3, 3).cuda()
-        self.ref_point16x32 = genSamplingPattern(16, 32, 3, 3).cuda()
+        # self.ref_point256x512 = genSamplingPattern(256, 512, 3, 3).cuda()
+        # self.ref_point128x256 = genSamplingPattern(128, 256, 3, 3).cuda()
+        # self.ref_point64x128 = genSamplingPattern(64, 128, 3, 3).cuda()
+        # self.ref_point32x64 = genSamplingPattern(32, 64, 3, 3).cuda()
+        # self.ref_point16x32 = genSamplingPattern(16, 32, 3, 3).cuda()
+        # Generate reference points dynamically based on image size
+        self.img_size = img_size
+        self.ref_point256x512 = None
+        self.ref_point128x256 = None
+        self.ref_point64x128 = None
+        self.ref_point32x64 = None
+        self.ref_point16x32 = None
 
         self.pos_drop = nn.Dropout(p=drop_rate)
 
@@ -1141,7 +1153,7 @@ class EGTransformer(nn.Module):
             Interpolate(scale_factor=2, mode="bilinear", align_corners=True),
             nn.Conv2d(curr_dim, 32, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
-            nn.Conv2d(32, 1, kernel_size=1, stride=1, padding=0),
+            nn.Conv2d(32, out_chans, kernel_size=1, stride=1, padding=0),
             nn.Sigmoid() if non_negative else nn.Identity(),
         )
 
@@ -1155,11 +1167,33 @@ class EGTransformer(nn.Module):
         elif isinstance(m, (nn.LayerNorm, nn.BatchNorm2d)):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
+    
+    def _generate_ref_points(self, device):
+        """Generate reference points dynamically based on image size"""
+        if self.ref_point256x512 is None:
+            h, w = self.img_size[0]//2, self.img_size[1]//2
+            self.ref_point256x512 = genSamplingPattern(h, w, 3, 3).to(device)
+        if self.ref_point128x256 is None:
+            h, w = self.img_size[0]//4, self.img_size[1]//4
+            self.ref_point128x256 = genSamplingPattern(h, w, 3, 3).to(device)
+        if self.ref_point64x128 is None:
+            h, w = self.img_size[0]//8, self.img_size[1]//8
+            self.ref_point64x128 = genSamplingPattern(h, w, 3, 3).to(device)
+        if self.ref_point32x64 is None:
+            h, w = self.img_size[0]//16, self.img_size[1]//16
+            self.ref_point32x64 = genSamplingPattern(h, w, 3, 3).to(device)
+        if self.ref_point16x32 is None:
+            h, w = self.img_size[0]//32, self.img_size[1]//32
+            self.ref_point16x32 = genSamplingPattern(h, w, 3, 3).to(device)
 
     def forward_features(self, x):
         features = []
         B = x.shape[0]
         features= []
+        
+        # Generate reference points for the current device
+        device = x.device
+        self._generate_ref_points(device)
        
 
     ########## Encoder       
@@ -1226,3 +1260,29 @@ class EGTransformer(nn.Module):
     def forward(self, x):
         out = self.forward_features(x)
         return out
+
+
+# Model registration for timm
+@register_model
+def egformer(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs):
+    """EGformer tiny model"""
+    # Filter out timm-specific parameters
+    egformer_kwargs = {k: v for k, v in kwargs.items() 
+                      if k not in ['cache_dir', 'features_only', 'out_indices', 'scriptable', 'exportable']}
+    model = EGTransformer(
+        img_size=[512, 1024],
+        patch_size=16,
+        in_chans=3,
+        embed_dim=32,
+        depth=[2, 2, 2, 2, 2, 2, 2, 2, 2],
+        split_size=[1, 1, 1, 1, 1, 1, 1, 1, 1],
+        num_heads=[1, 2, 4, 8, 16, 16, 8, 4, 2],
+        mlp_ratio=4.0,
+        qkv_bias=True,
+        drop_rate=0.0,
+        attn_drop_rate=0.0,
+        drop_path_rate=0.1,
+        norm_layer=nn.LayerNorm,
+        **egformer_kwargs
+    )
+    return model
