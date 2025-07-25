@@ -251,8 +251,9 @@ def genSamplingPattern(h, w, kh, kw, stride=1):
 
 ########### feed-forward network #############
 class LeFF(nn.Module):
-    def __init__(self, dim=32, hidden_dim=128, act_layer=nn.GELU, drop=0., flag = 0):
+    def __init__(self, dim, hidden_dim=None, act_layer=nn.GELU, drop=0., flag = 0):
         super().__init__()
+        hidden_dim = hidden_dim or dim * 4  # Default to 4x expansion if not specified
         self.linear1 = nn.Sequential(nn.Linear(dim, hidden_dim),
                                      act_layer())
         self.dwconv = nn.Sequential(
@@ -435,7 +436,18 @@ class PanoSelfAttention(nn.Module):
             #ref_point = generate_ref_points(query_width, query_height).repeat(nbatches, 1, 1, 1)
 
             # B, K, H, W, 2
-            reversed_ref_point = ref_point #restore_scale(height=h, width=w, ref_point=ref_point)
+            # Scale reference points to match current feature map dimensions
+            if ref_point.shape[2] != h or ref_point.shape[3] != w:
+                # Interpolate reference points to match current spatial dimensions
+                ref_point_resized = F.interpolate(
+                    ref_point.view(-1, 2, ref_point.shape[2], ref_point.shape[3]), 
+                    size=(h, w), 
+                    mode='bilinear', 
+                    align_corners=False
+                ).view(ref_point.shape[0], ref_point.shape[1], h, w, 2)
+                reversed_ref_point = ref_point_resized
+            else:
+                reversed_ref_point = ref_point
 
             #reversed_ref_point = restore_scale(w, h)
 
@@ -465,7 +477,37 @@ class PanoSelfAttention(nn.Module):
 
 
             for k in range(self.k):
-                points = reversed_ref_point[:, :, :, k, :] + offset[:, l, k, :, :, :]#+ equi_offset[:, l, :, :, k, :] + offset[:, l, k, :, :, :]
+                # Scale offset to match feature map dimensions if needed
+                current_offset = offset[:, l, k, :, :, :]
+                
+                # Debug: print tensor shapes
+                # print(f"reversed_ref_point shape: {reversed_ref_point.shape}")
+                # print(f"current_offset shape: {current_offset.shape}")
+                # print(f"h, w: {h}, {w}")
+                
+                if current_offset.shape[2] != h or current_offset.shape[3] != w:
+                    # Interpolate offset to match current spatial dimensions
+                    # current_offset has shape [B*M, H, W, 2] where H, W are query dimensions
+                    # We need to reshape it to [B*M, 2, H, W] for interpolation, then back to [B*M, h, w, 2]
+                    offset_reshaped = current_offset.permute(0, 3, 1, 2).contiguous()  # [B*M, 2, H, W]
+                    offset_resized = F.interpolate(
+                        offset_reshaped, 
+                        size=(h, w), 
+                        mode='bilinear', 
+                        align_corners=False
+                    )
+                    current_offset = offset_resized.permute(0, 2, 3, 1).contiguous()  # [B*M, h, w, 2]
+                
+                # Ensure both tensors have the same spatial dimensions
+                # reversed_ref_point has shape [B*M, 1, h, w, 2] where the second dimension is 1
+                # We need to extract the reference point for the current k
+                ref_point_k = reversed_ref_point[:, 0, :, :, :]  # [B*M, h, w, 2]
+                
+                # Debug: print final tensor shapes
+                # print(f"ref_point_k shape: {ref_point_k.shape}")
+                # print(f"current_offset shape after scaling: {current_offset.shape}")
+                
+                points = ref_point_k + current_offset
                 vgrid_x = 2.0 * points[:, :, :, 1] / max(w - 1, 1) - 1.0
                 vgrid_y = 2.0 * points[:, :, :, 0] / max(h - 1, 1) - 1.0
                 vgrid_scaled = torch.stack((vgrid_x, vgrid_y), dim=3)
@@ -546,7 +588,19 @@ class PanoformerBlock(nn.Module):
         # W-MSA/SW-MSA
         if self.ref_point is not None:
             self.ref_point = self.ref_point.to(x.get_device())
-            x = self.dattn(x, x.unsqueeze(0), self.ref_point.repeat(B, 1, 1, 1, 1))  # nW*B, win_size*win_size, C
+            # Scale reference points to match current input resolution
+            if self.ref_point.shape[2] != H or self.ref_point.shape[3] != W:
+                # Interpolate reference points to match current spatial dimensions
+                ref_point_resized = F.interpolate(
+                    self.ref_point.view(-1, 2, self.ref_point.shape[2], self.ref_point.shape[3]), 
+                    size=(H, W), 
+                    mode='bilinear', 
+                    align_corners=False
+                ).view(self.ref_point.shape[0], self.ref_point.shape[1], H, W, 2)
+                ref_point_to_use = ref_point_resized
+            else:
+                ref_point_to_use = self.ref_point
+            x = self.dattn(x, x.unsqueeze(0), ref_point_to_use.repeat(B, 1, 1, 1, 1))  # nW*B, win_size*win_size, C
         else:
             # Fallback: create a simple reference point grid
             ref_point = torch.zeros(1, 1, H, W, 2, device=x.get_device())
@@ -679,22 +733,7 @@ def HRPE(num_heads, height, width, split_size): ## Used for Horizontal attention
     return base.unsqueeze(1).repeat(split_size,num_heads,1,1) 
 
 
-# LUT should be updated if input resolution is not 512x1024. 
-
-VRPE_LUT.append(VRPE(1,256,512,1))
-HRPE_LUT.append(HRPE(1,256,512,1))
-
-VRPE_LUT.append(VRPE(2,128,256,1))
-HRPE_LUT.append(HRPE(2,128,256,1))
-
-VRPE_LUT.append(VRPE(4,64,128,1))
-HRPE_LUT.append(HRPE(4,64,128,1))
-
-VRPE_LUT.append(VRPE(8,32,64,1))
-HRPE_LUT.append(HRPE(8,32,64,1))
-
-VRPE_LUT.append(VRPE(16,16,32,1))
-HRPE_LUT.append(HRPE(16,16,32,1))
+# RPE functions are now used dynamically - no need for hardcoded LUTs
 
 
 class Mlp(nn.Module):
@@ -743,10 +782,12 @@ class EGAttention(nn.Module):
 
             if idx == 0:  # Horizontal Self-Attention
                 W_sp, H_sp = self.resolution[1], self.split_size
-                self.RPE = HRPE_LUT[self.d_idx]
+                # Compute RPE dynamically instead of using pre-computed LUT
+                self.RPE = HRPE(self.num_heads, self.resolution[0], self.resolution[1], self.split_size)
             elif idx == 1:  # Vertical Self-Attention
                 H_sp, W_sp = self.resolution[0], self.split_size
-                self.RPE = VRPE_LUT[self.d_idx]
+                # Compute RPE dynamically instead of using pre-computed LUT
+                self.RPE = VRPE(self.num_heads, self.resolution[0], self.resolution[1], self.split_size)
             else:
                 print ("ERROR MODE", idx)
                 exit(0)
@@ -924,17 +965,17 @@ class EGTransformer(nn.Module):
 
         non_negative=True 
 
-        #### Panoformer variables
-        img_size_pano=256; in_chans=3; embed_dim=32; depths=[2, 2, 2, 2, 2, 2, 2, 2, 2]; num_heads=[1, 2, 4, 8, 16, 16, 8, 4, 2]
-        win_size=8; mlp_ratio=4.; qkv_bias=True; qk_scale=None; drop_rate=0.; attn_drop_rate=0.; drop_path_rate=0.1
+        #### Panoformer variables - use parameters instead of hardcoded values
+        img_size_pano=256; depths=[2, 2, 2, 2, 2, 2, 2, 2, 2]; num_heads=[1, 2, 4, 8, 16, 16, 8, 4, 2]
+        win_size=8; qkv_bias=True; qk_scale=None; drop_rate=0.; attn_drop_rate=0.; drop_path_rate=0.1
         norm_layer=nn.LayerNorm; patch_norm=True; use_checkpoint=False; token_projection='linear'; token_mlp='leff'; se_layer=False
         dowsample=Downsample; upsample=Upsample
 
         self.num_enc_layers = len(depths) // 2
         self.num_dec_layers = len(depths) // 2
-        self.embed_dim = embed_dim
+        self.embed_dim = embed_dim  # Use the parameter, not hardcoded value
         self.patch_norm = patch_norm
-        self.mlp_ratio = mlp_ratio
+        self.mlp_ratio = mlp_ratio  # Use the parameter, not hardcoded value
         self.token_projection = token_projection
         self.mlp = token_mlp
         self.win_size = win_size
@@ -1012,40 +1053,20 @@ class EGTransformer(nn.Module):
             for i in range(depth[1])])
         self.downsample2 = Merge_Block(curr_dim, curr_dim*2, resolution = [img_size[0]//4, img_size[1]//4])
        
-        # Tuning into decoder dimension
-        curr_dim = curr_dim*2
-
-        self.stage3 = nn.ModuleList([
+        # Update curr_dim after downsample2
+        curr_dim = curr_dim * 2
+        
+        # Skip stage3 and stage4 - go directly to bottleneck
+        # curr_dim is now 256 (64 -> 128 -> 256)
+        self.bottleneck = nn.ModuleList([
             EGBlock(
                 dim=curr_dim, num_heads=heads[2], reso=[img_size[0]//8, img_size[1]//8], mlp_ratio=mlp_ratio,
                 qkv_bias=qkv_bias, qk_scale=qk_scale, split_size=split_size[2],
                 drop=drop_rate, attn_drop=attn_drop_rate,
-                drop_path=dpr[np.sum(depth[:2])+i], norm_layer=norm_layer,attention = 0 , idx= i%2, depth_index = 2)
+                drop_path=dpr[np.sum(depth[:2])+i], norm_layer=norm_layer, last_stage=False,attention = 0, idx= i%2, depth_index = 2)
             for i in range(depth[2])])
-
-        self.downsample3 = Merge_Block(curr_dim, curr_dim*2, resolution = [img_size[0]//8, img_size[1]//8])
-
-        curr_dim = curr_dim*2
-        self.stage4 = nn.ModuleList([
-            EGBlock(
-                dim=curr_dim, num_heads=heads[3], reso=[img_size[0]//16, img_size[1]//16], mlp_ratio=mlp_ratio,
-                qkv_bias=qkv_bias, qk_scale=qk_scale, split_size=split_size[3],
-                drop=drop_rate, attn_drop=attn_drop_rate,
-                drop_path=dpr[np.sum(depth[:3])+i], norm_layer=norm_layer, last_stage=False,attention = 0 , idx= i%2, depth_index = 3)
-            for i in range(depth[3])])
  
-        self.downsample4 = Merge_Block(curr_dim, curr_dim * 2, resolution = [img_size[0]//16, img_size[1]//16])
-        curr_dim = curr_dim*2
- 
-        self.bottleneck = nn.ModuleList([
-            EGBlock(
-                dim=curr_dim, num_heads=heads[-1], reso=[img_size[0]//32, img_size[1]//32], mlp_ratio=mlp_ratio,
-                qkv_bias=qkv_bias, qk_scale=qk_scale, split_size=split_size[-1],
-                drop=drop_rate, attn_drop=attn_drop_rate,
-                drop_path=dpr[np.sum(depth[:-1])+i], norm_layer=norm_layer, last_stage=False,attention = 0, idx= i%2, depth_index = 4)
-            for i in range(depth[-1])])
- 
-        self.upsample5 = Merge_Block(curr_dim, curr_dim // 2, resolution = [img_size[0]//32, img_size[1]//32],scale_factor=2.)
+        self.upsample5 = Merge_Block(curr_dim, curr_dim // 2, resolution = [img_size[0]//8, img_size[1]//8],scale_factor=2.)
         curr_dim = curr_dim // 2
 
 
@@ -1056,92 +1077,38 @@ class EGTransformer(nn.Module):
         curr_dim = curr_dim
         self.dec_stage5 = nn.ModuleList(
             [EGBlock(
-                dim=curr_dim, num_heads=heads[4], reso=[img_size[0]//16, img_size[1]//16], mlp_ratio=mlp_ratio,
-                qkv_bias=qkv_bias, qk_scale=qk_scale, split_size=split_size[4],
+                dim=curr_dim, num_heads=heads[4], reso=[img_size[0]//4, img_size[1]//4], mlp_ratio=mlp_ratio,
+                qkv_bias=qkv_bias, qk_scale=qk_scale, split_size=split_size[1],
                 drop=drop_rate, attn_drop=attn_drop_rate,
-                drop_path=dpr[np.sum(depth[:4])+i], norm_layer=norm_layer, last_stage=False, attention = 0, idx= i%2, depth_index = 3)
-            for i in range(depth[4])])
+                drop_path=dpr[np.sum(depth[:2])+i], norm_layer=norm_layer, last_stage=False, attention = 0, idx= i%2, depth_index = 3)
+            for i in range(depth[2])])
 
-        self.upsample6 = Merge_Block(curr_dim, curr_dim // 2, resolution = [img_size[0]//16, img_size[1]//16],scale_factor=2.)
+        self.upsample6 = Merge_Block(curr_dim, curr_dim // 2, resolution = [img_size[0]//4, img_size[1]//4],scale_factor=2.)
 
-        self.tune5 = Tune_Block(curr_dim * 2  ,curr_dim, resolution = [img_size[0]//16, img_size[1]//16]) # Tune_5
-        self.set_dim.append(To_BCHW(resolution = [img_size[0]//16, img_size[1]//16])) # BCHW_5
-        self.rearrange.append(Rearrange('b c h w -> b (h w) c', h = img_size[0]//16, w = img_size[1]//16))
+        self.tune5 = Tune_Block(curr_dim * 2  ,curr_dim, resolution = [img_size[0]//4, img_size[1]//4]) # Tune_5
+        self.set_dim.append(To_BCHW(resolution = [img_size[0]//4, img_size[1]//4])) # BCHW_5
+        self.rearrange.append(Rearrange('b c h w -> b (h w) c', h = img_size[0]//4, w = img_size[1]//4))
 
 
         
         curr_dim = curr_dim // 2
         self.dec_stage6 = nn.ModuleList(
             [EGBlock(
-                dim=curr_dim, num_heads=heads[5], reso=[img_size[0]//8, img_size[1]//8], mlp_ratio=mlp_ratio,
-                qkv_bias=qkv_bias, qk_scale=qk_scale, split_size=split_size[5],
+                dim=curr_dim, num_heads=heads[5], reso=[img_size[0]//2, img_size[1]//2], mlp_ratio=mlp_ratio,
+                qkv_bias=qkv_bias, qk_scale=qk_scale, split_size=split_size[0],
                 drop=drop_rate, attn_drop=attn_drop_rate,
-                drop_path=dpr[np.sum(depth[:5])+i], norm_layer=norm_layer,attention = 0, idx= i%2, depth_index = 2)
-            for i in range(depth[5])])
+                drop_path=dpr[np.sum(depth[:3])+i], norm_layer=norm_layer,attention = 0, idx= i%2, depth_index = 2)
+            for i in range(depth[3])])
 
-        self.upsample7 = Merge_Block(curr_dim , curr_dim //2, resolution = [img_size[0]//8, img_size[1]//8],scale_factor=2.)
+        self.upsample7 = Merge_Block(curr_dim , curr_dim //2, resolution = [img_size[0]//2, img_size[1]//2],scale_factor=2.)
  
-        self.tune6 = Tune_Block(curr_dim * 2  ,curr_dim, resolution = [img_size[0]//8, img_size[1]//8]) # Tune_6
+        self.tune6 = Tune_Block(curr_dim * 2  ,curr_dim, resolution = [img_size[0]//2, img_size[1]//2]) # Tune_6
 
-        self.set_dim.append(To_BCHW(resolution = [img_size[0]//8, img_size[1]//8])) # BCHW_6
-        self.rearrange.append(Rearrange('b c h w -> b (h w) c', h = img_size[0]//8, w = img_size[1]//8))
-        
-        
-        curr_dim = curr_dim // 2
-        self.dec_stage7 = nn.ModuleList([
-            BasicPanoformerLayer(dim=curr_dim, output_dim=curr_dim,
-                                                input_resolution=(img_size[0]//4, img_size[1]//4),
-                                                depth=depths[7],
-                                                num_heads=num_heads[7],
-                                                win_size=win_size,
-                                                mlp_ratio=self.mlp_ratio,
-                                                qkv_bias=qkv_bias, qk_scale=qk_scale,
-                                                drop=drop_rate, attn_drop=attn_drop_rate,
-                                                drop_path=dec_dpr[sum(depths[5:7]):sum(depths[5:8])],
-                                                norm_layer=norm_layer,
-                                                use_checkpoint=use_checkpoint,
-                                                token_projection=token_projection, token_mlp=token_mlp,
-                                                se_layer=se_layer,ref_point=self.ref_point128x256, flag = 1) if i%2==0 else
-            EGBlock(
-                dim=curr_dim, num_heads=heads[6], reso=[img_size[0]//4, img_size[1]//4], mlp_ratio=mlp_ratio,
-                qkv_bias=qkv_bias, qk_scale=qk_scale, split_size=split_size[6],
-                drop=drop_rate, attn_drop=attn_drop_rate,
-                drop_path=dpr[np.sum(depth[:6])+i], norm_layer=norm_layer,attention=0, idx= i%2, depth_index = 1)
-            for i in range(depth[6])])
-        
-        self.upsample8 = Merge_Block(curr_dim , curr_dim//2, resolution = [img_size[0]//4, img_size[1]//4],scale_factor=2.)
-        
-        self.tune7 = Tune_Block(curr_dim * 2  ,curr_dim, resolution = [img_size[0]//4, img_size[1]//4]) # Tune_7
-        self.set_dim.append(To_BCHW(resolution = [img_size[0]//4, img_size[1]//4])) # BCHW_7
-        self.rearrange.append(Rearrange('b c h w -> b (h w) c', h = img_size[0]//4, w = img_size[1]//4))
-
-
-        curr_dim = curr_dim // 2
-        self.dec_stage8 = nn.ModuleList([
-            BasicPanoformerLayer(dim=curr_dim, output_dim=curr_dim,
-                                                input_resolution=(img_size[0]//2, img_size[1]//2),
-                                                depth=depths[8],
-                                                num_heads=num_heads[8],
-                                                win_size=win_size,
-                                                mlp_ratio=self.mlp_ratio,
-                                                qkv_bias=qkv_bias, qk_scale=qk_scale,
-                                                drop=drop_rate, attn_drop=attn_drop_rate,
-                                                drop_path=dec_dpr[sum(depths[5:8]):sum(depths[5:9])],
-                                                norm_layer=norm_layer,
-                                                use_checkpoint=use_checkpoint,
-                                                token_projection=token_projection, token_mlp=token_mlp,
-                                                se_layer=se_layer, ref_point=self.ref_point256x512, flag = 1) if i%2==0 else
-            EGBlock(
-                dim=curr_dim, num_heads=heads[7], reso=[img_size[0]//2, img_size[1]//2], mlp_ratio=mlp_ratio,
-                qkv_bias=qkv_bias, qk_scale=qk_scale, split_size=split_size[7],
-                drop=drop_rate, attn_drop=attn_drop_rate,
-                drop_path=dpr[np.sum(depth[:7])+i], norm_layer=norm_layer,attention=0, idx= i%2, depth_index = 0)
-            for i in range(depth[7])])
-
-        
-        self.tune8 = Tune_Block(curr_dim * 2  ,curr_dim, resolution = [img_size[0]//2, img_size[1]//2]) # Tune_8
-        self.set_dim.append(To_BCHW(resolution = [img_size[0]//2, img_size[1]//2])) # BCHW_8
+        self.set_dim.append(To_BCHW(resolution = [img_size[0]//2, img_size[1]//2])) # BCHW_6
         self.rearrange.append(Rearrange('b c h w -> b (h w) c', h = img_size[0]//2, w = img_size[1]//2))
+        
+        
+        # Skip dec_stage7 and dec_stage8 - removed to reduce parameters
     
         self.tune_final = Tune_Block_Final(curr_dim,curr_dim, resolution = [img_size[0]//2, img_size[1]//2])
         # Tuning into decoder dimension
@@ -1196,7 +1163,7 @@ class EGTransformer(nn.Module):
         self._generate_ref_points(device)
        
 
-    ########## Encoder       
+    ########## Encoder (Reduced to 3 stages)       
         x = self.patch_embed(x)
         
         for blk in self.stage1:
@@ -1209,47 +1176,26 @@ class EGTransformer(nn.Module):
         features.append(x)
         x = self.downsample2(x)
 
-        for blk in self.stage3:
-            x = blk(x)
-        features.append(x)
-        x = self.downsample3(x)
-        
-        for blk in self.stage4:
-            x = blk(x)
-        features.append(x)
-        x = self.downsample4(x)
-        
+        # Skip stage3 and stage4, go directly to bottleneck
         for blk in self.bottleneck:
             x = blk(x)
 
-    ######## Decoder
+    ######## Decoder (Reduced to 2 stages)
         x = self.upsample5(x)
         for blk in self.dec_stage5:
             x = blk(x)
-        x = torch.cat((self.set_dim[0](features[3]), self.set_dim[0](x)), dim=1)
+        x = torch.cat((self.set_dim[0](features[1]), self.set_dim[0](x)), dim=1)
         x = self.tune5(x)
         x = self.rearrange[0](x)
 
         x = self.upsample6(x)
         for blk in self.dec_stage6:
             x = blk(x)
-        x = torch.cat((self.set_dim[1](features[2]), self.set_dim[1](x)), dim=1)
+        x = torch.cat((self.set_dim[1](features[0]), self.set_dim[1](x)), dim=1)
         x = self.tune6(x)
         x = self.rearrange[1](x)
 
-        x = self.upsample7(x)
-        for blk in self.dec_stage7:
-            x = blk(x)
-        x = torch.cat((self.set_dim[2](features[1]), self.set_dim[2](x)), dim=1)
-        x = self.tune7(x)
-        x = self.rearrange[2](x)
-
-        x = self.upsample8(x)
-        for blk in self.dec_stage8:
-            x = blk(x)
-        x = torch.cat((self.set_dim[3](features[0]), self.set_dim[3](x)), dim=1)
-        x = self.tune8(x)
-        x = self.rearrange[3](x)
+        # Skip dec_stage7 and dec_stage8
 
         # EGformer Output Projection
         x = self.tune_final(x)
@@ -1269,20 +1215,5 @@ def egformer(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None,
     # Filter out timm-specific parameters
     egformer_kwargs = {k: v for k, v in kwargs.items() 
                       if k not in ['cache_dir', 'features_only', 'out_indices', 'scriptable', 'exportable']}
-    model = EGTransformer(
-        img_size=[512, 1024],
-        patch_size=16,
-        in_chans=3,
-        embed_dim=32,
-        depth=[2, 2, 2, 2, 2, 2, 2, 2, 2],
-        split_size=[1, 1, 1, 1, 1, 1, 1, 1, 1],
-        num_heads=[1, 2, 4, 8, 16, 16, 8, 4, 2],
-        mlp_ratio=4.0,
-        qkv_bias=True,
-        drop_rate=0.0,
-        attn_drop_rate=0.0,
-        drop_path_rate=0.1,
-        norm_layer=nn.LayerNorm,
-        **egformer_kwargs
-    )
+    model = EGTransformer(**egformer_kwargs)
     return model
