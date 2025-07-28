@@ -388,14 +388,15 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
 
     # specify which models to train here
     models = [
-        "transformer_sc2_layers4_e128",
-        "s2transformer_sc2_layers4_e128",
-        "ntransformer_sc2_layers4_e128",
-        "s2ntransformer_sc2_layers4_e128",
-        "segformer_sc2_layers4_e128",
-        "s2segformer_sc2_layers4_e128",
-        "nsegformer_sc2_layers4_e128",
-        "s2nsegformer_sc2_layers4_e128",
+        # "transformer_sc2_layers4_e128",
+        # "s2transformer_sc2_layers4_e128",
+        # "ntransformer_sc2_layers4_e128",
+        # "s2ntransformer_sc2_layers4_e128",
+        # "segformer_sc2_layers4_e128",
+        # "s2segformer_sc2_layers4_e128",
+        # "nsegformer_sc2_layers4_e128",
+        # "s2nsegformer_sc2_layers4_e128",
+        "egformer",
         # "sfno_sc2_layers4_e32",
         # "lsno_sc2_layers4_e32",
     ]

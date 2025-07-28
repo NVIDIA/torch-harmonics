@@ -963,8 +963,6 @@ class EGTransformer(nn.Module):
             nn.LayerNorm(embed_dim)
         )
 
-        non_negative=True 
-
         #### Panoformer variables - use parameters instead of hardcoded values
         img_size_pano=256; depths=[2, 2, 2, 2, 2, 2, 2, 2, 2]; num_heads=[1, 2, 4, 8, 16, 16, 8, 4, 2]
         win_size=8; qkv_bias=True; qk_scale=None; drop_rate=0.; attn_drop_rate=0.; drop_path_rate=0.1
@@ -1121,7 +1119,6 @@ class EGTransformer(nn.Module):
             nn.Conv2d(curr_dim, 32, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
             nn.Conv2d(32, out_chans, kernel_size=1, stride=1, padding=0),
-            nn.Sigmoid() if non_negative else nn.Identity(),
         )
 
         self.apply(self._init_weights)

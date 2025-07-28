@@ -449,33 +449,34 @@ def main(
     # specify which models to train here
     if models is None:
         models = [
-            "s2segformer_sc2_layers4_e128",
-            "s2segformer_sc2_layers4_e256",
+            # "s2segformer_sc2_layers4_e128",
+            # "s2segformer_sc2_layers4_e256",
 
-            "segformer_sc2_layers4_e128",
-            "segformer_sc2_layers4_e256",
+            # "segformer_sc2_layers4_e128",
+            # "segformer_sc2_layers4_e256",
         
-            "s2nsegformer_sc2_layers4_e128",
-            "s2nsegformer_sc2_layers4_e256",
+            # "s2nsegformer_sc2_layers4_e128",
+            # "s2nsegformer_sc2_layers4_e256",
         
-            "nsegformer_sc2_layers4_e128",
-            "nsegformer_sc2_layers4_e256",
+            # "nsegformer_sc2_layers4_e128",
+            # "nsegformer_sc2_layers4_e256",
         
-            "s2transformer_sc2_layers4_e128",
-            "s2transformer_sc2_layers4_e256",
+            # "s2transformer_sc2_layers4_e128",
+            # "s2transformer_sc2_layers4_e256",
         
-            "s2ntransformer_sc2_layers4_e128",
-            "s2ntransformer_sc2_layers4_e256",
+            # "s2ntransformer_sc2_layers4_e128",
+            # "s2ntransformer_sc2_layers4_e256",
         
-            "transformer_sc2_layers4_e128",
-            "transformer_sc2_layers4_e256",
+            # "transformer_sc2_layers4_e128",
+            # "transformer_sc2_layers4_e256",
             
-            "ntransformer_sc2_layers4_e128",
-            "ntransformer_sc2_layers4_e256",
+            # "ntransformer_sc2_layers4_e128",
+            # "ntransformer_sc2_layers4_e256",
             
-            "vit_sc2_layers4_e128",
-            "sfno_sc2_layers4_e32",
-            "lsno_sc2_layers4_e32",
+            # "vit_sc2_layers4_e128",
+            # "sfno_sc2_layers4_e32",
+            # "lsno_sc2_layers4_e32",
+            "egformer",
         ]
     elif isinstance(models, str):
         models = [models]
