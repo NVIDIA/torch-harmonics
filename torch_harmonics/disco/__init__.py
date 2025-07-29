@@ -1,6 +1,6 @@
 # coding=utf-8
 
-# SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 #
 # Redistribution and use in source and binary forms, with or without
@@ -29,12 +29,17 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-__version__ = "0.8.1"
+import warnings
+import torch
 
-from .sht import RealSHT, InverseRealSHT, RealVectorSHT, InverseRealVectorSHT
-from .disco import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
-from .resample import ResampleS2
-from .attention import AttentionS2, NeighborhoodAttentionS2
-from . import quadrature
-from . import random_fields
-from . import examples
+# we need those helpers
+from disco_helpers import cuda_kernels_is_available, optimized_kernels_is_available
+
+if optimized_kernels_is_available():
+    from . import _C
+    from torch.ops import disco_kernels
+else:
+    disco_kernels = None
+    warnings.warn("No optimized kernels are available. Please compile the extension first setting BUILD_CPP and BUILD_CUDA to 1.")
+
+from .convolution import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2

@@ -28,7 +28,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "attention.cuh"
+#include "attention_cuda.cuh"
 #include "c10/core/MemoryFormat.h"
 
 #include <ATen/core/TensorAccessor.h>
@@ -42,7 +42,7 @@
 #include <limits>
 
 #include "cudamacro.h"
-#include "attention_utils.cuh"
+#include "attention_cuda_utils.cuh"
 
 #include <iostream>
 #include <chrono>
@@ -51,6 +51,8 @@
 #define THREADS (64)
 
 #define MAX_LOCAL_ARR_LEN (16)
+
+namespace attention_kernels {
 
 #if 0
 class ScopeTimer
@@ -771,11 +773,11 @@ void launch_spc_attn_bwd(int batch_size,
     return;
 }
 
-static void s2_attn_bwd_dispatch(int batch_size,
-                                 int nchans,
-                                 int nlon_in,
-                                 int nlat_out,
-                                 int nlon_out,
+static void s2_attn_bwd_dispatch(int64_t batch_size,
+                                 int64_t nchans,
+                                 int64_t nlon_in,
+                                 int64_t nlat_out,
+                                 int64_t nlon_out,
                                  at::Tensor kxP,
                                  at::Tensor vxP,
                                  at::Tensor qyP,
@@ -889,7 +891,7 @@ static void s2_attn_bwd_dispatch(int batch_size,
 std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy,
                                                                           at::Tensor dy, at::Tensor quad_weights,
                                                                           at::Tensor psi_col_idx, at::Tensor psi_row_off,
-                                                                          int nlon_in, int nlat_out, int nlon_out)
+                                                                          int64_t nlon_in, int64_t nlat_out, int64_t nlon_out)
 {
 
     CHECK_CUDA_INPUT_TENSOR(kx);
@@ -956,5 +958,11 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Te
     dqy = dqy.to(qy_type);
 
     return std::make_tuple(dkx, dvx, dqy);
-// #endif
+}
+
+TORCH_LIBRARY_IMPL(attention_kernels, CUDA, m)
+{
+    m.impl("backward",  &s2_attention_bwd_dkvq_cuda);
+}
+
 }

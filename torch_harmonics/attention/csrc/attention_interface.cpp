@@ -28,12 +28,34 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#pragma once
+#include <Python.h>
+#include "attention.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <torch/extension.h>
-#include <cassert>
+extern "C" {
+    /* Creates a dummy empty _C module that can be imported from Python.
+       The import from Python will load the .so consisting of this file
+       in this extension, so that the TORCH_LIBRARY static initializers
+       below are run. */
+    PyMODINIT_FUNC PyInit__C(void)
+    {
+        static struct PyModuleDef module_def = {
+            PyModuleDef_HEAD_INIT,
+            "_C",   /* name of module */
+            NULL,   /* module documentation, may be NULL */
+            -1,     /* size of per-interpreter state of the module,
+                       or -1 if the module keeps state in global variables. */
+            NULL,   /* methods */
+        };
+        return PyModule_Create(&module_def);
+    }
+}
 
-#define CHECK_CONTIGUOUS_TENSOR(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
-#define CHECK_INPUT_TENSOR(x) CHECK_CONTIGUOUS_TENSOR(x)
+namespace attention_kernels {
+
+    // Declare the operators
+    TORCH_LIBRARY(attention_kernels, m) {
+        m.def("forward(Tensor kx, Tensor vx, Tensor qy, Tensor quad_weights, Tensor col_idx, Tensor row_off, int nlon_in, int nlat_out, int nlon_out) -> Tensor", {at::Tag::pt2_compliant_tag});
+        m.def("backward(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor quad_weights, Tensor col_idx, Tensor row_off, int nlon_in, int nlat_out, int nlon_out) -> (Tensor, Tensor, Tensor)", {at::Tag::pt2_compliant_tag});
+    }
+
+}

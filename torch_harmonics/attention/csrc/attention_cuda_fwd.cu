@@ -28,7 +28,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "attention.cuh"
+#include "attention_cuda.cuh"
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/cuda/detail/KernelUtils.h>
 #include <ATen/cuda/detail/IndexUtils.cuh>
@@ -40,13 +40,15 @@
 #include <limits>
 
 #include "cudamacro.h"
-#include "attention_utils.cuh"
+#include "attention_cuda_utils.cuh"
 
 #define THREADS (64)
 
 #define MAX_LOCAL_ARR_LEN (16)
 
 // BEGIN - forward kernels and functions
+
+namespace attention_kernels {
 
 // called with (blockDim.x=32 and blockDim.y>1, BDIM_X=blockDim.x*blockDim.y)
 template<int BDIM_X,
@@ -363,11 +365,11 @@ void launch_spc_attn_fwd(int batch_size,
     return;
 }
 
-static void s2_attn_fwd_dispatch(int batch_size,
-                                 int nchans,
-                                 int nlon_in,
-                                 int nlat_out,
-                                 int nlon_out,
+static void s2_attn_fwd_dispatch(int64_t batch_size,
+                                 int64_t nchans,
+                                 int64_t nlon_in,
+                                 int64_t nlat_out,
+                                 int64_t nlon_out,
                                  at::Tensor kxP,
                                  at::Tensor vxP,
                                  at::Tensor qyP,
@@ -469,9 +471,9 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
                                     at::Tensor quad_weights,
                                     at::Tensor psi_col_idx,
                                     at::Tensor psi_row_off,
-                                    int nlon_in,
-                                    int nlat_out,
-                                    int nlon_out) {
+                                    int64_t nlon_in,
+                                    int64_t nlat_out,
+                                    int64_t nlon_out) {
     CHECK_CUDA_INPUT_TENSOR(kx);
     CHECK_CUDA_INPUT_TENSOR(vx);
     CHECK_CUDA_INPUT_TENSOR(qy);
@@ -483,8 +485,8 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
 
     const int batch_size = kx.size(0);
 
-     // extract dtype
-     auto qy_type = qy.dtype();
+    // extract dtype
+    auto qy_type = qy.dtype();
 
     torch::Tensor kxP = kx.to(torch::kFloat32);
     torch::Tensor vxP = vx.to(torch::kFloat32);
@@ -522,4 +524,11 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 
     return y;
+}
+
+TORCH_LIBRARY_IMPL(attention_kernels, CUDA, m)
+{
+    m.impl("forward",  &s2_attention_fwd_cuda);
+}
+
 }

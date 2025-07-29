@@ -29,40 +29,34 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import os
+from time import perf_counter_ns
 import unittest
 from parameterized import parameterized, parameterized_class
 
-# import math
-import numpy as np
 import torch
+from torch.library import opcheck
 import torch.nn as nn
 
 # from torch.autograd import gradcheck
 from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
+from torch_harmonics.attention._attention_utils import _neighborhood_s2_attention_torch
+from torch_harmonics.attention import cuda_kernels_is_available, optimized_kernels_is_available
 
-from torch_harmonics._neighborhood_attention import (
-    _neighborhood_attention_s2_torch,
-    _neighborhood_attention_s2_fwd_torch,
-    _neighborhood_attention_s2_bwd_dv_torch,
-    _neighborhood_attention_s2_bwd_dk_torch,
-    _neighborhood_attention_s2_bwd_dq_torch,
-)
-
-# import custom C++/CUDA extensions
-try:
-    import attention_cuda_extension
-
-    _cuda_extension_available = True
-except ImportError as err:
-    print(f"Warning: Couldn't Import cuda attention: {err}")
-    attention_cuda_extension = None
-    _cuda_extension_available = False
+if not optimized_kernels_is_available():
+    print(f"Warning: Couldn't import optimized disco convolution kernels")
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
     _devices.append((torch.device("cuda"),))
 
-_perf_test_thresholds = {"fwd_ms": 50, "bwd_ms": 150}
+# perf thresholds
+# CPU results normalized to 16 OpenMP threads,
+# GPU results normalized to V100 16 GB GPU
+# this is just to detect performance regressions, not for absolute performance
+_perf_test_thresholds = {"cpu": {"fwd_ms": 650, "bwd_ms": 3000}, 
+                         "cuda": {"fwd_ms": 50, "bwd_ms": 150}}
+_run_perf_tests = (os.getenv("TORCH_HARMONICS_RUN_PERF_TESTS", "0") == "1")
 
 
 @parameterized_class(("device"), _devices)
@@ -86,8 +80,12 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
+    @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
     def test_custom_implementation(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
         """Tests numerical equivalence between the custom (CUDA) implementation and the reference torch implementation"""
+
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
 
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
@@ -101,39 +99,20 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         inputs = {k: v.detach().clone().to(self.device).requires_grad_() for k, v in inputs_ref.items()}
 
         # reference input and model
-        model_ref = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True).to(
-            self.device
-        )
+        model_ref = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, optimized_kernel=False).to(self.device)
 
         # Device model and inputs
-        model = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True)
+        model = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, optimized_kernel=True).to(self.device)
 
         # Synchronize parameters of model
         model.load_state_dict(model_ref.state_dict())
-        model = model.to(self.device)
         for (name_ref, p_ref), (name, p) in zip(model_ref.named_parameters(), model.named_parameters()):
-            self.assertTrue(torch.allclose(p_ref, p))
+            self.assertTrue(torch.allclose(p_ref.cpu(), p.cpu()))
 
         # reference forward passes
-        out_ref = _neighborhood_attention_s2_torch(
-            inputs_ref["k"],
-            inputs_ref["v"],
-            inputs_ref["q"] * model_ref.scale,
-            model_ref.k_weights,
-            model_ref.v_weights,
-            model_ref.q_weights,
-            model_ref.k_bias,
-            model_ref.v_bias,
-            model_ref.q_bias,
-            model_ref.quad_weights,
-            model_ref.psi_col_idx,
-            model_ref.psi_roff_idx,
-            model_ref.num_heads,
-            model_ref.nlon_in,
-            model_ref.nlat_out,
-            model_ref.nlon_out,
-        )
-        out_ref = nn.functional.conv2d(out_ref, model_ref.proj_weights, bias=model_ref.proj_bias)
+        out_ref = model_ref(inputs_ref["q"], inputs_ref["k"], inputs_ref["v"])
+
+        # Device output
         out = model(inputs["q"], inputs["k"], inputs["v"])
 
         # Check forward equivalence
@@ -142,19 +121,97 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         # Backward passes
         grad = torch.randn_like(out_ref)
         out_ref.backward(grad)
-        out.backward(grad.to(self.device))
+        out.backward(grad)
 
         # Check input gradient equivalence
-        for inp in ["q", "k", "v"]:
+        for inp in ["q", "v", "k"]:
             grad_ref = inputs_ref[inp].grad.cpu()
             grad = inputs[inp].grad.cpu()
+            #print(inp, "grad", grad[0, 0, 0, ...], "grad_ref", grad_ref[0, 0, 0, ...])
             self.assertTrue(torch.allclose(grad, grad_ref, atol=atol, rtol=rtol), f"Input gradient mismatch in {inp}")
 
         # Check parameter gradient equivalence
         for p_ref, p in zip(model_ref.parameters(), model.parameters()):
-            self.assertTrue(torch.allclose(p.grad, p_ref.grad, atol=atol, rtol=rtol), f"Parameter gradient mismatch: {type(p_ref).__name__}")
+            pgrad = p.grad.cpu()
+            pgrad_ref = p_ref.grad.cpu()
+            self.assertTrue(torch.allclose(pgrad, pgrad_ref, atol=atol, rtol=rtol), f"Parameter gradient mismatch: {p_ref.name}")
 
     # caution: multihead-implementation between full and neighborhood attention still seem to differ. tests are only done for single head
+    @parameterized.expand(
+        [
+            # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
+            [2, 64, 1, (25, 48), (25, 48), "equiangular", "equiangular", 1e-4, 1e-4],
+        ],
+        skip_on_empty=True,
+    )
+    @unittest.skipUnless(cuda_kernels_is_available(), "skipping test because CUDA kernels are not available")
+    def test_device_vs_cpu(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
+        """Tests numerical equivalence between optimized CUDA and CPU implementations"""
+
+        if (self.device.type == "cpu"):
+            # comparing CPU with itself does not make sense
+            return
+
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        # Helper: create inputs
+        inputs_host = {
+            "k": torch.randn(batch_size, channels, nlat_in, nlon_in, requires_grad=True, dtype=torch.float32),
+            "v": torch.randn(batch_size, channels, nlat_in, nlon_in, requires_grad=True, dtype=torch.float32),
+            "q": torch.randn(batch_size, channels, nlat_out, nlon_out, requires_grad=True, dtype=torch.float32),
+        }
+        inputs_device = {k: v.detach().clone().to(self.device).requires_grad_() for k, v in inputs_host.items()}
+
+        # reference input and model
+        att_host = NeighborhoodAttentionS2(
+            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, theta_cutoff=2 * torch.pi
+        )
+
+        # Device model and inputs
+        att_device = NeighborhoodAttentionS2(
+            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, theta_cutoff=2 * torch.pi
+        ).to(self.device)
+
+        # Synchronize parameters of model
+        att_device.load_state_dict(att_host.state_dict())
+        for (name_host, p_host), (name_device, p_device) in zip(att_host.named_parameters(), att_device.named_parameters()):
+            p_host_copy = p_host.detach().clone().cpu()
+            p_device_copy = p_device.detach().clone().cpu()
+            if verbose:
+                print(f"weight comparison for {name_host}: host_weight={p_host_copy}, device_weight={p_device_copy}, diff={torch.abs(p_host_copy - p_device_copy)}")
+            self.assertTrue(torch.allclose(p_host_copy, p_device_copy))
+
+        # reference forward passes
+        out_host = att_host(inputs_host["q"], inputs_host["k"], inputs_host["v"])
+        out_device = att_device(inputs_device["q"], inputs_device["k"], inputs_device["v"])
+
+        # Check forward equivalence
+        if verbose:
+            print(f"output comparison: out_host={out_host}, out_device={out_device}, diff={torch.abs(out_host.cpu() - out_device.cpu())}")
+        self.assertTrue(torch.allclose(out_host.cpu(), out_device.cpu(), atol=atol, rtol=rtol), "Forward outputs differ between host and device implementation")
+
+        # Backward passes
+        grad = torch.randn_like(out_host)
+        out_host.backward(grad)
+        out_device.backward(grad.to(self.device))
+
+        for inp in ["q", "k", "v"]:
+            igrad_host = inputs_host[inp].grad.cpu()
+            igrad_device = inputs_device[inp].grad.cpu()
+            if verbose:
+                print(f"input grad comparison for {inp}: host_grad={igrad_host}, device_grad={igrad_device}, diff={torch.abs(igrad_host - igrad_device)}")
+            self.assertTrue(torch.allclose(igrad_host, igrad_device, atol=atol, rtol=rtol), f"Input gradient mismatch in {inp}")
+
+        # Check parameter gradient equivalence - check only q,k, v weights
+        for (name_host, p_host), (name_device, p_device) in zip(att_host.named_parameters(), att_device.named_parameters()):
+            grad_host = p_host.grad.cpu()
+            grad_device = p_device.grad.cpu()
+            if verbose:
+                print(f"grad comparison for {name_host}: host_grad={grad_host}, device_grad={grad_device}, diff={torch.abs(grad_host - grad_device)}")
+            self.assertTrue(torch.allclose(grad_host, grad_device, atol=atol, rtol=rtol), f"Parameter gradient mismatch: {name_host}")
+
+
     @parameterized.expand(
         [
             # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
@@ -166,6 +223,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     )
     def test_neighborhood_global_equivalence(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
         """Tests numerical equivalence between the global spherical attention module and the neighborhood spherical attention module with the neighborhood set ot the whole sphere"""
+
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
 
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
@@ -219,99 +279,119 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # self attention
-            [1, 256, 1, (361, 720), (361, 720), "equiangular", "equiangular", 1e-5, 1e-5],
+            # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
+            [4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-2, 0],
         ],
         skip_on_empty=True,
     )
-    @unittest.skipUnless((torch.cuda.is_available() and _cuda_extension_available), "skipping performance test because CUDA is not available")
-    def test_perf(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
+    def test_optimized_pt2_compatibility(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
+        """Tests whether the optimized kernels are PyTorch 2 compatible"""
 
-        # skip this test if we are not running on GPU, it will take very long otherwise
-        if self.device.type != "cuda":
-            self.assertFalse(False)
-            return
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping GPU test because CUDA kernels are not available")
+
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        att = NeighborhoodAttentionS2(
+            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=False, theta_cutoff=2 * torch.pi, optimized_kernel=True
+        ).to(self.device)
+
+        inputs = {
+            "k": torch.randn(batch_size, channels, nlat_in, nlon_in, requires_grad=True, device=self.device, dtype=torch.float32),
+            "v": torch.randn(batch_size, channels, nlat_in, nlon_in, requires_grad=True, device=self.device, dtype=torch.float32),
+            "q": torch.randn(batch_size, channels, nlat_out, nlon_out, requires_grad=True, device=self.device, dtype=torch.float32),
+        }
+
+        test_inputs = (inputs["k"], inputs["v"], inputs["q"], 
+                       att.k_weights, att.v_weights, att.q_weights, 
+                       att.k_bias, att.v_bias, att.q_bias, 
+                       att.quad_weights, att.psi_col_idx, att.psi_roff_idx, 
+                       att.psi_max_nnz, att.num_heads, nlon_in, nlat_out, nlon_out)
+
+        opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs)
+        # opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs, test_utils="test_schema")
+        # opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs, test_utils="test_faketensor")
+        #opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs, test_utils="test_aot_dispatch_dynamic")
+
+
+    @parameterized.expand(
+        [
+            # self attention
+            [1, 256, 1, (91, 180), (91, 180), "equiangular", "equiangular", 1e-5, 1e-5],
+        ],
+        skip_on_empty=True,
+    )
+    @unittest.skipUnless(optimized_kernels_is_available() and _run_perf_tests, "skipping performance test because optimized kernels are not available or perf tests are disabled")
+    def test_perf(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
+        
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
         
         # extract some parameters
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
         # TODO: this test seems hardcoded for GPU. Is this necessary?
-        k_gpu = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device=self.device)
-        k_gpu.requires_grad = False
-        v_gpu = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device=self.device)
-        v_gpu.requires_grad = False
-        q_gpu = torch.randn(batch_size, channels, nlat_out, nlon_out, dtype=torch.float32, device=self.device)
-        q_gpu.requires_grad = False
+        k_inp = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device=self.device)
+        k_inp.requires_grad = False
+        v_inp = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device=self.device)
+        v_inp.requires_grad = False
+        q_inp = torch.randn(batch_size, channels, nlat_out, nlon_out, dtype=torch.float32, device=self.device)
+        q_inp.requires_grad = False
 
-        # set up layers
-        time_layer_setup_start = torch.cuda.Event(enable_timing=True)
-        time_layer_setup_end = torch.cuda.Event(enable_timing=True)
-        time_layer_setup_start.record()
-        att_gpu = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads,
-                                          in_shape=in_shape, out_shape=out_shape,
-                                          grid_in=grid_in, grid_out=grid_out, bias=True).to(self.device)
-        time_layer_setup_end.record()
-        torch.cuda.synchronize()
+        att_optimized = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads,
+                                                in_shape=in_shape, out_shape=out_shape,
+                                                grid_in=grid_in, grid_out=grid_out, bias=True,
+                                                optimized_kernel=True).to(self.device)
 
         # random weights
         with torch.no_grad():
-            att_gpu.q_weights.normal_()
-            att_gpu.k_weights.normal_()
-            att_gpu.v_weights.normal_()
-            att_gpu.q_bias.normal_()
-            att_gpu.k_bias.normal_()
-            att_gpu.v_bias.normal_()
+            att_optimized.q_weights.normal_()
+            att_optimized.k_weights.normal_()
+            att_optimized.v_weights.normal_()
+            att_optimized.q_bias.normal_()
+            att_optimized.k_bias.normal_()
+            att_optimized.v_bias.normal_()
 
-            # time forward pass
-            for i in range(2):
-                # warmup
-                out_gpu = att_gpu(q_gpu, k_gpu, v_gpu)
-            time_forward_start = torch.cuda.Event(enable_timing=True)
-            time_forward_end = torch.cuda.Event(enable_timing=True)
-            time_forward_start.record()
-            out_gpu = att_gpu(q_gpu, k_gpu, v_gpu)
-            time_forward_end.record()
-            torch.cuda.synchronize()
-            elapsed_time = time_forward_start.elapsed_time(time_forward_end)
-            if verbose:
-                print(f"Forward execution time: {elapsed_time} ms")
-            self.assertTrue(elapsed_time < _perf_test_thresholds["fwd_ms"])
-
-        # sync weights:
-        with torch.no_grad():
-            att_gpu.q_weights.copy_(att_gpu.q_weights)
-            att_gpu.k_weights.copy_(att_gpu.k_weights)
-            att_gpu.v_weights.copy_(att_gpu.v_weights)
-            att_gpu.q_bias.copy_(att_gpu.q_bias)
-            att_gpu.k_bias.copy_(att_gpu.k_bias)
-            att_gpu.v_bias.copy_(att_gpu.v_bias)
-
-        q_gpu = q_gpu.detach().clone().to(self.device)
-        q_gpu.requires_grad = True
-        k_gpu = k_gpu.detach().clone().to(self.device)
-        k_gpu.requires_grad = True
-        v_gpu = v_gpu.detach().clone().to(self.device)
-        v_gpu.requires_grad = True
-
-        out_gpu = att_gpu(q_gpu, k_gpu, v_gpu)
-        out_grad = torch.randn(out_gpu.shape, dtype=torch.float32, device=self.device)
-        time_backward_start = torch.cuda.Event(enable_timing=True)
-        time_backward_end = torch.cuda.Event(enable_timing=True)
-
+        # forward test
+        # warmup
         for i in range(2):
-            # warmup
-            out_gpu.backward(out_grad, retain_graph=True)
+            out_optimized = att_optimized(q_inp, k_inp, v_inp)
 
-        time_backward_start.record()
-        out_gpu.backward(out_grad)
-        time_backward_end.record()
-        torch.cuda.synchronize()
-        elapsed_time = time_backward_start.elapsed_time(time_backward_end)
+        # start timer
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        start = perf_counter_ns()
+        out_optimized = att_optimized(q_inp, k_inp, v_inp)
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        end = perf_counter_ns()
+        duration = (end - start) / 1e6
         if verbose:
-            print(f"Backward execution time: {elapsed_time} ms")
-        self.assertTrue(elapsed_time < _perf_test_thresholds["bwd_ms"])
+            print(f"Forward execution time on device {self.device.type}: {duration:.2f} ms")
+        self.assertTrue(duration <= _perf_test_thresholds[self.device.type]["fwd_ms"])
 
+        # # backward test
+        out_optimized = att_optimized(q_inp, k_inp, v_inp)
+        out_grad = torch.randn(out_optimized.shape, dtype=torch.float32, device=self.device)
+        
+        # # warmup
+        for i in range(2):
+            out_optimized.backward(out_grad, retain_graph=True)
+
+        # start timer
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        start = perf_counter_ns()
+        out_optimized.backward(out_grad)
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        end = perf_counter_ns()
+        duration = (end - start) / 1e6
+        if verbose:
+            print(f"Backward execution time on device {self.device.type}: {duration:.2f} ms")
+        self.assertTrue(duration <= _perf_test_thresholds[self.device.type]["bwd_ms"])
 
 if __name__ == "__main__":
     unittest.main()

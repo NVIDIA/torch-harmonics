@@ -31,6 +31,8 @@
 #include "disco.h"
 #include "disco_cuda.cuh"
 
+namespace disco_kernels {
+
 template <int BDIM_X, int ELXTH, typename REAL_T>
 __device__ void disco_fwd_d(const int Hi, const int Wi, const int K, const int Ho, const int Wo, const int pscale,
                             const int64_t *__restrict__ roff, const int64_t *__restrict__ kers,
@@ -40,7 +42,7 @@ __device__ void disco_fwd_d(const int Hi, const int Wi, const int K, const int H
 
     const int tid = threadIdx.x;
 
-    const int64_t bidx = blockIdx.x; // gloabl row
+    const int64_t bidx = blockIdx.x; // global row
     const int64_t bidy = blockIdx.y; // bc
 
     int64_t soff = roff[bidx];
@@ -183,83 +185,90 @@ static void launch_kernel(int BC, int Hi, int Wi, int K, int Ho, int Wo, int64_t
     return;
 }
 
-torch::Tensor disco_cuda_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-                             torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo)
-{
+    torch::Tensor disco_cuda_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
+                                 torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo)
+    {
 
-    // some sanity checks
-    CHECK_CUDA_INPUT_TENSOR(inp);
-    CHECK_CUDA_INPUT_TENSOR(roff_idx);
-    CHECK_CUDA_INPUT_TENSOR(ker_idx);
-    CHECK_CUDA_INPUT_TENSOR(row_idx);
-    CHECK_CUDA_INPUT_TENSOR(col_idx);
-    CHECK_CUDA_INPUT_TENSOR(val);
+        // some sanity checks
+        CHECK_CUDA_INPUT_TENSOR(inp);
+        CHECK_CUDA_INPUT_TENSOR(roff_idx);
+        CHECK_CUDA_INPUT_TENSOR(ker_idx);
+        CHECK_CUDA_INPUT_TENSOR(row_idx);
+        CHECK_CUDA_INPUT_TENSOR(col_idx);
+        CHECK_CUDA_INPUT_TENSOR(val);
 
-    // extract some shapes
-    int64_t B = inp.size(0);
-    int64_t C = inp.size(1);
-    int64_t BC = B * C;
-    int64_t Hi = inp.size(2);
-    int64_t Wi = inp.size(3);
-    int64_t nrows = roff_idx.size(0) - 1;
+        // extract some shapes
+        int64_t B = inp.size(0);
+        int64_t C = inp.size(1);
+        int64_t BC = B * C;
+        int64_t Hi = inp.size(2);
+        int64_t Wi = inp.size(3);
+        int64_t nrows = roff_idx.size(0) - 1;
 
-    // allocate output
-    int64_t out_dims[] = {B, C, K, Ho, Wo};
-    auto options = torch::TensorOptions().device(inp.device()).dtype(inp.dtype());
-    torch::Tensor out = torch::zeros(out_dims, options);
+        // allocate output
+        int64_t out_dims[] = {B, C, K, Ho, Wo};
+        auto options = torch::TensorOptions().device(inp.device()).dtype(inp.dtype());
+        torch::Tensor out = torch::zeros(out_dims, options);
 
-    // get stream
-    auto stream = at::cuda::getCurrentCUDAStream().stream();
+        // get stream
+        auto stream = at::cuda::getCurrentCUDAStream().stream();
 
-    // assert
-    static_assert(0 == (ELXTH_MAX % 2));
+        // assert
+        static_assert(0 == (ELXTH_MAX % 2));
 
-    // pick the correct launch config
-    if (Wo <= 64 * ELXTH_MAX) {
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
-                                       launch_kernel<64, 1, scalar_t>(
-                                           BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                           ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                           col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                           inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
-                                   }));
-    } else if (Wo <= 128 * ELXTH_MAX) {
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
-                                       launch_kernel<128, (ELXTH_MAX / 2) + 1, scalar_t>(
-                                           BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                           ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                           col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                           inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
-                                   }));
-    } else if (Wo <= 256 * ELXTH_MAX) {
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
-                                       launch_kernel<256, (ELXTH_MAX / 2) + 1, scalar_t>(
-                                           BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                           ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                           col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                           inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
-                                   }));
-    } else if (Wo <= 512 * ELXTH_MAX) {
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
-                                       launch_kernel<512, (ELXTH_MAX / 2) + 1, scalar_t>(
-                                           BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                           ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                           col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                           inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
-                                   }));
-    } else if (Wo <= 1024 * ELXTH_MAX) {
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
-                                       launch_kernel<1024, (ELXTH_MAX / 2) + 1, scalar_t>(
-                                           BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                           ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                           col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                           inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
-                                   }));
-    } else {
-        fprintf(stderr, "%s:%d: error, unsupported Wo value (%ld), max supported is %d\n", __FILE__, __LINE__, Wo,
-                1024 * ELXTH_MAX);
-        exit(EXIT_FAILURE);
+        // pick the correct launch config
+        if (Wo <= 64 * ELXTH_MAX) {
+            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
+                                           launch_kernel<64, 1, scalar_t>(
+                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
+                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
+                                       }));
+        } else if (Wo <= 128 * ELXTH_MAX) {
+            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
+                                           launch_kernel<128, (ELXTH_MAX / 2) + 1, scalar_t>(
+                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
+                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
+                                       }));
+        } else if (Wo <= 256 * ELXTH_MAX) {
+            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
+                                           launch_kernel<256, (ELXTH_MAX / 2) + 1, scalar_t>(
+                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
+                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
+                                       }));
+        } else if (Wo <= 512 * ELXTH_MAX) {
+            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
+                                           launch_kernel<512, (ELXTH_MAX / 2) + 1, scalar_t>(
+                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
+                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
+                                       }));
+        } else if (Wo <= 1024 * ELXTH_MAX) {
+            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
+                                           launch_kernel<1024, (ELXTH_MAX / 2) + 1, scalar_t>(
+                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
+                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
+                                       }));
+        } else {
+            fprintf(stderr, "%s:%d: error, unsupported Wo value (%ld), max supported is %d\n", __FILE__, __LINE__, Wo,
+                    1024 * ELXTH_MAX);
+            exit(EXIT_FAILURE);
+        }
+
+        return out;
     }
 
-    return out;
+    TORCH_LIBRARY_IMPL(disco_kernels, CUDA, m)
+    {
+        m.impl("forward",  &disco_cuda_fwd);
+    }
+
 }

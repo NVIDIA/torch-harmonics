@@ -36,21 +36,13 @@ import math
 
 import torch
 import torch.nn as nn
-import numpy as np
 
 from torch_harmonics.quadrature import _precompute_latitudes
-from torch_harmonics.convolution import _precompute_convolution_tensor_s2
-from torch_harmonics._neighborhood_attention import _neighborhood_attention_s2_torch, _neighborhood_attention_s2_cuda
+from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
+from torch_harmonics.attention._attention_utils import _neighborhood_s2_attention_torch, _neighborhood_s2_attention_optimized
 from torch_harmonics.filter_basis import get_filter_basis
+from attention_helpers import optimized_kernels_is_available
 
-# import custom C++/CUDA extensions
-try:
-    import attention_cuda_extension
-
-    _cuda_extension_available = True
-except ImportError as err:
-    attention_cuda_extension = None
-    _cuda_extension_available = False
 
 class AttentionS2(nn.Module):
     """
@@ -216,6 +208,8 @@ class NeighborhoodAttentionS2(nn.Module):
         number of dimensions for interior inner product in the attention matrix (corresponds to kdim in MHA in PyTorch)
     out_channels: int, optional
         number of dimensions for interior inner product in the attention matrix (corresponds to vdim in MHA in PyTorch)
+    optimized_kernel: Optional[bool]
+        Whether to use the optimized kernel (if available)
     """
 
     def __init__(
@@ -231,6 +225,7 @@ class NeighborhoodAttentionS2(nn.Module):
         theta_cutoff: Optional[float] = None,
         k_channels: Optional[int] = None,
         out_channels: Optional[int] = None,
+        optimized_kernel: Optional[bool] = True,
     ):
         super().__init__()
 
@@ -241,6 +236,7 @@ class NeighborhoodAttentionS2(nn.Module):
         self.num_heads = num_heads
         self.k_channels = in_channels if k_channels is None else k_channels
         self.out_channels = in_channels if out_channels is None else out_channels
+        self.optimized_kernel = optimized_kernel and optimized_kernels_is_available()
 
         # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
         if theta_cutoff is None:
@@ -278,7 +274,7 @@ class NeighborhoodAttentionS2(nn.Module):
         roff_idx = roff.contiguous()
 
         # store some metadata
-        self.max_psi_nnz = col_idx.max().item() + 1
+        self.psi_max_nnz = col_idx.max().item() + 1
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
@@ -313,6 +309,11 @@ class NeighborhoodAttentionS2(nn.Module):
             self.v_bias = None
             self.proj_bias = None
 
+        if self.optimized_kernel:
+            self.attention_handle = _neighborhood_s2_attention_optimized
+        else:
+            self.attention_handle = _neighborhood_s2_attention_torch
+
     def extra_repr(self):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}"
 
@@ -332,50 +333,25 @@ class NeighborhoodAttentionS2(nn.Module):
         query_scaled = query * self.scale
 
         # TODO: insert dimension checks for input
-        if query.is_cuda and _cuda_extension_available:
-
-            out = _neighborhood_attention_s2_cuda(
-                key,
-                value,
-                query_scaled,
-                self.k_weights,
-                self.v_weights,
-                self.q_weights,
-                self.k_bias,
-                self.v_bias,
-                self.q_bias,
-                self.quad_weights,
-                self.psi_col_idx,
-                self.psi_roff_idx,
-                self.max_psi_nnz,
-                self.num_heads,
-                self.nlon_in,
-                self.nlat_out,
-                self.nlon_out,
-            )
-        else:
-            if query.is_cuda:
-                warn("couldn't find CUDA extension, falling back to slow PyTorch implementation")
-
-            # call attention
-            out = _neighborhood_attention_s2_torch(
-                key,
-                value,
-                query_scaled,
-                self.k_weights,
-                self.v_weights,
-                self.q_weights,
-                self.k_bias,
-                self.v_bias,
-                self.q_bias,
-                self.quad_weights,
-                self.psi_col_idx,
-                self.psi_roff_idx,
-                self.num_heads,
-                self.nlon_in,
-                self.nlat_out,
-                self.nlon_out,
-            )
+        out = self.attention_handle(
+            key,
+            value,
+            query_scaled,
+            self.k_weights,
+            self.v_weights,
+            self.q_weights,
+            self.k_bias,
+            self.v_bias,
+            self.q_bias,
+            self.quad_weights,
+            self.psi_col_idx,
+            self.psi_roff_idx,
+            self.psi_max_nnz,
+            self.num_heads,
+            self.nlon_in,
+            self.nlat_out,
+            self.nlon_out,
+        )
 
         out = nn.functional.conv2d(out, self.proj_weights, bias=self.proj_bias)
 

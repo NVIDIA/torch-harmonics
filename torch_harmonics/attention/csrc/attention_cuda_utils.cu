@@ -28,11 +28,11 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "attention.cuh"
+#include "attention_cuda_utils.cuh"
+
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/cuda/detail/KernelUtils.h>
 #include <ATen/cuda/detail/IndexUtils.cuh>
-#include <ATen/cuda/CUDAUtils.h>
 
 #include <cuda_runtime.h>
 
@@ -40,12 +40,14 @@
 #include <limits>
 
 #include "cudamacro.h"
-#include "attention_utils.cuh"
+#include "attention_cuda.cuh"
 
 #define THREADS (64)
 
 #define TRANSP_WARPS_X_TILE_GENERIC (32)
 #define TRANSP_WARPS_X_TILE_SM100    (4)
+
+namespace attention_kernels {
 
 // BEGIN - CSR rows sorting kernels and functions
 __global__ void set_rlen_rids_k(const int n,
@@ -178,3 +180,5 @@ unsigned int next_pow2(unsigned int x) {
     return x+1;
 }
 // END - general host-side functions
+
+}
