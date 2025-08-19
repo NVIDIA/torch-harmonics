@@ -54,13 +54,13 @@ namespace attention_kernels {
         if (!vx_is_channels_last) { vx = vx.contiguous(at::MemoryFormat::ChannelsLast); }
         if (!qy_is_channels_last) { qy = qy.contiguous(at::MemoryFormat::ChannelsLast); }
 
-        // prepare result tensor
-        auto y = torch::zeros_like(qy);
-
         // some parameters
         const int64_t batch_size = kx.size(0);
         const int64_t nchannels_out = vx.size(1);
         const int64_t nchannels_in = qy.size(1);
+
+        // prepare result tensor
+        auto y = torch::zeros({batch_size, nchannels_out, nlat_out, nlon_out}, qy.options());
 
         // extract accessors
         auto roff_arr = row_off.packed_accessor64<int64_t, 1>();
