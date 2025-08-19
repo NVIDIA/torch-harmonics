@@ -70,18 +70,20 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
-            [4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            [4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            [4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            [4, 1, 1, (2, 4), (2, 4), "equiangular", "equiangular", 1e-5, 1e-3],
-            [4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-5, 1e-3],
-            [4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-5, 1e-3],
+            # Format: [batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
+            [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
+            [4, 4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
+            [4, 4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
+            [4, 4, 8, 4, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
+            [4, 1, 1, 1, (2, 4), (2, 4), "equiangular", "equiangular", 1e-5, 1e-3],
+            [4, 1, 4, 1, (2, 4), (2, 4), "equiangular", "equiangular", 1e-5, 1e-3],
+            [4, 4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-5, 1e-3],
+            [4, 4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-5, 1e-3],
         ],
         skip_on_empty=True,
     )
     @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
-    def test_custom_implementation(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
+    def test_custom_implementation(self, batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
         """Tests numerical equivalence between the custom (CUDA) implementation and the reference torch implementation"""
 
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
@@ -96,45 +98,48 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             "v": torch.randn(batch_size, channels, nlat_in, nlon_in, requires_grad=True, device=self.device, dtype=torch.float32),
             "q": torch.randn(batch_size, channels, nlat_out, nlon_out, requires_grad=True, device=self.device, dtype=torch.float32),
         }
-        inputs = {k: v.detach().clone().to(self.device).requires_grad_() for k, v in inputs_ref.items()}
+        inputs_opt = {k: v.detach().clone().to(self.device).requires_grad_() for k, v in inputs_ref.items()}
 
         # reference input and model
-        model_ref = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, optimized_kernel=False).to(self.device)
+        model_ref = NeighborhoodAttentionS2(in_channels=channels, out_channels=channels_out, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, optimized_kernel=False).to(self.device)
 
         # Device model and inputs
-        model = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, optimized_kernel=True).to(self.device)
+        model_opt = NeighborhoodAttentionS2(in_channels=channels, out_channels=channels_out, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, optimized_kernel=True).to(self.device)
 
         # Synchronize parameters of model
-        model.load_state_dict(model_ref.state_dict())
-        for (name_ref, p_ref), (name, p) in zip(model_ref.named_parameters(), model.named_parameters()):
-            self.assertTrue(torch.allclose(p_ref.cpu(), p.cpu()))
+        model_opt.load_state_dict(model_ref.state_dict())
+        for (name_ref, p_ref), (name_opt, p_opt) in zip(model_ref.named_parameters(), model_opt.named_parameters()):
+            self.assertTrue(torch.allclose(p_ref.cpu(), p_opt.cpu()))
 
         # reference forward passes
         out_ref = model_ref(inputs_ref["q"], inputs_ref["k"], inputs_ref["v"])
 
         # Device output
-        out = model(inputs["q"], inputs["k"], inputs["v"])
+        out_opt = model_opt(inputs_opt["q"], inputs_opt["k"], inputs_opt["v"])
 
         # Check forward equivalence
-        self.assertTrue(torch.allclose(out, out_ref, atol=atol, rtol=rtol), "Forward outputs differ between torch reference and custom implementation")
+        self.assertTrue(torch.allclose(out_opt, out_ref, atol=atol, rtol=rtol), "Forward outputs differ between torch reference and custom implementation")
 
         # Backward passes
         grad = torch.randn_like(out_ref)
         out_ref.backward(grad)
-        out.backward(grad)
+        out_opt.backward(grad)
 
         # Check input gradient equivalence
         for inp in ["q", "v", "k"]:
             grad_ref = inputs_ref[inp].grad.cpu()
-            grad = inputs[inp].grad.cpu()
-            #print(inp, "grad", grad[0, 0, 0, ...], "grad_ref", grad_ref[0, 0, 0, ...])
-            self.assertTrue(torch.allclose(grad, grad_ref, atol=atol, rtol=rtol), f"Input gradient mismatch in {inp}")
+            grad_opt = inputs_opt[inp].grad.cpu()
+            if verbose:
+                print(f"input grad comparison for {inp}: grad_ref={grad_ref}, grad_opt={grad_opt}, diff={torch.abs(grad_ref - grad_opt)}")
+            self.assertTrue(torch.allclose(grad_opt, grad_ref, atol=atol, rtol=rtol), f"Input gradient mismatch in {inp}")
 
         # Check parameter gradient equivalence
-        for p_ref, p in zip(model_ref.parameters(), model.parameters()):
-            pgrad = p.grad.cpu()
+        for (name_ref, p_ref), (name_opt, p_opt) in zip(model_ref.named_parameters(), model_opt.named_parameters()):
+            pgrad_opt = p_opt.grad.cpu()
             pgrad_ref = p_ref.grad.cpu()
-            self.assertTrue(torch.allclose(pgrad, pgrad_ref, atol=atol, rtol=rtol), f"Parameter gradient mismatch: {p_ref.name}")
+            if verbose:
+                print(f"parameter grad comparison for {name_ref}: grad_ref={pgrad_ref}, grad_opt={pgrad_opt}, diff={torch.abs(pgrad_ref - pgrad_opt)}")
+            self.assertTrue(torch.allclose(pgrad_opt, pgrad_ref, atol=atol, rtol=rtol), f"Parameter gradient mismatch: {name_ref}")
 
     # caution: multihead-implementation between full and neighborhood attention still seem to differ. tests are only done for single head
     @parameterized.expand(
@@ -214,14 +219,15 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
-            [4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-2, 0],
-            [4, 4, 1, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-2, 0],
-            [4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-2, 0],
+            # Format: [batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
+            [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-2, 0],
+            [4, 4, 8, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-2, 0],
+            [4, 4, 4, 1, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-2, 0],
+            [4, 4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-2, 0],
         ],
         skip_on_empty=True,
     )
-    def test_neighborhood_global_equivalence(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
+    def test_neighborhood_global_equivalence(self, batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
         """Tests numerical equivalence between the global spherical attention module and the neighborhood spherical attention module with the neighborhood set ot the whole sphere"""
 
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
@@ -239,11 +245,11 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         inputs = {k: v.detach().clone().to(self.device).requires_grad_() for k, v in inputs_ref.items()}
 
         # reference input and model
-        model_ref = AttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=False).to(self.device)
+        model_ref = AttentionS2(in_channels=channels, out_channels=channels_out, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=False).to(self.device)
 
         # Device model and inputs
         model = NeighborhoodAttentionS2(
-            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=False, theta_cutoff=2 * torch.pi
+            in_channels=channels, num_heads=heads, out_channels=channels_out, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=False, theta_cutoff=2 * torch.pi
         )
 
         # Synchronize parameters of model

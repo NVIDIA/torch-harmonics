@@ -237,7 +237,8 @@ def _neighborhood_s2_attention_fwd_torch(kx: torch.Tensor, vx: torch.Tensor, qy:
 
 
     # prepare result tensor
-    y = torch.zeros_like(qy)
+    out_shape = (qy.shape[0], vx.shape[1], nlat_out, nlon_out)
+    y = torch.zeros(out_shape, dtype=qy.dtype, device=qy.device)
 
     for ho in range(nlat_out):
         
@@ -289,13 +290,14 @@ def _neighborhood_s2_attention_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, 
     # shapes:
     # input
     # kx: B, C, Hi, Wi
-    # vx: B, C, Hi, Wi
-    # qy: B, C, Ho, Wo
+    # vx: B, Cout, Hi, Wi
+    # qy: B, Cout, Ho, Wo
     # quad_weights: Hi
     # output
-    # dvx: B, C, Hi, Wi
+    # dvx: B, Cout, Hi, Wi
 
     dvx = torch.zeros_like(vx)
+    batch_size = dy.shape[0]
 
     for ho in range(nlat_out):
 
@@ -305,9 +307,9 @@ def _neighborhood_s2_attention_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, 
 
         for wo in range(nlon_out):
 
-            alpha_nz = torch.zeros((dy.shape[0], zend-zstart), dtype=dy.dtype, device=dy.device)
-            qdotk_nz = torch.zeros((dy.shape[0], zend-zstart), dtype=dy.dtype, device=dy.device)
-            alpha_sum = torch.zeros((dy.shape[0],), dtype=dy.dtype, device=dy.device)
+            alpha_nz = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
+            qdotk_nz = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
+            alpha_sum = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
             for idz in range(zstart, zend):
                 nz_col_idx = col_idx[idz]
 
@@ -357,13 +359,14 @@ def _neighborhood_s2_attention_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, 
     # shapes:
     # input
     # kx: B, C, Hi, Wi
-    # vx: B, C, Hi, Wi
+    # vx: B, Cout, Hi, Wi
     # qy: B, C, Ho, Wo
     # quad_weights: Hi
     # output
     # dkx: B, C, Hi, Wi
 
     dkx = torch.zeros_like(kx)
+    batch_size = dy.shape[0]
 
     for ho in range(nlat_out):
 
@@ -373,10 +376,10 @@ def _neighborhood_s2_attention_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, 
 
         for wo in range(nlon_out):
 
-            qdotk_nz = torch.zeros((dy.shape[0], zend-zstart), dtype=dy.dtype, device=dy.device)
-            integral = torch.zeros((dy.shape[0],), dtype=dy.dtype, device=dy.device)
-            alpha = torch.zeros((dy.shape[0], zend-zstart), dtype=dy.dtype, device=dy.device)
-            alpha_sum = torch.zeros((dy.shape[0],), dtype=dy.dtype, device=dy.device)
+            qdotk_nz = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
+            integral = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
+            alpha = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
+            alpha_sum = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
             for idz in range(zstart, zend):
                 nz_col_idx = col_idx[idz]
 
@@ -438,11 +441,15 @@ def _neighborhood_s2_attention_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, 
     # shapes:
     # input
     # kx: B, C, Hi, Wi
-    # vx: B, C, Hi, Wi
+    # vx: B, Cout, Hi, Wi
     # qy: B, C, Ho, Wo
     # quad_weights: Hi
     # output
-    # dvx: B, C, Hi, Wi
+    # dq: B, C, Ho, Wo
+
+    batch_size = dy.shape[0]
+    channels_in = kx.shape[1]
+    channels_out = vx.shape[1]
 
     dqy = torch.zeros_like(qy)
 
@@ -454,13 +461,13 @@ def _neighborhood_s2_attention_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, 
 
         for wo in range(nlon_out):
 
-            alpha = torch.zeros((dy.shape[0], zend-zstart), dtype=dy.dtype, device=dy.device)
-            qdotk_nz = torch.zeros((dy.shape[0], zend-zstart), dtype=dy.dtype, device=dy.device)
-            alpha_k = torch.zeros((dy.shape[0], dy.shape[1]), dtype=dy.dtype, device=dy.device)
-            alpha_vw = torch.zeros((dy.shape[0], dy.shape[1]), dtype=dy.dtype, device=dy.device)
-            alpha_kvw = torch.zeros((dy.shape[0], dy.shape[1]), dtype=dy.dtype, device=dy.device)
-            alpha_sum = torch.zeros((dy.shape[0],), dtype=dy.dtype, device=dy.device)
-            alpha_sum2 = torch.zeros((dy.shape[0],), dtype=dy.dtype, device=dy.device)
+            alpha = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
+            qdotk_nz = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
+            alpha_k = torch.zeros((batch_size, channels_in), dtype=dy.dtype, device=dy.device)
+            alpha_vw = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
+            alpha_kvw = torch.zeros((batch_size, channels_in), dtype=dy.dtype, device=dy.device)
+            alpha_sum = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
+            alpha_sum2 = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
             for idz in range(zstart, zend):
                 nz_col_idx = col_idx[idz]
 
@@ -496,10 +503,10 @@ def _neighborhood_s2_attention_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, 
 
                 gdotv = torch.sum(dy[:,:,ho, wo] * vx[:,:,hi, wip], dim=1)
                 alpha_k[:,:] += alpha[:, None, idz_i] * k_hi_wi
-                alpha_vw[:,:] += alpha[:, None, idz_i] * gdotv[:,None]
+                alpha_vw[:] += alpha[:, idz_i] * gdotv[:]
                 alpha_kvw[:,:] += alpha[:, None, idz_i] * k_hi_wi * gdotv[:,None]
 
-            dqy[:,:,ho,wo] = (alpha_kvw*alpha_sum[:,None] - alpha_vw*alpha_k) / (alpha_sum[:,None]*alpha_sum[:,None])
+            dqy[:,:,ho,wo] = (alpha_kvw * alpha_sum[:,None] - alpha_vw[:, None] * alpha_k) / (alpha_sum[:,None] * alpha_sum[:,None])
 
     return dqy
 
@@ -513,7 +520,7 @@ def _neighborhood_s2_attention_torch(k: torch.Tensor, v: torch.Tensor, q: torch.
     vw = F.conv2d(v, weight=wv, bias=bv)
     qw = F.conv2d(q, weight=wq, bias=bq)
 
-        # reshape, folding num heads into batch dim
+    # reshape, folding num heads into batch dim
     B, _, H, W = kw.shape
     kw = kw.reshape(B*nh, -1, H, W)
     B, _, H, W = vw.shape
