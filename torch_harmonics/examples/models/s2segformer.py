@@ -612,11 +612,12 @@ class SphericalSegformer(nn.Module):
 
     Parameters
     -----------
-    img_shape : tuple, optional
+    img_size : tuple, optional
         Shape of the input channels, by default (128, 256)
-    kernel_shape: tuple, int
-    scale_factor: int, optional
-        Scale factor to use, by default 2
+    grid : str, optional
+        Grid type for input/output, by default "equiangular"
+    grid_internal : str, optional
+        Grid type for internal processing, by default "legendre-gauss"
     in_chans : int, optional
         Number of input channels, by default 3
     out_chans : int, optional
@@ -625,38 +626,41 @@ class SphericalSegformer(nn.Module):
         Dimension of the embeddings for each block, has to be the same length as heads
     heads : List[int], optional
         Number of heads for each block in the network, has to be the same length as embed_dims
-    depths: List[in], optional
+    depths: List[int], optional
         Number of repetitions of attentions blocks and ffn mixers per layer. Has to be the same length as embed_dims and heads
+    scale_factor: int, optional
+        Scale factor to use, by default 2
     activation_function : str, optional
         Activation function to use, by default "gelu"
-    embedder_kernel_shape : int, optional
-        size of the encoder kernel
-    filter_basis_type: Optional[str]: str, optional
-        filter basis type
-    use_mlp : int, optional
-        Whether to use MLPs in the SFNO blocks, by default True
-    mlp_ratio : int, optional
+    kernel_shape : tuple, optional
+        Kernel shape for convolutions, by default (3, 3)
+    filter_basis_type : str, optional
+        Filter basis type, by default "morlet"
+    mlp_ratio : float, optional
         Ratio of MLP to use, by default 2.0
-    drop_rate : float, optional
-        Dropout rate, by default 0.0
+    att_drop_rate : float, optional
+        Dropout rate for attention, by default 0.0
     drop_path_rate : float, optional
-        Dropout path rate, by default 0.0
-    normalization_layer : str, optional
-        Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "instance_norm"
-    hard_thresholding_fraction : float, optional
-        Fraction of hard thresholding (frequency cutoff) to apply, by default 1.0
-    upsampling_method : str
-        Conv, bilinear
+        Dropout path rate, by default 0.1
+    attention_mode : str, optional
+        Attention mode ("neighborhood" or "global"), by default "neighborhood"
+    theta_cutoff : float, optional
+        Cutoff radius for neighborhood attention, by default None
+    upsampling_method : str, optional
+        Upsampling method ("conv" or "bilinear"), by default "bilinear"
+    bias : bool, optional
+        Whether to use bias, by default True
 
     Example
     -----------
-    >>> model = SphericalTransformer(
-    ...         img_shape=(128, 256),
+    >>> model = SphericalSegformer(
+    ...         img_size=(128, 256),
     ...         scale_factor=4,
     ...         in_chans=2,
     ...         out_chans=2,
-    ...         embed_dim=16,
-    ...         num_layers=4,
+    ...         embed_dims=[16, 32, 64, 128],
+    ...         heads=[1, 2, 4, 8],
+    ...         depths=[3, 4, 6, 3],
     ...         use_mlp=True,)
     >>> model(torch.randn(1, 2, 128, 256)).shape
     torch.Size([1, 2, 128, 256])
