@@ -34,7 +34,7 @@ namespace disco_kernels {
 
     // cpu ops
     torch::Tensor disco_cpu_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-        torch::Tensor col_idx, torch::Tensor vals, int64_t K, int64_t Ho, int64_t Wo) {
+        torch::Tensor col_idx, torch::Tensor vals, torch::Tensor weights, int64_t K, int64_t Ho, int64_t Wo) {
         
         // sanity checks
         CHECK_CPU_INPUT_TENSOR(inp);
@@ -64,7 +64,7 @@ namespace disco_kernels {
     }
 
     torch::Tensor disco_cpu_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-        torch::Tensor col_idx, torch::Tensor vals, int64_t K, int64_t Ho, int64_t Wo) {
+        torch::Tensor col_idx, torch::Tensor vals, torch::Tensor weights, int64_t K, int64_t Ho, int64_t Wo) {
         
         // sanity checks
         CHECK_CPU_INPUT_TENSOR(inp);
