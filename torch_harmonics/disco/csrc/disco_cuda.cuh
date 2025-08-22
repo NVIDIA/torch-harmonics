@@ -40,7 +40,11 @@
     CHECK_CUDA_TENSOR(x);                                                                                              \
     CHECK_CONTIGUOUS_TENSOR(x)
 
+// will come from ../../attention/csrc/attention_cuda_utils.cuh
+#ifndef DIV_UP
 #define DIV_UP(a, b) (((a) + ((b)-1)) / (b))
+#endif
+
 
 #define MIN_THREADS (64)
 #define ELXTH_MAX (32)
@@ -49,10 +53,10 @@ namespace disco_kernels {
 
     // forward kernel
     torch::Tensor disco_cuda_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-                                 torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo);
+                                 torch::Tensor col_idx, torch::Tensor val, torch::Tensor weights, int64_t K, int64_t Ho, int64_t Wo);
 
     // backward kernel
     torch::Tensor disco_cuda_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-                                torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo);
+                                torch::Tensor col_idx, torch::Tensor val, torch::Tensor weights, int64_t K, int64_t Ho, int64_t Wo);
 
 }
