@@ -65,7 +65,7 @@ def get_compile_args(module_name):
         cpp_extra_flags.append("-fopenmp")
 
     nvcc_extra_flags = []
-    if profile_mode:
+    if True or profile_mode:
         nvcc_extra_flags.append("-lineinfo")
         nvcc_extra_flags.append("-Xptxas=-v")
         
@@ -128,6 +128,7 @@ def get_ext_modules():
         if BUILD_CUDA:
             print(f"Compiling custom CUDA kernels for torch-harmonics.")
             disco_sources.extend([
+                "torch_harmonics/disco/csrc/disco_cuda_utils.cu",
                 "torch_harmonics/disco/csrc/disco_cuda_fwd.cu",
                 "torch_harmonics/disco/csrc/disco_cuda_bwd.cu",
             ])

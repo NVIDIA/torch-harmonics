@@ -42,7 +42,7 @@ if optimized_kernels_is_available():
     @torch.library.register_fake("disco_kernels::forward")
     def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
           row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
-          kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+          weights: torch.Tensor, kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
         out_shape = (inp.shape[0], inp.shape[1], kernel_size, nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
@@ -50,7 +50,7 @@ if optimized_kernels_is_available():
     @torch.library.register_fake("disco_kernels::backward")
     def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
           row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
-          kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+          weights: torch.Tensor, kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
         out_shape = (inp.shape[0], inp.shape[1], nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
@@ -59,10 +59,10 @@ if optimized_kernels_is_available():
     def _disco_s2_contraction_optimized(
         inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
         row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
-        kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        weights: torch.Tensor, kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
         itype = inp.dtype
         inp = inp.to(torch.float32).contiguous()
-        out = disco_kernels.forward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+        out = disco_kernels.forward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, weights, kernel_size, nlat_out, nlon_out)
         out = out.to(itype)
         return out
 
@@ -71,10 +71,10 @@ if optimized_kernels_is_available():
     def _disco_s2_transpose_contraction_optimized(
         inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
         row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
-        kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        weights: torch.Tensor, kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
         itype = inp.dtype
         inp = inp.to(torch.float32).contiguous()
-        out = disco_kernels.backward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+        out = disco_kernels.backward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, weights, kernel_size, nlat_out, nlon_out)
         out = out.to(itype)
         return out
     
@@ -82,7 +82,7 @@ if optimized_kernels_is_available():
     @torch.library.register_fake("disco_kernels::_disco_s2_contraction_optimized")
     def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
           row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
-          kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+          weights: torch.Tensor, kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
         out_shape = (inp.shape[0], inp.shape[1], kernel_size, nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
@@ -90,13 +90,13 @@ if optimized_kernels_is_available():
     @torch.library.register_fake("disco_kernels::_disco_s2_transpose_contraction_optimized")
     def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
           row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
-        kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+          weights: torch.Tensor, kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
         out_shape = (inp.shape[0], inp.shape[1], nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
 #general routines: this is the same for forward and transpose
 def _setup_context_conv_backward(ctx, inputs, output):
-    inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out = inputs
+    inp, roff_idx, ker_idx, row_idx, col_idx, vals, _, kernel_size, nlat_out, nlon_out = inputs
     ctx.save_for_backward(roff_idx, ker_idx, row_idx, col_idx, vals)
     ctx.kernel_size = kernel_size
     ctx.nlat_in = inp.shape[-2]
@@ -110,12 +110,12 @@ def _disco_s2_contraction_bwd_optimized(ctx, grad_output):
         gtype =	grad_output.dtype
         grad_output = grad_output.to(torch.float32).contiguous()
         grad_input = disco_kernels.backward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
-                                                    ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
+                                                    torch.empty(0), ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)  # Mauro
         grad_input = grad_input.to(gtype)
     else:
         grad_input = None
 
-    return grad_input, None, None, None, None, None, None, None, None
+    return grad_input, None, None, None, None, None, None, None, None, None        # Mauro: added a None for weights 
 
 if optimized_kernels_is_available():
     torch.library.register_autograd(
@@ -129,12 +129,12 @@ def _disco_s2_transpose_contraction_bwd_optimized(ctx, grad_output):
         gtype = grad_output.dtype
         grad_output = grad_output.to(torch.float32).contiguous()
         grad_input = disco_kernels.forward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
-                                                    ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
+                                                   torch.empty(0), ctx.kernel_size, ctx.nlat_in, ctx.nlon_in) # Mauro
         grad_input = grad_input.to(gtype)
     else:
         grad_input = None
 
-    return grad_input, None, None, None, None, None, None, None, None
+    return grad_input, None, None, None, None, None, None, None, None, None        # Mauro: added a None for weights
 
 if optimized_kernels_is_available():
     torch.library.register_autograd(
