@@ -38,6 +38,10 @@ import math
 import torch
 import torch.nn as nn
 
+import nvtx
+
+import numpy as np
+
 from functools import partial
 
 from torch_harmonics.cache import lru_cache
@@ -502,22 +506,49 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
+    @nvtx.annotate("forward", color="purple")
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
+        #print("input x.shape:", x.shape)
+
         if self.optimized_kernel:
-            x = _disco_s2_contraction_optimized(
-                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
-            )
+            with nvtx.annotate("_disco_s2_contraction_optimized", color="red"):
+                out = _disco_s2_contraction_optimized(
+                #x = _disco_s2_contraction_optimized(
+                    x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, 
+                    self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2]),
+                    self.kernel_size, self.nlat_out, self.nlon_out
+                )
         else:
             x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
+ 
+            #print("y.shape:", x.shape)
+            #print("self.groups:", self.groups, "self.groupsize:", self.groupsize)
+            #print("weight.shape:", self.weight.shape)
+            #pippo = self.weight.clone()
+            #pippo = pippo.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])
+            #print("after reshape, weight.shape:", pippo.shape)
 
-        # extract shape
-        B, C, K, H, W = x.shape
-        x = x.reshape(B, self.groups, self.groupsize, K, H, W)
+            # extract shape
+            B, C, K, H, W = x.shape
+            with nvtx.annotate("reshape", color="blue"):
+                x = x.reshape(B, self.groups, self.groupsize, K, H, W)
 
-        # do weight multiplication
-        out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
-        out = out.reshape(B, -1, H, W)
+            #print("after reshape, x.shape:", x.shape)
+
+            # do weight multiplication
+            with nvtx.annotate("einsum", color="blue"):
+                out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
+            #print("out.shape:", out.shape)
+            out = out.reshape(B, -1, H, W)
+
+        #cpu_tensor = out.detach().cpu().numpy()
+        #np.savetxt('yout_einsum.ref.txt', cpu_tensor.flatten(), fmt='%.6f')
+
+        print("weight.shape:", self.weight.shape)
+        print("after reshape, out.shape:", out.shape)
+        print("\n")
+
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)

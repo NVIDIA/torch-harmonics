@@ -199,7 +199,7 @@ static void launch_kernel(int BC, int Hi, int Wi, int K, int Ho, int Wo, int64_t
 }
 
     torch::Tensor disco_cuda_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-                                 torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo)
+                                 torch::Tensor col_idx, torch::Tensor val, torch::Tensor weights, int64_t K, int64_t Ho, int64_t Wo)
     {
 
         // some sanity checks
