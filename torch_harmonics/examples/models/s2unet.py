@@ -411,53 +411,54 @@ class UpsamplingBlock(nn.Module):
 
 class SphericalUNet(nn.Module):
     """
-    Spherical segformer model designed to approximate mappings from spherical signals to spherical segmentation masks
+    Spherical U-Net model designed to approximate mappings from spherical signals to spherical segmentation masks
 
     Parameters
     -----------
-    img_shape : tuple, optional
+    img_size : tuple, optional
         Shape of the input channels, by default (128, 256)
-    kernel_shape: tuple, int
-    scale_factor: int, optional
-        Scale factor to use, by default 2
+    grid : str, optional
+        Grid type for input/output, by default "equiangular"
+    grid_internal : str, optional
+        Grid type for internal processing, by default "legendre-gauss"
     in_chans : int, optional
         Number of input channels, by default 3
     out_chans : int, optional
         Number of classes, by default 3
     embed_dims : List[int], optional
         Dimension of the embeddings for each block, has to be the same length as depths
-    depths: List[in], optional
+    depths : List[int], optional
         Number of repetitions of conv blocks and ffn mixers per layer. Has to be the same length as embed_dims
+    scale_factor : int, optional
+        Scale factor to use, by default 2
     activation_function : str, optional
         Activation function to use, by default "relu"
-    embedder_kernel_shape : int, optional
-        size of the encoder kernel
-    filter_basis_type: Optional[str]: str, optional
-        filter basis type
-    use_mlp : int, optional
-        Whether to use MLPs in the SFNO blocks, by default True
-    mlp_ratio : int, optional
-        Ratio of MLP to use, by default 2.0
-    drop_rate : float, optional
-        Dropout rate, by default 0.0
+    kernel_shape : tuple, optional
+        Kernel shape for convolutions, by default (3, 3)
+    filter_basis_type : str, optional
+        Filter basis type, by default "morlet"
+    transform_skip : bool, optional
+        Whether to transform skip connection, by default False
+    drop_conv_rate : float, optional
+        Dropout rate for convolutions, by default 0.1
     drop_path_rate : float, optional
-        Dropout path rate, by default 0.0
-    normalization_layer : str, optional
-        Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "instance_norm"
-    hard_thresholding_fraction : float, optional
-        Fraction of hard thresholding (frequency cutoff) to apply, by default 1.0
-    upsample_sht : bool, optional
-        Use SHT upsampling if true, else linear interpolation
+        Dropout path rate, by default 0.1
+    drop_dense_rate : float, optional
+        Dropout rate for dense layers, by default 0.5
+    downsampling_mode : str, optional
+        Downsampling mode ("bilinear", "conv"), by default "bilinear"
+    upsampling_mode : str, optional
+        Upsampling mode ("bilinear", "conv"), by default "bilinear"
 
     Example
     -----------
-    >>> model = SphericalTransformer(
-    ...         img_shape=(128, 256),
+    >>> model = SphericalUNet(
+    ...         img_size=(128, 256),
     ...         scale_factor=4,
     ...         in_chans=2,
     ...         out_chans=2,
-    ...         embed_dim=16,
-    ...         num_layers=4,
+    ...         embed_dims=[16, 32, 64, 128],
+    ...         depths=[2, 2, 2, 2],
     ...         use_mlp=True,)
     >>> model(torch.randn(1, 2, 128, 256)).shape
     torch.Size([1, 2, 128, 256])

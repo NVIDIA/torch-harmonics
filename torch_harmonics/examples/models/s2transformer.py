@@ -373,9 +373,12 @@ class SphericalTransformer(nn.Module):
 
     Parameters
     -----------
-    img_shape : tuple, optional
+    img_size : tuple, optional
         Shape of the input channels, by default (128, 256)
-    kernel_shape: tuple, int
+    grid : str, optional
+        Grid type for input/output, by default "equiangular"
+    grid_internal : str, optional
+        Grid type for internal processing, by default "legendre-gauss"
     scale_factor : int, optional
         Scale factor to use, by default 3
     in_chans : int, optional
@@ -388,37 +391,41 @@ class SphericalTransformer(nn.Module):
         Number of layers in the network, by default 4
     activation_function : str, optional
         Activation function to use, by default "gelu"
-    encoder_kernel_shape : int, optional
-        size of the encoder kernel
-    filter_basis_type: str, optional
-        filter basis type
-    num_heads: int, optional
-        number of attention heads
-    use_mlp : int, optional
+    encoder_kernel_shape : tuple, optional
+        Kernel shape for encoder, by default (3, 3)
+    filter_basis_type : str, optional
+        Filter basis type, by default "morlet"
+    num_heads : int, optional
+        Number of attention heads, by default 1
+    use_mlp : bool, optional
         Whether to use MLPs in the SFNO blocks, by default True
-    mlp_ratio : int, optional
+    mlp_ratio : float, optional
         Ratio of MLP to use, by default 2.0
     drop_rate : float, optional
         Dropout rate, by default 0.0
     drop_path_rate : float, optional
         Dropout path rate, by default 0.0
     normalization_layer : str, optional
-        Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "instance_norm"
+        Type of normalization layer to use ("layer_norm", "instance_norm", "none"), by default "none"
     hard_thresholding_fraction : float, optional
         Fraction of hard thresholding (frequency cutoff) to apply, by default 1.0
     residual_prediction : bool, optional
-        Whether to add a single large skip connection, by default True
-    pos_embed : bool, optional
-        Whether to use positional embedding, by default True
+        Whether to add a single large skip connection, by default False
+    pos_embed : str, optional
+        Type of positional embedding to use, by default "spectral"
     upsample_sht : bool, optional
-        Use SHT upsampling if true, else linear interpolation
+        Use SHT upsampling if true, else linear interpolation, by default False
+    attention_mode : str, optional
+        Attention mode ("neighborhood" or "global"), by default "neighborhood"
     bias : bool, optional
-        Whether to use a bias, by default False
+        Whether to use bias, by default False
+    theta_cutoff : float, optional
+        Cutoff radius for neighborhood attention, by default None
 
     Example
     -----------
     >>> model = SphericalTransformer(
-    ...         img_shape=(128, 256),
+    ...         img_size=(128, 256),
     ...         scale_factor=4,
     ...         in_chans=2,
     ...         out_chans=2,
