@@ -843,8 +843,8 @@ void launch_spc_attn_bwd(int nloc,      // "BDIM_X*nloc" >= nchans_out
         // ibstead of "nchans_in"; in this way as long as the
         // difference between the number of input and output channels
         // is <= BDIM_X we can use the faster path 
-        if (nchans_in >= BDIM_X*(CUR_LOC_SIZE-1) && 
-            nchans_in <= BDIM_X* CUR_LOC_SIZE  ) {
+        if (nchans_out >= BDIM_X*(CUR_LOC_SIZE-1) &&
+            nchans_out <= BDIM_X* CUR_LOC_SIZE  ) {
                 s2_attn_bwd_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE>
                                          <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out,
                                                                            _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx,
