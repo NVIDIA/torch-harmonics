@@ -55,7 +55,8 @@ template<int BDIM_X,
          typename FLOATV_T> // either float or float4
 __global__
 __launch_bounds__(BDIM_X)
-void s2_attn_fwd_generic_vec_k(int nchan,  // no. of FLOATV_T elements along channel dim
+void s2_attn_fwd_generic_vec_k(int nchan_in,   // no. of FLOATV_T elements along channel dim
+                               int nchan_out,  // no. of FLOATV_T elements along channel dim
                                int nlat_in,
                                int nlon_in,
                                int nlat_out,
@@ -70,7 +71,7 @@ void s2_attn_fwd_generic_vec_k(int nchan,  // no. of FLOATV_T elements along cha
                                      FLOATV_T *__restrict__ y) {
 
     extern __shared__ __align__(sizeof(float4)) float shext[];
-    FLOATV_T *shy = reinterpret_cast<FLOATV_T *>(shext) + threadIdx.y*nchan;
+    FLOATV_T *shy = reinterpret_cast<FLOATV_T *>(shext) + threadIdx.y*nchan_out;
 
     const int batch = blockIdx.y;
     const int wid = blockIdx.x*blockDim.y + threadIdx.y;
@@ -85,14 +86,15 @@ void s2_attn_fwd_generic_vec_k(int nchan,  // no. of FLOATV_T elements along cha
     const int wo = wid - (h*nlon_out);
     const int ho = row_idx[h];
 
-    for(int chan = tidx; chan < nchan; chan += WARP_SIZE) {
+    for(int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
         shy[chan] = __vset<FLOATV_T>(0.f);
     }
 
-    kx += int64_t(batch)*nlat_in*nlon_in*nchan;
-    vx += int64_t(batch)*nlat_in*nlon_in*nchan;
-    qy += int64_t(batch)*nlat_out*nlon_out*nchan + int64_t(ho)*nchan*nlon_out + int64_t(wo)*nchan;
-    y  += int64_t(batch)*nlat_out*nlon_out*nchan + int64_t(ho)*nchan*nlon_out + int64_t(wo)*nchan;
+    kx += int64_t(batch)*nlat_in*nlon_in*nchan_in;
+    qy += int64_t(batch)*nlat_out*nlon_out*nchan_in + int64_t(ho)*nchan_in*nlon_out + int64_t(wo)*nchan_in;
+
+    vx += int64_t(batch)*nlat_in*nlon_in*nchan_out;
+    y  += int64_t(batch)*nlat_out*nlon_out*nchan_out + int64_t(ho)*nchan_out*nlon_out + int64_t(wo)*nchan_out;
 
     float alpha_sum = 0.0f;
     float qdotk_max = -FLT_MAX;
@@ -112,12 +114,12 @@ void s2_attn_fwd_generic_vec_k(int nchan,  // no. of FLOATV_T elements along cha
         const int wi = col - (hi*nlon_in);
         const int wip = (wi+wo) - ((wi+wo) / nlon_in) * nlon_in;
 
-        const FLOATV_T *_kx = kx + int64_t(hi)*nlon_in*nchan + int64_t(wip)*nchan;
-        const FLOATV_T *_vx = vx + int64_t(hi)*nlon_in*nchan + int64_t(wip)*nchan;
+        const FLOATV_T *_kx = kx + int64_t(hi)*nlon_in*nchan_in  + int64_t(wip)*nchan_in;
+        const FLOATV_T *_vx = vx + int64_t(hi)*nlon_in*nchan_out + int64_t(wip)*nchan_out;
 
         FLOATV_T qdotkv = __vset<FLOATV_T>(0.f);
 
-        for(int chan = tidx; chan < nchan; chan += WARP_SIZE) {
+        for(int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
             qdotkv = __vadd(qdotkv,
                             __vmul( qy[chan],
                                    _kx[chan]));
@@ -135,7 +137,7 @@ void s2_attn_fwd_generic_vec_k(int nchan,  // no. of FLOATV_T elements along cha
 
         alpha_sum = alpha + alpha_sum*exp_save;
 
-        for(int chan = tidx; chan < nchan; chan += WARP_SIZE) {
+        for(int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
             shy[chan] = __vadd(__vscale(exp_save, shy[chan]),
                                __vscale(   alpha, _vx[chan]));
         }
@@ -143,7 +145,7 @@ void s2_attn_fwd_generic_vec_k(int nchan,  // no. of FLOATV_T elements along cha
     }
 
     alpha_sum = 1.0f / alpha_sum;
-    for(int chan = tidx; chan < nchan; chan += WARP_SIZE) {
+    for(int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
         y[chan] = __vscale(alpha_sum, shy[chan]);
     }
 
@@ -153,11 +155,13 @@ void s2_attn_fwd_generic_vec_k(int nchan,  // no. of FLOATV_T elements along cha
 // called with either (BDIM_X=32 and BDIM_Y>1) || (2^K=BDIM_X > 32 and BDIM_Y=1)
 template<int BDIM_X,
          int BDIM_Y,
-         int NLOC,
+         int CHIN_AS_OUT, // 1 iif "BDIM_X*(NLOC-1) <= nchan_in <= BDIM_X*NLOC" else 0
+         int NLOC,        // smallest int such that BDIM_X*NLOC >= nchan_out
          typename FLOATV_T> // either float or float4
 __global__
 __launch_bounds__(BDIM_X*BDIM_Y)
-void s2_attn_fwd_special_vec_k(int nchan, // no. of FLOATV_T elements along channel dim
+void s2_attn_fwd_special_vec_k(int nchan_in,  // no. of FLOATV_T elements along channel dim
+                               int nchan_out, // no. of FLOATV_T elements along channel dim
                                int nlat_in,
                                int nlon_in,
                                int nlat_out,
@@ -189,28 +193,43 @@ void s2_attn_fwd_special_vec_k(int nchan, // no. of FLOATV_T elements along chan
     FLOATV_T locy[NLOC];
 
     extern __shared__ __align__(sizeof(float4)) float shext[];
-    FLOATV_T *shq = reinterpret_cast<FLOATV_T *>(shext) + threadIdx.y*nchan + tidx;
+    FLOATV_T *shq = reinterpret_cast<FLOATV_T *>(shext) + threadIdx.y*nchan_in;
+
+    if constexpr(CHIN_AS_OUT) {
+        shq += tidx;
+    }
 
     const int h = ctaid / nlon_out;
     const int wo = ctaid - (h*nlon_out);
     const int ho = row_idx[h];
 
-    kx += int64_t(batch)*nlat_in*nlon_in*nchan + tidx;
-    vx += int64_t(batch)*nlat_in*nlon_in*nchan + tidx;
-    qy += int64_t(batch)*nlat_out*nlon_out*nchan + int64_t(ho)*nlon_out*nchan + int64_t(wo)*nchan + tidx;
-    y  += int64_t(batch)*nlat_out*nlon_out*nchan + int64_t(ho)*nlon_out*nchan + int64_t(wo)*nchan + tidx;
+    kx += int64_t(batch)*nlat_in*nlon_in*nchan_in;
+    qy += int64_t(batch)*nlat_out*nlon_out*nchan_in + int64_t(ho)*nlon_out*nchan_in + int64_t(wo)*nchan_in;
+    if constexpr(CHIN_AS_OUT) {
+        kx += tidx;
+        qy += tidx;
+    }
+
+    vx += int64_t(batch)*nlat_in*nlon_in*nchan_out + tidx;
+    y  += int64_t(batch)*nlat_out*nlon_out*nchan_out + int64_t(ho)*nlon_out*nchan_out + int64_t(wo)*nchan_out + tidx;
 
     #pragma unroll
     for(int i = 0; i < NLOC; i++) {
         locy[i] = __vset<FLOATV_T>(0.f);
     }
 
-    #pragma unroll
-    for(int i = 0; i < NLOC_M1; i++) {
-        shq[i*BDIM_X] = qy[i*BDIM_X];
-    }
-    if (NLOC_M1*BDIM_X+tidx < nchan) {
-        shq[NLOC_M1*BDIM_X] = qy[NLOC_M1*BDIM_X];
+    if constexpr(CHIN_AS_OUT) {
+        #pragma unroll
+        for(int i = 0; i < NLOC_M1; i++) {
+            shq[i*BDIM_X] = qy[i*BDIM_X];
+        }
+        if (NLOC_M1*BDIM_X+tidx < nchan_in) {
+            shq[NLOC_M1*BDIM_X] = qy[NLOC_M1*BDIM_X];
+        }
+    } else {
+        for(int chan = tidx; chan < nchan_in; chan += BDIM_X) {
+            shq[chan] = qy[chan];
+        }
     }
 
     float alpha_sum = 0.0f;
@@ -231,21 +250,27 @@ void s2_attn_fwd_special_vec_k(int nchan, // no. of FLOATV_T elements along chan
         const int wi = col - (hi*nlon_in);
         const int wip = (wi+wo) - ((wi+wo) / nlon_in) * nlon_in;
 
-        const FLOATV_T *_kx = kx + int64_t(hi)*nlon_in*nchan + int64_t(wip)*nchan;
-        const FLOATV_T *_vx = vx + int64_t(hi)*nlon_in*nchan + int64_t(wip)*nchan;
+        const FLOATV_T *_kx = kx + int64_t(hi)*nlon_in*nchan_in  + int64_t(wip)*nchan_in;
+        const FLOATV_T *_vx = vx + int64_t(hi)*nlon_in*nchan_out + int64_t(wip)*nchan_out;
 
         FLOATV_T qdotkv = __vset<FLOATV_T>(0.f);
 
-        #pragma unroll
-        for(int i = 0; i < NLOC_M1; i++) {
-            qdotkv = __vadd(qdotkv,
-                            __vmul(shq[i*BDIM_X],
-                                   _kx[i*BDIM_X]));
-        }
-        if (NLOC_M1*BDIM_X+tidx < nchan) {
-            qdotkv = __vadd(qdotkv,
-                            __vmul(shq[NLOC_M1*BDIM_X],
-                                   _kx[NLOC_M1*BDIM_X]));
+        if constexpr(CHIN_AS_OUT) {
+            #pragma unroll
+            for(int i = 0; i < NLOC_M1; i++) {
+                qdotkv = __vadd(qdotkv,
+                                __vmul(shq[i*BDIM_X],
+                                       _kx[i*BDIM_X]));
+            }
+            if (NLOC_M1*BDIM_X+tidx < nchan_in) {
+                qdotkv = __vadd(qdotkv,
+                                __vmul(shq[NLOC_M1*BDIM_X],
+                                       _kx[NLOC_M1*BDIM_X]));
+            }
+        } else {
+            for(int chan = tidx; chan < nchan_in; chan += BDIM_X) {
+                qdotkv = __vadd(qdotkv, __vmul(shq[chan], _kx[chan]));
+            }
         }
 
         float qdotk = __vred(qdotkv);
@@ -267,7 +292,7 @@ void s2_attn_fwd_special_vec_k(int nchan, // no. of FLOATV_T elements along chan
             locy[i] = __vadd(__vscale(exp_save, locy[i]),
                              __vscale(alpha, _vx[i*BDIM_X]));
         }
-        if (NLOC_M1*BDIM_X+tidx < nchan) {
+        if (NLOC_M1*BDIM_X+tidx < nchan_out) {
             locy[NLOC_M1] = __vadd(__vscale(exp_save, locy[NLOC_M1]),
                                    __vscale(alpha, _vx[NLOC_M1*BDIM_X]));
         }
@@ -281,7 +306,7 @@ void s2_attn_fwd_special_vec_k(int nchan, // no. of FLOATV_T elements along chan
     for(int i = 0; i < NLOC_M1; i++) {
         y[i*BDIM_X] = __vscale(alpha_sum, locy[i]);
     }
-    if (NLOC_M1*BDIM_X+tidx < nchan) {
+    if (NLOC_M1*BDIM_X+tidx < nchan_out) {
         y[NLOC_M1*BDIM_X] = __vscale(alpha_sum, locy[NLOC_M1]);
     }
 
@@ -290,7 +315,8 @@ void s2_attn_fwd_special_vec_k(int nchan, // no. of FLOATV_T elements along chan
 
 template<typename FLOATV_T>
 void launch_gen_attn_fwd(int batch_size,
-                         int nchans,
+                         int nchans_in,
+                         int nchans_out,
                          int nlat_in,
                          int nlon_in,
                          int nlat_out,
@@ -308,10 +334,10 @@ void launch_gen_attn_fwd(int batch_size,
     dim3 block(WARP_SIZE, THREADS/WARP_SIZE);
     dim3 grid(DIV_UP(nlat_out*nlon_out, block.y), batch_size);
 
-    size_t shsize = sizeof(FLOATV_T)*nchans * block.y;
+    size_t shsize = sizeof(FLOATV_T)*nchans_out * block.y;
 
     s2_attn_fwd_generic_vec_k<THREADS>
-                             <<<grid, block, shsize, stream>>>(nchans, nlat_in, nlon_in, nlat_out, nlon_out,
+                             <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out,
                                                                _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp);
     CHECK_ERROR("s2_attn_fwd_generic_vec_k");
 
@@ -323,9 +349,10 @@ template<int BDIM_X,
          int CUR_LOC_SIZE,
          int MAX_LOC_SIZE, // max size of FLOATV_T[] local array
          typename FLOATV_T>
-void launch_spc_attn_fwd(int batch_size,
-                         int nloc,      // "BDIM_X*nloc" >= nchans
-                         int nchans,
+void launch_spc_attn_fwd(int nloc,      // "BDIM_X*nloc" >= nchans_out
+                         int batch_size,
+                         int nchans_in,
+                         int nchans_out,
                          int nlat_in,
                          int nlon_in,
                          int nlat_out,
@@ -345,11 +372,30 @@ void launch_spc_attn_fwd(int batch_size,
         dim3 block(BDIM_X, BDIM_Y);
         dim3 grid(DIV_UP(nlat_out*nlon_out, block.y), batch_size);
 
-        size_t shsize = sizeof(FLOATV_T)*nchans * block.y; // block.y > 1 iif block.x==32
+        //size_t shsize = sizeof(FLOATV_T)*nchans_out * block.y; // block.y > 1 iif block.x==32
+        size_t shsize = sizeof(FLOATV_T)*nchans_in * block.y; // block.y > 1 iif block.x==32
 
-        s2_attn_fwd_special_vec_k<BDIM_X, BDIM_Y, CUR_LOC_SIZE>
-                                 <<<grid, block, shsize, stream>>>(nchans, nlat_in, nlon_in, nlat_out, nlon_out,
-                                                                   _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp);
+        // nloc determines the size of local arrays used to store
+        // y vectors, of length nchans_out;
+        // if nchans_in is >= BDIM_X*(nloc-1) and <= BDIM_X*nloc
+        // then we can use the same compile-time known loops used
+        // for output channels, with the execpetion of testing 
+        // whether to execute the last iteration based on "nchans_in"
+        // rather than on "nchans_out"; in this way as long as the
+        // difference between the number of input and output channels
+        // is <= BDIM_X we can use the faster path 
+        if (nchans_in >= BDIM_X*(CUR_LOC_SIZE-1) && 
+            nchans_in <= BDIM_X* CUR_LOC_SIZE  ) {
+
+            s2_attn_fwd_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE>
+                                     <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out,
+                                                                       _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp);
+        } else {
+
+            s2_attn_fwd_special_vec_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE>
+                                     <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out,
+                                                                       _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp);
+        }
         CHECK_ERROR("s2_attn_fwd_special_vec_k");
 
         return;
@@ -358,7 +404,7 @@ void launch_spc_attn_fwd(int batch_size,
         launch_spc_attn_fwd<BDIM_X,
                              BDIM_Y,
                              CUR_LOC_SIZE+1,
-                             MAX_LOC_SIZE>(batch_size, nloc, nchans, nlat_in, nlon_in, nlat_out, nlon_out,
+                             MAX_LOC_SIZE>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out,
                                            _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp,
                                            stream);
     }
@@ -366,7 +412,8 @@ void launch_spc_attn_fwd(int batch_size,
 }
 
 static void s2_attn_fwd_dispatch(int64_t batch_size,
-                                 int64_t nchans,
+                                 int64_t nchans_in,
+                                 int64_t nchans_out,
                                  int64_t nlon_in,
                                  int64_t nlat_out,
                                  int64_t nlon_out,
@@ -389,9 +436,9 @@ static void s2_attn_fwd_dispatch(int64_t batch_size,
 
     const int nlat_in = kxP.size(1);
 
-    // smallest power of two "bdimx" (>=32) s.t. bdimx*MAX_LOCAL_ARR_LEN >= nchans
+    // smallest power of two "bdimx" (>=32) s.t. bdimx*MAX_LOCAL_ARR_LEN >= nchans_out
     int bdimx;
-    bdimx = DIV_UP(nchans, MAX_LOCAL_ARR_LEN);
+    bdimx = DIV_UP(nchans_out, MAX_LOCAL_ARR_LEN);
     bdimx = max(bdimx, WARP_SIZE);
     bdimx = next_pow2(bdimx);
 
@@ -411,27 +458,28 @@ static void s2_attn_fwd_dispatch(int64_t batch_size,
         !is_aligned<sizeof(float4)>(_vxp) ||
         !is_aligned<sizeof(float4)>(_qyp) ||
         !is_aligned<sizeof(float4)>(_yp)  ||
-        (nchans % VEC_SIZE) != 0) {
+        (nchans_in  % VEC_SIZE) != 0      ||
+        (nchans_out % VEC_SIZE) != 0) {
 
-        const int nloc = DIV_UP(nchans, bdimx);
+        const int nloc = DIV_UP(nchans_out, bdimx);
         
         // to avoid the compilation of unused template instances;
         // we use a block size BDIM_X that is the smallest power of 2
-        // such that BDIM_X*MAX_LOCAL_ARR_LEN >= nchans, so
+        // such that BDIM_X*MAX_LOCAL_ARR_LEN >= nchans_out, so
         // BDIM_X > 32 are used only for:
         //
-        //  (BDIM_X-1)*MAX_LOCAL_ARR_LEN < nchans <= BDIM_X*MAX_LOCAL_ARR_LEN
+        //  (BDIM_X-1)*MAX_LOCAL_ARR_LEN < nchans_out <= BDIM_X*MAX_LOCAL_ARR_LEN
         constexpr int MIN_LOC_ARR_LEN = MAX_LOCAL_ARR_LEN/2+1;
 
         // use 2D blocks only if 32 threads are enough
         switch(bdimx) {
-            case   32: launch_spc_attn_fwd<  32, 2,               1, MAX_LOCAL_ARR_LEN>(batch_size, nloc, nchans, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream); break;
-            case   64: launch_spc_attn_fwd<  64, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(batch_size, nloc, nchans, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream); break;
-            case  128: launch_spc_attn_fwd< 128, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(batch_size, nloc, nchans, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream); break;
-            case  256: launch_spc_attn_fwd< 256, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(batch_size, nloc, nchans, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream); break;
-            case  512: launch_spc_attn_fwd< 512, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(batch_size, nloc, nchans, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream); break;
-            case 1024: launch_spc_attn_fwd<1024, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(batch_size, nloc, nchans, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream); break;
-            default:   launch_gen_attn_fwd                                             (batch_size,       nchans, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream); break;
+            case   32: launch_spc_attn_fwd<  32, 2,               1, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream); break;
+            case   64: launch_spc_attn_fwd<  64, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream); break;
+            case  128: launch_spc_attn_fwd< 128, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream); break;
+            case  256: launch_spc_attn_fwd< 256, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream); break;
+            case  512: launch_spc_attn_fwd< 512, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream); break;
+            case 1024: launch_spc_attn_fwd<1024, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream); break;
+            default:   launch_gen_attn_fwd                                             (      batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream); break;
         }
 
     } else {
@@ -441,8 +489,9 @@ static void s2_attn_fwd_dispatch(int64_t batch_size,
         float4 *_qyp4 = reinterpret_cast<float4 *>(_qyp);
         float4 *_yp4  = reinterpret_cast<float4 *>(_yp);
 
-        nchans /= VEC_SIZE;
-        const int nloc = DIV_UP(nchans, bdimx);
+        nchans_in  /= VEC_SIZE;
+        nchans_out /= VEC_SIZE;
+        const int nloc = DIV_UP(nchans_out, bdimx);
 
         constexpr int MAX_LOCAL_VEC_LEN = MAX_LOCAL_ARR_LEN / VEC_SIZE;
         
@@ -450,13 +499,13 @@ static void s2_attn_fwd_dispatch(int64_t batch_size,
 
         // use 2D blocks only if 32 threads are enough
         switch(bdimx) {
-            case   32: launch_spc_attn_fwd<  32, 2,               1, MAX_LOCAL_VEC_LEN>(batch_size, nloc, nchans, nlat_in, nlon_in, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _yp4, stream); break;
-            case   64: launch_spc_attn_fwd<  64, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(batch_size, nloc, nchans, nlat_in, nlon_in, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _yp4, stream); break;
-            case  128: launch_spc_attn_fwd< 128, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(batch_size, nloc, nchans, nlat_in, nlon_in, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _yp4, stream); break;
-            case  256: launch_spc_attn_fwd< 256, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(batch_size, nloc, nchans, nlat_in, nlon_in, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _yp4, stream); break;
-            case  512: launch_spc_attn_fwd< 512, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(batch_size, nloc, nchans, nlat_in, nlon_in, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _yp4, stream); break;
-            case 1024: launch_spc_attn_fwd<1024, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(batch_size, nloc, nchans, nlat_in, nlon_in, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _yp4, stream); break;
-            default:   launch_gen_attn_fwd                                             (batch_size,       nchans, nlat_in, nlon_in, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _yp4, stream); break;
+            case   32: launch_spc_attn_fwd<  32, 2,               1, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _yp4, stream); break;
+            case   64: launch_spc_attn_fwd<  64, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _yp4, stream); break;
+            case  128: launch_spc_attn_fwd< 128, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _yp4, stream); break;
+            case  256: launch_spc_attn_fwd< 256, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _yp4, stream); break;
+            case  512: launch_spc_attn_fwd< 512, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _yp4, stream); break;
+            case 1024: launch_spc_attn_fwd<1024, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _yp4, stream); break;
+            default:   launch_gen_attn_fwd                                             (      batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _yp4, stream); break;
         }
     }
 
@@ -481,7 +530,8 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
     CHECK_CUDA_TENSOR(psi_col_idx);
     CHECK_CUDA_TENSOR(psi_row_off);
 
-    size_t uo_num_channels = kx.size(1);
+    size_t nchans_in  = qy.size(1); // or kx.size(1)
+    size_t nchans_out = vx.size(1); 
 
     const int batch_size = kx.size(0);
 
@@ -502,10 +552,11 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
     if (!vx_is_channels_last) { vxP = permute_4D_to0231(vxP); }
     if (!qy_is_channels_last) { qyP = permute_4D_to0231(qyP); }
 
-    torch::Tensor yP = torch::empty_like(qyP);
+    torch::Tensor yP = torch::empty_like(vxP);
 
     s2_attn_fwd_dispatch(batch_size,
-                         uo_num_channels,
+                         nchans_in,
+                         nchans_out,
                          nlon_in,
                          nlat_out,
                          nlon_out,
