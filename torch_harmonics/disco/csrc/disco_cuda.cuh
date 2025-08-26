@@ -52,11 +52,11 @@
 namespace disco_kernels {
 
     // forward kernel
-    torch::Tensor disco_cuda_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-                                 torch::Tensor col_idx, torch::Tensor val, torch::Tensor weights, int64_t K, int64_t Ho, int64_t Wo);
+    std::tuple<torch::Tensor, torch::Tensor> disco_cuda_fwd(torch::Tensor inp, torch::Tensor weights, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx, 
+                                 torch::Tensor col_idx, torch::Tensor val, int64_t Ho, int64_t Wo);
 
     // backward kernel
-    torch::Tensor disco_cuda_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-                                torch::Tensor col_idx, torch::Tensor val, torch::Tensor weights, int64_t K, int64_t Ho, int64_t Wo);
+    std::tuple<torch::Tensor, torch::Tensor> disco_cuda_bwd(torch::Tensor ograd, torch::Tensor dinp, torch::Tensor weights, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
+                                torch::Tensor col_idx, torch::Tensor val, int64_t Ho, int64_t Wo);
 
 }
