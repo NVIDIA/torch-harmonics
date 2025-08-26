@@ -970,12 +970,13 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         return;
     }
 
-    torch::Tensor disco_cuda_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-                                 torch::Tensor col_idx, torch::Tensor val, torch::Tensor weights, int64_t K, int64_t Ho, int64_t Wo)
+    std::tuple<torch::Tensor, torch::Tensor> disco_cuda_fwd(torch::Tensor inp, torch::Tensor weights, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
+                                 torch::Tensor col_idx, torch::Tensor val, int64_t Ho, int64_t Wo)
     {
 
         // some sanity checks
         CHECK_CUDA_INPUT_TENSOR(inp);
+        CHECK_CUDA_INPUT_TENSOR(weights);
         CHECK_CUDA_INPUT_TENSOR(roff_idx);
         CHECK_CUDA_INPUT_TENSOR(ker_idx);
         CHECK_CUDA_INPUT_TENSOR(row_idx);
@@ -989,6 +990,7 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         int64_t Hi = inp.size(2);
         int64_t Wi = inp.size(3);
         int64_t nrows = roff_idx.size(0) - 1;
+        int64_t K = weights.size(3);
 
         // rename dimensions consistent with attention
         int64_t batch_size = inp.size(0);
@@ -1186,21 +1188,21 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
 
         // switch to channel-last
 
-        // extract dtype
+        // extract dtype and memory format
+        bool x_is_channels_last = inp.strides()[1] == 1;
         auto x_type = inp.dtype();
-        torch::Tensor xP = inp.to(torch::kFloat32);
-    
-        // exract memory format: this is much safer than checking is_contiguous(at::MemoryFormat::ChannelsLast)
-        // the former fails for num_channels == 1
-        bool x_is_channels_last = xP.strides()[1] == 1;
 
         // transpose if required
+        torch::Tensor xP = inp;
         if (!x_is_channels_last) { xP = permute_4D_to0231(xP); }
+
+        // convert datatype
+        xP = xP.to(torch::kFloat32);
 
         // to test before fusion
         int64_t out_dims[] = {batch_size, nlat_out, nlon_out, nchan*K};
-        auto options = torch::TensorOptions().device(inp.device()).dtype(inp.dtype());
-        torch::Tensor yP = torch::empty(out_dims, options);
+        //auto options = torch::TensorOptions().device(inp.device()).dtype(inp.dtype());
+        torch::Tensor yP = torch::empty(out_dims, xP.options());
 
         // call channel-last kernel implementation
         s2_disco_fwd_dispatch(batch_size,
@@ -1216,8 +1218,10 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
                               val,
                               yP);
 
-        // call einsum
+        // store output of convolution
+        auto disco_y = yP;
 
+        // call einsum
         // yP is         {batch_size, nlat_out, nlon_out,              nchan_in*K},
         // reshape it to {batch_size, nlat_out, nlon_out, ngroup, chan_x_grp_in*K}
         auto yP_resh = yP.reshape({batch_size, nlat_out, nlon_out, ngroup, -1});
@@ -1241,12 +1245,18 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
             // make y {batch_size, nchan_out, nlat_out, nlon_out}
         }
 
-        //CHECK_CUDA(cudaDeviceSynchronize());
-        
+        // some hacky reshuffling now:
+        if (!x_is_channels_last) { 
+            disco_y = permute_4D_to0312(yP).reshape({batch_size, ngroup*chan_x_grp_in, K, nlat_out, nlon_out});
+        } else {
+            disco_y = yP.reshape({batch_size, ngroup*chan_x_grp_in, K, nlat_out, nlon_out}); 
+        }
+
         // convert precision back to starting
         y = y.to(x_type);
+        disco_y = disco_y.to(x_type);
         
-        torch::Tensor out = y;
+        std::tuple<torch::Tensor, torch::Tensor> out = std::make_tuple(y, disco_y);
 #endif
 
 #endif // closes ORIGINAL if
@@ -1256,7 +1266,7 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
             CHECK_CUDA(cudaStreamSynchronize(stream));
             printf("done\n");
             fflush(stdout);
-            dump_tensor("yout.txt", out);
+            //dump_tensor("yout.txt", out);
             //dump_csr_linear("csr_disco.txt", roff_idx, ker_idx, row_idx, col_idx, val);
             //dump_out_kers("out_kers", out);
         }

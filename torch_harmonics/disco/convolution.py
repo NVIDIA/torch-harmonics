@@ -46,8 +46,8 @@ from functools import partial
 
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
-from ._disco_utils import _get_psi, _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
-from ._disco_utils import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
+from ._disco_utils import _get_psi, _disco_s2_contraction_torch #, _disco_s2_transpose_contraction_torch
+from ._disco_utils import _disco_s2_contraction_optimized #, _disco_s2_transpose_contraction_optimized
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
 from disco_helpers import optimized_kernels_is_available, preprocess_psi
 
@@ -374,9 +374,10 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
             raise ValueError("Error, the number of input channels has to be an integer multiple of the group size")
         if out_channels % self.groups != 0:
             raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
-        self.groupsize = in_channels // self.groups
-        scale = math.sqrt(1.0 / self.groupsize / self.kernel_size)
-        self.weight = nn.Parameter(scale * torch.randn(out_channels, self.groupsize, self.kernel_size))
+        self.groupsize_in = in_channels // self.groups
+        self.groupsize_out = out_channels // self.groups
+        scale = math.sqrt(1.0 / self.groupsize_in / self.kernel_size)
+        self.weight = nn.Parameter(scale * torch.randn(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
 
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_channels))
@@ -513,11 +514,9 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         if self.optimized_kernel:
             with nvtx.annotate("_disco_s2_contraction_optimized", color="red"):
-                out = _disco_s2_contraction_optimized(
-                #x = _disco_s2_contraction_optimized(
-                    x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, 
-                    self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2]),
-                    self.kernel_size, self.nlat_out, self.nlon_out
+                out, _ = _disco_s2_contraction_optimized(
+                    x, self.weight, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, 
+                    self.nlat_out, self.nlon_out
                 )
         else:
             x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
@@ -530,15 +529,15 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             #print("after reshape, weight.shape:", pippo.shape)
 
             # extract shape
-            B, C, K, H, W = x.shape
+            B, _, K, H, W = x.shape
             with nvtx.annotate("reshape", color="blue"):
-                x = x.reshape(B, self.groups, self.groupsize, K, H, W)
+                x = x.reshape(B, self.groups, self.groupsize_in, K, H, W)
 
             #print("after reshape, x.shape:", x.shape)
 
             # do weight multiplication
             with nvtx.annotate("einsum", color="blue"):
-                out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
+                out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight).contiguous()
             #print("out.shape:", out.shape)
             out = out.reshape(B, -1, H, W)
 
@@ -556,139 +555,139 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         return out
 
 
-class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
-    """
-    Discrete-continuous (DISCO) transpose convolutions on the 2-Sphere as described in [1].
+# class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
+#     """
+#     Discrete-continuous (DISCO) transpose convolutions on the 2-Sphere as described in [1].
 
-    Parameters
-    -----------
-    in_channels: int
-        Number of input channels
-    out_channels: int
-        Number of output channels
-    in_shape: Tuple[int]
-        Input shape of the convolution tensor
-    out_shape: Tuple[int]
-        Output shape of the convolution tensor
-    kernel_shape: Union[int, Tuple[int], Tuple[int, int]]
-        Shape of the kernel
-    basis_type: Optional[str]
-        Type of the basis functions
-    basis_norm_mode: Optional[str]
-        Mode for basis normalization
-    groups: Optional[int]
-        Number of groups
-    grid_in: Optional[str]
-        Input grid type
-    grid_out: Optional[str]
-        Output grid type
-    bias: Optional[bool]
-        Whether to use bias
-    theta_cutoff: Optional[float]
-        Theta cutoff for the filter basis functions
-    optimized_kernel: Optional[bool]
-        Whether to use the optimized kernel (if available)
+#     Parameters
+#     -----------
+#     in_channels: int
+#         Number of input channels
+#     out_channels: int
+#         Number of output channels
+#     in_shape: Tuple[int]
+#         Input shape of the convolution tensor
+#     out_shape: Tuple[int]
+#         Output shape of the convolution tensor
+#     kernel_shape: Union[int, Tuple[int], Tuple[int, int]]
+#         Shape of the kernel
+#     basis_type: Optional[str]
+#         Type of the basis functions
+#     basis_norm_mode: Optional[str]
+#         Mode for basis normalization
+#     groups: Optional[int]
+#         Number of groups
+#     grid_in: Optional[str]
+#         Input grid type
+#     grid_out: Optional[str]
+#         Output grid type
+#     bias: Optional[bool]
+#         Whether to use bias
+#     theta_cutoff: Optional[float]
+#         Theta cutoff for the filter basis functions
+#     optimized_kernel: Optional[bool]
+#         Whether to use the optimized kernel (if available)
 
-    Returns
-    --------
-    out: torch.Tensor
-        Output tensor
+#     Returns
+#     --------
+#     out: torch.Tensor
+#         Output tensor
 
-    References
-    ----------
-    [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
-    """
+#     References
+#     ----------
+#     [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
+#     """
 
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        in_shape: Tuple[int],
-        out_shape: Tuple[int],
-        kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
-        basis_type: Optional[str] = "piecewise linear",
-        basis_norm_mode: Optional[str] = "mean",
-        groups: Optional[int] = 1,
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
-        bias: Optional[bool] = True,
-        theta_cutoff: Optional[float] = None,
-        optimized_kernel: Optional[bool] = True,
-    ):
-        super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
+#     def __init__(
+#         self,
+#         in_channels: int,
+#         out_channels: int,
+#         in_shape: Tuple[int],
+#         out_shape: Tuple[int],
+#         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
+#         basis_type: Optional[str] = "piecewise linear",
+#         basis_norm_mode: Optional[str] = "mean",
+#         groups: Optional[int] = 1,
+#         grid_in: Optional[str] = "equiangular",
+#         grid_out: Optional[str] = "equiangular",
+#         bias: Optional[bool] = True,
+#         theta_cutoff: Optional[float] = None,
+#         optimized_kernel: Optional[bool] = True,
+#     ):
+#         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
-        self.nlat_in, self.nlon_in = in_shape
-        self.nlat_out, self.nlon_out = out_shape
+#         self.nlat_in, self.nlon_in = in_shape
+#         self.nlat_out, self.nlon_out = out_shape
 
-        # make sure the p-shift works by checking that longitudes are divisible
-        assert self.nlon_out % self.nlon_in == 0
+#         # make sure the p-shift works by checking that longitudes are divisible
+#         assert self.nlon_out % self.nlon_in == 0
 
-        # bandlimit
-        if theta_cutoff is None:
-            theta_cutoff = torch.pi / float(self.nlat_in - 1)
+#         # bandlimit
+#         if theta_cutoff is None:
+#             theta_cutoff = torch.pi / float(self.nlat_in - 1)
 
-        if theta_cutoff <= 0.0:
-            raise ValueError("Error, theta_cutoff has to be positive.")
+#         if theta_cutoff <= 0.0:
+#             raise ValueError("Error, theta_cutoff has to be positive.")
 
-        # switch in_shape and out_shape since we want the transpose convolution
-        idx, vals, _ = _precompute_convolution_tensor_s2(
-            out_shape,
-            in_shape,
-            self.filter_basis,
-            grid_in=grid_out,
-            grid_out=grid_in,
-            theta_cutoff=theta_cutoff,
-            transpose_normalization=True,
-            basis_norm_mode=basis_norm_mode,
-            merge_quadrature=True,
-        )
+#         # switch in_shape and out_shape since we want the transpose convolution
+#         idx, vals, _ = _precompute_convolution_tensor_s2(
+#             out_shape,
+#             in_shape,
+#             self.filter_basis,
+#             grid_in=grid_out,
+#             grid_out=grid_in,
+#             theta_cutoff=theta_cutoff,
+#             transpose_normalization=True,
+#             basis_norm_mode=basis_norm_mode,
+#             merge_quadrature=True,
+#         )
 
-        # sort the values
-        ker_idx = idx[0, ...].contiguous()
-        row_idx = idx[1, ...].contiguous()
-        col_idx = idx[2, ...].contiguous()
-        vals = vals.contiguous()
+#         # sort the values
+#         ker_idx = idx[0, ...].contiguous()
+#         row_idx = idx[1, ...].contiguous()
+#         col_idx = idx[2, ...].contiguous()
+#         vals = vals.contiguous()
 
-        if self.optimized_kernel:
-            # preprocessed data-structure for GPU kernel
-            roff_idx = preprocess_psi(self.kernel_size, self.nlat_in, ker_idx, row_idx, col_idx, vals).contiguous()
-            self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+#         if self.optimized_kernel:
+#             # preprocessed data-structure for GPU kernel
+#             roff_idx = preprocess_psi(self.kernel_size, self.nlat_in, ker_idx, row_idx, col_idx, vals).contiguous()
+#             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
-        # save all datastructures
-        self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
-        self.register_buffer("psi_row_idx", row_idx, persistent=False)
-        self.register_buffer("psi_col_idx", col_idx, persistent=False)
-        self.register_buffer("psi_vals", vals, persistent=False)
+#         # save all datastructures
+#         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
+#         self.register_buffer("psi_row_idx", row_idx, persistent=False)
+#         self.register_buffer("psi_col_idx", col_idx, persistent=False)
+#         self.register_buffer("psi_vals", vals, persistent=False)
 
-        # also store psi just in case
-        if not self.optimized_kernel:
-            self.psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, semi_transposed=True)
+#         # also store psi just in case
+#         if not self.optimized_kernel:
+#             self.psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, semi_transposed=True)
 
-    def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
+#     def extra_repr(self):
+#         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
 
-    @property
-    def psi_idx(self):
-        return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
+#     @property
+#     def psi_idx(self):
+#         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
-        # extract shape
-        B, C, H, W = x.shape
-        x = x.reshape(B, self.groups, self.groupsize, H, W)
+#         # extract shape
+#         B, C, H, W = x.shape
+#         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
-        # do weight multiplication
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
-        x = x.reshape(B, -1, x.shape[-3], H, W)
+#         # do weight multiplication
+#         x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
+#         x = x.reshape(B, -1, x.shape[-3], H, W)
 
-        if self.optimized_kernel:
-            out = _disco_s2_transpose_contraction_optimized(
-                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
-            )
-        else:
-            out = _disco_s2_transpose_contraction_torch(x, self.psi_st.to(x.device), self.nlon_out)
+#         if self.optimized_kernel:
+#             out = _disco_s2_transpose_contraction_optimized(
+#                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
+#             )
+#         else:
+#             out = _disco_s2_transpose_contraction_torch(x, self.psi_st.to(x.device), self.nlon_out)
 
-        if self.bias is not None:
-            out = out + self.bias.reshape(1, -1, 1, 1)
+#         if self.bias is not None:
+#             out = out + self.bias.reshape(1, -1, 1, 1)
 
-        return out
+#         return out

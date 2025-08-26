@@ -122,7 +122,7 @@ def get_ext_modules():
         # Create a single extension that includes both CPU and CUDA code
         disco_sources = [
             "torch_harmonics/disco/csrc/disco_interface.cpp",
-            "torch_harmonics/disco/csrc/disco_cpu.cpp"
+            #"torch_harmonics/disco/csrc/disco_cpu.cpp"
         ]
         
         if BUILD_CUDA:
@@ -157,7 +157,7 @@ def get_ext_modules():
             "torch_harmonics/attention/csrc/attention_cpu_bwd.cpp",
         ]
 
-        if BUILD_CUDA:
+        if False: #BUILD_CUDA:
             print(f"Compiling attention CUDA kernels for torch-harmonics.")
             attention_sources.extend([
                 "torch_harmonics/attention/csrc/attention_cuda_utils.cu",
