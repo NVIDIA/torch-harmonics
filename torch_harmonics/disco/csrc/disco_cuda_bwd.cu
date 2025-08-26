@@ -198,12 +198,14 @@ static void launch_kernel(int BC, int Hi, int Wi, int K, int Ho, int Wo, int64_t
     return;
 }
 
-    torch::Tensor disco_cuda_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-                                 torch::Tensor col_idx, torch::Tensor val, torch::Tensor weights, int64_t K, int64_t Ho, int64_t Wo)
+    std::tuple<torch::Tensor, torch::Tensor> disco_cuda_bwd(torch::Tensor inp, torch::Tensor dinp, torch::Tensor weights, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
+                                 torch::Tensor col_idx, torch::Tensor val, int64_t Ho, int64_t Wo)
     {
 
         // some sanity checks
         CHECK_CUDA_INPUT_TENSOR(inp);
+        CHECK_CUDA_INPUT_TENSOR(dinp);
+        CHECK_CUDA_INPUT_TENSOR(weights);
         CHECK_CUDA_INPUT_TENSOR(roff_idx);
         CHECK_CUDA_INPUT_TENSOR(ker_idx);
         CHECK_CUDA_INPUT_TENSOR(row_idx);
@@ -212,69 +214,97 @@ static void launch_kernel(int BC, int Hi, int Wi, int K, int Ho, int Wo, int64_t
 
         // extract some shapes
         int64_t B = inp.size(0);
-        int64_t C = inp.size(1);
-        int64_t BC = B * C;
-        int64_t Hi = inp.size(3);
-        int64_t Wi = inp.size(4);
+        int64_t Cin = inp.size(1);
+        int64_t Cout = weights.size(0) * weights.size(2);
+        int64_t K = weights.size(3);
+        int64_t BC = B * Cout;
+        int64_t Hi = inp.size(2);
+        int64_t Wi = inp.size(3);
         int64_t nrows = roff_idx.size(0) - 1;
 
         // allocate output
-        int64_t out_dims[] = {B, C, Ho, Wo};
-        auto options = torch::TensorOptions().device(inp.device()).dtype(inp.dtype());
-        torch::Tensor out = torch::zeros(out_dims, options);
+        int64_t out_dims[] = {B, Cout, Ho, Wo};
 
         // get stream
         auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+        // print shapes
+        std::cout << "dinp.dim(): " << dinp.dim() << std::endl;
+        for (int i=0; i<dinp.dim(); i++) {
+            std::cout << "dinp.size(" << i << "): " << dinp.size(i) << std::endl;
+        }
+        std::cout << "inp.dim(): " << inp.dim() << std::endl;
+        for (int i=0; i<inp.dim(); i++) {
+            std::cout << "inp.size(" << i << "): " << inp.size(i) << std::endl;
+        }
+
+        // reshape inputs to match einsum
+        auto inp_resh = inp.reshape({B, weights.size(0), -1, Hi, Wi});
+        auto dinp_resh = dinp.reshape({B, weights.size(0), -1, K, Hi, Wi});
+
+        // compute einsums
+        auto x = torch::einsum("bgoxy,goik->bgikxy", {inp_resh, weights}).reshape({B, Cout, K, Hi, Wi}).contiguous();
+        auto wgrad = torch::einsum("bgixy,bgokxy->giok", {inp_resh, dinp_resh}).to(torch::kFloat32).contiguous();
+
+        // extract dtype
+        auto x_type = x.dtype();
+        torch::Tensor xP = x.to(torch::kFloat32);
+
+        torch::Tensor out = torch::zeros(out_dims, xP.options());
 
         // assert
         static_assert(0 == (ELXTH_MAX % 2));
 
         if (Wo <= 64 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_cuda", ([&] {
+            AT_DISPATCH_FLOATING_TYPES(xP.scalar_type(), "disco_backward_cuda", ([&] {
                                            launch_kernel<64, 1, scalar_t>(
                                                BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
                                                ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
                                                col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
+                                               xP.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
                                        }));
         } else if (Wo <= 128 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_cuda", ([&] {
+            AT_DISPATCH_FLOATING_TYPES(xP.scalar_type(), "disco_backward_cuda", ([&] {
                                            launch_kernel<128, (ELXTH_MAX / 2) + 1, scalar_t>(
                                                BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
                                                ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
                                                col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
+                                               xP.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
                                         }));
         } else if (Wo <= 256 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_cuda", ([&] {
+            AT_DISPATCH_FLOATING_TYPES(xP.scalar_type(), "disco_backward_cuda", ([&] {
                                            launch_kernel<256, (ELXTH_MAX / 2) + 1, scalar_t>(
                                                BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
                                                ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
                                                col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
+                                               xP.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
                                        }));
         } else if (Wo <= 512 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_cuda", ([&] {
+            AT_DISPATCH_FLOATING_TYPES(xP.scalar_type(), "disco_backward_cuda", ([&] {
                                            launch_kernel<512, (ELXTH_MAX / 2) + 1, scalar_t>(
                                                BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
                                                ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
                                                col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
+                                               xP.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
                                        }));
         } else if (Wo <= 1024 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_cuda", ([&] {
+            AT_DISPATCH_FLOATING_TYPES(xP.scalar_type(), "disco_backward_cuda", ([&] {
                                          launch_kernel<1024, (ELXTH_MAX / 2) + 1, scalar_t>(
                                                BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
                                                ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
                                                col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
+                                               xP.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
                                        }));
         } else {
             fprintf(stderr, "%s:%d: error, unsupported Wo value (%ld), max supported is %d\n", __FILE__, __LINE__, Wo,
                     1024 * ELXTH_MAX);
             exit(EXIT_FAILURE);
         }
-        return out;
+
+        // convert back to original dtype
+        out = out.to(x_type);
+
+        return std::make_tuple(out, wgrad);
     }
 
     TORCH_LIBRARY_IMPL(disco_kernels, CUDA, m)
