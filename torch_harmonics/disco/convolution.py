@@ -374,9 +374,10 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
             raise ValueError("Error, the number of input channels has to be an integer multiple of the group size")
         if out_channels % self.groups != 0:
             raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
-        self.groupsize = in_channels // self.groups
-        scale = math.sqrt(1.0 / self.groupsize / self.kernel_size)
-        self.weight = nn.Parameter(scale * torch.randn(out_channels, self.groupsize, self.kernel_size))
+        self.groupsize_in = in_channels // self.groups
+        self.groupsize_out = out_channels // self.groups
+        scale = math.sqrt(1.0 / self.groupsize_in / self.kernel_size)
+        self.weight = nn.Parameter(scale * torch.randn(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
 
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_channels))
@@ -515,11 +516,9 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         if self.optimized_kernel:
             with nvtx.annotate("_disco_s2_contraction_optimized", color="red"):
-                out = _disco_s2_contraction_optimized(
-                #x = _disco_s2_contraction_optimized(
-                    x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, 
-                    self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2]),
-                    self.kernel_size, self.nlat_out, self.nlon_out
+                out, _ = _disco_s2_contraction_optimized(
+                    x, self.weight, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, 
+                    self.nlat_out, self.nlon_out
                 )
         else:
             x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
@@ -532,15 +531,15 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             #print("after reshape, weight.shape:", pippo.shape)
 
             # extract shape
-            B, C, K, H, W = x.shape
+            B, _, K, H, W = x.shape
             with nvtx.annotate("reshape", color="blue"):
-                x = x.reshape(B, self.groups, self.groupsize, K, H, W)
+                x = x.reshape(B, self.groups, self.groupsize_in, K, H, W)
 
             #print("after reshape, x.shape:", x.shape)
 
             # do weight multiplication
             with nvtx.annotate("einsum", color="blue"):
-                out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
+                out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight).contiguous()
             #print("out.shape:", out.shape)
             out = out.reshape(B, -1, H, W)
 
@@ -627,7 +626,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # bandlimit
         if theta_cutoff is None:
-            self.theta_cutoff = torch.pi / float(self.nlat_in - 1)
+            self.theta_cutoff = torch.pi / float(self.nlat_out - 1)
         else:
             self.theta_cutoff = theta_cutoff
 
