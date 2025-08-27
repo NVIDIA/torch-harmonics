@@ -30,7 +30,7 @@
 #
 
 import math
-from typing import Union
+from typing import Union, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -61,7 +61,7 @@ if optimized_kernels_is_available():
     @torch.library.register_fake("attention_kernels::backward")
     def _(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor, grad_output: torch.Tensor,
           quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-          nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+          nlon_in: int, nlat_out: int, nlon_out: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         dk = torch.empty_like(kw)
         dv = torch.empty_like(vw)
         dq = torch.empty_like(qw)

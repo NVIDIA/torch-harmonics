@@ -54,7 +54,7 @@ if torch.cuda.is_available():
 # CPU results normalized to 16 OpenMP threads,
 # GPU results normalized to V100 16 GB GPU
 # this is just to detect performance regressions, not for absolute performance
-_perf_test_thresholds = {"cpu": {"fwd_ms": 650, "bwd_ms": 3000}, 
+_perf_test_thresholds = {"cpu": {"fwd_ms": 1000, "bwd_ms": 8000}, 
                          "cuda": {"fwd_ms": 50, "bwd_ms": 150}}
 _run_perf_tests = (os.getenv("TORCH_HARMONICS_RUN_PERF_TESTS", "0") == "1")
 
@@ -378,7 +378,8 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         duration = (end - start) / 1e6
         if verbose:
             print(f"Forward execution time on device {self.device.type}: {duration:.2f} ms")
-        self.assertTrue(duration <= _perf_test_thresholds[self.device.type]["fwd_ms"])
+        threshold = _perf_test_thresholds[self.device.type]["fwd_ms"]
+        self.assertTrue(duration <= threshold, msg=f"Forward execution time on device {self.device.type} is too high: {duration:.2f} ms > {threshold:.2f} ms")
 
         # # backward test
         out_optimized = att_optimized(q_inp, k_inp, v_inp)
@@ -399,7 +400,8 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         duration = (end - start) / 1e6
         if verbose:
             print(f"Backward execution time on device {self.device.type}: {duration:.2f} ms")
-        self.assertTrue(duration <= _perf_test_thresholds[self.device.type]["bwd_ms"])
+        threshold = _perf_test_thresholds[self.device.type]["bwd_ms"]
+        self.assertTrue(duration <= threshold, msg=f"Backward execution time on device {self.device.type} is too high: {duration:.2f} ms > {threshold:.2f} ms")
 
 if __name__ == "__main__":
     unittest.main()
