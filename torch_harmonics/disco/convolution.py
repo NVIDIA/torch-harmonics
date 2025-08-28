@@ -34,18 +34,18 @@ from typing import List, Tuple, Union, Optional
 from warnings import warn
 
 import math
+import xmlrpc
 
 import torch
 import torch.nn as nn
 
 import nvtx
 
-import numpy as np
-
 from functools import partial
 
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
+from utils import permute_to_0231, permute_to_0312
 from ._disco_utils import _get_psi, _disco_s2_contraction_torch #, _disco_s2_transpose_contraction_torch
 from ._disco_utils import _disco_s2_contraction_optimized #, _disco_s2_transpose_contraction_optimized
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
@@ -514,10 +514,14 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         if self.optimized_kernel:
             with nvtx.annotate("_disco_s2_contraction_optimized", color="red"):
-                out, _ = _disco_s2_contraction_optimized(
-                    x, self.weight, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, 
+                xp = permute_to_0231(x)
+                xpc = _disco_s2_contraction_optimized(
+                    xp, self.weight, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, 
                     self.nlat_out, self.nlon_out
                 )
+                xpc = xpc.reshape(xpc.shape[0], self.nlat_out, self.nlon_out, self.groups, self.groupsize_in, self.kernel_size)
+                yp = torch.einsum("bxygck,gock->bxygo", xpc, self.weight).reshape(xpc.shape[0], self.nlat_out, self.nlon_out, -1).contiguous()
+                out = permute_to_0312(yp)
         else:
             x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
  
