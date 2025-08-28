@@ -181,7 +181,7 @@ unsigned int next_pow2(unsigned int x) {
 }
 // END - general host-side functions
 
-TORCH_LIBRARY_IMPL(utils_kernels, CUDA, m)
+TORCH_LIBRARY_IMPL(utility_kernels, CUDA, m)
     {
         m.impl("permute_0231",  &permute_4D_to0231);
         m.impl("permute_0312",  &permute_4D_to0312);
