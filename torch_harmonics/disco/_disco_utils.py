@@ -40,13 +40,11 @@ from . import disco_kernels
 if optimized_kernels_is_available():
     # raw forward fake
     @torch.library.register_fake("disco_kernels::forward")
-    def _(inp: torch.Tensor, weights: torch.Tensor, 
-           roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
+    def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
            row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
-           nlat_out: int, nlon_out: int) -> Tuple[torch.Tensor, torch.Tensor]:
-         out_shape = (inp.shape[0], weights.shape[0] * weights.shape[1], nlat_out, nlon_out)
-         dout_shape = (inp.shape[0], weights.shape[0] * weights.shape[2], nlat_out, nlon_out)
-         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device), torch.empty(dout_shape, dtype=inp.dtype, device=inp.device)
+           kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+         out_shape = (inp.shape[0], nlat_out, nlon_out, kernel_size*inp.shape[3])
+         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
     # raw backward fake
     @torch.library.register_fake("disco_kernels::backward")
@@ -60,12 +58,11 @@ if optimized_kernels_is_available():
     # forward
     @torch.library.custom_op("disco_kernels::_disco_s2_contraction_optimized", mutates_args=())
     def _disco_s2_contraction_optimized(
-        inp: torch.Tensor, weights: torch.Tensor,
-        roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
+        inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
         row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
-        nlat_out: int, nlon_out: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        out, dout = disco_kernels.forward.default(inp, weights, roff_idx, ker_idx, row_idx, col_idx, vals, nlat_out, nlon_out)
-        return out, dout
+        kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        out = disco_kernels.forward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+        return out
 
     # transpose
     @torch.library.custom_op("disco_kernels::_disco_s2_transpose_contraction_optimized", mutates_args=())
@@ -81,13 +78,11 @@ if optimized_kernels_is_available():
     
     # forward fake
     @torch.library.register_fake("disco_kernels::_disco_s2_contraction_optimized")
-    def _(inp: torch.Tensor, weights: torch.Tensor, 
-          roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
+    def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
           row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
-          nlat_out: int, nlon_out: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        out_shape = (inp.shape[0], weights.shape[0] * weights.shape[1], nlat_out, nlon_out)
-        dout_shape = (inp.shape[0], weights.shape[0] * weights.shape[2], nlat_out, nlon_out)
-        return torch.empty(out_shape, dtype=inp.dtype, device=inp.device), torch.empty(dout_shape, dtype=inp.dtype, device=inp.device)
+          kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        out_shape = (inp.shape[0], nlat_out, nlon_out, kernel_size*inp.shape[3])
+        return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
     # transpose fake
     @torch.library.register_fake("disco_kernels::_disco_s2_transpose_contraction_optimized")
@@ -99,28 +94,22 @@ if optimized_kernels_is_available():
 
 #general routines: this is the same for forward and transpose
 def _setup_context_conv_backward(ctx, inputs, output):
-    inp, weights, roff_idx, ker_idx, row_idx, col_idx, vals, _, _ = inputs
-    _, dinp = output
-    ctx.save_for_backward(dinp, weights, roff_idx, ker_idx, row_idx, col_idx, vals)
+    inp, roff_idx, ker_idx, row_idx, col_idx, vals, _, _, _ = inputs
+    ctx.save_for_backward(roff_idx, ker_idx, row_idx, col_idx, vals)
     ctx.nlat_in = inp.shape[-2]
     ctx.nlon_in = inp.shape[-1]
 
 # convolution related
 def _disco_s2_contraction_bwd_optimized(ctx, grad_output):
-    dinp, weights, roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
-
-    print("grad_output", grad_output)
-    
-    print("SHAPE CHECK", grad_output.shape, dinp.shape, weights.shape)
+    roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
     
     if ctx.needs_input_grad[0]:
-        grad_input, wgrad = disco_kernels.backward.default(grad_output, dinp, weights, roff_idx, ker_idx, row_idx, col_idx, vals,
+        grad_input = disco_kernels.backward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
                                                            ctx.nlat_in, ctx.nlon_in)  # Mauro
     else:
         grad_input = None
-        wgrad = None
 
-    return grad_input, wgrad, None, None, None, None, None, None, None       # Mauro: added a None for weights 
+    return grad_input, None, None, None, None, None, None, None, None       # Mauro: added a None for weights 
 
 if optimized_kernels_is_available():
     torch.library.register_autograd(

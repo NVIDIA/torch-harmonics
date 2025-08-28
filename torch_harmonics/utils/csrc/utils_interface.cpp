@@ -29,7 +29,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <Python.h>
-#include "disco.h"
+#include <torch/library.h>
 
 extern "C" {
     /* Creates a dummy empty _C module that can be imported from Python.
@@ -50,12 +50,12 @@ extern "C" {
     }
 }
 
-namespace disco_kernels {
+namespace utility_kernels {
 
     // Declare the operators
-    TORCH_LIBRARY(disco_kernels, m) {
-        m.def("forward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor"); //, {at::Tag::pt2_compliant_tag});
-        m.def("backward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor"); //, {at::Tag::pt2_compliant_tag});
+    TORCH_LIBRARY(utility_kernels, m) {
+        m.def("permute_0231(Tensor inp) -> Tensor"); //, {at::Tag::pt2_compliant_tag});
+        m.def("permute_0312(Tensor inp) -> Tensor");
     }
 
 }
