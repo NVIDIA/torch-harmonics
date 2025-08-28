@@ -93,6 +93,9 @@ def get_helpers_compile_args():
 def get_ext_modules():
     """Get list of extension modules to compile."""
     
+    # define setup dir
+    setup_dir = os.path.abspath(os.path.dirname(__file__))
+
     ext_modules = []
     cmdclass = {}
 
@@ -128,7 +131,7 @@ def get_ext_modules():
         if BUILD_CUDA:
             print(f"Compiling custom CUDA kernels for torch-harmonics.")
             disco_sources.extend([
-                "torch_harmonics/disco/csrc/disco_cuda_utils.cu",
+                "torch_harmonics/utils/csrc/cuda_utils.cu",
                 "torch_harmonics/disco/csrc/disco_cuda_fwd.cu",
                 "torch_harmonics/disco/csrc/disco_cuda_bwd.cu",
             ])
@@ -136,6 +139,7 @@ def get_ext_modules():
                 CUDAExtension(
                     "torch_harmonics.disco._C",
                     disco_sources,
+                    include_dirs=[os.path.join(setup_dir, "torch_harmonics/utils/csrc")],
                     extra_compile_args=get_compile_args("disco")
                 )
             )

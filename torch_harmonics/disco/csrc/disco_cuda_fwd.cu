@@ -28,25 +28,10 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#include "cudamacro.h"
 #include "disco.h"
 #include "disco_cuda.cuh"
-#include "disco_cuda_utils.cuh"
-
-#define CHECK_CUDA(call) {                                          \
-    cudaError_t err = call;                                         \
-    if( cudaSuccess != err) {                                       \
-      fprintf(stderr, "Cuda error in file '%s' in line %i : %s.\n", \
-              __FILE__, __LINE__, cudaGetErrorString( err) );       \
-      exit(EXIT_FAILURE);                                           \
-    }}
-
-#define CHECK_ERROR(errorMessage) {                                     \
-    cudaError_t err = cudaGetLastError();                               \
-    if( cudaSuccess != err) {                                           \
-      fprintf(stderr, "Cuda error: %s in file '%s' in line %i : %s.\n", \
-              errorMessage, __FILE__, __LINE__, cudaGetErrorString( err) ); \
-      exit(EXIT_FAILURE);                                               \
-    }}
+#include "cuda_utils.cuh"
 
 #define THREADS (64)
 
