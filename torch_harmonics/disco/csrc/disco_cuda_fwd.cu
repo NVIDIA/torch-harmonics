@@ -39,6 +39,8 @@
 
 namespace disco_kernels {
 
+using namespace utility_kernels;
+
 void dump_tensor(const char *fname, at::Tensor t);
 void dump_csr(const char *fname, at::Tensor roff, at::Tensor cols);
 void dump_csr_linear(const char *fname, at::Tensor roff, at::Tensor kers, at::Tensor rows, at::Tensor cols, at::Tensor vals);
@@ -955,33 +957,31 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         return;
     }
 
-    std::tuple<torch::Tensor, torch::Tensor> disco_cuda_fwd(torch::Tensor inp, torch::Tensor weights, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-                                 torch::Tensor col_idx, torch::Tensor val, int64_t Ho, int64_t Wo)
+    torch::Tensor disco_cuda_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
+                                 torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo)
     {
 
         // some sanity checks
         CHECK_CUDA_INPUT_TENSOR(inp);
-        CHECK_CUDA_INPUT_TENSOR(weights);
         CHECK_CUDA_INPUT_TENSOR(roff_idx);
         CHECK_CUDA_INPUT_TENSOR(ker_idx);
         CHECK_CUDA_INPUT_TENSOR(row_idx);
         CHECK_CUDA_INPUT_TENSOR(col_idx);
         CHECK_CUDA_INPUT_TENSOR(val);
 
-        // extract some shapes
+        // assume input is B, H, W, C
         int64_t B = inp.size(0);
-        int64_t C = inp.size(1);
-        int64_t BC = B * C;
-        int64_t Hi = inp.size(2);
-        int64_t Wi = inp.size(3);
+        int64_t Hi = inp.size(1);
+        int64_t Wi = inp.size(2);
+        int64_t C = inp.size(3);
+        //int64_t BC = B * C;
         int64_t nrows = roff_idx.size(0) - 1;
-        int64_t K = weights.size(3);
 
         // rename dimensions consistent with attention
-        int64_t batch_size = inp.size(0);
-        int64_t nchan = inp.size(1);
-        int64_t nlat_in = inp.size(2);
-        int64_t nlon_in = inp.size(3);
+        int64_t batch_size = B;
+        int64_t nchan = C;
+        int64_t nlat_in = Hi;
+        int64_t nlon_in = Wi;
         int64_t nlat_out = Ho;
         int64_t nlon_out = Wo;
 /*
@@ -1126,11 +1126,11 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         // switch back to original layout;
         // I'm assuming that if x was passed as channel last, then
         // the output tensor should be K last
-        torch::Tensor y = yP;
-        if (!x_is_channels_last) { 
-            y = permute_4D_to0312(y);
-            // make y {batch_size, nchan_out, nlat_out, nlon_out}
-        }
+        //torch::Tensor y = yP;
+        //if (!x_is_channels_last) { 
+        //    y = permute_4D_to0312(y);
+        //    // make y {batch_size, nchan_out, nlat_out, nlon_out}
+        //}
 #else
         // to test before fusion
         torch::Tensor y = yP;
@@ -1148,41 +1148,8 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         // switch to channel-last
         // version with fused enisum 
 
-        int64_t ngroup = weights.size(0);
-        int64_t chan_x_grp_out = weights.size(1);
-        int64_t chan_x_grp_in  = weights.size(2);
-        int64_t weight_k = weights.size(3);
-
-        int64_t nchan_out = ngroup*chan_x_grp_out;
-        
-        printf("weight tensor shape: %ld, %ld, %ld, %ld\n", ngroup, chan_x_grp_out, chan_x_grp_in, weight_k); fflush(stdout);
-
-        if (nchan != chan_x_grp_in*ngroup || K != weight_k) {
-            fprintf(stderr,
-                    "%s:%d: error, dimension mismatch for weight tensor!\n",
-                    __func__, __LINE__);
-            exit(EXIT_FAILURE);
-        }
-
-
-        // input:  inp[B][Ci][Hi][Wi] -> inp[B][Hi][Wi][Ci]
-        //
-        // output: out[[B][Ho][Wo][Co] -> out[B][Co][Ho][Wo]
-        //         with Co = ngroup*chan_x_grp_out
-
-
-        // switch to channel-last
-
-        // extract dtype and memory format
-        bool x_is_channels_last = inp.strides()[1] == 1;
         auto x_type = inp.dtype();
-
-        // transpose if required
-        torch::Tensor xP = inp;
-        if (!x_is_channels_last) { xP = permute_4D_to0231(xP); }
-
-        // convert datatype
-        xP = xP.to(torch::kFloat32);
+        auto xP = inp.to(torch::kFloat32);
 
         // to test before fusion
         int64_t out_dims[] = {batch_size, nlat_out, nlon_out, nchan*K};
@@ -1203,45 +1170,9 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
                               val,
                               yP);
 
-        // store output of convolution
-        auto disco_y = yP;
-
-        // call einsum
-        // yP is         {batch_size, nlat_out, nlon_out,              nchan_in*K},
-        // reshape it to {batch_size, nlat_out, nlon_out, ngroup, chan_x_grp_in*K}
-        auto yP_resh = yP.reshape({batch_size, nlat_out, nlon_out, ngroup, -1});
-
-        // weight is         {ngroup, chan_x_grp_out, chan_x_grp_in, K}
-        // reshape weight to {ngroup, chan_x_grp_out,  chan_x_grp_in*K}
-        auto weights_resh = weights.reshape({ngroup, chan_x_grp_out, -1});
-
-        auto out_sum = torch::einsum("bxygc,goc->bxygo", {yP_resh, weights_resh}).contiguous();
-
-        // out is        {batch_size, nlat_out, nlon_out, ngroup, chan_x_grp_out},
-        // reshape it ot {batch_size, nlat_out, nlon_out,              nchan_out},
-        auto out_resh = out_sum.reshape({batch_size, nlat_out, nlon_out, -1});
-
-        // switch back to original layout;
-        // I'm assuming that if x was passed as channel last, then
-        // the output tensor should be K last
-        torch::Tensor y = out_resh;
-        if (!x_is_channels_last) { 
-            y = permute_4D_to0312(y);
-            // make y {batch_size, nchan_out, nlat_out, nlon_out}
-        }
-
-        // some hacky reshuffling now:
-        if (!x_is_channels_last) { 
-            disco_y = permute_4D_to0312(yP).reshape({batch_size, ngroup*chan_x_grp_in, K, nlat_out, nlon_out});
-        } else {
-            disco_y = yP.reshape({batch_size, ngroup*chan_x_grp_in, K, nlat_out, nlon_out}); 
-        }
-
-        // convert precision back to starting
-        y = y.to(x_type);
-        disco_y = disco_y.to(x_type);
+        auto y = yP.to(x_type);
         
-        std::tuple<torch::Tensor, torch::Tensor> out = std::make_tuple(y, disco_y);
+        torch::Tensor out = y;
 #endif
 
 #endif // closes ORIGINAL if
