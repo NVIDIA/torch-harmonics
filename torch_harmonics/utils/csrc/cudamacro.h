@@ -1,6 +1,6 @@
 // coding=utf-8
 //
-// SPDX-FileCopyrightText: Copyright (c) 2024 The torch-harmonics Authors. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
 //
 // Redistribution and use in source and binary forms, with or without
@@ -28,35 +28,20 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include <Python.h>
-#include "disco.h"
+#pragma once
 
-extern "C" {
-    /* Creates a dummy empty _C module that can be imported from Python.
-       The import from Python will load the .so consisting of this file
-       in this extension, so that the TORCH_LIBRARY static initializers
-       below are run. */
-    PyMODINIT_FUNC PyInit__C(void)
-    {
-        static struct PyModuleDef module_def = {
-            PyModuleDef_HEAD_INIT,
-            "_C",   /* name of module */
-            NULL,   /* module documentation, may be NULL */
-            -1,     /* size of per-interpreter state of the module,
-                       or -1 if the module keeps state in global variables. */
-            NULL,   /* methods */
-        };
-        return PyModule_Create(&module_def);
-    }
-}
+#define CHECK_CUDA(call) {                                                   \
+    cudaError_t err = call;                                                  \
+    if( cudaSuccess != err) {                                                \
+        fprintf(stderr, "Cuda error in file '%s' in line %i : %s.\n",        \
+                __FILE__, __LINE__, cudaGetErrorString( err) );              \
+        exit(EXIT_FAILURE);                                                  \
+    }}
 
-namespace disco_kernels {
-
-    // Declare the operators
-    TORCH_LIBRARY(disco_kernels, m) {
-        m.def("forward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor"); //, {at::Tag::pt2_compliant_tag});
-        m.def("backward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor"); //, {at::Tag::pt2_compliant_tag});
-    }
-
-}
-
+#define CHECK_ERROR(errorMessage) {                                          \
+    cudaError_t err = cudaGetLastError();                                    \
+    if( cudaSuccess != err) {                                                \
+        fprintf(stderr, "Cuda error: %s in file '%s' in line %i : %s.\n",    \
+                errorMessage, __FILE__, __LINE__, cudaGetErrorString( err) );\
+        exit(EXIT_FAILURE);                                                  \
+    }}

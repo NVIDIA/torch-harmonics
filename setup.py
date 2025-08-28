@@ -100,6 +100,19 @@ def get_ext_modules():
     cmdclass = {}
 
     print(f"Compiling helper routines for torch-harmonics.")
+
+    # UTILITIES
+    ext_modules.append(
+        CppExtension(
+            "utility_helpers", 
+            [
+                "torch_harmonics/utils/csrc/utils_helpers.cpp",
+            ],
+            extra_compile_args=get_helpers_compile_args(),
+        )
+    )
+
+    # DISCO
     ext_modules.append(
         CppExtension(
             "disco_helpers", 
@@ -121,6 +134,32 @@ def get_ext_modules():
     )
 
     if BUILD_CPP:
+        # HELPERS
+        utility_sources = [
+            "torch_harmonics/utils/csrc/utils_interface.cpp",
+        ]
+
+        if BUILD_CUDA:
+            print(f"Compiling custom CUDA kernels for torch-harmonics.")
+            utility_sources.extend([
+                "torch_harmonics/utils/csrc/cuda_utils.cu",
+            ])
+            ext_modules.append(
+                CUDAExtension(
+                    "torch_harmonics.utils._C",
+                    utility_sources,
+                    extra_compile_args=get_compile_args("utils")
+                )
+            )
+        else:
+            ext_modules.append(
+                CppExtension(
+                    "torch_harmonics.utils._C", 
+                    utility_sources,
+                    extra_compile_args=get_compile_args("utils")
+                )
+            )
+
         # DISCO
         # Create a single extension that includes both CPU and CUDA code
         disco_sources = [
@@ -151,7 +190,6 @@ def get_ext_modules():
                     extra_compile_args=get_compile_args("disco")
                 )
             )
-        cmdclass["build_ext"] = BuildExtension
 
         # ATTENTION
         # Create a single extension that includes both CPU and CUDA code
@@ -183,6 +221,8 @@ def get_ext_modules():
                     extra_compile_args=get_compile_args("attention")
                 )
             )
+        
+        # set cmdclass
         cmdclass["build_ext"] = BuildExtension
 
     return ext_modules, cmdclass
