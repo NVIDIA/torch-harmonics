@@ -28,35 +28,31 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include <Python.h>
-#include "disco.h"
+#include <torch/extension.h>
 
-extern "C" {
-    /* Creates a dummy empty _C module that can be imported from Python.
-       The import from Python will load the .so consisting of this file
-       in this extension, so that the TORCH_LIBRARY static initializers
-       below are run. */
-    PyMODINIT_FUNC PyInit__C(void)
-    {
-        static struct PyModuleDef module_def = {
-            PyModuleDef_HEAD_INIT,
-            "_C",   /* name of module */
-            NULL,   /* module documentation, may be NULL */
-            -1,     /* size of per-interpreter state of the module,
-                       or -1 if the module keeps state in global variables. */
-            NULL,   /* methods */
-        };
-        return PyModule_Create(&module_def);
-    }
+// set default values for BUILD_CPP and BUILD_CUDA
+#ifndef BUILD_CPP
+#define BUILD_CPP 0
+#endif
+
+#ifndef BUILD_CUDA
+#define BUILD_CUDA 0
+#endif
+
+bool cpp_kernels_is_available() {
+    return static_cast<bool>(BUILD_CPP);
 }
 
-namespace disco_kernels {
+bool cuda_kernels_is_available() {
+    return static_cast<bool>(BUILD_CUDA);
+}
 
-    // Declare the operators
-    TORCH_LIBRARY(disco_kernels, m) {
-        m.def("forward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor"); //, {at::Tag::pt2_compliant_tag});
-        m.def("backward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor"); //, {at::Tag::pt2_compliant_tag});
-    }
+bool optimized_kernels_is_available() {
+    return cuda_kernels_is_available() || cpp_kernels_is_available();
+}
 
+PYBIND11_MODULE(utility_helpers, m)
+{
+    m.def("optimized_kernels_is_available", &optimized_kernels_is_available, "Check if optimized kernels (CUDA or C++) are available.");
 }
 
