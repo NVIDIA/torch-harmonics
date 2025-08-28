@@ -45,7 +45,7 @@ from functools import partial
 
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
-from utils import permute_to_0231, permute_to_0312
+from torch_harmonics.utils import permute_to_0231, permute_to_0312
 from ._disco_utils import _get_psi, _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from ._disco_utils import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
