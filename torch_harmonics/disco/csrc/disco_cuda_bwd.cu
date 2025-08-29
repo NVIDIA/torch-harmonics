@@ -30,7 +30,7 @@
 
 #include "disco.h"
 #include "disco_cuda.cuh"
-#include "cuda_utils.cuh"
+#include "csr_cuda.cuh"
 
 namespace disco_kernels {
 

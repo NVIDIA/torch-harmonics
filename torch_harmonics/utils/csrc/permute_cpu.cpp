@@ -1,6 +1,6 @@
 // coding=utf-8
 //
-// SPDX-FileCopyrightText: Copyright (c) 2024 The torch-harmonics Authors. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
 //
 // Redistribution and use in source and binary forms, with or without
@@ -28,35 +28,25 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include <Python.h>
 #include <torch/library.h>
-
-extern "C" {
-    /* Creates a dummy empty _C module that can be imported from Python.
-       The import from Python will load the .so consisting of this file
-       in this extension, so that the TORCH_LIBRARY static initializers
-       below are run. */
-    PyMODINIT_FUNC PyInit__C(void)
-    {
-        static struct PyModuleDef module_def = {
-            PyModuleDef_HEAD_INIT,
-            "_C",   /* name of module */
-            NULL,   /* module documentation, may be NULL */
-            -1,     /* size of per-interpreter state of the module,
-                       or -1 if the module keeps state in global variables. */
-            NULL,   /* methods */
-        };
-        return PyModule_Create(&module_def);
-    }
-}
+#include <torch/torch.h>
 
 namespace utility_kernels {
 
-    // Declare the operators
-    TORCH_LIBRARY(utility_kernels, m) {
-        m.def("permute_to_0231(Tensor inp) -> Tensor", {at::Tag::pt2_compliant_tag});
-        m.def("permute_to_0312(Tensor inp) -> Tensor", {at::Tag::pt2_compliant_tag});
-    }
-
+torch::Tensor permute_4D_to0231_cpu(torch::Tensor src) {
+    // CPU implementation using standard permute
+    return src.permute({0, 2, 3, 1}).contiguous();
 }
 
+torch::Tensor permute_4D_to0312_cpu(torch::Tensor src) {
+    // CPU implementation using standard permute
+    return src.permute({0, 3, 1, 2}).contiguous();
+}
+
+TORCH_LIBRARY_IMPL(utility_kernels, CPU, m)
+{
+    m.impl("permute_to_0231", &permute_4D_to0231_cpu);
+    m.impl("permute_to_0312", &permute_4D_to0312_cpu);
+}
+
+}
