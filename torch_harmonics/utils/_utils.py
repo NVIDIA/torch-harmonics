@@ -39,38 +39,42 @@ from . import utility_kernels
 if optimized_kernels_is_available():
 
     # fake permutations
-    @torch.library.register_fake("utility_kernels::permute_0231")
+    @torch.library.register_fake("utility_kernels::permute_to_0231")
     def _(inp: torch.Tensor) -> torch.Tensor:
         B, C, H, W = inp.shape
         out_shape = (B, H, W, C)
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
-    @torch.library.register_fake("utility_kernels::permute_0312")
+    @torch.library.register_fake("utility_kernels::permute_to_0312")
     def _(inp: torch.Tensor) -> torch.Tensor:
         B, H, W, C = inp.shape
         out_shape = (B, C, H, W)
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
-    # autograds
-    torch.library.register_autograd(
-        "utility_kernels::permute_0231", utility_kernels.permute_0312)
+    # autograds: shallow wrappers around the default kernels
+    def _permute_to_0231_bwd(ctx, grad_output):
+        return utility_kernels.permute_to_0312.default(grad_output)
+
+    def _permute_to_0312_bwd(ctx, grad_output):
+        return utility_kernels.permute_to_0231.default(grad_output)
 
     torch.library.register_autograd(
-        "utility_kernels::permute_0312", utility_kernels.permute_0231)
+        "utility_kernels::permute_to_0231", _permute_to_0231_bwd)
 
+    torch.library.register_autograd(
+        "utility_kernels::permute_to_0312", _permute_to_0312_bwd)
 
-def permute_to_0231(inp: torch.Tensor) -> torch.Tensor:
-    if optimized_kernels_is_available() and inp.is_cuda:
-        out = utility_kernels.permute_0231.default(inp)
-    else:
-        out = inp.permute(0, 2, 3, 1).contiguous()
-    return out
+if optimized_kernels_is_available():
+    def permute_to_0231(inp: torch.Tensor) -> torch.Tensor:
+        return utility_kernels.permute_to_0231.default(inp)
+    
+    def permute_to_0312(inp: torch.Tensor) -> torch.Tensor:
+        return utility_kernels.permute_to_0312.default(inp)
+else:
+    def permute_to_0231(inp: torch.Tensor) -> torch.Tensor:
+        return inp.permute(0, 2, 3, 1).contiguous()
 
-def permute_to_0312(inp: torch.Tensor) -> torch.Tensor:
-    if optimized_kernels_is_available() and inp.is_cuda:
-        out = utility_kernels.permute_0312.default(inp)
-    else:
-        out = inp.permute(0, 3, 1, 2).contiguous()
-    return out
+    def permute_to_0312(inp: torch.Tensor) -> torch.Tensor:
+        return inp.permute(0, 3, 1, 2).contiguous()
 
 
