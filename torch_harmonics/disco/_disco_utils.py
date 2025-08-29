@@ -94,10 +94,11 @@ if optimized_kernels_is_available():
 
 #general routines: this is the same for forward and transpose
 def _setup_context_conv_backward(ctx, inputs, output):
-    inp, roff_idx, ker_idx, row_idx, col_idx, vals, _, _, _ = inputs
+    inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, _, _ = inputs
     ctx.save_for_backward(roff_idx, ker_idx, row_idx, col_idx, vals)
     ctx.nlat_in = inp.shape[-2]
     ctx.nlon_in = inp.shape[-1]
+    ctx.kernel_size = kernel_size
 
 # convolution related
 def _disco_s2_contraction_bwd_optimized(ctx, grad_output):
@@ -105,7 +106,7 @@ def _disco_s2_contraction_bwd_optimized(ctx, grad_output):
     
     if ctx.needs_input_grad[0]:
         grad_input = disco_kernels.backward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
-                                                           ctx.nlat_in, ctx.nlon_in)  # Mauro
+                                                    ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)  # Mauro
     else:
         grad_input = None
 
