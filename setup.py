@@ -137,12 +137,13 @@ def get_ext_modules():
         # HELPERS
         utility_sources = [
             "torch_harmonics/utils/csrc/utils_interface.cpp",
+            "torch_harmonics/utils/csrc/permute_cpu.cpp",
         ]
 
         if BUILD_CUDA:
             print(f"Compiling custom CUDA kernels for torch-harmonics.")
             utility_sources.extend([
-                "torch_harmonics/utils/csrc/cuda_utils.cu",
+                "torch_harmonics/utils/csrc/permute_cuda.cu",
             ])
             ext_modules.append(
                 CUDAExtension(
@@ -170,7 +171,7 @@ def get_ext_modules():
         if BUILD_CUDA:
             print(f"Compiling custom CUDA kernels for torch-harmonics.")
             disco_sources.extend([
-                "torch_harmonics/utils/csrc/cuda_utils.cu",
+                "torch_harmonics/utils/csrc/csr_cuda.cu",
                 "torch_harmonics/disco/csrc/disco_cuda_fwd.cu",
                 "torch_harmonics/disco/csrc/disco_cuda_bwd.cu",
             ])

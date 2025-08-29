@@ -518,8 +518,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             with nvtx.annotate("_disco_s2_contraction_optimized", color="red"):
                 xp = permute_to_0231(x)
                 xpc = _disco_s2_contraction_optimized(
-                    xp, self.weight, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, 
-                    self.nlat_out, self.nlon_out
+                    xp, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, 
+                    self.kernel_size, self.nlat_out, self.nlon_out
                 )
                 xpc = xpc.reshape(xpc.shape[0], self.nlat_out, self.nlon_out, self.groups, self.groupsize_in, self.kernel_size)
                 yp = torch.einsum("bxygck,gock->bxygo", xpc, self.weight).reshape(xpc.shape[0], self.nlat_out, self.nlon_out, -1).contiguous()
