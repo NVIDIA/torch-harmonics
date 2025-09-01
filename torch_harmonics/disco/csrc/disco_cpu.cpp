@@ -34,7 +34,7 @@ namespace disco_kernels {
 
     // cpu ops
     torch::Tensor disco_cpu_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-        torch::Tensor col_idx, torch::Tensor vals, torch::Tensor weights, int64_t K, int64_t Ho, int64_t Wo) {
+        torch::Tensor col_idx, torch::Tensor vals, int64_t K, int64_t Ho, int64_t Wo) {
         
         // sanity checks
         CHECK_CPU_INPUT_TENSOR(inp);
@@ -44,12 +44,16 @@ namespace disco_kernels {
         CHECK_CPU_INPUT_TENSOR(col_idx);
         CHECK_CPU_INPUT_TENSOR(vals);
 
+        // convert input to fp32
+        auto inp_dtype = inp.scalar_type();
+        inp = inp.to(torch::kFloat32).contiguous();
+
         // initialize output tensor
-        auto out = torch::zeros({inp.size(0), inp.size(1), K, Ho, Wo}, inp.options());
+        auto out = torch::zeros({inp.size(0), Ho, Wo, inp.size(3), K}, inp.options());
 
         AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cpu", ([&] {
             disco_fwd_cpu<scalar_t>(
-                inp.size(0), inp.size(1), K, inp.size(2), inp.size(3), 
+                inp.size(0), inp.size(3), K, inp.size(1), inp.size(2), 
                 Ho, Wo, vals.size(0), roff_idx.size(0) - 1,
                 inp.packed_accessor64<scalar_t, 4>(), 
                 roff_idx.packed_accessor64<int64_t, 1>(), 
@@ -60,11 +64,14 @@ namespace disco_kernels {
                 out.packed_accessor64<scalar_t, 5>());
         }));
 
+        // convert to input datatype
+        out = out.to(inp_dtype);
+
         return out;
     }
 
     torch::Tensor disco_cpu_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-        torch::Tensor col_idx, torch::Tensor vals, torch::Tensor weights, int64_t K, int64_t Ho, int64_t Wo) {
+        torch::Tensor col_idx, torch::Tensor vals, int64_t K, int64_t Ho, int64_t Wo) {
         
         // sanity checks
         CHECK_CPU_INPUT_TENSOR(inp);
@@ -73,14 +80,18 @@ namespace disco_kernels {
         CHECK_CPU_INPUT_TENSOR(row_idx);
         CHECK_CPU_INPUT_TENSOR(col_idx);
         CHECK_CPU_INPUT_TENSOR(vals);
+        
+        // convert input to fp32
+        auto inp_dtype = inp.scalar_type();
+        inp = inp.to(torch::kFloat32).contiguous();
 
-        // initialize output tensor
-        auto out = torch::zeros({inp.size(0), inp.size(1), Ho, Wo}, inp.options());
+        // initialize output tensor: assume channels last format
+        auto out = torch::zeros({inp.size(0), Ho, Wo, inp.size(3)}, inp.options());
 
         AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_cpu", ([&] {
             disco_bwd_cpu<scalar_t>(
-                inp.size(0), inp.size(1), K, inp.size(3), 
-                inp.size(4), Ho, Wo, vals.size(0), roff_idx.size(0) - 1,
+                inp.size(0), inp.size(3), K, inp.size(1), inp.size(2), 
+                Ho, Wo, vals.size(0), roff_idx.size(0) - 1,
                 inp.packed_accessor64<scalar_t, 5>(), 
                 roff_idx.packed_accessor64<int64_t, 1>(), 
                 ker_idx.packed_accessor64<int64_t, 1>(), 
@@ -89,6 +100,9 @@ namespace disco_kernels {
                 vals.packed_accessor64<scalar_t, 1>(), 
                 out.packed_accessor64<scalar_t, 4>());
         }));
+
+        // convert to input datatype
+        out = out.to(inp_dtype);
 
         return out;
     }

@@ -32,7 +32,7 @@
 __version__ = "0.8.1"
 
 from .sht import RealSHT, InverseRealSHT, RealVectorSHT, InverseRealVectorSHT
-from .disco import DiscreteContinuousConvS2 #, DiscreteContinuousConvTransposeS2
+from .disco import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 from .resample import ResampleS2
 from .attention import AttentionS2, NeighborhoodAttentionS2
 from . import quadrature
