@@ -165,7 +165,7 @@ def get_ext_modules():
         # Create a single extension that includes both CPU and CUDA code
         disco_sources = [
             "torch_harmonics/disco/csrc/disco_interface.cpp",
-            #"torch_harmonics/disco/csrc/disco_cpu.cpp"
+            "torch_harmonics/disco/csrc/disco_cpu.cpp"
         ]
         
         if BUILD_CUDA:

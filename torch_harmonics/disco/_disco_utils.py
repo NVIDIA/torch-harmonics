@@ -43,7 +43,7 @@ if optimized_kernels_is_available():
     def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
            row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
            kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-         out_shape = (inp.shape[0], nlat_out, nlon_out, kernel_size*inp.shape[3])
+         out_shape = (inp.shape[0], nlat_out, nlon_out, inp.shape[3], kernel_size)
          return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
     # raw backward fake
@@ -51,7 +51,7 @@ if optimized_kernels_is_available():
     def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
           row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
           kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-        out_shape = (inp.shape[0], nlat_out, nlon_out, kernel_size*inp.shape[3])
+        out_shape = (inp.shape[0], nlat_out, nlon_out, inp.shape[3])
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
     # forward
@@ -77,7 +77,7 @@ if optimized_kernels_is_available():
     def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
           row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
           kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-        out_shape = (inp.shape[0], nlat_out, nlon_out, kernel_size*inp.shape[3])
+        out_shape = (inp.shape[0], nlat_out, nlon_out, inp.shape[3], kernel_size)
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
     # transpose fake
@@ -85,15 +85,15 @@ if optimized_kernels_is_available():
     def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
           row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
           kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-        out_shape = (inp.shape[0], nlat_out, nlon_out, kernel_size*inp.shape[3])
+        out_shape = (inp.shape[0], nlat_out, nlon_out, inp.shape[3])
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
 #general routines: this is the same for forward and transpose
 def _setup_context_conv_backward(ctx, inputs, output):
     inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, _, _ = inputs
     ctx.save_for_backward(roff_idx, ker_idx, row_idx, col_idx, vals)
-    ctx.nlat_in = inp.shape[-2]
-    ctx.nlon_in = inp.shape[-1]
+    ctx.nlat_in = inp.shape[1]
+    ctx.nlon_in = inp.shape[2]
     ctx.kernel_size = kernel_size
 
 # convolution related
