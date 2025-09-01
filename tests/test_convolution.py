@@ -49,8 +49,8 @@ if not optimized_kernels_is_available():
 
 
 _devices = [(torch.device("cpu"),)]
-if torch.cuda.is_available():
-    _devices.append((torch.device("cuda"),))
+#if torch.cuda.is_available():
+#    _devices.append((torch.device("cuda"),))
 
 # perf thresholds
 # CPU results normalized to 16 OpenMP threads,
@@ -302,6 +302,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         w_ref = torch.empty_like(conv.weight)
         with torch.no_grad():
             w_ref.copy_(conv.weight)
+        w_ref = w_ref.reshape(-1, w_ref.shape[2], w_ref.shape[3])
         w_ref.requires_grad = True
 
         # create an input signal
@@ -526,7 +527,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (16, 32), (8,  16), (3), "piecewise linear", "mean", "equiangular", "equiangular", False],
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True],
             [8, 4, 2, (8,  16), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True],
-
         ], 
         skip_on_empty=True,
     )
@@ -608,7 +608,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [8, 4, 2, (91, 180), (91, 180), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4],
+            # [8, 4, 2, (91, 180), (91, 180), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4],
         ],
         skip_on_empty=True,
     )

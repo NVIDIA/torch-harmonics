@@ -30,21 +30,15 @@
 #
 
 import abc
-from typing import List, Tuple, Union, Optional
-from warnings import warn
+from typing import Tuple, Union, Optional
 
 import math
-import xmlrpc
 
 import torch
 import torch.nn as nn
 
-import nvtx
-
-from functools import partial
-
 from torch_harmonics.cache import lru_cache
-from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
+from torch_harmonics.quadrature import _precompute_latitudes, _precompute_longitudes
 from torch_harmonics.utils import permute_to_0231, permute_to_0312
 from ._disco_utils import _get_psi, _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from ._disco_utils import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
@@ -168,8 +162,8 @@ def _normalize_convolution_tensor_s2(
 
 @lru_cache(typed=True, copy=True)
 def _precompute_convolution_tensor_s2(
-    in_shape: Tuple[int],
-    out_shape: Tuple[int],
+    in_shape: Tuple[int, int],
+    out_shape: Tuple[int, int],
     filter_basis: FilterBasis,
     grid_in: Optional[str]="equiangular",
     grid_out: Optional[str]="equiangular",
@@ -196,9 +190,9 @@ def _precompute_convolution_tensor_s2(
 
     Parameters
     -----------
-    in_shape: Tuple[int]
+    in_shape: Tuple[int, int]
         Input shape of the convolution tensor
-    out_shape: Tuple[int]
+    out_shape: Tuple[int, int]
         Output shape of the convolution tensor
     filter_basis: FilterBasis
         Filter basis functions
@@ -376,8 +370,10 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
             raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
         self.groupsize_in = in_channels // self.groups
         self.groupsize_out = out_channels // self.groups
+        # keep this for backward compatibility
+        self.groupsize = self.groupsize_in
         scale = math.sqrt(1.0 / self.groupsize_in / self.kernel_size)
-        self.weight = nn.Parameter(scale * torch.randn(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
+        self.weight = nn.Parameter(scale * torch.randn(self.groups * self.groupsize_out, self.groupsize_in, self.kernel_size))
 
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_channels))
@@ -456,15 +452,14 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
+        self.theta_cutoff = theta_cutoff
 
         # make sure the p-shift works by checking that longitudes are divisible
         assert self.nlon_in % self.nlon_out == 0
 
         # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
-        if theta_cutoff is None:
+        if self.theta_cutoff is None:
             self.theta_cutoff = torch.pi / float(self.nlat_out - 1)
-        else:
-            self.theta_cutoff = theta_cutoff
 
         if self.theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -481,7 +476,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             merge_quadrature=True,
         )
 
-        # sort the values
+        # extract values and indices
         ker_idx = idx[0, ...].contiguous()
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()
@@ -509,51 +504,44 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
-    @nvtx.annotate("forward", color="purple")
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
-        #print("input x.shape:", x.shape)
-
         if self.optimized_kernel:
-            with nvtx.annotate("_disco_s2_contraction_optimized", color="red"):
-                xp = permute_to_0231(x)
-                xpc = _disco_s2_contraction_optimized(
-                    xp, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, 
-                    self.kernel_size, self.nlat_out, self.nlon_out
-                )
-                xpc = xpc.reshape(xpc.shape[0], self.nlat_out, self.nlon_out, self.groups, self.groupsize_in, self.kernel_size)
-                yp = torch.einsum("bxygck,gock->bxygo", xpc, self.weight).reshape(xpc.shape[0], self.nlat_out, self.nlon_out, -1).contiguous()
-                out = permute_to_0312(yp)
+            # permute input
+            xp = permute_to_0231(x)
+
+            # disco contaction
+            xpc = _disco_s2_contraction_optimized(
+                xp, 
+                self.psi_roff_idx, 
+                self.psi_ker_idx, 
+                self.psi_row_idx, 
+                self.psi_col_idx, 
+                self.psi_vals, 
+                self.kernel_size, 
+                self.nlat_out, 
+                self.nlon_out
+            )
+
+            # weight multiplication
+            B, H, W, _, K = xpc.shape
+            xpc = xpc.reshape(B, H, W, self.groups, self.groupsize_in, K)
+            outp = torch.einsum("bxygck,gock->bxygo", xpc, self.weight.reshape(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
+            outp = outp.reshape(B, H, W, -1).contiguous()
+
+            # permute output
+            out = permute_to_0312(outp)
         else:
+            # disco contaction
             x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
- 
-            #print("y.shape:", x.shape)
-            #print("self.groups:", self.groups, "self.groupsize:", self.groupsize)
-            #print("weight.shape:", self.weight.shape)
-            #pippo = self.weight.clone()
-            #pippo = pippo.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])
-            #print("after reshape, weight.shape:", pippo.shape)
 
             # extract shape
             B, _, K, H, W = x.shape
-            with nvtx.annotate("reshape", color="blue"):
-                x = x.reshape(B, self.groups, self.groupsize_in, K, H, W)
+            x = x.reshape(B, self.groups, self.groupsize_in, K, H, W)
 
-            #print("after reshape, x.shape:", x.shape)
-
-            # do weight multiplication
-            with nvtx.annotate("einsum", color="blue"):
-                out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight).contiguous()
-            #print("out.shape:", out.shape)
-            out = out.reshape(B, -1, H, W)
-
-        #cpu_tensor = out.detach().cpu().numpy()
-        #np.savetxt('yout_einsum.ref.txt', cpu_tensor.flatten(), fmt='%.6f')
-
-        print("weight.shape:", self.weight.shape)
-        print("after reshape, out.shape:", out.shape)
-        print("\n")
-
+            # weight multiplication
+            out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
+            out = out.reshape(B, -1, H, W).contiguous()
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
@@ -624,15 +612,14 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
+        self.theta_cutoff = theta_cutoff
 
         # make sure the p-shift works by checking that longitudes are divisible
         assert self.nlon_out % self.nlon_in == 0
 
         # bandlimit
-        if theta_cutoff is None:
-            self.theta_cutoff = torch.pi / float(self.nlat_out - 1)
-        else:
-            self.theta_cutoff = theta_cutoff
+        if self.theta_cutoff is None:
+            self.theta_cutoff = torch.pi / float(self.nlat_in - 1)
 
         if self.theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -681,19 +668,40 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         # extract shape
-        B, C, H, W = x.shape
-        x = x.reshape(B, self.groups, self.groupsize, H, W)
-
-        # do weight multiplication
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
-        x = x.reshape(B, -1, x.shape[-3], H, W)
+        B, _, H, W = x.shape
 
         if self.optimized_kernel:
-            out = _disco_s2_transpose_contraction_optimized(
-                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
+            # permute input
+            xp = permute_to_0231(x)
+
+            # weight multiplication
+            xp = xp.reshape(B, H, W, self.groups, self.groupsize_in)
+            xpc = torch.einsum("bxygc,gock->bxygok", xp, self.weight.reshape(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
+            xpc = xpc.reshape(B, H, W, -1, self.kernel_size).contiguous()
+
+            # disco contraction
+            outp = _disco_s2_transpose_contraction_optimized(
+                xpc, 
+                self.psi_roff_idx, 
+                self.psi_ker_idx, 
+                self.psi_row_idx, 
+                self.psi_col_idx, 
+                self.psi_vals, 
+                self.kernel_size, 
+                self.nlat_out, 
+                self.nlon_out
             )
+
+            # permute output
+            out = permute_to_0312(outp)
         else:
-            out = _disco_s2_transpose_contraction_torch(x, self.psi_st.to(x.device), self.nlon_out)
+            # weight multiplication
+            x = x.reshape(B, self.groups, self.groupsize_in, H, W)
+            xc = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
+            xc = xc.reshape(B, self.groups* self.groupsize_out, -1, H, W).contiguous()
+
+            # disco contraction
+            out = _disco_s2_transpose_contraction_torch(xc, self.psi_st.to(x.device), self.nlon_out)
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
