@@ -59,6 +59,7 @@ if optimized_kernels_is_available():
         inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
         row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
         kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        inp = inp.contiguous()
         out = disco_kernels.forward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
         return out
 
@@ -68,6 +69,7 @@ if optimized_kernels_is_available():
         inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
         row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
         kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        inp = inp.contiguous()
         out = disco_kernels.backward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
         return out
     
