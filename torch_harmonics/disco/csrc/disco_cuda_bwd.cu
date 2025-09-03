@@ -1110,19 +1110,12 @@ static void s2_disco_bwd_dispatch(int64_t batch_size,
         int64_t batch_size = ograd.size(0);
         int64_t nlat_in = ograd.size(1);
         int64_t nlon_in = ograd.size(2);
-        int64_t nchan = ograd.size(3);
+        int64_t Co = ograd.size(3);
+        int64_t nchan = Co * K;
         int64_t nrows = roff_idx.size(0) - 1;
 
         printf("%s:%d: batch_size: %ld, nlat_in: %ld, nlon_in: %ld, C: %ld\n", 
                __func__, __LINE__, batch_size, nlat_in, nlon_in, nchan);
-
-        if (nchan % K) {
-                fprintf(stderr,
-                        "%s:%d: error, number of channles of output gradient (%ld) is expected to be a multiple of kernel size (%ld)!\n",
-                       __func__, __LINE__, nchan, K);
-                exit(EXIT_FAILURE);
-        }
-        int64_t Co = nchan/K;
 
         printf("K: %ld, Cin: %ld\n", K, nchan/K);
         
@@ -1137,7 +1130,7 @@ static void s2_disco_bwd_dispatch(int64_t batch_size,
 
         // extract dtype
         auto x_type = ograd.dtype();
-        torch::Tensor xP = ograd.to(torch::kFloat32);
+        torch::Tensor xP = ograd.reshape({batch_size, nlat_in, nlon_in, nchan}).to(torch::kFloat32);
 
         torch::Tensor igrad = torch::zeros(out_dims, xP.options());
         
