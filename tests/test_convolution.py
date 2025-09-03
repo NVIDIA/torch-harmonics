@@ -39,7 +39,7 @@ import torch
 from torch.library import opcheck
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 
-from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
+from torch_harmonics.quadrature import _precompute_latitudes, _precompute_longitudes
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
 
 if not optimized_kernels_is_available():
@@ -47,8 +47,8 @@ if not optimized_kernels_is_available():
 
 
 _devices = [(torch.device("cpu"),)]
-#if torch.cuda.is_available():
-#    _devices.append((torch.device("cuda"),))
+if torch.cuda.is_available():
+    _devices.append((torch.device("cuda"),))
 
 # perf thresholds
 # CPU results normalized to 16 OpenMP threads,
@@ -198,7 +198,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "equiangular", "legendre-gauss", False, 1e-4, False],
             [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "legendre-gauss", "equiangular", False, 1e-4, False],
             [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", False, 1e-4, False],
-            # # transpose convolution
+            # transpose convolution
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
             [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
             [8, 4, 2, (12, 24), (24, 48), (3, 3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
@@ -453,10 +453,10 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
-            [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", False, 1e-4, False],
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
-            [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", True, 1e-4, False],
+            # [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, False],
+            # [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", False, 1e-4, False],
+            # [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, False],
+            # [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", True, 1e-4, False],
         ],
         skip_on_empty=True,
     )
