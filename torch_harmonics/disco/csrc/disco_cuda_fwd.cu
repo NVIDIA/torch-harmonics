@@ -423,15 +423,6 @@ __device__ void processCSR_Kpow2_reg_d(const int wo,
     const int tidx = threadIdx.x;
     const int tidy = threadIdx.y;
 
-    // unused if BDIM_X > WARP_SIZE
-    unsigned int subwarp_mask = FULL_MASK;
-
-    if constexpr(BDIM_X <= WARP_SIZE) {
-        constexpr unsigned int MASK = (1ull << BDIM_X)-1;
-        subwarp_mask = MASK << (tidy*BDIM_X);
-    }
-
-    // only used in K_POWER_2==1 branch
     const int log2_K = __ffs(K)-1;
 
     const int tidxDivK = tidx >> log2_K;
@@ -445,8 +436,7 @@ __device__ void processCSR_Kpow2_reg_d(const int wo,
     for(int off = 0; off < rlen; off++) {
 
         if ((off % BDIM_X) == 0) {
-            if constexpr(BDIM_X <= WARP_SIZE) { __syncwarp(subwarp_mask); }
-            else                              { __syncthreads(); }
+            __sync<BDIM_X>();
 
             const int64_t  col = (off+tidx < rlen) ? cols[0] : 0;
 
@@ -462,8 +452,7 @@ __device__ void processCSR_Kpow2_reg_d(const int wo,
             shXOff[tidx] = x + int64_t(hi)*nlon_in*nchan_in + int64_t(wip)*nchan_in;
             cols += BDIM_X;
 
-            if constexpr(BDIM_X <= WARP_SIZE) { __syncwarp(subwarp_mask); }
-            else                              { __syncthreads(); }
+            __sync<BDIM_X>();
         }
 
         const float *_x = shXOff[off % BDIM_X] + tidxDivK;
@@ -510,21 +499,12 @@ __device__ void processCSR_Kanyv_reg_d(const int wo,
     const int tidx = threadIdx.x;
     const int tidy = threadIdx.y;
 
-    // unused if BDIM_X > WARP_SIZE
-    unsigned int subwarp_mask = 0xFFFFFFFF;
-
-    if constexpr(BDIM_X <= WARP_SIZE) {
-        constexpr unsigned int MASK = (1ull << BDIM_X)-1;
-        subwarp_mask = MASK << (tidy*BDIM_X);
-    }
-
     cols += tidx;
 
     for(int off = 0; off < rlen; off++) {
 
         if ((off % BDIM_X) == 0) {
-            if constexpr(BDIM_X <= WARP_SIZE) { __syncwarp(subwarp_mask); }
-            else                              { __syncthreads(); }
+            __sync<BDIM_X>();
 
             const int64_t  col = (off+tidx < rlen) ? cols[0] : 0;
 
@@ -540,8 +520,7 @@ __device__ void processCSR_Kanyv_reg_d(const int wo,
             shXOff[tidx] = x + int64_t(hi)*nlon_in*nchan_in + int64_t(wip)*nchan_in;
             cols += BDIM_X;
 
-            if constexpr(BDIM_X <= WARP_SIZE) { __syncwarp(subwarp_mask); }
-            else                              { __syncthreads(); }
+            __sync<BDIM_X>();
         }
 
         const float *_x = shXOff[off % BDIM_X];
@@ -763,6 +742,7 @@ void launch_spc_disco_fwd(int nloc,      // "BDIM_X*nloc" >= nchans
 
 static void s2_disco_fwd_dispatch(int64_t batch_size,
                                   int64_t nchan_in,
+                                  int64_t nlat_in,
                                   int64_t nlon_in,
                                   int64_t nlat_out,
                                   int64_t nlon_out,
@@ -822,8 +802,6 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
                                                 val_pck.data_ptr<float>());
     }
     // if K is a multiple of VEC_SIZE it will be read with vector lds
-
-    const int nlat_in = xP.size(1);
 
     // smallest power of two "bdimx" (>=4) s.t. bdimx*MAX_LOCAL_ARR_LEN >= nchan_in*K
     int bdimx;
@@ -984,12 +962,7 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         int64_t nlon_in = Wi;
         int64_t nlat_out = Ho;
         int64_t nlon_out = Wo;
-/*
-        int64_t ngroup = 1;
-        if (std::getenv("S2_NGROUP")) {
-            ngroup = atoi(std::getenv("S2_NGROUP"));
-        }
-*/
+
         printf("%s:%d: batch_size: %ld, nchan: %ld, nlat_in: %ld, nlon_in: %ld, nlat_out: %ld, nlon_out: %ld, nrows: %ld, nnz_tot: %ld, K: %ld\n",
                 __func__, __LINE__, batch_size, nchan, nlat_in, nlon_in, nlat_out, nlon_out, nrows, col_idx.size(0), K);
 
@@ -1053,98 +1026,6 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         }
 #else
 
-#if 0 // FUSED VERSION
-        // switch to channel-last
-        // version with fused enisum 
-
-        int64_t ngroup = weights.size(0);
-        int64_t chan_x_grp_out = weights.size(1);
-        int64_t chan_x_grp_in  = weights.size(2);
-        int64_t weight_k = weights.size(3);
-
-        int64_t nchan_out = ngroup*chan_x_grp_out;
-        
-        printf("weight tensor shape: %ld, %ld, %ld, %ld\n", ngroup, chan_x_grp_out, chan_x_grp_in, weight_k); fflush(stdout);
-
-        if (nchan != chan_x_grp_in*ngroup || K != weight_k) {
-            fprintf(stderr,
-                    "%s:%d: error, dimension mismatch for weight tensor!\n",
-                    __func__, __LINE__);
-            exit(EXIT_FAILURE);
-        }
-
-
-        // input:  inp[B][Ci][Hi][Wi] -> inp[B][Hi][Wi][Ci]
-        //
-        // output: out[[B][Ho][Wo][Co] -> out[B][Co][Ho][Wo]
-        //         with Co = ngroup*chan_x_grp_out
-
-
-        // switch to channel-last
-
-        // extract dtype
-        auto x_type = inp.dtype();
-        torch::Tensor xP = inp.to(torch::kFloat32);
-    
-        // exract memory format: this is much safer than checking is_contiguous(at::MemoryFormat::ChannelsLast)
-        // the former fails for num_channels == 1
-        bool x_is_channels_last = xP.strides()[1] == 1;
-
-        // transpose if required
-        if (!x_is_channels_last) { xP = permute_4D_to0231(xP); }
-
-#if 1
-        int64_t out_dims[] = {batch_size, nlat_out, nlon_out, nchan_out};
-        auto options = torch::TensorOptions().device(inp.device()).dtype(inp.dtype());
-        torch::Tensor yP = torch::zeros(out_dims, options); // this will be empty_like() 
-        // y is {batch_size, nlat_out, nlon_out, nchan_out},
-#else
-        // to test before fusion
-        int64_t out_dims[] = {batch_size, nlat_out, nlon_out, nchan*K};
-        auto options = torch::TensorOptions().device(inp.device()).dtype(inp.dtype());
-        torch::Tensor yP = torch::zeros(out_dims, options);
-        // y is {batch_size, nlat_out, nlon_out, nchan*K},
-#endif
-        // call channel-last kernel implementation
-        s2_disco_fwd_dispatch(batch_size,
-                              nchan,
-                              nchan_out,
-                              ngroup,
-                              nlon_in,
-                              //nlat_in,
-                              nlat_out,
-                              nlon_out,
-                              K,
-                              xP,
-                              roff_idx,
-                              col_idx,
-                              val,
-                              weights,
-                              yP);
-
-#if 1
-        // switch back to original layout;
-        // I'm assuming that if x was passed as channel last, then
-        // the output tensor should be K last
-        //torch::Tensor y = yP;
-        //if (!x_is_channels_last) { 
-        //    y = permute_4D_to0312(y);
-        //    // make y {batch_size, nchan_out, nlat_out, nlon_out}
-        //}
-#else
-        // to test before fusion
-        torch::Tensor y = yP;
-        if (!x_is_channels_last) { 
-            y = permute_4D_to0312(y);
-            // make y {batch_size, nchan, K, nlat_out, nlon_out}
-            y = y.reshape({batch_size, nchan, K, nlat_out, nlon_out});
-        } else {
-            // make y {batch_size, nlat_out, nlon_out, nchan, K}
-            y = y.reshape({batch_size, nlat_out, nlon_out, nchan, K});
-        }
-#endif
-
-#else // VERSION WITH SEPARATED EINSUM
         // switch to channel-last
         // version with fused enisum 
 
@@ -1159,8 +1040,8 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         // call channel-last kernel implementation
         s2_disco_fwd_dispatch(batch_size,
                               nchan,
+                              nlat_in,
                               nlon_in,
-                              //nlat_in,
                               nlat_out,
                               nlon_out,
                               K,
@@ -1173,7 +1054,6 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         auto y = yP.to(x_type);
         
         torch::Tensor out = y;
-#endif
 
 #endif // closes ORIGINAL if
 #if 1
@@ -1182,7 +1062,7 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
             CHECK_CUDA(cudaStreamSynchronize(stream));
             printf("done\n");
             fflush(stdout);
-            //dump_tensor("yout.txt", out);
+            dump_tensor("yout.txt", out);
             //dump_csr_linear("csr_disco.txt", roff_idx, ker_idx, row_idx, col_idx, val);
             //dump_out_kers("out_kers", out);
         }
