@@ -156,6 +156,23 @@ __device__ float4 __forceinline__ __vdiv(float s, float4 v) {
     return make_float4(s/v.x, s/v.y, s/v.z, s/v.w);;
 }
 
+template<int BDIM_X>
+static __device__ void __sync() {
+
+    unsigned int subwarp_mask = FULL_MASK;
+
+    if constexpr(BDIM_X <= WARP_SIZE) {
+        const int tidy = threadIdx.y;
+        constexpr unsigned int MASK = (1ull << BDIM_X)-1;
+        subwarp_mask = MASK << (tidy*BDIM_X);
+    }
+
+    if constexpr(BDIM_X <= WARP_SIZE) { __syncwarp(subwarp_mask); }
+    else                              {          __syncthreads(); }
+
+    return;
+}
+
 template<typename VAL_T>
 __device__ VAL_T __warp_sum(VAL_T val) {
 
