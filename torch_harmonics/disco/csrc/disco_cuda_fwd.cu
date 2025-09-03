@@ -1051,7 +1051,7 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
                               val,
                               yP);
 
-        auto y = yP.to(x_type);
+        auto y = yP.reshape({batch_size, nlat_out, nlon_out, nchan, K}).to(x_type);
         
         torch::Tensor out = y;
 
