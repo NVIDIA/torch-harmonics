@@ -41,6 +41,11 @@ from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTran
 
 from torch_harmonics.quadrature import _precompute_latitudes, _precompute_longitudes
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
+from disco_helpers import preprocess_psi
+from torch_harmonics.filter_basis import get_filter_basis
+from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
+
+from testutils import compare_tensors
 
 from testutils import set_seed, compare_tensors
 
@@ -49,8 +54,8 @@ if not optimized_kernels_is_available():
 
 
 _devices = [(torch.device("cpu"),)]
-#if torch.cuda.is_available():
-#    _devices.append((torch.device("cuda"),))
+if torch.cuda.is_available():
+    _devices.append((torch.device("cuda"),))
 
 # perf thresholds
 # CPU results normalized to 16 OpenMP threads,
@@ -182,6 +187,99 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
+            # piecewise linear
+            # normal isotropic
+            [(16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular"],
+            [(17, 32), (17, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular"],
+            # normal anisotropic
+            [(16, 32), (16, 32), (3, 4), "piecewise linear", "mean", "equiangular", "equiangular"],
+            [(16, 32), (16, 32), (3, 2), "piecewise linear", "mean", "equiangular", "equiangular"],
+            # downsampling isotropic
+            [(16, 32), (8, 16), (3), "piecewise linear", "mean", "equiangular", "equiangular"],
+            [(17, 32), (9, 16), (3), "piecewise linear", "mean", "equiangular", "equiangular"],
+            # downsampling anisotropic
+            [(16, 32), (8, 16), (3, 4), "piecewise linear", "mean", "equiangular", "equiangular"],
+            [(16, 32), (8, 16), (3, 2), "piecewise linear", "mean", "equiangular", "equiangular"],
+            # morlet
+            # normal isotropic
+            [(16, 32), (16, 32), (1), "morlet", "mean", "equiangular", "equiangular"], # important for attention
+            [(16, 32), (16, 32), (3), "morlet", "mean", "equiangular", "equiangular"],
+            [(17, 32), (17, 32), (3), "morlet", "mean", "equiangular", "equiangular"],
+            # normal anisotropic
+            [(16, 32), (16, 32), (3, 4), "morlet", "mean", "equiangular", "equiangular"],
+            [(16, 32), (16, 32), (3, 2), "morlet", "mean", "equiangular", "equiangular"],
+            # downsampling isotropic
+            [(16, 32), (8, 16), (1), "morlet", "mean", "equiangular", "equiangular"], # important for attention
+            [(16, 32), (8, 16), (3), "morlet", "mean", "equiangular", "equiangular"],
+            [(17, 32), (9, 16), (3), "morlet", "mean", "equiangular", "equiangular"],
+            # downsampling anisotropic
+            [(16, 32), (8, 16), (3, 4), "morlet", "mean", "equiangular", "equiangular"],
+            [(16, 32), (8, 16), (3, 2), "morlet", "mean", "equiangular", "equiangular"],
+            # zernike
+            # normal 
+            [(16, 32), (16, 32), (1), "zernike", "mean", "equiangular", "equiangular"],
+            [(16, 32), (16, 32), (3, 3), "zernike", "mean", "equiangular", "equiangular"],
+            [(17, 32), (17, 32), (3, 3), "zernike", "mean", "equiangular", "equiangular"],
+            # downsampling
+            [(16, 32), (8, 16), (1), "zernike", "mean", "equiangular", "equiangular"],
+            [(16, 32), (8, 16), (3, 3), "zernike", "mean", "equiangular", "equiangular"],
+            [(17, 32), (9, 16), (3, 3), "zernike", "mean", "equiangular", "equiangular"],
+        ],
+        skip_on_empty=True,
+    )
+    def test_convolution_tensor_integrity(self, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, verbose=False):
+
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        filter_basis = get_filter_basis(kernel_shape=kernel_shape, basis_type=basis_type)
+
+        # use default value cutoff
+        theta_cutoff = torch.pi / float(nlat_out - 1)
+
+        idx, vals, _ = _precompute_convolution_tensor_s2(
+            in_shape=in_shape,
+            out_shape=out_shape,
+            filter_basis=filter_basis,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            theta_cutoff=theta_cutoff,
+            transpose_normalization=False,
+            basis_norm_mode=basis_norm_mode,
+            merge_quadrature=True,
+        )
+
+        ker_idx = idx[0, ...].contiguous()
+        row_idx = idx[1, ...].contiguous()
+        col_idx = idx[2, ...].contiguous()
+        vals = vals.contiguous()
+
+        # sort values
+        roff_idx = preprocess_psi(filter_basis.kernel_size, nlat_out, ker_idx, row_idx, col_idx, vals).contiguous()
+
+        # check shapes
+        self.assertTrue(ker_idx.shape[0] == row_idx.shape[0], f"ker_idx and row_idx have to have the same shape: found {ker_idx.shape[0]} and {row_idx.shape[0]}")
+        self.assertTrue(ker_idx.shape[0] == col_idx.shape[0], f"ker_idx and col_idx have to have the same shape: found {ker_idx.shape[0]} and {col_idx.shape[0]}")
+        self.assertTrue(ker_idx.shape[0] == vals.shape[0], f"ker_idx and vals have to have the same shape: found {ker_idx.shape[0]} and {vals.shape[0]}")
+        self.assertTrue((roff_idx.shape[0] - 1) == filter_basis.kernel_size * nlat_out, f"roff_idx has to have shape: found {(roff_idx.shape[0] - 1)} and {filter_basis.kernel_size * nlat_out}")
+
+        # the multiplicitiy in ker_idx has to be the same for all kernel indices
+        unique, counts = torch.unique(ker_idx, return_counts=True)
+        self.assertTrue(torch.all(counts.max() == counts), f"The multiplicity in ker_idx has to be the same for all kernel indices: found {counts} for entries {unique}")
+
+        if verbose:
+            print(f"\n ker_idx = {ker_idx},\n row_idx = {row_idx},\n col_idx = {col_idx}")
+
+        # the following has to be true: the row_idx and col_idx have to be the same for all kernel indices
+        row_idx_ref = row_idx[ker_idx == 0]
+        col_idx_ref = col_idx[ker_idx == 0]
+        for k in range(1, filter_basis.kernel_size):
+            self.assertTrue(torch.all(row_idx_ref == row_idx[ker_idx == k]), f"The row_idx has to be the same for all kernel indices: found {row_idx_ref} for entries {ker_idx == k}")
+            self.assertTrue(torch.all(col_idx_ref == col_idx[ker_idx == k]), f"The row_idx has to be the same for all kernel indices: found {col_idx_ref} for entries {ker_idx == k}")
+
+
+    @parameterized.expand(
+        [
             # regular convolution
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
             [8, 4, 2, (16, 32), (8, 16), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
@@ -241,11 +339,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
-        if isinstance(kernel_shape, int):
-            theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
-        else:
-            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
-
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
         conv = Conv(
             in_channels,
@@ -259,7 +352,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             grid_in=grid_in,
             grid_out=grid_out,
             bias=False,
-            theta_cutoff=theta_cutoff,
+            theta_cutoff=None,
             optimized_kernel=use_optimized_kernels,
         ).to(self.device)
 
@@ -272,7 +365,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
                 filter_basis,
                 grid_in=grid_out,
                 grid_out=grid_in,
-                theta_cutoff=theta_cutoff,
+                theta_cutoff=conv.theta_cutoff,
                 transpose_normalization=transpose,
                 basis_norm_mode=basis_norm_mode,
                 merge_quadrature=True,
@@ -280,7 +373,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
             psi = torch.sparse_coo_tensor(conv.psi_idx, conv.psi_vals, size=(conv.kernel_size, conv.nlat_in, conv.nlat_out * conv.nlon_out)).to_dense()
 
-            self.assertTrue(torch.allclose(psi, psi_dense[:, :, 0].reshape(-1, nlat_in, nlat_out * nlon_out)))
+            self.assertTrue(compare_tensors("psi", psi, psi_dense[:, :, 0].reshape(-1, nlat_in, nlat_out * nlon_out)))
         else:
             psi_dense = _precompute_convolution_tensor_dense(
                 in_shape,
@@ -288,7 +381,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
                 filter_basis,
                 grid_in=grid_in,
                 grid_out=grid_out,
-                theta_cutoff=theta_cutoff,
+                theta_cutoff=conv.theta_cutoff,
                 transpose_normalization=transpose,
                 basis_norm_mode=basis_norm_mode,
                 merge_quadrature=True,
@@ -296,13 +389,12 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
             psi = torch.sparse_coo_tensor(conv.psi_idx, conv.psi_vals, size=(conv.kernel_size, conv.nlat_out, conv.nlat_in * conv.nlon_in)).to_dense()
 
-            self.assertTrue(torch.allclose(psi, psi_dense[:, :, 0].reshape(-1, nlat_out, nlat_in * nlon_in)))
+            self.assertTrue(compare_tensors("psi", psi, psi_dense[:, :, 0].reshape(-1, nlat_out, nlat_in * nlon_in)))
 
         # create a copy of the weight
         w_ref = torch.empty_like(conv.weight)
         with torch.no_grad():
             w_ref.copy_(conv.weight)
-        w_ref = w_ref.reshape(-1, w_ref.shape[2], w_ref.shape[3])
         w_ref.requires_grad = True
 
         # create an input signal
@@ -406,7 +498,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             grid_in=grid_in,
             grid_out=grid_out,
             bias=False,
-            theta_cutoff=theta_cutoff,
+            theta_cutoff=None,
             optimized_kernel=False,
         ).to(self.device)
     
@@ -422,7 +514,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             grid_in=grid_in,
             grid_out=grid_out,
             bias=False,
-            theta_cutoff=theta_cutoff,
+            theta_cutoff=None,
             optimized_kernel=True,
         ).to(self.device)
 
@@ -471,11 +563,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
-        if isinstance(kernel_shape, int):
-            theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
-        else:
-            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
-
         # get handle
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
 
@@ -492,7 +579,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             grid_in=grid_in,
             grid_out=grid_out,
             bias=False,
-            theta_cutoff=theta_cutoff,
+            theta_cutoff=None,
         )
 
         #torch.set_default_device(self.device)
@@ -509,7 +596,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
                 grid_in=grid_in,
                 grid_out=grid_out,
                 bias=False,
-                theta_cutoff=theta_cutoff,
+                theta_cutoff=None,
             )
 
         # since we specified the device specifier everywhere, it should always
@@ -577,14 +664,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             grid_in=grid_in,
             grid_out=grid_out,
             bias=False,
-            theta_cutoff=theta_cutoff,
+            theta_cutoff=None,
         ).to(self.device)
 
         # forward test
         if not transpose:
-            inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
+            inp = torch.randn(batch_size, *in_shape, in_channels, device=self.device)
         else:
-            inp = torch.randn(batch_size, conv.kernel_size, in_channels, *in_shape, device=self.device)
+            inp = torch.randn(batch_size, *in_shape, in_channels, conv.kernel_size, device=self.device)
 
         test_inputs = (inp, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals, 
                        conv.kernel_size, conv.nlat_out, conv.nlon_out)
@@ -608,7 +695,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # [8, 4, 2, (91, 180), (91, 180), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4],
+            #[8, 4, 2, (91, 180), (91, 180), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4],
         ],
         skip_on_empty=True,
     )
@@ -622,11 +709,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
-
-        if isinstance(kernel_shape, int):
-            theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
-        else:
-            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
 
         # get handle
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
@@ -644,7 +726,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             grid_in=grid_in,
             grid_out=grid_out,
             bias=True,
-            theta_cutoff=theta_cutoff,
+            theta_cutoff=None,
             optimized_kernel=True,
         ).to(self.device)
 
