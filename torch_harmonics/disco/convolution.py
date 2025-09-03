@@ -665,7 +665,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         if self.optimized_kernel:
             xp = permute_to_0231(x)
             xp = xp.reshape(B, H, W, self.groups, self.groupsize_in)
-            xpc = torch.einsum("bxygc,gock->bxygok", xp, self.weight).reshape(B, H, W, self.groups * self.groupsize_out, -1).contiguous()
+            xpc = torch.einsum("bxygc,gock->bxygok", xp, self.weight).reshape(B, H, W, -1, self.kernel_size).contiguous()
             outp = _disco_s2_transpose_contraction_optimized(
                 xpc, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
             )
