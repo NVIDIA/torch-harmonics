@@ -166,6 +166,57 @@ def _normalize_convolution_tensor_s2(
     return psi_vals
 
 
+def _pad_convolution_tensor_s2(psi_idx, psi_vals, kernel_size) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Pads convolution tensor values with zeros to allow kernel vectorization.
+
+    This function modifies the tensor to ensure that the number of elements per row is consistent for each kernel.
+    This is essential for vectorizing the kernel operations.
+
+    Parameters
+    -----------
+    psi_idx: torch.Tensor
+        Index tensor for the sparse convolution tensor.
+    psi_vals: torch.Tensor
+        Value tensor for the sparse convolution tensor.
+    kernel_size: int
+        Number of kernel basis functions.
+
+    Returns
+    -------
+    Tuple[torch.Tensor, torch.Tensor]
+        Padded index and value tensors.
+    """
+
+    ker_idx = psi_idx[0, ...]
+    row_idx = psi_idx[1, ...]
+    col_idx = psi_idx[2, ...]
+    
+    # check number of elements per row for each kernel and collect unique indices in the same go:
+    indices = {}
+    nnz = 0
+    for ik in range(kernel_size):
+        iidx = torch.argwhere(ker_idx == ik)
+        nnz_tmp = iidx.shape[0]
+        nnz = max(nnz, nnz_tmp)
+        #row_idx_ker = row_idx[]
+        #col_idx_ker = col_idx[torch.where(ker_idx == ik)[0]]
+
+    print(f"max number of elements per row: {nnz}")
+
+    # create padded kernels
+    ker_idx_pad = torch.zeros(nnz*kernel_size, dtype=psi_idx.dtype, device=psi_idx.device)
+    row_idx_pad = torch.zeros(nnz*kernel_size, dtype=psi_idx.dtype, device=psi_idx.device)
+    col_idx_pad = torch.zeros(nnz*kernel_size, dtype=psi_idx.dtype, device=psi_idx.device)
+    vals_pad = torch.zeros(nnz*kernel_size, dtype=psi_vals.dtype, device=psi_vals.device)
+    
+    #off = 0
+    for ik in range(kernel_size):
+        iidx = torch.argwhere(ker_idx == ik)
+        print(f"kernel {ik}:", row_idx[iidx], col_idx[iidx])
+
+    return psi_idx_pad, psi_vals_pad
+
+
 @lru_cache(typed=True, copy=True)
 def _precompute_convolution_tensor_s2(
     in_shape: Tuple[int],
@@ -479,7 +530,11 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             merge_quadrature=True,
         )
 
-        # sort the values
+        #if self.optimized_kernel:
+        #    # pad the convolution tensor to allow kernel vectorization
+        #    idx, vals = _pad_convolution_tensor_s2(idx, vals, self.kernel_size)
+
+        # extract values and indices
         ker_idx = idx[0, ...].contiguous()
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()

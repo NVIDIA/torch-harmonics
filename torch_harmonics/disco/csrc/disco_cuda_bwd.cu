@@ -1114,10 +1114,8 @@ static void s2_disco_bwd_dispatch(int64_t batch_size,
         int64_t nchan = Co * K;
         int64_t nrows = roff_idx.size(0) - 1;
 
-        printf("%s:%d: batch_size: %ld, nlat_in: %ld, nlon_in: %ld, C: %ld\n", 
-               __func__, __LINE__, batch_size, nlat_in, nlon_in, nchan);
-
-        printf("K: %ld, Cin: %ld\n", K, nchan/K);
+        printf("%s:%d: batch_size: %ld, nlat_in: %ld, nlon_in: %ld, nchan: %ld, K: %ld\n", 
+               __func__, __LINE__, batch_size, nlat_in, nlon_in, nchan, K);
         
         int64_t nlat_out = Ho;
         int64_t nlon_out = Wo;
@@ -1130,7 +1128,7 @@ static void s2_disco_bwd_dispatch(int64_t batch_size,
 
         // extract dtype
         auto x_type = ograd.dtype();
-        torch::Tensor xP = ograd.reshape({batch_size, nlat_in, nlon_in, nchan}).to(torch::kFloat32);
+        torch::Tensor xP = ograd.reshape({batch_size, nlat_in, nlon_in, nchan}).to(torch::kFloat32).contiguous();
 
         torch::Tensor igrad = torch::zeros(out_dims, xP.options());
         
