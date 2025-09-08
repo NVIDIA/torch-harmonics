@@ -130,10 +130,12 @@ class PiecewiseLinearFilterBasis(FilterBasis):
         else:
             ir = (ikernel + 0.5) * dr
 
+        #print("ir", ir, ir.min())
+
         # find the indices where the rotated position falls into the support of the kernel
-        iidx = torch.argwhere(((r - ir.max()).abs() <= dr) & (r <= r_cutoff))
+        #iidx = torch.argwhere((r.abs() <= dr) & (r <= r_cutoff))
         #vals = 1 - (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs() / dr
-        #iidx = torch.argwhere((r <= r_cutoff) & torch.full_like(ikernel, True, dtype=torch.bool, device=r.device))
+        iidx = torch.argwhere((r <= r_cutoff) & torch.full_like(ikernel, True, dtype=torch.bool, device=r.device))
         vals = 1 - (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs() / dr
         vals = torch.clamp(vals, min=0.0)
 
@@ -161,7 +163,6 @@ class PiecewiseLinearFilterBasis(FilterBasis):
         #cond_r = ((r - ir.max()).abs() <= dr) & (r <= r_cutoff)
         cond_r = (r <= r_cutoff) & torch.full_like(ikernel, True, dtype=torch.bool, device=r.device)
 
-
         # find the indices where the rotated position falls into the support of the kernel
         if nr % 2 == 1:
             # find the support
@@ -185,7 +186,7 @@ class PiecewiseLinearFilterBasis(FilterBasis):
             phin = torch.where(phi + math.pi >= math.pi, phi - math.pi, phi + math.pi)
             cond_phi = _circle_dist(phi, iphi.max()).abs() <= dphi
             #cond_rn = ((rn - ir).abs() <= dr) & (rn <= r_cutoff)
-            cond_rn = (rn <= r_cutoff) & torch.full_like(ikernel, True, dtype=torch.bool, device=rn.device)
+            cond_rn = (rn.abs() <= r_cutoff) & torch.full_like(ikernel, True, dtype=torch.bool, device=rn.device)
             cond_phin = _circle_dist(phin, iphi.min()) <= dphi
             # find indices where conditions are met
             iidx = torch.argwhere((cond_r & cond_phi) | (cond_rn & cond_phin))
@@ -200,7 +201,8 @@ class PiecewiseLinearFilterBasis(FilterBasis):
             #vals *= cond_phi[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - dist_phi / dphi)
             #valsn = cond_rn[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - dist_rn / dr)
             #valsn *= cond_phin[iidx[:, 0], iidx[:, 1], iidx[:, 2]] * (1 - dist_phin / dphi)
-
+            #vals += valsn
+            
             vals = torch.clamp((1 - dist_r / dr) * (1 - dist_phi / dphi), min=0.0)
             valsn = torch.clamp((1 - dist_rn / dr) * (1 - dist_phin / dphi), min=0.0)
             vals += valsn
