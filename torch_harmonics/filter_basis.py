@@ -197,7 +197,7 @@ class PiecewiseLinearFilterBasis(FilterBasis):
             cond_phi = _circle_dist(phi, iphi.max()).abs() <= dphi
             #cond_rn = ((rn - ir).abs() <= dr) & (rn <= r_cutoff)
             cond_rn = (rn.abs() <= r_cutoff) & torch.full_like(ikernel, True, dtype=torch.bool, device=rn.device)
-            cond_phin = _circle_dist(phin, iphi.min()) <= dphi
+            cond_phin = _circle_dist(phin, iphi.max()) <= dphi
             # find indices where conditions are met
             iidx = torch.argwhere((cond_r & cond_phi) | (cond_rn & cond_phin))
             #iidx = torch.argwhere(cond_r | cond_rn) # & cond_phin)
