@@ -191,7 +191,6 @@ class PiecewiseLinearFilterBasis(FilterBasis):
             # clamp values
             vals = torch.clamp(vals, min=0.0)
         else:
-            print("IN THERE!")
             # in the even case, the inner basis functions overlap into areas with a negative areas
             rn = -r
             phin = torch.where(phi + math.pi >= math.pi, phi - math.pi, phi + math.pi)
