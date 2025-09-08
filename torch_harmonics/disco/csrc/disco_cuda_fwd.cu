@@ -823,7 +823,7 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         !is_aligned<sizeof(float4)>(_val_pck) ||
         (K % VEC_SIZE) != 0) {
 
-        //printf("%s:%d: VEC_SIZE: %d, nchan_in: %d, K: %d, _xp: %p, _yp: %p\n", __func__, __LINE__, VEC_SIZE, nchan_in, K, _xp, _yp);
+        printf("Is aligned: %s:%d: VEC_SIZE: %d, nchan_in: %d, K: %d, _xp: %p, _yp: %p\n", __func__, __LINE__, VEC_SIZE, nchan_in, K, _xp, _yp);
 
         const int nloc = DIV_UP(nchan_in*K, bdimx);
         
@@ -850,7 +850,7 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
 
     } else {
 
-        //printf("%s:%d: VEC_SIZE: %d, nchan_in: %d, K: %d, _xp: %p, _yp: %p\n", __func__, __LINE__, VEC_SIZE, nchan_in, K, _xp, _yp);
+        printf("Is not aligned: %s:%d: VEC_SIZE: %d, nchan_in: %d, K: %d, _xp: %p, _yp: %p\n", __func__, __LINE__, VEC_SIZE, nchan_in, K, _xp, _yp);
 
         //float4 *_xp4 = reinterpret_cast<float4 *>(_xp);
         float4 *_yp4 = reinterpret_cast<float4 *>(_yp);
@@ -1030,7 +1030,7 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         // version with fused enisum 
 
         auto x_type = inp.dtype();
-        auto xP = inp.to(torch::kFloat32);
+        auto xP = inp.to(torch::kFloat32).contiguous();
 
         // to test before fusion
         int64_t out_dims[] = {batch_size, nlat_out, nlon_out, nchan*K};
