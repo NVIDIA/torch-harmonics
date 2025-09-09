@@ -101,7 +101,7 @@ def get_ext_modules():
 
     print(f"Compiling helper routines for torch-harmonics.")
 
-    # UTILITIES
+    # Utility helpers
     ext_modules.append(
         CppExtension(
             "utility_helpers", 
@@ -112,7 +112,7 @@ def get_ext_modules():
         )
     )
 
-    # DISCO
+    # DISCO helpers
     ext_modules.append(
         CppExtension(
             "disco_helpers", 
@@ -123,6 +123,7 @@ def get_ext_modules():
         )
     )
 
+    # Attention helpers
     ext_modules.append(
         CppExtension(
             "attention_helpers", 
