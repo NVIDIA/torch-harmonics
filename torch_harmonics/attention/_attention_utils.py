@@ -55,7 +55,8 @@ if optimized_kernels_is_available():
     def _(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor,
           quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
           nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-        out_shape = (kw.shape[0], vw.shape[1], nlat_out, nlon_out)
+        # the raw kernel uses channels last format
+        out_shape = (kw.shape[0], nlat_out, nlon_out, vw.shape[3])
         return torch.empty(out_shape, dtype=kw.dtype, device=kw.device)
     
     # raw backward fake
@@ -63,6 +64,7 @@ if optimized_kernels_is_available():
     def _(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor, grad_output: torch.Tensor,
           quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
           nlon_in: int, nlat_out: int, nlon_out: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # the raw kernel uses channels last format
         dk = torch.empty_like(kw)
         dv = torch.empty_like(vw)
         dq = torch.empty_like(qw)
@@ -123,6 +125,7 @@ if optimized_kernels_is_available():
         bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], bq: Union[torch.Tensor, None],
         quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
         max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        # the wrapped kernel uses channels first format
         out_shape = (k.shape[0], wv.shape[0], nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=k.dtype, device=k.device)
 
