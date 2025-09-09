@@ -353,6 +353,7 @@ class NeighborhoodAttentionS2(nn.Module):
             self.nlon_out,
         )
 
+        # compute the output
         out = nn.functional.conv2d(out, self.proj_weights, bias=self.proj_bias)
 
         return out

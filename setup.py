@@ -200,7 +200,7 @@ def get_ext_modules():
             "torch_harmonics/attention/csrc/attention_cpu_bwd.cpp",
         ]
 
-        if False: #BUILD_CUDA:
+        if BUILD_CUDA:
             print(f"Compiling attention CUDA kernels for torch-harmonics.")
             attention_sources.extend([
                 "torch_harmonics/attention/csrc/attention_cuda_utils.cu",
