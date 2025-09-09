@@ -530,8 +530,10 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
     CHECK_CUDA_TENSOR(psi_col_idx);
     CHECK_CUDA_TENSOR(psi_row_off);
 
-    size_t nchans_in  = qy.size(1); // or kx.size(1)
-    size_t nchans_out = vx.size(1); 
+    // IMPORTANT: all input tensors are in channels last format!
+
+    size_t nchans_in  = qy.size(3); // or kx.size(3)
+    size_t nchans_out = vx.size(3); 
 
     const int batch_size = kx.size(0);
 
@@ -542,16 +544,7 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
     torch::Tensor vxP = vx.to(torch::kFloat32);
     torch::Tensor qyP = qy.to(torch::kFloat32);
 
-    // these are much safer than checking is_contiguous(at::MemoryFormat::ChannelsLast)
-    // the former fails for num_channels == 1
-    bool kx_is_channels_last = kxP.strides()[1] == 1;
-    bool vx_is_channels_last = vxP.strides()[1] == 1;
-    bool qy_is_channels_last = qyP.strides()[1] == 1;
-
-    if (!kx_is_channels_last) { kxP = permute_4D_to0231(kxP); }
-    if (!vx_is_channels_last) { vxP = permute_4D_to0231(vxP); }
-    if (!qy_is_channels_last) { qyP = permute_4D_to0231(qyP); }
-
+    // output tensor
     torch::Tensor yP = torch::empty_like(vxP);
 
     s2_attn_fwd_dispatch(batch_size,
@@ -567,7 +560,6 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
                          yP);
 
     torch::Tensor y = yP;
-    if (!qy_is_channels_last) { y = permute_4D_to0312(y); }
 
     // convert precision back to starting
     y = y.to(qy_type);

@@ -1003,16 +1003,17 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Te
     CHECK_CUDA_TENSOR(psi_col_idx);
     CHECK_CUDA_TENSOR(psi_row_off);
     
-    //const size_t uo_num_channels = kx.size(1);
-    size_t nchans_in  = qy.size(1); // or kx.size(1)
-    size_t nchans_out = vx.size(1); 
+    // IMPORTANT: all input tensors are in channels last format!
+
+    size_t nchans_in  = qy.size(3); // or kx.size(3)
+    size_t nchans_out = vx.size(3); 
 
     const int batch_size = kx.size(0);
 
     // extract dtype
-    auto kx_type = kx.dtype(); // nchans_in
+    auto kx_type = kx.dtype();
     auto qy_type = qy.dtype();
-    auto vx_type = vx.dtype(); // ncahn_out
+    auto vx_type = vx.dtype();
     auto dy_type = dy.dtype();
 
     torch::Tensor kxP = kx.to(torch::kFloat32);
@@ -1020,19 +1021,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Te
     torch::Tensor qyP = qy.to(torch::kFloat32);
     torch::Tensor dyP = dy.to(torch::kFloat32);
 
-    // exract memory format: this is much safer than checking is_contiguous(at::MemoryFormat::ChannelsLast)
-    // the former fails for num_channels == 1
-    bool kx_is_channels_last = kxP.strides()[1] == 1;
-    bool vx_is_channels_last = vxP.strides()[1] == 1;
-    bool qy_is_channels_last = qyP.strides()[1] == 1;
-    bool dy_is_channels_last = dyP.strides()[1] == 1;
-
-    // transpose if required
-    if (!kx_is_channels_last) { kxP = permute_4D_to0231(kxP); }
-    if (!vx_is_channels_last) { vxP = permute_4D_to0231(vxP); }
-    if (!qy_is_channels_last) { qyP = permute_4D_to0231(qyP); }
-    if (!dy_is_channels_last) { dyP = permute_4D_to0231(dyP); }
-
+    // create output tensors
     torch::Tensor dkxP = torch::zeros_like(kxP);
     torch::Tensor dvxP = torch::zeros_like(vxP);
     torch::Tensor dqyP = torch::zeros_like(qyP);
@@ -1052,10 +1041,6 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Te
     torch::Tensor dkx = dkxP;
     torch::Tensor dvx = dvxP;
     torch::Tensor dqy = dqyP;
-
-    if (!kx_is_channels_last) { dkx = permute_4D_to0312(dkx); }
-    if (!vx_is_channels_last) { dvx = permute_4D_to0312(dvx); }
-    if (!qy_is_channels_last) { dqy = permute_4D_to0312(dqy); }
 
     // convert precision back to starting
     dkx = dkx.to(kx_type);

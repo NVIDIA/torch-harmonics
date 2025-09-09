@@ -111,63 +111,6 @@ at::Tensor sortRows(int nlat_out, at::Tensor row_off, cudaStream_t stream) {
 }
 // END - CSR rows sorting kernels and functions
 
-
-// BEGIN - 4D tensor permutation kernels and functions
-__global__ void empty_k() {}
-
-static int getPtxver() {
-    cudaFuncAttributes attrs;
-    CHECK_CUDA(cudaFuncGetAttributes(&attrs, empty_k));
-    return attrs.ptxVersion*10;
-}
-
-at::Tensor permute_4D_to0231(at::Tensor src) {
-
-    auto options = torch::TensorOptions().dtype(src.dtype()).device(src.device());
-    torch::Tensor dst = torch::empty({src.size(0), src.size(2), src.size(3), src.size(1)}, options);
-
-    const int ptxv = getPtxver();
-
-    // to be further specialized for additional archs, if necessary
-    if (ptxv < 100) {
-        AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0231_k_tile_generic", ([&] {
-            launch_permute_to0231<TRANSP_WARPS_X_TILE_GENERIC, scalar_t>(src, dst);
-        }));
-        CHECK_ERROR("permute_to0231_k_tile_generic");
-    } else {
-        AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0231_k_tile_sm100", ([&] {
-            launch_permute_to0231<TRANSP_WARPS_X_TILE_SM100, scalar_t>(src, dst);
-        }));
-        CHECK_ERROR("permute_to0231_k_tile_sm100");
-    }
-
-    return dst;
-}
-
-at::Tensor permute_4D_to0312(at::Tensor src) {
-
-    auto options = torch::TensorOptions().dtype(src.dtype()).device(src.device());
-    torch::Tensor dst = torch::empty({src.size(0), src.size(3), src.size(1), src.size(2)}, options);
-
-    const int ptxv = getPtxver();
-
-    // to be further specialized for additional archs, if necessary
-    if (ptxv < 100) {
-        AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0312_k_tile_generic", ([&] {
-            launch_permute_to0312<TRANSP_WARPS_X_TILE_GENERIC, scalar_t>(src, dst);
-        }));
-        CHECK_ERROR("permute_to0312_k_tile_generic");
-    } else {
-        AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0312_k_tile_sm100", ([&] {
-            launch_permute_to0312<TRANSP_WARPS_X_TILE_SM100, scalar_t>(src, dst);
-        }));
-        CHECK_ERROR("permute_to0312_k_tile_sm100");
-    }
-
-    return dst;
-}
-// END - tensor permutation kernels and functions
-
 // BEGIN - general host-side functions
 unsigned int next_pow2(unsigned int x) { 
 
