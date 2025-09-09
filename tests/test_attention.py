@@ -55,8 +55,8 @@ if torch.cuda.is_available():
 # CPU results normalized to 16 OpenMP threads,
 # GPU results normalized to V100 16 GB GPU
 # this is just to detect performance regressions, not for absolute performance
-_perf_test_thresholds = {"cpu": {"fwd_ms": 1000, "bwd_ms": 8000}, 
-                         "cuda": {"fwd_ms": 50, "bwd_ms": 150}}
+_perf_test_thresholds = {"cpu": {"fwd_ms": 800, "bwd_ms": 6000}, 
+                         "cuda": {"fwd_ms": 10, "bwd_ms": 30}}
 _run_perf_tests = (os.getenv("TORCH_HARMONICS_RUN_PERF_TESTS", "0") == "1")
 
 
@@ -321,12 +321,12 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     @parameterized.expand(
         [
             # self attention
-            [1, 256, 1, (91, 180), (91, 180), "equiangular", "equiangular", 1e-5, 1e-5],
+            [1, 256, 1, (91, 180), (91, 180), "equiangular", "equiangular"],
         ],
         skip_on_empty=True,
     )
     @unittest.skipUnless(optimized_kernels_is_available() and _run_perf_tests, "skipping performance test because optimized kernels are not available or perf tests are disabled")
-    def test_perf(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
+    def test_perf(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, verbose=False):
         
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
