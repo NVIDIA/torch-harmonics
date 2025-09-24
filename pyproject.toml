@@ -69,7 +69,8 @@ line-length = 180
 build = ["cp39-*", "cp310-*", "cp311-*", "cp312-*"]
 
 # Use manylinux for Linux wheels
-linux = "manylinux2014"
+manylinux-x86_64-image = "manylinux2014"
+manylinux-i686-image = "manylinux2014"
 
 # Build options
 before-build = "pip install --upgrade pip setuptools wheel setuptools-scm"
