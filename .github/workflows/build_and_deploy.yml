@@ -1,5 +1,6 @@
 name: Build and Deploy Manylinux Wheels
 
+# Trigger workflow on PRs, tags, and manual dispatch
 on:
   push:
     tags:
