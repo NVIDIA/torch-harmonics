@@ -1,5 +1,5 @@
 [build-system]
-requires = [ "setuptools", "setuptools-scm", "torch>=2.4.0"]
+requires = [ "setuptools", "setuptools-scm", "torch"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -37,7 +37,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "torch>=2.4.0",
+    ,
     "numpy>=1.22.4",
 ]
 
