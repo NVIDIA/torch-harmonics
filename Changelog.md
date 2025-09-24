@@ -2,6 +2,15 @@
 
 ## Versioning
 
+### v0.8.1
+
+* Restructuring torch-harmonics module to streamline usage of the new attention and DISCO layers
+* Full PyTorch 2 custom operator compatibility, allowing for exporting models with torch-harmonics layers using torch.export 
+* Added OpenMP accelerated CPU backend for DISCO and attention layers
+* New query functions `torch_harmonics.disco.optimized_kernels_is_available` and `torch_harmonics.attention.optimized_kernels_is_available` for optimized layers availability
+* More tests for DISCO and attention layers
+* Cleaned up notebooks
+
 ### v0.8.0
 
 * Adding spherical attention and spherical neighborhood attention
