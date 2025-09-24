@@ -73,7 +73,6 @@ manylinux-x86_64-image = "manylinux2014"
 manylinux-i686-image = "manylinux2014"
 
 # Build options
-before-build = "pip install --upgrade pip setuptools wheel setuptools-scm"
 
 # Test the built wheel
 test-command = "python -c 'import torch_harmonics; print(\"Import successful\")'"
