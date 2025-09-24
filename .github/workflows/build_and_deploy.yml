@@ -1,0 +1,154 @@
+name: Build and Deploy Manylinux Wheels
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      torch_version:
+        description: 'PyTorch version to build (e.g., 2.4.0)'
+        required: false
+        default: ''
+      cuda_version:
+        description: 'CUDA version to build (e.g., cu121, cpu)'
+        required: false
+        default: ''
+
+jobs:
+  build-manylinux-wheels:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # PyTorch 2.4.x with multiple CUDA versions
+          - torch-version: '2.4.0'
+            torch-cuda: 'cu118'
+            cuda-version: '11.8'
+          - torch-version: '2.4.0'
+            torch-cuda: 'cu121'
+            cuda-version: '12.1'
+          - torch-version: '2.4.0'
+            torch-cuda: 'cu124'
+            cuda-version: '12.4'
+          - torch-version: '2.4.0'
+            torch-cuda: 'cpu'
+            cuda-version: 'none'
+
+          # PyTorch 2.5.x with multiple CUDA versions
+          - torch-version: '2.5.0'
+            torch-cuda: 'cu118'
+            cuda-version: '11.8'
+          - torch-version: '2.5.0'
+            torch-cuda: 'cu121'
+            cuda-version: '12.1'
+          - torch-version: '2.5.0'
+            torch-cuda: 'cu124'
+            cuda-version: '12.4'
+          - torch-version: '2.5.0'
+            torch-cuda: 'cpu'
+            cuda-version: 'none'
+
+          # PyTorch 2.6.x with multiple CUDA versions
+          - torch-version: '2.6.0'
+            torch-cuda: 'cu118'
+            cuda-version: '11.8'
+          - torch-version: '2.6.0'
+            torch-cuda: 'cu121'
+            cuda-version: '12.1'
+          - torch-version: '2.6.0'
+            torch-cuda: 'cu124'
+            cuda-version: '12.4'
+          - torch-version: '2.6.0'
+            torch-cuda: 'cpu'
+            cuda-version: 'none'
+
+          # PyTorch 2.7.x with multiple CUDA versions
+          - torch-version: '2.7.0'
+            torch-cuda: 'cu118'
+            cuda-version: '11.8'
+          - torch-version: '2.7.0'
+            torch-cuda: 'cu121'
+            cuda-version: '12.1'
+          - torch-version: '2.7.0'
+            torch-cuda: 'cu124'
+            cuda-version: '12.4'
+          - torch-version: '2.7.0'
+            torch-cuda: 'cpu'
+            cuda-version: 'none'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install cibuildwheel
+      run: |
+        python -m pip install cibuildwheel
+
+    - name: Build manylinux wheels
+      env:
+        CIBW_BUILD: cp39-* cp310-* cp311-* cp312-*
+        CIBW_PLATFORM: linux
+        CIBW_BEFORE_BUILD: |
+          pip install --upgrade pip setuptools wheel setuptools-scm
+          if [ "${{ matrix.torch-cuda }}" = "cpu" ]; then
+            pip install torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
+          else
+            pip install torch==${{ matrix.torch-version }}+${{ matrix.torch-cuda }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
+          fi
+          pip install numpy
+        CIBW_ENVIRONMENT: |
+          TORCH_CUDA_VERSION=${{ matrix.cuda-version }}
+        CIBW_REPAIR_WHEEL_COMMAND: |
+          auditwheel repair -w {dest_dir} {wheel}
+        CIBW_TEST_COMMAND: |
+          python -c "import torch_harmonics; print('Import successful')"
+        CIBW_BEFORE_BUILD_LINUX: |
+          # Set CUDA environment variables for manylinux
+          if [ "${{ matrix.cuda-version }}" != "none" ]; then
+            export CUDA_HOME=/usr/local/cuda-${{ matrix.cuda-version }}
+            export PATH=$CUDA_HOME/bin:$PATH
+            export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+          fi
+      run: |
+        cibuildwheel --platform linux
+
+    - name: Rename wheels to PyTorch ecosystem convention
+      run: |
+        # Get version from git tag or fallback
+        VERSION=$(git describe --tags --dirty 2>/dev/null | sed 's/^v//' || echo "0.8.1")
+
+        # Rename all wheels in wheelhouse
+        for wheel in wheelhouse/*.whl; do
+          if [ -f "$wheel" ]; then
+            WHEEL_NAME=$(basename "$wheel")
+            # Extract parts: torch_harmonics-0.8.1-cp310-cp310-linux_x86_64.whl
+            IFS='-' read -ra PARTS <<< "$WHEEL_NAME"
+
+            # Create new name with CUDA suffix: torch_harmonics-0.8.1+cu121-cp310-cp310-linux_x86_64.whl
+            NEW_NAME="${PARTS[0]}-${PARTS[1]}+${{ matrix.torch-cuda }}-${PARTS[2]}-${PARTS[3]}-${PARTS[4]}"
+
+            # Rename the wheel
+            mv "$wheel" "wheelhouse/$NEW_NAME"
+            echo "✅ Renamed wheel to: $NEW_NAME"
+          fi
+        done
+
+    - name: Upload wheel artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: wheel-torch-${{ matrix.torch-version }}-${{ matrix.torch-cuda }}
+        path: wheelhouse/*.whl
+
+    - name: Upload to PyPI
+      if: startsWith(github.ref, 'refs/tags/')
+      env:
+        TWINE_USERNAME: __token__
+        TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
+      run: |
+        python -m pip install twine
+        python -m twine upload wheelhouse/*.whl

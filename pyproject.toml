@@ -1,5 +1,5 @@
 [build-system]
-requires = [ "setuptools", "setuptools-scm"]
+requires = [ "setuptools", "setuptools-scm", "torch>=2.4.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -63,3 +63,22 @@ dev = [
 
 [tool.black]
 line-length = 180
+
+[tool.cibuildwheel]
+# Build for Python 3.9, 3.10, 3.11, 3.12
+build = ["cp39-*", "cp310-*", "cp311-*", "cp312-*"]
+
+# Use manylinux for Linux wheels
+linux = "manylinux2014"
+
+# Build options
+before-build = "pip install --upgrade pip setuptools wheel setuptools-scm"
+
+# Test the built wheel
+test-command = "python -c 'import torch_harmonics; print(\"Import successful\")'"
+
+# Repair wheels with auditwheel
+repair-wheel-command = "auditwheel repair -w {dest_dir} {wheel}"
+
+# Skip building for platforms we don't support
+skip = ["*-win32", "*-win_amd64", "*-macosx_arm64"]

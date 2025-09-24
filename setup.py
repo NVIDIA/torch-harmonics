@@ -39,19 +39,22 @@ from setuptools.command.install import install
 FORCE_CUDA_EXTENSION = os.getenv("FORCE_CUDA_EXTENSION", "0") == "1"
 BUILD_CPP = BUILD_CUDA = False
 
-# try to import torch
+# PyTorch is required for building this package
 try:
     import torch
-
     print(f"setup.py with torch {torch.__version__}")
-    from torch.utils.cpp_extension import BuildExtension, CppExtension
+    from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDA_HOME, CUDAExtension
 
     BUILD_CPP = True
-    from torch.utils.cpp_extension import CUDA_HOME, CUDAExtension
-
     BUILD_CUDA = FORCE_CUDA_EXTENSION or (torch.cuda.is_available() and (CUDA_HOME is not None))
+
+    if BUILD_CUDA:
+        print("CUDA extensions will be built")
+    else:
+        print("CPU-only extensions will be built")
+
 except (ImportError, TypeError, AssertionError, AttributeError) as e:
-    warnings.warn(f"building custom extensions skipped: {e}")
+    raise RuntimeError(f"PyTorch is required to build torch-harmonics. Please install PyTorch first. Error: {e}")
 
 def get_compile_args(module_name):
     """If user runs build with TORCH_HARMONICS_DEBUG=1 set, it will use debugging flags to build"""
@@ -96,90 +99,90 @@ def get_ext_modules():
     ext_modules = []
     cmdclass = {}
 
-    if BUILD_CPP:
-        print(f"Compiling helper routines for torch-harmonics.")
+    # Always build helper extensions (PyTorch is guaranteed to be available)
+    print(f"Compiling helper routines for torch-harmonics.")
+    ext_modules.append(
+        CppExtension(
+            "disco_helpers",
+            [
+                "torch_harmonics/disco/csrc/disco_helpers.cpp",
+            ],
+            extra_compile_args=get_helpers_compile_args(),
+        )
+    )
+
+    ext_modules.append(
+        CppExtension(
+            "attention_helpers",
+            [
+                "torch_harmonics/attention/csrc/attention_helpers.cpp",
+            ],
+            extra_compile_args=get_helpers_compile_args(),
+        )
+    )
+
+    # Always build main extensions
+    # DISCO
+    # Create a single extension that includes both CPU and CUDA code
+    disco_sources = [
+        "torch_harmonics/disco/csrc/disco_interface.cpp",
+        "torch_harmonics/disco/csrc/disco_cpu.cpp"
+    ]
+
+    if BUILD_CUDA:
+        print(f"Compiling custom CUDA kernels for torch-harmonics.")
+        disco_sources.extend([
+            "torch_harmonics/disco/csrc/disco_cuda_fwd.cu",
+            "torch_harmonics/disco/csrc/disco_cuda_bwd.cu",
+        ])
         ext_modules.append(
-            CppExtension(
-                "disco_helpers",
-                [
-                    "torch_harmonics/disco/csrc/disco_helpers.cpp",
-                ],
-                extra_compile_args=get_helpers_compile_args(),
+            CUDAExtension(
+                "torch_harmonics.disco._C",
+                disco_sources,
+                extra_compile_args=get_compile_args("disco")
             )
         )
-
+    else:
         ext_modules.append(
             CppExtension(
-                "attention_helpers",
-                [
-                    "torch_harmonics/attention/csrc/attention_helpers.cpp",
-                ],
-                extra_compile_args=get_helpers_compile_args(),
+                "torch_harmonics.disco._C",
+                disco_sources,
+                extra_compile_args=get_compile_args("disco")
             )
         )
+    cmdclass["build_ext"] = BuildExtension
 
-    if BUILD_CPP:
-        # DISCO
-        # Create a single extension that includes both CPU and CUDA code
-        disco_sources = [
-            "torch_harmonics/disco/csrc/disco_interface.cpp",
-            "torch_harmonics/disco/csrc/disco_cpu.cpp"
-        ]
+    # ATTENTION
+    # Create a single extension that includes both CPU and CUDA code
+    attention_sources = [
+        "torch_harmonics/attention/csrc/attention_interface.cpp",
+        "torch_harmonics/attention/csrc/attention_cpu_fwd.cpp",
+        "torch_harmonics/attention/csrc/attention_cpu_bwd.cpp",
+    ]
 
-        if BUILD_CUDA:
-            print(f"Compiling custom CUDA kernels for torch-harmonics.")
-            disco_sources.extend([
-                "torch_harmonics/disco/csrc/disco_cuda_fwd.cu",
-                "torch_harmonics/disco/csrc/disco_cuda_bwd.cu",
-            ])
-            ext_modules.append(
-                CUDAExtension(
-                    "torch_harmonics.disco._C",
-                    disco_sources,
-                    extra_compile_args=get_compile_args("disco")
-                )
+    if BUILD_CUDA:
+        print(f"Compiling attention CUDA kernels for torch-harmonics.")
+        attention_sources.extend([
+            "torch_harmonics/attention/csrc/attention_cuda_utils.cu",
+            "torch_harmonics/attention/csrc/attention_cuda_fwd.cu",
+            "torch_harmonics/attention/csrc/attention_cuda_bwd.cu",
+        ])
+        ext_modules.append(
+            CUDAExtension(
+                "torch_harmonics.attention._C",
+                attention_sources,
+                extra_compile_args=get_compile_args("attention")
             )
-        else:
-            ext_modules.append(
-                CppExtension(
-                    "torch_harmonics.disco._C",
-                    disco_sources,
-                    extra_compile_args=get_compile_args("disco")
-                )
+        )
+    else:
+        ext_modules.append(
+            CppExtension(
+                "torch_harmonics.attention._C",
+                attention_sources,
+                extra_compile_args=get_compile_args("attention")
             )
-        cmdclass["build_ext"] = BuildExtension
-
-        # ATTENTION
-        # Create a single extension that includes both CPU and CUDA code
-        attention_sources = [
-            "torch_harmonics/attention/csrc/attention_interface.cpp",
-            "torch_harmonics/attention/csrc/attention_cpu_fwd.cpp",
-            "torch_harmonics/attention/csrc/attention_cpu_bwd.cpp",
-        ]
-
-        if BUILD_CUDA:
-            print(f"Compiling attention CUDA kernels for torch-harmonics.")
-            attention_sources.extend([
-                "torch_harmonics/attention/csrc/attention_cuda_utils.cu",
-                "torch_harmonics/attention/csrc/attention_cuda_fwd.cu",
-                "torch_harmonics/attention/csrc/attention_cuda_bwd.cu",
-            ])
-            ext_modules.append(
-                CUDAExtension(
-                    "torch_harmonics.attention._C",
-                    attention_sources,
-                    extra_compile_args=get_compile_args("attention")
-                )
-            )
-        else:
-            ext_modules.append(
-                CppExtension(
-                    "torch_harmonics.attention._C",
-                    attention_sources,
-                    extra_compile_args=get_compile_args("attention")
-                )
-            )
-        cmdclass["build_ext"] = BuildExtension
+        )
+    cmdclass["build_ext"] = BuildExtension
 
     return ext_modules, cmdclass
 
@@ -188,7 +191,27 @@ if __name__ == "__main__":
     ext_modules, cmdclass = get_ext_modules()
 
     setup(
+        name="torch_harmonics",
         packages=find_packages(),
         ext_modules=ext_modules,
         cmdclass=cmdclass,
+        python_requires=">=3.9",
+        install_requires=[
+            "torch>=2.4.0",
+            "numpy>=1.22.4",
+        ],
+        extras_require={
+            "dev": [
+                "pytest>=6.0.0",
+                "coverage>=6.5.0",
+            ],
+            "2d3ds": [
+                "requests",
+                "tarfile",
+                "tqdm",
+                "PIL",
+                "h5py",
+            ],
+        },
+        zip_safe=False,  # Required for extensions
     )
