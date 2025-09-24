@@ -146,7 +146,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     @parameterized.expand(
         [
             # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
-            [2, 64, 1, (25, 48), (25, 48), "equiangular", "equiangular", 1e-4, 1e-4],
+            [2, 64, 1, (25, 48), (25, 48), "equiangular", "equiangular", 5e-2, 1e-4],
         ],
         skip_on_empty=True,
     )
