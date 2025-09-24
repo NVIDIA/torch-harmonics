@@ -64,6 +64,9 @@ jobs:
             torch-cuda: 'cu124'
             cuda-version: '12.4'
           - torch-version: '2.6.0'
+            torch-cuda: 'cu126'
+            cuda-version: '12.6'
+          - torch-version: '2.6.0'
             torch-cuda: 'cpu'
             cuda-version: 'none'
 

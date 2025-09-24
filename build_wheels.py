@@ -28,6 +28,7 @@ BUILD_MATRIX = [
     {"torch": "2.6.0", "cuda": "cu118", "cuda_version": "11.8"},
     {"torch": "2.6.0", "cuda": "cu121", "cuda_version": "12.1"},
     {"torch": "2.6.0", "cuda": "cu124", "cuda_version": "12.4"},
+    {"torch": "2.6.0", "cuda": "cu126", "cuda_version": "12.6"},
     {"torch": "2.6.0", "cuda": "cpu", "cuda_version": "none"},
 
 ]
