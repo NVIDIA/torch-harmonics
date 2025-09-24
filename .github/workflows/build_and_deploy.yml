@@ -144,7 +144,16 @@ jobs:
         name: wheel-torch-${{ matrix.torch-version }}-${{ matrix.torch-cuda }}
         path: wheelhouse/*.whl
 
-    - name: Upload to PyPI
+    - name: Upload to TestPyPI (for testing)
+      if: github.event_name == 'workflow_dispatch'
+      env:
+        TWINE_USERNAME: __token__
+        TWINE_PASSWORD: ${{ secrets.TEST_PYPI_PASSWORD }}
+      run: |
+        python -m pip install twine
+        python -m twine upload --repository testpypi wheelhouse/*.whl
+
+    - name: Upload to PyPI (production)
       if: startsWith(github.ref, 'refs/tags/')
       env:
         TWINE_USERNAME: __token__
