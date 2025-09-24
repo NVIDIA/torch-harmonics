@@ -55,7 +55,7 @@ except (ImportError, TypeError, AssertionError, AttributeError) as e:
 
 def get_compile_args(module_name):
     """If user runs build with TORCH_HARMONICS_DEBUG=1 set, it will use debugging flags to build"""
-    
+
     debug_mode = os.environ.get('TORCH_HARMONICS_DEBUG', '0') == '1'
     profile_mode = os.environ.get('TORCH_HARMONICS_PROFILE', '0') == '1'
     openmp_mode = os.getenv('TORCH_HARMONICS_ENABLE_OPENMP', '0') == '1'
@@ -68,7 +68,7 @@ def get_compile_args(module_name):
     if profile_mode:
         nvcc_extra_flags.append("-lineinfo")
         nvcc_extra_flags.append("-Xptxas=-v")
-        
+
     if debug_mode:
         print(f"WARNING: Compiling {module_name} with debugging flags")
         return {
@@ -85,37 +85,38 @@ def get_compile_args(module_name):
 def get_helpers_compile_args():
     return {
         'cxx': [
-            f'-DBUILD_CPP={1 if BUILD_CPP else 0}', 
+            f'-DBUILD_CPP={1 if BUILD_CPP else 0}',
             f'-DBUILD_CUDA={1 if BUILD_CUDA else 0}'
-        ], 
+        ],
     }
 
 def get_ext_modules():
     """Get list of extension modules to compile."""
-    
+
     ext_modules = []
     cmdclass = {}
 
-    print(f"Compiling helper routines for torch-harmonics.")
-    ext_modules.append(
-        CppExtension(
-            "disco_helpers", 
-            [
-                "torch_harmonics/disco/csrc/disco_helpers.cpp",
-            ],
-            extra_compile_args=get_helpers_compile_args(),
+    if BUILD_CPP:
+        print(f"Compiling helper routines for torch-harmonics.")
+        ext_modules.append(
+            CppExtension(
+                "disco_helpers",
+                [
+                    "torch_harmonics/disco/csrc/disco_helpers.cpp",
+                ],
+                extra_compile_args=get_helpers_compile_args(),
+            )
         )
-    )
 
-    ext_modules.append(
-        CppExtension(
-            "attention_helpers", 
-            [
-                "torch_harmonics/attention/csrc/attention_helpers.cpp",
-            ],
-            extra_compile_args=get_helpers_compile_args(),
+        ext_modules.append(
+            CppExtension(
+                "attention_helpers",
+                [
+                    "torch_harmonics/attention/csrc/attention_helpers.cpp",
+                ],
+                extra_compile_args=get_helpers_compile_args(),
+            )
         )
-    )
 
     if BUILD_CPP:
         # DISCO
@@ -124,7 +125,7 @@ def get_ext_modules():
             "torch_harmonics/disco/csrc/disco_interface.cpp",
             "torch_harmonics/disco/csrc/disco_cpu.cpp"
         ]
-        
+
         if BUILD_CUDA:
             print(f"Compiling custom CUDA kernels for torch-harmonics.")
             disco_sources.extend([
@@ -141,7 +142,7 @@ def get_ext_modules():
         else:
             ext_modules.append(
                 CppExtension(
-                    "torch_harmonics.disco._C", 
+                    "torch_harmonics.disco._C",
                     disco_sources,
                     extra_compile_args=get_compile_args("disco")
                 )
