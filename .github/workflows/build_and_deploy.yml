@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - 'v*'
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       torch_version:
@@ -103,6 +106,7 @@ jobs:
           pip install numpy
         CIBW_ENVIRONMENT: |
           TORCH_CUDA_VERSION=${{ matrix.cuda-version }}
+          TORCH_CUDA_ARCH_LIST=8.0;8.6;8.9;9.0;10.0;12.0;+PTX
         CIBW_REPAIR_WHEEL_COMMAND: |
           auditwheel repair -w {dest_dir} {wheel}
         CIBW_TEST_COMMAND: |
@@ -145,7 +149,7 @@ jobs:
         path: wheelhouse/*.whl
 
     - name: Upload to TestPyPI (for testing)
-      if: github.event_name == 'workflow_dispatch'
+      if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
       env:
         TWINE_USERNAME: __token__
         TWINE_PASSWORD: ${{ secrets.TEST_PYPI_PASSWORD }}
