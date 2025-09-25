@@ -74,7 +74,15 @@ jobs:
           - torch-version: '2.7.0'
             torch-cuda: 'cpu'
             cuda-version: 'none'
-
+          - torch-version: '2.7.0'
+            torch-cuda: 'cu118'
+            cuda-version: '11.8'
+          - torch-version: '2.7.0'
+            torch-cuda: 'cu126'
+            cuda-version: '12.6'
+          - torch-version: '2.7.0'
+            torch-cuda: 'cu128'
+            cuda-version: '12.8'
 
     steps:
     - uses: actions/checkout@v4
@@ -98,6 +106,7 @@ jobs:
             pip install torch==${{ matrix.torch-version }}+${{ matrix.torch-cuda }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
           fi
           pip install numpy
+          export TORCH_HARMONICS_ENABLE_OPENMP=1
           if [ "${{ matrix.cuda-version }}" != "none" ]; then
             export CUDA_HOME=/usr/local/cuda-${{ matrix.cuda-version }}
             export PATH=$CUDA_HOME/bin:$PATH
