@@ -92,19 +92,22 @@ jobs:
           else
             pip install torch==${{ matrix.torch-version }}+${{ matrix.torch-cuda }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
           fi
-          pip install numpy
           if [ "${{ matrix.cuda-version }}" != "none" ]; then
             export CUDA_HOME=/usr/local/cuda-${{ matrix.cuda-version }}
             export PATH=$CUDA_HOME/bin:$PATH
             export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
           fi
         CIBW_BEFORE_TEST: |
+          echo "Installing PyTorch for testing..."
           if [ "${{ matrix.torch-cuda }}" = "cpu" ]; then
             pip install torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
           else
             pip install torch==${{ matrix.torch-version }}+${{ matrix.torch-cuda }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
           fi
-          pip install numpy
+          echo "Verifying PyTorch installation..."
+          python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'PyTorch ops available: {hasattr(torch, \"ops\")}'); print(f'Available ops: {list(torch.ops.__dict__.keys()) if hasattr(torch, \"ops\") else \"No ops\"}')"
+          echo "Testing torch_harmonics import step by step..."
+          python -c "import torch_harmonics; print('torch_harmonics imported successfully')"
           if [ "${{ matrix.cuda-version }}" != "none" ]; then
             export CUDA_HOME=/usr/local/cuda-${{ matrix.cuda-version }}
             export PATH=$CUDA_HOME/bin:$PATH
