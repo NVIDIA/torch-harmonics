@@ -19,6 +19,9 @@ on:
         required: false
         default: ''
 
+env:
+  CUDA_ARCH_MAP: '{"11.8": "8.0;8.6;8.9;9.0;+PTX", "12.1": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "12.4": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "12.6": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "12.8": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "none": ""}'
+
 jobs:
   build-manylinux-wheels:
     runs-on: ubuntu-latest
@@ -96,6 +99,11 @@ jobs:
       run: |
         python -m pip install cibuildwheel
 
+    - name: Set CUDA architecture list
+      run: |
+        ARCH_LIST=$(echo "$CUDA_ARCH_MAP" | jq -r '.["${{ matrix.cuda-version }}"]')
+        echo "TORCH_CUDA_ARCH_LIST=$ARCH_LIST" >> $GITHUB_ENV
+
     - name: Build manylinux wheels
       env:
         CIBW_BEFORE_BUILD: |
@@ -126,9 +134,9 @@ jobs:
             export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
           fi
         TORCH_CUDA_VERSION: ${{ matrix.cuda-version }}
-        TORCH_CUDA_ARCH_LIST: "8.0;8.6;8.9;9.0;10.0;10.3;12.0;+PTX"
+        TORCH_CUDA_ARCH_LIST: ${{ env.TORCH_CUDA_ARCH_LIST }}
         CIBW_BUILD_FRONTEND: "pip"
-        # CIBW_REPAIR_WHEEL_COMMAND: "auditwheel repair --exclude libstdc++.so --exclude libgcc_s.so --exclude libc10.so --exclude libtorch.so --exclude libtorch_cpu.so --exclude libtorch_cuda.so --exclude libtorch_python.so --exclude libtorch_global_deps.so --exclude libtorch_cuda_cpp.so --exclude libtorch_cuda_cu.so --exclude libopenblas.so --exclude liblapack.so --exclude libgfortran.so --exclude libquadmath.so -w {dest_dir} {wheel}"
+
       run: |
         cibuildwheel --platform linux
 
