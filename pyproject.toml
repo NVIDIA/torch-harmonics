@@ -65,8 +65,7 @@ dev = [
 line-length = 180
 
 [tool.cibuildwheel]
-# Build for Python 3.9, 3.10, 3.11, 3.12
-# build = ["cp39-*", "cp310-*", "cp311-*", "cp312-*"]
+# Build for Python 3.10, 3.11, 3.12
 build = ["cp310-*", "cp311-*", "cp312-*"]
 
 # Use manylinux for Linux wheels
