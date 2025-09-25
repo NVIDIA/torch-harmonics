@@ -30,6 +30,9 @@ jobs:
         include:
           # # PyTorch 2.4.x with multiple CUDA versions
           # - torch-version: '2.4.0'
+          #   torch-cuda: 'cpu'
+          #   cuda-version: 'none'
+          # - torch-version: '2.4.0'
           #   torch-cuda: 'cu118'
           #   cuda-version: '11.8'
           # - torch-version: '2.4.0'
@@ -38,12 +41,12 @@ jobs:
           # - torch-version: '2.4.0'
           #   torch-cuda: 'cu124'
           #   cuda-version: '12.4'
-          # - torch-version: '2.4.0'
-          #   torch-cuda: 'cpu'
-          #   cuda-version: 'none'
 
           # # PyTorch 2.5.x with multiple CUDA versions
           # - torch-version: '2.5.0'
+          #   torch-cuda: 'cpu'
+          #   cuda-version: 'none'
+          # - torch-version: '2.5.0'
           #   torch-cuda: 'cu118'
           #   cuda-version: '11.8'
           # - torch-version: '2.5.0'
@@ -52,26 +55,20 @@ jobs:
           # - torch-version: '2.5.0'
           #   torch-cuda: 'cu124'
           #   cuda-version: '12.4'
-          # - torch-version: '2.5.0'
-          #   torch-cuda: 'cpu'
-          #   cuda-version: 'none'
 
           # PyTorch 2.6.x with multiple CUDA versions
           # - torch-version: '2.6.0'
+          #   torch-cuda: 'cpu'
+          #   cuda-version: 'none'
+          # - torch-version: '2.6.0'
           #   torch-cuda: 'cu118'
           #   cuda-version: '11.8'
-          # - torch-version: '2.6.0'
-          #   torch-cuda: 'cu121'
-          #   cuda-version: '12.1'
           # - torch-version: '2.6.0'
           #   torch-cuda: 'cu124'
           #   cuda-version: '12.4'
           # - torch-version: '2.6.0'
           #   torch-cuda: 'cu126'
           #   cuda-version: '12.6'
-          # - torch-version: '2.6.0'
-          #   torch-cuda: 'cpu'
-          #   cuda-version: 'none'
 
           # PyTorch 2.7.x with multiple CUDA versions
           - torch-version: '2.7.0'
@@ -142,21 +139,32 @@ jobs:
 
     - name: Rename wheels to PyTorch ecosystem convention
       run: |
+        # Install wheel package for proper wheel manipulation
+        python -m pip install wheel
+
         # Get version from git tag or fallback
         VERSION=$(git describe --tags --dirty 2>/dev/null | sed 's/^v//' || echo "0.8.1")
 
-        # Rename all wheels in wheelhouse
+        # Rename all wheels in wheelhouse using proper wheel tools
         for wheel in wheelhouse/*.whl; do
           if [ -f "$wheel" ]; then
             WHEEL_NAME=$(basename "$wheel")
             # Extract parts: torch_harmonics-0.8.1-cp310-cp310-linux_x86_64.whl
             IFS='-' read -ra PARTS <<< "$WHEEL_NAME"
 
-            # Create new name with CUDA suffix: torch_harmonics-0.8.1+cu121-cp310-cp310-linux_x86_64.whl
+            # Create new name with CUDA suffix: torch_harmonics-0.8.1+cpu-cp310-cp310-linux_x86_64.whl
             NEW_NAME="${PARTS[0]}-${PARTS[1]}+${{ matrix.torch-cuda }}-${PARTS[2]}-${PARTS[3]}-${PARTS[4]}"
 
-            # Rename the wheel
-            mv "$wheel" "wheelhouse/$NEW_NAME"
+            # Use wheel command to properly rename the wheel (preserves internal structure)
+            python -m wheel unpack "$wheel" --dest temp_wheel
+            cd temp_wheel
+            python -m wheel pack .
+            mv *.whl "../wheelhouse/$NEW_NAME"
+            cd ..
+            rm -rf temp_wheel
+
+            # Remove original wheel
+            rm "$wheel"
             echo "✅ Renamed wheel to: $NEW_NAME"
           fi
         done
