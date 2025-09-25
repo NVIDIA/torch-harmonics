@@ -101,6 +101,12 @@ jobs:
         ARCH_LIST=$(echo "$CUDA_ARCH_MAP" | jq -r '.["${{ matrix.cuda-version }}"]')
         echo "TORCH_CUDA_ARCH_LIST=$ARCH_LIST" >> $GITHUB_ENV
 
+    - name: Determine package version suffix
+      run: |
+        BASE_VERSION=$(git describe --tags --dirty 2>/dev/null | sed 's/^v//' || echo "0.8.1")
+        SUFFIX="torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }}"
+        echo "PACKAGE_VERSION=${BASE_VERSION}+${SUFFIX}" >> $GITHUB_ENV
+
     - name: Build manylinux wheels
       env:
         CIBW_BEFORE_BUILD: |
@@ -132,85 +138,10 @@ jobs:
           fi
         TORCH_CUDA_VERSION: ${{ matrix.cuda-version }}
         TORCH_CUDA_ARCH_LIST: ${{ env.TORCH_CUDA_ARCH_LIST }}
-        CIBW_BUILD_FRONTEND: "pip"
+        CIBW_ENVIRONMENT: "SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.PACKAGE_VERSION }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }}"
 
       run: |
         cibuildwheel --platform linux
-
-    - name: Create wheel renaming script
-      run: |
-        cat > rename_wheel.py << 'EOF'
-        import zipfile
-        import shutil
-        import tempfile
-        import os
-        from pathlib import Path
-
-        def rename_wheel(wheel_path, new_name):
-            wheel_path = Path(wheel_path)
-            new_path = wheel_path.parent / new_name
-
-            with tempfile.TemporaryDirectory() as temp_dir:
-                temp_dir = Path(temp_dir)
-
-                # Extract wheel
-                with zipfile.ZipFile(wheel_path, 'r') as zip_ref:
-                    zip_ref.extractall(temp_dir)
-
-                # Find .dist-info directory
-                dist_info_dirs = list(temp_dir.glob('*.dist-info'))
-                if not dist_info_dirs:
-                    print(f"❌ No .dist-info directory found in {wheel_path}")
-                    return False
-
-                dist_info_dir = dist_info_dirs[0]
-
-                # Rename .dist-info directory to match new wheel name
-                new_dist_info_name = f"{new_name.replace('.whl', '')}.dist-info"
-                new_dist_info_path = temp_dir / new_dist_info_name
-                shutil.move(str(dist_info_dir), str(new_dist_info_path))
-
-                # Create new wheel
-                with zipfile.ZipFile(new_path, 'w', zipfile.ZIP_DEFLATED) as zip_ref:
-                    for file_path in temp_dir.rglob('*'):
-                        if file_path.is_file():
-                            arcname = file_path.relative_to(temp_dir)
-                            zip_ref.write(file_path, arcname)
-
-            print(f"✅ Renamed wheel to: {new_name}")
-            return True
-
-        if __name__ == "__main__":
-            import sys
-            if len(sys.argv) != 3:
-                print("Usage: python rename_wheel.py <wheel_path> <new_name>")
-                sys.exit(1)
-            rename_wheel(sys.argv[1], sys.argv[2])
-        EOF
-
-    - name: Rename wheels to PyTorch ecosystem convention
-      run: |
-        # Get version from git tag or fallback
-        VERSION=$(git describe --tags --dirty 2>/dev/null | sed 's/^v//' || echo "0.8.1")
-
-        # Rename all wheels in wheelhouse using proper wheel tools
-        for wheel in wheelhouse/*.whl; do
-          if [ -f "$wheel" ]; then
-            WHEEL_NAME=$(basename "$wheel")
-            # Extract parts: torch_harmonics-0.8.1-cp310-cp310-linux_x86_64.whl
-            IFS='-' read -ra PARTS <<< "$WHEEL_NAME"
-
-            # Create new name with PyTorch and CUDA suffix: torch_harmonics-0.8.1+torch2.7.0+cpu-cp310-cp310-linux_x86_64.whl
-            NEW_NAME="${PARTS[0]}-${PARTS[1]}+torch${{ matrix.torch-version }}+${{ matrix.torch-cuda }}-${PARTS[2]}-${PARTS[3]}-${PARTS[4]}"
-
-            # Run the Python script
-            python3 rename_wheel.py "$wheel" "$NEW_NAME"
-
-            # Remove original wheel
-            rm "$wheel"
-            echo "✅ Renamed wheel to: $NEW_NAME"
-          fi
-        done
 
     - name: Upload wheel artifacts
       uses: actions/upload-artifact@v4
