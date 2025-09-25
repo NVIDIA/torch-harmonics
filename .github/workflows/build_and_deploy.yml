@@ -152,15 +152,24 @@ jobs:
             # Extract parts: torch_harmonics-0.8.1-cp310-cp310-linux_x86_64.whl
             IFS='-' read -ra PARTS <<< "$WHEEL_NAME"
 
-            # Create new name with CUDA suffix: torch_harmonics-0.8.1+cpu-cp310-cp310-linux_x86_64.whl
-            NEW_NAME="${PARTS[0]}-${PARTS[1]}+${{ matrix.torch-cuda }}-${PARTS[2]}-${PARTS[3]}-${PARTS[4]}"
+            # Create new name with PyTorch and CUDA suffix: torch_harmonics-0.8.1+torch2.7.0+cpu-cp310-cp310-linux_x86_64.whl
+            NEW_NAME="${PARTS[0]}-${PARTS[1]}+torch${{ matrix.torch-version }}+${{ matrix.torch-cuda }}-${PARTS[2]}-${PARTS[3]}-${PARTS[4]}"
 
             # Use wheel command to properly rename the wheel (preserves internal structure)
             python -m wheel unpack "$wheel" --dest temp_wheel
-            cd temp_wheel
-            python -m wheel pack .
-            mv *.whl "../wheelhouse/$NEW_NAME"
-            cd ..
+
+            # Find the .dist-info directory and ensure it's properly structured
+            DIST_INFO_DIR=$(find temp_wheel -name "*.dist-info" -type d | head -1)
+            if [ -n "$DIST_INFO_DIR" ]; then
+              cd temp_wheel
+              python -m wheel pack .
+              mv *.whl "../wheelhouse/$NEW_NAME"
+              cd ..
+            else
+              echo "❌ Could not find .dist-info directory in $wheel"
+              exit 1
+            fi
+
             rm -rf temp_wheel
 
             # Remove original wheel
