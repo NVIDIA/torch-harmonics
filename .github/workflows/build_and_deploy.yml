@@ -93,7 +93,7 @@ jobs:
         CIBW_BEFORE_BUILD: |
           pip install --upgrade pip setuptools wheel setuptools-scm
           if [ "${{ matrix.torch-cuda }}" = "cpu" ]; then
-            pip install torch==${{ matrix.torch-version }} --index-url https://download.pytorch.org/whl/cpu
+            pip install torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
           else
             pip install torch==${{ matrix.torch-version }}+${{ matrix.torch-cuda }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
           fi
@@ -105,7 +105,7 @@ jobs:
         CIBW_BEFORE_TEST: |
           echo "Installing PyTorch for testing..."
           if [ "${{ matrix.torch-cuda }}" = "cpu" ]; then
-            pip install torch==${{ matrix.torch-version }} --index-url https://download.pytorch.org/whl/cpu
+            pip install torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
           else
             pip install torch==${{ matrix.torch-version }}+${{ matrix.torch-cuda }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
           fi
