@@ -53,7 +53,7 @@ jobs:
           #   torch-cuda: 'cpu'
           #   cuda-version: 'none'
 
-          # # PyTorch 2.6.x with multiple CUDA versions
+          # PyTorch 2.6.x with multiple CUDA versions
           # - torch-version: '2.6.0'
           #   torch-cuda: 'cu118'
           #   cuda-version: '11.8'
@@ -66,9 +66,9 @@ jobs:
           # - torch-version: '2.6.0'
           #   torch-cuda: 'cu126'
           #   cuda-version: '12.6'
-          # - torch-version: '2.6.0'
-          #   torch-cuda: 'cpu'
-          #   cuda-version: 'none'
+          - torch-version: '2.6.0'
+            torch-cuda: 'cpu'
+            cuda-version: 'none'
 
           # PyTorch 2.7.x with multiple CUDA versions
           - torch-version: '2.7.0'
@@ -116,12 +116,8 @@ jobs:
             export PATH=$CUDA_HOME/bin:$PATH
             export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
           fi
-          # echo "Verifying PyTorch installation..."
-          # python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'PyTorch ops available: {hasattr(torch, \"ops\")}'); print(f'Available ops: {list(torch.ops.__dict__.keys()) if hasattr(torch, \"ops\") else \"No ops\"}')"
-          # echo "Testing torch_harmonics import step by step..."
-          # python -c "import torch_harmonics; print('torch_harmonics imported successfully')"
         TORCH_CUDA_VERSION: ${{ matrix.cuda-version }}
-        TORCH_CUDA_ARCH_LIST: "8.0;8.6;8.9;9.0;10.0;12.0;+PTX"
+        TORCH_CUDA_ARCH_LIST: "8.0;8.6;8.9;9.0;10.0;10.3;12.0;+PTX"
         CIBW_BUILD_FRONTEND: "pip"
         CIBW_REPAIR_WHEEL_COMMAND: "auditwheel repair --exclude libc10.so --exclude libtorch.so --exclude libtorch_cpu.so --exclude libtorch_cuda.so --exclude libtorch_python.so --exclude libtorch_global_deps.so --exclude libtorch_cuda_cpp.so --exclude libtorch_cuda_cu.so --exclude libopenblas.so --exclude liblapack.so --exclude libgfortran.so --exclude libquadmath.so -w {dest_dir} {wheel}"
       run: |
