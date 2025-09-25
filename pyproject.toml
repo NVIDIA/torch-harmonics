@@ -78,7 +78,7 @@ manylinux-i686-image = "manylinux_2_28"
 test-command = "python -c 'import torch_harmonics; print(\"torch_harmonics imported successfully\"); from torch_harmonics.disco import optimized_kernels_is_available; print(\"optimized kernels are available: {optimized_kernels_is_available()}\")'"
 
 # Repair wheels with auditwheel
-repair-wheel-command = "auditwheel repair --exclude libc10.so --exclude libtorch.so --exclude libtorch_cpu.so --exclude libtorch_cuda.so --exclude libtorch_python.so --exclude libtorch_global_deps.so --exclude libtorch_cuda_cpp.so --exclude libtorch_cuda_cu.so --exclude libopenblas.so --exclude liblapack.so --exclude libgfortran.so --exclude libquadmath.so -w {dest_dir} {wheel}"
+repair-wheel-command = "auditwheel repair --exclude libstdc++.so --exclude libgcc_s.so --exclude libc10.so --exclude libtorch.so --exclude libtorch_cpu.so --exclude libtorch_cuda.so --exclude libtorch_python.so --exclude libtorch_global_deps.so --exclude libtorch_cuda_cpp.so --exclude libtorch_cuda_cu.so --exclude libopenblas.so --exclude liblapack.so --exclude libgfortran.so --exclude libquadmath.so -w {dest_dir} {wheel}"
 
 # Skip building for platforms we don't support
 skip = ["*-win32", "*-win_amd64", "*-macosx_arm64", "*-musllinux*"]
