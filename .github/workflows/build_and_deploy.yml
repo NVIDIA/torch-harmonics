@@ -174,7 +174,7 @@ jobs:
         TWINE_PASSWORD: ${{ secrets.TEST_PYPI_PASSWORD }}
       run: |
         python -m pip install twine
-        python -m twine upload --repository testpypi wheelhouse/*.whl
+        python -m twine upload --verbose --repository testpypi wheelhouse/*.whl
 
     - name: Upload to PyPI (production)
       if: startsWith(github.ref, 'refs/tags/')
