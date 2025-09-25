@@ -77,8 +77,8 @@ manylinux-i686-image = "manylinux_2_28"
 # Test the built wheel
 test-command = "python -c 'import torch_harmonics; print(\"torch_harmonics imported successfully\"); from torch_harmonics.disco import optimized_kernels_is_available; print(\"optimized kernels are available: {optimized_kernels_is_available()}\")'"
 
-# Repair wheels with auditwheel
-repair-wheel-command = "auditwheel repair --exclude libstdc++.so --exclude libgcc_s.so --exclude libc10.so --exclude libtorch.so --exclude libtorch_cpu.so --exclude libtorch_cuda.so --exclude libtorch_python.so --exclude libtorch_global_deps.so --exclude libtorch_cuda_cpp.so --exclude libtorch_cuda_cu.so --exclude libopenblas.so --exclude liblapack.so --exclude libgfortran.so --exclude libquadmath.so -w {dest_dir} {wheel}"
+# Repair wheels with auditwheel - exclude all system, PyTorch, and CUDA libraries
+repair-wheel-command = "auditwheel repair --exclude 'libc.so*' --exclude 'libm.so*' --exclude 'libpthread.so*' --exclude 'libdl.so*' --exclude 'libutil.so*' --exclude 'libnsl.so*' --exclude 'libresolv.so*' --exclude 'libcrypt.so*' --exclude 'libnss.so*' --exclude 'libselinux.so*' --exclude 'libpcre.so*' --exclude 'libz.so*' --exclude 'libbz2.so*' --exclude 'liblzma.so*' --exclude 'libtinfo.so*' --exclude 'libncurses.so*' --exclude 'libreadline.so*' --exclude 'libhistory.so*' --exclude 'libform.so*' --exclude 'libmenu.so*' --exclude 'libpanel.so*' --exclude 'libgcc_s.so*' --exclude 'libstdc++.so*' --exclude 'libopenblas.so*' --exclude 'liblapack.so*' --exclude 'libgfortran.so*' --exclude 'libquadmath.so*' --exclude 'libtorch*.so*' --exclude 'libc10.so*' --exclude 'libcudart.so*' --exclude 'libcublas.so*' --exclude 'libcurand.so*' --exclude 'libcusparse.so*' --exclude 'libcufft.so*' --exclude 'libcusolver.so*' --exclude 'libnvrtc.so*' --exclude 'libnvjpeg.so*' --exclude 'libcudnn.so*' -w {dest_dir} {wheel}"
 
 # Skip building for platforms we don't support
 skip = ["*-win32", "*-win_amd64", "*-macosx_arm64", "*-musllinux*"]
