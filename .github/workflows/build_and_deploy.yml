@@ -21,7 +21,6 @@ on:
 
 env:
   CUDA_ARCH_MAP: '{"11.8": "8.0;8.6;8.9;+PTX", "12.1": "8.0;8.6;8.9;9.0;+PTX", "12.4": "8.0;8.6;8.9;9.0;+PTX", "12.6": "8.0;8.6;8.9;9.0;+PTX", "12.8": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "none": ""}'
-  CIBW_ENVIRONMENT: CXXFLAGS="-D_GLIBCXX_USE_CXX11_ABI=1"
 
 jobs:
   build-manylinux-wheels:
@@ -151,7 +150,7 @@ jobs:
           fi
         TORCH_CUDA_VERSION: ${{ matrix.cuda-version }}
         TORCH_CUDA_ARCH_LIST: ${{ env.TORCH_CUDA_ARCH_LIST }}
-        CIBW_ENVIRONMENT: "SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.PACKAGE_VERSION }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }}"
+        CIBW_ENVIRONMENT: "CXXFLAGS='-D_GLIBCXX_USE_CXX11_ABI=1' SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.PACKAGE_VERSION }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }}"
 
       run: |
         cibuildwheel --platform linux
