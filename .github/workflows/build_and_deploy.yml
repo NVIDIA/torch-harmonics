@@ -157,6 +157,7 @@ jobs:
         cibuildwheel --platform linux
 
     - name: Inspect built wheels and .so files
+      if: always()
       run: |
         echo "Listing wheelhouse contents:"
         ls -lh wheelhouse/
