@@ -148,12 +148,24 @@ jobs:
             export PATH=$CUDA_HOME/bin:$PATH
             export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
           fi
+        CIBW_TEST_INSIDE: true
         TORCH_CUDA_VERSION: ${{ matrix.cuda-version }}
         TORCH_CUDA_ARCH_LIST: ${{ env.TORCH_CUDA_ARCH_LIST }}
         CIBW_ENVIRONMENT: "CXXFLAGS='-D_GLIBCXX_USE_CXX11_ABI=1' SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.PACKAGE_VERSION }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }}"
 
       run: |
         cibuildwheel --platform linux
+
+    - name: Inspect built wheels and .so files
+      run: |
+        echo "Listing wheelhouse contents:"
+        ls -lh wheelhouse/
+        echo "Checking .so symbols and ABI:"
+        for so in wheelhouse/*.so; do
+          echo "==== $so ===="
+          nm -D "$so" | grep exception_ptr || echo "No exception_ptr symbols found"
+          strings "$so" | grep ABI || echo "No ABI macro found in $so"
+        done
 
     - name: Upload wheel artifacts
       uses: actions/upload-artifact@v4
