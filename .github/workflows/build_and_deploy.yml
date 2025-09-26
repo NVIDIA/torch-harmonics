@@ -42,19 +42,19 @@ jobs:
           #   torch-cuda: 'cu124'
           #   cuda-version: '12.4'
 
-          # PyTorch 2.5.x with multiple CUDA versions
-          - torch-version: '2.5.0'
-            torch-cuda: 'cpu'
-            cuda-version: 'none'
-          - torch-version: '2.5.0'
-            torch-cuda: 'cu118'
-            cuda-version: '11.8'
-          - torch-version: '2.5.0'
-            torch-cuda: 'cu121'
-            cuda-version: '12.1'
-          - torch-version: '2.5.0'
-            torch-cuda: 'cu124'
-            cuda-version: '12.4'
+          # # PyTorch 2.5.x with multiple CUDA versions
+          # - torch-version: '2.5.0'
+          #   torch-cuda: 'cpu'
+          #   cuda-version: 'none'
+          # - torch-version: '2.5.0'
+          #   torch-cuda: 'cu118'
+          #   cuda-version: '11.8'
+          # - torch-version: '2.5.0'
+          #   torch-cuda: 'cu121'
+          #   cuda-version: '12.1'
+          # - torch-version: '2.5.0'
+          #   torch-cuda: 'cu124'
+          #   cuda-version: '12.4'
 
           # PyTorch 2.6.x with multiple CUDA versions
           - torch-version: '2.6.0'
