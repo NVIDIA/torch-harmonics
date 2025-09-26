@@ -75,27 +75,36 @@ torch-harmonics has been used to implement a variety of differentiable PDE solve
 
 
 ## Installation
-A simple installation can be directly done from PyPI:
 
-```bash
-pip install torch-harmonics
-```
-If you are planning to use spherical convolutions, we recommend building the corresponding custom CUDA kernels. To enforce this, you can set the `FORCE_CUDA_EXTENSION` flag. You may also want to set appropriate architectures with the `TORCH_CUDA_ARCH_LIST` flag. Finally, make sure to disable build isolation via the `--no-build-isolation` flag to ensure that the custom kernels are built with the existing torch installation.
+In general we recommend building the package yourself with the exact PyTorch build you rely on (see the instructions below) to avoid binary incompatibilities. Many features in torch-harmonics make use of accelerated CUDA kernels which need to match the CUDA packaged with your PyTorch installation. To do so, you may build torch-harmonics using
 ```bash
 export FORCE_CUDA_EXTENSION=1
-export TORCH_CUDA_ARCH_LIST="7.0 7.2 7.5 8.0 8.6 8.7 9.0+PTX"
-pip install --no-build-isolation torch-harmonics
+export TORCH_CUDA_ARCH_LIST="8.0 8.6 8.7 9.0 10.0 12.0+PTX"
+pip install --no-binary=torch-harmonics --no-build-isolation torch-harmonics
 ```
-:warning: Please note that the custom CUDA extensions currently only support CUDA architectures >= 7.0.
+The `--no-build-isolation` flag is necessary to ensure that torch-harmonics extensions are built with the correct PyTorch libraries. For container builds, we recommend setting the flags `FORCE_CUDA_EXTENSION` and `TORCH_CUDA_ARCH_LIST`, as the containers may run on systems with different GPUs than those available on the host system building the container.
+
+:warning: Please note that the custom CUDA extensions only support CUDA architectures >= 7.0.
+
+A simple installation using one of the prebuilt wheels on PyPI is also possible. However, it is important that it matches your local PyTorch and CUDA build. To do so, use the helper command below to print the exact `pip install` command for your environment:
+
+```bash
+python -c "import torch, os; parts=torch.__version__.split('+', 1); torch_tag=parts[0]; cuda_tag=parts[1] if len(parts) > 1 else 'cpu'; print(f'pip install torch-harmonics==0.8.1+torch{torch_tag}.{cuda_tag}')"
+```
+This will generate a command of the form
+```bash
+pip install torch-harmonics==0.8.1+torch{torch_tag}.{cuda_tag}
+```
+specifying the exact wheel, matching both PyTorch installation and its CUDA version.
 
 If you want to actively develop torch-harmonics, we recommend building it in your environment from github:
 
 ```bash
 git clone git@github.com:NVIDIA/torch-harmonics.git
 cd torch-harmonics
-pip install -e .
+pip install --no-build-isolation -e .
 ```
-
+<!--
 Alternatively, use the Dockerfile to build your custom container after cloning:
 
 ```bash
@@ -103,7 +112,7 @@ git clone git@github.com:NVIDIA/torch-harmonics.git
 cd torch-harmonics
 docker build . -t torch_harmonics
 docker run --gpus all -it --rm --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 torch_harmonics
-```
+``` -->
 
 ## More about torch-harmonics
 
