@@ -60,44 +60,44 @@ jobs:
           - torch-version: '2.6.0'
             torch-cuda: 'cpu'
             cuda-version: 'none'
-          - torch-version: '2.6.0'
-            torch-cuda: 'cu118'
-            cuda-version: '11.8'
-          - torch-version: '2.6.0'
-            torch-cuda: 'cu124'
-            cuda-version: '12.4'
-          - torch-version: '2.6.0'
-            torch-cuda: 'cu126'
-            cuda-version: '12.6'
+          # - torch-version: '2.6.0'
+          #   torch-cuda: 'cu118'
+          #   cuda-version: '11.8'
+          # - torch-version: '2.6.0'
+          #   torch-cuda: 'cu124'
+          #   cuda-version: '12.4'
+          # - torch-version: '2.6.0'
+          #   torch-cuda: 'cu126'
+          #   cuda-version: '12.6'
 
           # PyTorch 2.7.x with multiple CUDA versions
           - torch-version: '2.7.0'
             torch-cuda: 'cpu'
             cuda-version: 'none'
-          - torch-version: '2.7.0'
-            torch-cuda: 'cu118'
-            cuda-version: '11.8'
-          - torch-version: '2.7.0'
-            torch-cuda: 'cu126'
-            cuda-version: '12.6'
-          - torch-version: '2.7.0'
-            torch-cuda: 'cu128'
-            cuda-version: '12.8'
+          # - torch-version: '2.7.0'
+          #   torch-cuda: 'cu118'
+          #   cuda-version: '11.8'
+          # - torch-version: '2.7.0'
+          #   torch-cuda: 'cu126'
+          #   cuda-version: '12.6'
+          # - torch-version: '2.7.0'
+          #   torch-cuda: 'cu128'
+          #   cuda-version: '12.8'
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Free Disk Space
-      run: |
-        sudo rm -rf /usr/local/.ghcup
-        sudo rm -rf /opt/hostedtoolcache/CodeQL
-        sudo rm -rf /usr/local/lib/android/sdk/ndk
-        sudo rm -rf /usr/share/dotnet
-        sudo rm -rf /opt/ghc
-        sudo rm -rf /usr/local/share/boost
-        sudo apt-get clean
-        echo "Disk space after cleanup:"
-        df -h
+    # - name: Free Disk Space
+    #   run: |
+    #     sudo rm -rf /usr/local/.ghcup
+    #     sudo rm -rf /opt/hostedtoolcache/CodeQL
+    #     sudo rm -rf /usr/local/lib/android/sdk/ndk
+    #     sudo rm -rf /usr/share/dotnet
+    #     sudo rm -rf /opt/ghc
+    #     sudo rm -rf /usr/local/share/boost
+    #     sudo apt-get clean
+    #     echo "Disk space after cleanup:"
+    #     df -h
 
     - name: Set up Python
       uses: actions/setup-python@v5
