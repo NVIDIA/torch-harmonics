@@ -101,10 +101,10 @@ torch::Tensor preprocess_psi(const int64_t K, const int64_t Ho, torch::Tensor ke
                              torch::Tensor col_idx, torch::Tensor val)
 {
 
-    CHECK_CPU_INPUT_TENSOR(ker_idx);
-    CHECK_CPU_INPUT_TENSOR(row_idx);
-    CHECK_CPU_INPUT_TENSOR(col_idx);
-    CHECK_CPU_INPUT_TENSOR(val);
+    CHECK_CONTIGUOUS_TENSOR(ker_idx);
+    CHECK_CONTIGUOUS_TENSOR(row_idx);
+    CHECK_CONTIGUOUS_TENSOR(col_idx);
+    CHECK_CONTIGUOUS_TENSOR(val);
 
     // get the input device and make sure all tensors are on the same device
     auto device = ker_idx.device();
