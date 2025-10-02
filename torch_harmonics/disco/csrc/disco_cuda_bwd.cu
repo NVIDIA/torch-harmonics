@@ -811,7 +811,7 @@ void launch_gen_disco_bwd(int64_t batch_size,
     size_t shsize = (sizeof(FLOATV_T)*(nchans*K) + sizeof(float)*nchans)*block.y;
 
     const int pscale = nlon_out / nlon_in;
-#if 1
+#if 0
     printf("Launching s2_disco_bwd_generic_vec_k<%d, float%s><<<..., ..., %zu, ...>>> with:\n"
            "\tnchan_out: %ld\n"
            "\tK: %ld\n\n",
@@ -860,7 +860,7 @@ void launch_spc_disco_bwd(int nloc,      // "BDIM_X*nloc" >= nchans
         //size_t shsize = sizeof(float)*DIV_UP(nchans, BDIM_X)*BDIM_X*block.y;
 
         const int pscale = nlon_out / nlon_in;
-#if 1
+#if 0
         printf("Launching s2_disco_bwd_special_vec_k<%d, %d, %d, float%s><<<(%d, %d), (%d, %d), ..., %zu, ...>>> with:\n"
                "\tnchans: %ld\n"
                "\tK: %ld\n\n",
@@ -1111,14 +1111,22 @@ static void s2_disco_bwd_dispatch(int64_t batch_size,
         int64_t nlat_in = ograd.size(1);
         int64_t nlon_in = ograd.size(2);
         int64_t Co = ograd.size(3);
-        int64_t nchan = Co * K;
-        int64_t nrows = roff_idx.size(0) - 1;
+        int64_t Kograd = ograd.size(4);
+        if (K != Kograd) {
+                fprintf(stderr,
+                        "%s:%d: error, K (%ld) must match size of dimension 4 of ograd (%ld)!\n",
+                        __func__, __LINE__, K, Kograd);
+                exit(EXIT_FAILURE);
+        }
 
-        printf("%s:%d: batch_size: %ld, nlat_in: %ld, nlon_in: %ld, C: %ld\n", 
-               __func__, __LINE__, batch_size, nlat_in, nlon_in, nchan);
+        int64_t nchan = Co * Kograd;
+        int64_t nrows = roff_idx.size(0) - 1;
+#if 0
+        printf("%s:%d: batch_size: %ld, nchan: %ld, nlat_in: %ld, nlon_in: %ld, K: %ld\n", 
+               __func__, __LINE__, batch_size, Co, nlat_in, nlon_in, Kograd);
 
         printf("K: %ld, Cin: %ld\n", K, nchan/K);
-        
+#endif    
         int64_t nlat_out = Ho;
         int64_t nlon_out = Wo;
 
