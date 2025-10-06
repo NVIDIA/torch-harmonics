@@ -41,10 +41,6 @@ namespace disco_kernels {
 
 using namespace utility_kernels;
 
-void dump_tensor(const char *fname, at::Tensor t);
-void dump_csr(const char *fname, at::Tensor roff, at::Tensor cols);
-void dump_csr_linear(const char *fname, at::Tensor roff, at::Tensor kers, at::Tensor rows, at::Tensor cols, at::Tensor vals);
-
 template <int BDIM_X, int ELXTH, typename REAL_T>
 __device__ void disco_fwd_d(const int Hi, const int Wi, const int K, const int Ho, const int Wo, const int pscale,
                             const int64_t *__restrict__ roff, const int64_t *__restrict__ kers,
@@ -229,7 +225,6 @@ __global__ void pack_vals_k(const int64_t K,
         
 
 // BEGIN VERSION WITH CHANNEL-LAST WITH 2D BLOCKS, 2ND DIM IDENTIFYING CHANNLES, NO EINSUM
-#if 1
 template<int BDIM_X,
          typename FLOATV_T>
 __device__ void processCSR_Kpow2_shm_d(const int wo,
@@ -361,16 +356,9 @@ void s2_disco_fwd_generic_vec_k(int nchan_in,   // no. of input  float (not FLOA
         return;
     }
 
-#if 1
     const int h = ctaid / nlon_out;
     const int wo = ctaid - (h*nlon_out);
     const int ho = row_idx[h];
-#else
-    // for now don't use row_idx
-    const int ho = wid / nlon_out;
-    const int wo = wid - (ho*nlon_out);
-#endif
-    
     const int nchan_out = nchan_in*K;
 
     extern __shared__ __align__(sizeof(float4)) float shext[];
@@ -596,16 +584,9 @@ void s2_disco_fwd_special_vec_k(const int nchan_in,   // no. of input  float (no
         return;
     }
 
-#if 1
     const int h = ctaid / nlon_out;
     const int wo = ctaid - (h*nlon_out);
     const int ho = row_idx[h];
-#else
-    // for now don't use row_idx
-    const int ho = ctaid / nlon_out;
-    const int wo = ctaid - (ho*nlon_out);
-#endif
-
     const int nchan_out = nchan_in*K;
 
     FLOATV_T locy[NLOC];
@@ -666,15 +647,8 @@ void launch_gen_disco_fwd(int64_t batch_size,
     dim3 grid(DIV_UP(nlat_out*nlon_out, block.y), batch_size);
 
     size_t shsize = sizeof(FLOATV_T)*(nchan_in*K)*block.y;
-
     const int pscale = nlon_in / nlon_out;
-#if 0
-    printf("Launching s2_disco_fwd_generic_vec_k<%d, float%s><<<..., ..., %zu, ...>>> with:\n"
-           "\tngroup: %ld\n"
-           "\tnchan_in: %ld\n"
-           "\tK: %ld\n\n",
-           THREADS, sizeof(FLOATV_T)==16?"4":"", shsize, ngroup, nchan_in, K);
-#endif
+
     // will use only the first 1/K-th of the CSR, i.e. only the first nlat_out rows
     s2_disco_fwd_generic_vec_k<THREADS>
                               <<<grid, block, shsize, stream>>>(nchan_in, nlat_in, nlon_in, nlat_out, nlon_out, pscale, K,
@@ -714,15 +688,8 @@ void launch_spc_disco_fwd(int nloc,      // "BDIM_X*nloc" >= nchans
         dim3 grid(DIV_UP(nlat_out*nlon_out, block.y), batch_size);
     
         size_t shsize = 0; //sizeof(float)*chxgrp_out * block.y;
-
         const int pscale = nlon_in / nlon_out;
-#if 0
-        printf("Launching s2_disco_fwd_special_vec_k<%d, %d, %d, float%s><<<(%d, %d, %d), (%d, %d), ..., %zu, ...>>> with:\n"
-               "\tngroup: %ld\n"
-               "\tnchan_in: %ld\n"
-               "\tK: %ld\n\n",
-               BDIM_X, BDIM_Y, CUR_LOC_SIZE, sizeof(FLOATV_T)==16?"4":"", grid.x, grid.y, grid.z, block.x, block.y, shsize, ngroup, nchan_in, K);
-#endif
+
         s2_disco_fwd_special_vec_k<BDIM_X, BDIM_Y, CUR_LOC_SIZE>
                                   <<<grid, block, shsize, stream>>>(nchan_in, nlat_in, nlon_in, nlat_out, nlon_out, pscale, K,
                                                                     _xp, _row_idx, _row_off, _col_idx, _val_pck, _yp);
@@ -775,7 +742,6 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
     // based on (row_off[ho+1]-row_off[ho])
     at::Tensor row_idx = sortRows(nlat_out, row_off, stream);
 
-
     // replace the K sequential CRSs in "val_dat":
     //
     //  val_dat[    0:  nnz/K) for ker = 0
@@ -823,8 +789,6 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         !is_aligned<sizeof(float4)>(_val_pck) ||
         (K % VEC_SIZE) != 0) {
 
-        //printf("Is aligned: %s:%d: VEC_SIZE: %d, nchan_in: %d, K: %d, _xp: %p, _yp: %p\n", __func__, __LINE__, VEC_SIZE, nchan_in, K, _xp, _yp);
-
         const int nloc = DIV_UP(nchan_in*K, bdimx);
         
         // to avoid the compilation of unused template instances;
@@ -849,8 +813,6 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         }
 
     } else {
-
-        //printf("Is not aligned: %s:%d: VEC_SIZE: %d, nchan_in: %d, K: %d, _xp: %p, _yp: %p\n", __func__, __LINE__, VEC_SIZE, nchan_in, K, _xp, _yp);
 
         //float4 *_xp4 = reinterpret_cast<float4 *>(_xp);
         float4 *_yp4 = reinterpret_cast<float4 *>(_yp);
@@ -878,62 +840,8 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
     }
     return;
 }
-#endif
 // END VERSION WITH CHANNEL-LAST WITH 2D BLOCKS, 2ND DIM IDENTIFYING CHANNLES, NO EINSUM
 
-
-
-
-
-
-
-
-    // utility functions
-    void dump_out_kers(const char *fprefix, at::Tensor t) {
-
-        int64_t B = t.size(0);
-        int64_t C = t.size(1);
-        int64_t K = t.size(2);
-        int64_t Ho = t.size(3);
-        int64_t Wo = t.size(4);
-
-        at::Tensor t_h = t.to(torch::kCPU);
-
-        auto accessor = t_h.accessor<float, 5>();
-
-        printf("Writing data to file...");
-
-        char fname[256];
-
-        for(size_t k = 0; k < K; k++) {
-            
-            snprintf(fname, sizeof(fname), "%s_%ld.txt", fprefix, k);
-
-            FILE *fp = fopen(fname, "w");
-            if (!fp) {
-                    fprintf(stderr, "Cannot open file %s for writing!\n", fname);
-                    exit(EXIT_FAILURE);
-            }
-            for(int64_t b = 0; b < B; b++) {
-                fprintf(fp, "b: %ld\n", b);
-                for(int64_t c = 0; c < C; c++) {
-                    fprintf(fp, "c: %ld\n", c);
-                    for(int64_t h = 0; h < Ho; h++) {
-                        for(int64_t w = 0; w < Wo; w++) {
-                            fprintf(fp, " %f", accessor[b][c][k][h][w]);
-                        }
-                        fprintf(fp, "\n");
-                    }
-                    fprintf(fp, "\n");
-                }
-                fprintf(fp, "\n");
-            }
-            fclose(fp);
-        }
-        printf("done\n");
-
-        return;
-    }
 
     torch::Tensor disco_cuda_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
                                  torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo)
@@ -963,68 +871,11 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         int64_t nlat_out = Ho;
         int64_t nlon_out = Wo;
 
-        //printf("%s:%d: batch_size: %ld, nchan: %ld, nlat_in: %ld, nlon_in: %ld, nlat_out: %ld, nlon_out: %ld, nrows: %ld, nnz_tot: %ld, K: %ld\n",
-        //        __func__, __LINE__, batch_size, nchan, nlat_in, nlon_in, nlat_out, nlon_out, nrows, col_idx.size(0), K);
-
         // get stream
         auto stream = at::cuda::getCurrentCUDAStream().stream();
 
         // assert
         static_assert(0 == (ELXTH_MAX % 2));
-#if 0
-        // allocate output
-        int64_t out_dims[] = {B, C, K, Ho, Wo};
-        auto options = torch::TensorOptions().device(inp.device()).dtype(inp.dtype());
-        torch::Tensor out = torch::zeros(out_dims, options);
-
-
-        // pick the correct launch config
-        if (Wo <= 64 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
-                                           launch_kernel<64, 1, scalar_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
-                                       }));
-        } else if (Wo <= 128 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
-                                           launch_kernel<128, (ELXTH_MAX / 2) + 1, scalar_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
-                                       }));
-        } else if (Wo <= 256 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
-                                           launch_kernel<256, (ELXTH_MAX / 2) + 1, scalar_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
-                                       }));
-        } else if (Wo <= 512 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
-                                           launch_kernel<512, (ELXTH_MAX / 2) + 1, scalar_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
-                                       }));
-        } else if (Wo <= 1024 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
-                                           launch_kernel<1024, (ELXTH_MAX / 2) + 1, scalar_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
-                                       }));
-        } else {
-            fprintf(stderr, "%s:%d: error, unsupported Wo value (%ld), max supported is %d\n", __FILE__, __LINE__, Wo,
-                    1024 * ELXTH_MAX);
-            exit(EXIT_FAILURE);
-        }
-#else
 
         // switch to channel-last
         // version with fused enisum 
@@ -1051,190 +902,15 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
                               val,
                               yP);
 
-        auto y = yP.reshape({batch_size, nlat_out, nlon_out, nchan, K}).to(x_type);
-        
-        torch::Tensor out = y;
+        auto out = yP.reshape({batch_size, nlat_out, nlon_out, nchan, K}).to(x_type);
 
-#endif // closes ORIGINAL if
-#if 0
-        if (std::getenv("S2_DISCO_DUMP_Y")) {
-            printf("waiting for kernel to finish...");
-            CHECK_CUDA(cudaStreamSynchronize(stream));
-            printf("done\n");
-            fflush(stdout);
-            dump_tensor("yout.txt", out);
-            //dump_csr_linear("csr_disco.txt", roff_idx, ker_idx, row_idx, col_idx, val);
-            //dump_out_kers("out_kers", out);
-        }
-#endif
         return out;
     }
 
-    TORCH_LIBRARY_IMPL(disco_kernels, CUDA, m)
-    {
-        m.impl("forward",  &disco_cuda_fwd);
-    }
+TORCH_LIBRARY_IMPL(disco_kernels, CUDA, m)
+{
+    m.impl("forward",  &disco_cuda_fwd);
+}
 
-    // utility functions
-    void dump_tensor(const char *fname, at::Tensor t) {
-
-            size_t n = 1;
-            for(int i = 0; i < t.dim(); i++) {
-                    n *= t.size(i);
-            }
-
-            float *data_h = (float *)malloc(sizeof(*data_h)*n);
-            if (!data_h) {
-                    fprintf(stderr, "Cannot allcoate %zu bytes!\n", sizeof(*data_h)*n);
-                    exit(EXIT_FAILURE);
-            }
-
-            float *float_d = t.data_ptr<float>();
-
-            CHECK_CUDA(cudaMemcpy(data_h, float_d, sizeof(*data_h)*n, cudaMemcpyDeviceToHost));
-
-            printf("Writing data to file...");
-
-            FILE *fp = fopen(fname, "w");
-            if (!fp) {
-                    fprintf(stderr, "Cannot open file %s for writing!\n", fname);
-                    exit(EXIT_FAILURE);
-            }
-
-            for(size_t i = 0; i < n; i++) {
-                    fprintf(fp, "%f\n", data_h[i]);
-            }
-
-            fclose(fp);
-            printf("done\n");
-
-            free(data_h);
-
-            return;
-    }
-
-    void dump_csr(const char *fname,
-                  at::Tensor roff,
-                  at::Tensor cols) {
-
-            int64_t nrows = roff.size(0)-1;
-            int64_t nnz = cols.size(0);
-
-            int64_t *roff_h = new int64_t[nrows+1];
-            int64_t *cols_h = new int64_t[nnz];
-
-            int64_t *roff_d = roff.data_ptr<int64_t>();
-            int64_t *cols_d = cols.data_ptr<int64_t>();
-
-            CHECK_CUDA(cudaMemcpy(roff_h, roff_d, sizeof(*roff_h)*(nrows+1), cudaMemcpyDeviceToHost));
-            CHECK_CUDA(cudaMemcpy(cols_h, cols_d, sizeof(*cols_d)*nnz      , cudaMemcpyDeviceToHost));
-
-            printf("Writing data to file...");
-
-            FILE *fp = fopen(fname, "w");
-            if (!fp) {
-                    fprintf(stderr, "Cannot open file %s for writing!\n", fname);
-                    exit(EXIT_FAILURE);
-            }
-            for(int64_t r = 0; r < nrows; r++) {
-
-                    fprintf(fp, "%10ld %10ld", r, roff_h[r+1]-roff_h[r]);
-
-                    for(int64_t o = roff_h[r]; o < roff_h[r+1]; o++) {
-                            fprintf(fp, "%10ld", cols_h[o]);
-                    }
-                    fprintf(fp, "\n");
-            }
-            fclose(fp);
-            printf("done\n");
-
-            delete [] roff_h;
-            delete [] cols_h;
-    }
-    
-    void dump_csr_linear(const char *fname,
-                         at::Tensor roff,
-                         at::Tensor kers,
-                         at::Tensor rows,
-                         at::Tensor cols,
-                         at::Tensor vals) {
-
-            int64_t nrows = roff.size(0)-1;
-            int64_t nnz = cols.size(0);
-
-            int64_t *roff_h = new int64_t[nrows+1];
-            int64_t *kers_h = new int64_t[nnz];
-            int64_t *rows_h = new int64_t[nnz];
-            int64_t *cols_h = new int64_t[nnz];
-            float   *vals_h = new float[nnz];
-
-            int64_t *roff_d = roff.data_ptr<int64_t>();
-            int64_t *kers_d = kers.data_ptr<int64_t>();
-            int64_t *rows_d = rows.data_ptr<int64_t>();
-            int64_t *cols_d = cols.data_ptr<int64_t>();
-            float   *vals_d = vals.data_ptr<float>();
-
-            CHECK_CUDA(cudaMemcpy(roff_h, roff_d, sizeof(*roff_h)*(nrows+1), cudaMemcpyDeviceToHost));
-            CHECK_CUDA(cudaMemcpy(kers_h, kers_d, sizeof(*kers_h)*nnz      , cudaMemcpyDeviceToHost));
-            CHECK_CUDA(cudaMemcpy(rows_h, rows_d, sizeof(*rows_h)*nnz      , cudaMemcpyDeviceToHost));
-            CHECK_CUDA(cudaMemcpy(cols_h, cols_d, sizeof(*cols_h)*nnz      , cudaMemcpyDeviceToHost));
-            CHECK_CUDA(cudaMemcpy(vals_h, vals_d, sizeof(*vals_h)*nnz      , cudaMemcpyDeviceToHost));
-
-            printf("Writing data to file...");
-
-            FILE *fp = fopen(fname, "w");
-            if (!fp) {
-                    fprintf(stderr, "Cannot open file %s for writing!\n", fname);
-                    exit(EXIT_FAILURE);
-            }
-            fprintf(fp, "COLS:\n");
-            for(int64_t r = 0; r < nrows; r++) {
-
-                    fprintf(fp, "%10ld %10ld", r, roff_h[r+1]-roff_h[r]);
-
-                    for(int64_t o = roff_h[r]; o < roff_h[r+1]; o++) {
-                            fprintf(fp, "%10ld", cols_h[o]);
-                    }
-                    fprintf(fp, "\n");
-            }
-            fprintf(fp, "KERS:\n");
-            for(int64_t r = 0; r < nrows; r++) {
-
-                    fprintf(fp, "%10ld %10ld", r, roff_h[r+1]-roff_h[r]);
-
-                    for(int64_t o = roff_h[r]; o < roff_h[r+1]; o++) {
-                            fprintf(fp, "%10ld", kers_h[o]);
-                    }
-                    fprintf(fp, "\n");
-            }
-            fprintf(fp, "ROWS:\n");
-            for(int64_t r = 0; r < nrows; r++) {
-
-                    fprintf(fp, "%10ld %10ld", r, roff_h[r+1]-roff_h[r]);
-
-                    for(int64_t o = roff_h[r]; o < roff_h[r+1]; o++) {
-                            fprintf(fp, "%10ld", rows_h[o]);
-                    }
-                    fprintf(fp, "\n");
-            }
-            fprintf(fp, "VALS:\n");
-            for(int64_t r = 0; r < nrows; r++) {
-
-                    fprintf(fp, "%10ld %10ld", r, roff_h[r+1]-roff_h[r]);
-
-                    for(int64_t o = roff_h[r]; o < roff_h[r+1]; o++) {
-                            fprintf(fp, "%10f", vals_h[o]);
-                    }
-                    fprintf(fp, "\n");
-            }
-            fclose(fp);
-            printf("done\n");
-
-            delete [] roff_h;
-            delete [] kers_h;
-            delete [] rows_h;
-            delete [] cols_h;
-            delete [] vals_h;
-    }
 }
 
