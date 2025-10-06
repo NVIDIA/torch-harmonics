@@ -42,6 +42,8 @@ from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTran
 from torch_harmonics.quadrature import _precompute_latitudes, _precompute_longitudes
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
 
+from testutils import compare_tensors
+
 if not optimized_kernels_is_available():
     print(f"Warning: Couldn't import optimized disco convolution kernels")
 
@@ -280,7 +282,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
             psi = torch.sparse_coo_tensor(conv.psi_idx, conv.psi_vals, size=(conv.kernel_size, conv.nlat_in, conv.nlat_out * conv.nlon_out)).to_dense()
 
-            self.assertTrue(torch.allclose(psi, psi_dense[:, :, 0].reshape(-1, nlat_in, nlat_out * nlon_out)))
+            self.assertTrue(compare_tensors(psi, psi_dense[:, :, 0].reshape(-1, nlat_in, nlat_out * nlon_out)))
         else:
             psi_dense = _precompute_convolution_tensor_dense(
                 in_shape,
@@ -296,7 +298,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
             psi = torch.sparse_coo_tensor(conv.psi_idx, conv.psi_vals, size=(conv.kernel_size, conv.nlat_out, conv.nlat_in * conv.nlon_in)).to_dense()
 
-            self.assertTrue(torch.allclose(psi, psi_dense[:, :, 0].reshape(-1, nlat_out, nlat_in * nlon_in)))
+            self.assertTrue(compare_tensors(psi, psi_dense[:, :, 0].reshape(-1, nlat_out, nlat_in * nlon_in)))
 
         # create a copy of the weight
         w_ref = torch.empty_like(conv.weight)
@@ -329,11 +331,11 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # compare results
         print(y, y_ref)
-        self.assertTrue(torch.allclose(y, y_ref, rtol=tol, atol=tol))
+        self.assertTrue(compare_tensors(y, y_ref, rtol=tol, atol=tol, verbose=verbose))
 
         # compare
-        self.assertTrue(torch.allclose(x_grad, x_ref_grad, rtol=tol, atol=tol))
-        self.assertTrue(torch.allclose(conv.weight.grad, w_ref.grad.unsqueeze(0), rtol=tol, atol=tol))
+        self.assertTrue(compare_tensors(x_grad, x_ref_grad, rtol=tol, atol=tol, verbose=verbose))
+        self.assertTrue(compare_tensors(conv.weight.grad, w_ref.grad.unsqueeze(0), rtol=tol, atol=tol, verbose=verbose))
 
 
     @parameterized.expand(
@@ -445,11 +447,11 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         inp_grad_opt = inp.grad.clone()
 
         # compare results
-        self.assertTrue(torch.allclose(out_naive, out_opt, rtol=tol, atol=tol))
+        self.assertTrue(compare_tensors(out_naive, out_opt, rtol=tol, atol=tol, verbose=verbose))
 
         # compare
-        self.assertTrue(torch.allclose(inp_grad_naive, inp_grad_opt, rtol=tol, atol=tol))
-        self.assertTrue(torch.allclose(conv_naive.weight.grad, conv_opt.weight.grad, rtol=tol, atol=tol))
+        self.assertTrue(compare_tensors(inp_grad_naive, inp_grad_opt, rtol=tol, atol=tol, verbose=verbose))
+        self.assertTrue(compare_tensors(conv_naive.weight.grad, conv_opt.weight.grad, rtol=tol, atol=tol, verbose=verbose))
 
 
     @parameterized.expand(

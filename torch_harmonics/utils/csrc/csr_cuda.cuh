@@ -159,17 +159,14 @@ __device__ float4 __forceinline__ __vdiv(float s, float4 v) {
 template<int BDIM_X>
 static __device__ void __sync() {
 
-    unsigned int subwarp_mask = FULL_MASK;
-
-    if constexpr(BDIM_X <= WARP_SIZE) {
-        const int tidy = threadIdx.y;
+    if      constexpr(BDIM_X  > WARP_SIZE) {  __syncthreads(); }
+    else if constexpr(BDIM_X == WARP_SIZE) {     __syncwarp(); }
+    else {         // BDIM_X  < WARP_SIZE
         constexpr unsigned int MASK = (1ull << BDIM_X)-1;
-        subwarp_mask = MASK << (tidy*BDIM_X);
+        unsigned int shift = threadIdx.y % (WARP_SIZE/BDIM_X);
+        unsigned int subwarp_mask = MASK << (shift*BDIM_X);
+        __syncwarp(subwarp_mask);
     }
-
-    if constexpr(BDIM_X <= WARP_SIZE) { __syncwarp(subwarp_mask); }
-    else                              {          __syncthreads(); }
-
     return;
 }
 

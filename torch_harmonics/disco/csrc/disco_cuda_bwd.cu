@@ -394,15 +394,9 @@ void s2_disco_bwd_generic_vec_k(int nchans,   // no. of input  float (not FLOATV
         return;
     }
 
-#if 1
     const int h = ctaid / nlon_in;
     const int wi = ctaid - (h*nlon_in);
     const int hi = row_idx[h];
-#else
-    // for now don't use row_idx
-    const int hi = ctaid / nlon_in;
-    const int wi = ctaid - (hi*nlon_in);
-#endif
     
     x += int64_t(batch)*nlat_in*nlon_in*nchans*K + int64_t(hi)*nlon_in*nchans*K + int64_t(wi)*nchans*K;
     y += int64_t(batch)*nlat_out*nlon_out*nchans;
@@ -528,110 +522,6 @@ static __device__ void processCSR_Kpow2_reg_d(const int wi,
     return;
 }
 
-#if 0
-template<int BDIM_X,
-         int SHPAD,
-         int NLOC,
-         typename FLOATV_T>
-static __device__ void processCSR_Kpow2_reg_d2(const int wi,
-                                              const int rlen,
-                                              const int nchans,  // no. of input FLOATV_T elements along channel dim
-                                              const int nlon_out,
-                                              const int pscale,
-                                              const int K,
-                                              const FLOATV_T (&locx)[NLOC],
-                                              const int64_t  *__restrict__ cols,
-                                              const FLOATV_T *__restrict__ vals,
-                                                    float *(&shYOff)[BDIM_X+SHPAD],
-                                                    float *__restrict__ shy,       // NO LONGER USED
-                                                    float *__restrict__ y) {
-    constexpr int NLOC_M1 = NLOC-1;
-
-    const int tidx = threadIdx.x;
-    const int tidy = threadIdx.y;
-
-    const int log2_K = __ffs(K)-1;
-
-    const int tidxDivK = tidx >> log2_K;
-    const int tidxModK = tidx  & (K-1);
-    
-    vals += tidxModK;
-    
-    const int BDIMX_div_K = BDIM_X >> log2_K;
-#if 1
-    for(int chan = tidx; chan < nchans; chan += BDIM_X) {
-       shy[chan] = 0;
-    }
-    __sync<BDIM_X>();
-#endif
-
-    cols += tidx;
-
-    for(int off = 0; off < rlen; off++) {
-        if ((off % BDIM_X) == 0) {
-            __sync<BDIM_X>();
-
-            const int64_t  col = (off+tidx < rlen) ? cols[0] : 0;
-
-            const int ho = col / nlon_out;
-            const int wo = col - (ho*nlon_out);
-
-            int wop = wo + pscale*wi;
-            wop -= (wop / nlon_out)*nlon_out;
-
-            shYOff[tidx] = y + int64_t(ho)*nlon_out*nchans + int64_t(wop)*nchans;
-            cols += BDIM_X;
-
-            __sync<BDIM_X>();
-        }
-
-        float *_y = shYOff[off % BDIM_X];// + tidxDivK;
-        float *_shy = shy + tidxDivK;
-
-        const FLOATV_T myval = vals[0];
-
-        float locy[NLOC];
-        
-        #pragma unroll
-        for(int i = 0; i < NLOC; i++) {
-            locy[i] = __vred(__vmul(myval, locx[i]));
-        }
-
-        #pragma unroll
-        for(int i = 0; i < NLOC; i++) {
-
-            // K is a power of two <= 32
-            for(int j = 1; j < K; j *= 2) {
-                locy[i] += __shfl_xor_sync(FULL_MASK, locy[i], j);
-            }
-        }
-                
-        if (!tidxModK) {
-            // NLOC*BDIM_X >= nchans*K
-            // NLOC_M1*BDIM_X < nchans*K => NLOC_M1*BDIM_X/K < nchans
-            #pragma unroll
-            for(int i = 0; i < NLOC; i++) {
-                _shy[i*BDIMX_div_K] += locy[i];
-            }
-           // if (NLOC_M1*BDIM_X+tidx < nchans*K) {
-           //     _shy[NLOC_M1*BDIMX_div_K] += locy[NLOC_M1];
-           // }
-        }
-        __sync<BDIM_X>();
-
-        for(int chan = tidx; chan < nchans; chan += BDIM_X) {
-            atomicAdd(_y+chan, shy[chan]);
-            shy[chan] = 0;
-        }
-        __sync<BDIM_X>();
-
-        vals += K;
-    }
-
-    return;
-}
-#endif
-
 template<int BDIM_X,
          int SHPAD,
          int NLOC,
@@ -742,15 +632,9 @@ void s2_disco_bwd_special_vec_k(int nchans,   // no. of input  float (not FLOATV
         return;
     }
 
-#if 1
     const int h = ctaid / nlon_out;
     const int wi = ctaid - (h*nlon_out);
     const int hi = row_idx[h];
-#else
-    // for now don't use row_idx
-    const int hi = ctaid / nlon_out;
-    const int wi = ctaid - (hi*nlon_out);
-#endif
 
     x += int64_t(batch)*nlat_in*nlon_in*nchans*K + int64_t(hi)*nlon_in*nchans*K + int64_t(wi)*nchans*K + tidx;
     y += int64_t(batch)*nlat_out*nlon_out*nchans;
@@ -809,14 +693,8 @@ void launch_gen_disco_bwd(int64_t batch_size,
     dim3 grid(DIV_UP(nlat_in*nlon_in, block.y), batch_size);
 
     size_t shsize = (sizeof(FLOATV_T)*(nchans*K) + sizeof(float)*nchans)*block.y;
-
     const int pscale = nlon_out / nlon_in;
-#if 0
-    printf("Launching s2_disco_bwd_generic_vec_k<%d, float%s><<<..., ..., %zu, ...>>> with:\n"
-           "\tnchan_out: %ld\n"
-           "\tK: %ld\n\n",
-           THREADS, sizeof(FLOATV_T)==16?"4":"", shsize, nchans, K);
-#endif
+
     // will use only the first 1/K-th of the CSR, i.e. only the first nlat_out rows
     s2_disco_bwd_generic_vec_k<THREADS>
                               <<<grid, block, shsize, stream>>>(nchans, nlat_in, nlon_in, nlat_out, nlon_out, pscale, K,
@@ -858,14 +736,8 @@ void launch_spc_disco_bwd(int nloc,      // "BDIM_X*nloc" >= nchans
         // could be (BDIM_X/K) instead of BDIM_X but let's keep it simple
         size_t shsize = (K & (K-1)) ? sizeof(float)*DIV_UP(nchans, BDIM_X)*BDIM_X*block.y : 0;
         //size_t shsize = sizeof(float)*DIV_UP(nchans, BDIM_X)*BDIM_X*block.y;
-
         const int pscale = nlon_out / nlon_in;
-#if 0
-        printf("Launching s2_disco_bwd_special_vec_k<%d, %d, %d, float%s><<<(%d, %d), (%d, %d), ..., %zu, ...>>> with:\n"
-               "\tnchans: %ld\n"
-               "\tK: %ld\n\n",
-               BDIM_X, BDIM_Y, CUR_LOC_SIZE, sizeof(FLOATV_T)==16?"4":"", grid.x, grid.y, block.x, block.y, shsize, nchans, K);
-#endif
+
         s2_disco_bwd_special_vec_k<BDIM_X, BDIM_Y, CUR_LOC_SIZE>
                                   <<<grid, block, shsize, stream>>>(nchans, nlat_in, nlon_in, nlat_out, nlon_out, pscale, K,
                                                                     _xp, _row_idx, _row_off, _col_idx, _val_pck, _yp);
@@ -968,8 +840,6 @@ static void s2_disco_bwd_dispatch(int64_t batch_size,
         !is_aligned<sizeof(float4)>(_val_pck) ||
         (K % VEC_SIZE) != 0) {
 
-        //printf("%s:%d: VEC_SIZE: %d, nchans: %d, K: %d, _xp: %p, _yp: %p\n", __func__, __LINE__, VEC_SIZE, nchans, K, _xp, _yp);
-
         const int nloc = DIV_UP(nchans*K, bdimx);
         
         // to avoid the compilation of unused template instances;
@@ -995,11 +865,7 @@ static void s2_disco_bwd_dispatch(int64_t batch_size,
 
     } else {
 
-        //printf("%s:%d: VEC_SIZE: %d, nchans: %d, K: %d, _xp: %p, _yp: %p\n", __func__, __LINE__, VEC_SIZE, nchans, K, _xp, _yp);
-
         float4 *_xp4 = reinterpret_cast<float4 *>(_xp);
-        //float4 *_yp4 = reinterpret_cast<float4 *>(_yp);
-
         float4 *_val_pck4 = reinterpret_cast<float4 *>(_val_pck);
 
         K /= VEC_SIZE;
@@ -1036,76 +902,7 @@ static void s2_disco_bwd_dispatch(int64_t batch_size,
         CHECK_CUDA_INPUT_TENSOR(row_idx);
         CHECK_CUDA_INPUT_TENSOR(col_idx);
         CHECK_CUDA_INPUT_TENSOR(val);
-#if 0
-        // extract some shapes
-        int64_t B = ograd.size(0);
-        int64_t Hi = ograd.size(1);
-        int64_t Wi = ograd.size(2);
-        int64_t C = ograd.size(3);
-        int64_t BC = B * C;
-        int64_t nrows = roff_idx.size(0) - 1;
 
-        // allocate output
-        int64_t out_dims[] = {B, Ho, Wo, C};
-
-        // get stream
-        auto stream = at::cuda::getCurrentCUDAStream().stream();
-
-        // extract dtype
-        auto x_type = ograd.dtype();
-        torch::Tensor xP = ograd.to(torch::kFloat32);
-
-        torch::Tensor igrad = torch::zeros(out_dims, xP.options());
-
-        // assert
-        static_assert(0 == (ELXTH_MAX % 2));
-
-        if (Wo <= 64 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(xP.scalar_type(), "disco_backward_cuda", ([&] {
-                                           launch_kernel<64, 1, scalar_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               xP.data_ptr<scalar_t>(), igrad.data_ptr<scalar_t>(), stream);
-                                       }));
-        } else if (Wo <= 128 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(xP.scalar_type(), "disco_backward_cuda", ([&] {
-                                           launch_kernel<128, (ELXTH_MAX / 2) + 1, scalar_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               xP.data_ptr<scalar_t>(), igrad.data_ptr<scalar_t>(), stream);
-                                        }));
-        } else if (Wo <= 256 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(xP.scalar_type(), "disco_backward_cuda", ([&] {
-                                           launch_kernel<256, (ELXTH_MAX / 2) + 1, scalar_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               xP.data_ptr<scalar_t>(), igrad.data_ptr<scalar_t>(), stream);
-                                       }));
-        } else if (Wo <= 512 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(xP.scalar_type(), "disco_backward_cuda", ([&] {
-                                           launch_kernel<512, (ELXTH_MAX / 2) + 1, scalar_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               xP.data_ptr<scalar_t>(), igrad.data_ptr<scalar_t>(), stream);
-                                       }));
-        } else if (Wo <= 1024 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(xP.scalar_type(), "disco_backward_cuda", ([&] {
-                                         launch_kernel<1024, (ELXTH_MAX / 2) + 1, scalar_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               xP.data_ptr<scalar_t>(), igrad.data_ptr<scalar_t>(), stream);
-                                       }));
-        } else {
-            fprintf(stderr, "%s:%d: error, unsupported Wo value (%ld), max supported is %d\n", __FILE__, __LINE__, Wo,
-                    1024 * ELXTH_MAX);
-            exit(EXIT_FAILURE);
-        }
-#else
         // extract some shapes
         int64_t batch_size = ograd.size(0);
         int64_t nlat_in = ograd.size(1);
@@ -1121,12 +918,6 @@ static void s2_disco_bwd_dispatch(int64_t batch_size,
 
         int64_t nchan = Co * Kograd;
         int64_t nrows = roff_idx.size(0) - 1;
-#if 0
-        printf("%s:%d: batch_size: %ld, nchan: %ld, nlat_in: %ld, nlon_in: %ld, K: %ld\n", 
-               __func__, __LINE__, batch_size, Co, nlat_in, nlon_in, Kograd);
-
-        printf("K: %ld, Cin: %ld\n", K, nchan/K);
-#endif    
         int64_t nlat_out = Ho;
         int64_t nlon_out = Wo;
 
@@ -1136,26 +927,11 @@ static void s2_disco_bwd_dispatch(int64_t batch_size,
         // get stream
         auto stream = at::cuda::getCurrentCUDAStream().stream();
 
-        // extract dtype
+        // extract dtype, convert to fp32 and make contiguous
         auto x_type = ograd.dtype();
-        torch::Tensor xP = ograd.reshape({batch_size, nlat_in, nlon_in, nchan}).to(torch::kFloat32);
+        torch::Tensor xP = ograd.reshape({batch_size, nlat_in, nlon_in, nchan}).to(torch::kFloat32).contiguous();
 
         torch::Tensor igrad = torch::zeros(out_dims, xP.options());
-        
-#if 0
-        printf("%s:%d: tensors info:\n", __func__, __LINE__);
-        printf("\tbatch_size: %ld\n", batch_size);
-        printf("\t   nlat_in: %ld\n", nlat_in);
-        printf("\t   nlon_in: %ld\n", nlon_in);
-        printf("\t         C: %ld\n", nchan);
-        printf("\t         K: %ld\n\n", K);
-        printf("\troff_idx.size(0)-1 == nlat_in*K: %d\n", roff_idx.size(0)-1 == nlat_in*K);
-        //printf("\tinp channle-last: %d\n", x_is_channels_last);
-        printf("\treshaped inp to: {%ld, %ld, %ld, %ld}\n", xP.size(0), xP.size(1), xP.size(2), xP.size(3));
-        fflush(stdout);
-
-        //exit(1);
-#endif
         
         // call channel-last kernel implementation
         s2_disco_bwd_dispatch(batch_size,
@@ -1170,15 +946,7 @@ static void s2_disco_bwd_dispatch(int64_t batch_size,
                               col_idx,
                               val,
                               igrad);
-/*
-        // switch back to original layout;
-        torch::Tensor out = yP;
-        if (!x_is_channels_last) { 
-            out = permute_4D_to0312(yP);
-            // make y {batch_size, nchan, nlat_out, nlon_out}
-        }
-*/
-#endif
+
         // convert back to original dtype
         igrad = igrad.to(x_type);
 
