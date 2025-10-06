@@ -330,7 +330,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         x_ref_grad = x_ref.grad.clone()
 
         # compare results
-        print(y, y_ref)
         self.assertTrue(compare_tensors(y, y_ref, rtol=tol, atol=tol, verbose=verbose))
 
         # compare

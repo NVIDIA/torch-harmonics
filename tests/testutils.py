@@ -38,4 +38,7 @@ def compare_tensors(tensor, tensor_ref, rtol=1e-8, atol=1e-5,  verbose=False):
         print(f"absolute tensor diff: min = {torch.min(diff)}, mean = {torch.mean(diff)}, max = {torch.max(diff)}.")
         reldiff = diff / torch.abs(tensor_ref)
         print(f"relative tensor diff: min = {torch.min(reldiff)}, mean = {torch.mean(reldiff)}, max = {torch.max(reldiff)}.")
+        # find element with maximum difference
+        index = torch.argmax(diff)
+        print(f"element {index} with maximum difference: value = {tensor.flatten()[index]}, reference value = {tensor_ref.flatten()[index]}, diff = {diff.flatten()[index]}.")
     return allclose
