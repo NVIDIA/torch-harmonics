@@ -823,7 +823,7 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         !is_aligned<sizeof(float4)>(_val_pck) ||
         (K % VEC_SIZE) != 0) {
 
-        printf("Is aligned: %s:%d: VEC_SIZE: %d, nchan_in: %d, K: %d, _xp: %p, _yp: %p\n", __func__, __LINE__, VEC_SIZE, nchan_in, K, _xp, _yp);
+        //printf("Is aligned: %s:%d: VEC_SIZE: %d, nchan_in: %d, K: %d, _xp: %p, _yp: %p\n", __func__, __LINE__, VEC_SIZE, nchan_in, K, _xp, _yp);
 
         const int nloc = DIV_UP(nchan_in*K, bdimx);
         
@@ -850,7 +850,7 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
 
     } else {
 
-        printf("Is not aligned: %s:%d: VEC_SIZE: %d, nchan_in: %d, K: %d, _xp: %p, _yp: %p\n", __func__, __LINE__, VEC_SIZE, nchan_in, K, _xp, _yp);
+        //printf("Is not aligned: %s:%d: VEC_SIZE: %d, nchan_in: %d, K: %d, _xp: %p, _yp: %p\n", __func__, __LINE__, VEC_SIZE, nchan_in, K, _xp, _yp);
 
         //float4 *_xp4 = reinterpret_cast<float4 *>(_xp);
         float4 *_yp4 = reinterpret_cast<float4 *>(_yp);
@@ -963,8 +963,8 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         int64_t nlat_out = Ho;
         int64_t nlon_out = Wo;
 
-        printf("%s:%d: batch_size: %ld, nchan: %ld, nlat_in: %ld, nlon_in: %ld, nlat_out: %ld, nlon_out: %ld, nrows: %ld, nnz_tot: %ld, K: %ld\n",
-                __func__, __LINE__, batch_size, nchan, nlat_in, nlon_in, nlat_out, nlon_out, nrows, col_idx.size(0), K);
+        //printf("%s:%d: batch_size: %ld, nchan: %ld, nlat_in: %ld, nlon_in: %ld, nlat_out: %ld, nlon_out: %ld, nrows: %ld, nnz_tot: %ld, K: %ld\n",
+        //        __func__, __LINE__, batch_size, nchan, nlat_in, nlon_in, nlat_out, nlon_out, nrows, col_idx.size(0), K);
 
         // get stream
         auto stream = at::cuda::getCurrentCUDAStream().stream();
@@ -1056,7 +1056,7 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         torch::Tensor out = y;
 
 #endif // closes ORIGINAL if
-#if 1
+#if 0
         if (std::getenv("S2_DISCO_DUMP_Y")) {
             printf("waiting for kernel to finish...");
             CHECK_CUDA(cudaStreamSynchronize(stream));
