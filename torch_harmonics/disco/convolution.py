@@ -30,21 +30,15 @@
 #
 
 import abc
-from typing import List, Tuple, Union, Optional
-from warnings import warn
+from typing import Tuple, Union, Optional
 
 import math
-import xmlrpc
 
 import torch
 import torch.nn as nn
 
-import nvtx
-
-from functools import partial
-
 from torch_harmonics.cache import lru_cache
-from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
+from torch_harmonics.quadrature import _precompute_latitudes, _precompute_longitudes
 from torch_harmonics.utils import permute_to_0231, permute_to_0312
 from ._disco_utils import _get_psi, _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from ._disco_utils import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
@@ -164,57 +158,6 @@ def _normalize_convolution_tensor_s2(
         psi_vals = psi_vals / correction_factor
 
     return psi_vals
-
-
-def _pad_convolution_tensor_s2(psi_idx, psi_vals, kernel_size) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Pads convolution tensor values with zeros to allow kernel vectorization.
-
-    This function modifies the tensor to ensure that the number of elements per row is consistent for each kernel.
-    This is essential for vectorizing the kernel operations.
-
-    Parameters
-    -----------
-    psi_idx: torch.Tensor
-        Index tensor for the sparse convolution tensor.
-    psi_vals: torch.Tensor
-        Value tensor for the sparse convolution tensor.
-    kernel_size: int
-        Number of kernel basis functions.
-
-    Returns
-    -------
-    Tuple[torch.Tensor, torch.Tensor]
-        Padded index and value tensors.
-    """
-
-    ker_idx = psi_idx[0, ...]
-    row_idx = psi_idx[1, ...]
-    col_idx = psi_idx[2, ...]
-    
-    # check number of elements per row for each kernel and collect unique indices in the same go:
-    indices = {}
-    nnz = 0
-    for ik in range(kernel_size):
-        iidx = torch.argwhere(ker_idx == ik)
-        nnz_tmp = iidx.shape[0]
-        nnz = max(nnz, nnz_tmp)
-        #row_idx_ker = row_idx[]
-        #col_idx_ker = col_idx[torch.where(ker_idx == ik)[0]]
-
-    print(f"max number of elements per row: {nnz}")
-
-    # create padded kernels
-    ker_idx_pad = torch.zeros(nnz*kernel_size, dtype=psi_idx.dtype, device=psi_idx.device)
-    row_idx_pad = torch.zeros(nnz*kernel_size, dtype=psi_idx.dtype, device=psi_idx.device)
-    col_idx_pad = torch.zeros(nnz*kernel_size, dtype=psi_idx.dtype, device=psi_idx.device)
-    vals_pad = torch.zeros(nnz*kernel_size, dtype=psi_vals.dtype, device=psi_vals.device)
-    
-    #off = 0
-    for ik in range(kernel_size):
-        iidx = torch.argwhere(ker_idx == ik)
-        print(f"kernel {ik}:", row_idx[iidx], col_idx[iidx])
-
-    return psi_idx_pad, psi_vals_pad
 
 
 @lru_cache(typed=True, copy=True)
@@ -530,10 +473,6 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             merge_quadrature=True,
         )
 
-        #if self.optimized_kernel:
-        #    # pad the convolution tensor to allow kernel vectorization
-        #    idx, vals = _pad_convolution_tensor_s2(idx, vals, self.kernel_size)
-
         # extract values and indices
         ker_idx = idx[0, ...].contiguous()
         row_idx = idx[1, ...].contiguous()
@@ -562,34 +501,44 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
-    @nvtx.annotate("forward", color="purple")
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         if self.optimized_kernel:
-            with nvtx.annotate("_disco_s2_contraction_optimized", color="red"):
-                xp = permute_to_0231(x)
+            # permute input
+            xp = permute_to_0231(x)
 
-                xpc = _disco_s2_contraction_optimized(
-                    xp, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, 
-                    self.kernel_size, self.nlat_out, self.nlon_out
-                ).reshape(x.shape[0], self.nlat_out, self.nlon_out, self.groups, self.groupsize_in, self.kernel_size)
+            # disco contaction
+            xpc = _disco_s2_contraction_optimized(
+                xp, 
+                self.psi_roff_idx, 
+                self.psi_ker_idx, 
+                self.psi_row_idx, 
+                self.psi_col_idx, 
+                self.psi_vals, 
+                self.kernel_size, 
+                self.nlat_out, 
+                self.nlon_out
+            )
 
-                outp = torch.einsum("bxygck,gock->bxygo", xpc, self.weight).reshape(xpc.shape[0], self.nlat_out, self.nlon_out, -1).contiguous()
+            # weight multiplication
+            B, H, W, _, K = xpc.shape
+            xpc = xpc.reshape(B, H, W, self.groups, self.groupsize_in, K)
+            outp = torch.einsum("bxygck,gock->bxygo", xpc, self.weight)
+            outp = outp.reshape(B, H, W, -1).contiguous()
 
-                out = permute_to_0312(outp)
+            # permute output
+            out = permute_to_0312(outp)
         else:
+            # disco contaction
             x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
 
             # extract shape
             B, _, K, H, W = x.shape
-            with nvtx.annotate("reshape", color="blue"):
-                x = x.reshape(B, self.groups, self.groupsize_in, K, H, W)
+            x = x.reshape(B, self.groups, self.groupsize_in, K, H, W)
 
-            # do weight multiplication
-            with nvtx.annotate("einsum", color="blue"):
-                out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight).contiguous()
-
-            out = out.reshape(B, -1, H, W)
+            # weight multiplication
+            out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight)
+            out = out.reshape(B, -1, H, W).contiguous()
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
@@ -715,22 +664,37 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         # extract shape
-        B, C, H, W = x.shape
+        B, _, H, W = x.shape
 
         if self.optimized_kernel:
+            # permute input
             xp = permute_to_0231(x)
+
+            # weight multiplication
             xp = xp.reshape(B, H, W, self.groups, self.groupsize_in)
-            xpc = torch.einsum("bxygc,gock->bxygok", xp, self.weight).reshape(B, H, W, -1, self.kernel_size).contiguous()
+            xpc = torch.einsum("bxygc,gock->bxygok", xp, self.weight)
+            xpc = xpc.reshape(B, H, W, -1, self.kernel_size).contiguous()
+
+            # disco contraction
             outp = _disco_s2_transpose_contraction_optimized(
-                xpc, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
+                xpc, 
+                self.psi_roff_idx, 
+                self.psi_ker_idx, 
+                self.psi_row_idx, 
+                self.psi_col_idx, 
+                self.psi_vals, 
+                self.kernel_size, 
+                self.nlat_out, 
+                self.nlon_out
             )
+
+            # permute output
             out = permute_to_0312(outp)
         else:
+            # weight multiplication
             x = x.reshape(B, self.groups, self.groupsize_in, H, W)
-
-            # do weight multiplication
-            xc = torch.einsum("bgcxy,gock->bgokxy", x, self.weight).contiguous()
-            xc = xc.reshape(B, self.groups* self.groupsize_out, -1, H, W)
+            xc = torch.einsum("bgcxy,gock->bgokxy", x, self.weight)
+            xc = xc.reshape(B, self.groups* self.groupsize_out, -1, H, W).contiguous()
 
             # disco contraction
             out = _disco_s2_transpose_contraction_torch(xc, self.psi_st.to(x.device), self.nlon_out)

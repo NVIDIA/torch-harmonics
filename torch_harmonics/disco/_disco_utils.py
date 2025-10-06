@@ -29,8 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import Optional, Tuple
-import math
+from typing import Optional
 
 import torch
 from disco_helpers import optimized_kernels_is_available
