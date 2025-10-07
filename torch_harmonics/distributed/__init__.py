@@ -40,10 +40,12 @@ from .primitives import (
     reduce_from_azimuth_region,
     scatter_to_polar_region,
     gather_from_polar_region,
+    gather_from_azimuth_region,
     copy_to_polar_region,
     copy_to_azimuth_region,
     reduce_from_scatter_to_polar_region,
-    gather_from_copy_to_polar_region
+    gather_from_copy_to_polar_region,
+    gather_from_copy_to_azimuth_region
 )
 
 # import the sht
@@ -53,6 +55,9 @@ from .distributed_sht import DistributedRealVectorSHT, DistributedInverseRealVec
 # import DISCO
 from .distributed_convolution import DistributedDiscreteContinuousConvS2
 from .distributed_convolution import DistributedDiscreteContinuousConvTransposeS2
+
+# import attention
+from .distributed_attention import DistributedAttentionS2
 
 # import resampling
 from .distributed_resample import DistributedResampleS2

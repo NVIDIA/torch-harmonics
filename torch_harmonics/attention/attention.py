@@ -29,8 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import List, Tuple, Union, Optional
-from warnings import warn
+from typing import Tuple, Union, Optional
 
 import math
 
@@ -147,6 +146,9 @@ class AttentionS2(nn.Module):
 
         # change this later to allow arbitrary number of batch dims
         assert (query.dim() == key.dim()) and (key.dim() == value.dim()) and (value.dim() == 4)
+        assert (query.shape[2] == self.nlat_out) and (query.shape[3] == self.nlon_out)
+        assert (key.shape[2] == self.nlat_in) and (key.shape[3] == self.nlon_in)
+        assert (value.shape[2] == self.nlat_in) and (value.shape[3] == self.nlon_in)
 
         # perform MLP
         query = nn.functional.conv2d(query, self.q_weights, bias=self.q_bias)
@@ -154,31 +156,38 @@ class AttentionS2(nn.Module):
         value = nn.functional.conv2d(value, self.v_weights, bias=self.v_bias)
 
         # reshape
-        B, _, H, W = query.shape
-        query = query.reshape(B, self.num_heads, -1, H, W)
-        B, _, H, W = key.shape
-        key = key.reshape(B, self.num_heads, -1, H, W)
-        B, _, H, W = value.shape
-        value = value.reshape(B, self.num_heads, -1, H, W)
+        B, _, Ho, Wo = query.shape
+        query = query.reshape(B, self.num_heads, -1, Ho, Wo)
+        B, _, Hi, Wi = key.shape
+        key = key.reshape(B, self.num_heads, -1, Hi, Wi)
+        B, _, Hi, Wi = value.shape
+        value = value.reshape(B, self.num_heads, -1, Hi, Wi)
 
         # reshape to the right dimensions
-        B, _, C, H, W = query.shape
-        query = query.permute(0,1,3,4,2).reshape(B, self.num_heads, H*W, C)
-        B, _, C, H, W = key.shape
-        key = key.permute(0,1,3,4,2).reshape(B, self.num_heads, H*W, C)
-        B, _, C, H, W = value.shape
-        value = value.permute(0,1,3,4,2).reshape(B, self.num_heads, H*W, C)
+        Ci = query.shape[2]
+        query = query.permute(0,1,3,4,2).reshape(B, self.num_heads, Ho*Wo, Ci)
+        Ci = key.shape[2]
+        key = key.permute(0,1,3,4,2).reshape(B, self.num_heads, Hi*Wi, Ci)
+        Co = value.shape[2]
+        value = value.permute(0,1,3,4,2).reshape(B, self.num_heads, Hi*Wi, Co)
 
         # multiply the query, key and value tensors
-        out = nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=self.log_quad_weights, dropout_p=self.drop_rate, scale=self.scale)
+        out = nn.functional.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            attn_mask=self.log_quad_weights,
+            dropout_p=self.drop_rate,
+            scale=self.scale
+        )
 
         # reshape
-        B, _, _, C = out.shape
-        # (B, heads, H*W, C)
+        B, _, _, Co = out.shape
+        # (B, heads, H*W, Co)
         out = out.permute(0,1,3,2)
-        # (B, heads, C, H*W)
-        out = out.reshape(B, self.num_heads*C, self.nlat_out, self.nlon_out)
-        # (B, heads*C, H, W)
+        # (B, heads, Co, Ho*Wo)
+        out = out.reshape(B, self.num_heads*Co, self.nlat_out, self.nlon_out)
+        # (B, heads*Co, Ho, Wo)
         out = nn.functional.conv2d(out, self.proj_weights, bias=self.proj_bias)
 
         return out

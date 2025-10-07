@@ -340,6 +340,29 @@ class _GatherFromPolarRegion(torch.autograd.Function):
         else:
             return grad_output, None, None
 
+class _GatherFromAzimuthRegion(torch.autograd.Function):
+
+    @staticmethod
+    def symbolic(graph, input_, dim_, shapes_):
+        return _gather(input_, dim_, shapes_, azimuth_group())
+
+    @staticmethod
+    @custom_fwd(device_type="cuda")
+    def forward(ctx, input_, dim_, shapes_):
+        if is_distributed_azimuth():
+            ctx.dim = dim_
+            return _gather(input_, dim_, shapes_, group=azimuth_group())
+        else:
+            return input_
+
+    @staticmethod
+    @custom_bwd(device_type="cuda")
+    def backward(ctx, grad_output):
+        if is_distributed_azimuth():
+            return _split(grad_output, ctx.dim, group=azimuth_group()), None, None
+        else:
+            return grad_output, None, None
+
     
 class _ReduceFromPolarRegion(torch.autograd.Function):
     
@@ -442,6 +465,33 @@ class _GatherFromCopyToPolarRegion(torch.autograd.Function):
             return _reduce_scatter(grad_output, ctx.dim, use_fp32=True, group=polar_group()), None, None
         else:
             return grad_output, None, None
+
+
+class _GatherFromCopyToAzimuthRegion(torch.autograd.Function):
+
+    @staticmethod
+    def symbolic(graph, input_, dim_, shapes_):
+        if is_distributed_azimuth():
+            return _gather(input_, dim_, shapes_, azimuth_group())
+        else:
+            return input_
+
+    @staticmethod
+    @custom_fwd(device_type="cuda")
+    def forward(ctx, input_, dim_, shapes_):
+        if is_distributed_azimuth():
+            ctx.dim = dim_
+            return _gather(input_, dim_, shapes_, group=azimuth_group())
+        else:
+            return input_
+
+    @staticmethod
+    @custom_bwd(device_type="cuda")
+    def backward(ctx, grad_output):
+        if is_distributed_azimuth():
+            return _reduce_scatter(grad_output, ctx.dim, use_fp32=True, group=azimuth_group()), None, None
+        else:
+            return grad_output, None, None
         
 
         
@@ -463,8 +513,14 @@ def scatter_to_polar_region(input_, dim_):
 def gather_from_polar_region(input_, dim_, shapes_):
     return _GatherFromPolarRegion.apply(input_, dim_, shapes_)
 
+def gather_from_azimuth_region(input_, dim_, shapes_):
+    return _GatherFromAzimuthRegion.apply(input_, dim_, shapes_)
+
 def reduce_from_scatter_to_polar_region(input_, dim_):
     return _ReduceFromScatterToPolarRegion.apply(input_, dim_)
 
 def gather_from_copy_to_polar_region(input_, dim_, shapes_):
     return _GatherFromCopyToPolarRegion.apply(input_, dim_, shapes_)
+
+def gather_from_copy_to_azimuth_region(input_, dim_, shapes_):
+    return _GatherFromCopyToAzimuthRegion.apply(input_, dim_, shapes_)

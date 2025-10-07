@@ -40,12 +40,11 @@ import torch_harmonics as th
 import torch_harmonics.distributed as thd
 
 
-class TestDistributedResampling(unittest.TestCase):
-    """Test the distributed resampling module (CPU/CUDA if available)."""
+class TestDistributedAttention(unittest.TestCase):
+    """Test the distributed attention module."""
 
     @classmethod
     def setUpClass(cls):
-
         # set up distributed
         cls.world_rank = int(os.getenv("WORLD_RANK", 0))
         cls.grid_size_h = int(os.getenv("GRID_H", 1))
@@ -110,7 +109,7 @@ class TestDistributedResampling(unittest.TestCase):
         if cls.world_rank == 0:
             print(f"Running distributed tests on grid H x W = {cls.grid_size_h} x {cls.grid_size_w}")
 
-        # initializing sht
+        # initializing distributed
         thd.init(cls.h_group, cls.w_group)
 
     @classmethod
@@ -131,11 +130,19 @@ class TestDistributedResampling(unittest.TestCase):
 
         return tensor_local
 
-    def _gather_helper_fwd(self, tensor, B, C, convolution_dist):
+    def _gather_helper(self, tensor, B, C, attention_dist, is_output=True):
 
         # we need the shapes
-        lat_shapes = convolution_dist.lat_out_shapes
-        lon_shapes = convolution_dist.lon_out_shapes
+        if is_output:
+            lat_shapes = attention_dist.lat_out_shapes
+            lon_shapes = attention_dist.lon_out_shapes
+            nlat = attention_dist.nlat_out
+            nlon = attention_dist.nlon_out
+        else:
+            lat_shapes = attention_dist.lat_in_shapes
+            lon_shapes = attention_dist.lon_in_shapes
+            nlat = attention_dist.nlat_in
+            nlon = attention_dist.nlon_in
 
         # gather in W
         tensor = tensor.contiguous()
@@ -151,33 +158,7 @@ class TestDistributedResampling(unittest.TestCase):
         # gather in H
         tensor_gather = tensor_gather.contiguous()
         if self.grid_size_h > 1:
-            gather_shapes = [(B, C, h, convolution_dist.nlon_out) for h in lat_shapes]
-            olist = [torch.empty(shape, dtype=tensor_gather.dtype, device=tensor_gather.device) for shape in gather_shapes]
-            olist[self.hrank] = tensor_gather
-            dist.all_gather(olist, tensor_gather, group=self.h_group)
-            tensor_gather = torch.cat(olist, dim=-2)
-
-        return tensor_gather
-
-    def _gather_helper_bwd(self, tensor, B, C, resampling_dist):
-
-        # we need the shapes
-        lat_shapes = resampling_dist.lat_in_shapes
-        lon_shapes = resampling_dist.lon_in_shapes
-
-        # gather in W
-        if self.grid_size_w > 1:
-            gather_shapes = [(B, C, lat_shapes[self.hrank], w) for w in lon_shapes]
-            olist = [torch.empty(shape, dtype=tensor.dtype, device=tensor.device) for shape in gather_shapes]
-            olist[self.wrank] = tensor
-            dist.all_gather(olist, tensor, group=self.w_group)
-            tensor_gather = torch.cat(olist, dim=-1)
-        else:
-            tensor_gather = tensor
-
-        # gather in H
-        if self.grid_size_h > 1:
-            gather_shapes = [(B, C, h, resampling_dist.nlon_in) for h in lat_shapes]
+            gather_shapes = [(B, C, h, nlon) for h in lat_shapes]
             olist = [torch.empty(shape, dtype=tensor_gather.dtype, device=tensor_gather.device) for shape in gather_shapes]
             olist[self.hrank] = tensor_gather
             dist.all_gather(olist, tensor_gather, group=self.h_group)
@@ -187,43 +168,54 @@ class TestDistributedResampling(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [64, 128, 128, 256, 32, 8, "equiangular", "equiangular", "bilinear", 1e-7, False],
-            [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", "bilinear", 1e-7, False],
-            [64, 128, 128, 256, 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-7, False],
-            [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-7, False],
-            [129, 256, 65, 128, 32, 8, "equiangular", "equiangular", "bilinear", 1e-7, False],
-            [65, 128, 129, 256, 32, 8, "equiangular", "equiangular", "bilinear", 1e-7, False],
-            [129, 256, 65, 128, 32, 8, "equiangular", "legendre-gauss", "bilinear", 1e-7, False],
-            [65, 128, 129, 256, 32, 8, "legendre-gauss", "equiangular", "bilinear", 1e-7, False],
+            [16, 32, 16, 32, 2, 16, 16, 4, "equiangular", "equiangular", False, 1e-5],
+            [16, 32, 16, 32, 2,  8, 16, 4, "equiangular", "equiangular", False, 1e-5],
         ]
     )
-    def test_distributed_resampling(
-            self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, grid_in, grid_out, mode, tol, verbose
+    def test_distributed_attention_s2(
+        self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, in_channels, out_channels, num_heads, grid_in, grid_out, bias, tol
     ):
         
-        B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
+        B, Cin, Cout, H, W = batch_size, in_channels, out_channels, nlat_in, nlon_in
 
-        res_args = dict(
-            nlat_in=nlat_in,
-            nlon_in=nlon_in,
-            nlat_out=nlat_out,
-            nlon_out=nlon_out,
+        attention_args = dict(
+            in_channels=Cin,
+            out_channels=Cout,
+            num_heads=num_heads,
+            in_shape=(nlat_in, nlon_in),
+            out_shape=(nlat_out, nlon_out),
             grid_in=grid_in,
             grid_out=grid_out,
-            mode=mode,
+            bias=bias,
         )
 
-        # set up handlesD
-        res_local = th.ResampleS2(**res_args).to(self.device)
-        res_dist = thd.DistributedResampleS2(**res_args).to(self.device)
+        # set up handles
+        attn_local = th.AttentionS2(**attention_args).to(self.device)
+        attn_dist = thd.DistributedAttentionS2(**attention_args).to(self.device)
+
+        # copy the weights from the local attention into the dist attention
+        with torch.no_grad():
+            attn_dist.q_weights.copy_(attn_local.q_weights)
+            attn_dist.k_weights.copy_(attn_local.k_weights)
+            attn_dist.v_weights.copy_(attn_local.v_weights)
+            attn_dist.proj_weights.copy_(attn_local.proj_weights)
+            if bias:
+                attn_dist.q_bias.copy_(attn_local.q_bias)
+                attn_dist.k_bias.copy_(attn_local.k_bias)
+                attn_dist.v_bias.copy_(attn_local.v_bias)
+                attn_dist.proj_bias.copy_(attn_local.proj_bias)
 
         # create tensors
-        inp_full = torch.randn((B, C, H, W), dtype=torch.float32, device=self.device)
+        query_full = torch.randn((B, Cin, nlat_out, nlon_out), dtype=torch.float32, device=self.device)
+        key_full = torch.randn((B, Cin, H, W), dtype=torch.float32, device=self.device)
+        value_full = torch.randn((B, Cin, H, W), dtype=torch.float32, device=self.device)
 
-        # local conv
+        # local attention
         # FWD pass
-        inp_full.requires_grad = True
-        out_full = res_local(inp_full)
+        query_full.requires_grad = True
+        key_full.requires_grad = True
+        value_full.requires_grad = True
+        out_full = attn_local(query_full, key_full, value_full)
 
         # create grad for backward
         with torch.no_grad():
@@ -232,34 +224,57 @@ class TestDistributedResampling(unittest.TestCase):
 
         # BWD pass
         out_full.backward(ograd_full)
-        igrad_full = inp_full.grad.clone()
+        query_grad_full = query_full.grad.clone()
+        key_grad_full = key_full.grad.clone()
+        value_grad_full = value_full.grad.clone()
 
-        # distributed conv
+        # distributed attention
         # FWD pass
-        inp_local = self._split_helper(inp_full)
-        inp_local.requires_grad = True
-        out_local = res_dist(inp_local)
+        query_local = self._split_helper(query_full)
+        key_local = self._split_helper(key_full)
+        value_local = self._split_helper(value_full)
+        query_local.requires_grad = True
+        key_local.requires_grad = True
+        value_local.requires_grad = True
+        out_local = attn_dist(query_local, key_local, value_local)
 
         # BWD pass
         ograd_local = self._split_helper(ograd_full)
-        out_local = res_dist(inp_local)
         out_local.backward(ograd_local)
-        igrad_local = inp_local.grad.clone()
+        query_grad_local = query_local.grad.clone()
+        key_grad_local = key_local.grad.clone()
+        value_grad_local = value_local.grad.clone()
 
         # evaluate FWD pass
         with torch.no_grad():
-            out_gather_full = self._gather_helper_fwd(out_local, B, C, res_dist)
+            out_gather_full = self._gather_helper(out_local, B, Cout, attn_dist, is_output=True)
             err = torch.mean(torch.norm(out_full - out_gather_full, p="fro", dim=(-1, -2)) / torch.norm(out_full, p="fro", dim=(-1, -2)))
-            if verbose and (self.world_rank == 0):
+            if self.world_rank == 0:
                 print(f"final relative error of output: {err.item()}")
         self.assertTrue(err.item() <= tol)
 
-        # evaluate BWD pass
+        # evaluate BWD pass - query gradient
         with torch.no_grad():
-            igrad_gather_full = self._gather_helper_bwd(igrad_local, B, C, res_dist)
-            err = torch.mean(torch.norm(igrad_full - igrad_gather_full, p="fro", dim=(-1, -2)) / torch.norm(igrad_full, p="fro", dim=(-1, -2)))
-            if verbose and (self.world_rank == 0):
-                print(f"final relative error of gradients: {err.item()}")
+            query_grad_gather_full = self._gather_helper(query_grad_local, B, Cin, attn_dist, is_output=True)
+            err = torch.mean(torch.norm(query_grad_full - query_grad_gather_full, p="fro", dim=(-1, -2)) / torch.norm(query_grad_full, p="fro", dim=(-1, -2)))
+            if self.world_rank == 0:
+                print(f"final relative error of query gradients: {err.item()}")
+        self.assertTrue(err.item() <= tol)
+
+        # evaluate BWD pass - key gradient
+        with torch.no_grad():
+            key_grad_gather_full = self._gather_helper(key_grad_local, B, Cin, attn_dist, is_output=False)
+            err = torch.mean(torch.norm(key_grad_full - key_grad_gather_full, p="fro", dim=(-1, -2)) / torch.norm(key_grad_full, p="fro", dim=(-1, -2)))
+            if self.world_rank == 0:
+                print(f"final relative error of key gradients: {err.item()}")
+        self.assertTrue(err.item() <= tol)
+
+        # evaluate BWD pass - value gradient
+        with torch.no_grad():
+            value_grad_gather_full = self._gather_helper(value_grad_local, B, Cin, attn_dist, is_output=False)
+            err = torch.mean(torch.norm(value_grad_full - value_grad_gather_full, p="fro", dim=(-1, -2)) / torch.norm(value_grad_full, p="fro", dim=(-1, -2)))
+            if self.world_rank == 0:
+                print(f"final relative error of value gradients: {err.item()}")
         self.assertTrue(err.item() <= tol)
 
 
