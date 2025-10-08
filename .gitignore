@@ -2,3 +2,35 @@
 __pycache__
 *.so
 checkpoints
+
+# Build artifacts
+build/
+dist/
+wheelhouse/
+*.egg-info/
+
+# Compiled extensions (keep source, ignore compiled)
+*.so
+*.pyd
+
+# CUDA compilation artifacts
+*.cubin
+*.fatbin
+*.ptx
+
+# Python cache
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
