@@ -160,10 +160,10 @@ class DistributedAttentionS2(nn.Module):
 
         # self attention simplification
         if key is None:
-            key = query.clone()
+            key = query
 
         if value is None:
-            value = query.clone()
+            value = query
 
         # change this later to allow arbitrary number of batch dims
         assert (query.dim() == key.dim()) and (key.dim() == value.dim()) and (value.dim() == 4)
