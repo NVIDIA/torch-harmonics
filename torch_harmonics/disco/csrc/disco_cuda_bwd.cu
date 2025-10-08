@@ -810,9 +810,9 @@ static void s2_disco_bwd_dispatch(int64_t batch_size,
     torch::Tensor val_pck = torch::zeros(val_dims, options);
     {
         dim3 block(WARP_SIZE, THREADS/WARP_SIZE);
-        dim3 grid(DIV_UP(nlat_out, block.y));
+        dim3 grid(DIV_UP(nlat_in, block.y));
 
-        pack_vals_k<<<grid, block, 0, stream>>>(K, nlat_out,
+        pack_vals_k<<<grid, block, 0, stream>>>(K, nlat_in,
                                                 row_off.data_ptr<int64_t>(),
                                                 val_dat.data_ptr<float>(),
                                                 val_pck.data_ptr<float>());
