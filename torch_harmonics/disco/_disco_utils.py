@@ -68,7 +68,11 @@ if optimized_kernels_is_available():
         inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
         row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
         kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        print("forward transposed nlat_out", nlat_out)
+        print("forward transposed nlon_out", nlon_out)
+        print("forward transposed inp shape", inp.shape)
         out = disco_kernels.backward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+        print("forward transposed out shape", out.shape)
         return out
     
     # forward fake
@@ -116,8 +120,12 @@ def _disco_s2_transpose_contraction_bwd_optimized(ctx, grad_output):
     roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
 
     if ctx.needs_input_grad[0]:
+        print("backward transposed nlat_in", ctx.nlat_in)
+        print("backward transposed nlon_in", ctx.nlon_in)
+        print("grad_output shape", grad_output.shape)
         grad_input = disco_kernels.forward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
                                                    ctx.kernel_size, ctx.nlat_in, ctx.nlon_in) # Mauro
+        print("backward transposed grad_input shape", grad_input.shape)
     else:
         grad_input = None
 

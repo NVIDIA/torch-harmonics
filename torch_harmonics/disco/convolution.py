@@ -694,7 +694,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             # weight multiplication
             x = x.reshape(B, self.groups, self.groupsize_in, H, W)
             xc = torch.einsum("bgcxy,gock->bgokxy", x, self.weight)
-            xc = xc.reshape(B, self.groups* self.groupsize_out, -1, H, W).contiguous()
+            xc = xc.reshape(B, self.groups * self.groupsize_out, -1, H, W).contiguous()
 
             # disco contraction
             out = _disco_s2_transpose_contraction_torch(xc, self.psi_st.to(x.device), self.nlon_out)
