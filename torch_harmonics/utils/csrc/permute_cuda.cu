@@ -59,20 +59,23 @@ static int getPtxver() {
 
 torch::Tensor permute_4D_to0231(torch::Tensor src) {
 
-    auto options = torch::TensorOptions().dtype(src.dtype()).device(src.device());
-    torch::Tensor dst = torch::empty({src.size(0), src.size(2), src.size(3), src.size(1)}, options);
+    // make input contiguous:
+    auto srcc = src.contiguous();
+
+    auto options = torch::TensorOptions().dtype(srcc.dtype()).device(srcc.device());
+    torch::Tensor dst = torch::empty({srcc.size(0), srcc.size(2), srcc.size(3), srcc.size(1)}, options);
 
     const int ptxv = getPtxver();
 
     // to be further specialized for additional archs, if necessary
     if (ptxv < 100) {
-        AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0231_k_tile_generic", ([&] {
-            launch_permute_to0231<TRANSP_WARPS_X_TILE_GENERIC, scalar_t>(src, dst);
+        AT_DISPATCH_FLOATING_TYPES(srcc.scalar_type(), "permute_to0231_k_tile_generic", ([&] {
+            launch_permute_to0231<TRANSP_WARPS_X_TILE_GENERIC, scalar_t>(srcc, dst);
         }));
         CHECK_ERROR("permute_to0231_k_tile_generic");
     } else {
-        AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0231_k_tile_sm100", ([&] {
-            launch_permute_to0231<TRANSP_WARPS_X_TILE_SM100, scalar_t>(src, dst);
+        AT_DISPATCH_FLOATING_TYPES(srcc.scalar_type(), "permute_to0231_k_tile_sm100", ([&] {
+            launch_permute_to0231<TRANSP_WARPS_X_TILE_SM100, scalar_t>(srcc, dst);
         }));
         CHECK_ERROR("permute_to0231_k_tile_sm100");
     }
@@ -82,20 +85,23 @@ torch::Tensor permute_4D_to0231(torch::Tensor src) {
 
 torch::Tensor permute_4D_to0312(torch::Tensor src) {
 
-    auto options = torch::TensorOptions().dtype(src.dtype()).device(src.device());
-    torch::Tensor dst = torch::empty({src.size(0), src.size(3), src.size(1), src.size(2)}, options);
+    // make input contiguous:
+    auto srcc = src.contiguous();
+
+    auto options = torch::TensorOptions().dtype(srcc.dtype()).device(srcc.device());
+    torch::Tensor dst = torch::empty({srcc.size(0), srcc.size(3), srcc.size(1), srcc.size(2)}, options);
 
     const int ptxv = getPtxver();
 
     // to be further specialized for additional archs, if necessary
     if (ptxv < 100) {
-        AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0312_k_tile_generic", ([&] {
-            launch_permute_to0312<TRANSP_WARPS_X_TILE_GENERIC, scalar_t>(src, dst);
+        AT_DISPATCH_FLOATING_TYPES(srcc.scalar_type(), "permute_to0312_k_tile_generic", ([&] {
+            launch_permute_to0312<TRANSP_WARPS_X_TILE_GENERIC, scalar_t>(srcc, dst);
         }));
         CHECK_ERROR("permute_to0312_k_tile_generic");
     } else {
-        AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0312_k_tile_sm100", ([&] {
-            launch_permute_to0312<TRANSP_WARPS_X_TILE_SM100, scalar_t>(src, dst);
+        AT_DISPATCH_FLOATING_TYPES(srcc.scalar_type(), "permute_to0312_k_tile_sm100", ([&] {
+            launch_permute_to0312<TRANSP_WARPS_X_TILE_SM100, scalar_t>(srcc, dst);
         }));
         CHECK_ERROR("permute_to0312_k_tile_sm100");
     }
