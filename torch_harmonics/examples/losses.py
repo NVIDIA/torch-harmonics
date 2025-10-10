@@ -37,7 +37,7 @@ from typing import Optional
 from abc import ABC, abstractmethod
 
 from torch_harmonics.quadrature import _precompute_latitudes
-
+from torch_harmonics.sht import RealSHT,InverseRealVectorSHT
 
 def get_quadrature_weights(nlat: int, nlon: int, grid: str, tile: bool = False, normalized: bool = True) -> torch.Tensor:
     # area weights
@@ -317,6 +317,7 @@ class W11LossS2(SphericalLossBase):
         self.register_buffer("k_theta_mesh", k_theta_mesh)
 
     def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+        # print(f"W11Loss Shapes: prd={prd.shape}, tar={tar.shape}")
         prdtype = prd.dtype
         with amp.autocast(device_type="cuda", enabled=False):
             prd = prd.to(torch.float32)
@@ -328,6 +329,47 @@ class W11LossS2(SphericalLossBase):
 
         # Return the element-wise loss term
         return torch.abs(prd_prime_fft2_phi_h - tar_prime_fft2_phi_h) + torch.abs(prd_prime_fft2_theta_h - tar_prime_fft2_theta_h)
+
+class W11LossS2_v2(SphericalLossBase):
+    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
+        super().__init__(nlat=nlat, nlon=nlon, grid=grid)
+        # Set up grid and domain for FFT
+        # note: not sure why only 5
+        lmax = 5
+        n_theta = nlat
+        n_phi = nlon
+        self.rsht = RealSHT(n_theta, n_phi, lmax=lmax)
+        self.irvsht = InverseRealVectorSHT(n_theta, n_phi, lmax=lmax)
+        theta = torch.linspace(0, torch.pi, n_theta)
+        phi = torch.linspace(0, 2 * torch.pi, n_phi)
+        theta_grid, _ = torch.meshgrid(theta, phi, indexing='ij')
+        self.register_buffer("theta_grid", theta_grid)
+
+    def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
+        # print(f"W11Loss_v2 Shapes: prd={prd.shape}, tar={tar.shape}")
+        prdtype = prd.dtype
+        with amp.autocast(device_type="cuda", enabled=False):
+            prd = prd.to(torch.float32)
+            tar = tar.to(torch.float32)
+            if prd.dim() > 2:
+                tar = tar.unsqueeze(1)
+            diff = prd - tar
+            sh_coeffs = self.rsht(diff)
+            # We need to adapt the output of the SHT to be a vector field
+            if prd.dim() > 2:
+                vector_coeffs = torch.zeros(sh_coeffs.shape[0], 2, sh_coeffs.shape[-2], sh_coeffs.shape[-1], dtype=sh_coeffs.dtype, device=prd.device)
+                vector_coeffs[:,0] = sh_coeffs[:,0]
+            else:
+                vector_coeffs = torch.zeros(2, sh_coeffs.shape[-2], sh_coeffs.shape[-1], dtype=sh_coeffs.dtype, device=prd.device)
+                vector_coeffs[0] = sh_coeffs
+
+            nabla_f = self.irvsht(vector_coeffs)
+
+        # Return the element-wise loss term
+        if prd.dim() > 2:
+            return torch.abs(nabla_f[:,0]) + torch.abs(nabla_f[:,1])
+        else:
+            return torch.abs(nabla_f[0]) + torch.abs(nabla_f[1])
 
 
 class NormalLossS2(SphericalLossBase):

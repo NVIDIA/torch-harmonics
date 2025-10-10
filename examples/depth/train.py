@@ -50,7 +50,7 @@ from torch_harmonics.examples import (
     Stanford2D3DSDownloader,
     compute_stats_s2,
 )
-from torch_harmonics.examples.losses import W11LossS2, L1LossS2, L2LossS2, NormalLossS2
+from torch_harmonics.examples.losses import W11LossS2, W11LossS2_v2, L1LossS2, L2LossS2, NormalLossS2
 from torch_harmonics.plotting import plot_sphere, imshow_sphere
 
 # import baseline models
@@ -449,6 +449,7 @@ def main(
 
     # initialize Sobolev W11 loss function
     loss_w11 = W11LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
+    loss_w11_v2 = W11LossS2_v2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
     loss_l1 = L1LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
     loss_fn = lambda prd, tar, mask: 0.1 * loss_w11(prd, tar, mask) + loss_l1(prd, tar, mask)
 
@@ -458,6 +459,7 @@ def main(
         "L2 error": L2LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
         "L1 error": L1LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
         "W11 error": W11LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
+        "W11_v2 error": W11LossS2_v2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
         "Normals error": NormalLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
     }
 
