@@ -162,8 +162,8 @@ def _normalize_convolution_tensor_s2(
 
 @lru_cache(typed=True, copy=True)
 def _precompute_convolution_tensor_s2(
-    in_shape: Tuple[int],
-    out_shape: Tuple[int],
+    in_shape: Tuple[int, int],
+    out_shape: Tuple[int, int],
     filter_basis: FilterBasis,
     grid_in: Optional[str]="equiangular",
     grid_out: Optional[str]="equiangular",
@@ -190,9 +190,9 @@ def _precompute_convolution_tensor_s2(
 
     Parameters
     -----------
-    in_shape: Tuple[int]
+    in_shape: Tuple[int, int]
         Input shape of the convolution tensor
-    out_shape: Tuple[int]
+    out_shape: Tuple[int, int]
         Output shape of the convolution tensor
     filter_basis: FilterBasis
         Filter basis functions
@@ -450,15 +450,16 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
+        self.theta_cutoff = theta_cutoff
 
         # make sure the p-shift works by checking that longitudes are divisible
         assert self.nlon_in % self.nlon_out == 0
 
         # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
-        if theta_cutoff is None:
-            theta_cutoff = torch.pi / float(self.nlat_out - 1)
+        if self.theta_cutoff is None:
+            self.theta_cutoff = torch.pi / float(self.nlat_out - 1)
 
-        if theta_cutoff <= 0.0:
+        if self.theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
 
         idx, vals, _ = _precompute_convolution_tensor_s2(
@@ -467,7 +468,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             self.filter_basis,
             grid_in=grid_in,
             grid_out=grid_out,
-            theta_cutoff=theta_cutoff,
+            theta_cutoff=self.theta_cutoff,
             transpose_normalization=False,
             basis_norm_mode=basis_norm_mode,
             merge_quadrature=True,
@@ -609,15 +610,16 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
+        self.theta_cutoff = theta_cutoff
 
         # make sure the p-shift works by checking that longitudes are divisible
         assert self.nlon_out % self.nlon_in == 0
 
         # bandlimit
-        if theta_cutoff is None:
-            theta_cutoff = torch.pi / float(self.nlat_in - 1)
+        if self.theta_cutoff is None:
+            self.theta_cutoff = torch.pi / float(self.nlat_in - 1)
 
-        if theta_cutoff <= 0.0:
+        if self.theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
 
         # switch in_shape and out_shape since we want the transpose convolution
@@ -627,7 +629,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             self.filter_basis,
             grid_in=grid_out,
             grid_out=grid_in,
-            theta_cutoff=theta_cutoff,
+            theta_cutoff=self.theta_cutoff,
             transpose_normalization=True,
             basis_norm_mode=basis_norm_mode,
             merge_quadrature=True,

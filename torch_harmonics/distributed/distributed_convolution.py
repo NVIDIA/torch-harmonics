@@ -58,7 +58,6 @@ def _split_distributed_convolution_tensor_s2(
     idx: torch.Tensor,
     vals: torch.Tensor,
     in_shape: Tuple[int],
-    out_shape: Tuple[int],
 ):
     """
     Splits a pre-computed convolution tensor along the latitude dimension for distributed processing.
@@ -75,8 +74,6 @@ def _split_distributed_convolution_tensor_s2(
         Values of the pre-computed convolution tensor
     in_shape: Tuple[int]
         Shape of the input tensor (nlat_in, nlon_in)
-    out_shape: Tuple[int]
-        Shape of the output tensor (nlat_out, nlon_out)
 
     Returns
     -------
@@ -87,7 +84,6 @@ def _split_distributed_convolution_tensor_s2(
     """
 
     nlat_in, nlon_in = in_shape
-    nlat_out, nlon_out = out_shape
 
     comm_size_polar = polar_group_size()
     comm_rank_polar = polar_group_rank()
@@ -214,8 +210,13 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             merge_quadrature=True,
         )
 
+        print(f"{self.comm_rank_polar} before splitting shapes idx = {idx.shape}, vals = {vals.shape}")
+        print(f"{self.comm_rank_polar} before splitting \n ker = {idx[0]}\n row = {idx[1]}\n col = {idx[2]}", flush=True)
+
         # split the convolution tensor along latitude
-        idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, in_shape, out_shape)
+        idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, in_shape)
+
+        #print(f"{self.comm_rank_polar} after splitting \n ker = {idx[0]}\n row = {idx[1]}\n col = {idx[2]}", flush=True)
 
         # sort the values
         ker_idx = idx[0, ...].contiguous()
@@ -225,7 +226,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         if self.optimized_kernel:
             # preprocessed data-structure for GPU kernel
-            roff_idx = preprocess_psi(self.kernel_size, self.nlat_out_local, ker_idx, row_idx, col_idx, vals).contiguous()
+            roff_idx = preprocess_psi(self.kernel_size, self.nlat_out, ker_idx, row_idx, col_idx, vals)
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
         # save all datastructures
@@ -234,12 +235,15 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
 
+        print(f"{self.comm_rank_polar} after splitting sorted \n ker_idx = {self.psi_ker_idx}\n row = {self.psi_row_idx}\n col = {self.psi_col_idx}", flush=True)
+        print(f"{self.comm_rank_polar} roff_idx = {self.psi_roff_idx}", flush=True)
+
         # store psi jic:
         if not self.optimized_kernel:
             self.psi = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local)
 
     def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
+        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize_in * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
 
     @property
     def psi_idx(self):
@@ -250,19 +254,21 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         # store number of channels
         num_chans = x.shape[1]
 
+        print(f"{self.comm_rank_polar} input shape", x.shape)
+
         # h and w is split. First we make w local by transposing into channel dim
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth.apply(x, (1, -1), self.lon_in_shapes)
 
-        if self.optimized_kernel:
-            polar_dim = -3
-            azimuth_dim = -2
-            chan_dim = -1
+        print(f"{self.comm_rank_polar} after azimuth transpose forward", x.shape)
 
-            # permute input
+        if self.optimized_kernel:
+            # permute input: B, C, Hi, Wi -> B, Hi, Wi, C
             xp = permute_to_0231(x)
 
-            # disco contraction
+            print(f"{self.comm_rank_polar} before disco contraction", xp.shape)
+
+            # disco contraction: B, Hi, Wi, C -> B, Ho, Wo, C, K
             x = _disco_s2_contraction_optimized(
                 xp, 
                 self.psi_roff_idx, 
@@ -271,32 +277,49 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 self.psi_col_idx, 
                 self.psi_vals, 
                 self.kernel_size, 
-                self.nlat_out_local, 
+                self.nlat_out, 
                 self.nlon_out
             )
+
+            # extract shapes
+            polar_dim = -4
+            azimuth_dim = -3
+            chan_dim = -2
+
         else:
+            # disco contraction: B, C, Hi, Wi -> B, C, K, Ho, Wo
+            x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
+
+            # extract shapes
             polar_dim = -2
             azimuth_dim = -1
-            chan_dim = -3
+            chan_dim = -4
 
-            # disco contraction
-            x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
+        print(f"{self.comm_rank_polar} after disco contraction", x.shape)
+
+        print(f"{self.comm_rank_polar} polar dim", polar_dim)
+        print(f"{self.comm_rank_polar} azimuth dim", azimuth_dim)
+        print(f"{self.comm_rank_polar} chan dim", chan_dim)
 
         # perform reduce scatter in polar region
         x = reduce_from_polar_region(x)
         x = scatter_to_polar_region(x, polar_dim)
+
+        print(f"{self.comm_rank_polar} after polar scatter", x.shape)
 
         # now we can transpose back the result, so that lon is split and channels are local
         if self.comm_size_azimuth > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
             x = distributed_transpose_azimuth.apply(x, (azimuth_dim, chan_dim), chan_shapes)
 
+        print(f"{self.comm_rank_polar} after azimuth transpose inverse", x.shape, num_chans, azimuth_dim, chan_dim)
+
         # extract shape
         if self.optimized_kernel:
             # weight multiplication
             B, H, W, _, K = x.shape
             x = x.reshape(B, H, W, self.groups, self.groupsize_in, K)
-            outp = torch.einsum("bxygck,gock->bxygo", x, self.weight)
+            outp = torch.einsum("bxygck,gock->bxygo", x, self.weight.reshape(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
             outp = outp.reshape(B, H, W, -1).contiguous()
 
             # permute output
@@ -305,8 +328,10 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             # weight multiplication
             B, _, K, H, W = x.shape
             x = x.reshape(B, self.groups, self.groupsize_in, K, H, W)
-            out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight)
+            out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
             out = out.reshape(B, -1, H, W).contiguous()
+
+        print(f"{self.comm_rank_polar} after weight multiplication", out.shape)
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
@@ -422,7 +447,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # split the convolution tensor along latitude, again, we need to swap the meaning
         # of in_shape and out_shape
-        idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, out_shape, in_shape)
+        idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, out_shape)
 
         # sort the values
         ker_idx = idx[0, ...].contiguous()
@@ -432,7 +457,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         if self.optimized_kernel:
             # preprocessed data-structure for GPU kernel
-            roff_idx = preprocess_psi(self.kernel_size, self.nlat_in_local, ker_idx, row_idx, col_idx, vals).contiguous()
+            roff_idx = preprocess_psi(self.kernel_size, self.nlat_in, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
         # save all datastructures
@@ -446,7 +471,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             self.psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local, semi_transposed=True)
 
     def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
+        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize_in * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
 
     @property
     def psi_idx(self):
@@ -463,21 +488,24 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
             # weight multiplication
             xp = xp.reshape(B, H, W, self.groups, self.groupsize_in)
-            x = torch.einsum("bxygc,gock->bxygok", xp, self.weight)
+            x = torch.einsum("bxygc,gock->bxygok", xp, self.weight.reshape(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
             x = x.reshape(B, H, W, -1, self.kernel_size).contiguous()
-            polar_dim = -3
-            azimuth_dim = -2
-            chan_dim = -1
+            # count from front since this does not change
+            # after disco conv
+            polar_dim = 1
+            azimuth_dim = 2
+            chan_dim = 3
         else:
             # weight multiplication
             x = x.reshape(B, self.groups, self.groupsize_in, H, W)
-            x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight)
-            x = x.reshape(B, -1, x.shape[-3], H, W).contiguous()
+            x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
+            x = x.reshape(B, -1, self.kernel_size, H, W).contiguous()
+            # count from back since this changes after disco transpose conv
             polar_dim = -2
             azimuth_dim = -1
             chan_dim = 1
 
-        # save number of channels
+        # store number of channels
         num_chans = x.shape[chan_dim]
 
         # transpose such that lon is local, channels are split
