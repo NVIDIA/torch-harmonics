@@ -35,9 +35,12 @@ import math
 import torch
 
 from torch_harmonics.quadrature import legendre_gauss_weights, clenshaw_curtiss_weights
+from torch_harmonics.cache import lru_cache
+from testutils import compare_tensors
 
 
 class TestCacheConsistency(unittest.TestCase):
+
     def test_consistency(self, verbose=False):
         if verbose:
             print("Testing that cache values does not get modified externally")
@@ -49,7 +52,43 @@ class TestCacheConsistency(unittest.TestCase):
             # perform in-place modification of leg1
             leg1 *= -1.0
             leg2 = _precompute_legpoly(10, 10, cost)
-            self.assertFalse(torch.allclose(leg1, leg2))
+            self.assertFalse(compare_tensors("legendre", leg2, leg1, verbose=verbose))
+
+
+    def test_pytorch_tensors(self, verbose=False):
+        if verbose:
+            print("Testing that PyTorch tensors are cached")
+
+        @lru_cache(typed=True, copy=True)
+        def test_func(tens1, tens2):
+            return tens1, tens2
+
+        # initial tensors
+        tens1 = torch.randn(4, 4, dtype=torch.float32)
+        tens2 = torch.randn(4, 4, dtype=torch.float32)
+
+        # retrieve from cache
+        tens1c, tens2c = test_func(tens1, tens2)
+
+        # modify copies
+        tens1c *= -1.0
+        tens2c *= -1.0
+
+        # retrieve from cache again
+        tens1cc, tens2cc = test_func(tens1, tens2)
+
+        if verbose:
+            print("first tensor", tens1)
+            print("first tensor after modification", tens1c)
+            print("first tensor cached", tens1cc)
+            print("second tensor", tens2)
+            print("second tensor after modification", tens2c)
+            print("second tensor cached", tens2cc)
+
+        self.assertFalse(compare_tensors("first cached", tens1cc, tens1c, verbose=verbose))
+        self.assertFalse(compare_tensors("second cached", tens2cc, tens2c, verbose=verbose))
+        self.assertTrue(compare_tensors("first raw", tens1, tens1cc, verbose=verbose))
+        self.assertTrue(compare_tensors("second raw", tens2, tens2cc, verbose=verbose))
 
     def test_cache_tensor(self, verbose=False):
         from torch_harmonics.legendre import _precompute_legpoly

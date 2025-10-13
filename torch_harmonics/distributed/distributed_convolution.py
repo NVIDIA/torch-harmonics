@@ -29,19 +29,15 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import List, Tuple, Union, Optional
+from typing import Tuple, Union, Optional
 from itertools import accumulate
 
 import torch
-import torch.nn as nn
 
-from functools import partial
-
-from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
 from torch_harmonics.disco._disco_utils import _get_psi, _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from torch_harmonics.disco._disco_utils import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
-from torch_harmonics.filter_basis import get_filter_basis
-from disco_helpers import optimized_kernels_is_available, preprocess_psi
+from torch_harmonics.utils import permute_to_0231, permute_to_0312
+from disco_helpers import preprocess_psi
 from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
     DiscreteContinuousConv,
@@ -49,17 +45,16 @@ from torch_harmonics.disco.convolution import (
 
 # distirbuted stuff
 from torch_harmonics.distributed import polar_group_size, azimuth_group_size
-from torch_harmonics.distributed import distributed_transpose_azimuth, distributed_transpose_polar
+from torch_harmonics.distributed import distributed_transpose_azimuth
 from torch_harmonics.distributed import reduce_from_polar_region, scatter_to_polar_region, gather_from_polar_region, copy_to_polar_region
 from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
-from torch_harmonics.distributed import compute_split_shapes, split_tensor_along_dim
+from torch_harmonics.distributed import compute_split_shapes
 
 
 def _split_distributed_convolution_tensor_s2(
     idx: torch.Tensor,
     vals: torch.Tensor,
     in_shape: Tuple[int],
-    out_shape: Tuple[int],
 ):
     """
     Splits a pre-computed convolution tensor along the latitude dimension for distributed processing.
@@ -76,8 +71,6 @@ def _split_distributed_convolution_tensor_s2(
         Values of the pre-computed convolution tensor
     in_shape: Tuple[int]
         Shape of the input tensor (nlat_in, nlon_in)
-    out_shape: Tuple[int]
-        Shape of the output tensor (nlat_out, nlon_out)
 
     Returns
     -------
@@ -88,7 +81,6 @@ def _split_distributed_convolution_tensor_s2(
     """
 
     nlat_in, nlon_in = in_shape
-    nlat_out, nlon_out = out_shape
 
     comm_size_polar = polar_group_size()
     comm_rank_polar = polar_group_rank()
@@ -174,6 +166,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
+        self.theta_cutoff = theta_cutoff
 
         # get the comms grid:
         self.comm_size_polar = polar_group_size()
@@ -188,10 +181,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.lon_out_shapes = compute_split_shapes(self.nlon_out, self.comm_size_azimuth)
 
         # compute theta cutoff based on the bandlimit of the input field
-        if theta_cutoff is None:
+        if self.theta_cutoff is None:
             self.theta_cutoff = torch.pi / float(self.nlat_out - 1)
-        else:
-            self.theta_cutoff = theta_cutoff
 
         if self.theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -218,7 +209,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         )
 
         # split the convolution tensor along latitude
-        idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, in_shape, out_shape)
+        idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, in_shape)
 
         # sort the values
         ker_idx = idx[0, ...].contiguous()
@@ -228,7 +219,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         if self.optimized_kernel:
             # preprocessed data-structure for GPU kernel
-            roff_idx = preprocess_psi(self.kernel_size, self.nlat_out_local, ker_idx, row_idx, col_idx, vals).contiguous()
+            roff_idx = preprocess_psi(self.kernel_size, self.nlat_out, ker_idx, row_idx, col_idx, vals)
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
         # save all datastructures
@@ -242,7 +233,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             self.psi = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local)
 
     def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
+        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groups * self.groupsize_in}, out_chans={self.groups * self.groupsize_out}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
 
     @property
     def psi_idx(self):
@@ -258,28 +249,61 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             x = distributed_transpose_azimuth.apply(x, (1, -1), self.lon_in_shapes)
 
         if self.optimized_kernel:
+            # permute input: B, C, Hi, Wi -> B, Hi, Wi, C
+            xp = permute_to_0231(x)
+
+            # disco contraction: B, Hi, Wi, C -> B, Ho, Wo, C, K
             x = _disco_s2_contraction_optimized(
-                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out_local, self.nlon_out
+                xp, 
+                self.psi_roff_idx, 
+                self.psi_ker_idx, 
+                self.psi_row_idx, 
+                self.psi_col_idx, 
+                self.psi_vals, 
+                self.kernel_size, 
+                self.nlat_out, 
+                self.nlon_out
             )
+
+            # extract shapes
+            polar_dim = -4
+            azimuth_dim = -3
+            chan_dim = -2
+
         else:
+            # disco contraction: B, C, Hi, Wi -> B, C, K, Ho, Wo
             x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
+
+            # extract shapes
+            polar_dim = -2
+            azimuth_dim = -1
+            chan_dim = -4
 
         # perform reduce scatter in polar region
         x = reduce_from_polar_region(x)
-        x = scatter_to_polar_region(x, -2)
+        x = scatter_to_polar_region(x, polar_dim)
 
         # now we can transpose back the result, so that lon is split and channels are local
         if self.comm_size_azimuth > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
-            x = distributed_transpose_azimuth.apply(x, (-1, 1), chan_shapes)
+            x = distributed_transpose_azimuth.apply(x, (azimuth_dim, chan_dim), chan_shapes)
 
         # extract shape
-        B, C, K, H, W = x.shape
-        x = x.reshape(B, self.groups, self.groupsize, K, H, W)
+        if self.optimized_kernel:
+            # weight multiplication
+            B, H, W, _, K = x.shape
+            x = x.reshape(B, H, W, self.groups, self.groupsize_in, K)
+            outp = torch.einsum("bxygck,gock->bxygo", x, self.weight.reshape(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
+            outp = outp.reshape(B, H, W, -1).contiguous()
 
-        # do weight multiplication
-        out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
-        out = out.reshape(out.shape[0], -1, H, W)
+            # permute output
+            out = permute_to_0312(outp)
+        else:
+            # weight multiplication
+            B, _, K, H, W = x.shape
+            x = x.reshape(B, self.groups, self.groupsize_in, K, H, W)
+            out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
+            out = out.reshape(B, -1, H, W).contiguous()
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
@@ -350,6 +374,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
+        self.theta_cutoff = theta_cutoff
 
         # get the comms grid:
         self.comm_size_polar = polar_group_size()
@@ -364,10 +389,8 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.lon_out_shapes = compute_split_shapes(self.nlon_out, self.comm_size_azimuth)
 
         # bandlimit
-        if theta_cutoff is None:
+        if self.theta_cutoff is None:
             self.theta_cutoff = torch.pi / float(self.nlat_in - 1)
-        else:
-            self.theta_cutoff = theta_cutoff
 
         if self.theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
@@ -397,7 +420,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # split the convolution tensor along latitude, again, we need to swap the meaning
         # of in_shape and out_shape
-        idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, out_shape, in_shape)
+        idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, out_shape)
 
         # sort the values
         ker_idx = idx[0, ...].contiguous()
@@ -407,7 +430,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         if self.optimized_kernel:
             # preprocessed data-structure for GPU kernel
-            roff_idx = preprocess_psi(self.kernel_size, self.nlat_in_local, ker_idx, row_idx, col_idx, vals).contiguous()
+            roff_idx = preprocess_psi(self.kernel_size, self.nlat_in, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
         # save all datastructures
@@ -421,7 +444,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             self.psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local, semi_transposed=True)
 
     def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
+        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groups * self.groupsize_in}, out_chans={self.groups * self.groupsize_out}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
 
     @property
     def psi_idx(self):
@@ -430,27 +453,60 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         # extract shape
-        B, C, H, W = x.shape
-        x = x.reshape(B, self.groups, self.groupsize, H, W)
+        B, _, H, W = x.shape
 
-        # do weight multiplication
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
-        x = x.reshape(B, -1, x.shape[-3], H, W)
-        num_chans = x.shape[1]
+        if self.optimized_kernel:
+            # permute input
+            xp = permute_to_0231(x)
+
+            # weight multiplication
+            xp = xp.reshape(B, H, W, self.groups, self.groupsize_in)
+            x = torch.einsum("bxygc,gock->bxygok", xp, self.weight.reshape(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
+            x = x.reshape(B, H, W, -1, self.kernel_size).contiguous()
+            # count from front since this does not change
+            # after disco conv
+            polar_dim = 1
+            azimuth_dim = 2
+            chan_dim = 3
+        else:
+            # weight multiplication
+            x = x.reshape(B, self.groups, self.groupsize_in, H, W)
+            x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
+            x = x.reshape(B, -1, self.kernel_size, H, W).contiguous()
+            # count from back since this changes after disco transpose conv
+            polar_dim = -2
+            azimuth_dim = -1
+            chan_dim = 1
+
+        # store number of channels
+        num_chans = x.shape[chan_dim]
 
         # transpose such that lon is local, channels are split
         if self.comm_size_azimuth > 1:
-            x = distributed_transpose_azimuth.apply(x, (1, -1), self.lon_in_shapes)
+            x = distributed_transpose_azimuth.apply(x, (chan_dim, azimuth_dim), self.lon_in_shapes)
 
         # gather input tensor and set up backward reduction hooks
-        x = gather_from_polar_region(x, -2, self.lat_in_shapes)
+        x = gather_from_polar_region(x, polar_dim, self.lat_in_shapes)
         x = copy_to_polar_region(x)
 
         if self.optimized_kernel:
-            out = _disco_s2_transpose_contraction_optimized(
-                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out_local, self.nlon_out
+            # disco contraction
+            outp = _disco_s2_transpose_contraction_optimized(
+                x, 
+                self.psi_roff_idx, 
+                self.psi_ker_idx, 
+                self.psi_row_idx, 
+                self.psi_col_idx, 
+                self.psi_vals, 
+                self.kernel_size, 
+                self.nlat_out_local, 
+                self.nlon_out
             )
+
+            # permute output
+            out = permute_to_0312(outp)
         else:
+            # disco contraction
             out = _disco_s2_transpose_contraction_torch(x, self.psi_st.to(x.device), self.nlon_out)
 
         # now we can transpose back the result, so that lon is split and channels are local

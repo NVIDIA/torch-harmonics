@@ -36,6 +36,17 @@ from parameterized import parameterized
 import torch
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
+from torch_harmonics.disco import optimized_kernels_is_available
+
+from disco_helpers import preprocess_psi
+from torch_harmonics.filter_basis import get_filter_basis
+from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
+from torch_harmonics.distributed.distributed_convolution import _split_distributed_convolution_tensor_s2
+
+from testutils import compare_tensors
+
+if not optimized_kernels_is_available():
+    print(f"Warning: Couldn't import optimized disco convolution kernels")
 
 from testutils import (
     set_seed,
@@ -90,6 +101,9 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             wgroup=self.w_group
         )
 
+        # make contiguous
+        tensor_gather = tensor_gather.contiguous()
+
         return tensor_gather
 
     def _gather_helper_bwd(self, tensor, convolution_dist):
@@ -107,6 +121,9 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             hgroup=self.h_group, 
             wgroup=self.w_group
         )
+
+        # make contiguous
+        tensor_gather = tensor_gather.contiguous()
 
         return tensor_gather
 
@@ -150,21 +167,22 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             grid_in=grid_in,
             grid_out=grid_out,
             bias=True,
+            optimized_kernel=True,
         )
 
         # set up handles
         if transpose:
-            conv_local = th.DiscreteContinuousConvTransposeS2(**disco_args).to(self.device)
+            conv_full = th.DiscreteContinuousConvTransposeS2(**disco_args).to(self.device)
             conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args).to(self.device)
         else:
-            conv_local = th.DiscreteContinuousConvS2(**disco_args).to(self.device)
+            conv_full = th.DiscreteContinuousConvS2(**disco_args).to(self.device)
             conv_dist = thd.DistributedDiscreteContinuousConvS2(**disco_args).to(self.device)
 
         # copy the weights from the local conv into the dist conv
         with torch.no_grad():
-            conv_dist.weight.copy_(conv_local.weight)
+            conv_dist.weight.copy_(conv_full.weight)
             if disco_args["bias"]:
-                conv_dist.bias.copy_(conv_local.bias)
+                conv_dist.bias.copy_(conv_full.bias)
 
         # create tensors
         inp_full = torch.randn((B, C, H, W), dtype=torch.float32, device=self.device)
@@ -172,7 +190,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         # local conv
         # FWD pass
         inp_full.requires_grad = True
-        out_full = conv_local(inp_full)
+        out_full = conv_full(inp_full)
 
         # create grad for backward
         with torch.no_grad():
@@ -190,7 +208,8 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         out_local = conv_dist(inp_local)
 
         # BWD pass
-        ograd_local = self._split_helper(ograd_full)
+        with torch.no_grad():
+            ograd_local = self._split_helper(ograd_full)
         out_local = conv_dist(inp_local)
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
@@ -202,6 +221,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         # evaluate BWD pass
         igrad_gather_full = self._gather_helper_bwd(igrad_local, conv_dist)
         self.assertTrue(compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose))
+
 
 if __name__ == "__main__":
     unittest.main()

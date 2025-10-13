@@ -141,8 +141,6 @@ class PiecewiseLinearFilterBasis(FilterBasis):
         else:
             ir = (ikernel + 0.5) * dr
 
-        #print("ir", ir, ir.min())
-
         # find the indices where the rotated position falls into the support of the kernel
         #iidx = torch.argwhere((r.abs() <= dr) & (r <= r_cutoff))
         #vals = 1 - (r[iidx[:, 1], iidx[:, 2]] - ir[iidx[:, 0], 0, 0]).abs() / dr
