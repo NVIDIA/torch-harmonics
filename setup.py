@@ -65,7 +65,7 @@ def get_compile_args(module_name):
         cpp_extra_flags.append("-fopenmp")
 
     nvcc_extra_flags = []
-    if True or profile_mode:
+    if profile_mode:
         nvcc_extra_flags.append("-lineinfo")
         nvcc_extra_flags.append("-Xptxas=-v")
         
