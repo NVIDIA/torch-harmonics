@@ -370,8 +370,10 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
             raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
         self.groupsize_in = in_channels // self.groups
         self.groupsize_out = out_channels // self.groups
+        # keep this for backward compatibility
+        self.groupsize = self.groupsize_in
         scale = math.sqrt(1.0 / self.groupsize_in / self.kernel_size)
-        self.weight = nn.Parameter(scale * torch.randn(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
+        self.weight = nn.Parameter(scale * torch.randn(self.groups * self.groupsize_out, self.groupsize_in, self.kernel_size))
 
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_channels))
@@ -496,7 +498,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             self.psi = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out)
 
     def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
+        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize_in * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
 
     @property
     def psi_idx(self):
@@ -524,7 +526,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             # weight multiplication
             B, H, W, _, K = xpc.shape
             xpc = xpc.reshape(B, H, W, self.groups, self.groupsize_in, K)
-            outp = torch.einsum("bxygck,gock->bxygo", xpc, self.weight)
+            outp = torch.einsum("bxygck,gock->bxygo", xpc, self.weight.reshape(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
             outp = outp.reshape(B, H, W, -1).contiguous()
 
             # permute output
@@ -538,7 +540,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             x = x.reshape(B, self.groups, self.groupsize_in, K, H, W)
 
             # weight multiplication
-            out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight)
+            out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
             out = out.reshape(B, -1, H, W).contiguous()
 
         if self.bias is not None:
@@ -657,7 +659,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             self.psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, semi_transposed=True)
 
     def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
+        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize_in * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
 
     @property
     def psi_idx(self):
@@ -674,7 +676,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
             # weight multiplication
             xp = xp.reshape(B, H, W, self.groups, self.groupsize_in)
-            xpc = torch.einsum("bxygc,gock->bxygok", xp, self.weight)
+            xpc = torch.einsum("bxygc,gock->bxygok", xp, self.weight.reshape(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
             xpc = xpc.reshape(B, H, W, -1, self.kernel_size).contiguous()
 
             # disco contraction
@@ -695,7 +697,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         else:
             # weight multiplication
             x = x.reshape(B, self.groups, self.groupsize_in, H, W)
-            xc = torch.einsum("bgcxy,gock->bgokxy", x, self.weight)
+            xc = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, self.groupsize_out, self.groupsize_in, self.kernel_size))
             xc = xc.reshape(B, self.groups* self.groupsize_out, -1, H, W).contiguous()
 
             # disco contraction
