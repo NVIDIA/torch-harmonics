@@ -365,8 +365,8 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
     if torch.cuda.is_available():
         torch.cuda.set_device(device.index)
 
-    # 1 hour prediction steps
-    dt = 1 * 3600
+    # 30 min prediction steps
+    dt = 0.5 * 3600 #1 * 3600
     dt_solver = 150
     nsteps = dt // dt_solver
     grid = "legendre-gauss"
@@ -388,16 +388,22 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
 
     # specify which models to train here
     models = [
-        "transformer_sc2_layers4_e128",
-        "s2transformer_sc2_layers4_e128",
-        "ntransformer_sc2_layers4_e128",
-        "s2ntransformer_sc2_layers4_e128",
-        "segformer_sc2_layers4_e128",
-        "s2segformer_sc2_layers4_e128",
-        "nsegformer_sc2_layers4_e128",
-        "s2nsegformer_sc2_layers4_e128",
+        # "transformer_sc2_layers4_e128",
+        # "s2transformer_sc2_layers4_e128",
+        # "ntransformer_sc2_layers4_e128",
+        # "s2ntransformer_sc2_layers4_e128",
+        # "segformer_sc2_layers4_e128",
+        # "s2segformer_sc2_layers4_e128",
+        # "nsegformer_sc2_layers4_e128",
+        # "s2nsegformer_sc2_layers4_e128",
         # "sfno_sc2_layers4_e32",
         # "lsno_sc2_layers4_e32",
+        'ablation_1',
+        'ablation_2',
+        'ablation_3',
+        'ablation_4',
+        'ablation_5',
+        'ablation_6'
     ]
     models = {k: baseline_models[k] for k in models}
 
