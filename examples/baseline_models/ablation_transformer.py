@@ -54,6 +54,7 @@ class AblationTransformer(nn.Module):
         upsample_sht=False,
         theta_cutoff=None,
         filter_basis_type="morlet",
+        hard_thresholding_fraction=1.0
     ):
         super().__init__()
     

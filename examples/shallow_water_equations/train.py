@@ -336,13 +336,13 @@ def train_model(
             print(f"validation loss: {valid_loss}")
             for metric in valid_metrics:
                 print(f"{metric}: {valid_metrics[metric]}")
-
-            if wandb.run is not None:
-                current_lr = optimizer.param_groups[0]["lr"]
-                log_dict = {"loss": accumulated_loss, "validation loss": valid_loss, "learning rate": current_lr}
-                for metric in valid_metrics:
-                    log_dict[metric] = valid_metrics[metric]
-                wandb.log(log_dict)
+            if wandb is not None:
+                if wandb.run is not None:
+                    current_lr = optimizer.param_groups[0]["lr"]
+                    log_dict = {"loss": accumulated_loss, "validation loss": valid_loss, "learning rate": current_lr}
+                    for metric in valid_metrics:
+                        log_dict[metric] = valid_metrics[metric]
+                    wandb.log(log_dict)
 
     train_time = time.time() - train_start
 
@@ -366,7 +366,7 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
         torch.cuda.set_device(device.index)
 
     # 30 min prediction steps
-    dt = 0.5 * 3600 #1 * 3600
+    dt = int(0.5 * 3600) #1 * 3600
     dt_solver = 150
     nsteps = dt // dt_solver
     grid = "legendre-gauss"
