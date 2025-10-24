@@ -177,7 +177,6 @@ def train_model(
     optimizer,
     gscaler,
     scheduler=None,
-    max_grad_norm=0.0,
     normalization_in=None,
     normalization_out=None,
     augmentation=False,
@@ -234,9 +233,6 @@ def train_model(
 
             if log_grads and (iters % log_grads == 0) and (exp_dir is not None):
                 log_weights_and_grads(exp_dir, model, iters=iters)
-
-            if max_grad_norm > 0.0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
 
             gscaler.step(optimizer)
             gscaler.update()
@@ -337,7 +333,6 @@ def main(
     num_epochs=100,
     batch_size=8,
     learning_rate=1e-4,
-    max_grad_norm=0.0,
     train=True,
     load_checkpoint=False,
     amp_mode="none",
@@ -528,7 +523,6 @@ def main(
                 optimizer,
                 gscaler,
                 scheduler,
-                max_grad_norm=max_grad_norm,
                 normalization_in=normalization_in,
                 normalization_out=normalization_out,
                 augmentation=None,
@@ -617,7 +611,6 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", default=8, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--data_downsampling_factor", default=16, type=int, help="Switch for overriding the downsampling factor of the data.")
     parser.add_argument("--learning_rate", default=1e-3, type=float, help="Switch to override learning rate.")
-    parser.add_argument("--max_grad_norm", default=0.0, type=float, help="Switch to override max grad norm. A value > 0 activates gradient clipping.")
     parser.add_argument("--resume", action="store_true", help="Reload checkpoints.")
     parser.add_argument("--amp_mode", default="none", type=str, choices=["none", "bf16", "fp16"], help="Switch to enable AMP.")
     parser.add_argument("--enable_ddp", action="store_true", help="Switch to enable distributed data parallel.")
@@ -630,7 +623,6 @@ if __name__ == "__main__":
         num_epochs=args.num_epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
-        max_grad_norm=args.max_grad_norm,
         train=args.num_epochs > 0,
         load_checkpoint=args.resume,
         amp_mode=args.amp_mode,
