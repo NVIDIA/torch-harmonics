@@ -33,3 +33,4 @@ from .transformer import Transformer
 from .segformer import Segformer
 from .unet import UNet
 from .ablation_transformer import AblationTransformer
+from .sphericalunet import SUNet
