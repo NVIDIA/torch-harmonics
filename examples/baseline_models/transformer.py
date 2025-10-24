@@ -224,7 +224,6 @@ class AttentionBlock(nn.Module):
                 num_heads=num_heads,
                 qkv_bias=bias,
                 qk_scale=None,
-                attn_drop=drop_rate,
                 proj_drop=drop_rate,
             )
         else:

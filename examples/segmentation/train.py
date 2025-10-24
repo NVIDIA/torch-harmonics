@@ -319,7 +319,7 @@ def train_model(
 
 
 def main(
-        models,
+    models,
     root_path,
     num_epochs=100,
     batch_size=8,
