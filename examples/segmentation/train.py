@@ -63,7 +63,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from model_registry import get_baseline_models
 
 # wandb logging
-import wandb
+try:
+    import wandb
+except:
+    wandb = None
 
 
 # helper routine for counting number of paramerters in model
@@ -301,12 +304,13 @@ def train_model(
             for metric in valid_metrics:
                 print(f"{metric}: {valid_metrics[metric]}")
 
-            if wandb.run is not None:
+            if wandb is not None and wandb.run is not None:
                 current_lr = optimizer.param_groups[0]["lr"]
                 log_dict = {"loss": accumulated_loss, "validation loss": valid_loss, "learning rate": current_lr}
                 for metric in valid_metrics:
                     log_dict[metric] = valid_metrics[metric]
-                wandb.log(log_dict)
+                if wandb is not None:
+                    wandb.log(log_dict)
 
     # wrapping up
     train_time = time.time() - train_start
@@ -449,33 +453,7 @@ def main(
     # specify which models to train here
     if models is None:
         models = [
-            "s2segformer_sc2_layers4_e128",
-            "s2segformer_sc2_layers4_e256",
-
-            "segformer_sc2_layers4_e128",
-            "segformer_sc2_layers4_e256",
-        
-            "s2nsegformer_sc2_layers4_e128",
-            "s2nsegformer_sc2_layers4_e256",
-        
-            "nsegformer_sc2_layers4_e128",
-            "nsegformer_sc2_layers4_e256",
-        
-            "s2transformer_sc2_layers4_e128",
-            "s2transformer_sc2_layers4_e256",
-        
-            "s2ntransformer_sc2_layers4_e128",
-            "s2ntransformer_sc2_layers4_e256",
-        
-            "transformer_sc2_layers4_e128",
-            "transformer_sc2_layers4_e256",
-            
-            "ntransformer_sc2_layers4_e128",
-            "ntransformer_sc2_layers4_e256",
-            
-            "vit_sc2_layers4_e128",
-            "sfno_sc2_layers4_e32",
-            "lsno_sc2_layers4_e32",
+            "sunet_depth3_e64_k5_pf4",
         ]
     elif isinstance(models, str):
         models = [models]
@@ -534,7 +512,7 @@ def main(
 
         # run the training
         if train:
-            if logging:
+            if wandb is not None and logging:
                 run = wandb.init(project="spherical segmentation 2d3ds", group=model_name, name=model_name + "_" + str(time.time()), config=model_handle.keywords)
             else:
                 run = None
@@ -573,9 +551,9 @@ def main(
 
             training_time = time.time() - start_time
 
-            if logging:
+            if logging and wandb is not None:
                 run.finish()
-                torch.save(model.state_dict(), os.path.join(exp_dir, "checkpoint.pt"))
+            torch.save(model.state_dict(), os.path.join(exp_dir, "checkpoint.pt"))
 
         # set seed
         torch.manual_seed(333)
@@ -623,7 +601,8 @@ if __name__ == "__main__":
 
     mp.set_start_method("forkserver", force=True)
 
-    wandb.login()
+    if wandb is not None:
+        wandb.login()
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
