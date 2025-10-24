@@ -351,7 +351,7 @@ def train_model(
     return valid_loss
 
 
-def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learning_rate=1e-3, train=True, load_checkpoint=False, amp_mode="none", log_grads=0):
+def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learning_rate=1e-3, train=True, load_checkpoint=False, amp_mode="none", ar_steps=1, log_grads=0):
 
     # enable logging by default
     logging = True
@@ -512,7 +512,7 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
         print(f"Validating {model_name}")
         with torch.inference_mode():
             losses, metric_results, model_times, solver_times = autoregressive_inference(
-                model, dataset, loss_fn, metrics_fns, os.path.join(exp_dir, "figures"), nsteps=nsteps, autoreg_steps=1, nics=50, device=device
+                model, dataset, loss_fn, metrics_fns, os.path.join(exp_dir, "figures"), nsteps=nsteps, autoreg_steps=ar_steps, nics=50, device=device
             )
 
             # compute statistics
@@ -553,6 +553,7 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", default=1e-4, type=float, help="Switch to override learning rate.")
     parser.add_argument("--resume", action="store_true", help="Reload checkpoints.")
     parser.add_argument("--amp_mode", default="none", type=str, choices=["none", "bf16", "fp16"], help="Switch to enable AMP.")
+    parser.add_argument("--ar_steps", default=1, type=int, help="Number of autoregressive steps.")
     args = parser.parse_args()
 
     # main(train=False, load_checkpoint=True, enable_amp=False, log_grads=0)
@@ -565,5 +566,6 @@ if __name__ == "__main__":
         train=(args.pretrain_epochs > 0 or args.finetune_epochs > 0),
         load_checkpoint=args.resume,
         amp_mode=args.amp_mode,
+        ar_steps=args.ar_steps,
         log_grads=0,
     )
