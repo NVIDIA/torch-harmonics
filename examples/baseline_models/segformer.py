@@ -267,7 +267,7 @@ class AttentionWrapper(nn.Module):
 
         if attention_mode == "neighborhood":
             self.att = NeighborhoodAttention(
-                channels, kernel_size=kernel_shape, dilation=1, num_heads=heads, qk_scale=None, attn_drop=attention_drop_rate, proj_drop=0.0, qkv_bias=bias
+                channels, kernel_size=kernel_shape, dilation=1, num_heads=heads, qk_scale=None, proj_drop=0.0, qkv_bias=bias
             )
         elif attention_mode == "global":
             self.att = GlobalAttention(channels, num_heads=heads, dropout=attention_drop_rate, bias=bias)

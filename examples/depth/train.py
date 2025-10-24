@@ -177,6 +177,7 @@ def train_model(
     optimizer,
     gscaler,
     scheduler=None,
+    max_grad_norm=0.0,
     normalization_in=None,
     normalization_out=None,
     augmentation=False,
@@ -233,6 +234,9 @@ def train_model(
 
             if log_grads and (iters % log_grads == 0) and (exp_dir is not None):
                 log_weights_and_grads(exp_dir, model, iters=iters)
+
+            if max_grad_norm > 0.0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
 
             gscaler.step(optimizer)
             gscaler.update()
@@ -328,10 +332,12 @@ def train_model(
 
 
 def main(
+    models,
     root_path,
     num_epochs=100,
     batch_size=8,
     learning_rate=1e-4,
+    max_grad_norm=0.0,
     train=True,
     load_checkpoint=False,
     amp_mode="none",
@@ -433,19 +439,27 @@ def main(
     baseline_models = get_baseline_models(img_size=img_size, in_chans=in_channels, out_chans=out_channels)
 
     # specify which models to train here
-    models = [
-        "transformer_sc2_layers4_e128",
-        "s2transformer_sc2_layers4_e128",
-        "ntransformer_sc2_layers4_e128",
-        "s2ntransformer_sc2_layers4_e128",
-        "segformer_sc2_layers4_e128",
-        "s2segformer_sc2_layers4_e128",
-        "nsegformer_sc2_layers4_e128",
-        "s2nsegformer_sc2_layers4_e128",
-        "sfno_sc2_layers4_e32",
-        "lsno_sc2_layers4_e32",
-    ]
+    if models is None:
+        models = [
+            "transformer_sc2_layers4_e128",
+            "s2transformer_sc2_layers4_e128",
+            "ntransformer_sc2_layers4_e128",
+            "ntransformer_sc2_layers4_e256",
+            "s2ntransformer_sc2_layers4_e128",
+            "s2ntransformer_sc2_layers4_e256",
+            "segformer_sc2_layers4_e128",
+            "s2segformer_sc2_layers4_e128",
+            "nsegformer_sc2_layers4_e128",
+            "s2nsegformer_sc2_layers4_e128",
+            "sfno_sc2_layers4_e32",
+            "lsno_sc2_layers4_e32",
+        ]
+    elif isinstance(models, str):
+        models = [models]
     models = {k: baseline_models[k] for k in models}
+
+    if len(models) == 0:
+        raise ValueError("No models selected")
 
     # initialize Sobolev W11 loss function
     loss_w11 = W11LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
@@ -514,6 +528,7 @@ def main(
                 optimizer,
                 gscaler,
                 scheduler,
+                max_grad_norm=max_grad_norm,
                 normalization_in=normalization_in,
                 normalization_out=normalization_out,
                 augmentation=None,
@@ -597,10 +612,12 @@ if __name__ == "__main__":
         type=str,
         help="Directory to where the dataset is stored. If the dataset is not found in that location, it will be downloaded automatically.",
     )
+    parser.add_argument("--models", default=None, type=str, nargs='+', help="Provide a list of models to run")
     parser.add_argument("--num_epochs", default=100, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--batch_size", default=8, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--data_downsampling_factor", default=16, type=int, help="Switch for overriding the downsampling factor of the data.")
     parser.add_argument("--learning_rate", default=1e-3, type=float, help="Switch to override learning rate.")
+    parser.add_argument("--max_grad_norm", default=0.0, type=float, help="Switch to override max grad norm. A value > 0 activates gradient clipping.")
     parser.add_argument("--resume", action="store_true", help="Reload checkpoints.")
     parser.add_argument("--amp_mode", default="none", type=str, choices=["none", "bf16", "fp16"], help="Switch to enable AMP.")
     parser.add_argument("--enable_ddp", action="store_true", help="Switch to enable distributed data parallel.")
@@ -608,10 +625,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(
+        models=args.models,
         root_path=args.output_path,
         num_epochs=args.num_epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
+        max_grad_norm=args.max_grad_norm,
         train=args.num_epochs > 0,
         load_checkpoint=args.resume,
         amp_mode=args.amp_mode,
