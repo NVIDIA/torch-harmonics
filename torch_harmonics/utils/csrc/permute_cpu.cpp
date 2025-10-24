@@ -1,6 +1,6 @@
 // coding=utf-8
 //
-// SPDX-FileCopyrightText: Copyright (c) 2024 The torch-harmonics Authors. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
 //
 // Redistribution and use in source and binary forms, with or without
@@ -28,35 +28,25 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include <Python.h>
-#include "disco.h"
+#include <torch/library.h>
+#include <torch/torch.h>
 
-extern "C" {
-    /* Creates a dummy empty _C module that can be imported from Python.
-       The import from Python will load the .so consisting of this file
-       in this extension, so that the TORCH_LIBRARY static initializers
-       below are run. */
-    PyMODINIT_FUNC PyInit__C(void)
-    {
-        static struct PyModuleDef module_def = {
-            PyModuleDef_HEAD_INIT,
-            "_C",   /* name of module */
-            NULL,   /* module documentation, may be NULL */
-            -1,     /* size of per-interpreter state of the module,
-                       or -1 if the module keeps state in global variables. */
-            NULL,   /* methods */
-        };
-        return PyModule_Create(&module_def);
-    }
+namespace utility_kernels {
+
+torch::Tensor permute_4D_to0231_cpu(torch::Tensor src) {
+    // CPU implementation using standard permute
+    return src.permute({0, 2, 3, 1}).contiguous();
 }
 
-namespace disco_kernels {
-
-    // Declare the operators
-    TORCH_LIBRARY(disco_kernels, m) {
-        m.def("forward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor"); //, {at::Tag::pt2_compliant_tag});
-        m.def("backward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor"); //, {at::Tag::pt2_compliant_tag});
-    }
-
+torch::Tensor permute_4D_to0312_cpu(torch::Tensor src) {
+    // CPU implementation using standard permute
+    return src.permute({0, 3, 1, 2}).contiguous();
 }
 
+TORCH_LIBRARY_IMPL(utility_kernels, CPU, m)
+{
+    m.impl("permute_to_0231", &permute_4D_to0231_cpu);
+    m.impl("permute_to_0312", &permute_4D_to0312_cpu);
+}
+
+}

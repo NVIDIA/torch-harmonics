@@ -29,17 +29,16 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import warnings
 import torch
 
-# we need those helpers
-from disco_helpers import cuda_kernels_is_available, optimized_kernels_is_available
-
-if optimized_kernels_is_available():
-    from . import _C
-    from torch.ops import disco_kernels
-else:
-    disco_kernels = None
-    warnings.warn("No optimized DISCO kernels are available. Please compile the extension first setting BUILD_CPP and BUILD_CUDA to 1.")
-
-from .convolution import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
+def compare_tensors(msg, tensor, tensor_ref, rtol=1e-8, atol=1e-5,  verbose=False):
+    allclose = torch.allclose(tensor, tensor_ref, rtol=rtol, atol=atol)
+    if (not allclose) and verbose:
+        diff = torch.abs(tensor - tensor_ref)
+        print(f"{msg} absolute tensor diff: min = {torch.min(diff)}, mean = {torch.mean(diff)}, max = {torch.max(diff)}.")
+        reldiff = diff / torch.abs(tensor_ref)
+        print(f"{msg} relative tensor diff: min = {torch.min(reldiff)}, mean = {torch.mean(reldiff)}, max = {torch.max(reldiff)}.")
+        # find element with maximum difference
+        index = torch.argmax(diff)
+        print(f"{msg} element {index} with maximum difference: value = {tensor.flatten()[index]}, reference value = {tensor_ref.flatten()[index]}, diff = {diff.flatten()[index]}.")
+    return allclose
