@@ -1,0 +1,2 @@
+deepsphere git+https://github.com/albertocarpentieri/deepsphere-pytorch.git
+pygsp git+https://github.com/albertocarpentieri/pygsp.git
