@@ -86,7 +86,3 @@ repair-wheel-command = "auditwheel repair --exclude 'libc.so*' --exclude 'libm.s
 
 # Skip building for platforms we don't support
 skip = ["*-win32", "*-win_amd64", "*-macosx_arm64", "*-musllinux*"]
-
-# ensure we use the CXX11 ABI
-[tool.cibuildwheel.linux.environment]
-CXXFLAGS = "-D_GLIBCXX_USE_CXX11_ABI=1"
