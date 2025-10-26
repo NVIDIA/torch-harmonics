@@ -70,8 +70,8 @@ build = ["cp39-*", "cp310-*", "cp311-*", "cp312-*"]
 build-frontend = "pip"
 
 # Use manylinux for Linux wheels
-manylinux-x86_64-image = "manylinux_2_28"
-manylinux-i686-image = "manylinux_2_28"
+manylinux-x86_64-image = "manylinux_2_31"
+manylinux-i686-image = "manylinux_2_31"
 
 # Build options
 
