@@ -123,7 +123,7 @@ jobs:
       env:
         CIBW_BEFORE_BUILD: |
           pip install --upgrade pip setuptools wheel setuptools-scm
-          pip uninstall -y torch || true
+          # pip uninstall -y torch || true
           if [ "${{ matrix.torch-cuda }}" = "cpu" ]; then
             pip install -no-cache-dir torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
           else
@@ -139,7 +139,7 @@ jobs:
           fi
         CIBW_BEFORE_TEST: |
           echo "Installing PyTorch for testing..."
-          pip uninstall -y torch || true
+          # pip uninstall -y torch || true
           if [ "${{ matrix.torch-cuda }}" = "cpu" ]; then
             pip install torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
           else
