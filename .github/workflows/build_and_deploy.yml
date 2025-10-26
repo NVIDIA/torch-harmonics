@@ -119,6 +119,15 @@ jobs:
         SUFFIX="torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }}"
         echo "PACKAGE_VERSION=${BASE_VERSION}+${SUFFIX}" >> $GITHUB_ENV
 
+    - name: Set Glibc CXX11 ABI flag
+      run: |
+        version=${{ matrix.torch-version }}
+        if (( $(echo "$version >= 2.7" | bc -l) )); then
+          echo "USE_CXX11_ABI_FLAGG=1" >> $GITHUB_ENV
+        else
+          echo "USE_CXX11_ABI_FLAG=0" >> $GITHUB_ENV
+        fi
+
     - name: Build manylinux wheels
       env:
         CIBW_BEFORE_BUILD: |
@@ -151,7 +160,7 @@ jobs:
         CIBW_TEST_INSIDE: true
         TORCH_CUDA_VERSION: ${{ matrix.cuda-version }}
         TORCH_CUDA_ARCH_LIST: ${{ env.TORCH_CUDA_ARCH_LIST }}
-        CIBW_ENVIRONMENT: "CXXFLAGS='-D_GLIBCXX_USE_CXX11_ABI=1' SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.PACKAGE_VERSION }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }}"
+        CIBW_ENVIRONMENT: "CXXFLAGS='-D_GLIBCXX_USE_CXX11_ABI=${{ env.USE_CXX11_ABI_FLAG}}' SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.PACKAGE_VERSION }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }}"
 
       run: |
         cibuildwheel --platform linux
