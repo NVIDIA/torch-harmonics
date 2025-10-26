@@ -131,6 +131,8 @@ jobs:
     - name: Build manylinux wheels
       env:
         CIBW_BEFORE_BUILD: |
+          echo "Printing compilation environment..."
+          echo "CXXFLAGS=$CXXFLAGS"
           pip install --upgrade pip setuptools wheel setuptools-scm
           if [ "${{ matrix.torch-cuda }}" = "cpu" ]; then
             pip install torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
@@ -145,6 +147,8 @@ jobs:
             export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
           fi
         CIBW_BEFORE_TEST: |
+          echo "Printing ctesting environment..."
+          echo "CXXFLAGS=$CXXFLAGS"
           echo "Installing PyTorch for testing..."
           if [ "${{ matrix.torch-cuda }}" = "cpu" ]; then
             pip install torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
