@@ -121,9 +121,9 @@ jobs:
 
     - name: Build manylinux wheels
       env:
+        CIBW_BUILD_FRONTEND: "pip; args: --no-build-isolation"
         CIBW_BEFORE_BUILD: |
           pip install --upgrade pip setuptools wheel setuptools-scm
-          # pip uninstall -y torch || true
           if [ "${{ matrix.torch-cuda }}" = "cpu" ]; then
             pip install -no-cache-dir torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
           else
@@ -139,7 +139,6 @@ jobs:
           fi
         CIBW_BEFORE_TEST: |
           echo "Installing PyTorch for testing..."
-          # pip uninstall -y torch || true
           if [ "${{ matrix.torch-cuda }}" = "cpu" ]; then
             pip install torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
           else
@@ -152,7 +151,6 @@ jobs:
             export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
           fi
         CIBW_TEST_INSIDE: true
-        CIBW_BUILD_FRONTEND: "pip; args: --no-build-isolation"
         TORCH_CUDA_VERSION: ${{ matrix.cuda-version }}
         TORCH_CUDA_ARCH_LIST: ${{ env.TORCH_CUDA_ARCH_LIST }}
         CIBW_ENVIRONMENT: "SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.PACKAGE_VERSION }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }}"
