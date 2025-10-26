@@ -70,16 +70,23 @@ build = ["cp39-*", "cp310-*", "cp311-*", "cp312-*"]
 build-frontend = "pip"
 
 # Use manylinux for Linux wheels
-manylinux-x86_64-image = "manylinux_2_31"
-manylinux-i686-image = "manylinux_2_31"
+manylinux_x86_64_image = "manylinux_2_28"
+manylinux_i686_image = "manylinux_2_28"
 
 # Build options
 
 # Test the built wheel
-test-command = "python -c 'import torch_harmonics; print(\"torch_harmonics imported successfully\"); from torch_harmonics.disco import optimized_kernels_is_available; print(\"optimized kernels are available: {optimized_kernels_is_available()}\")'"
+test-command = [
+  "python -c 'import torch; print(torch._C._GLIBCXX_USE_CXX11_ABI)'",
+  "python -c 'import torch_harmonics; print(\"torch_harmonics imported successfully\"); from torch_harmonics.disco import optimized_kernels_is_available; print(f\"optimized kernels are available: {optimized_kernels_is_available()}\")'"
+]
 
 # Repair wheels with auditwheel - exclude all system, PyTorch, and CUDA libraries
 repair-wheel-command = "auditwheel repair --exclude 'libc.so*' --exclude 'libm.so*' --exclude 'libpthread.so*' --exclude 'libdl.so*' --exclude 'libutil.so*' --exclude 'libnsl.so*' --exclude 'libresolv.so*' --exclude 'libcrypt.so*' --exclude 'libnss.so*' --exclude 'libselinux.so*' --exclude 'libpcre.so*' --exclude 'libz.so*' --exclude 'libbz2.so*' --exclude 'liblzma.so*' --exclude 'libtinfo.so*' --exclude 'libncurses.so*' --exclude 'libreadline.so*' --exclude 'libhistory.so*' --exclude 'libform.so*' --exclude 'libmenu.so*' --exclude 'libpanel.so*' --exclude 'libgcc_s.so*' --exclude 'libstdc++.so*' --exclude 'libopenblas.so*' --exclude 'liblapack.so*' --exclude 'libgfortran.so*' --exclude 'libquadmath.so*' --exclude 'libtorch*.so*' --exclude 'libc10.so*' --exclude 'libcudart.so*' --exclude 'libcublas.so*' --exclude 'libcurand.so*' --exclude 'libcusparse.so*' --exclude 'libcufft.so*' --exclude 'libcusolver.so*' --exclude 'libnvrtc.so*' --exclude 'libnvjpeg.so*' --exclude 'libcudnn.so*' -w {dest_dir} {wheel}"
 
 # Skip building for platforms we don't support
 skip = ["*-win32", "*-win_amd64", "*-macosx_arm64", "*-musllinux*"]
+
+# ensure we use the CXX11 ABI
+[tool.cibuildwheel.linux.environment]
+CXXFLAGS = "-D_GLIBCXX_USE_CXX11_ABI=1"
