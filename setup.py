@@ -45,6 +45,10 @@ try:
     print(f"setup.py with torch {torch.__version__}")
     from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDA_HOME, CUDAExtension
 
+    print(f"Building with C++11 ABI = {torch._C._GLIBCXX_USE_CXX11_ABI}")
+    print(f"Compile flag will be -D_GLIBCXX_USE_CXX11_ABI={int(torch._C._GLIBCXX_USE_CXX11_ABI)}")
+
+
     BUILD_CPP = True
     BUILD_CUDA = FORCE_CUDA_EXTENSION or (torch.cuda.is_available() and (CUDA_HOME is not None))
 
