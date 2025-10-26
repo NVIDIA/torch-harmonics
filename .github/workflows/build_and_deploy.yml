@@ -125,11 +125,12 @@ jobs:
           pip install --upgrade pip setuptools wheel setuptools-scm
           pip uninstall -y torch || true
           if [ "${{ matrix.torch-cuda }}" = "cpu" ]; then
-            pip install torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
+            pip install -no-cache-dir torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
           else
-            pip install torch==${{ matrix.torch-version }}+${{ matrix.torch-cuda }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
+            pip install -no-cache-dir torch==${{ matrix.torch-version }}+${{ matrix.torch-cuda }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
           fi
           pip install numpy
+          export SETUPTOOLS_SCM_PRETEND_VERSION="${{ env.PACKAGE_VERSION }}"
           export TORCH_HARMONICS_ENABLE_OPENMP=1
           if [ "${{ matrix.cuda-version }}" != "none" ]; then
             export CUDA_HOME=/usr/local/cuda-${{ matrix.cuda-version }}
