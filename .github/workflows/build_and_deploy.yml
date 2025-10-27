@@ -124,9 +124,9 @@ jobs:
         CIBW_BEFORE_BUILD: |
           pip install --upgrade pip setuptools wheel setuptools-scm
           if [ "${{ matrix.torch-cuda }}" = "cpu" ]; then
-            pip install -no-cache-dir torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
+            pip install --no-cache-dir torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
           else
-            pip install -no-cache-dir torch==${{ matrix.torch-version }}+${{ matrix.torch-cuda }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
+            pip install --no-cache-dir torch==${{ matrix.torch-version }}+${{ matrix.torch-cuda }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
           fi
           pip install numpy
           export SETUPTOOLS_SCM_PRETEND_VERSION="${{ env.PACKAGE_VERSION }}"
