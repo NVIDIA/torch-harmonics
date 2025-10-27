@@ -121,7 +121,6 @@ jobs:
 
     - name: Build manylinux wheels
       env:
-        CIBW_BUILD_FRONTEND: "pip; args: --no-build-isolation"
         CIBW_BEFORE_BUILD: |
           pip install --upgrade pip setuptools wheel setuptools-scm
           if [ "${{ matrix.torch-cuda }}" = "cpu" ]; then
