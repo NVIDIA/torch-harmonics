@@ -113,11 +113,12 @@ jobs:
         ARCH_LIST=$(echo "$CUDA_ARCH_MAP" | jq -r '.["${{ matrix.cuda-version }}"]')
         echo "TORCH_CUDA_ARCH_LIST=$ARCH_LIST" >> $GITHUB_ENV
 
-    - name: Determine package version suffix
+    - name: Extract base version from pyproject.toml
       run: |
-        BASE_VERSION=$(git describe --tags --dirty 2>/dev/null | sed 's/^v//' || echo "0.8.1")
-        SUFFIX="torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }}"
-        echo "PACKAGE_VERSION=${BASE_VERSION}+${SUFFIX}" >> $GITHUB_ENV
+        BASE_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['tool']['setuptools_scm']['fallback_version'])" 2>/dev/null || \
+                       python -c "import tomli; print(tomli.load(open('pyproject.toml', 'rb'))['tool']['setuptools_scm']['fallback_version'])")
+        echo "BASE_VERSION=$BASE_VERSION" >> $GITHUB_ENV
+        echo "Base version: $BASE_VERSION"
 
     - name: Build manylinux wheels
       env:
@@ -129,7 +130,7 @@ jobs:
             pip install --no-cache-dir torch==${{ matrix.torch-version }}+${{ matrix.torch-cuda }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
           fi
           pip install numpy
-          export SETUPTOOLS_SCM_PRETEND_VERSION="${{ env.PACKAGE_VERSION }}"
+          export SETUPTOOLS_SCM_PRETEND_VERSION="${{ env.BASE_VERSION }}+torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }}"
           export TORCH_HARMONICS_ENABLE_OPENMP=1
           if [ "${{ matrix.cuda-version }}" != "none" ]; then
             export CUDA_HOME=/usr/local/cuda-${{ matrix.cuda-version }}
@@ -152,7 +153,7 @@ jobs:
         CIBW_TEST_INSIDE: true
         TORCH_CUDA_VERSION: ${{ matrix.cuda-version }}
         TORCH_CUDA_ARCH_LIST: ${{ env.TORCH_CUDA_ARCH_LIST }}
-        CIBW_ENVIRONMENT: "SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.PACKAGE_VERSION }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }}"
+        CIBW_ENVIRONMENT: "SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.BASE_VERSION }}+torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }}"
 
       run: |
         cibuildwheel --platform linux
