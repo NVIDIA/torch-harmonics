@@ -42,8 +42,8 @@ dependencies = [
 ]
 
 
-[tool.setuptools.dynamic]
-version = {attr = "torch_harmonics.__version__"}
+[tool.setuptools_scm]
+fallback_version = "0.8.1"
 
 [tool.setuptools.packages.find]
     include = ["torch_harmonics*"]
