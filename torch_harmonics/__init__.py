@@ -29,7 +29,11 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-__version__ = "0.8.1"
+try:
+    from importlib.metadata import version, PackageNotFoundError
+    __version__ = version("torch_harmonics")
+except (ImportError, PackageNotFoundError):
+    __version__ = "0.8.1"  # fallback for development installs
 
 from .sht import RealSHT, InverseRealSHT, RealVectorSHT, InverseRealVectorSHT
 from .disco import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
