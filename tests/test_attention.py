@@ -321,12 +321,12 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     @parameterized.expand(
         [
             # self attention
-            [1, 256, 1, (91, 180), (91, 180), "equiangular", "equiangular"],
+            [1, 256, 1, (91, 180), (91, 180), "equiangular", "equiangular", None],
         ],
         skip_on_empty=True,
     )
     @unittest.skipUnless(optimized_kernels_is_available() and _run_perf_tests, "skipping performance test because optimized kernels are not available or perf tests are disabled")
-    def test_perf(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, verbose=False):
+    def test_perf(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, theta_cutoff, verbose=False):
         
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
@@ -347,7 +347,8 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         att_optimized = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads,
                                                 in_shape=in_shape, out_shape=out_shape,
-                                                grid_in=grid_in, grid_out=grid_out, bias=True,
+                                                grid_in=grid_in, grid_out=grid_out, 
+                                                theta_cutoff=theta_cutoff, bias=True,
                                                 optimized_kernel=True).to(self.device)
 
         # random weights
