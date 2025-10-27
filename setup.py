@@ -35,31 +35,6 @@ import warnings
 from setuptools import setup, find_packages
 from setuptools.command.install import install
 
-# some code to handle the building of custom modules
-FORCE_CUDA_EXTENSION = os.getenv("FORCE_CUDA_EXTENSION", "0") == "1"
-BUILD_CPP = BUILD_CUDA = False
-
-# PyTorch is required for building this package
-try:
-    import torch
-    print(f"setup.py with torch {torch.__version__}")
-    from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDA_HOME, CUDAExtension
-
-    print(f"Building with C++11 ABI = {torch._C._GLIBCXX_USE_CXX11_ABI}")
-    print(f"Compile flag will be -D_GLIBCXX_USE_CXX11_ABI={int(torch._C._GLIBCXX_USE_CXX11_ABI)}")
-
-
-    BUILD_CPP = True
-    BUILD_CUDA = FORCE_CUDA_EXTENSION or (torch.cuda.is_available() and (CUDA_HOME is not None))
-
-    if BUILD_CUDA:
-        print("CUDA extensions will be built")
-    else:
-        print("CPU-only extensions will be built")
-
-except (ImportError, TypeError, AssertionError, AttributeError) as e:
-    raise RuntimeError(f"PyTorch is required to build torch-harmonics. Please install PyTorch first. Error: {e}")
-
 def get_compile_args(module_name):
     """If user runs build with TORCH_HARMONICS_DEBUG=1 set, it will use debugging flags to build"""
 
@@ -89,7 +64,7 @@ def get_compile_args(module_name):
             'nvcc': ['-O3', "-DNDEBUG"] + nvcc_extra_flags
         }
 
-def get_helpers_compile_args():
+def get_helpers_compile_args(BUILD_CPP, BUILD_CUDA):
     return {
         'cxx': [
             f'-DBUILD_CPP={1 if BUILD_CPP else 0}',
@@ -99,6 +74,24 @@ def get_helpers_compile_args():
 
 def get_ext_modules():
     """Get list of extension modules to compile."""
+
+    # PyTorch is required for building this package
+    try:
+        import torch
+        print(f"setup.py with torch {torch.__version__}")
+        from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDA_HOME, CUDAExtension
+
+        BUILD_CPP = True
+        FORCE_CUDA_EXTENSION = os.getenv("FORCE_CUDA_EXTENSION", "0") == "1"
+        BUILD_CUDA = FORCE_CUDA_EXTENSION or (torch.cuda.is_available() and (CUDA_HOME is not None))
+
+        if BUILD_CUDA:
+            print(f"CUDA extensions will be built for CUDA {torch.version.cuda}")
+        else:
+            print(f"CPU-only extensions will be built")
+
+    except (ImportError, TypeError, AssertionError, AttributeError) as e:
+        raise RuntimeError(f"PyTorch is required to build torch-harmonics. Please install PyTorch first. Error: {e}")
 
     ext_modules = []
     cmdclass = {}
@@ -111,7 +104,7 @@ def get_ext_modules():
             [
                 "torch_harmonics/disco/csrc/disco_helpers.cpp",
             ],
-            extra_compile_args=get_helpers_compile_args(),
+            extra_compile_args=get_helpers_compile_args(BUILD_CPP, BUILD_CUDA),
         )
     )
 
@@ -121,7 +114,7 @@ def get_ext_modules():
             [
                 "torch_harmonics/attention/csrc/attention_helpers.cpp",
             ],
-            extra_compile_args=get_helpers_compile_args(),
+            extra_compile_args=get_helpers_compile_args(BUILD_CPP, BUILD_CUDA),
         )
     )
 
@@ -192,7 +185,12 @@ def get_ext_modules():
 
 if __name__ == "__main__":
 
-    ext_modules, cmdclass = get_ext_modules()
+    # avoid importing pytorch unless we are doing an actual build
+    if any(cmd in sys.argv for cmd in ["build_ext", "bdist_wheel", "install", "develop"]):
+        ext_modules, cmdclass = get_ext_modules()
+    else:
+        ext_modules = []
+        cmdclass = {}
 
     setup(
         name="torch_harmonics",
