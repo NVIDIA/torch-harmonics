@@ -35,5 +35,3 @@
 #include <torch/all.h>
 #include <torch/library.h>
 #include <cassert>
-
-#include "cppmacro.h"
