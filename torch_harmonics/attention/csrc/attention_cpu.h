@@ -34,6 +34,8 @@
 #include <array>
 #include <vector>
 
+#include "cppmacro.h"
+
 #define CACHE_BLOCK_SIZE (64)
 
 namespace attention_kernels {

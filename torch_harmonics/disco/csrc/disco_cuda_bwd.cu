@@ -31,7 +31,6 @@
 #include "disco.h"
 #include "disco_cuda.cuh"
 #include "csr_cuda.cuh"
-#include "cudamacro.h"
 
 #define THREADS (64)
 

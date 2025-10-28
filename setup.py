@@ -119,6 +119,7 @@ def get_ext_modules():
             [
                 "torch_harmonics/disco/csrc/disco_helpers.cpp",
             ],
+            include_dirs=[os.path.join(setup_dir, "torch_harmonics/utils/csrc")],
             extra_compile_args=get_helpers_compile_args(),
         )
     )
@@ -130,6 +131,7 @@ def get_ext_modules():
             [
                 "torch_harmonics/attention/csrc/attention_helpers.cpp",
             ],
+            include_dirs=[os.path.join(setup_dir, "torch_harmonics/utils/csrc")],
             extra_compile_args=get_helpers_compile_args(),
         )
     )
@@ -189,6 +191,7 @@ def get_ext_modules():
                 CppExtension(
                     "torch_harmonics.disco._C", 
                     disco_sources,
+                    include_dirs=[os.path.join(setup_dir, "torch_harmonics/utils/csrc")],
                     extra_compile_args=get_compile_args("disco")
                 )
             )
@@ -212,6 +215,7 @@ def get_ext_modules():
                 CUDAExtension(
                     "torch_harmonics.attention._C",
                     attention_sources,
+                    include_dirs=[os.path.join(setup_dir, "torch_harmonics/utils/csrc")],
                     extra_compile_args=get_compile_args("attention")
                 )
             )
@@ -220,6 +224,7 @@ def get_ext_modules():
                 CppExtension(
                     "torch_harmonics.attention._C",
                     attention_sources,
+                    include_dirs=[os.path.join(setup_dir, "torch_harmonics/utils/csrc")],
                     extra_compile_args=get_compile_args("attention")
                 )
             )

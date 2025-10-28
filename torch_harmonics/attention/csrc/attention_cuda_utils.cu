@@ -39,7 +39,7 @@
 #include <cub/cub.cuh>
 #include <limits>
 
-#include "cudamacro.h"
+//#include "cudamacro.h"
 #include "attention_cuda.cuh"
 
 #define THREADS (64)

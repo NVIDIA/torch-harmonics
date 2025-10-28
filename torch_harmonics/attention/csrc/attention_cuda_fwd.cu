@@ -39,14 +39,13 @@
 #include <cub/cub.cuh>
 #include <limits>
 
-#include "cudamacro.h"
+//#include "cudamacro.h"
 #include "attention_cuda_utils.cuh"
 
 #define THREADS (64)
 
 #define MAX_LOCAL_ARR_LEN (16)
 
-// BEGIN - forward kernels and functions
 
 namespace attention_kernels {
 

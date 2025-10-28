@@ -30,21 +30,13 @@
 
 #pragma once
 
-//
-//#include <ATen/cuda/CUDAContext.h>
-//#include <ATen/cuda/CUDAUtils.h>
-
 #include <torch/torch.h>
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDAUtils.h>
 
 #define WARP_SIZE (32)
-#define FULL_MASK (0xFFFFFFFF)
 
-#ifndef DIV_UP
-#define DIV_UP(a,b) (((a)+((b)-1))/(b))
-#endif
 
 namespace utility_kernels {
 
