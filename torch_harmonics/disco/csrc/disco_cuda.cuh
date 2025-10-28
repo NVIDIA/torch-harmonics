@@ -35,16 +35,7 @@
 #include <cuda_runtime.h>
 #include <c10/cuda/CUDAStream.h>
 
-#define CHECK_CUDA_TENSOR(x) TORCH_INTERNAL_ASSERT(x.device().type() == torch::kCUDA)
-#define CHECK_CUDA_INPUT_TENSOR(x)                                                                                     \
-    CHECK_CUDA_TENSOR(x);                                                                                              \
-    CHECK_CONTIGUOUS_TENSOR(x)
-
-// will come from ../../attention/csrc/attention_cuda_utils.cuh
-#ifndef DIV_UP
-#define DIV_UP(a, b) (((a) + ((b)-1)) / (b))
-#endif
-
+#include "cudamacro.h"
 
 #define MIN_THREADS (64)
 #define ELXTH_MAX (32)

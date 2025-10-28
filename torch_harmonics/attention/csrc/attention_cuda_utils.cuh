@@ -34,9 +34,9 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDAUtils.h>
 
+#include "cudamacro.h"
+
 #define WARP_SIZE (32)
-#define FULL_MASK (0xFFFFFFFF)
-#define DIV_UP(a,b) (((a)+((b)-1))/(b))
 
 namespace attention_kernels {
 

@@ -30,18 +30,11 @@
 
 #pragma once
 
-#define CHECK_CUDA(call) {                                                   \
-    cudaError_t err = call;                                                  \
-    if( cudaSuccess != err) {                                                \
-        fprintf(stderr, "Cuda error in file '%s' in line %i : %s.\n",        \
-                __FILE__, __LINE__, cudaGetErrorString( err) );              \
-        exit(EXIT_FAILURE);                                                  \
-    }}
+#include <torch/torch.h>
 
-#define CHECK_ERROR(errorMessage) {                                          \
-    cudaError_t err = cudaGetLastError();                                    \
-    if( cudaSuccess != err) {                                                \
-        fprintf(stderr, "Cuda error: %s in file '%s' in line %i : %s.\n",    \
-                errorMessage, __FILE__, __LINE__, cudaGetErrorString( err) );\
-        exit(EXIT_FAILURE);                                                  \
-    }}
+#define CHECK_CPU_TENSOR(x) TORCH_INTERNAL_ASSERT(x.device().type() == torch::kCPU, #x " must be on CPU")
+#define CHECK_CONTIGUOUS_TENSOR(x) TORCH_INTERNAL_ASSERT(x.is_contiguous(), #x " must be contiguous")
+#define CHECK_INPUT_TENSOR(x) CHECK_CONTIGUOUS_TENSOR(x)
+#define CHECK_CPU_INPUT_TENSOR(x)                                                                                     \
+    CHECK_CPU_TENSOR(x);                                                                                              \
+    CHECK_CONTIGUOUS_TENSOR(x)

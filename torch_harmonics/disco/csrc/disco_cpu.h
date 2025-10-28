@@ -32,6 +32,8 @@
 
 #include "disco.h"
 
+#include "cppmacro.h"
+
 #define CACHE_BLOCK_SIZE (64)
 
 namespace disco_kernels {
