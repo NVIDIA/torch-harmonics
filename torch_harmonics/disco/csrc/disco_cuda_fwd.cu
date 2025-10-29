@@ -35,7 +35,7 @@
 
 #define THREADS (64)
 
-#define MAX_LOCAL_ARR_LEN (16)
+#define MAX_LOCAL_ARR_LEN (32)
 
 namespace disco_kernels {
 
@@ -576,7 +576,6 @@ void s2_disco_fwd_special_vec_k(const int nchan_in,   // no. of input  float (no
 
     constexpr int NLOC_M1 = NLOC-1;
 
-    //constexpr int VEC_SIZE = sizeof(FLOATV_T) / sizeof(float);
 
     const int tidx  = threadIdx.x;
     const int tidy  = threadIdx.y;
@@ -733,8 +732,6 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
                                   at::Tensor col_idx, // CSR non-empty col indices
                                   at::Tensor val_dat, // CSR non-empty value data
                                   at::Tensor yP) {
-
-    static_assert(0 == (MAX_LOCAL_ARR_LEN & (MAX_LOCAL_ARR_LEN-1)));
 
     if (batch_size <= 0 ||
         nchan_in   <= 0 ||

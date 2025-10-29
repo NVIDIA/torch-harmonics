@@ -34,7 +34,7 @@
 
 #define THREADS (64)
 
-#define MAX_LOCAL_ARR_LEN (16)
+#define MAX_LOCAL_ARR_LEN (32)
 
 namespace disco_kernels {
 
@@ -783,8 +783,6 @@ static void s2_disco_bwd_dispatch(int64_t batch_size,
                                   at::Tensor col_idx, // CSR non-empty col indices
                                   at::Tensor val_dat, // CSR non-empty value data
                                   at::Tensor yP) {
-
-    static_assert(0 == (MAX_LOCAL_ARR_LEN & (MAX_LOCAL_ARR_LEN-1)));
 
     if (batch_size <=         0 ||
         nchans     <=         0 ||
