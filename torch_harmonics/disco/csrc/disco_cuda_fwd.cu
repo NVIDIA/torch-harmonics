@@ -576,7 +576,6 @@ void s2_disco_fwd_special_vec_k(const int nchan_in,   // no. of input  float (no
 
     constexpr int NLOC_M1 = NLOC-1;
 
-    //constexpr int VEC_SIZE = sizeof(FLOATV_T) / sizeof(float);
 
     const int tidx  = threadIdx.x;
     const int tidy  = threadIdx.y;
@@ -660,7 +659,7 @@ void launch_gen_disco_fwd(int64_t batch_size,
     size_t shsize = sizeof(FLOATV_T)*(nchan_in*K)*block.y;
 
     const int pscale = nlon_in / nlon_out;
-#if 0
+#if 1
     printf("Launching s2_disco_fwd_generic_vec_k<%d, float%s><<<..., ..., %zu, ...>>> with:\n"
            "\tnchan_in: %ld\n"
            "\tK: %ld\n"
@@ -708,7 +707,7 @@ void launch_spc_disco_fwd(int nloc,      // "BDIM_X*nloc" >= nchans
         size_t shsize = 0; //sizeof(float)*chxgrp_out * block.y;
 
         const int pscale = nlon_in / nlon_out;
-#if 0
+#if 1
         printf("Launching s2_disco_fwd_special_vec_k<%d, %d, %d, float%s><<<(%d, %d), (%d, %d), ..., %zu, ...>>> with:\n"
                "\tnchan_in: %ld\n"
                "\tK: %ld\n"
@@ -747,7 +746,6 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
                                   at::Tensor yP) {
 
     //static_assert(0 == (MAX_LOCAL_ARR_LEN & (MAX_LOCAL_ARR_LEN-1)));
-
     if (batch_size <= 0 ||
         nchan_in   <= 0 ||
         nlon_in    <= 0 ||
@@ -833,7 +831,8 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
 
         // use 2D blocks only if 32 threads are enough
         switch(bdimx) {
-            case    8: launch_spc_disco_fwd<   8,                 1, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchan_in, nlat_in, nlon_in, nlat_out, nlon_out, K, _xp, nrow, _row_sort, _row_off, _row_idx, _col_idx, _val_pck, _yp, stream); break;
+            case    4: launch_spc_disco_fwd<   4,                 1, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchan_in, nlat_in, nlon_in, nlat_out, nlon_out, K, _xp, nrow, _row_sort, _row_off, _row_idx, _col_idx, _val_pck, _yp, stream); break;
+            case    8: launch_spc_disco_fwd<   8, MIN_LOCAL_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchan_in, nlat_in, nlon_in, nlat_out, nlon_out, K, _xp, nrow, _row_sort, _row_off, _row_idx, _col_idx, _val_pck, _yp, stream); break;
             case   16: launch_spc_disco_fwd<  16, MIN_LOCAL_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchan_in, nlat_in, nlon_in, nlat_out, nlon_out, K, _xp, nrow, _row_sort, _row_off, _row_idx, _col_idx, _val_pck, _yp, stream); break;
             case   32: launch_spc_disco_fwd<  32, MIN_LOCAL_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchan_in, nlat_in, nlon_in, nlat_out, nlon_out, K, _xp, nrow, _row_sort, _row_off, _row_idx, _col_idx, _val_pck, _yp, stream); break;
             case   64: launch_spc_disco_fwd<  64, MIN_LOCAL_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchan_in, nlat_in, nlon_in, nlat_out, nlon_out, K, _xp, nrow, _row_sort, _row_off, _row_idx, _col_idx, _val_pck, _yp, stream); break;
@@ -859,7 +858,8 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
 
         // use 2D blocks only if 32 threads are enough
         switch(bdimx) {
-            case    8: launch_spc_disco_fwd<   8,                 1, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchan_in, nlat_in, nlon_in, nlat_out, nlon_out, K, _xp, nrow, _row_sort, _row_off, _row_idx, _col_idx, _val_pck4, _yp4, stream); break;
+            case    4: launch_spc_disco_fwd<   4,                 1, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchan_in, nlat_in, nlon_in, nlat_out, nlon_out, K, _xp, nrow, _row_sort, _row_off, _row_idx, _col_idx, _val_pck4, _yp4, stream); break;
+            case    8: launch_spc_disco_fwd<   8, MIN_LOCAL_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchan_in, nlat_in, nlon_in, nlat_out, nlon_out, K, _xp, nrow, _row_sort, _row_off, _row_idx, _col_idx, _val_pck4, _yp4, stream); break;
             case   16: launch_spc_disco_fwd<  16, MIN_LOCAL_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchan_in, nlat_in, nlon_in, nlat_out, nlon_out, K, _xp, nrow, _row_sort, _row_off, _row_idx, _col_idx, _val_pck4, _yp4, stream); break;
             case   32: launch_spc_disco_fwd<  32, MIN_LOCAL_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchan_in, nlat_in, nlon_in, nlat_out, nlon_out, K, _xp, nrow, _row_sort, _row_off, _row_idx, _col_idx, _val_pck4, _yp4, stream); break;
             case   64: launch_spc_disco_fwd<  64, MIN_LOCAL_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchan_in, nlat_in, nlon_in, nlat_out, nlon_out, K, _xp, nrow, _row_sort, _row_off, _row_idx, _col_idx, _val_pck4, _yp4, stream); break;
