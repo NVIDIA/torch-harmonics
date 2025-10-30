@@ -45,22 +45,13 @@ namespace attention_kernels {
         CHECK_CPU_INPUT_TENSOR(col_idx);
         CHECK_CPU_INPUT_TENSOR(row_off);
 
-        // change to channels first:
-        bool kx_is_channels_last = kx.strides()[1] == 1;
-        bool vx_is_channels_last = vx.strides()[1] == 1;
-        bool qy_is_channels_last = qy.strides()[1] == 1;
-
-        if (!kx_is_channels_last) { kx = kx.contiguous(at::MemoryFormat::ChannelsLast); }
-        if (!vx_is_channels_last) { vx = vx.contiguous(at::MemoryFormat::ChannelsLast); }
-        if (!qy_is_channels_last) { qy = qy.contiguous(at::MemoryFormat::ChannelsLast); }
-
         // some parameters
         const int64_t batch_size = kx.size(0);
-        const int64_t nchannels_out = vx.size(1);
-        const int64_t nchannels_in = qy.size(1);
+        const int64_t nchannels_out = vx.size(3);
+        const int64_t nchannels_in = qy.size(3);
 
         // prepare result tensor
-        auto y = torch::zeros({batch_size, nchannels_out, nlat_out, nlon_out}, qy.options());
+        auto y = torch::zeros({batch_size, nlat_out, nlon_out, nchannels_out}, qy.options());
 
         // extract accessors
         auto roff_arr = row_off.packed_accessor64<int64_t, 1>();
@@ -73,9 +64,6 @@ namespace attention_kernels {
 
         s2_attn_fwd_kernel<float>(kx_arr, vx_arr, qy_arr, quad_weights_arr, col_idx_arr, roff_arr, y_arr, 
             nlon_in, nlat_out, nlon_out, batch_size, nchannels_in, nchannels_out);
-
-        // permute back
-        if (!qy_is_channels_last) { y = y.contiguous(at::MemoryFormat::Contiguous); }
 
         return y;
     }
