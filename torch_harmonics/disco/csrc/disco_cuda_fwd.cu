@@ -35,7 +35,7 @@
 
 #define THREADS (64)
 
-#define MAX_LOCAL_ARR_LEN (16)
+#define MAX_LOCAL_ARR_LEN (20)
 
 namespace disco_kernels {
 
@@ -660,7 +660,13 @@ void launch_gen_disco_fwd(int64_t batch_size,
     size_t shsize = sizeof(FLOATV_T)*(nchan_in*K)*block.y;
 
     const int pscale = nlon_in / nlon_out;
-
+#if 0
+    printf("Launching s2_disco_fwd_generic_vec_k<%d, float%s><<<..., ..., %zu, ...>>> with:\n"
+           "\tnchan_in: %ld\n"
+           "\tK: %ld\n"
+           "\tpscale: %d\n\n",
+           THREADS, sizeof(FLOATV_T)==16?"4":"", shsize, nchan_in, K, pscale);
+#endif
     // will use only the first 1/K-th of the CSR, i.e. only the first nlat_out rows
     s2_disco_fwd_generic_vec_k<THREADS>
                               <<<grid, block, shsize, stream>>>(nchan_in, nlat_in, nlon_in, nlat_out, nlon_out, pscale, K,
@@ -702,7 +708,13 @@ void launch_spc_disco_fwd(int nloc,      // "BDIM_X*nloc" >= nchans
         size_t shsize = 0; //sizeof(float)*chxgrp_out * block.y;
 
         const int pscale = nlon_in / nlon_out;
-
+#if 0
+        printf("Launching s2_disco_fwd_special_vec_k<%d, %d, %d, float%s><<<(%d, %d), (%d, %d), ..., %zu, ...>>> with:\n"
+               "\tnchan_in: %ld\n"
+               "\tK: %ld\n"
+               "\tpscale: %d\n\n",
+               BDIM_X, BDIM_Y, CUR_LOC_SIZE, sizeof(FLOATV_T)==16?"4":"", grid.x, grid.y, block.x, block.y, shsize, nchan_in, K, pscale);
+#endif
         s2_disco_fwd_special_vec_k<BDIM_X, BDIM_Y, CUR_LOC_SIZE>
                                   <<<grid, block, shsize, stream>>>(nchan_in, nlat_in, nlon_in, nlat_out, nlon_out, pscale, K,
                                                                     _xp, nrow, _row_sort, _row_off, _row_idx, _col_idx, _val_pck, _yp);
@@ -734,7 +746,7 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
                                   at::Tensor val_dat, // CSR non-empty value data
                                   at::Tensor yP) {
 
-    static_assert(0 == (MAX_LOCAL_ARR_LEN & (MAX_LOCAL_ARR_LEN-1)));
+    //static_assert(0 == (MAX_LOCAL_ARR_LEN & (MAX_LOCAL_ARR_LEN-1)));
 
     if (batch_size <= 0 ||
         nchan_in   <= 0 ||

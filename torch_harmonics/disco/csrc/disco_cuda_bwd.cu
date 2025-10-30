@@ -34,7 +34,7 @@
 
 #define THREADS (64)
 
-#define MAX_LOCAL_ARR_LEN (16)
+#define MAX_LOCAL_ARR_LEN (20)
 
 namespace disco_kernels {
 
@@ -457,6 +457,7 @@ static __device__ void processCSR_Kpow2_reg_d(const int wi,
         unsigned int subwarp_id = threadIdx.y % (WARP_SIZE/BDIM_X);
         subwarp_mask = MASK << (subwarp_id*BDIM_X);
     }
+    constexpr int MAX_POW2_K = (BDIM_X < WARP_SIZE) ? BDIM_X : WARP_SIZE;
 
     // K is a power of two <= BDIM_X
     const int log2_K = __popc(K-1);
@@ -500,13 +501,13 @@ static __device__ void processCSR_Kpow2_reg_d(const int wi,
 
         // K is a power of two <= 32
         #pragma unroll
-        for(int j = 1; j < BDIM_X; j *= 2) {
+        for(int j = 1; j < MAX_POW2_K; j *= 2) {
 
             if (j >= K) break;
 
             #pragma unroll
             for(int i = 0; i < NLOC; i++) {
-                locy[i] += __shfl_xor_sync(subwarp_mask, locy[i], j, BDIM_X);
+                locy[i] += __shfl_xor_sync(subwarp_mask, locy[i], j, MAX_POW2_K);
             }
         }
 
@@ -678,8 +679,9 @@ void s2_disco_bwd_special_vec_k(int nchans,   // no. of input  float (not FLOATV
     __shared__ float *shYOffAll[BDIM_Y][BDIM_X+PAD];
 
     // check if BDIM_X is a multiple of K; since BDIM_X is a power of 2, check if K is also a power of two
-    if (!(K & K-1) && K <= BDIM_X) { processCSR_Kpow2_reg_d<BDIM_X, PAD, NLOC>(wi, rlen, nchans, nlon_out, pscale, K, locx, col_idx, val_pck, shYOffAll[tidy], NULL, y); }
-    else                           { processCSR_Kanyv_reg_d<BDIM_X, PAD, NLOC>(wi, rlen, nchans, nlon_out, pscale, K, locx, col_idx, val_pck, shYOffAll[tidy],  shy, y); }
+    constexpr int MAX_POW2_K = (BDIM_X < WARP_SIZE) ? BDIM_X : WARP_SIZE;
+    if (!(K & K-1) && K <= MAX_POW2_K) { processCSR_Kpow2_reg_d<BDIM_X, PAD, NLOC>(wi, rlen, nchans, nlon_out, pscale, K, locx, col_idx, val_pck, shYOffAll[tidy], NULL, y); }
+    else                               { processCSR_Kanyv_reg_d<BDIM_X, PAD, NLOC>(wi, rlen, nchans, nlon_out, pscale, K, locx, col_idx, val_pck, shYOffAll[tidy],  shy, y); }
 
     return;
 
@@ -709,7 +711,18 @@ void launch_gen_disco_bwd(int64_t batch_size,
     size_t shsize = (sizeof(FLOATV_T)*(nchans*K) + sizeof(float)*nchans)*block.y;
 
     const int pscale = nlon_out / nlon_in;
-
+#if 0
+    printf("Launching s2_disco_bwd_generic_vec_k<%d, float%s><<<(%d,%d), (%d,%d)..., ..., %zu, ...>>> with:\n"
+           "\tnchan_out: %ld\n"
+           "\tK: %ld\n"
+           "\tpscale: %d\n"
+           "\tnlat_in: %ld\n"
+           "\tnlon_in: %ld\n"
+           "\tnlat_out: %ld\n"
+           "\tnlon_out: %ld\n\n",
+           THREADS, sizeof(FLOATV_T)==16?"4":"", grid.x, grid.y, block.x, block.y, shsize, nchans, K, pscale,
+           nlat_in, nlon_in, nlat_out, nlon_out);
+#endif
     // will use only the first 1/K-th of the CSR, i.e. only the first nlat_out rows
     s2_disco_bwd_generic_vec_k<THREADS>
                               <<<grid, block, shsize, stream>>>(nchans, nlat_in, nlon_in, nlat_out, nlon_out, pscale, K,
@@ -752,7 +765,18 @@ void launch_spc_disco_bwd(int nloc,      // "BDIM_X*nloc" >= nchans
         size_t shsize = (K & (K-1)) ? sizeof(float)*DIV_UP(nchans, BDIM_X)*BDIM_X*block.y : 0;
 
         const int pscale = nlon_out / nlon_in;
-
+#if 0
+        printf("Launching s2_disco_bwd_special_vec_k<%d, %d, %d, float%s><<<(%d, %d), (%d, %d), ..., %zu, ...>>> with:\n"
+               "\tnchans: %ld\n"
+               "\tK: %ld\n"
+               "\tpscale: %d\n"
+               "\tnlat_in: %ld\n"
+               "\tnlon_in: %ld\n"
+               "\tnlat_out: %ld\n"
+               "\tnlon_in: %ld\n\n",
+               BDIM_X, BDIM_Y, CUR_LOC_SIZE, sizeof(FLOATV_T)==16?"4":"", grid.x, grid.y, block.x, block.y, shsize, nchans, K, pscale,
+               nlat_in, nlon_in, nlat_out, nlon_out);
+#endif
         s2_disco_bwd_special_vec_k<BDIM_X, BDIM_Y, CUR_LOC_SIZE>
                                   <<<grid, block, shsize, stream>>>(nchans, nlat_in, nlon_in, nlat_out, nlon_out, pscale, K,
                                                                     _xp, nrow, _row_sort, _row_off, _row_idx, _col_idx, _val_pck, _yp);
@@ -784,7 +808,7 @@ static void s2_disco_bwd_dispatch(int64_t batch_size,
                                   at::Tensor val_dat, // CSR non-empty value data
                                   at::Tensor yP) {
 
-    static_assert(0 == (MAX_LOCAL_ARR_LEN & (MAX_LOCAL_ARR_LEN-1)));
+    //static_assert(0 == (MAX_LOCAL_ARR_LEN & (MAX_LOCAL_ARR_LEN-1)));
 
     if (batch_size <=         0 ||
         nchans     <=         0 ||
