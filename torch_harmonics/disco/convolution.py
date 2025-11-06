@@ -175,7 +175,7 @@ def _precompute_convolution_tensor_s2(
     basis_norm_mode: Optional[str]="mean",
     merge_quadrature: Optional[bool]=False,
 ):
-    """
+    r"""
     Precomputes the rotated filters at positions $R^{-1}_j \omega_i = R^{-1}_j R_i \nu = Y(-\theta_j)Z(\phi_i - \phi_j)Y(\theta_j)\nu$.
     Assumes a tensorized grid on the sphere with an equidistant sampling in longitude as described in Ocampo et al.
     The output tensor has shape kernel_shape x nlat_out x (nlat_in * nlon_in).
