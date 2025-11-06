@@ -113,7 +113,7 @@ def legpoly(mmax: int, lmax: int, x: torch.Tensor, norm: Optional[str]="ortho", 
 @lru_cache(typed=True, copy=True)
 def _precompute_legpoly(mmax: int , lmax: int, t: torch.Tensor,
                         norm: Optional[str]="ortho", inverse: Optional[bool]=False, csphase: Optional[bool]=True) -> torch.Tensor:
-    """
+    r"""
     Computes the values of (-1)^m c^l_m P^l_m(\cos \theta) at the positions specified by t (theta).
     The resulting tensor has shape (mmax, lmax, len(x)). The Condon-Shortley Phase (-1)^m
     can be turned off optionally.
@@ -151,7 +151,7 @@ def _precompute_legpoly(mmax: int , lmax: int, t: torch.Tensor,
 @lru_cache(typed=True, copy=True)
 def _precompute_dlegpoly(mmax: int, lmax: int, t: torch.Tensor,
                          norm: Optional[str]="ortho", inverse: Optional[bool]=False, csphase: Optional[bool]=True) -> torch.Tensor:
-    """
+    r"""
     Computes the values of the derivatives $\frac{d}{d \theta} P^m_l(\cos \theta)$
     at the positions specified by t (theta), as well as $\frac{1}{\sin \theta} P^m_l(\cos \theta)$,
     needed for the computation of the vector spherical harmonics. The resulting tensor has shape

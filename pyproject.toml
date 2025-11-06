@@ -57,7 +57,7 @@ dev = [
     "requests",
     "tarfile",
     "tqdm",
-    "PIL",
+    "pillow",
     "h5py",
 ]
 
