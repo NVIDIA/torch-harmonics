@@ -75,15 +75,14 @@ torch-harmonics has been used to implement a variety of differentiable PDE solve
 
 
 ## Installation
-A simple installation can be directly done from PyPI:
-
+A simple installation from source can be directly done from PyPI. Make sure to disable build isolation via the `--no-build-isolation` flag to ensure that custom CPU kernels for spherical convolutions and attention are built with the existing torch installation:
 ```bash
-pip install torch-harmonics
+pip install --no-build-isolation torch-harmonics
 ```
-If you are planning to use spherical convolutions, we recommend building the corresponding custom CUDA kernels. To enforce this, you can set the `FORCE_CUDA_EXTENSION` flag. You may also want to set appropriate architectures with the `TORCH_CUDA_ARCH_LIST` flag. Finally, make sure to disable build isolation via the `--no-build-isolation` flag to ensure that the custom kernels are built with the existing torch installation.
+If you are planning to use spherical convolutions on CUDA capable GPUs, you might need to take additional steps: if built inside a container or the CUDA devices are not found automaticall, please set the `FORCE_CUDA_EXTENSION` flag. You may also want to set appropriate architectures with the `TORCH_CUDA_ARCH_LIST` flag. We recommend to pick just the sm architecture you are actually planning to use since this reduces compilation time significantly.
 ```bash
 export FORCE_CUDA_EXTENSION=1
-export TORCH_CUDA_ARCH_LIST="7.0 7.2 7.5 8.0 8.6 8.7 9.0+PTX"
+export TORCH_CUDA_ARCH_LIST="7.0 7.2 7.5 8.0 8.6 8.7 9.0 10.0+PTX"
 pip install --no-build-isolation torch-harmonics
 ```
 :warning: Please note that the custom CUDA extensions currently only support CUDA architectures >= 7.0.
@@ -93,7 +92,7 @@ If you want to actively develop torch-harmonics, we recommend building it in you
 ```bash
 git clone git@github.com:NVIDIA/torch-harmonics.git
 cd torch-harmonics
-pip install -e .
+pip install --no-build-isolation -e .
 ```
 
 Alternatively, use the Dockerfile to build your custom container after cloning:
