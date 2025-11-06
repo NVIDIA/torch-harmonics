@@ -32,6 +32,8 @@
 
 #include "disco.h"
 
+#include "cppmacro.h"
+
 #define CACHE_BLOCK_SIZE (64)
 
 namespace disco_kernels {
@@ -55,10 +57,10 @@ namespace disco_kernels {
         const int64_t nblock_wo = static_cast<int64_t>((Wo + block_wo - 1) / block_wo);
 
         // loop over matrix entries
-        #pragma omp parallel for collapse(3)
+        #pragma omp parallel for simd collapse(3)
         for (int64_t b = 0; b < B; b++) {
-            for (int64_t c = 0; c < C; c++) {
-                for (int64_t row = 0; row < nnr; row++) {
+            for (int64_t row = 0; row < nnr; row++) {
+                for (int64_t c = 0; c < C; c++) {
 
                     // since the rows are ordered accordingly, we can compute ho and ker in here
                     int64_t ho = row_idx[roff_idx[row]];
@@ -89,12 +91,12 @@ namespace disco_kernels {
                             for (int64_t wo = wo_start; wo < wo_end; wo++) {
                                 // compute shifted w
                                 int64_t wipp = static_cast<int64_t>((wi + pscale * wo) % Wi);
-                                out_tmp[wo-wo_start] += val * inp[b][c][hi][wipp];
+                                out_tmp[wo-wo_start] += val * inp[b][hi][wipp][c];
                             }
                         }
                         // write out
                         for (int64_t wo = wo_start; wo < wo_end; wo++) {
-                            out[b][c][ker][ho][wo] = out_tmp[wo-wo_start];
+                            out[b][ho][wo][c][ker] = out_tmp[wo-wo_start];
                         }
                     }
                 }
@@ -117,7 +119,7 @@ namespace disco_kernels {
         const int64_t pscale = static_cast<int64_t>(Wo / Wi);
 
         // loop over matrix entries
-        #pragma omp parallel for collapse(2)
+        #pragma omp parallel for simd collapse(2)
         for (int64_t b = 0; b < B; b++) {
             for (int64_t c = 0; c < C; c++) {
 
@@ -142,7 +144,7 @@ namespace disco_kernels {
                         for (int64_t wi = 0; wi < Wi; wi++) {
                             // compute shifted w
                             int64_t wopp = static_cast<int64_t>((wo + pscale * wi) % Wo);
-                            out[b][c][ho][wopp] += val * inp[b][c][ker][hi][wi];
+                            out[b][ho][wopp][c] += val * inp[b][hi][wi][c][ker];
                         }
                     }
                 }

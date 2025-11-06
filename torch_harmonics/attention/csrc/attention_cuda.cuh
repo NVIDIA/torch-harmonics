@@ -34,11 +34,8 @@
 #include <cstdint>
 #include <torch/torch.h>
 
-#define CHECK_CUDA_TENSOR(x) TORCH_INTERNAL_ASSERT(x.device().type() == torch::kCUDA)
-#define CHECK_CONTIGUOUS_TENSOR(x) TORCH_INTERNAL_ASSERT(x.is_contiguous() || x.is_contiguous(at::MemoryFormat::ChannelsLast))
-#define CHECK_CUDA_INPUT_TENSOR(x)                                                                                     \
-    CHECK_CUDA_TENSOR(x);                                                                                              \
-    CHECK_CONTIGUOUS_TENSOR(x)
+#include "cudamacro.h"
+
 
 namespace attention_kernels {
 

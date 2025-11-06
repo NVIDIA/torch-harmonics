@@ -93,31 +93,77 @@ def get_helpers_compile_args():
 def get_ext_modules():
     """Get list of extension modules to compile."""
     
+    # define setup dir
+    setup_dir = os.path.abspath(os.path.dirname(__file__))
+
     ext_modules = []
     cmdclass = {}
 
     print(f"Compiling helper routines for torch-harmonics.")
+
+    # Utility helpers
+    ext_modules.append(
+        CppExtension(
+            "utility_helpers", 
+            [
+                "torch_harmonics/utils/csrc/utils_helpers.cpp",
+            ],
+            extra_compile_args=get_helpers_compile_args(),
+        )
+    )
+
+    # DISCO helpers
     ext_modules.append(
         CppExtension(
             "disco_helpers", 
             [
                 "torch_harmonics/disco/csrc/disco_helpers.cpp",
             ],
+            include_dirs=[os.path.join(setup_dir, "torch_harmonics/utils/csrc")],
             extra_compile_args=get_helpers_compile_args(),
         )
     )
 
+    # Attention helpers
     ext_modules.append(
         CppExtension(
             "attention_helpers", 
             [
                 "torch_harmonics/attention/csrc/attention_helpers.cpp",
             ],
+            include_dirs=[os.path.join(setup_dir, "torch_harmonics/utils/csrc")],
             extra_compile_args=get_helpers_compile_args(),
         )
     )
 
     if BUILD_CPP:
+        # HELPERS
+        utility_sources = [
+            "torch_harmonics/utils/csrc/utils_interface.cpp",
+            "torch_harmonics/utils/csrc/permute_cpu.cpp",
+        ]
+
+        if BUILD_CUDA:
+            print(f"Compiling custom CUDA kernels for torch-harmonics.")
+            utility_sources.extend([
+                "torch_harmonics/utils/csrc/permute_cuda.cu",
+            ])
+            ext_modules.append(
+                CUDAExtension(
+                    "torch_harmonics.utils._C",
+                    utility_sources,
+                    extra_compile_args=get_compile_args("utils")
+                )
+            )
+        else:
+            ext_modules.append(
+                CppExtension(
+                    "torch_harmonics.utils._C", 
+                    utility_sources,
+                    extra_compile_args=get_compile_args("utils")
+                )
+            )
+
         # DISCO
         # Create a single extension that includes both CPU and CUDA code
         disco_sources = [
@@ -128,6 +174,7 @@ def get_ext_modules():
         if BUILD_CUDA:
             print(f"Compiling custom CUDA kernels for torch-harmonics.")
             disco_sources.extend([
+                "torch_harmonics/utils/csrc/csr_cuda.cu",
                 "torch_harmonics/disco/csrc/disco_cuda_fwd.cu",
                 "torch_harmonics/disco/csrc/disco_cuda_bwd.cu",
             ])
@@ -135,6 +182,7 @@ def get_ext_modules():
                 CUDAExtension(
                     "torch_harmonics.disco._C",
                     disco_sources,
+                    include_dirs=[os.path.join(setup_dir, "torch_harmonics/utils/csrc")],
                     extra_compile_args=get_compile_args("disco")
                 )
             )
@@ -143,10 +191,10 @@ def get_ext_modules():
                 CppExtension(
                     "torch_harmonics.disco._C", 
                     disco_sources,
+                    include_dirs=[os.path.join(setup_dir, "torch_harmonics/utils/csrc")],
                     extra_compile_args=get_compile_args("disco")
                 )
             )
-        cmdclass["build_ext"] = BuildExtension
 
         # ATTENTION
         # Create a single extension that includes both CPU and CUDA code
@@ -167,6 +215,7 @@ def get_ext_modules():
                 CUDAExtension(
                     "torch_harmonics.attention._C",
                     attention_sources,
+                    include_dirs=[os.path.join(setup_dir, "torch_harmonics/utils/csrc")],
                     extra_compile_args=get_compile_args("attention")
                 )
             )
@@ -175,9 +224,12 @@ def get_ext_modules():
                 CppExtension(
                     "torch_harmonics.attention._C",
                     attention_sources,
+                    include_dirs=[os.path.join(setup_dir, "torch_harmonics/utils/csrc")],
                     extra_compile_args=get_compile_args("attention")
                 )
             )
+        
+        # set cmdclass
         cmdclass["build_ext"] = BuildExtension
 
     return ext_modules, cmdclass

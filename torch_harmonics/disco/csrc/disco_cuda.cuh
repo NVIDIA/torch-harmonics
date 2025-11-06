@@ -35,12 +35,7 @@
 #include <cuda_runtime.h>
 #include <c10/cuda/CUDAStream.h>
 
-#define CHECK_CUDA_TENSOR(x) TORCH_INTERNAL_ASSERT(x.device().type() == torch::kCUDA)
-#define CHECK_CUDA_INPUT_TENSOR(x)                                                                                     \
-    CHECK_CUDA_TENSOR(x);                                                                                              \
-    CHECK_CONTIGUOUS_TENSOR(x)
-
-#define DIV_UP(a, b) (((a) + ((b)-1)) / (b))
+#include "cudamacro.h"
 
 #define MIN_THREADS (64)
 #define ELXTH_MAX (32)
@@ -48,11 +43,11 @@
 namespace disco_kernels {
 
     // forward kernel
-    torch::Tensor disco_cuda_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-                                 torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo);
+    torch::Tensor disco_cuda_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx, 
+                                 torch::Tensor col_idx, torch::Tensor val, int64_t kernel_size, int64_t Ho, int64_t Wo);
 
     // backward kernel
-    torch::Tensor disco_cuda_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-                                torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo);
+    torch::Tensor disco_cuda_bwd(torch::Tensor ograd, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
+                                torch::Tensor col_idx, torch::Tensor val, int64_t kernel_size, int64_t Ho, int64_t Wo);
 
 }

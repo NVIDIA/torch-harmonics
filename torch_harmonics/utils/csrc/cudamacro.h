@@ -30,6 +30,11 @@
 
 #pragma once
 
+#include <torch/torch.h>
+
+#define DIV_UP(a,b) (((a)+((b)-1))/(b))
+#define FULL_MASK (0xFFFFFFFF)
+
 #define CHECK_CUDA(call) {                                                   \
     cudaError_t err = call;                                                  \
     if( cudaSuccess != err) {                                                \
@@ -45,3 +50,9 @@
                 errorMessage, __FILE__, __LINE__, cudaGetErrorString( err) );\
         exit(EXIT_FAILURE);                                                  \
     }}
+
+#define CHECK_CUDA_TENSOR(x) TORCH_INTERNAL_ASSERT(x.device().type() == torch::kCUDA, #x " must be on GPU")
+#define CHECK_CONTIGUOUS_TENSOR(x) TORCH_INTERNAL_ASSERT(x.is_contiguous(), #x " must be contiguous")
+#define CHECK_CUDA_INPUT_TENSOR(x)                                                                                     \
+    CHECK_CUDA_TENSOR(x);                                                                                              \
+    CHECK_CONTIGUOUS_TENSOR(x)

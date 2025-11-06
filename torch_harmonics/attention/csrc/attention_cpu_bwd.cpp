@@ -38,16 +38,16 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_cpu(tor
                                                       torch::Tensor quad_weights, torch::Tensor col_idx, torch::Tensor row_off,
                                                       int64_t nlon_in, int64_t nlat_out, int64_t nlon_out) {
 
-    // shapes:
+    // shapes: all channels LAST!
     // input
-    // kx: B, C, Hi, Wi
-    // vx: B, C, Hi, Wi
-    // qy: B, C, Ho, Wo
+    // kx: B, Hi, Wi, C
+    // vx: B, Hi, Wi, C
+    // qy: B, Ho, Wo, C
     // quad_weights: Hi
     // output
-    // dkx: B, C, Hi, Wi
-    // dvx: B, C, Hi, Wi
-    // dqy: B, C, Ho, Wo
+    // dkx: B, Hi, Wi, C
+    // dvx: B, Hi, Wi, C
+    // dqy: B, Ho, Wo, C
 
     // sanity checks
     CHECK_CPU_INPUT_TENSOR(kx);
@@ -58,25 +58,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_cpu(tor
     CHECK_CPU_INPUT_TENSOR(col_idx);
     CHECK_CPU_INPUT_TENSOR(row_off);
 
-    // change to channels first:
-    bool kx_is_channels_last = kx.strides()[1] == 1;
-    bool vx_is_channels_last = vx.strides()[1] == 1;
-    bool qy_is_channels_last = qy.strides()[1] == 1;
-    bool dy_is_channels_last = dy.strides()[1] == 1;
-
-    if (!kx_is_channels_last) { kx = kx.contiguous(at::MemoryFormat::ChannelsLast); }
-    if (!vx_is_channels_last) { vx = vx.contiguous(at::MemoryFormat::ChannelsLast); }
-    if (!qy_is_channels_last) { qy = qy.contiguous(at::MemoryFormat::ChannelsLast); }
-    if (!dy_is_channels_last) { dy = dy.contiguous(at::MemoryFormat::ChannelsLast); }
-
     auto dkx = torch::zeros_like(kx);
     auto dvx = torch::zeros_like(vx);
     auto dqy = torch::zeros_like(qy);
 
     // some parameters
     const int64_t batch_size = kx.size(0);
-    const int64_t nchannels_out = vx.size(1);
-    const int64_t nchannels_in = qy.size(1);
+    const int64_t nchannels_out = vx.size(3);
+    const int64_t nchannels_in = qy.size(3);
 
     // extract accessors
     auto kx_arr = kx.packed_accessor64<float, 4>();
@@ -96,11 +85,6 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_cpu(tor
         quad_weights_arr, col_idx_arr, roff_arr, dqy_arr, dvx_arr, dkx_arr,
         nlon_in, nlat_out, nlon_out,
         batch_size, nchannels_in, nchannels_out);
-
-    // permute back
-    if (!qy_is_channels_last) { dqy = dqy.contiguous(at::MemoryFormat::Contiguous); }
-    if (!vx_is_channels_last) { dvx = dvx.contiguous(at::MemoryFormat::Contiguous); }
-    if (!kx_is_channels_last) { dkx = dkx.contiguous(at::MemoryFormat::Contiguous); }
 
     return std::make_tuple(dkx, dvx, dqy);
 }
