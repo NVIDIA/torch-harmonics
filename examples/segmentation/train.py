@@ -66,7 +66,7 @@ from model_registry import get_baseline_models
 import wandb
 
 
-# helper routine for counting number of paramerters in model
+# helper routine for counting number of parameters in model
 def count_parameters(model):
 
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
