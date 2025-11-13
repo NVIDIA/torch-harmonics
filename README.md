@@ -79,7 +79,7 @@ A simple installation from source can be directly done from PyPI. Make sure to d
 ```bash
 pip install --no-build-isolation torch-harmonics
 ```
-If you are planning to use spherical convolutions on CUDA capable GPUs, you might need to take additional steps: if built inside a container or the CUDA devices are not found automaticall, please set the `FORCE_CUDA_EXTENSION` flag. You may also want to set appropriate architectures with the `TORCH_CUDA_ARCH_LIST` flag. We recommend to pick just the sm architecture you are actually planning to use since this reduces compilation time significantly.
+If you are planning to use spherical convolutions on CUDA capable GPUs, you might need to take additional steps: if built inside a container or the CUDA devices are not found automatically, please set the `FORCE_CUDA_EXTENSION` flag. You may also want to set appropriate architectures with the `TORCH_CUDA_ARCH_LIST` flag. We recommend to pick just the sm architecture you are actually planning to use since this reduces compilation time significantly.
 ```bash
 export FORCE_CUDA_EXTENSION=1
 export TORCH_CUDA_ARCH_LIST="7.0 7.2 7.5 8.0 8.6 8.7 9.0 10.0+PTX"
