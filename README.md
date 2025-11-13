@@ -174,7 +174,7 @@ torch-harmonics now provides local discrete-continuous (DISCO) convolutions as o
 
 ### Spherical (neighborhood) attention
 
-torch-harmonics introducers spherical attention mechanisms which correctly generalize the attention mechanism to the sphere. The use of quadrature rules makes the resulting operations approximately equivariant and equivariant in the continuous limit. Moreover, neighborhood attention is correctly generalized onto the sphere by using the geodesic distance to determine the size of the neighborhood.
+torch-harmonics introduces spherical attention mechanisms which correctly generalize the attention mechanism to the sphere. The use of quadrature rules makes the resulting operations approximately equivariant and equivariant in the continuous limit. Moreover, neighborhood attention is correctly generalized onto the sphere by using the geodesic distance to determine the size of the neighborhood.
 
 ## Getting started
 
