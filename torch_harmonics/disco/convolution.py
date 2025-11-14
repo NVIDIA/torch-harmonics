@@ -127,8 +127,9 @@ def _normalize_convolution_tensor_s2(
 
             # compute the 1-norm
             # scale[ik, ilat] = torch.sqrt(torch.sum(psi_vals[iidx].abs().pow(2) * q[iidx]))
-            if basis_norm_mode == "modal" and ik != 0:
-                bias[ik, ilat] = torch.sum(psi_vals[iidx] * q[iidx])
+            if basis_norm_mode == "modal":
+                if ik != 0:
+                    bias[ik, ilat] = torch.sum(psi_vals[iidx] * q[iidx])
                 scale[ik, ilat] = torch.sqrt(torch.sum((psi_vals[iidx] - bias[ik, ilat]).abs().pow(2) * q[iidx]))
             else:
                 scale[ik, ilat] = torch.sum((psi_vals[iidx] - bias[ik, ilat]).abs() * q[iidx])
