@@ -72,7 +72,7 @@ class RealSHT(nn.Module):
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
-        
+
 
         super().__init__()
 
@@ -243,7 +243,7 @@ class InverseRealSHT(nn.Module):
         x[..., 0].imag = 0.0
         if (self.nlon % 2 == 0) and (self.nlon // 2 < self.mmax):
             x[..., self.nlon // 2].imag = 0.0
-        
+
         x = torch.fft.irfft(x, n=self.nlon, dim=-1, norm="forward")
 
         return x
@@ -284,7 +284,7 @@ class RealVectorSHT(nn.Module):
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
-        
+
 
         super().__init__()
 
@@ -479,7 +479,7 @@ class InverseRealVectorSHT(nn.Module):
         x[..., 0].imag = 0.0
         if (self.nlon % 2 == 0) and (self.nlon // 2 < self.mmax):
             x[..., self.nlon // 2].imag = 0.0
-        
+
         x = torch.fft.irfft(x, n=self.nlon, dim=-1, norm="forward")
 
         return x
