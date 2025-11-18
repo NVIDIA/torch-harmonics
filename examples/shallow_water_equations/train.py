@@ -365,8 +365,10 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
     if torch.cuda.is_available():
         torch.cuda.set_device(device.index)
 
-    # 1 hour prediction steps
-    dt = 1 * 3600
+    # 30 minute prediction steps. note: the attention models have "stability
+    # issues" for dt=3600s, so we lower to 1800s. (solution falls apart using
+    # autoregressive rollout) LSNO and SFNO are stable at 3600s.
+    dt = 1 * 1800
     dt_solver = 150
     nsteps = dt // dt_solver
     grid = "legendre-gauss"
