@@ -113,6 +113,7 @@ class DistributedRealSHT(nn.Module):
 
         # determine the dimensions
         self.mmax = mmax or self.nlon // 2 + 1
+        self.mmax_local = compute_split_shapes(self.mmax, self.comm_size_azimuth)[self.comm_rank_azimuth]
 
         # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
@@ -167,10 +168,10 @@ class DistributedRealSHT(nn.Module):
         #xs = torch.einsum('...kmr,mlk->...lmr', x, self.weights.to(x.dtype)).contiguous()
         out_shape = list(x.size())
         out_shape[-3] = self.lmax
-        out_shape[-2] = x.shape[-2]
+        out_shape[-2] = self.mmax_local
         xs = torch.zeros(out_shape, dtype=x.dtype, device=x.device)
-        xs[..., 0] = torch.einsum("...km,mlk->...lm", x[..., 0], self.weights.to(x.dtype))
-        xs[..., 1] = torch.einsum("...km,mlk->...lm", x[..., 1], self.weights.to(x.dtype))
+        xs[..., 0] = torch.einsum("...km,mlk->...lm", x[..., : self.mmax_local, 0], self.weights.to(x.dtype))
+        xs[..., 1] = torch.einsum("...km,mlk->...lm", x[..., : self.mmax_local, 1], self.weights.to(x.dtype))
 
         # cast to complex
         x = torch.view_as_complex(xs)
