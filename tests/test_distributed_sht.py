@@ -204,6 +204,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [256, 512, 32, 8, "legendre-gauss", False, 1e-9],
             [361, 720, 1, 10, "equiangular", False, 1e-6],
             [361, 720, 1, 10, "legendre-gauss", False, 1e-6],
+            [4, 8, 1, 10, "equiangular", False, 1e-6],
             [256, 512, 32, 8, "equiangular", True, 1e-9],
             [256, 512, 32, 8, "legendre-gauss", True, 1e-9],
             [256, 512, 32, 8, "equiangular", True, 1e-9],

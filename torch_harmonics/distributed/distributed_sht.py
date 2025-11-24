@@ -164,7 +164,13 @@ class DistributedRealSHT(nn.Module):
         x = torch.view_as_real(x)
 
         # contraction
-        xs = torch.einsum('...kmr,mlk->...lmr', x, self.weights.to(x.dtype)).contiguous()
+        #xs = torch.einsum('...kmr,mlk->...lmr', x, self.weights.to(x.dtype)).contiguous()
+        out_shape = list(x.size())
+        out_shape[-3] = self.lmax
+        out_shape[-2] = x.shape[-2]
+        xs = torch.zeros(out_shape, dtype=x.dtype, device=x.device)
+        xs[..., 0] = torch.einsum("...km,mlk->...lm", x[..., 0], self.weights.to(x.dtype))
+        xs[..., 1] = torch.einsum("...km,mlk->...lm", x[..., 1], self.weights.to(x.dtype))
 
         # cast to complex
         x = torch.view_as_complex(xs)
