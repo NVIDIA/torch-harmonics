@@ -113,13 +113,13 @@ class DistributedRealSHT(nn.Module):
 
         # determine the dimensions
         self.mmax = mmax or self.nlon // 2 + 1
-        self.mmax_local = compute_split_shapes(self.mmax, self.comm_size_azimuth)[self.comm_rank_azimuth]
 
         # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
         self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
+        self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
 
         # combine quadrature weights with the legendre weights
         pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
@@ -256,6 +256,7 @@ class DistributedInverseRealSHT(nn.Module):
         self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
+        self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
 
         # compute legende polynomials
         pct = _precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
@@ -284,8 +285,16 @@ class DistributedInverseRealSHT(nn.Module):
         # Evaluate associated Legendre functions on the output nodes
         x = torch.view_as_real(x)
 
-        # einsum
-        xs = torch.einsum('...lmr, mlk->...kmr', x, self.pct.to(x.dtype)).contiguous()
+        # prepare output
+        out_shape = list(x.size())
+        out_shape[-3] = self.nlat
+        out_shape[-2] = self.mmax_local
+        xs = torch.zeros(out_shape, dtype=x.dtype, device=x.device)
+
+        # legendre transformation
+        xs[..., 0] = torch.einsum("...lm,mlk->...km", x[..., 0], self.pct.to(x.dtype))
+        xs[..., 1] = torch.einsum("...lm,mlk->...km", x[..., 1], self.pct.to(x.dtype))
+        #xs = torch.einsum('...lmr, mlk->...kmr', x, self.pct.to(x.dtype)).contiguous()
 
         # inverse FFT
         x = torch.view_as_complex(xs)

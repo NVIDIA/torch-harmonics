@@ -232,7 +232,17 @@ class InverseRealSHT(nn.Module):
 
         # Evaluate associated Legendre functions on the output nodes
         x = torch.view_as_real(x)
-        xs = torch.einsum("...lmr, mlk->...kmr", x, self.pct.to(x.dtype)).contiguous()
+
+        # prepare output
+        out_shape = list(x.size())
+        out_shape[-3] = self.nlat
+        out_shape[-2] = self.mmax
+        xs = torch.zeros(out_shape, dtype=x.dtype, device=x.device)
+
+        # legendre transformation
+        xs[..., 0] = torch.einsum("...lm,mlk->...km", x[..., 0], self.pct.to(x.dtype))
+        xs[..., 1] = torch.einsum("...lm,mlk->...km", x[..., 1], self.pct.to(x.dtype))
+        #xs = torch.einsum("...lmr, mlk->...kmr", x, self.pct.to(x.dtype)).contiguous()
 
         # apply the inverse (real) FFT
         x = torch.view_as_complex(xs)
