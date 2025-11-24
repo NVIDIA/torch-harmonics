@@ -165,7 +165,6 @@ class DistributedRealSHT(nn.Module):
         x = torch.view_as_real(x)
 
         # contraction
-        #xs = torch.einsum('...kmr,mlk->...lmr', x, self.weights.to(x.dtype)).contiguous()
         out_shape = list(x.size())
         out_shape[-3] = self.lmax
         out_shape[-2] = self.mmax_local
