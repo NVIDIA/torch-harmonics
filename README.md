@@ -208,7 +208,7 @@ Detailed usage of torch-harmonics, alongside helpful analysis provided in a seri
 5. [Conditioning of the Gramian](./notebooks/conditioning_sht.ipynb)
 6. [Solving the Helmholtz equation](./notebooks/helmholtz.ipynb)
 7. [Solving the shallow water equations](./notebooks/shallow_water_equations.ipynb)
-8. [Training Spherical Fourier Neural Operators (SFNO)](./notebooks/train_sfno.ipynb)
+8. [Training Spherical Fourier Neural Operators (SFNO)](./notebooks/train_spherical_neural_operator.ipynb)
 9. [Resampling signals on the sphere](./notebooks/resample_sphere.ipynb)
 10. [Computing partial derivatives with the SHT](./notebooks/partial_derivatives.ipynb)
 
