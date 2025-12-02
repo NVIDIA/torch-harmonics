@@ -298,13 +298,13 @@ class SphericalFourierNeuralOperator(nn.Module):
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, self.num_layers)]
 
         if pos_embed == "sequence":
-            self.pos_embed = SequencePositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal)
+            self.pos_embed = SequencePositionEmbedding(self.img_size, grid=grid, num_chans=self.embed_dim)
         elif pos_embed == "spectral":
-            self.pos_embed = SpectralPositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal)
+            self.pos_embed = SpectralPositionEmbedding(self.img_size, grid=grid, num_chans=self.embed_dim)
         elif pos_embed == "learnable lat":
-            self.pos_embed = LearnablePositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal, embed_type="lat")
+            self.pos_embed = LearnablePositionEmbedding(self.img_size, grid=grid, num_chans=self.embed_dim, embed_type="lat")
         elif pos_embed == "learnable latlon":
-            self.pos_embed = LearnablePositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal, embed_type="latlon")
+            self.pos_embed = LearnablePositionEmbedding(self.img_size, grid=grid, num_chans=self.embed_dim, embed_type="latlon")
         elif pos_embed == "none":
             self.pos_embed = nn.Identity()
         else:
