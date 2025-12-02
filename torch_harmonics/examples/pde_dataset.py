@@ -89,6 +89,7 @@ class PdeDataset(torch.utils.data.Dataset):
 
         self.nlat = dims[0]
         self.nlon = dims[1]
+        self.grid = grid
 
         # number of solver steps used to compute the target
         self.nsteps = nsteps
