@@ -189,9 +189,11 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # compute theta cutoff based on the bandlimit of the input field
         if theta_cutoff is None:
-            theta_cutoff = torch.pi / float(self.nlat_out - 1)
+            self.theta_cutoff = torch.pi / float(self.nlat_out - 1)
+        else:
+            self.theta_cutoff = theta_cutoff
 
-        if theta_cutoff <= 0.0:
+        if self.theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
 
         # Note that the psi matrix is of shape nlat_out x nlat_in * nlon_in. Since the contraction in nlon direction is a convolution,
@@ -209,7 +211,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             self.filter_basis,
             grid_in=grid_in,
             grid_out=grid_out,
-            theta_cutoff=theta_cutoff,
+            theta_cutoff=self.theta_cutoff,
             transpose_normalization=False,
             basis_norm_mode=basis_norm_mode,
             merge_quadrature=True,
@@ -240,7 +242,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             self.psi = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local)
 
     def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
+        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
 
     @property
     def psi_idx(self):
@@ -363,9 +365,11 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # bandlimit
         if theta_cutoff is None:
-            theta_cutoff = torch.pi / float(self.nlat_in - 1)
+            self.theta_cutoff = torch.pi / float(self.nlat_in - 1)
+        else:
+            self.theta_cutoff = theta_cutoff
 
-        if theta_cutoff <= 0.0:
+        if self.theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
 
         # Note that the psi matrix is of shape nlat_out x nlat_in * nlon_in. Since the contraction in nlon direction is a convolution,
@@ -385,7 +389,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             self.filter_basis,
             grid_in=grid_out,
             grid_out=grid_in,
-            theta_cutoff=theta_cutoff,
+            theta_cutoff=self.theta_cutoff,
             transpose_normalization=True,
             basis_norm_mode=basis_norm_mode,
             merge_quadrature=True,
@@ -417,7 +421,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             self.psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local, semi_transposed=True)
 
     def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, groups={self.groups}"
+        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
 
     @property
     def psi_idx(self):
