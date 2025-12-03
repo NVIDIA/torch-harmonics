@@ -294,7 +294,6 @@ class DistributedInverseRealSHT(nn.Module):
         # legendre transformation
         xs[..., 0] = torch.einsum("...lm,mlk->...km", x[..., 0], self.pct.to(x.dtype))
         xs[..., 1] = torch.einsum("...lm,mlk->...km", x[..., 1], self.pct.to(x.dtype))
-        #xs = torch.einsum('...lmr, mlk->...kmr', x, self.pct.to(x.dtype)).contiguous()
 
         # inverse FFT
         x = torch.view_as_complex(xs)
