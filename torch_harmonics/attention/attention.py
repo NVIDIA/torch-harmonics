@@ -240,9 +240,11 @@ class NeighborhoodAttentionS2(nn.Module):
 
         # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
         if theta_cutoff is None:
-            theta_cutoff = torch.pi / float(self.nlat_out - 1)
+            self.theta_cutoff = torch.pi / float(self.nlat_out - 1)
+        else:
+            self.theta_cutoff = theta_cutoff
 
-        if theta_cutoff <= 0.0:
+        if self.theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
 
         # integration weights
@@ -262,7 +264,7 @@ class NeighborhoodAttentionS2(nn.Module):
             fb,
             grid_in=grid_in,
             grid_out=grid_out,
-            theta_cutoff=theta_cutoff,
+            theta_cutoff=self.theta_cutoff,
             transpose_normalization=False,
             basis_norm_mode="none",
             merge_quadrature=True,
@@ -315,7 +317,7 @@ class NeighborhoodAttentionS2(nn.Module):
             self.attention_handle = _neighborhood_s2_attention_torch
 
     def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}"
+        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}, theta_cutoff={self.theta_cutoff}"
 
     def forward(self, query: torch.Tensor, key: Optional[torch.Tensor] = None, value: Optional[torch.Tensor] = None) -> torch.Tensor:
 
