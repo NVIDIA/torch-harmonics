@@ -60,6 +60,17 @@ class FilterBasis(metaclass=abc.ABCMeta):
 
         self.kernel_shape = kernel_shape
 
+    def __repr__(self):
+        class_name = self.__class__.__name__
+        if hasattr(self, 'extra_repr'):
+            extra = self.extra_repr()
+            return f"{class_name}({extra})"
+        else:
+            return f"{class_name}()"
+
+    def extra_repr(self):
+        return f"kernel_shape={self.kernel_shape}"
+
     @property
     @abc.abstractmethod
     def kernel_size(self):
