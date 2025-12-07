@@ -47,6 +47,7 @@ from attention_helpers import optimized_kernels_is_available
 class AttentionS2(nn.Module):
     """
     (Global) attention on the 2-sphere.
+
     Parameters
     -----------
     in_channels: int
@@ -67,6 +68,13 @@ class AttentionS2(nn.Module):
         number of dimensions for interior inner product in the attention matrix (corresponds to kdim in MHA in PyTorch)
     out_channels: int, optional
         number of dimensions for interior inner product in the attention matrix (corresponds to vdim in MHA in PyTorch)
+
+    Reference
+    ---------
+    Bonev, B., Rietmann, M., Paris, A., Carpentieri, A., & Kurth, T. (2025).
+    "Attention on the Sphere."
+    Advances in Neural Information Processing Systems (NeurIPS).
+    https://arxiv.org/abs/2505.11157
     """
 
     def __init__(
@@ -210,6 +218,13 @@ class NeighborhoodAttentionS2(nn.Module):
         number of dimensions for interior inner product in the attention matrix (corresponds to vdim in MHA in PyTorch)
     optimized_kernel: Optional[bool]
         Whether to use the optimized kernel (if available)
+
+    Reference
+    ---------
+    Bonev, B., Rietmann, M., Paris, A., Carpentieri, A., & Kurth, T. (2025).
+    "Attention on the Sphere."
+    Advances in Neural Information Processing Systems (NeurIPS).
+    https://arxiv.org/abs/2505.11157
     """
 
     def __init__(
