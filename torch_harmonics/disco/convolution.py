@@ -89,10 +89,6 @@ def _normalize_convolution_tensor_s2(
         If basis_norm_mode is not one of the supported modes.
     """
 
-    # exit here if no normalization is needed
-    if basis_norm_mode == "none":
-        return psi_vals
-
     # reshape the indices implicitly to be ikernel, out_shape[0], in_shape[0], in_shape[1]
     idx = torch.stack([psi_idx[0], psi_idx[1], psi_idx[2] // in_shape[1], psi_idx[2] % in_shape[1]], dim=0)
 
@@ -128,9 +124,10 @@ def _normalize_convolution_tensor_s2(
             # compute the 1-norm
             # scale[ik, ilat] = torch.sqrt(torch.sum(psi_vals[iidx].abs().pow(2) * q[iidx]))
             if basis_norm_mode == "modal":
-                if ik != 0:
-                    bias[ik, ilat] = torch.sum(psi_vals[iidx] * q[iidx])
-                scale[ik, ilat] = torch.sqrt(torch.sum((psi_vals[iidx] - bias[ik, ilat]).abs().pow(2) * q[iidx]))
+                # if ik != 0:
+                #     bias[ik, ilat] = torch.sum(psi_vals[iidx] * q[iidx])
+                # scale[ik, ilat] = torch.sqrt(torch.sum((psi_vals[iidx] - bias[ik, ilat]).abs().pow(2) * q[iidx]))
+                scale[ik, ilat] = torch.sum((psi_vals[iidx] - bias[ik, ilat]).abs() * q[iidx])
             else:
                 scale[ik, ilat] = torch.sum((psi_vals[iidx] - bias[ik, ilat]).abs() * q[iidx])
 
