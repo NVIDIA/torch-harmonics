@@ -31,6 +31,7 @@
 
 __version__ = "0.8.1"
 
+from .truncation import truncate_sht
 from .sht import RealSHT, InverseRealSHT, RealVectorSHT, InverseRealVectorSHT
 from .disco import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 from .resample import ResampleS2

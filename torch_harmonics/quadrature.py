@@ -39,7 +39,7 @@ def _precompute_grid(n: int, grid: Optional[str]="equidistant", a: Optional[floa
                      periodic: Optional[bool]=False) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Precompute grid points and weights for various quadrature rules.
-    
+
     Parameters
     -----------
     n : int
@@ -52,12 +52,12 @@ def _precompute_grid(n: int, grid: Optional[str]="equidistant", a: Optional[floa
         Upper bound of interval, by default 1.0
     periodic : bool, optional
         Whether the grid is periodic (only for equidistant), by default False
-        
+
     Returns
     -------
     Tuple[torch.Tensor, torch.Tensor]
         Grid points and weights
-        
+
     Raises
     ------
     ValueError
@@ -83,22 +83,22 @@ def _precompute_grid(n: int, grid: Optional[str]="equidistant", a: Optional[floa
 
 @lru_cache(typed=True, copy=True)
 def _precompute_longitudes(nlon: int):
-   
+
     lons = torch.linspace(0, 2 * math.pi, nlon+1, dtype=torch.float64, requires_grad=False)[:-1]
     return lons
 
 
 @lru_cache(typed=True, copy=True)
 def _precompute_latitudes(nlat: int, grid: Optional[str]="equiangular") -> Tuple[torch.Tensor, torch.Tensor]:
-        
+
     # compute coordinates in the cosine theta domain
     xlg, wlg = _precompute_grid(nlat, grid=grid, a=-1.0, b=1.0, periodic=False)
-    
+
     # to perform the quadrature and account for the jacobian of the sphere, the quadrature rule
     # is formulated in the cosine theta domain, which is designed to integrate functions of cos theta
     lats = torch.flip(torch.arccos(xlg), dims=(0,)).clone()
     wlg = torch.flip(wlg, dims=(0,)).clone()
-    
+
     return lats, wlg
 
 
@@ -119,9 +119,9 @@ def trapezoidal_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0,
         Whether the grid is periodic
 
     Returns
-    ------- 
+    -------
     xlg: torch.Tensor
-        Tensor of quadrature nodes  
+        Tensor of quadrature nodes
     wlg: torch.Tensor
         Tensor of quadrature weights
     """
@@ -153,7 +153,7 @@ def legendre_gauss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1
     Returns
     -------
     xlg: torch.Tensor
-        Tensor of quadrature nodes  
+        Tensor of quadrature nodes
     wlg: torch.Tensor
         Tensor of quadrature weights
     """
