@@ -89,18 +89,18 @@ class RealSHT(nn.Module):
             cost, weights = legendre_gauss_weights(nlat, -1, 1)
             # maximum polynomial degree for Gauss Legendre is 2 * nlat - 1 >= 2 * lmax
             # and therefore lmax = nlat - 1 (inclusive)
-            self.lmax = lmax or self.nlat
+            self.lmax = lmax or (self.nlat // 2)
         elif self.grid == "lobatto":
             cost, weights = lobatto_weights(nlat, -1, 1)
             # maximum polynomial degree for Gauss Legendre is 2 * nlat - 3 >= 2 * lmax
             # and therefore lmax = nlat - 2 (inclusive)
-            self.lmax = lmax or self.nlat - 1
+            self.lmax = lmax or (self.nlat - 1) // 2
         elif self.grid == "equiangular":
             cost, weights = clenshaw_curtiss_weights(nlat, -1, 1)
             # in principle, Clenshaw-Curtiss quadrature is only exact up to polynomial degrees of nlat
             # however, we observe that the quadrature is remarkably accurate for higher degress. This is why we do not
             # choose a lower lmax for now.
-            self.lmax = lmax or self.nlat
+            self.lmax = lmax or (self.nlat // 2)
         else:
             raise (ValueError("Unknown quadrature mode"))
 
@@ -108,7 +108,12 @@ class RealSHT(nn.Module):
         tq = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine the dimensions
-        self.mmax = mmax or self.nlon // 2 + 1
+        self.mmax = mmax or (self.nlon // 2 + 1)
+
+        # use the minimum of mmax and lmax
+        self.lmax = min(self.lmax, self.mmax)
+        self.mmax = self.lmax
+
 
         # combine quadrature weights with the legendre weights
         pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
@@ -198,13 +203,13 @@ class InverseRealSHT(nn.Module):
         # compute quadrature points
         if self.grid == "legendre-gauss":
             cost, _ = legendre_gauss_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat
+            self.lmax = lmax or (self.nlat // 2)
         elif self.grid == "lobatto":
             cost, _ = lobatto_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat - 1
+            self.lmax = lmax or (self.nlat - 1) // 2
         elif self.grid == "equiangular":
             cost, _ = clenshaw_curtiss_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat
+            self.lmax = lmax or (self.nlat // 2)
         else:
             raise (ValueError("Unknown quadrature mode"))
 
@@ -212,7 +217,11 @@ class InverseRealSHT(nn.Module):
         t = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine the dimensions
-        self.mmax = mmax or self.nlon // 2 + 1
+        self.mmax = mmax or (self.nlon // 2 + 1)
+
+        # use the minimum of mmax and lmax
+        self.lmax = min(self.lmax, self.mmax)
+        self.mmax = self.lmax
 
         pct = _precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
 
