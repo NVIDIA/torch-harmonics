@@ -35,6 +35,7 @@ import torch.nn as nn
 import torch.fft
 import torch.nn.functional as F
 
+from torch_harmonics.truncation import truncate_sht
 from torch_harmonics.quadrature import legendre_gauss_weights, lobatto_weights, clenshaw_curtiss_weights
 from torch_harmonics.legendre import _precompute_legpoly, _precompute_dlegpoly
 from torch_harmonics.distributed import polar_group_size, azimuth_group_size, distributed_transpose_azimuth, distributed_transpose_polar
@@ -77,7 +78,7 @@ class DistributedRealSHT(nn.Module):
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
-        
+
         super().__init__()
 
         self.nlat = nlat
@@ -91,14 +92,10 @@ class DistributedRealSHT(nn.Module):
         # compute quadrature points
         if self.grid == "legendre-gauss":
             cost, weights = legendre_gauss_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat
         elif self.grid == "lobatto":
             cost, weights = lobatto_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat-1
         elif self.grid == "equiangular":
             cost, weights = clenshaw_curtiss_weights(nlat, -1, 1)
-            # cost, w = fejer2_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat
         else:
             raise(ValueError("Unknown quadrature mode"))
 
@@ -111,8 +108,8 @@ class DistributedRealSHT(nn.Module):
         # apply cosine transform and flip them
         tq = torch.flip(torch.arccos(cost), dims=(0,))
 
-        # determine the dimensions
-        self.mmax = mmax or self.nlon // 2 + 1
+        # determine maximum degrees based on triangular truncation
+        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
 
         # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
@@ -229,13 +226,10 @@ class DistributedInverseRealSHT(nn.Module):
         # compute quadrature points
         if self.grid == "legendre-gauss":
             cost, _ = legendre_gauss_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat
         elif self.grid == "lobatto":
             cost, _ = lobatto_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat-1
         elif self.grid == "equiangular":
             cost, _ = clenshaw_curtiss_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat
         else:
             raise(ValueError("Unknown quadrature mode"))
 
@@ -248,8 +242,8 @@ class DistributedInverseRealSHT(nn.Module):
         # apply cosine transform and flip them
         t = torch.flip(torch.arccos(cost), dims=(0,))
 
-        # determine the dimensions
-        self.mmax = mmax or self.nlon // 2 + 1
+        # determine maximum degrees based on triangular truncation
+        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
 
         # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
@@ -310,7 +304,7 @@ class DistributedInverseRealSHT(nn.Module):
         x[..., 0].imag = 0.0
         if (self.nlon % 2 == 0) and (self.nlon // 2 < x.shape[-1]):
             x[..., self.nlon // 2].imag = 0.0
-            
+
         # apply the inverse (real) FFT
         x = torch.fft.irfft(x, n=self.nlon, dim=-1, norm="forward")
 
@@ -333,7 +327,7 @@ class DistributedRealVectorSHT(nn.Module):
     nlat: int
         Number of latitude points
     nlon: int
-        Number of longitude points  
+        Number of longitude points
     lmax: int
         Maximum spherical harmonic degree
     mmax: int
@@ -369,14 +363,10 @@ class DistributedRealVectorSHT(nn.Module):
         # compute quadrature points
         if self.grid == "legendre-gauss":
             cost, weights = legendre_gauss_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat
         elif self.grid == "lobatto":
             cost, weights = lobatto_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat-1
         elif self.grid == "equiangular":
             cost, weights = clenshaw_curtiss_weights(nlat, -1, 1)
-            # cost, w = fejer2_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat
         else:
             raise(ValueError("Unknown quadrature mode"))
 
@@ -389,8 +379,8 @@ class DistributedRealVectorSHT(nn.Module):
         # apply cosine transform and flip them
         tq = torch.flip(torch.arccos(cost), dims=(0,))
 
-        # determine the dimensions
-        self.mmax = mmax or self.nlon // 2 + 1
+        # determine maximum degrees based on triangular truncation
+        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
 
         # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
@@ -524,13 +514,10 @@ class DistributedInverseRealVectorSHT(nn.Module):
         # compute quadrature points
         if self.grid == "legendre-gauss":
             cost, _ = legendre_gauss_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat
         elif self.grid == "lobatto":
             cost, _ = lobatto_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat-1
         elif self.grid == "equiangular":
             cost, _ = clenshaw_curtiss_weights(nlat, -1, 1)
-            self.lmax = lmax or self.nlat
         else:
             raise(ValueError("Unknown quadrature mode"))
 
@@ -542,8 +529,8 @@ class DistributedInverseRealVectorSHT(nn.Module):
         # apply cosine transform and flip them
         t = torch.flip(torch.arccos(cost), dims=(0,))
 
-        # determine the dimensions
-        self.mmax = mmax or self.nlon // 2 + 1
+        # determine maximum degrees based on triangular truncation
+        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
 
         # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
