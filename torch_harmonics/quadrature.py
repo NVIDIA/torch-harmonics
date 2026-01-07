@@ -334,3 +334,50 @@ def fejer2_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0) -> T
     wcc = wcc * (b - a) * 0.5
 
     return tcc, wcc
+
+
+class QuadratureS2(torch.nn.Module):
+    def __init__(
+        self, 
+        img_shape: Tuple[int], 
+        grid: Optional[str]="equiangular", 
+        normalize: Optional[bool]=False
+    ):
+        super().__init__()
+
+        if self.grid == "legendre-gauss":
+            _, weights = legendre_gauss_weights(img_shape[0], -1, 1)
+            dlambda = 2 * torch.pi / img_shape[1]
+            quad_weight = dlambda * weights.unsqueeze(1)
+            quad_weight = quad_weight.tile(1, img_shape[1])
+        elif self.grid == "lobatto":
+            _, weights = lobatto_weights(img_shape[0], -1, 1)
+            dlambda = 2 * torch.pi / img_shape[1]
+            quad_weight = dlambda * weights.unsqueeze(1)
+            quad_weight = quad_weight.tile(1, img_shape[1])
+        elif self.grid == "equiangular":
+            _, weights = clenshaw_curtiss_weights(img_shape[0], -1, 1)
+            dlambda = 2 * torch.pi / img_shape[1]
+            quad_weight = dlambda * weights.unsqueeze(1)
+            quad_weight = quad_weight.tile(1, img_shape[1])
+        else:
+            raise (ValueError("Unknown quadrature mode"))
+
+        # apply normalization
+        if normalize:
+            quad_weight = quad_weight / (4.0 * torch.pi)
+
+        # make it contiguous
+        quad_weight = quad_weight.contiguous()
+
+        # reshape
+        quad_weight = quad_weight.reshape(1, 1, *img_shape)
+
+        # register buffer
+        self.register_buffer("quad_weight", quad_weight, persistent=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # integrate over last two axes only:
+        quad = torch.sum(x * self.quad_weight, dim=(-2, -1))
+
+        return quad

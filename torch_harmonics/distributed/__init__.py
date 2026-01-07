@@ -46,9 +46,15 @@ from .primitives import (
     gather_from_copy_to_polar_region
 )
 
+# import quadrature
+from .distributed_quadrature import DistributedQuadratureS2
+
 # import the sht
 from .distributed_sht import DistributedRealSHT, DistributedInverseRealSHT
 from .distributed_sht import DistributedRealVectorSHT, DistributedInverseRealVectorSHT
+
+# import spectral convolution
+from .distributed_spectral_convolution import DistributedSpectralConvS2
 
 # import DISCO
 from .distributed_convolution import DistributedDiscreteContinuousConvS2
