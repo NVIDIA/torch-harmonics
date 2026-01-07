@@ -1,6 +1,6 @@
 # coding=utf-8
 
-# SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 #
 # Redistribution and use in source and binary forms, with or without
@@ -29,15 +29,39 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-__version__ = "0.8.1"
+import unittest
+from parameterized import parameterized
 
-from .truncation import truncate_sht
-from .quadrature import QuadratureS2
-from .sht import RealSHT, InverseRealSHT, RealVectorSHT, InverseRealVectorSHT
-from .spectral_convolution import SpectralConvS2
-from .disco import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
-from .resample import ResampleS2
-from .attention import AttentionS2, NeighborhoodAttentionS2
-from . import quadrature
-from . import random_fields
-from . import examples
+import torch
+import torch_harmonics as th
+
+
+class TestQuadrature(unittest.TestCase):
+    """Serial QuadratureS2 integration tests."""
+
+    @parameterized.expand(
+        [
+            [64, 128, 2, 3, "equiangular", False, 1e-6],
+            [64, 128, 2, 3, "equiangular", True, 1e-6],
+            [65, 128, 1, 1, "legendre-gauss", False, 1e-6],
+            [65, 128, 1, 1, "legendre-gauss", True, 1e-6],
+            [65, 128, 2, 2, "lobatto", False, 1e-6],
+            [65, 128, 2, 2, "lobatto", True, 1e-6],
+        ]
+    )
+    def test_constant_integral(self, nlat, nlon, batch_size, num_chan, grid, normalize, tol):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        quad = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=normalize).to(device)
+
+        data = torch.ones((batch_size, num_chan, nlat, nlon), dtype=torch.float32, device=device)
+        out = quad(data)
+
+        expected_value = 1.0 if normalize else 4.0 * torch.pi
+        expected = torch.full((batch_size, num_chan), expected_value, device=device)
+
+        self.assertTrue(torch.allclose(out, expected, atol=tol, rtol=tol))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
