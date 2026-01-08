@@ -37,7 +37,7 @@ from torch_harmonics.quadrature import legendre_gauss_weights, lobatto_weights, 
 
 from torch_harmonics.distributed import polar_group_size, azimuth_group_size
 from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
-from torch_harmonics.distributed import split_tensor_along_dim
+from torch_harmonics.distributed import compute_split_shapes, split_tensor_along_dim
 from torch_harmonics.distributed import reduce_from_polar_region, reduce_from_azimuth_region
 
 
@@ -83,15 +83,21 @@ class DistributedQuadratureS2(torch.nn.Module):
         if normalize:
             quad_weight = quad_weight / (4.0 * torch.pi)
 
+        # store lat and lon shapes:
+        self.lat_shapes = compute_split_shapes(img_shape[0], self.comm_size_polar)
+        self.lon_shapes = compute_split_shapes(img_shape[1], self.comm_size_azimuth)
+
         # make it contiguous
-        quad_weight = quad_weight.contiguous()
+        quad_weight = quad_weight.contiguous().reshape(1, 1, *img_shape)
 
         # split across latitude and longitude
-        quad_weight = split_tensor_along_dim(quad_weight, dim=0, num_chunks=self.comm_size_polar)
-        quad_weight = split_tensor_along_dim(quad_weight, dim=1, num_chunks=self.comm_size_azimuth)
+        if self.comm_size_polar > 1:
+            quad_weight = split_tensor_along_dim(quad_weight, dim=-2, num_chunks=self.comm_size_polar)[self.comm_rank_polar]
+        if self.comm_size_azimuth > 1:
+            quad_weight = split_tensor_along_dim(quad_weight, dim=-1, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]
 
-        # reshape
-        quad_weight = quad_weight.reshape(1, 1, *img_shape)
+        # cast to fp32
+        quad_weight = quad_weight.to(torch.float32).contiguous()
 
         # register buffer
         self.register_buffer("quad_weight", quad_weight, persistent=False)

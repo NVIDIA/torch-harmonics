@@ -36,7 +36,6 @@ from parameterized import parameterized, parameterized_class
 
 import torch
 from torch.library import opcheck
-import torch.nn as nn
 
 # from torch.autograd import gradcheck
 from torch_harmonics import AttentionS2, NeighborhoodAttentionS2

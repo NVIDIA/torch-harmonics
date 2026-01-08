@@ -107,7 +107,7 @@ class SpectralConvS2(nn.Module):
         x = x.float()
 
         # compute integral in case if bias is used
-        if hasattr(self, "bias"):
+        if hasattr(self, "spectral_bias"):
             integral = self.quadrature(x)
 
         with torch.amp.autocast(device_type="cuda", enabled=False):
@@ -120,7 +120,7 @@ class SpectralConvS2(nn.Module):
         B, C, H, W = x.shape
 
         # deal with bias
-        if hasattr(self, "bias"):
+        if hasattr(self, "spectral_bias"):
             x = x + integral.reshape(B, C, 1, 1) * self.spectral_bias
 
         # perform contraction
