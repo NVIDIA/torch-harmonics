@@ -36,6 +36,8 @@ import torch
 from torch.autograd import gradcheck
 import torch_harmonics as th
 
+from testutils import compare_tensors
+
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
     _devices.append((torch.device("cuda"),))
@@ -88,29 +90,29 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
     @parameterized.expand(
         [
             # even-even
-            [32, 64, 32, "ortho", "equiangular", 1e-9, False],
-            [32, 64, 32, "ortho", "legendre-gauss", 1e-9, False],
-            [32, 64, 32, "ortho", "lobatto", 1e-9, False],
-            [32, 64, 32, "four-pi", "equiangular", 1e-9, False],
-            [32, 64, 32, "four-pi", "legendre-gauss", 1e-9, False],
-            [32, 64, 32, "four-pi", "lobatto", 1e-9, False],
-            [32, 64, 32, "schmidt", "equiangular", 1e-9, False],
-            [32, 64, 32, "schmidt", "legendre-gauss", 1e-9, False],
-            [32, 64, 32, "schmidt", "lobatto", 1e-9, False],
+            [32, 64, 32, "ortho", "equiangular", 1e-9, 1e-9],
+            [32, 64, 32, "ortho", "legendre-gauss", 1e-9, 1e-9],
+            [32, 64, 32, "ortho", "lobatto", 1e-9, 1e-9],
+            [32, 64, 32, "four-pi", "equiangular", 1e-9, 1e-9],
+            [32, 64, 32, "four-pi", "legendre-gauss", 1e-9, 1e-9],
+            [32, 64, 32, "four-pi", "lobatto", 1e-9, 1e-9],
+            [32, 64, 32, "schmidt", "equiangular", 1e-9, 1e-9],
+            [32, 64, 32, "schmidt", "legendre-gauss", 1e-9, 1e-9],
+            [32, 64, 32, "schmidt", "lobatto", 1e-9, 1e-9],
             # odd-even
-            [33, 64, 32, "ortho", "equiangular", 1e-9, False],
-            [33, 64, 32, "ortho", "legendre-gauss", 1e-9, False],
-            [33, 64, 32, "ortho", "lobatto", 1e-9, False],
-            [33, 64, 32, "four-pi", "equiangular", 1e-9, False],
-            [33, 64, 32, "four-pi", "legendre-gauss", 1e-9, False],
-            [33, 64, 32, "four-pi", "lobatto", 1e-9, False],
-            [33, 64, 32, "schmidt", "equiangular", 1e-9, False],
-            [33, 64, 32, "schmidt", "legendre-gauss", 1e-9, False],
-            [33, 64, 32, "schmidt", "lobatto", 1e-9, False],
+            [33, 64, 32, "ortho", "equiangular", 1e-9, 1e-9],
+            [33, 64, 32, "ortho", "legendre-gauss", 1e-9, 1e-9],
+            [33, 64, 32, "ortho", "lobatto", 1e-9, 1e-9],
+            [33, 64, 32, "four-pi", "equiangular", 1e-9, 1e-9],
+            [33, 64, 32, "four-pi", "legendre-gauss", 1e-9, 1e-9],
+            [33, 64, 32, "four-pi", "lobatto", 1e-9, 1e-9],
+            [33, 64, 32, "schmidt", "equiangular", 1e-9, 1e-9],
+            [33, 64, 32, "schmidt", "legendre-gauss", 1e-9, 1e-9],
+            [33, 64, 32, "schmidt", "lobatto", 1e-9, 1e-9],
         ],
         skip_on_empty=True,
     )
-    def test_forward_inverse(self, nlat, nlon, batch_size, norm, grid, tol, verbose):
+    def test_forward_inverse(self, nlat, nlon, batch_size, norm, grid, atol, rtol, verbose=False):
         if verbose:
             print(f"Testing real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization on {self.device.type} device")
 
@@ -142,37 +144,34 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
                 for _ in range(iter):
                     base = isht(sht(base))
 
-                err = torch.mean(torch.norm(base - signal, p="fro", dim=(-1, -2)) / torch.norm(signal, p="fro", dim=(-1, -2)))
-                if verbose:
-                    print(f"final relative error: {err.item()}")
-                self.assertTrue(err.item() <= tol)
+                self.assertTrue(compare_tensors(f"output iteration {iter}", base, signal, atol=atol, rtol=rtol, verbose=verbose))
 
     @parameterized.expand(
         [
             # even-even
-            [12, 24, 2, "ortho", "equiangular", 1e-5, False],
-            [12, 24, 2, "ortho", "legendre-gauss", 1e-5, False],
-            [12, 24, 2, "ortho", "lobatto", 1e-5, False],
-            [12, 24, 2, "four-pi", "equiangular", 1e-5, False],
-            [12, 24, 2, "four-pi", "legendre-gauss", 1e-5, False],
-            [12, 24, 2, "four-pi", "lobatto", 1e-5, False],
-            [12, 24, 2, "schmidt", "equiangular", 1e-5, False],
-            [12, 24, 2, "schmidt", "legendre-gauss", 1e-5, False],
-            [12, 24, 2, "schmidt", "lobatto", 1e-5, False],
+            [12, 24, 2, "ortho", "equiangular", 1e-5, 1e-5],
+            [12, 24, 2, "ortho", "legendre-gauss", 1e-5, 1e-5],
+            [12, 24, 2, "ortho", "lobatto", 1e-5, 1e-5],
+            [12, 24, 2, "four-pi", "equiangular", 1e-5, 1e-5],
+            [12, 24, 2, "four-pi", "legendre-gauss", 1e-5, 1e-5],
+            [12, 24, 2, "four-pi", "lobatto", 1e-5, 1e-5],
+            [12, 24, 2, "schmidt", "equiangular", 1e-5, 1e-5],
+            [12, 24, 2, "schmidt", "legendre-gauss", 1e-5, 1e-5],
+            [12, 24, 2, "schmidt", "lobatto", 1e-5, 1e-5],
             # odd-even
-            [15, 30, 2, "ortho", "equiangular", 1e-5, False],
-            [15, 30, 2, "ortho", "legendre-gauss", 1e-5, False],
-            [15, 30, 2, "ortho", "lobatto", 1e-5, False],
-            [15, 30, 2, "four-pi", "equiangular", 1e-5, False],
-            [15, 30, 2, "four-pi", "legendre-gauss", 1e-5, False],
-            [15, 30, 2, "four-pi", "lobatto", 1e-5, False],
-            [15, 30, 2, "schmidt", "equiangular", 1e-5, False],
-            [15, 30, 2, "schmidt", "legendre-gauss", 1e-5, False],
-            [15, 30, 2, "schmidt", "lobatto", 1e-5, False],
+            [15, 30, 2, "ortho", "equiangular", 1e-5, 1e-5],
+            [15, 30, 2, "ortho", "legendre-gauss", 1e-5, 1e-5],
+            [15, 30, 2, "ortho", "lobatto", 1e-5, 1e-5],
+            [15, 30, 2, "four-pi", "equiangular", 1e-5, 1e-5],
+            [15, 30, 2, "four-pi", "legendre-gauss", 1e-5, 1e-5],
+            [15, 30, 2, "four-pi", "lobatto", 1e-5, 1e-5],
+            [15, 30, 2, "schmidt", "equiangular", 1e-5, 1e-5],
+            [15, 30, 2, "schmidt", "legendre-gauss", 1e-5, 1e-5],
+            [15, 30, 2, "schmidt", "lobatto", 1e-5, 1e-5],
         ],
         skip_on_empty=True,
     )
-    def test_grads(self, nlat, nlon, batch_size, norm, grid, tol, verbose):
+    def test_grads(self, nlat, nlon, batch_size, norm, grid, atol, rtol, verbose=False):
         if verbose:
             print(f"Testing gradients of real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization")
 
@@ -195,26 +194,26 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         # test the sht
         grad_input = torch.randn_like(signal, requires_grad=True)
         err_handle = lambda x: torch.mean(torch.norm(sht(x) - coeffs, p="fro", dim=(-1, -2)) / torch.norm(coeffs, p="fro", dim=(-1, -2)))
-        test_result = gradcheck(err_handle, grad_input, eps=1e-6, atol=tol)
+        test_result = gradcheck(err_handle, grad_input, eps=1e-6, atol=atol, rtol=rtol)
         self.assertTrue(test_result)
 
         # test the isht
         grad_input = torch.randn_like(coeffs, requires_grad=True)
         err_handle = lambda x: torch.mean(torch.norm(isht(x) - signal, p="fro", dim=(-1, -2)) / torch.norm(signal, p="fro", dim=(-1, -2)))
-        test_result = gradcheck(err_handle, grad_input, eps=1e-6, atol=tol)
+        test_result = gradcheck(err_handle, grad_input, eps=1e-6, atol=atol, rtol=rtol)
         self.assertTrue(test_result)
 
     @parameterized.expand(
         [
             # even-even
-            [12, 24, 2, "ortho", "equiangular", 1e-5, False],
-            [12, 24, 2, "ortho", "legendre-gauss", 1e-5, False],
-            [12, 24, 2, "ortho", "lobatto", 1e-5, False],
+            [12, 24, "ortho", "equiangular", 1e-5, 1e-5],
+            [12, 24, "ortho", "legendre-gauss", 1e-5, 1e-5],
+            [12, 24, "ortho", "lobatto", 1e-5, 1e-5],
         ],
         skip_on_empty=True,
     )
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA is not available")
-    def test_device_instantiation(self, nlat, nlon, batch_size, norm, grid, tol, verbose):
+    def test_device_instantiation(self, nlat, nlon, norm, grid, atol, rtol, verbose=False):
         if verbose:
             print(f"Testing device instantiation of real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization")
 
@@ -235,8 +234,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             sht_device = th.RealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm)
             isht_device = th.InverseRealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm)
 
-        self.assertTrue(torch.allclose(sht_host.weights.cpu(), sht_device.weights.cpu()))
-        self.assertTrue(torch.allclose(isht_host.pct.cpu(), isht_device.pct.cpu()))
+        self.assertTrue(compare_tensors(f"sht weights", sht_host.weights.cpu(), sht_device.weights.cpu(), atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors(f"isht weights", isht_host.pct.cpu(), isht_device.pct.cpu(), atol=atol, rtol=rtol, verbose=verbose))
 
 
 if __name__ == "__main__":
