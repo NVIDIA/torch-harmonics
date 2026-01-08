@@ -202,6 +202,10 @@ def compare_tensors(msg, tensor1, tensor2, atol=1e-8, rtol=1e-5, verbose=False):
         allclose = False
         if verbose:
             print(f"tensor1 is not None and tensor2 is None")
+    elif tensor1.dtype == torch.long and tensor2.dtype == torch.long:
+        allclose = torch.all(tensor1 == tensor2)
+        if not allclose and verbose:
+            print(f"Element values with max difference on {msg}: {tensor1.flatten()[diff.argmax()]} and {tensor2.flatten()[diff.argmax()]}")
     else:
         diff = torch.abs(tensor1 - tensor2)
         abs_diff = torch.mean(diff, dim=0)

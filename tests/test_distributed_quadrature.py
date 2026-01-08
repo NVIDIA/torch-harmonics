@@ -34,7 +34,6 @@ import unittest
 from parameterized import parameterized
 
 import torch
-import torch.distributed as dist
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
 

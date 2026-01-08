@@ -35,21 +35,22 @@ from parameterized import parameterized
 import torch
 import torch_harmonics as th
 
+from testutils import compare_tensors
 
 class TestQuadrature(unittest.TestCase):
     """Serial QuadratureS2 integration tests."""
 
     @parameterized.expand(
         [
-            [64, 128, 2, 3, "equiangular", False, 1e-6],
-            [64, 128, 2, 3, "equiangular", True, 1e-6],
-            [65, 128, 1, 1, "legendre-gauss", False, 1e-6],
-            [65, 128, 1, 1, "legendre-gauss", True, 1e-6],
-            [65, 128, 2, 2, "lobatto", False, 1e-6],
-            [65, 128, 2, 2, "lobatto", True, 1e-6],
+            [64, 128, 2, 3, "equiangular", False, 1e-6, 1e-6],
+            [64, 128, 2, 3, "equiangular", True, 1e-6, 1e-6],
+            [65, 128, 1, 1, "legendre-gauss", False, 1e-6, 1e-6],
+            [65, 128, 1, 1, "legendre-gauss", True, 1e-6, 1e-6],
+            [65, 128, 2, 2, "lobatto", False, 1e-6, 1e-6],
+            [65, 128, 2, 2, "lobatto", True, 1e-6, 1e-6],
         ]
     )
-    def test_constant_integral(self, nlat, nlon, batch_size, num_chan, grid, normalize, tol):
+    def test_constant_integral(self, nlat, nlon, batch_size, num_chan, grid, normalize, atol, rtol, verbose=False):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         quad = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=normalize).to(device)
 
@@ -59,7 +60,7 @@ class TestQuadrature(unittest.TestCase):
         expected_value = 1.0 if normalize else 4.0 * torch.pi
         expected = torch.full((batch_size, num_chan), expected_value, device=device)
 
-        self.assertTrue(torch.allclose(out, expected, atol=tol, rtol=tol))
+        self.assertTrue(compare_tensors(f"output", out, expected, atol=atol, rtol=rtol, verbose=verbose))
 
 
 if __name__ == "__main__":

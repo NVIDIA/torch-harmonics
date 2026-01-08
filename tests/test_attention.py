@@ -42,6 +42,8 @@ from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
 from torch_harmonics.attention._attention_utils import _neighborhood_s2_attention_torch
 from torch_harmonics.attention import cuda_kernels_is_available, optimized_kernels_is_available
 
+from testutils import compare_tensors
+
 if not optimized_kernels_is_available():
     print(f"Warning: Couldn't import optimized disco convolution kernels")
 
@@ -129,17 +131,13 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         for inp in ["q", "v", "k"]:
             grad_ref = inputs_ref[inp].grad.cpu()
             grad_opt = inputs_opt[inp].grad.cpu()
-            if verbose:
-                print(f"input grad comparison for {inp}: grad_ref={grad_ref}, grad_opt={grad_opt}, diff={torch.abs(grad_ref - grad_opt)}")
-            self.assertTrue(torch.allclose(grad_opt, grad_ref, atol=atol, rtol=rtol), f"Input gradient mismatch in {inp}")
+            self.assertTrue(compare_tensors(f"input grad {inp}", grad_opt, grad_ref, atol=atol, rtol=rtol, verbose=verbose))
 
         # Check parameter gradient equivalence
         for (name_ref, p_ref), (name_opt, p_opt) in zip(model_ref.named_parameters(), model_opt.named_parameters()):
             pgrad_opt = p_opt.grad.cpu()
             pgrad_ref = p_ref.grad.cpu()
-            if verbose:
-                print(f"parameter grad comparison for {name_ref}: grad_ref={pgrad_ref}, grad_opt={pgrad_opt}, diff={torch.abs(pgrad_ref - pgrad_opt)}")
-            self.assertTrue(torch.allclose(pgrad_opt, pgrad_ref, atol=atol, rtol=rtol), f"Parameter gradient mismatch: {name_ref}")
+            self.assertTrue(compare_tensors(f"parameter grad {name_ref}", pgrad_opt, pgrad_ref, atol=atol, rtol=rtol, verbose=verbose))
 
     # caution: multihead-implementation between full and neighborhood attention still seem to differ. tests are only done for single head
     @parameterized.expand(
@@ -183,18 +181,12 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         for (name_host, p_host), (name_device, p_device) in zip(att_host.named_parameters(), att_device.named_parameters()):
             p_host_copy = p_host.detach().clone().cpu()
             p_device_copy = p_device.detach().clone().cpu()
-            if verbose:
-                print(f"weight comparison for {name_host}: host_weight={p_host_copy}, device_weight={p_device_copy}, diff={torch.abs(p_host_copy - p_device_copy)}")
-            self.assertTrue(torch.allclose(p_host_copy, p_device_copy))
+            self.assertTrue(compare_tensors(f"weight {name_host}", p_device_copy, p_host_copy, atol=atol, rtol=rtol, verbose=verbose))
 
         # reference forward passes
         out_host = att_host(inputs_host["q"], inputs_host["k"], inputs_host["v"])
         out_device = att_device(inputs_device["q"], inputs_device["k"], inputs_device["v"])
-
-        # Check forward equivalence
-        if verbose:
-            print(f"output comparison: out_host={out_host}, out_device={out_device}, diff={torch.abs(out_host.cpu() - out_device.cpu())}")
-        self.assertTrue(torch.allclose(out_host.cpu(), out_device.cpu(), atol=atol, rtol=rtol), "Forward outputs differ between host and device implementation")
+        self.assertTrue(compare_tensors(f"output", out_device.cpu(), out_host.cpu(), atol=atol, rtol=rtol, verbose=verbose))
 
         # Backward passes
         grad = torch.randn_like(out_host)
@@ -204,17 +196,13 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         for inp in ["q", "k", "v"]:
             igrad_host = inputs_host[inp].grad.cpu()
             igrad_device = inputs_device[inp].grad.cpu()
-            if verbose:
-                print(f"input grad comparison for {inp}: host_grad={igrad_host}, device_grad={igrad_device}, diff={torch.abs(igrad_host - igrad_device)}")
-            self.assertTrue(torch.allclose(igrad_host, igrad_device, atol=atol, rtol=rtol), f"Input gradient mismatch in {inp}")
+            self.assertTrue(compare_tensors(f"input grad {inp}", igrad_device, igrad_host, atol=atol, rtol=rtol, verbose=verbose))
 
         # Check parameter gradient equivalence - check only q,k, v weights
         for (name_host, p_host), (name_device, p_device) in zip(att_host.named_parameters(), att_device.named_parameters()):
             grad_host = p_host.grad.cpu()
             grad_device = p_device.grad.cpu()
-            if verbose:
-                print(f"grad comparison for {name_host}: host_grad={grad_host}, device_grad={grad_device}, diff={torch.abs(grad_host - grad_device)}")
-            self.assertTrue(torch.allclose(grad_host, grad_device, atol=atol, rtol=rtol), f"Parameter gradient mismatch: {name_host}")
+            self.assertTrue(compare_tensors(f"parameter grad {name_host}", grad_device, grad_host, atol=atol, rtol=rtol, verbose=verbose))
 
 
     @parameterized.expand(
@@ -257,14 +245,14 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         model.load_state_dict(model_ref.state_dict())
         model = model.to(self.device)
         for (name_ref, p_ref), (name, p) in zip(model_ref.named_parameters(), model.named_parameters()):
-            self.assertTrue(torch.allclose(p_ref, p))
+            self.assertTrue(compare_tensors(f"weight {name_ref}", p, p_ref, atol=atol, rtol=rtol, verbose=verbose))
 
         # reference forward passes
         out_ref = model_ref(inputs_ref["q"], inputs_ref["k"], inputs_ref["v"])
         out = model(inputs["q"], inputs["k"], inputs["v"])
 
         # Check forward equivalence
-        self.assertTrue(torch.allclose(out, out_ref, atol=atol, rtol=rtol), "Forward outputs differ between torch reference and custom implementation")
+        self.assertTrue(compare_tensors(f"output", out, out_ref, atol=atol, rtol=rtol, verbose=verbose))
 
         # Backward passes
         grad = torch.randn_like(out_ref)
@@ -275,13 +263,13 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         for inp in ["q", "k", "v"]:
             grad_ref = inputs_ref[inp].grad
             grad = inputs[inp].grad
-            self.assertTrue(torch.allclose(grad, grad_ref, atol=atol, rtol=rtol), f"Input gradient mismatch in {inp}")
+            self.assertTrue(compare_tensors(f"input grad {inp}", grad, grad_ref, atol=atol, rtol=rtol, verbose=verbose))
 
         # Check parameter gradient equivalence - check only q,k, v weights
         for key in ["q_weights", "k_weights", "v_weights"]:
             grad_ref = getattr(model_ref, key).grad
             grad = getattr(model, key).grad
-            self.assertTrue(torch.allclose(grad, grad_ref, atol=atol, rtol=rtol), f"Parameter gradient mismatch")
+            self.assertTrue(compare_tensors(f"parameter grad {key}", grad, grad_ref, atol=atol, rtol=rtol, verbose=verbose))
 
 
     @parameterized.expand(
