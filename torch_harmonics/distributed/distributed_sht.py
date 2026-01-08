@@ -387,6 +387,7 @@ class DistributedRealVectorSHT(nn.Module):
         self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
+        self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
 
         # compute weights
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
@@ -439,8 +440,11 @@ class DistributedRealVectorSHT(nn.Module):
         # do the Legendre-Gauss quadrature
         x = torch.view_as_real(x)
 
-        # create output array
-        xs = torch.zeros_like(x, dtype=x.dtype, device=x.device)
+        # set up output tensor
+        out_shape = list(x.size())
+        out_shape[-3] = self.lmax
+        out_shape[-2] = self.mmax_local
+        xs = torch.zeros(out_shape, dtype=x.dtype, device=x.device)
 
         # contraction - spheroidal component
         # real component
