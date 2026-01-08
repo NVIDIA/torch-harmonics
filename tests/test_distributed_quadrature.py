@@ -38,19 +38,30 @@ import torch.distributed as dist
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
 
-from testutils import setup_distributed, teardown_distributed, split_tensor_hw, gather_tensor_hw, compare_tensors
+from testutils import (
+    setup_module, 
+    teardown_module,
+    setup_class_from_context,
+    split_tensor_hw,
+    gather_tensor_hw,
+    compare_tensors
+)
 
+# shared state
+_DIST_CTX = {}
+
+def setUpModule():
+    setup_module(_DIST_CTX)
+
+def tearDownModule():
+    teardown_module(_DIST_CTX)
 
 class TestDistributedQuadrature(unittest.TestCase):
     """Compare QuadratureS2 with DistributedQuadratureS2 (CPU/CUDA if available)."""
 
     @classmethod
     def setUpClass(cls):
-        setup_distributed(cls)
-
-    @classmethod
-    def tearDownClass(cls):
-        teardown_distributed(cls)
+        setup_class_from_context(cls, _DIST_CTX)
 
     def _split_helper(self, tensor):
         return split_tensor_hw(

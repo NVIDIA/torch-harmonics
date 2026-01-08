@@ -339,7 +339,7 @@ class RealVectorSHT(nn.Module):
         # do the Legendre-Gauss quadrature
         x = torch.view_as_real(x)
 
-        # distributed contraction: fork
+        # set up output tensor
         out_shape = list(x.size())
         out_shape[-3] = self.lmax
         out_shape[-2] = self.mmax

@@ -35,85 +35,117 @@ import torch.distributed as dist
 import torch_harmonics.distributed as thd
 
 
-def setup_distributed(cls):
-    cls.world_rank = int(os.getenv("WORLD_RANK", 0))
-    cls.grid_size_h = int(os.getenv("GRID_H", 1))
-    cls.grid_size_w = int(os.getenv("GRID_W", 1))
+def setup_distributed_context(ctx):
+    ctx.world_rank = int(os.getenv("WORLD_RANK", 0))
+    ctx.grid_size_h = int(os.getenv("GRID_H", 1))
+    ctx.grid_size_w = int(os.getenv("GRID_W", 1))
     port = int(os.getenv("MASTER_PORT", "29501"))
     master_address = os.getenv("MASTER_ADDR", "localhost")
-    cls.world_size = cls.grid_size_h * cls.grid_size_w
+    ctx.world_size = ctx.grid_size_h * ctx.grid_size_w
 
     if torch.cuda.is_available():
-        if cls.world_rank == 0:
+        if ctx.world_rank == 0:
             print("Running test on GPU")
-        local_rank = cls.world_rank % torch.cuda.device_count()
-        cls.device = torch.device(f"cuda:{local_rank}")
+        local_rank = ctx.world_rank % torch.cuda.device_count()
+        ctx.device = torch.device(f"cuda:{local_rank}")
         torch.cuda.set_device(local_rank)
         torch.cuda.manual_seed(333)
         proc_backend = "nccl"
     else:
-        if cls.world_rank == 0:
+        if ctx.world_rank == 0:
             print("Running test on CPU")
-        cls.device = torch.device("cpu")
+        ctx.device = torch.device("cpu")
         proc_backend = "gloo"
     torch.manual_seed(333)
 
     dist.init_process_group(
         backend=proc_backend,
         init_method=f"tcp://{master_address}:{port}",
-        rank=cls.world_rank,
-        world_size=cls.world_size,
+        rank=ctx.world_rank,
+        world_size=ctx.world_size,
     )
 
-    cls.wrank = cls.world_rank % cls.grid_size_w
-    cls.hrank = cls.world_rank // cls.grid_size_w
+    ctx.wrank = ctx.world_rank % ctx.grid_size_w
+    ctx.hrank = ctx.world_rank // ctx.grid_size_w
 
-    cls.w_group = None
-    cls.h_group = None
+    ctx.w_group = None
+    ctx.h_group = None
 
     wgroups = []
-    for w in range(0, cls.world_size, cls.grid_size_w):
+    for w in range(0, ctx.world_size, ctx.grid_size_w):
         start = w
-        end = w + cls.grid_size_w
+        end = w + ctx.grid_size_w
         wgroups.append(list(range(start, end)))
 
-    if cls.world_rank == 0:
+    if ctx.world_rank == 0:
         print("w-groups:", wgroups)
     for grp in wgroups:
         if len(grp) == 1:
             continue
         tmp_group = dist.new_group(ranks=grp)
-        if cls.world_rank in grp:
-            cls.w_group = tmp_group
+        if ctx.world_rank in grp:
+            ctx.w_group = tmp_group
 
     hgroups = [sorted(list(i)) for i in zip(*wgroups)]
 
-    if cls.world_rank == 0:
+    if ctx.world_rank == 0:
         print("h-groups:", hgroups)
     for grp in hgroups:
         if len(grp) == 1:
             continue
         tmp_group = dist.new_group(ranks=grp)
-        if cls.world_rank in grp:
-            cls.h_group = tmp_group
+        if ctx.world_rank in grp:
+            ctx.h_group = tmp_group
 
-    if cls.world_rank == 0:
-        print(f"Running distributed tests on grid H x W = {cls.grid_size_h} x {cls.grid_size_w}")
+    if ctx.world_rank == 0:
+        print(f"Running distributed tests on grid H x W = {ctx.grid_size_h} x {ctx.grid_size_w}")
 
-    thd.init(cls.h_group, cls.w_group)
+    thd.init(ctx.h_group, ctx.w_group)
 
     return
 
 
-def teardown_distributed(cls):
+def teardown_distributed_context(ctx):
     thd.finalize()
-    if cls.h_group is not None:
-        dist.destroy_process_group(cls.h_group)
-    if cls.w_group is not None:
-        dist.destroy_process_group(cls.w_group)
+    if ctx.h_group is not None:
+        dist.destroy_process_group(ctx.h_group)
+    if ctx.w_group is not None:
+        dist.destroy_process_group(ctx.w_group)
     dist.destroy_process_group(None)
 
     return
+
+
+def setup_class_from_context(cls, ctx_dict):
+
+    ctx = ctx_dict.get("ctx", None)
+
+    if ctx is None:
+        raise ValueError("Context not found")
+
+    cls.device = ctx.device
+    cls.world_rank = ctx.world_rank
+    cls.grid_size_h = ctx.grid_size_h
+    cls.grid_size_w = ctx.grid_size_w
+    cls.h_group = ctx.h_group
+    cls.w_group = ctx.w_group
+    cls.hrank = ctx.hrank
+    cls.wrank = ctx.wrank
+
+
+def setup_module(ctx_dict={}):
+    # set up once per module
+    class _Dummy: pass
+    ctx = _Dummy()
+    setup_distributed_context(ctx)
+    ctx_dict["ctx"] = ctx
+
+
+def teardown_module(ctx_dict):
+    ctx = ctx_dict.get("ctx")
+    if ctx:
+        teardown_distributed_context(ctx)
+    ctx_dict.clear()
 
 
 def split_tensor_hw(tensor, hdim=-2, wdim=-1, hsize=1, wsize=1, hrank=0, wrank=0):

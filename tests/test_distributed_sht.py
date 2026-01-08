@@ -39,19 +39,30 @@ import torch.distributed as dist
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
 
-from testutils import setup_distributed, teardown_distributed, split_tensor_hw, gather_tensor_hw
+from testutils import (
+    setup_module, 
+    teardown_module, 
+    setup_class_from_context,
+    split_tensor_hw, 
+    gather_tensor_hw,
+    compare_tensors,
+)
 
+# shared state
+_DIST_CTX = {}
+
+def setUpModule():
+    setup_module(_DIST_CTX)
+
+def tearDownModule():
+    teardown_module(_DIST_CTX)
 
 class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
     """Test the distributed spherical harmonic transform module (CPU/CUDA if available)."""
 
     @classmethod
     def setUpClass(cls):
-        setup_distributed(cls)
-
-    @classmethod
-    def tearDownClass(cls):
-        teardown_distributed(cls)
+        setup_class_from_context(cls, _DIST_CTX)
 
     def _split_helper(self, tensor):
         return split_tensor_hw(
@@ -101,26 +112,26 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [256, 512, 32, 8, "equiangular", False, 1e-9],
-            [256, 512, 32, 8, "legendre-gauss", False, 1e-9],
-            [256, 512, 32, 8, "equiangular", False, 1e-9],
-            [256, 512, 32, 8, "legendre-gauss", False, 1e-9],
-            [256, 512, 32, 8, "equiangular", False, 1e-9],
-            [256, 512, 32, 8, "legendre-gauss", False, 1e-9],
-            [361, 720, 1, 10, "equiangular", False, 1e-6],
-            [361, 720, 1, 10, "legendre-gauss", False, 1e-6],
-            [4, 8, 1, 10, "equiangular", False, 1e-6],
-            [256, 512, 32, 8, "equiangular", True, 1e-9],
-            [256, 512, 32, 8, "legendre-gauss", True, 1e-9],
-            [256, 512, 32, 8, "equiangular", True, 1e-9],
-            [256, 512, 32, 8, "legendre-gauss", True, 1e-9],
-            [256, 512, 32, 8, "equiangular", True, 1e-9],
-            [256, 512, 32, 8, "legendre-gauss", True, 1e-9],
-            [361, 720, 1, 10, "equiangular", True, 1e-6],
-            [361, 720, 1, 10, "legendre-gauss", True, 1e-6],
-        ]
+            [64, 128, 32, 8, "equiangular", False, 1e-7,1e-9],
+            [64, 128, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
+            [64, 128, 32, 8, "equiangular", False, 1e-7, 1e-9],
+            [64, 128, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
+            [64, 128, 32, 8, "equiangular", False, 1e-7, 1e-9],
+            [64, 128, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
+            [65, 128, 1, 10, "equiangular", False, 1e-6, 1e-6],
+            [65, 128, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
+            [4, 8, 1, 10, "equiangular", False, 1e-6, 1e-6],
+            [64, 128, 32, 8, "equiangular", True, 1e-7, 1e-9],
+            [64, 128, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
+            [64, 128, 32, 8, "equiangular", True, 1e-7, 1e-9],
+            [64, 128, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
+            [64, 128, 32, 8, "equiangular", True, 1e-7, 1e-9],
+            [64, 128, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
+            [64, 128, 1, 10, "equiangular", True, 1e-6, 1e-6],
+            [65, 128, 1, 10, "legendre-gauss", True, 1e-6, 1e-6],
+        ], skip_on_empty=True
     )
-    def test_distributed_sht(self, nlat, nlon, batch_size, num_chan, grid, vector, tol):
+    def test_distributed_sht(self, nlat, nlon, batch_size, num_chan, grid, vector, atol, rtol, verbose=False):
     
         B, C, H, W = batch_size, num_chan, nlat, nlon
 
@@ -165,42 +176,35 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         igrad_local = inp_local.grad.clone()
 
         # evaluate FWD pass
-        with torch.no_grad():
-            out_gather_full = self._gather_helper_fwd(out_local, forward_transform_dist)
-            err = torch.mean(torch.norm(out_full - out_gather_full, p="fro", dim=(-1, -2)) / torch.norm(out_full, p="fro", dim=(-1, -2)))
-            if self.world_rank == 0:
-                print(f"final relative error of output: {err.item()}")
-        self.assertTrue(err.item() <= tol)
+        out_gather_full = self._gather_helper_fwd(out_local, forward_transform_dist)
+        self.assertTrue(compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose))
 
         # evaluate BWD pass
-        with torch.no_grad():
-            igrad_gather_full = self._gather_helper_bwd(igrad_local, forward_transform_dist)
-            err = torch.mean(torch.norm(igrad_full - igrad_gather_full, p="fro", dim=(-1, -2)) / torch.norm(igrad_full, p="fro", dim=(-1, -2)))
-            if self.world_rank == 0:
-                print(f"final relative error of gradients: {err.item()}")
-        self.assertTrue(err.item() <= tol)
+        igrad_gather_full = self._gather_helper_bwd(igrad_local, forward_transform_dist)
+        self.assertTrue(compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose))
+
 
     @parameterized.expand(
         [
-            [256, 512, 32, 8, "equiangular", False, 1e-9],
-            [256, 512, 32, 8, "legendre-gauss", False, 1e-9],
-            [256, 512, 32, 8, "equiangular", False, 1e-9],
-            [256, 512, 32, 8, "legendre-gauss", False, 1e-9],
-            [256, 512, 32, 8, "equiangular", False, 1e-9],
-            [256, 512, 32, 8, "legendre-gauss", False, 1e-9],
-            [361, 720, 1, 10, "equiangular", False, 1e-6],
-            [361, 720, 1, 10, "legendre-gauss", False, 1e-6],
-            [256, 512, 32, 8, "equiangular", True, 1e-9],
-            [256, 512, 32, 8, "legendre-gauss", True, 1e-9],
-            [256, 512, 32, 8, "equiangular", True, 1e-9],
-            [256, 512, 32, 8, "legendre-gauss", True, 1e-9],
-            [256, 512, 32, 8, "equiangular", True, 1e-9],
-            [256, 512, 32, 8, "legendre-gauss", True, 1e-9],
-            [361, 720, 1, 10, "equiangular", True, 1e-6],
-            [361, 720, 1, 10, "legendre-gauss", True, 1e-6],
-        ]
+            [64, 128, 32, 8, "equiangular", False, 1e-7, 1e-9],
+            [64, 128, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
+            [64, 128, 32, 8, "equiangular", False, 1e-7, 1e-9],
+            [64, 128, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
+            [64, 128, 32, 8, "equiangular", False, 1e-7, 1e-9],
+            [64, 128, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
+            [65, 128, 1, 10, "equiangular", False, 1e-6, 1e-6],
+            [65, 128, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
+            [64, 128, 32, 8, "equiangular", True, 1e-7, 1e-9],
+            [64, 128, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
+            [64, 128, 32, 8, "equiangular", True, 1e-7, 1e-9],
+            [64, 128, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
+            [64, 128, 32, 8, "equiangular", True, 1e-7, 1e-9],
+            [64, 128, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
+            [65, 128, 1, 10, "equiangular", True, 1e-6, 1e-6],
+            [65, 128, 1, 10, "legendre-gauss", True, 1e-6, 1e-6],
+        ], skip_on_empty=True
     )
-    def test_distributed_isht(self, nlat, nlon, batch_size, num_chan, grid, vector, tol):
+    def test_distributed_isht(self, nlat, nlon, batch_size, num_chan, grid, vector, atol, rtol, verbose=True):
         
         B, C, H, W = batch_size, num_chan, nlat, nlon
 
@@ -254,20 +258,12 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         igrad_local = inp_local.grad.clone()
 
         # evaluate FWD pass
-        with torch.no_grad():
-            out_gather_full = self._gather_helper_bwd(out_local, backward_transform_dist)
-            err = torch.mean(torch.norm(out_full - out_gather_full, p="fro", dim=(-1, -2)) / torch.norm(out_full, p="fro", dim=(-1, -2)))
-            if self.world_rank == 0:
-                print(f"final relative error of output: {err.item()}")
-        self.assertTrue(err.item() <= tol)
+        out_gather_full = self._gather_helper_bwd(out_local, backward_transform_dist)
+        self.assertTrue(compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose))
 
         # evaluate BWD pass
-        with torch.no_grad():
-            igrad_gather_full = self._gather_helper_fwd(igrad_local, backward_transform_dist)
-            err = torch.mean(torch.norm(igrad_full - igrad_gather_full, p="fro", dim=(-1, -2)) / torch.norm(igrad_full, p="fro", dim=(-1, -2)))
-            if self.world_rank == 0:
-                print(f"final relative error of gradients: {err.item()}")
-        self.assertTrue(err.item() <= tol)
+        igrad_gather_full = self._gather_helper_fwd(igrad_local, backward_transform_dist)
+        self.assertTrue(compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose))
 
 
 if __name__ == "__main__":

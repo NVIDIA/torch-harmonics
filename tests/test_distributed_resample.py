@@ -39,19 +39,30 @@ import torch.distributed as dist
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
 
-from testutils import setup_distributed, teardown_distributed, split_tensor_hw, gather_tensor_hw
+from testutils import (
+    setup_module, 
+    teardown_module, 
+    setup_class_from_context,
+    split_tensor_hw, 
+    gather_tensor_hw,
+    compare_tensors,
+)
 
+# shared state
+_DIST_CTX = {}
+
+def setUpModule():
+    setup_module(_DIST_CTX)
+
+def tearDownModule():
+    teardown_module(_DIST_CTX)
 
 class TestDistributedResampling(unittest.TestCase):
     """Test the distributed resampling module (CPU/CUDA if available)."""
 
     @classmethod
     def setUpClass(cls):
-        setup_distributed(cls)
-
-    @classmethod
-    def tearDownClass(cls):
-        teardown_distributed(cls)
+        setup_class_from_context(cls, _DIST_CTX)
 
     def _split_helper(self, tensor):
         return split_tensor_hw(
@@ -102,18 +113,18 @@ class TestDistributedResampling(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [64, 128, 128, 256, 32, 8, "equiangular", "equiangular", "bilinear", 1e-7, False],
-            [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", "bilinear", 1e-7, False],
-            [64, 128, 128, 256, 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-7, False],
-            [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-7, False],
-            [129, 256, 65, 128, 32, 8, "equiangular", "equiangular", "bilinear", 1e-7, False],
-            [65, 128, 129, 256, 32, 8, "equiangular", "equiangular", "bilinear", 1e-7, False],
-            [129, 256, 65, 128, 32, 8, "equiangular", "legendre-gauss", "bilinear", 1e-7, False],
-            [65, 128, 129, 256, 32, 8, "legendre-gauss", "equiangular", "bilinear", 1e-7, False],
-        ]
+            [64, 128, 128, 256, 32, 8, "equiangular", "equiangular", "bilinear", 1e-6, 1e-7],
+            [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", "bilinear", 1e-6, 1e-7],
+            [64, 128, 128, 256, 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-6, 1e-7],
+            [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-6, 1e-7],
+            [129, 256, 65, 128, 32, 8, "equiangular", "equiangular", "bilinear", 1e-6, 1e-7],
+            [65, 128, 129, 256, 32, 8, "equiangular", "equiangular", "bilinear", 1e-6, 1e-7],
+            [129, 256, 65, 128, 32, 8, "equiangular", "legendre-gauss", "bilinear", 1e-6, 1e-7],
+            [65, 128, 129, 256, 32, 8, "legendre-gauss", "equiangular", "bilinear", 1e-6, 1e-7],
+        ], skip_on_empty=True
     )
     def test_distributed_resampling(
-            self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, grid_in, grid_out, mode, tol, verbose
+            self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, grid_in, grid_out, mode, atol, rtol, verbose=False
     ):
         
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
@@ -162,22 +173,12 @@ class TestDistributedResampling(unittest.TestCase):
         igrad_local = inp_local.grad.clone()
 
         # evaluate FWD pass
-        with torch.no_grad():
-            out_gather_full = self._gather_helper_fwd(out_local, res_dist)
-            err = torch.mean(torch.norm(out_full - out_gather_full, p="fro", dim=(-1, -2)) / torch.norm(out_full, p="fro", dim=(-1, -2)))
-            if verbose and (self.world_rank == 0):
-                print(f"final relative error of output: {err.item()}")
-        self.assertTrue(err.item() <= tol)
+        out_gather_full = self._gather_helper_fwd(out_local, res_dist)
+        self.assertTrue(compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose))
 
         # evaluate BWD pass
-        with torch.no_grad():
-            igrad_gather_full = self._gather_helper_bwd(igrad_local, res_dist)
-
-            err = torch.mean(torch.norm(igrad_full - igrad_gather_full, p="fro", dim=(-1, -2)) / torch.norm(igrad_full, p="fro", dim=(-1, -2)))
-            if verbose and (self.world_rank == 0):
-                print(f"final relative error of gradients: {err.item()}")
-        self.assertTrue(err.item() <= tol)
-
+        igrad_gather_full = self._gather_helper_bwd(igrad_local, res_dist)
+        self.assertTrue(compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose))
 
 if __name__ == "__main__":
     unittest.main()
