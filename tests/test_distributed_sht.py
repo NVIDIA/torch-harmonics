@@ -39,158 +39,63 @@ import torch.distributed as dist
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
 
+from testutils import setup_distributed, teardown_distributed, split_tensor_hw, gather_tensor_hw
+
 
 class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
     """Test the distributed spherical harmonic transform module (CPU/CUDA if available)."""
 
     @classmethod
     def setUpClass(cls):
-        # set up distributed
-        cls.world_rank = int(os.getenv("WORLD_RANK", 0))
-        cls.grid_size_h = int(os.getenv("GRID_H", 1))
-        cls.grid_size_w = int(os.getenv("GRID_W", 1))
-        port = int(os.getenv("MASTER_PORT", "29501"))
-        master_address = os.getenv("MASTER_ADDR", "localhost")
-        cls.world_size = cls.grid_size_h * cls.grid_size_w
-
-        if torch.cuda.is_available():
-            if cls.world_rank == 0:
-                print("Running test on GPU")
-            local_rank = cls.world_rank % torch.cuda.device_count()
-            cls.device = torch.device(f"cuda:{local_rank}")
-            torch.cuda.manual_seed(333)
-            proc_backend = "nccl"
-        else:
-            if cls.world_rank == 0:
-                print("Running test on CPU")
-            cls.device = torch.device("cpu")
-            proc_backend = "gloo"
-        torch.manual_seed(333)
-
-        dist.init_process_group(backend=proc_backend, init_method=f"tcp://{master_address}:{port}", rank=cls.world_rank, world_size=cls.world_size)
-
-        cls.wrank = cls.world_rank % cls.grid_size_w
-        cls.hrank = cls.world_rank // cls.grid_size_w
-
-        # now set up the comm groups:
-        # set default
-        cls.w_group = None
-        cls.h_group = None
-
-        # do the init
-        wgroups = []
-        for w in range(0, cls.world_size, cls.grid_size_w):
-            start = w
-            end = w + cls.grid_size_w
-            wgroups.append(list(range(start, end)))
-
-        if cls.world_rank == 0:
-            print("w-groups:", wgroups)
-        for grp in wgroups:
-            if len(grp) == 1:
-                continue
-            tmp_group = dist.new_group(ranks=grp)
-            if cls.world_rank in grp:
-                cls.w_group = tmp_group
-
-        # transpose:
-        hgroups = [sorted(list(i)) for i in zip(*wgroups)]
-
-        if cls.world_rank == 0:
-            print("h-groups:", hgroups)
-        for grp in hgroups:
-            if len(grp) == 1:
-                continue
-            tmp_group = dist.new_group(ranks=grp)
-            if cls.world_rank in grp:
-                cls.h_group = tmp_group
-
-        # set seed
-        torch.manual_seed(333)
-
-        if cls.world_rank == 0:
-            print(f"Running distributed tests on grid H x W = {cls.grid_size_h} x {cls.grid_size_w}")
-
-        # initializing sht
-        thd.init(cls.h_group, cls.w_group)
+        setup_distributed(cls)
 
     @classmethod
     def tearDownClass(cls):
-        thd.finalize()
-        dist.destroy_process_group(None)
+        teardown_distributed(cls)
 
     def _split_helper(self, tensor):
-        with torch.no_grad():
-            # split in W
-            tensor_list_local = thd.split_tensor_along_dim(tensor, dim=-1, num_chunks=self.grid_size_w)
-            tensor_local = tensor_list_local[self.wrank]
+        return split_tensor_hw(
+            tensor, 
+            hdim=-2,
+            wdim=-1, 
+            hsize=self.grid_size_h, 
+            wsize=self.grid_size_w, 
+            hrank=self.hrank, 
+            wrank=self.wrank
+        )
 
-            # split in H
-            tensor_list_local = thd.split_tensor_along_dim(tensor_local, dim=-2, num_chunks=self.grid_size_h)
-            tensor_local = tensor_list_local[self.hrank]
-
-        return tensor_local
-
-    def _gather_helper_fwd(self, tensor, B, C, transform_dist, vector):
-        # we need the shapes
-        l_shapes = transform_dist.l_shapes
-        m_shapes = transform_dist.m_shapes
-
-        # gather in W
-        if self.grid_size_w > 1:
-            if vector:
-                gather_shapes = [(B, C, 2, l_shapes[self.hrank], m) for m in m_shapes]
-            else:
-                gather_shapes = [(B, C, l_shapes[self.hrank], m) for m in m_shapes]
-            olist = [torch.empty(shape, dtype=tensor.dtype, device=tensor.device) for shape in gather_shapes]
-            olist[self.wrank] = tensor
-            dist.all_gather(olist, tensor, group=self.w_group)
-            tensor_gather = torch.cat(olist, dim=-1)
-        else:
-            tensor_gather = tensor
-
-        # gather in H
-        if self.grid_size_h > 1:
-            if vector:
-                gather_shapes = [(B, C, 2, l, transform_dist.mmax) for l in l_shapes]
-            else:
-                gather_shapes = [(B, C, l, transform_dist.mmax) for l in l_shapes]
-            olist = [torch.empty(shape, dtype=tensor_gather.dtype, device=tensor_gather.device) for shape in gather_shapes]
-            olist[self.hrank] = tensor_gather
-            dist.all_gather(olist, tensor_gather, group=self.h_group)
-            tensor_gather = torch.cat(olist, dim=-2)
+    def _gather_helper_fwd(self, tensor, transform_dist):
+        tensor_gather = gather_tensor_hw(
+            tensor, 
+            hdim=-2, 
+            wdim=-1, 
+            hshapes=transform_dist.l_shapes, 
+            wshapes=transform_dist.m_shapes, 
+            hsize=self.grid_size_h, 
+            wsize=self.grid_size_w, 
+            hrank=self.hrank, 
+            wrank=self.wrank, 
+            hgroup=self.h_group, 
+            wgroup=self.w_group
+        )
 
         return tensor_gather
 
-    def _gather_helper_bwd(self, tensor, B, C, transform_dist, vector):
-        
-        # we need the shapes
-        lat_shapes = transform_dist.lat_shapes
-        lon_shapes = transform_dist.lon_shapes
+    def _gather_helper_bwd(self, tensor, transform_dist):
 
-        # gather in W
-        if self.grid_size_w > 1:
-            if vector:
-                gather_shapes = [(B, C, 2, lat_shapes[self.hrank], w) for w in lon_shapes]
-            else:
-                gather_shapes = [(B, C, lat_shapes[self.hrank], w) for w in lon_shapes]
-            olist = [torch.empty(shape, dtype=tensor.dtype, device=tensor.device) for shape in gather_shapes]
-            olist[self.wrank] = tensor
-            dist.all_gather(olist, tensor, group=self.w_group)
-            tensor_gather = torch.cat(olist, dim=-1)
-        else:
-            tensor_gather = tensor
-
-        # gather in H
-        if self.grid_size_h > 1:
-            if vector:
-                gather_shapes = [(B, C, 2, h, transform_dist.nlon) for h in lat_shapes]
-            else:
-                gather_shapes = [(B, C, h, transform_dist.nlon) for h in lat_shapes]
-            olist = [torch.empty(shape, dtype=tensor_gather.dtype, device=tensor_gather.device) for shape in gather_shapes]
-            olist[self.hrank] = tensor_gather
-            dist.all_gather(olist, tensor_gather, group=self.h_group)
-            tensor_gather = torch.cat(olist, dim=-2)
+        tensor_gather = gather_tensor_hw(
+            tensor, 
+            hdim=-2, 
+            wdim=-1, 
+            hshapes=transform_dist.lat_shapes, 
+            wshapes=transform_dist.lon_shapes, 
+            hsize=self.grid_size_h, 
+            wsize=self.grid_size_w, 
+            hrank=self.hrank, 
+            wrank=self.wrank, 
+            hgroup=self.h_group, 
+            wgroup=self.w_group
+        )
 
         return tensor_gather
 
@@ -261,7 +166,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         # evaluate FWD pass
         with torch.no_grad():
-            out_gather_full = self._gather_helper_fwd(out_local, B, C, forward_transform_dist, vector)
+            out_gather_full = self._gather_helper_fwd(out_local, forward_transform_dist)
             err = torch.mean(torch.norm(out_full - out_gather_full, p="fro", dim=(-1, -2)) / torch.norm(out_full, p="fro", dim=(-1, -2)))
             if self.world_rank == 0:
                 print(f"final relative error of output: {err.item()}")
@@ -269,7 +174,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         # evaluate BWD pass
         with torch.no_grad():
-            igrad_gather_full = self._gather_helper_bwd(igrad_local, B, C, forward_transform_dist, vector)
+            igrad_gather_full = self._gather_helper_bwd(igrad_local, forward_transform_dist)
             err = torch.mean(torch.norm(igrad_full - igrad_gather_full, p="fro", dim=(-1, -2)) / torch.norm(igrad_full, p="fro", dim=(-1, -2)))
             if self.world_rank == 0:
                 print(f"final relative error of gradients: {err.item()}")
@@ -350,7 +255,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         # evaluate FWD pass
         with torch.no_grad():
-            out_gather_full = self._gather_helper_bwd(out_local, B, C, backward_transform_dist, vector)
+            out_gather_full = self._gather_helper_bwd(out_local, backward_transform_dist)
             err = torch.mean(torch.norm(out_full - out_gather_full, p="fro", dim=(-1, -2)) / torch.norm(out_full, p="fro", dim=(-1, -2)))
             if self.world_rank == 0:
                 print(f"final relative error of output: {err.item()}")
@@ -358,7 +263,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         # evaluate BWD pass
         with torch.no_grad():
-            igrad_gather_full = self._gather_helper_fwd(igrad_local, B, C, backward_transform_dist, vector)
+            igrad_gather_full = self._gather_helper_fwd(igrad_local, backward_transform_dist)
             err = torch.mean(torch.norm(igrad_full - igrad_gather_full, p="fro", dim=(-1, -2)) / torch.norm(igrad_full, p="fro", dim=(-1, -2)))
             if self.world_rank == 0:
                 print(f"final relative error of gradients: {err.item()}")

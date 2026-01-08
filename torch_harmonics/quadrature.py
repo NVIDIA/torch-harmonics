@@ -345,6 +345,9 @@ class QuadratureS2(torch.nn.Module):
     ):
         super().__init__()
 
+        self.grid = grid
+        self.normalize = normalize
+
         if self.grid == "legendre-gauss":
             _, weights = legendre_gauss_weights(img_shape[0], -1, 1)
             dlambda = 2 * torch.pi / img_shape[1]
@@ -371,7 +374,7 @@ class QuadratureS2(torch.nn.Module):
         quad_weight = quad_weight.contiguous()
 
         # reshape
-        quad_weight = quad_weight.reshape(1, 1, *img_shape)
+        quad_weight = quad_weight.reshape(1, 1, *img_shape).to(torch.float32).contiguous()
 
         # register buffer
         self.register_buffer("quad_weight", quad_weight, persistent=False)
