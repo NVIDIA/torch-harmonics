@@ -42,6 +42,33 @@ from torch_harmonics.distributed import reduce_from_polar_region, reduce_from_az
 
 
 class DistributedQuadratureS2(torch.nn.Module):
+    """
+    Distributed scalar quadrature on :math:`S^2` for integrating spherical fields on a
+    latitude/longitude grid, with data and weights split across polar and
+    azimuth communicator groups.
+
+    Parameters
+    -----------
+    img_shape: Tuple[int]
+        Spatial grid shape ``(nlat, nlon)``.
+    grid: str, optional
+        Quadrature grid type (``"equiangular"``, ``"legendre-gauss"``,
+        ``"lobatto"``, ``"equidistant"``), by default ``"equiangular"``.
+    normalize: bool, optional
+        If ``True``, divides weights by ``4π`` to return an average instead of
+        an integral, by default ``False``.
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor of shape ``(..., channels)`` containing the global integral over
+        the last two spatial dimensions (reduced across communicator groups).
+
+    Raises
+    ------
+    ValueError
+        If an unknown ``grid`` type is provided.
+    """
     def __init__(
         self, 
         img_shape: Tuple[int], 

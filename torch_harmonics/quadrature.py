@@ -337,6 +337,32 @@ def fejer2_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0) -> T
 
 
 class QuadratureS2(torch.nn.Module):
+    """
+    Scalar quadrature on :math:`S^2` for integrating spherical fields defined on a
+    latitude/longitude grid.
+
+    Parameters
+    -----------
+    img_shape: Tuple[int]
+        Spatial grid shape ``(nlat, nlon)``.
+    grid: str, optional
+        Quadrature grid type (``"equiangular"``, ``"legendre-gauss"``,
+        ``"lobatto"``, ``"equidistant"``), by default ``"equiangular"``.
+    normalize: bool, optional
+        If ``True``, divides weights by ``4π`` to return an average instead of
+        an integral, by default ``False``.
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor of shape ``(..., channels)`` containing the integral over the
+        last two spatial dimensions.
+
+    Raises
+    ------
+    ValueError
+        If an unknown ``grid`` type is provided.
+    """
     def __init__(
         self, 
         img_shape: Tuple[int], 

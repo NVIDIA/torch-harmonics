@@ -40,7 +40,7 @@ from torch_harmonics.truncation import truncate_sht
 from torch_harmonics import RealSHT, InverseRealSHT
 
 
-#@torch.compile
+@torch.compile
 def _contract_lwise(ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:
     resc = torch.einsum("bgixy,giox->bgoxy", ac, bc)
     return resc
@@ -48,7 +48,46 @@ def _contract_lwise(ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:
 
 class SpectralConvS2(nn.Module):
     """
-    Spectral Convolution of the Driscoll-Healy type implemented via SHT.
+    Spectral convolution layer on :math:`S^2` implemented via real SHT
+    (Driscoll-Healy formulation).
+
+    Parameters
+    -----------
+    in_shape: Tuple[int]
+        Spatial input grid shape ``(nlat, nlon)``.
+    out_shape: Tuple[int]
+        Spatial output grid shape ``(nlat, nlon)``.
+    in_channels: int
+        Number of input channels.
+    out_channels: int
+        Number of output channels.
+    num_groups: int, optional
+        Number of channel groups for grouped spectral weights, by default 1.
+    grid_in: str, optional
+        Grid used for the forward SHT (``"equiangular"``, ``"legendre-gauss"``,
+        ``"lobatto"``, ``"equidistant"``), by default ``"equiangular"``.
+    grid_out: str, optional
+        Grid used for the inverse SHT, same options as ``grid_in``.
+    bias: bool, optional
+        If ``True``, adds a learnable spectral bias computed from the spatial
+        integral, by default ``False``.
+
+    Raises
+    ------
+    AssertionError
+        If ``in_channels`` or ``out_channels`` is not divisible by
+        ``num_groups``.
+
+    Returns
+    -------
+    x: torch.Tensor
+        Tensor of shape ``(..., out_channels, out_shape[0], out_shape[1])``.
+
+    Notes
+    -----
+    The SHT truncation ``lmax``/``mmax`` is the minimum of the input and output
+    truncations, and the grouped contraction is performed with
+    ``_contract_lwise``.
     """
 
     def __init__(self, 

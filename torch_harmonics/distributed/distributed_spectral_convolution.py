@@ -47,7 +47,49 @@ from torch_harmonics.distributed import copy_to_polar_region, copy_to_azimuth_re
 
 class DistributedSpectralConvS2(nn.Module):
     """
-    Spectral Convolution of the Driscoll-Healy type implemented via SHT.
+    Distributed spectral convolution layer on :math:`S^2` implemented with
+    distributed real SHT (Driscoll-Healy formulation). Computation is split
+    across polar and azimuth communicator groups.
+
+    Parameters
+    -----------
+    in_shape: Tuple[int]
+        Spatial input grid shape ``(nlat, nlon)``.
+    out_shape: Tuple[int]
+        Spatial output grid shape ``(nlat, nlon)``.
+    in_channels: int
+        Number of input channels.
+    out_channels: int
+        Number of output channels.
+    num_groups: int, optional
+        Number of channel groups for grouped spectral weights, by default 1.
+    grid_in: str, optional
+        Grid used for the forward distributed SHT (``"equiangular"``,
+        ``"legendre-gauss"``, ``"lobatto"``, ``"equidistant"``), by default
+        ``"equiangular"``.
+    grid_out: str, optional
+        Grid used for the inverse distributed SHT, same options as ``grid_in``.
+    bias: bool, optional
+        If ``True``, adds a learnable spectral bias computed from the spatial
+        integral (replicated across process groups as needed), by default
+        ``False``.
+
+    Raises
+    ------
+    AssertionError
+        If ``in_channels`` or ``out_channels`` is not divisible by
+        ``num_groups``.
+
+    Returns
+    -------
+    x: torch.Tensor
+        Tensor of shape ``(..., out_channels, out_shape[0], out_shape[1])``.
+
+    Notes
+    -----
+    The layer truncates ``lmax``/``mmax`` to the distributed SHT limits, and
+    uses local ``lmax``/``mmax`` slices when constructing spectral weights. The
+    grouped contraction is performed with ``_contract_lwise``.
     """
 
     def __init__(self, 
