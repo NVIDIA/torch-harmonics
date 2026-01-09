@@ -30,13 +30,19 @@
 #
 
 import unittest
-from parameterized import parameterized
+from parameterized import parameterized, parameterized_class
 
 import torch
 import torch_harmonics as th
 
-from testutils import compare_tensors
+from testutils import set_seed, compare_tensors
 
+_devices = [(torch.device("cpu"),)]
+if torch.cuda.is_available():
+    _devices.append((torch.device("cuda"),))
+
+
+@parameterized_class(("device"), _devices)
 class TestQuadrature(unittest.TestCase):
     """Serial QuadratureS2 integration tests."""
 
@@ -51,14 +57,16 @@ class TestQuadrature(unittest.TestCase):
         ]
     )
     def test_constant_integral(self, nlat, nlon, batch_size, num_chan, grid, normalize, atol, rtol, verbose=False):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        quad = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=normalize).to(device)
 
-        data = torch.ones((batch_size, num_chan, nlat, nlon), dtype=torch.float32, device=device)
+        set_seed(333)
+
+        quad = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=normalize).to(self.device)
+
+        data = torch.ones((batch_size, num_chan, nlat, nlon), dtype=torch.float32, device=self.device)
         out = quad(data)
 
         expected_value = 1.0 if normalize else 4.0 * torch.pi
-        expected = torch.full((batch_size, num_chan), expected_value, device=device)
+        expected = torch.full((batch_size, num_chan), expected_value, device=self.device)
 
         self.assertTrue(compare_tensors(f"output", out, expected, atol=atol, rtol=rtol, verbose=verbose))
 

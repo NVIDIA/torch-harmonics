@@ -34,6 +34,8 @@ from parameterized import parameterized
 import math
 import torch
 
+from torch_harmonics.quadrature import legendre_gauss_weights, clenshaw_curtiss_weights
+
 
 class TestCacheConsistency(unittest.TestCase):
     def test_consistency(self, verbose=False):
@@ -47,6 +49,20 @@ class TestCacheConsistency(unittest.TestCase):
             # perform in-place modification of leg1
             leg1 *= -1.0
             leg2 = _precompute_legpoly(10, 10, cost)
+            self.assertFalse(torch.allclose(leg1, leg2))
+
+    def test_cache_tensor(self, verbose=False):
+        from torch_harmonics.legendre import _precompute_legpoly
+
+        with torch.no_grad():
+            # compute legpoly with given cost
+            cost, _ = legendre_gauss_weights(10, -1, 1)
+            tq = torch.flip(torch.arccos(cost), dims=(0,))
+            leg1 = _precompute_legpoly(10, 10, tq)
+            # compute legpoly with different cost
+            cost, _ = clenshaw_curtiss_weights(10, -1, 1)
+            tq = torch.flip(torch.arccos(cost), dims=(0,))
+            leg2 = _precompute_legpoly(10, 10, tq)
             self.assertFalse(torch.allclose(leg1, leg2))
 
 

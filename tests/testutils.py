@@ -34,6 +34,12 @@ import torch
 import torch.distributed as dist
 import torch_harmonics.distributed as thd
 
+def set_seed(seed=333):
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+    return
+
 
 def setup_distributed_context(ctx):
     ctx.world_rank = int(os.getenv("WORLD_RANK", 0))
@@ -49,14 +55,12 @@ def setup_distributed_context(ctx):
         local_rank = ctx.world_rank % torch.cuda.device_count()
         ctx.device = torch.device(f"cuda:{local_rank}")
         torch.cuda.set_device(local_rank)
-        torch.cuda.manual_seed(333)
         proc_backend = "nccl"
     else:
         if ctx.world_rank == 0:
             print("Running test on CPU")
         ctx.device = torch.device("cpu")
         proc_backend = "gloo"
-    torch.manual_seed(333)
 
     dist.init_process_group(
         backend=proc_backend,
@@ -101,6 +105,7 @@ def setup_distributed_context(ctx):
         print(f"Running distributed tests on grid H x W = {ctx.grid_size_h} x {ctx.grid_size_w}")
 
     thd.init(ctx.h_group, ctx.w_group)
+    torch.cuda.set_device(ctx.device.index)
 
     return
 
@@ -148,14 +153,22 @@ def teardown_module(ctx_dict):
     ctx_dict.clear()
 
 
+def split_tensor_dim(tensor, dim=-2, dimsize=1, dimrank=0):
+    """Split tensor along dim according to process grid ranks in that dim."""
+    with torch.no_grad():
+        if dimsize > 1:
+            tensor_list_local = thd.split_tensor_along_dim(tensor, dim=dim, num_chunks=dimsize)
+            tensor_local = tensor_list_local[dimrank]
+        else:
+            tensor_local = tensor
+    return tensor_local
+
+
 def split_tensor_hw(tensor, hdim=-2, wdim=-1, hsize=1, wsize=1, hrank=0, wrank=0):
     """Split tensor along height/width according to process grid ranks."""
     with torch.no_grad():
-        tensor_list_local = thd.split_tensor_along_dim(tensor, dim=wdim, num_chunks=wsize)
-        tensor_local = tensor_list_local[wrank]
-
-        tensor_list_local = thd.split_tensor_along_dim(tensor_local, dim=hdim, num_chunks=hsize)
-        tensor_local = tensor_list_local[hrank]
+        tensor_local = split_tensor_dim(tensor, dim=wdim, dimsize=wsize, dimrank=wrank)
+        tensor_local = split_tensor_dim(tensor_local, dim=hdim, dimsize=hsize, dimrank=hrank)
 
     return tensor_local
 

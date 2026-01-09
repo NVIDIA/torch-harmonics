@@ -38,6 +38,7 @@ import torch_harmonics as th
 import torch_harmonics.distributed as thd
 
 from testutils import (
+    set_seed,
     setup_module, 
     teardown_module,
     setup_class_from_context,
@@ -100,6 +101,9 @@ class TestDistributedQuadrature(unittest.TestCase):
         ]
     )
     def test_distributed_quadrature(self, nlat, nlon, batch_size, num_chan, grid, normalize, atol, rtol, verbose=False):
+
+        set_seed(333)
+
         B, C, H, W = batch_size, num_chan, nlat, nlon
 
         quad_local = th.QuadratureS2(img_shape=(H, W), grid=grid, normalize=normalize).to(self.device)
