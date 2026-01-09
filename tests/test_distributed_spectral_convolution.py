@@ -94,16 +94,25 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [(64, 128), (64, 128), 4, 8, 1, "equiangular", "equiangular", 1e-6, 1e-6],
-            [(65, 128), (65, 128), 4, 8, 1, "equiangular", "equiangular", 1e-6, 1e-6],
-            [(64, 128), (32,  64), 4, 8, 1, "equiangular", "equiangular", 1e-6, 1e-6],
-            [(65, 128), (33,  64), 4, 8, 1, "equiangular", "equiangular", 1e-6, 1e-6],
-            [(33,  64), (65, 128), 4, 8, 1, "equiangular", "equiangular", 1e-6, 1e-6],
-            [(64, 128), (64, 128), 4, 8, 1, "equiangular", "legendre-gauss", 1e-6, 1e-6],
-            [(65, 128), (65, 128), 4, 8, 1, "equiangular", "legendre-gauss", 1e-6, 1e-6],
+            # no bias
+            [(64, 128), (64, 128), 4, 8, 1, "equiangular", "equiangular", False, 1e-6, 1e-6],
+            [(65, 128), (65, 128), 4, 8, 1, "equiangular", "equiangular", False, 1e-6, 1e-6],
+            [(64, 128), (32,  64), 4, 8, 1, "equiangular", "equiangular", False, 1e-6, 1e-6],
+            [(65, 128), (33,  64), 4, 8, 1, "equiangular", "equiangular", False, 1e-6, 1e-6],
+            [(33,  64), (65, 128), 4, 8, 1, "equiangular", "equiangular", False, 1e-6, 1e-6],
+            [(64, 128), (64, 128), 4, 8, 1, "equiangular", "legendre-gauss", False, 1e-6, 1e-6],
+            [(65, 128), (65, 128), 4, 8, 1, "equiangular", "legendre-gauss", False, 1e-6, 1e-6],
+            # with bias
+            [(64, 128), (64, 128), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
+            [(65, 128), (65, 128), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
+            [(64, 128), (32,  64), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
+            [(65, 128), (33,  64), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
+            [(33,  64), (65, 128), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
+            [(64, 128), (64, 128), 4, 8, 1, "equiangular", "legendre-gauss", True, 1e-6, 1e-6],
+            [(65, 128), (65, 128), 4, 8, 1, "equiangular", "legendre-gauss", True, 1e-6, 1e-6],
         ], skip_on_empty=True
     )
-    def test_distributed_spectral_conv(self, in_shape, out_shape, batch_size, num_chan, num_groups, grid_in, grid_out, atol, rtol, verbose=True):
+    def test_distributed_spectral_conv(self, in_shape, out_shape, batch_size, num_chan, num_groups, grid_in, grid_out, bias, atol, rtol, verbose=True):
 
         set_seed(333)
 
@@ -117,7 +126,7 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
             num_groups=num_groups,
             grid_in=grid_in,
             grid_out=grid_out,
-            bias=True,
+            bias=bias,
         ).to(self.device)
 
         conv_dist = thd.DistributedSpectralConvS2(
@@ -128,15 +137,16 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
             num_groups=num_groups,
             grid_in=grid_in,
             grid_out=grid_out,
-            bias=True,
+            bias=bias,
         ).to(self.device)
 
         # copy weights: split local weight along l dimension
         with torch.no_grad():
             weight_split = split_tensor_dim(conv_local.weight.clone(), dim=-1, dimsize=self.grid_size_h, dimrank=self.hrank)
             conv_dist.weight.copy_(weight_split)
-            bias_split = split_tensor_hw(conv_local.spectral_bias.clone(), hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
-            conv_dist.spectral_bias.copy_(bias_split)
+            if bias:
+                bias_split = split_tensor_hw(conv_local.spectral_bias.clone(), hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
+                conv_dist.spectral_bias.copy_(bias_split)
 
         # generate input tensor
         inp_full = torch.randn((B, C, in_shape[0], in_shape[1]), dtype=torch.float32, device=self.device)
