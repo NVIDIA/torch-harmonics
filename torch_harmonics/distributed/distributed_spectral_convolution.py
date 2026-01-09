@@ -48,8 +48,8 @@ from torch_harmonics.distributed import copy_to_polar_region, copy_to_azimuth_re
 class DistributedSpectralConvS2(nn.Module):
     """
     Distributed spectral convolution layer on :math:`S^2` implemented with
-    distributed real SHT (Driscoll-Healy formulation). Computation is split
-    across polar and azimuth communicator groups.
+    distributed real SHT (Driscoll-Healy formulation, see https://api.semanticscholar.org/CorpusID:122817218). 
+    Computation is split across polar and azimuth communicator groups.
 
     Parameters
     -----------

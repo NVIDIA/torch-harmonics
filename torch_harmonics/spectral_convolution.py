@@ -49,7 +49,8 @@ def _contract_lwise(ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:
 class SpectralConvS2(nn.Module):
     """
     Spectral convolution layer on :math:`S^2` implemented via real SHT
-    (Driscoll-Healy formulation).
+    (Driscoll-Healy formulation, see https://api.semanticscholar.org/CorpusID:122817218).
+}).
 
     Parameters
     -----------
