@@ -2,6 +2,15 @@
 
 ## Versioning
 
+### v0.8.2
+* Adding Driscoll-Healey convolutions
+* Adding QuadratureS2 method which allows to integrate a spherical field over one of the supported grids
+* Adding tests for QuadratureS2 and Driscoll-Healey spectral convolutions
+* Improving setup for distributed tests, refactoring and code re-use for distributed and serial tests
+* Decreasing problem sizes for some tests, allowing for faster execution
+* Adding an additional caching test based of contents of a torch tensor
+* DistributedRealVectorSHT now does truncation correctly, previously this was not guaranteed
+
 ### v0.8.1
 
 * Revised the truncation logic for the SHT
