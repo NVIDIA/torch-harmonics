@@ -166,7 +166,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         # distributed transform
         # FWD pass
-        inp_local = self._split_helper(inp_full)
+        inp_local = self._split_helper(inp_full.detach().clone())
         inp_local.requires_grad = True
         out_local = forward_transform_dist(inp_local)
 
@@ -206,7 +206,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         ], skip_on_empty=True
     )
     def test_distributed_isht(self, nlat, nlon, batch_size, num_chan, grid, vector, atol, rtol, verbose=True):
-        
+
         set_seed(333)
 
         B, C, H, W = batch_size, num_chan, nlat, nlon
@@ -250,7 +250,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         # distributed transform
         # FWD pass
-        inp_local = self._split_helper(inp_full)
+        inp_local = self._split_helper(inp_full.detach().clone())
         inp_local.requires_grad = True
         out_local = backward_transform_dist(inp_local)
 

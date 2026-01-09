@@ -112,10 +112,6 @@ def setup_distributed_context(ctx):
 
 def teardown_distributed_context(ctx):
     thd.finalize()
-    if ctx.h_group is not None:
-        dist.destroy_process_group(ctx.h_group)
-    if ctx.w_group is not None:
-        dist.destroy_process_group(ctx.w_group)
     dist.destroy_process_group(None)
 
     return

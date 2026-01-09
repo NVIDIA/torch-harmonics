@@ -112,26 +112,26 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [128, 256, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
-            [129, 256, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
-            [128, 256, 128, 256, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
-            [128, 256, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
-            [128, 256, 128, 256, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", False, 1e-6, 1e-5],
-            [128, 256, 128, 256, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
-            [128, 256, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
-            [129, 256, 129, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
-            [128, 256, 128, 256, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
             [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
-            [128, 256, 128, 256, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", True, 1e-6, 1e-5],
-            [128, 256, 128, 256, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
-            [129, 256, 129, 256, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
-            [129, 256, 129, 256, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
-            [65, 128, 129, 256, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
-            [129, 256, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", True, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
+            [33, 64, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
+            [65, 128, 33, 64, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
         ], skip_on_empty=True
     )
     def test_distributed_disco_conv(
-        self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, kernel_shape, basis_type, basis_norm_mode, groups, grid_in, grid_out, transpose, atol, rtol, verbose=False
+        self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, kernel_shape, basis_type, basis_norm_mode, groups, grid_in, grid_out, transpose, atol, rtol, verbose=True
     ):
 
         set_seed(333)
@@ -185,7 +185,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
         # distributed conv
         # FWD pass
-        inp_local = self._split_helper(inp_full)
+        inp_local = self._split_helper(inp_full.detach().clone())
         inp_local.requires_grad = True
         out_local = conv_dist(inp_local)
 

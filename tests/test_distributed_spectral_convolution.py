@@ -8,15 +8,15 @@
 #
 # 1. Redistributions of source code must retain the above copyright notice, this
 # list of conditions and the following disclaimer.
-#
+# 
 # 2. Redistributions in binary form must reproduce the above copyright notice,
 # this list of conditions and the following disclaimer in the documentation
 # and/or other materials provided with the distribution.
-#
+# 
 # 3. Neither the name of the copyright holder nor the names of its
 # contributors may be used to endorse or promote products derived from
 # this software without specific prior written permission.
-#
+# 
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 # AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 # IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -40,11 +40,12 @@ import torch_harmonics.distributed as thd
 from testutils import (
     set_seed,
     setup_module, 
-    teardown_module,
+    teardown_module, 
     setup_class_from_context,
-    split_tensor_hw,
+    split_tensor_hw, 
+    split_tensor_dim,
     gather_tensor_hw,
-    compare_tensors
+    compare_tensors,
 )
 
 # shared state
@@ -56,8 +57,8 @@ def setUpModule():
 def tearDownModule():
     teardown_module(_DIST_CTX)
 
-class TestDistributedQuadrature(unittest.TestCase):
-    """Compare QuadratureS2 with DistributedQuadratureS2 (CPU/CUDA if available)."""
+class TestDistributedSpectralConvolution(unittest.TestCase):
+    """Compare SpectralConvS2 with DistributedSpectralConvS2 (CPU/CUDA if available)."""
 
     @classmethod
     def setUpClass(cls):
@@ -66,7 +67,7 @@ class TestDistributedQuadrature(unittest.TestCase):
     def _split_helper(self, tensor):
         return split_tensor_hw(
             tensor, 
-            hdim=-2, 
+            hdim=-2,
             wdim=-1, 
             hsize=self.grid_size_h, 
             wsize=self.grid_size_w, 
@@ -74,14 +75,13 @@ class TestDistributedQuadrature(unittest.TestCase):
             wrank=self.wrank
         )
 
-    def _gather_helper(self, tensor, quadrature_dist):
-
+    def _gather_helper(self, tensor, lat_shapes, lon_shapes):
         tensor_gather = gather_tensor_hw(
             tensor, 
             hdim=-2, 
             wdim=-1, 
-            hshapes=quadrature_dist.lat_shapes, 
-            wshapes=quadrature_dist.lon_shapes, 
+            hshapes=lat_shapes, 
+            wshapes=lon_shapes, 
             hsize=self.grid_size_h, 
             wsize=self.grid_size_w, 
             hrank=self.hrank, 
@@ -94,48 +94,80 @@ class TestDistributedQuadrature(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [64, 128, 4, 3, "equiangular", False, 1e-7, 1e-5],
-            [65, 128, 2, 2, "equiangular", True, 1e-7, 1e-5],
-            [64, 128, 4, 3, "legendre-gauss", False, 1e-7, 1e-5],
-            [65, 128, 2, 2, "lobatto", False, 1e-7, 1e-5],
-        ]
+            [(64, 128), (64, 128), 4, 8, 1, "equiangular", "equiangular", 1e-6, 1e-6],
+            [(65, 128), (65, 128), 4, 8, 1, "equiangular", "equiangular", 1e-6, 1e-6],
+            [(64, 128), (32,  64), 4, 8, 1, "equiangular", "equiangular", 1e-6, 1e-6],
+            [(65, 128), (33,  64), 4, 8, 1, "equiangular", "equiangular", 1e-6, 1e-6],
+            [(33,  64), (65, 128), 4, 8, 1, "equiangular", "equiangular", 1e-6, 1e-6],
+            [(64, 128), (64, 128), 4, 8, 1, "equiangular", "legendre-gauss", 1e-6, 1e-6],
+            [(65, 128), (65, 128), 4, 8, 1, "equiangular", "legendre-gauss", 1e-6, 1e-6],
+        ], skip_on_empty=True
     )
-    def test_distributed_quadrature(self, nlat, nlon, batch_size, num_chan, grid, normalize, atol, rtol, verbose=False):
+    def test_distributed_spectral_conv(self, in_shape, out_shape, batch_size, num_chan, num_groups, grid_in, grid_out, atol, rtol, verbose=True):
 
         set_seed(333)
 
-        B, C, H, W = batch_size, num_chan, nlat, nlon
+        B, C = batch_size, num_chan
 
-        quad_local = th.QuadratureS2(img_shape=(H, W), grid=grid, normalize=normalize).to(self.device)
-        quad_dist = thd.DistributedQuadratureS2(img_shape=(H, W), grid=grid, normalize=normalize).to(self.device)
+        conv_local = th.SpectralConvS2(
+            in_shape=in_shape,
+            out_shape=out_shape,
+            in_channels=C,
+            out_channels=C,
+            num_groups=num_groups,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            bias=True,
+        ).to(self.device)
 
-        # create tensors
-        inp_full = torch.randn((B, C, H, W), dtype=torch.float32, device=self.device)
+        conv_dist = thd.DistributedSpectralConvS2(
+            in_shape=in_shape,
+            out_shape=out_shape,
+            in_channels=C,
+            out_channels=C,
+            num_groups=num_groups,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            bias=True,
+        ).to(self.device)
 
-        # local quadrature
-        inp_full.requires_grad = True
-        out_full = quad_local(inp_full)
-
+        # copy weights: split local weight along l dimension
         with torch.no_grad():
-            ograd_full = torch.randn_like(out_full)
+            weight_split = split_tensor_dim(conv_local.weight.clone(), dim=-1, dimsize=self.grid_size_h, dimrank=self.hrank)
+            conv_dist.weight.copy_(weight_split)
+            bias_split = split_tensor_hw(conv_local.spectral_bias.clone(), hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
+            conv_dist.spectral_bias.copy_(bias_split)
 
+        # generate input tensor
+        inp_full = torch.randn((B, C, in_shape[0], in_shape[1]), dtype=torch.float32, device=self.device)
+
+        # local forward/backward
+        inp_full.requires_grad = True
+        out_full = conv_local(inp_full)
+        ograd_full = torch.randn_like(out_full)
         out_full.backward(ograd_full)
         igrad_full = inp_full.grad.clone()
 
-        # distributed quadrature
+        # distributed forward/backward
         inp_local = self._split_helper(inp_full.detach().clone())
         inp_local.requires_grad = True
-        out_local = quad_dist(inp_local)
-        ograd_local = ograd_full.clone()
-
+        out_local = conv_dist(inp_local)
+        ograd_local = self._split_helper(ograd_full)
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
 
-        # evaluate FWD pass
-        self.assertTrue(compare_tensors("output", out_full, out_local, atol=atol, rtol=rtol, verbose=verbose))
+        out_gather_full = self._gather_helper(
+            out_local,
+            conv_dist.isht.lat_shapes,
+            conv_dist.isht.lon_shapes,
+        )
+        self.assertTrue(compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose))
 
-        # evaluate BWD pass
-        igrad_gather_full = self._gather_helper(igrad_local, quad_dist)
+        igrad_gather_full = self._gather_helper(
+            igrad_local,
+            conv_dist.sht.lat_shapes,
+            conv_dist.sht.lon_shapes,
+        )
         self.assertTrue(compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose))
 
 if __name__ == "__main__":

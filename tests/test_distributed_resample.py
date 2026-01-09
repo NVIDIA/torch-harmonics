@@ -163,7 +163,7 @@ class TestDistributedResampling(unittest.TestCase):
 
         # distributed conv
         # FWD pass
-        inp_local = self._split_helper(inp_full)
+        inp_local = self._split_helper(inp_full.detach().clone())
         inp_local.requires_grad = True
         out_local = res_dist(inp_local)
 
