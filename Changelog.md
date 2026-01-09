@@ -3,9 +3,9 @@
 ## Versioning
 
 ### v0.8.2
-* Adding Driscoll-Healey convolutions
+* Adding Driscoll-Healy convolutions
 * Adding QuadratureS2 method which allows to integrate a spherical field over one of the supported grids
-* Adding tests for QuadratureS2 and Driscoll-Healey spectral convolutions
+* Adding tests for QuadratureS2 and Driscoll-Healy spectral convolutions
 * Improving setup for distributed tests, refactoring and code re-use for distributed and serial tests
 * Decreasing problem sizes for some tests, allowing for faster execution
 * Adding an additional caching test based of contents of a torch tensor
