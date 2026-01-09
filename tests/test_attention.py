@@ -42,7 +42,7 @@ from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
 from torch_harmonics.attention._attention_utils import _neighborhood_s2_attention_torch
 from torch_harmonics.attention import cuda_kernels_is_available, optimized_kernels_is_available
 
-from testutils import compare_tensors
+from testutils import set_seed, compare_tensors
 
 if not optimized_kernels_is_available():
     print(f"Warning: Couldn't import optimized disco convolution kernels")
@@ -90,6 +90,8 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+
+        set_seed(333)
 
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
@@ -154,6 +156,8 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         if (self.device.type == "cpu"):
             # comparing CPU with itself does not make sense
             return
+
+        set_seed(333)
 
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
@@ -222,6 +226,8 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
 
+        set_seed(333)
+
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
@@ -285,6 +291,8 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping GPU test because CUDA kernels are not available")
 
+        set_seed(333)
+
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
@@ -322,7 +330,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
-        
+
+        set_seed(333)
+
         # extract some parameters
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape

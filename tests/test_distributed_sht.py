@@ -38,6 +38,7 @@ import torch_harmonics as th
 import torch_harmonics.distributed as thd
 
 from testutils import (
+    set_seed,
     setup_module, 
     teardown_module, 
     setup_class_from_context,
@@ -130,7 +131,9 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         ], skip_on_empty=True
     )
     def test_distributed_sht(self, nlat, nlon, batch_size, num_chan, grid, vector, atol, rtol, verbose=False):
-    
+
+        set_seed(333)
+
         B, C, H, W = batch_size, num_chan, nlat, nlon
 
         # set up handles
@@ -204,6 +207,8 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
     )
     def test_distributed_isht(self, nlat, nlon, batch_size, num_chan, grid, vector, atol, rtol, verbose=True):
         
+        set_seed(333)
+
         B, C, H, W = batch_size, num_chan, nlat, nlon
 
         if vector:

@@ -42,7 +42,7 @@ from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTran
 from torch_harmonics.quadrature import _precompute_latitudes, _precompute_longitudes
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
 
-from testutils import compare_tensors
+from testutils import set_seed, compare_tensors
 
 if not optimized_kernels_is_available():
     print(f"Warning: Couldn't import optimized disco convolution kernels")
@@ -180,11 +180,6 @@ def _precompute_convolution_tensor_dense(
 class TestDiscreteContinuousConvolution(unittest.TestCase):
     """Test the discrete-continuous convolution module (CPU/CUDA if available)."""
 
-    def setUp(self):
-        torch.manual_seed(333)
-        if self.device.type == "cuda":
-            torch.cuda.manual_seed(333)
-
     @parameterized.expand(
         [
             # regular convolution
@@ -236,6 +231,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         if verbose:
             print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
+
+        set_seed(333)
 
         use_optimized_kernels = optimized_kernels_is_available()
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
@@ -383,7 +380,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         if verbose:
             print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
-        
+
+        set_seed(333)
+
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
@@ -465,6 +464,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
     )
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA is not available")
     def test_device_instantiation(self, batch_size, in_channels, out_channels, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, transpose, atol, rtol, verbose=False):
+
+        set_seed(333)
 
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
@@ -552,7 +553,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         
         if verbose:
             print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
-        
+
+        set_seed(333)
+
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
@@ -615,6 +618,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
         
+        set_seed(333)
+
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 

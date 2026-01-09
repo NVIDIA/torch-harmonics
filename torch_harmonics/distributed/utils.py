@@ -47,6 +47,7 @@ def azimuth_group():
 def init(polar_process_group, azimuth_process_group):
     global _POLAR_PARALLEL_GROUP
     global _AZIMUTH_PARALLEL_GROUP
+    global _IS_INITIALIZED
     _POLAR_PARALLEL_GROUP = polar_process_group
     _AZIMUTH_PARALLEL_GROUP = azimuth_process_group
     _IS_INITIALIZED = True
@@ -56,7 +57,7 @@ def finalize():
         if is_distributed_polar():
             dist.destroy_process_group(_POLAR_PARALLEL_GROUP)
         if is_distributed_azimuth():
-            ist.destroy_process_group(_AZIMUTH_PARALLEL_GROUP)
+            dist.destroy_process_group(_AZIMUTH_PARALLEL_GROUP)
 
 def is_initialized() -> bool:
     return _IS_INITIALIZED

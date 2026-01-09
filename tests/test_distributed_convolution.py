@@ -38,6 +38,7 @@ import torch_harmonics as th
 import torch_harmonics.distributed as thd
 
 from testutils import (
+    set_seed,
     setup_module, 
     teardown_module, 
     setup_class_from_context,
@@ -132,7 +133,9 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
     def test_distributed_disco_conv(
         self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, kernel_shape, basis_type, basis_norm_mode, groups, grid_in, grid_out, transpose, atol, rtol, verbose=False
     ):
-        
+
+        set_seed(333)
+
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
 
         disco_args = dict(

@@ -36,7 +36,7 @@ import torch
 from torch.autograd import gradcheck
 import torch_harmonics as th
 
-from testutils import compare_tensors
+from testutils import set_seed, compare_tensors
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -82,10 +82,6 @@ class TestLegendrePolynomials(unittest.TestCase):
 @parameterized_class(("device"), _devices)
 class TestSphericalHarmonicTransform(unittest.TestCase):
     """Test the spherical harmonic transform (CPU/CUDA if available)."""
-    def setUp(self):
-        torch.manual_seed(333)
-        if self.device.type == "cuda":
-            torch.cuda.manual_seed(333)
 
     @parameterized.expand(
         [
@@ -115,6 +111,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
     def test_forward_inverse(self, nlat, nlon, batch_size, norm, grid, atol, rtol, verbose=False):
         if verbose:
             print(f"Testing real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization on {self.device.type} device")
+
+        set_seed(333)
 
         testiters = [1, 2, 4, 8, 16]
         if grid == "equiangular":
@@ -175,6 +173,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         if verbose:
             print(f"Testing gradients of real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization")
 
+        set_seed(333)
+
         if grid == "equiangular":
             mmax = nlat // 2
         elif grid == "lobatto":
@@ -216,6 +216,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
     def test_device_instantiation(self, nlat, nlon, norm, grid, atol, rtol, verbose=False):
         if verbose:
             print(f"Testing device instantiation of real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization")
+
+        set_seed(333)
 
         if grid == "equiangular":
             mmax = nlat // 2

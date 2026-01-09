@@ -36,10 +36,11 @@ import torch.nn as nn
 import math
 
 from torch_harmonics.quadrature import QuadratureS2
+from torch_harmonics.truncation import truncate_sht
 from torch_harmonics import RealSHT, InverseRealSHT
 
 
-@torch.compile
+#@torch.compile
 def _contract_lwise(ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:
     resc = torch.einsum("bgixy,giox->bgoxy", ac, bc)
     return resc
@@ -69,21 +70,26 @@ class SpectralConvS2(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.num_groups = num_groups
+
+        # compute truncation
+        lmax_in, mmax_in = truncate_sht(in_shape[0], in_shape[1], grid=grid_in)
+        lmax_out, mmax_out = truncate_sht(out_shape[0], out_shape[1], grid=grid_out)
+
+        # compute lmax and lmin
+        lmax = min(lmax_in, lmax_out)
+        mmax = min(mmax_in, mmax_out)
+        self.lmax = min(lmax, mmax)
+        self.mmax = self.lmax
         
         # set up sht layers
-        self.sht = RealSHT(*in_shape, grid=grid_in)
-        self.isht = InverseRealSHT(*out_shape, grid=grid_out)
-
-        self.modes_lat = self.isht.lmax
-        self.modes_lon = self.isht.mmax
-
-        self.scale_residual = (in_shape[0] != out_shape[0]) or (in_shape[1] != out_shape[1]) or (grid_in != grid_out)
+        self.sht = RealSHT(*in_shape, grid=grid_in, lmax=self.lmax, mmax=self.mmax)
+        self.isht = InverseRealSHT(*out_shape, grid=grid_out, lmax=self.lmax, mmax=self.mmax)
 
         # weight shape 
-        weight_shape = [num_groups, in_channels // num_groups, out_channels // num_groups, self.modes_lat]
+        weight_shape = [num_groups, in_channels // num_groups, out_channels // num_groups, self.lmax]
 
         # Compute scaling factor for correct initialization
-        scale = math.sqrt(1.0 / (in_channels // num_groups)) * torch.ones(self.modes_lat, dtype=torch.complex64)
+        scale = math.sqrt(1.0 / (in_channels // num_groups)) * torch.ones(self.lmax, dtype=torch.complex64)
         # seemingly the first weight is not really complex, so we need to account for that
         scale[0] *= math.sqrt(2.0)
         self.weight = nn.Parameter(scale * torch.randn(*weight_shape, dtype=torch.complex64))
@@ -93,7 +99,7 @@ class SpectralConvS2(nn.Module):
 
         if bias == True:
             self.spectral_bias = nn.Parameter(
-                torch.zeros(1, self.out_channels, self.modes_lat, self.modes_lon, dtype=torch.complex64)
+                torch.zeros(1, self.out_channels, self.lmax, self.mmax, dtype=torch.complex64)
             )
             self.quadrature = QuadratureS2(
                 img_shape=in_shape, 
@@ -103,7 +109,6 @@ class SpectralConvS2(nn.Module):
 
     def forward(self, x):
         dtype = x.dtype
-        residual = x
         x = x.float()
 
         # compute integral in case if bias is used
@@ -112,9 +117,6 @@ class SpectralConvS2(nn.Module):
 
         with torch.amp.autocast(device_type="cuda", enabled=False):
             x = self.sht(x).contiguous()
-            if self.scale_residual:
-                residual = self.isht(x)
-                residual = residual.to(dtype)
 
         # store the shapes
         B, C, H, W = x.shape
@@ -134,4 +136,4 @@ class SpectralConvS2(nn.Module):
         # convert datatype
         x = x.to(dtype=dtype)
 
-        return x, residual
+        return x
