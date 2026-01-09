@@ -30,6 +30,7 @@
 #
 
 from typing import Optional, Tuple
+import warnings
 
 def _truncate_lmax(nlat: int, grid: Optional[str]="equiangular") -> int:
     """
@@ -60,6 +61,12 @@ def _truncate_lmax(nlat: int, grid: Optional[str]="equiangular") -> int:
     elif grid == "lobatto":
         return nlat - 1
     elif grid in ["equiangular", "equidistant"]:
+        warnings.warn(
+            "Default SHT truncation changed in v0.8.1: equiangular/equidistant grids now truncate to (nlat+1)//2. "
+            "Specify lmax explicitly to override.",
+            UserWarning,
+            stacklevel=2,
+        )
         return (nlat + 1) // 2
     else:
         raise ValueError(f"Unknown grid type {grid}")
