@@ -40,12 +40,6 @@ from torch_harmonics.truncation import truncate_sht
 from torch_harmonics import RealSHT, InverseRealSHT
 
 
-@torch.compile
-def _contract_lwise(ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:
-    resc = torch.einsum("bgixy,giox->bgoxy", ac, bc)
-    return resc
-
-
 class SpectralConvS2(nn.Module):
     """
     Spectral convolution layer on :math:`S^2` implemented via real SHT
@@ -134,9 +128,6 @@ class SpectralConvS2(nn.Module):
         scale[0] *= math.sqrt(2.0)
         self.weight = nn.Parameter(scale * torch.randn(*weight_shape, dtype=torch.complex64))
 
-        # get the contraction handle. This should return a pyTorch contraction
-        self.contract_handle = _contract_lwise
-
         if bias == True:
             self.spectral_bias = nn.Parameter(
                 torch.zeros(1, self.out_channels, self.lmax, self.mmax, dtype=torch.complex64)
@@ -146,6 +137,11 @@ class SpectralConvS2(nn.Module):
                 grid=grid_in, 
                 normalize=False
             )
+
+    @torch.compile
+    def _contract_lwise(self, ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:
+        resc = torch.einsum("bgixy,giox->bgoxy", ac, bc)
+        return resc
 
     def forward(self, x):
         dtype = x.dtype
@@ -167,7 +163,7 @@ class SpectralConvS2(nn.Module):
 
         # perform contraction
         x = x.reshape(B, self.num_groups, C // self.num_groups, H, W)
-        xp = self.contract_handle(x, self.weight)
+        xp = self._contract_lwise(x, self.weight)
         x = xp.reshape(B, self.out_channels, H, W).contiguous()
 
         with torch.amp.autocast(device_type="cuda", enabled=False):

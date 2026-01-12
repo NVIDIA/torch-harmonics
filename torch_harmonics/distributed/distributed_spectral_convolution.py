@@ -35,7 +35,6 @@ import torch
 import torch.nn as nn
 import math
 
-from torch_harmonics.spectral_convolution import _contract_lwise
 from torch_harmonics.truncation import truncate_sht
 
 from torch_harmonics.distributed import DistributedRealSHT, DistributedInverseRealSHT, DistributedQuadratureS2
@@ -147,9 +146,6 @@ class DistributedSpectralConvS2(nn.Module):
         scale[0] *= math.sqrt(2.0)
         self.weight = nn.Parameter(scale * torch.randn(*weight_shape, dtype=torch.complex64))
 
-        # get the contraction handle. This should return a pyTorch contraction
-        self.contract_handle = _contract_lwise
-
         if bias == True:
             self.spectral_bias = nn.Parameter(
                 torch.zeros(1, self.out_channels, self.lmax_local, self.mmax_local, dtype=torch.complex64)
@@ -159,6 +155,11 @@ class DistributedSpectralConvS2(nn.Module):
                 grid=grid_in, 
                 normalize=False
             )
+
+    @torch.compile
+    def _contract_lwise(self, ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:
+        resc = torch.einsum("bgixy,giox->bgoxy", ac, bc)
+        return resc
 
     def forward(self, x):
         dtype = x.dtype
@@ -184,7 +185,7 @@ class DistributedSpectralConvS2(nn.Module):
 
         # perform contraction
         x = x.reshape(B, self.num_groups, C // self.num_groups, H, W)
-        xp = self.contract_handle(x, self.weight)
+        xp = self._contract_lwise(x, self.weight)
         x = xp.reshape(B, self.out_channels, H, W).contiguous()
 
         with torch.amp.autocast(device_type="cuda", enabled=False):
