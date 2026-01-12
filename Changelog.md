@@ -3,7 +3,7 @@
 ## Versioning
 
 ### v0.8.2
-* Adding Driscoll-Healy convolutions
+* Adding Driscoll-Healy (spectral) convolutions
 * Adding QuadratureS2 method which allows to integrate a spherical field over one of the supported grids
 * Adding tests for QuadratureS2 and Driscoll-Healy spectral convolutions
 * Improving setup for distributed tests, refactoring and code re-use for distributed and serial tests
