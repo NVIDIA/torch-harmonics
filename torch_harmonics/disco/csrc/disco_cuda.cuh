@@ -42,6 +42,37 @@
 
 namespace disco_kernels {
 
+    // fast base 2 logarithm for integer types
+    inline int64_t countl_zero_u64(std::uint64_t v) {
+#if defined(__GNUC__) || defined(__clang__)
+        return v ? static_cast<int64_t>(__builtin_clzll(v)) : 64;
+#elif defined(_MSC_VER)
+        unsigned long idx;
+        if (_BitScanReverse64(&idx, v)) return 63 - static_cast<int64_t>(idx);
+        return 64;
+#else
+        int64_t n = 0;
+        while (v && (v >> 63) == 0) { v <<= 1; ++n; }
+        return v ? n : 64;
+#endif
+    }
+
+    // fast base 2 logarithm for integer types
+    inline int64_t ilog2(int64_t n) {
+        return static_cast<int64_t>(
+            std::numeric_limits<std::uint64_t>::digits - 1 -
+            countl_zero_u64(static_cast<std::uint64_t>(n)));
+    }
+
+    // fast power of 2 for integer types
+    inline int64_t pow2(int64_t n) {
+        if (n < 0 || n >= 64) {
+            // Handle error: overflow or invalid input
+            return 0;
+        }
+        return (1ULL << n);  // 1 shifted left x times
+    }
+
     // forward kernel
     torch::Tensor disco_cuda_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx, 
                                  torch::Tensor col_idx, torch::Tensor val, int64_t kernel_size, int64_t Ho, int64_t Wo);

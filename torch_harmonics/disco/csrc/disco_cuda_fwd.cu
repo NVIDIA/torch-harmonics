@@ -889,7 +889,6 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         int64_t Hi = inp.size(1);
         int64_t Wi = inp.size(2);
         int64_t C = inp.size(3);
-        //int64_t BC = B * C;
         int64_t nrows = roff_idx.size(0) - 1;
 
         // rename dimensions consistent with attention
@@ -903,33 +902,107 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         // get stream
         auto stream = at::cuda::getCurrentCUDAStream().stream();
 
-        // switch to channel-last
-        // version with fused enisum
-
+        // create output tensor
         auto x_type = inp.dtype();
         auto xP = inp.to(torch::kFloat32).contiguous();
 
+        // first, we split the input tensors along kernel dims, so that we work on K_1 = 2^k
+        // kernels first and then compute the K - K_1 kernels later:
+        int64_t log_K = ilog2(K);
+        int64_t K_1 = pow2(log_K);
+        int64_t K_2 = K - K_1;
+
         // to test before fusion
-        int64_t out_dims[] = {batch_size, nlat_out, nlon_out, nchan*K};
-        //auto options = torch::TensorOptions().device(inp.device()).dtype(inp.dtype());
-        torch::Tensor yP = torch::zeros(out_dims, xP.options());
+        torch::Tensor out;
+        if (K == 1 || K_2 == 0) {
+        //if (true) {
+            int64_t out_dims[] = {batch_size, nlat_out, nlon_out, nchan*K};
+            //auto options = torch::TensorOptions().device(inp.device()).dtype(inp.dtype());
+            torch::Tensor yP = torch::zeros(out_dims, xP.options());
 
-        // call channel-last kernel implementation
-        s2_disco_fwd_dispatch(batch_size,
-                              nchan,
-                              nlat_in,
-                              nlon_in,
-                              nlat_out,
-                              nlon_out,
-                              K,
-                              xP,
-                              roff_idx,
-                              row_idx,
-                              col_idx,
-                              val,
-                              yP);
+            // call channel-last kernel implementation
+            s2_disco_fwd_dispatch(batch_size,
+                                  nchan,
+                                  nlat_in,
+                                  nlon_in,
+                                  nlat_out,
+                                  nlon_out,
+                                  K,
+                                  xP,
+                                  roff_idx,
+                                  row_idx,
+                                  col_idx,
+                                  val,
+                                  yP);
 
-        auto out = yP.reshape({batch_size, nlat_out, nlon_out, nchan, K}).to(x_type);
+            out = yP.reshape({batch_size, nlat_out, nlon_out, nchan, K}).to(x_type);
+        } else {
+            // we need to split the psi tensors here:
+            ker_idx = torch::reshape(ker_idx, {K, -1});
+            row_idx = torch::reshape(row_idx, {K, -1});
+            col_idx = torch::reshape(col_idx, {K, -1});
+            val = torch::reshape(val, {K, -1});
+            int64_t nrows = (roff_idx.size(0) - 1) / K;
+
+            // now, perform computation on the first K_1 kernels:
+            auto ker_idx_1 = ker_idx.narrow(0, 0, K_1).reshape({-1}).contiguous();
+            auto row_idx_1 = row_idx.narrow(0, 0, K_1).reshape({-1}).contiguous();
+            auto col_idx_1 = col_idx.narrow(0, 0, K_1).reshape({-1}).contiguous();
+            auto val_1 = val.narrow(0, 0, K_1).reshape({-1}).contiguous();
+            auto roff_idx_1 = roff_idx.narrow(0, 0, nrows * K_1 + 1).contiguous();
+            
+            // prepare output 1
+            int64_t out_dims_1[] = {batch_size, nlat_out, nlon_out, nchan*K_1};
+            torch::Tensor yP_1 = torch::zeros(out_dims_1, xP.options());
+
+            // call channel-last kernel implementation
+            s2_disco_fwd_dispatch(batch_size,
+                nchan,
+                nlat_in,
+                nlon_in,
+                nlat_out,
+                nlon_out,
+                K_1,
+                xP,
+                roff_idx_1,
+                row_idx_1,
+                col_idx_1,
+                val_1,
+                yP_1);
+
+            yP_1 = yP_1.reshape({batch_size, nlat_out, nlon_out, nchan, K_1}).to(x_type);
+
+            // now, perform computation on the remaining K_2 kernels:
+            auto ker_idx_2 = ker_idx.narrow(0, K_1, K_2).reshape({-1}).contiguous() - K_1;
+            auto row_idx_2 = row_idx.narrow(0, K_1, K_2).reshape({-1}).contiguous();
+            auto col_idx_2 = col_idx.narrow(0, K_1, K_2).reshape({-1}).contiguous();
+            auto val_2 = val.narrow(0, K_1, K_2).reshape({-1}).contiguous();
+            auto roff_idx_2 = roff_idx.narrow(0, nrows * K_1, nrows * K_2 + 1).contiguous() - roff_idx_1.index({roff_idx_1.size(0) - 1});
+
+            // prepare output
+            int64_t out_dims_2[] = {batch_size, nlat_out, nlon_out, nchan*K_2};
+            torch::Tensor yP_2 = torch::zeros(out_dims_2, xP.options());
+
+            // call channel-last kernel implementation
+            s2_disco_fwd_dispatch(batch_size,
+                nchan,
+                nlat_in,
+                nlon_in,
+                nlat_out,
+                nlon_out,
+                K_2,
+                xP,
+                roff_idx_2,
+                row_idx_2,
+                col_idx_2,
+                val_2,
+                yP_2);
+
+            yP_2 = yP_2.reshape({batch_size, nlat_out, nlon_out, nchan, K_2}).to(x_type);
+
+            // merge results
+            out = torch::cat({yP_1, yP_2}, -1).contiguous();
+        }
 
         return out;
     }
