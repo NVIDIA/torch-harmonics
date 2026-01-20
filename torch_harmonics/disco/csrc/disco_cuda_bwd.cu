@@ -960,7 +960,7 @@ static void s2_disco_bwd_dispatch(int64_t batch_size,
         }
 
         int64_t nchan = Co * Kograd;
-        int64_t nrows = roff_idx.size(0) - 1;
+        //int64_t nrows = roff_idx.size(0) - 1;
         int64_t nlat_out = Ho;
         int64_t nlon_out = Wo;
 
@@ -972,24 +972,84 @@ static void s2_disco_bwd_dispatch(int64_t batch_size,
 
         // extract dtype, convert to fp32 and make contiguous
         auto x_type = ograd.dtype();
-        torch::Tensor xP = ograd.reshape({batch_size, nlat_in, nlon_in, nchan}).to(torch::kFloat32).contiguous();
 
-        torch::Tensor igrad = torch::zeros(out_dims, xP.options());
+        // first, we split the input tensors along kernel dims, so that we work on K_1 = 2^k
+        // kernels first and then compute the K - K_1 kernels later:
+        int64_t log_K = ilog2(K);
+        int64_t K_1 = pow2(log_K);
+        int64_t K_2 = K - K_1;
 
         // call channel-last kernel implementation
-        s2_disco_bwd_dispatch(batch_size,
-                              Co, //nchan,
-                              nlat_in,
-                              nlon_in,
-                              nlat_out,
-                              nlon_out,
-                              K,
-                              xP,
-                              roff_idx,
-                              row_idx,
-                              col_idx,
-                              val,
-                              igrad);
+        torch::Tensor igrad;
+        if (K == 1 || K_2 == 0) {
+            torch::Tensor xP = ograd.reshape({batch_size, nlat_in, nlon_in, nchan}).to(torch::kFloat32).contiguous();
+            igrad = torch::zeros(out_dims, xP.options());
+            s2_disco_bwd_dispatch(batch_size,
+                                  Co, //nchan,
+                                  nlat_in,
+                                  nlon_in,
+                                  nlat_out,
+                                  nlon_out,
+                                  K,
+                                  xP,
+                                  roff_idx,
+                                  row_idx,
+                                  col_idx,
+                                  val,
+                                  igrad);
+        } else {
+            // we need to split the psi tensors here:
+            ker_idx = torch::reshape(ker_idx, {K, -1});
+            row_idx = torch::reshape(row_idx, {K, -1});
+            col_idx = torch::reshape(col_idx, {K, -1});
+            val = torch::reshape(val, {K, -1});
+            int64_t nrows = (roff_idx.size(0) - 1) / K;
+
+            // now, perform computation on the first K_1 kernels:
+            auto ker_idx_1 = ker_idx.narrow(0, 0, K_1).reshape({-1}).contiguous();
+            auto row_idx_1 = row_idx.narrow(0, 0, K_1).reshape({-1}).contiguous();
+            auto col_idx_1 = col_idx.narrow(0, 0, K_1).reshape({-1}).contiguous();
+            auto val_1 = val.narrow(0, 0, K_1).reshape({-1}).contiguous();
+            auto roff_idx_1 = roff_idx.narrow(0, 0, nrows * K_1 + 1).contiguous();
+            auto xP_1 = ograd.narrow(-1, 0, K_1).reshape({batch_size, nlat_in, nlon_in, Co*K_1}).to(torch::kFloat32).contiguous();
+
+            igrad = torch::zeros(out_dims, xP_1.options());
+            s2_disco_bwd_dispatch(batch_size,
+                                  Co, //nchan,
+                                  nlat_in,
+                                  nlon_in,
+                                  nlat_out,
+                                  nlon_out,
+                                  K_1,
+                                  xP_1,
+                                  roff_idx_1,
+                                  row_idx_1,
+                                  col_idx_1,
+                                  val_1,
+                                  igrad);
+
+            // now, perform computation on the remaining K_2 kernels:
+            auto ker_idx_2 = ker_idx.narrow(0, K_1, K_2).reshape({-1}).contiguous() - K_1;
+            auto row_idx_2 = row_idx.narrow(0, K_1, K_2).reshape({-1}).contiguous();
+            auto col_idx_2 = col_idx.narrow(0, K_1, K_2).reshape({-1}).contiguous();
+            auto val_2 = val.narrow(0, K_1, K_2).reshape({-1}).contiguous();
+            auto roff_idx_2 = roff_idx.narrow(0, nrows * K_1, nrows * K_2 + 1).contiguous() - roff_idx_1.index({roff_idx_1.size(0) - 1});
+            auto xP_2 = ograd.narrow(-1, K_1, K_2).reshape({batch_size, nlat_in, nlon_in, Co*K_2}).to(torch::kFloat32).contiguous();
+
+            s2_disco_bwd_dispatch(batch_size,
+                                  Co, //nchan,
+                                  nlat_in,
+                                  nlon_in,
+                                  nlat_out,
+                                  nlon_out,
+                                  K_2,
+                                  xP_2,
+                                  roff_idx_2,
+                                  row_idx_2,
+                                  col_idx_2,
+                                  val_2,
+                                  igrad);
+        }
 
         // convert back to original dtype
         igrad = igrad.to(x_type);

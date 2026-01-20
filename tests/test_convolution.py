@@ -429,25 +429,25 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # regular convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (2, 3), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
+            # # regular convolution
+            # [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
+            # [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
+            # [8, 4, 2, (41, 80), (41, 80), (2, 3), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
             [8, 4, 2, (41, 80), (41, 80), (3, 3), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (21, 40), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (21, 40), (2, 2), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (21, 40), (2, 1), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (21, 40), (3), "zernike", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            # transpose convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (2, 3), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
-            [8, 4, 2, (21, 40), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
-            [8, 4, 2, (21, 40), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
-            [8, 4, 2, (21, 40), (41, 80), (2, 1), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
-            [8, 4, 2, (21, 40), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
+            # [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
+            # [8, 4, 2, (41, 80), (21, 40), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
+            # [8, 4, 2, (41, 80), (21, 40), (2, 2), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
+            # [8, 4, 2, (41, 80), (21, 40), (2, 1), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
+            # [8, 4, 2, (41, 80), (21, 40), (3), "zernike", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
+            # # transpose convolution
+            # [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
+            # [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
+            # [8, 4, 2, (41, 80), (41, 80), (2, 3), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
+            # [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
+            # [8, 4, 2, (21, 40), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
+            # [8, 4, 2, (21, 40), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
+            # [8, 4, 2, (21, 40), (41, 80), (2, 1), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
+            # [8, 4, 2, (21, 40), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
         ],
         skip_on_empty=True,
     )

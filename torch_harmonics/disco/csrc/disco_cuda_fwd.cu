@@ -889,7 +889,7 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
         int64_t Hi = inp.size(1);
         int64_t Wi = inp.size(2);
         int64_t C = inp.size(3);
-        int64_t nrows = roff_idx.size(0) - 1;
+        //int64_t nrows = roff_idx.size(0) - 1;
 
         // rename dimensions consistent with attention
         int64_t batch_size = B;
