@@ -576,7 +576,7 @@ static __device__ void processCSR_Kanyv_reg_d(const int wi,
         float *_y = shYOff[off % BDIM_X];
 
         // shy is allocated as ceil(nchans / (BDIM_X/K))*(BDIM_X/K)
-        // so we can just loop NLOC timss
+        // so we can just loop NLOC times
         #pragma unroll
         for(int i = 0; i < NLOC; i++) {
 
