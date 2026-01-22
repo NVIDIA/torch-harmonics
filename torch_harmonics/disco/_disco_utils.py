@@ -60,10 +60,11 @@ if optimized_kernels_is_available():
         inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
         row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
         kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-        itype = inp.dtype
-        inp = inp.to(torch.float32).contiguous()
+        #itype = inp.dtype
+        #inp = inp.to(torch.float32).contiguous()
+        inp = inp.contiguous()
         out = disco_kernels.forward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
-        out = out.to(itype)
+        #out = out.to(itype)
         return out
 
     # transpose
@@ -72,10 +73,11 @@ if optimized_kernels_is_available():
         inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
         row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
         kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-        itype = inp.dtype
-        inp = inp.to(torch.float32).contiguous()
+        #itype = inp.dtype
+        #inp = inp.to(torch.float32).contiguous()
+        inp = inp.contiguous()
         out = disco_kernels.backward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
-        out = out.to(itype)
+        #out = out.to(itype)
         return out
     
     # forward fake
@@ -107,11 +109,12 @@ def _disco_s2_contraction_bwd_optimized(ctx, grad_output):
     roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
     
     if ctx.needs_input_grad[0]:
-        gtype =	grad_output.dtype
-        grad_output = grad_output.to(torch.float32).contiguous()
+        #gtype =	grad_output.dtype
+        #grad_output = grad_output.to(torch.float32).contiguous()
+        grad_output = grad_output.contiguous()
         grad_input = disco_kernels.backward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
                                                     ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
-        grad_input = grad_input.to(gtype)
+        #grad_input = grad_input.to(gtype)
     else:
         grad_input = None
 
@@ -126,11 +129,12 @@ def _disco_s2_transpose_contraction_bwd_optimized(ctx, grad_output):
     roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
 
     if ctx.needs_input_grad[0]:
-        gtype = grad_output.dtype
-        grad_output = grad_output.to(torch.float32).contiguous()
+        #gtype = grad_output.dtype
+        #grad_output = grad_output.to(torch.float32).contiguous()
+        grad_output = grad_output.contiguous()
         grad_input = disco_kernels.forward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
                                                     ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
-        grad_input = grad_input.to(gtype)
+        #grad_input = grad_input.to(gtype)
     else:
         grad_input = None
 
@@ -183,17 +187,22 @@ def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: in
     # add a dummy dimension for nkernel and move the batch and channel dims to the end
     x = x.reshape(1, batch_size * n_chans, nlat_in, nlon_in).permute(0, 2, 3, 1)
     x = x.expand(kernel_size, -1, -1, -1)
+    xtype = x.dtype
+    x = x.to(torch.float32).contiguous()
 
     y = torch.zeros(nlon_out, kernel_size, nlat_out, batch_size * n_chans, device=x.device, dtype=x.dtype)
 
-    for pout in range(nlon_out):
-        # sparse contraction with psi
-        y[pout] = torch.bmm(psi, x.reshape(kernel_size, nlat_in * nlon_in, -1))
-        # we need to repeatedly roll the input tensor to faciliate the shifted multiplication
-        x = torch.roll(x, -pscale, dims=2)
+    with torch.amp.autocast(device_type=x.device.type, enabled=False):
+        for pout in range(nlon_out):
+            # sparse contraction with psi
+            y[pout] = torch.bmm(psi, x.reshape(kernel_size, nlat_in * nlon_in, -1))
+            # we need to repeatedly roll the input tensor to faciliate the shifted multiplication
+            x = torch.roll(x, -pscale, dims=2)
+
+    y = y.to(xtype)
 
     # reshape y back to expose the correct dimensions
-    y = y.permute(3, 1, 2, 0).reshape(batch_size, n_chans, kernel_size, nlat_out, nlon_out)
+    y = y.permute(3, 1, 2, 0).reshape(batch_size, n_chans, kernel_size, nlat_out, nlon_out).contiguous()
 
     return y
 
@@ -218,18 +227,25 @@ def _disco_s2_transpose_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nl
     # we only need to apoply the nlon stride here, since nlat stride is taken care of by the kernel
     x_ext[:, :, ::pscale, :] = x[...]
 
+    xtype = x_ext.dtype
+    x_ext = x_ext.to(torch.float32).contiguous()
+
     # create output tensor
     y = torch.zeros(kernel_size, nlon_out, nlat_out, batch_size * n_chans, device=x.device, dtype=x.dtype)
 
-    for pout in range(nlon_out):
-        # we need to repeatedly roll the input tensor to faciliate the shifted multiplication
-        # TODO: double-check why this has to happen first
-        x_ext = torch.roll(x_ext, -1, dims=2)
-        # sparse contraction with the modified psi
-        y[:, pout, :, :] = torch.bmm(psi, x_ext.reshape(kernel_size, nlat_in * nlon_out, -1))
+    with torch.amp.autocast(device_type=x.device.type, enabled=False):
+        for pout in range(nlon_out):
+            # we need to repeatedly roll the input tensor to faciliate the shifted multiplication
+            # TODO: double-check why this has to happen first
+            x_ext = torch.roll(x_ext, -1, dims=2)
+            # sparse contraction with the modified psi
+            y[:, pout, :, :] = torch.bmm(psi, x_ext.reshape(kernel_size, nlat_in * nlon_out, -1))
 
     # sum over the kernel dimension and reshape to the correct output size
-    y = y.sum(dim=0).permute(2, 1, 0).reshape(batch_size, n_chans, nlat_out, nlon_out).contiguous()
+    y = y.sum(dim=0).permute(2, 1, 0).reshape(batch_size, n_chans, nlat_out, nlon_out)
+    
+    # convert datatype back to input type
+    y = y.to(xtype).contiguous()
 
     return y
 
