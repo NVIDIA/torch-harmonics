@@ -336,24 +336,39 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
+            # fp32 tests
             # regular convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (2, 3), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (21, 40), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (21, 40), (2, 2), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (21, 40), (2, 1), "morlet", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (21, 40), (3), "zernike", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+            [8, 4, 2, (41, 80), (41, 80), (2, 3), "morlet", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+            [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+            [8, 4, 2, (41, 80), (21, 40), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+            [8, 4, 2, (41, 80), (21, 40), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+            [8, 4, 2, (41, 80), (21, 40), (2, 1), "morlet", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+            [8, 4, 2, (41, 80), (21, 40), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
             # transpose convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (2, 3), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
-            [8, 4, 2, (21, 40), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
-            [8, 4, 2, (21, 40), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
-            [8, 4, 2, (21, 40), (41, 80), (2, 1), "morlet", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
-            [8, 4, 2, (21, 40), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+            [8, 4, 2, (41, 80), (41, 80), (2, 3), "morlet", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+            [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+            [8, 4, 2, (21, 40), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+            [8, 4, 2, (21, 40), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+            [8, 4, 2, (21, 40), (41, 80), (2, 1), "morlet", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+            [8, 4, 2, (21, 40), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+            # fp16 tests
+            # regular convolution
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, 1e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float16, False, 1e-2, 1e-2],
+            # transpose convolution
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, True, 1e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float16, True, 1e-2, 1e-2],
+            # bf16 tests
+            # regular convolution
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, 1e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.bfloat16, False, 1e-2, 1e-2],
+            # transpose convolution
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, 1e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.bfloat16, True, 1e-2, 1e-2],
         ],
         skip_on_empty=True,
     )
@@ -370,16 +385,17 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         basis_norm_mode,
         grid_in,
         grid_out,
+        amp_dtype,
         transpose,
         atol,
         rtol,
-        verbose=False,
+        verbose=True,
     ):
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
 
-        if verbose:
-            print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
+        if (self.device.type == "cpu") and (amp_dtype != torch.float32):
+            raise unittest.SkipTest("skipping test because CPU does not support non-float32 autocast")
 
         set_seed(333)
 
@@ -434,14 +450,16 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # FWD and BWD pass
         inp.requires_grad = True
-        out_naive = conv_naive(inp)
+        with torch.amp.autocast(device_type=self.device.type, dtype=amp_dtype):
+            out_naive = conv_naive(inp)
         grad_input = torch.randn_like(out_naive)
         out_naive.backward(grad_input)
         inp_grad_naive = inp.grad.clone()
 
         # perform the reference computation
         inp.grad = None
-        out_opt = conv_opt(inp)
+        with torch.amp.autocast(device_type=self.device.type, dtype=amp_dtype):
+            out_opt = conv_opt(inp)
         out_opt.backward(grad_input)
         inp_grad_opt = inp.grad.clone()
 

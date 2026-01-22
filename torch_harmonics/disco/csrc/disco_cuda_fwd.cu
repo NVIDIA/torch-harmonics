@@ -31,13 +31,16 @@
 #include "disco.h"
 #include "disco_cuda.cuh"
 
+#include <ATen/Dispatch.h>
+#include <ATen/OpMathType.h>
+
 namespace disco_kernels {
 
-template <int BDIM_X, int ELXTH, typename REAL_T>
+template <int BDIM_X, int ELXTH, typename STORAGE_T, typename COMPUTE_T>
 __device__ void disco_fwd_d(const int Hi, const int Wi, const int K, const int Ho, const int Wo, const int pscale,
                             const int64_t *__restrict__ roff, const int64_t *__restrict__ kers,
                             const int64_t *__restrict__ rows, const int64_t *__restrict__ cols,
-                            const REAL_T *__restrict__ vals, const REAL_T *__restrict__ inp, REAL_T *__restrict__ out)
+                            const COMPUTE_T *__restrict__ vals, const STORAGE_T *__restrict__ inp, STORAGE_T *__restrict__ out)
 {
 
     const int tid = threadIdx.x;
@@ -54,12 +57,12 @@ __device__ void disco_fwd_d(const int Hi, const int Wi, const int K, const int H
     inp += bidy * Hi * Wi;
     out += bidy * K * Ho * Wo + ker * Ho * Wo + row * Wo;
 
-    REAL_T __reg[ELXTH] = {0};
+    COMPUTE_T __reg[ELXTH] = {0};
 
     // align to larger supported fp type
     extern __shared__ __align__(
-        sizeof(double)) unsigned char __sh_ptr[]; // REAL_T __sh[2*Wi + ppscale*(BDIM_X*ELXTH - Wo)]
-    REAL_T *__sh = reinterpret_cast<REAL_T *>(__sh_ptr);
+        sizeof(double)) unsigned char __sh_ptr[]; // STORAGE_T __sh[2*Wi + ppscale*(BDIM_X*ELXTH - Wo)]
+    STORAGE_T *__sh = reinterpret_cast<STORAGE_T *>(__sh_ptr);
 
     int col_prev = cols[soff];
 
@@ -68,7 +71,7 @@ __device__ void disco_fwd_d(const int Hi, const int Wi, const int K, const int H
 
     // copy current inp row in shmem
     for (int i = tid; i < Wi; i += BDIM_X) {
-        const REAL_T v = inp[h_prev * Wi + i];
+        const STORAGE_T v = inp[h_prev * Wi + i];
         __sh[i] = v;
         __sh[Wi + i] = v;
     }
@@ -79,7 +82,7 @@ __device__ void disco_fwd_d(const int Hi, const int Wi, const int K, const int H
     for (int64_t nz = soff; nz < eoff; nz++) {
 
         const int col = cols[nz];
-        const REAL_T val = vals[nz];
+        const COMPUTE_T val = vals[nz];
 
         // if we are processing a nz with a col value
         // leading to a new row of inp then copy it
@@ -94,7 +97,7 @@ __device__ void disco_fwd_d(const int Hi, const int Wi, const int K, const int H
 
             __syncthreads();
             for (int i = tid; i < Wi; i += BDIM_X) {
-                const REAL_T v = inp[h_prev * Wi + i];
+                const STORAGE_T v = inp[h_prev * Wi + i];
                 __sh[i] = v;
                 __sh[Wi + i] = v;
             }
@@ -120,7 +123,7 @@ __device__ void disco_fwd_d(const int Hi, const int Wi, const int K, const int H
             // also, to avoid the conditional, sh can be extended to
             // cover the maximum location accessed during this loop
             //
-            // REAL_T __sh[2*Wi + ppscale*NUM_REM]
+            // STORAGE_T __sh[2*Wi + ppscale*NUM_REM]
             //
             //   Wi + (Wi/Wo)*BDIM_X*ELXTH = (since BDIM_X*ELXTH >= Wo) =
             // = Wi + (Wi/Wo)*(Wo + (BDIM_X*ELXTH - Wo)) =
@@ -130,7 +133,7 @@ __device__ void disco_fwd_d(const int Hi, const int Wi, const int K, const int H
 
             const int wpp = w + pscale * pp;
 
-            __reg[i] += val * __sh[wpp];
+            __reg[i] += val * static_cast<COMPUTE_T>(__sh[wpp]);
         }
     }
 
@@ -140,33 +143,33 @@ __device__ void disco_fwd_d(const int Hi, const int Wi, const int K, const int H
         const int pp = i * BDIM_X + tid;
         if (pp >= Wo) break;
 
-        out[pp] = __reg[i];
+        out[pp] = static_cast<STORAGE_T>(__reg[i]);
     }
 
     return;
 }
 
-template <int BDIM_X, int ELXTH, typename REAL_T>
+template <int BDIM_X, int ELXTH, typename STORAGE_T, typename COMPUTE_T>
 __global__
     __launch_bounds__(BDIM_X) void disco_fwd_blk_k(const int Hi, const int Wi, const int K, const int Ho, const int Wo,
                                                    const int pscale, const int64_t *__restrict__ roff,
                                                    const int64_t *__restrict__ kers, const int64_t *__restrict__ rows,
-                                                   const int64_t *__restrict__ cols, const REAL_T *__restrict__ vals,
-                                                   const REAL_T *__restrict__ inp, REAL_T *__restrict__ out)
+                                                   const int64_t *__restrict__ cols, const COMPUTE_T *__restrict__ vals,
+                                                   const STORAGE_T *__restrict__ inp, STORAGE_T *__restrict__ out)
 {
 
-    disco_fwd_d<BDIM_X, ELXTH>(Hi, Wi, K, Ho, Wo, pscale, roff, kers, rows, cols, vals, inp, out);
+    disco_fwd_d<BDIM_X, ELXTH, STORAGE_T, COMPUTE_T>(Hi, Wi, K, Ho, Wo, pscale, roff, kers, rows, cols, vals, inp, out);
 
     return;
 }
 
-template <int NTH, int ELXTH, typename REAL_T>
+template <int NTH, int ELXTH, typename STORAGE_T, typename COMPUTE_T>
 static void launch_kernel(int BC, int Hi, int Wi, int K, int Ho, int Wo, int64_t nrows, int64_t *roff_d, int64_t *ker_d,
-                          int64_t *row_d, int64_t *col_d, REAL_T *val_d, REAL_T *inp_d, REAL_T *out_d,
+                          int64_t *row_d, int64_t *col_d, COMPUTE_T *val_d, STORAGE_T *inp_d, STORAGE_T *out_d,
                           cudaStream_t stream)
 {
 
-    static_assert(sizeof(REAL_T) == 2 || sizeof(REAL_T) == 4 || sizeof(REAL_T) == 8);
+    static_assert(sizeof(STORAGE_T) == 2 || sizeof(STORAGE_T) == 4 || sizeof(STORAGE_T) == 8);
 
     if constexpr (ELXTH <= ELXTH_MAX) {
         if (NTH * ELXTH >= Wo) {
@@ -175,11 +178,12 @@ static void launch_kernel(int BC, int Hi, int Wi, int K, int Ho, int Wo, int64_t
             const int pscale = Wi / Wo;
             size_t shmem = sizeof(*out_d) * (Wi * 2 + pscale * (NTH * ELXTH - Wo));
 
-            disco_fwd_blk_k<NTH, ELXTH><<<grid, NTH, shmem, stream>>>(Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d, row_d,
+            disco_fwd_blk_k<NTH, ELXTH, STORAGE_T, COMPUTE_T><<<grid, NTH, shmem, stream>>>(Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d, row_d,
                                                                       col_d, val_d, inp_d, out_d);
         } else {
-            launch_kernel<NTH, ELXTH + 1>(BC, Hi, Wi, K, Ho, Wo, nrows, roff_d, ker_d, row_d, col_d, val_d, inp_d,
-                                          out_d, stream);
+            launch_kernel<NTH, ELXTH + 1, STORAGE_T, COMPUTE_T>(
+                BC, Hi, Wi, K, Ho, Wo, nrows, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d, stream
+            );
         }
     }
     return;
@@ -218,45 +222,55 @@ static void launch_kernel(int BC, int Hi, int Wi, int K, int Ho, int Wo, int64_t
 
         // pick the correct launch config
         if (Wo <= 64 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
-                                           launch_kernel<64, 1, scalar_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
-                                       }));
+            AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, inp.scalar_type(), "disco_forward_cuda", ([&] {
+                using storage_t = scalar_t;
+                using compute_t = typename at::opmath_type<storage_t>;
+                launch_kernel<64, 1, storage_t, compute_t>(
+                    BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                    ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                    col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
+                    inp.data_ptr<storage_t>(), out.data_ptr<storage_t>(), stream);
+            }));
         } else if (Wo <= 128 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
-                                           launch_kernel<128, (ELXTH_MAX / 2) + 1, scalar_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
-                                       }));
+            AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, inp.scalar_type(), "disco_forward_cuda", ([&] {
+                using storage_t = scalar_t;
+                using compute_t = typename at::opmath_type<storage_t>;
+                launch_kernel<128, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
+                    BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                    ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                    col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
+                    inp.data_ptr<storage_t>(), out.data_ptr<storage_t>(), stream);
+            }));
         } else if (Wo <= 256 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
-                                           launch_kernel<256, (ELXTH_MAX / 2) + 1, scalar_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
-                                       }));
+            AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, inp.scalar_type(), "disco_forward_cuda", ([&] {
+                using storage_t = scalar_t;
+                using compute_t = typename at::opmath_type<storage_t>;
+                launch_kernel<256, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
+                    BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                    ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                    col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
+                    inp.data_ptr<storage_t>(), out.data_ptr<storage_t>(), stream);
+            }));
         } else if (Wo <= 512 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
-                                           launch_kernel<512, (ELXTH_MAX / 2) + 1, scalar_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
-                                       }));
+            AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, inp.scalar_type(), "disco_forward_cuda", ([&] {
+                using storage_t = scalar_t;
+                using compute_t = typename at::opmath_type<storage_t>;
+                launch_kernel<512, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
+                    BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                    ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                    col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
+                    inp.data_ptr<storage_t>(), out.data_ptr<storage_t>(), stream);
+            }));
         } else if (Wo <= 1024 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cuda", ([&] {
-                                           launch_kernel<1024, (ELXTH_MAX / 2) + 1, scalar_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<scalar_t>(),
-                                               inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>(), stream);
-                                       }));
+            AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, inp.scalar_type(), "disco_forward_cuda", ([&] {
+                using storage_t = scalar_t;
+                using compute_t = typename at::opmath_type<storage_t>;
+                launch_kernel<1024, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
+                    BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                    ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                    col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
+                    inp.data_ptr<storage_t>(), out.data_ptr<storage_t>(), stream);
+            }));
         } else {
             fprintf(stderr, "%s:%d: error, unsupported Wo value (%ld), max supported is %d\n", __FILE__, __LINE__, Wo,
                     1024 * ELXTH_MAX);
