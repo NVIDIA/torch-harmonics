@@ -29,7 +29,6 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os
 import unittest
 from parameterized import parameterized, parameterized_class
 
@@ -52,17 +51,29 @@ class TestPermutation(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [8, 8, 16, 32, "0231"], 
-            [8, 1, 16, 32, "0231"], 
-            [1, 8, 16, 32, "0231"],
-            [8, 8, 16, 32, "0312"], 
-            [8, 1, 16, 32, "0312"], 
-            [1, 8, 16, 32, "0312"],
+            [8, 8, 16, 32, "0231", torch.float32],
+            [8, 8, 16, 32, "0231", torch.float16],
+            [8, 8, 16, 32, "0231", torch.bfloat16],
+            [8, 1, 16, 32, "0231", torch.float32],
+            [8, 1, 16, 32, "0231", torch.float16],
+            [8, 1, 16, 32, "0231", torch.bfloat16],
+            [1, 8, 16, 32, "0231", torch.float32],
+            [1, 8, 16, 32, "0231", torch.float16],
+            [1, 8, 16, 32, "0231", torch.bfloat16],
+            [8, 8, 16, 32, "0312", torch.float32],
+            [8, 8, 16, 32, "0312", torch.float16],
+            [8, 8, 16, 32, "0312", torch.bfloat16],
+            [8, 1, 16, 32, "0312", torch.float32],
+            [8, 1, 16, 32, "0312", torch.float16],
+            [8, 1, 16, 32, "0312", torch.bfloat16],
+            [1, 8, 16, 32, "0312", torch.float32],
+            [1, 8, 16, 32, "0312", torch.float16],
+            [1, 8, 16, 32, "0312", torch.bfloat16],
         ],
         skip_on_empty=True,
     )
     def test_permutation(
-        self, batch_size, channels, nlat, nlon, mode
+        self, batch_size, channels, nlat, nlon, mode, amp_dtype
     ):
         # create input
         if mode == "0231":
@@ -76,8 +87,9 @@ class TestPermutation(unittest.TestCase):
         inp.requires_grad = True
 
         # forward test
-        out_opt = permute_fn(inp)
-        out_naive = inp.permute(*permute_shape).contiguous().clone()
+        with torch.autocast(device_type="cuda", dtype=amp_dtype):
+            out_opt = permute_fn(inp)
+            out_naive = inp.permute(*permute_shape).contiguous().clone()
         self.assertTrue(torch.allclose(out_opt, out_naive))
 
         # backward test

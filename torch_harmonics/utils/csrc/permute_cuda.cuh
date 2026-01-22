@@ -32,8 +32,15 @@
 
 #include <torch/torch.h>
 #include <ATen/ATen.h>
+
+// include 16 bit datatypes
+//#include <c10/util/Half.h>
+//#include <c10/util/BFloat16.h>
+
+// include cuda utils
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDAUtils.h>
+
 
 #define WARP_SIZE (32)
 

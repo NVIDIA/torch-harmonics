@@ -64,11 +64,12 @@ def get_compile_args(module_name):
     if openmp_mode:
         cpp_extra_flags.append("-fopenmp")
 
-    nvcc_extra_flags = []
+    #nvcc_extra_flags = ["-DCUDA_HAS_FP16=1", "-DATEN_ENABLE_BFLOAT16"]
+    nvcc_extra_flags = ["-DATEN_ENABLE_BFLOAT16"]
     if profile_mode:
         nvcc_extra_flags.append("-lineinfo")
         nvcc_extra_flags.append("-Xptxas=-v")
-        
+
     if debug_mode:
         print(f"WARNING: Compiling {module_name} with debugging flags")
         return {

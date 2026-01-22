@@ -38,11 +38,18 @@
 #include "cudamacro.h"
 #include "permute_cuda.cuh"
 
+// dispatch utils
+#include <ATen/Dispatch.h>
+//#include <c10/util/string_utils.h>
+
+
 // Define the missing macros
 #define TRANSP_WARPS_X_TILE_GENERIC (32)
 #define TRANSP_WARPS_X_TILE_SM100    (4)
 
 namespace utility_kernels {
+
+using at::toString;
 
     // BEGIN - 4D tensor permutation kernels and functions
 __global__ void empty_k() {}
@@ -65,12 +72,12 @@ torch::Tensor permute_4D_to0231(torch::Tensor src) {
 
     // to be further specialized for additional archs, if necessary
     if (ptxv < 100) {
-        AT_DISPATCH_FLOATING_TYPES(srcc.scalar_type(), "permute_to0231_k_tile_generic", ([&] {
+        AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, srcc.scalar_type(), "permute_to0231_k_tile_generic", ([&] {
             launch_permute_to0231<TRANSP_WARPS_X_TILE_GENERIC, scalar_t>(srcc, dst);
         }));
         CHECK_ERROR("permute_to0231_k_tile_generic");
     } else {
-        AT_DISPATCH_FLOATING_TYPES(srcc.scalar_type(), "permute_to0231_k_tile_sm100", ([&] {
+        AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, srcc.scalar_type(), "permute_to0231_k_tile_sm100", ([&] {
             launch_permute_to0231<TRANSP_WARPS_X_TILE_SM100, scalar_t>(srcc, dst);
         }));
         CHECK_ERROR("permute_to0231_k_tile_sm100");
@@ -91,12 +98,12 @@ torch::Tensor permute_4D_to0312(torch::Tensor src) {
 
     // to be further specialized for additional archs, if necessary
     if (ptxv < 100) {
-        AT_DISPATCH_FLOATING_TYPES(srcc.scalar_type(), "permute_to0312_k_tile_generic", ([&] {
+        AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, srcc.scalar_type(), "permute_to0312_k_tile_generic", ([&] {
             launch_permute_to0312<TRANSP_WARPS_X_TILE_GENERIC, scalar_t>(srcc, dst);
         }));
         CHECK_ERROR("permute_to0312_k_tile_generic");
     } else {
-        AT_DISPATCH_FLOATING_TYPES(srcc.scalar_type(), "permute_to0312_k_tile_sm100", ([&] {
+        AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, srcc.scalar_type(), "permute_to0312_k_tile_sm100", ([&] {
             launch_permute_to0312<TRANSP_WARPS_X_TILE_SM100, scalar_t>(srcc, dst);
         }));
         CHECK_ERROR("permute_to0312_k_tile_sm100");
