@@ -344,10 +344,10 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         x_ref_grad = x_ref.grad.clone()
 
         # compare results
-        self.assertTrue(compare_tensors(f"output", y, y_ref, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors(f"output", y.to(y_ref.dtype), y_ref, atol=atol, rtol=rtol, verbose=verbose))
 
         # compare
-        self.assertTrue(compare_tensors(f"input grad", x_grad, x_ref_grad, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors(f"input grad", x_grad.to(x_ref_grad.dtype), x_ref_grad, atol=atol, rtol=rtol, verbose=verbose))
         self.assertTrue(compare_tensors(f"weight grad", conv.weight.grad, w_ref.grad, atol=atol, rtol=rtol, verbose=verbose))
 
 
@@ -355,23 +355,23 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         [
             # fp32 tests
             # regular convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 5e-4],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 5e-4],
-            [8, 4, 2, (41, 80), (41, 80), (2, 3), "morlet", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 5e-4],
-            [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 5e-4],
-            [8, 4, 2, (41, 80), (21, 40), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 5e-4],
-            [8, 4, 2, (41, 80), (21, 40), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 5e-4],
-            [8, 4, 2, (41, 80), (21, 40), (2, 1), "morlet", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 5e-4],
-            [8, 4, 2, (41, 80), (21, 40), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 5e-4],
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 5e-4, 1e-4],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float32, False, 5e-4, 1e-4],
+            [8, 4, 2, (41, 80), (41, 80), (2, 3), "morlet", "mean", "equiangular", "equiangular", torch.float32, False, 5e-4, 1e-4],
+            [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, False, 5e-4, 1e-4],
+            [8, 4, 2, (41, 80), (21, 40), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 5e-4, 1e-4],
+            [8, 4, 2, (41, 80), (21, 40), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float32, False, 5e-4, 1e-4],
+            [8, 4, 2, (41, 80), (21, 40), (2, 1), "morlet", "mean", "equiangular", "equiangular", torch.float32, False, 5e-4, 1e-4],
+            [8, 4, 2, (41, 80), (21, 40), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, False, 5e-4, 1e-4],
             # transpose convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 5e-4],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 5e-4],
-            [8, 4, 2, (41, 80), (41, 80), (2, 3), "morlet", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 5e-4],
-            [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 5e-4],
-            [8, 4, 2, (21, 40), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 5e-4],
-            [8, 4, 2, (21, 40), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 5e-4],
-            [8, 4, 2, (21, 40), (41, 80), (2, 1), "morlet", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 5e-4],
-            [8, 4, 2, (21, 40), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 5e-4],
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 5e-4, 1e-4],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float32, True, 5e-4, 1e-4],
+            [8, 4, 2, (41, 80), (41, 80), (2, 3), "morlet", "mean", "equiangular", "equiangular", torch.float32, True, 5e-4, 1e-4],
+            [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, True, 5e-4, 1e-4],
+            [8, 4, 2, (21, 40), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 5e-4, 1e-4],
+            [8, 4, 2, (21, 40), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float32, True, 5e-4, 1e-4],
+            [8, 4, 2, (21, 40), (41, 80), (2, 1), "morlet", "mean", "equiangular", "equiangular", torch.float32, True, 5e-4, 1e-4],
+            [8, 4, 2, (21, 40), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, True, 5e-4, 1e-4],
             # fp16 tests
             # regular convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, 1e-2, 1e-2],
