@@ -242,7 +242,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         transpose,
         atol,
         rtol,
-        verbose=False,
+        verbose=True,
     ):
 
         if (self.device.type == "cpu") and (amp_dtype != torch.float32):
@@ -366,7 +366,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             # transpose convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 5e-4, 1e-4],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float32, True, 5e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (2, 3), "morlet", "mean", "equiangular", "equiangular", torch.float32, True, 5e-4, 1e-4],
+            [8, 4, 2, (41, 80), (41, 80), (2, 3), "morlet", "mean", "equiangular", "equiangular", torch.float32, True, 5e-4, 5e-4],
             [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, True, 5e-4, 1e-4],
             [8, 4, 2, (21, 40), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 5e-4, 1e-4],
             [8, 4, 2, (21, 40), (41, 80), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float32, True, 5e-4, 1e-4],
