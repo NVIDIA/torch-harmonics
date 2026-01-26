@@ -249,10 +249,11 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             raise unittest.SkipTest("skipping test because CPU does not support non-float32 autocast")
 
         # disable tf32
-        torch.backends.cuda.matmul.fp32_precision = "ieee"
-        torch.backends.cudnn.fp32_precision = "ieee"
-        torch.backends.cudnn.conv.fp32_precision = "ieee"
-        torch.backends.cudnn.rnn.fp32_precision = "ieee"
+        if torch.cuda.is_available():
+            torch.backends.cuda.matmul.fp32_precision = "ieee"
+            torch.backends.cudnn.fp32_precision = "ieee"
+            torch.backends.cudnn.conv.fp32_precision = "ieee"
+            torch.backends.cudnn.rnn.fp32_precision = "ieee"
 
         # set seed
         set_seed(333)
@@ -423,10 +424,11 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             raise unittest.SkipTest("skipping test because CPU does not support non-float32 autocast")
 
         # disable tf32
-        torch.backends.cuda.matmul.fp32_precision = "ieee"
-        torch.backends.cudnn.fp32_precision = "ieee"
-        torch.backends.cudnn.conv.fp32_precision = "ieee"
-        torch.backends.cudnn.rnn.fp32_precision = "ieee"
+        if torch.cuda.is_available():
+            torch.backends.cuda.matmul.fp32_precision = "ieee"
+            torch.backends.cudnn.fp32_precision = "ieee"
+            torch.backends.cudnn.conv.fp32_precision = "ieee"
+            torch.backends.cudnn.rnn.fp32_precision = "ieee"
 
         # set seed
         set_seed(333)
