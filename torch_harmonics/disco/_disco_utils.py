@@ -30,7 +30,6 @@
 #
 
 from typing import Optional
-import math
 
 import torch
 from disco_helpers import optimized_kernels_is_available
@@ -60,11 +59,10 @@ if optimized_kernels_is_available():
         inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor, 
         row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
         kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-        #itype = inp.dtype
-        #inp = inp.to(torch.float32).contiguous()
-        inp = inp.contiguous()
+        itype = inp.dtype
+        inp = inp.to(torch.float32).contiguous()
         out = disco_kernels.forward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
-        #out = out.to(itype)
+        out = out.to(itype)
         return out
 
     # transpose
@@ -73,11 +71,10 @@ if optimized_kernels_is_available():
         inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
         row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
         kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-        #itype = inp.dtype
-        #inp = inp.to(torch.float32).contiguous()
-        inp = inp.contiguous()
+        itype = inp.dtype
+        inp = inp.to(torch.float32).contiguous()
         out = disco_kernels.backward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
-        #out = out.to(itype)
+        out = out.to(itype)
         return out
     
     # forward fake
@@ -109,12 +106,11 @@ def _disco_s2_contraction_bwd_optimized(ctx, grad_output):
     roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
     
     if ctx.needs_input_grad[0]:
-        #gtype =	grad_output.dtype
-        #grad_output = grad_output.to(torch.float32).contiguous()
-        grad_output = grad_output.contiguous()
+        gtype =	grad_output.dtype
+        grad_output = grad_output.to(torch.float32).contiguous()
         grad_input = disco_kernels.backward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
                                                     ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
-        #grad_input = grad_input.to(gtype)
+        grad_input = grad_input.to(gtype)
     else:
         grad_input = None
 
@@ -129,12 +125,11 @@ def _disco_s2_transpose_contraction_bwd_optimized(ctx, grad_output):
     roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
 
     if ctx.needs_input_grad[0]:
-        #gtype = grad_output.dtype
-        #grad_output = grad_output.to(torch.float32).contiguous()
-        grad_output = grad_output.contiguous()
+        gtype = grad_output.dtype
+        grad_output = grad_output.to(torch.float32).contiguous()
         grad_input = disco_kernels.forward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
                                                     ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
-        #grad_input = grad_input.to(gtype)
+        grad_input = grad_input.to(gtype)
     else:
         grad_input = None
 
