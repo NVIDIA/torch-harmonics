@@ -442,9 +442,8 @@ class _GatherFromCopyToPolarRegion(torch.autograd.Function):
             return _reduce_scatter(grad_output, ctx.dim, use_fp32=True, group=polar_group()), None, None
         else:
             return grad_output, None, None
-        
 
-        
+
 def copy_to_polar_region(input_):
     return _CopyToPolarRegion.apply(input_)
 
@@ -457,14 +456,18 @@ def reduce_from_polar_region(input_):
 def reduce_from_azimuth_region(input_):
     return _ReduceFromAzimuthRegion.apply(input_)
 
+@torch.compiler.disable()
 def scatter_to_polar_region(input_, dim_):
     return _ScatterToPolarRegion.apply(input_, dim_)
 
+@torch.compiler.disable()
 def gather_from_polar_region(input_, dim_, shapes_):
     return _GatherFromPolarRegion.apply(input_, dim_, shapes_)
 
+@torch.compiler.disable()
 def reduce_from_scatter_to_polar_region(input_, dim_):
     return _ReduceFromScatterToPolarRegion.apply(input_, dim_)
 
+@torch.compiler.disable()
 def gather_from_copy_to_polar_region(input_, dim_, shapes_):
     return _GatherFromCopyToPolarRegion.apply(input_, dim_, shapes_)
