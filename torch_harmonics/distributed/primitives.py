@@ -98,7 +98,7 @@ def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False)
     return x_recv, dim0_split_sizes, req
 
 
-class distributed_transpose_azimuth(torch.autograd.Function):
+class _DistributeTransposeAzimuth(torch.autograd.Function):
 
     @staticmethod
     @custom_fwd(device_type="cuda")
@@ -124,16 +124,16 @@ class distributed_transpose_azimuth(torch.autograd.Function):
         return gi, None, None
 
     
-class distributed_transpose_polar(torch.autograd.Function):
+class _DistributeTransposePolar(torch.autograd.Function):
 
     @staticmethod
     @custom_fwd(device_type="cuda")
-    def forward(ctx, x, dim, dim1_split_sizes):
+    def forward(ctx, x, dims, dim1_split_sizes):
 
         # WAR for a potential contig check torch bug for channels last contig tensors 
-        xlist, dim0_split_sizes, _ = _transpose(x, dim[0], dim[1], dim1_split_sizes, group=polar_group())
-        x = torch.cat(xlist, dim=dim[1])
-        ctx.dim = dim
+        xlist, dim0_split_sizes, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=polar_group())
+        x = torch.cat(xlist, dim=dims[1])
+        ctx.dims = dims
         ctx.dim0_split_sizes = dim0_split_sizes
         return x
 
@@ -141,11 +141,11 @@ class distributed_transpose_polar(torch.autograd.Function):
     @custom_bwd(device_type="cuda")
     def backward(ctx, go):
 
-        dim = ctx.dim
+        dims = ctx.dims
         dim0_split_sizes = ctx.dim0_split_sizes
         # WAR for a potential contig check torch bug for channels last contig tensors 
-        gilist, _, _ = _transpose(go, dim[1], dim[0], dim0_split_sizes, group=polar_group())
-        gi = torch.cat(gilist, dim=dim[0])
+        gilist, _, _ = _transpose(go, dims[1], dims[0], dim0_split_sizes, group=polar_group())
+        gi = torch.cat(gilist, dim=dims[0])
         return gi, None, None
 
     
@@ -443,6 +443,13 @@ class _GatherFromCopyToPolarRegion(torch.autograd.Function):
         else:
             return grad_output, None, None
 
+@torch.compiler.disable()
+def distributed_transpose_azimuth(input_, dims_, shapes_):
+    return _DistributeTransposeAzimuth.apply(input_, dims_, shapes_)
+
+@torch.compiler.disable()
+def distributed_transpose_polar(input_, dims_, shapes_):
+    return _DistributeTransposePolar.apply(input_, dims_, shapes_)
 
 def copy_to_polar_region(input_):
     return _CopyToPolarRegion.apply(input_)
