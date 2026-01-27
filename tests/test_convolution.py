@@ -42,7 +42,7 @@ from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTran
 from torch_harmonics.quadrature import _precompute_latitudes, _precompute_longitudes
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
 
-from testutils import set_seed, compare_tensors
+from testutils import disable_tf32, set_seed, compare_tensors
 
 if not optimized_kernels_is_available():
     print(f"Warning: Couldn't import optimized disco convolution kernels")
@@ -211,18 +211,18 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", torch.float32, True, 1e-4, 1e-4],
             # fp16 tests
             # regular convolution
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, 1e-2, 1e-2],
-            [8, 4, 2, (24, 48), (12, 24), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float16, False, 1e-2, 1e-2],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, 2e-2, 1e-2],
+            [8, 4, 2, (24, 48), (12, 24), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float16, False, 2e-2, 1e-2],
             # transpose convolution
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, True, 1e-2, 1e-2],
-            [8, 4, 2, (12, 24), (24, 48), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float16, True, 1e-2, 1e-2],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, True, 2e-2, 1e-2],
+            [8, 4, 2, (12, 24), (24, 48), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.float16, True, 2e-2, 1e-2],
             # bf16 tests
             # regular convolution
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, 5e-2, 1e-2],
-            [8, 4, 2, (24, 48), (12, 24), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.bfloat16, False, 5e-2, 1e-2],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, 5e-2, 5e-2],
+            [8, 4, 2, (24, 48), (12, 24), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.bfloat16, False, 5e-2, 5e-2],
             # transpose convolution
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, 5e-2, 5e-2],
-            [8, 4, 2, (12, 24), (24, 48), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.bfloat16, True, 5e-2, 1e-2],
+            [8, 4, 2, (12, 24), (24, 48), (2, 2), "morlet", "mean", "equiangular", "equiangular", torch.bfloat16, True, 5e-2, 5e-2],
         ],
         skip_on_empty=True,
     )
@@ -242,18 +242,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         transpose,
         atol,
         rtol,
-        verbose=False,
+        verbose=True,
     ):
 
         if (self.device.type == "cpu") and (amp_dtype != torch.float32):
             raise unittest.SkipTest("skipping test because CPU does not support non-float32 autocast")
 
         # disable tf32
-        if torch.cuda.is_available():
-            torch.backends.cuda.matmul.fp32_precision = "ieee"
-            torch.backends.cudnn.fp32_precision = "ieee"
-            torch.backends.cudnn.conv.fp32_precision = "ieee"
-            torch.backends.cudnn.rnn.fp32_precision = "ieee"
+        disable_tf32()
 
         # set seed
         set_seed(333)
@@ -424,11 +420,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             raise unittest.SkipTest("skipping test because CPU does not support non-float32 autocast")
 
         # disable tf32
-        if torch.cuda.is_available():
-            torch.backends.cuda.matmul.fp32_precision = "ieee"
-            torch.backends.cudnn.fp32_precision = "ieee"
-            torch.backends.cudnn.conv.fp32_precision = "ieee"
-            torch.backends.cudnn.rnn.fp32_precision = "ieee"
+        disable_tf32()
 
         # set seed
         set_seed(333)

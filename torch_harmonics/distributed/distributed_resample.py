@@ -219,7 +219,7 @@ class DistributedResampleS2(nn.Module):
         # h and w is split. First we make w local by transposing into channel dim
         if self.comm_size_polar > 1:
             channels_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
-            x = distributed_transpose_polar.apply(x, (-3, -2), self.lat_in_shapes)
+            x = distributed_transpose_polar(x, (-3, -2), self.lat_in_shapes)
 
         # expand poles if requested
         if self.expand_poles:
@@ -230,18 +230,18 @@ class DistributedResampleS2(nn.Module):
 
         # now, transpose back
         if self.comm_size_polar > 1:
-            x = distributed_transpose_polar.apply(x, (-2, -3), channels_shapes)
+            x = distributed_transpose_polar(x, (-2, -3), channels_shapes)
 
         # now, transpose in w:
         if self.comm_size_azimuth > 1:
             channels_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
-            x = distributed_transpose_azimuth.apply(x, (-3, -1), self.lon_in_shapes)
+            x = distributed_transpose_azimuth(x, (-3, -1), self.lon_in_shapes)
 
         # upscale
         x = self._upscale_longitudes(x)
 
         # transpose back
         if self.comm_size_azimuth > 1:
-            x = distributed_transpose_azimuth.apply(x, (-1, -3), channels_shapes)
+            x = distributed_transpose_azimuth(x, (-1, -3), channels_shapes)
 
         return x

@@ -141,7 +141,7 @@ class DistributedRealSHT(nn.Module):
 
         # h and w is split. First we make w local by transposing into channel dim
         if self.comm_size_azimuth > 1:
-            x = distributed_transpose_azimuth.apply(x, (-3, -1), self.lon_shapes)
+            x = distributed_transpose_azimuth(x, (-3, -1), self.lon_shapes)
 
         # apply real fft in the longitudinal direction: make sure to truncate to nlon
         x = 2.0 * torch.pi * torch.fft.rfft(x, n=self.nlon, dim=-1, norm="forward")
@@ -152,11 +152,11 @@ class DistributedRealSHT(nn.Module):
         # transpose: after this, m is split and c is local
         if self.comm_size_azimuth > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
-            x = distributed_transpose_azimuth.apply(x, (-1, -3), chan_shapes)
+            x = distributed_transpose_azimuth(x, (-1, -3), chan_shapes)
 
         # transpose: after this, c is split and h is local
         if self.comm_size_polar > 1:
-            x = distributed_transpose_polar.apply(x, (-3, -2), self.lat_shapes)
+            x = distributed_transpose_polar(x, (-3, -2), self.lat_shapes)
 
         # do the Legendre-Gauss quadrature
         x = torch.view_as_real(x)
@@ -175,7 +175,7 @@ class DistributedRealSHT(nn.Module):
         # transpose: after this, l is split and c is local
         if self.comm_size_polar	> 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
-            x = distributed_transpose_polar.apply(x, (-2, -3), chan_shapes)
+            x = distributed_transpose_polar(x, (-2, -3), chan_shapes)
 
         return x
 
@@ -274,7 +274,7 @@ class DistributedInverseRealSHT(nn.Module):
 
         # transpose: after that, channels are split, l is local:
         if self.comm_size_polar > 1:
-            x = distributed_transpose_polar.apply(x, (-3, -2), self.l_shapes)
+            x = distributed_transpose_polar(x, (-3, -2), self.l_shapes)
 
         # Evaluate associated Legendre functions on the output nodes
         x = torch.view_as_real(x)
@@ -294,11 +294,11 @@ class DistributedInverseRealSHT(nn.Module):
 
         if self.comm_size_polar > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
-            x = distributed_transpose_polar.apply(x, (-2, -3), chan_shapes)
+            x = distributed_transpose_polar(x, (-2, -3), chan_shapes)
 
         # transpose: after this, channels are split and m is local
         if self.comm_size_azimuth > 1:
-            x = distributed_transpose_azimuth.apply(x, (-3, -1), self.m_shapes)
+            x = distributed_transpose_azimuth(x, (-3, -1), self.m_shapes)
 
         # set DCT and nyquist frequencies to 0:
         x[..., 0].imag = 0.0
@@ -311,7 +311,7 @@ class DistributedInverseRealSHT(nn.Module):
         # transpose: after this, m is split and channels are local
         if self.comm_size_azimuth > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
-            x = distributed_transpose_azimuth.apply(x, (-1, -3), chan_shapes)
+            x = distributed_transpose_azimuth(x, (-1, -3), chan_shapes)
 
         return x
 
@@ -420,7 +420,7 @@ class DistributedRealVectorSHT(nn.Module):
 
         # h and w is split. First we make w local by transposing into channel dim
         if self.comm_size_azimuth > 1:
-            x = distributed_transpose_azimuth.apply(x, (-4, -1), self.lon_shapes)
+            x = distributed_transpose_azimuth(x, (-4, -1), self.lon_shapes)
 
         # apply real fft in the longitudinal direction: make sure to truncate to nlon
         x = 2.0 * torch.pi * torch.fft.rfft(x, n=self.nlon, dim=-1, norm="forward")
@@ -431,11 +431,11 @@ class DistributedRealVectorSHT(nn.Module):
         # transpose: after this, m is split and c is local
         if self.comm_size_azimuth > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
-            x = distributed_transpose_azimuth.apply(x, (-1, -4), chan_shapes)
+            x = distributed_transpose_azimuth(x, (-1, -4), chan_shapes)
 
         # transpose: after this, c is split and h is local
         if self.comm_size_polar > 1:
-            x = distributed_transpose_polar.apply(x, (-4, -2), self.lat_shapes)
+            x = distributed_transpose_polar(x, (-4, -2), self.lat_shapes)
 
         # do the Legendre-Gauss quadrature
         x = torch.view_as_real(x)
@@ -468,7 +468,7 @@ class DistributedRealVectorSHT(nn.Module):
         # transpose: after this, l is split and c is local
         if self.comm_size_polar > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
-            x = distributed_transpose_polar.apply(x, (-2, -4), chan_shapes)
+            x = distributed_transpose_polar(x, (-2, -4), chan_shapes)
 
         return x
 
@@ -564,7 +564,7 @@ class DistributedInverseRealVectorSHT(nn.Module):
 
         # transpose: after that, channels are split, l is local:
         if self.comm_size_polar > 1:
-            x = distributed_transpose_polar.apply(x, (-4, -2), self.l_shapes)
+            x = distributed_transpose_polar(x, (-4, -2), self.l_shapes)
 
         # Evaluate associated Legendre functions on the output nodes
         x = torch.view_as_real(x)
@@ -595,11 +595,11 @@ class DistributedInverseRealVectorSHT(nn.Module):
 
         if self.comm_size_polar > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
-            x = distributed_transpose_polar.apply(x, (-2, -4), chan_shapes)
+            x = distributed_transpose_polar(x, (-2, -4), chan_shapes)
 
         # transpose: after this, channels are split and m is local
         if self.comm_size_azimuth > 1:
-            x = distributed_transpose_azimuth.apply(x, (-4, -1), self.m_shapes)
+            x = distributed_transpose_azimuth(x, (-4, -1), self.m_shapes)
 
         # set DCT and nyquist frequencies to zero
         x[..., 0].imag = 0.0
@@ -612,6 +612,6 @@ class DistributedInverseRealVectorSHT(nn.Module):
         # transpose: after this, m is split and channels are local
         if self.comm_size_azimuth > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
-            x = distributed_transpose_azimuth.apply(x, (-1, -4), chan_shapes)
+            x = distributed_transpose_azimuth(x, (-1, -4), chan_shapes)
 
         return x

@@ -49,7 +49,7 @@ from torch_harmonics.disco.convolution import (
 
 # distirbuted stuff
 from torch_harmonics.distributed import polar_group_size, azimuth_group_size
-from torch_harmonics.distributed import distributed_transpose_azimuth, distributed_transpose_polar
+from torch_harmonics.distributed import distributed_transpose_azimuth
 from torch_harmonics.distributed import reduce_from_polar_region, scatter_to_polar_region, gather_from_polar_region, copy_to_polar_region
 from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
 from torch_harmonics.distributed import compute_split_shapes, split_tensor_along_dim
@@ -255,7 +255,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # h and w is split. First we make w local by transposing into channel dim
         if self.comm_size_azimuth > 1:
-            x = distributed_transpose_azimuth.apply(x, (1, -1), self.lon_in_shapes)
+            x = distributed_transpose_azimuth(x, (1, -1), self.lon_in_shapes)
 
         if self.optimized_kernel:
             x = _disco_s2_contraction_optimized(
@@ -271,7 +271,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         # now we can transpose back the result, so that lon is split and channels are local
         if self.comm_size_azimuth > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
-            x = distributed_transpose_azimuth.apply(x, (-1, 1), chan_shapes)
+            x = distributed_transpose_azimuth(x, (-1, 1), chan_shapes)
 
         # extract shape
         B, C, K, H, W = x.shape
@@ -440,7 +440,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # transpose such that lon is local, channels are split
         if self.comm_size_azimuth > 1:
-            x = distributed_transpose_azimuth.apply(x, (1, -1), self.lon_in_shapes)
+            x = distributed_transpose_azimuth(x, (1, -1), self.lon_in_shapes)
 
         # gather input tensor and set up backward reduction hooks
         x = gather_from_polar_region(x, -2, self.lat_in_shapes)
@@ -456,7 +456,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         # now we can transpose back the result, so that lon is split and channels are local
         if self.comm_size_azimuth > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
-            out = distributed_transpose_azimuth.apply(out, (-1, 1), chan_shapes)
+            out = distributed_transpose_azimuth(out, (-1, 1), chan_shapes)
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
