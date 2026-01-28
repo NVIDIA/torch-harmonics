@@ -30,15 +30,15 @@
 # build after cloning in directoy torch_harmonics via
 # docker build . -t torch_harmonics
 
-FROM nvcr.io/nvidia/pytorch:24.12-py3
+FROM nvcr.io/nvidia/pytorch:25.12-py3
 
 # we need this for tests
 RUN pip install parameterized
 
 # The custom CUDA extension does not suppport architerctures < 7.0
 ENV FORCE_CUDA_EXTENSION=1
-ENV TORCH_CUDA_ARCH_LIST="7.0 7.2 7.5 8.0 8.6 8.7 9.0+PTX"
-ENV TORCH_HARMONICS_DEBUG=1
+ENV TORCH_HARMONICS_ENABLE_OPENMP=1
+ENV TORCH_CUDA_ARCH_LIST="8.0 8.6 8.7 9.0 10.0+PTX"
 COPY . /workspace/torch_harmonics
 RUN cd /workspace/torch_harmonics && pip install --no-build-isolation .
 
