@@ -48,8 +48,8 @@ RUN pip install h5py
 RUN cd /opt && git clone https://github.com/SHI-Labs/NATTEN natten  && \
     cd natten && \
     make WITH_CUDA=1 \
-    	 CUDA_ARCH="8.0;8.6;8.7;9.0;10.0" \
-	 WORKERS=4
+        CUDA_ARCH="8.0;8.6;8.7;9.0;10.0" \
+        WORKERS=4
 
 # install torch harmonics
 COPY . /workspace/torch_harmonics
