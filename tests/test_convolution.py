@@ -187,43 +187,43 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # # piecewise linear
-            # # normal isotropic
-            # [(16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular"],
-            # [(17, 32), (17, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular"],
-            # # normal anisotropic
-            # [(16, 32), (16, 32), (3, 4), "piecewise linear", "mean", "equiangular", "equiangular"],
-            # [(16, 32), (16, 32), (3, 2), "piecewise linear", "mean", "equiangular", "equiangular"],
-            # # downsampling isotropic
-            # [(16, 32), (8, 16), (3), "piecewise linear", "mean", "equiangular", "equiangular"],
-            # [(17, 32), (9, 16), (3), "piecewise linear", "mean", "equiangular", "equiangular"],
-            # # downsampling anisotropic
-            # [(16, 32), (8, 16), (3, 4), "piecewise linear", "mean", "equiangular", "equiangular"],
-            # [(16, 32), (8, 16), (3, 2), "piecewise linear", "mean", "equiangular", "equiangular"],
-            # # morlet
-            # # normal isotropic
-            # [(16, 32), (16, 32), (1), "morlet", "mean", "equiangular", "equiangular"], # important for attention
-            # [(16, 32), (16, 32), (3), "morlet", "mean", "equiangular", "equiangular"],
-            # [(17, 32), (17, 32), (3), "morlet", "mean", "equiangular", "equiangular"],
-            # # normal anisotropic
-            # [(16, 32), (16, 32), (3, 4), "morlet", "mean", "equiangular", "equiangular"],
-            # [(16, 32), (16, 32), (3, 2), "morlet", "mean", "equiangular", "equiangular"],
-            # # downsampling isotropic
-            # [(16, 32), (8, 16), (1), "morlet", "mean", "equiangular", "equiangular"], # important for attention
-            # [(16, 32), (8, 16), (3), "morlet", "mean", "equiangular", "equiangular"],
-            # [(17, 32), (9, 16), (3), "morlet", "mean", "equiangular", "equiangular"],
-            # # downsampling anisotropic
-            # [(16, 32), (8, 16), (3, 4), "morlet", "mean", "equiangular", "equiangular"],
-            # [(16, 32), (8, 16), (3, 2), "morlet", "mean", "equiangular", "equiangular"],
-            # # zernike
-            # # normal 
-            # [(16, 32), (16, 32), (1), "zernike", "mean", "equiangular", "equiangular"],
-            # [(16, 32), (16, 32), (3, 3), "zernike", "mean", "equiangular", "equiangular"],
-            # [(17, 32), (17, 32), (3, 3), "zernike", "mean", "equiangular", "equiangular"],
-            # # downsampling
-            # [(16, 32), (8, 16), (1), "zernike", "mean", "equiangular", "equiangular"],
-            # [(16, 32), (8, 16), (3, 3), "zernike", "mean", "equiangular", "equiangular"],
-            # [(17, 32), (9, 16), (3, 3), "zernike", "mean", "equiangular", "equiangular"],
+            # piecewise linear
+            # normal isotropic
+            [(16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular"],
+            [(17, 32), (17, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular"],
+            # normal anisotropic
+            [(16, 32), (16, 32), (3, 4), "piecewise linear", "mean", "equiangular", "equiangular"],
+            [(16, 32), (16, 32), (3, 2), "piecewise linear", "mean", "equiangular", "equiangular"],
+            # downsampling isotropic
+            [(16, 32), (8, 16), (3), "piecewise linear", "mean", "equiangular", "equiangular"],
+            [(17, 32), (9, 16), (3), "piecewise linear", "mean", "equiangular", "equiangular"],
+            # downsampling anisotropic
+            [(16, 32), (8, 16), (3, 4), "piecewise linear", "mean", "equiangular", "equiangular"],
+            [(16, 32), (8, 16), (3, 2), "piecewise linear", "mean", "equiangular", "equiangular"],
+            # morlet
+            # normal isotropic
+            [(16, 32), (16, 32), (1), "morlet", "mean", "equiangular", "equiangular"], # important for attention
+            [(16, 32), (16, 32), (3), "morlet", "mean", "equiangular", "equiangular"],
+            [(17, 32), (17, 32), (3), "morlet", "mean", "equiangular", "equiangular"],
+            # normal anisotropic
+            [(16, 32), (16, 32), (3, 4), "morlet", "mean", "equiangular", "equiangular"],
+            [(16, 32), (16, 32), (3, 2), "morlet", "mean", "equiangular", "equiangular"],
+            # downsampling isotropic
+            [(16, 32), (8, 16), (1), "morlet", "mean", "equiangular", "equiangular"], # important for attention
+            [(16, 32), (8, 16), (3), "morlet", "mean", "equiangular", "equiangular"],
+            [(17, 32), (9, 16), (3), "morlet", "mean", "equiangular", "equiangular"],
+            # downsampling anisotropic
+            [(16, 32), (8, 16), (3, 4), "morlet", "mean", "equiangular", "equiangular"],
+            [(16, 32), (8, 16), (3, 2), "morlet", "mean", "equiangular", "equiangular"],
+            # zernike
+            # normal 
+            [(16, 32), (16, 32), (1), "zernike", "mean", "equiangular", "equiangular"],
+            [(16, 32), (16, 32), (3, 3), "zernike", "mean", "equiangular", "equiangular"],
+            [(17, 32), (17, 32), (3, 3), "zernike", "mean", "equiangular", "equiangular"],
+            # downsampling
+            [(16, 32), (8, 16), (1), "zernike", "mean", "equiangular", "equiangular"],
+            [(16, 32), (8, 16), (3, 3), "zernike", "mean", "equiangular", "equiangular"],
+            [(17, 32), (9, 16), (3, 3), "zernike", "mean", "equiangular", "equiangular"],
         ],
         skip_on_empty=True,
     )
@@ -330,8 +330,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         if verbose:
             print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
 
+        # set seed and disable tf32
         set_seed(333)
-
         disable_tf32()
 
         use_optimized_kernels = optimized_kernels_is_available()
@@ -477,18 +477,11 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         if verbose:
             print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
 
+        # set seed and disable tf32
         set_seed(333)
-
         disable_tf32()
 
-        nlat_in, nlon_in = in_shape
-        nlat_out, nlon_out = out_shape
-
-        if isinstance(kernel_shape, int):
-            theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
-        else:
-            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
-
+        # set up convolution
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
 
         conv_naive = Conv(
@@ -553,10 +546,10 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            # [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", False, 1e-4, 1e-4],
-            # [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
-            # [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", True, 1e-4, 1e-4],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
+            [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", False, 1e-4, 1e-4],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
+            [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", True, 1e-4, 1e-4],
         ],
         skip_on_empty=True,
     )
@@ -615,10 +608,10 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False],
-            # [8, 4, 2, (16, 32), (8,  16), (3), "piecewise linear", "mean", "equiangular", "equiangular", False],
-            # [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True],
-            # [8, 4, 2, (8,  16), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False],
+            [8, 4, 2, (16, 32), (8,  16), (3), "piecewise linear", "mean", "equiangular", "equiangular", False],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True],
+            [8, 4, 2, (8,  16), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True],
         ], 
         skip_on_empty=True,
     )
@@ -648,13 +641,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         set_seed(333)
 
-        nlat_in, nlon_in = in_shape
-        nlat_out, nlon_out = out_shape
-
-        if isinstance(kernel_shape, int):
-            theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
-        else:
-            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
+        nlat_in, _ = in_shape
 
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
         conv = Conv(

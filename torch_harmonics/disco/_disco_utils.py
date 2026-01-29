@@ -61,44 +61,6 @@ if optimized_kernels_is_available():
         row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, 
         kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
         out = disco_kernels.forward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
-
-        # # first, we split the input tensors along kernel dims, so that we work on K_1 = 2^k
-        # # kernels first and then compute the K-K_1 kernels later:
-        # log_kernel_size = math.floor(math.log2(kernel_size))
-        # kernel_size_1 = 2**log_kernel_size
-        # kernel_size_2 = kernel_size - kernel_size_1
-
-        # #print(f"kernel_size: {kernel_size}, kernel_size_1: {kernel_size_1}, kernel_size_2: {kernel_size_2}")
-
-        # if (kernel_size == 1) or (kernel_size_2 == 0):
-        #     out = disco_kernels.forward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
-        # else:
-        #     ker_idx = ker_idx.reshape(kernel_size, -1)
-        #     row_idx = row_idx.reshape(kernel_size, -1)
-        #     col_idx = col_idx.reshape(kernel_size, -1)
-        #     vals = vals.reshape(kernel_size, -1)
-        #     nrows = (roff_idx.shape[0] - 1) // kernel_size
-
-        #     # now, perform computation on the first K_1 kernels:
-        #     ker_idx_1 = ker_idx[:kernel_size_1].reshape(-1).contiguous()
-        #     row_idx_1 = row_idx[:kernel_size_1].reshape(-1).contiguous()
-        #     col_idx_1 = col_idx[:kernel_size_1].reshape(-1).contiguous()
-        #     vals_1 = vals[:kernel_size_1].reshape(-1).contiguous()
-        #     roff_idx_1 = roff_idx[:nrows * kernel_size_1 + 1]
-        #     out_1 = disco_kernels.forward.default(inp, roff_idx_1, ker_idx_1, row_idx_1, col_idx_1, vals_1, kernel_size_1, nlat_out, nlon_out)
-
-        #     # no perform computation on the remaining K-K_1 kernels:
-        #     ker_idx_2 = ker_idx[kernel_size_1:].reshape(-1).contiguous() - kernel_size_1
-        #     row_idx_2 = row_idx[kernel_size_1:].reshape(-1).contiguous()
-        #     col_idx_2 = col_idx[kernel_size_1:].reshape(-1).contiguous()
-        #     vals_2 = vals[kernel_size_1:].reshape(-1).contiguous()
-        #     roff_idx_2 = roff_idx[nrows * kernel_size_1:] - roff_idx_1[-1]
-        #     #print("roff_idx.shape, roff_idx_1.shape, roff_idx_2.shape, nrows, roff_idx_1, roff_idx_2", roff_idx.shape, roff_idx_1.shape, roff_idx_2.shape, nrows, roff_idx_1, roff_idx_2)
-        #     out_2 = disco_kernels.forward.default(inp, roff_idx_2, ker_idx_2, row_idx_2, col_idx_2, vals_2, kernel_size_2, nlat_out, nlon_out)
-
-        #     # now, concatenate the outputs:
-        #     out = torch.cat([out_1, out_2], dim=-1)
-
         return out
 
     # transpose
