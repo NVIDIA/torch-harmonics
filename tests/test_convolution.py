@@ -47,7 +47,7 @@ from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 
 from testutils import compare_tensors
 
-from testutils import set_seed, compare_tensors
+from testutils import disable_tf32, set_seed, compare_tensors
 
 if not optimized_kernels_is_available():
     print(f"Warning: Couldn't import optimized disco convolution kernels")
@@ -332,6 +332,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         set_seed(333)
 
+        disable_tf32()
+
         use_optimized_kernels = optimized_kernels_is_available()
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             use_optimized_kernels = False
@@ -476,6 +478,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
 
         set_seed(333)
+
+        disable_tf32()
 
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
