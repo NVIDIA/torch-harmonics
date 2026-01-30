@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include <torch/torch.h>
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDAUtils.h>
@@ -38,30 +39,28 @@
 
 #define WARP_SIZE (32)
 
-namespace attention_kernels {
+
+namespace utility_kernels {
 
 // CSR rows sorting kernels and functions
-at::Tensor sortRows(int nlat_out, at::Tensor row_off, cudaStream_t stream);
+torch::Tensor sortRows(int nlat_out, torch::Tensor row_off, cudaStream_t stream);
 
-// 4D tensor permutation kernels and functions
-at::Tensor permute_4D_to0231(at::Tensor src);
-at::Tensor permute_4D_to0312(at::Tensor src);
 
 // Host tensor dump and CSR manipulation functions
-void dump_tensor(const char *fname, at::Tensor t);
-void dump_csr(const char *fname, at::Tensor roff, at::Tensor cols);
+void dump_tensor(const char *fname, torch::Tensor t);
+void dump_csr(const char *fname, torch::Tensor roff, torch::Tensor cols);
 
 int part_csr_rows(int *row_perm,
-                  const at::Tensor roff,
-                  const at::Tensor cols,
+                  const torch::Tensor roff,
+                  const torch::Tensor cols,
                   int **part_off,
                   int **part_val);
 
 int verify_part(const int npart,
                 const int *part_off,
                 const int *part_val,
-                const at::Tensor roff,
-                const at::Tensor cols);
+                const torch::Tensor roff,
+                const torch::Tensor cols);
 
 void verify_part_new(const int nlon_out,
                 const int nlat_in,
@@ -69,8 +68,8 @@ void verify_part_new(const int nlon_out,
                 const int npart,      // partitioning data
                 const int *part_off,
                 const int *part_val,
-                const at::Tensor roff, 
-                const at::Tensor cols);
+                const torch::Tensor roff, 
+                const torch::Tensor cols);
 
 unsigned int next_pow2(unsigned int x);
 
@@ -149,6 +148,22 @@ __device__ float4 __forceinline__ __vscale(float s, float4 v) {
 
 __device__ float4 __forceinline__ __vdiv(float s, float4 v) {
     return make_float4(s/v.x, s/v.y, s/v.z, s/v.w);;
+}
+
+template<int BDIM_X>
+static __device__ void __sync() {
+
+    static_assert(BDIM_X > 0 && 0 == (BDIM_X & (BDIM_X-1)));
+
+    if      constexpr(BDIM_X  > WARP_SIZE) {  __syncthreads(); }
+    else if constexpr(BDIM_X == WARP_SIZE) {     __syncwarp(); }
+    else {         // BDIM_X  < WARP_SIZE
+        constexpr unsigned int MASK = (1ull << BDIM_X)-1;
+        unsigned int subwarp_id = threadIdx.y % (WARP_SIZE/BDIM_X);
+        unsigned int subwarp_mask = MASK << (subwarp_id*BDIM_X);
+        __syncwarp(subwarp_mask);
+    }
+    return;
 }
 
 template<typename VAL_T>

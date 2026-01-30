@@ -35,6 +35,7 @@ from typing import Union, Tuple
 import torch
 import torch.nn.functional as F
 from attention_helpers import optimized_kernels_is_available
+from torch_harmonics.utils import permute_to_0231, permute_to_0312
 from . import attention_kernels
 
 # HELPER ROUTINE FOR BACKWARD setup_context
@@ -54,7 +55,8 @@ if optimized_kernels_is_available():
     def _(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor,
           quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
           nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-        out_shape = (kw.shape[0], vw.shape[1], nlat_out, nlon_out)
+        # the raw kernel uses channels last format
+        out_shape = (kw.shape[0], nlat_out, nlon_out, vw.shape[3])
         return torch.empty(out_shape, dtype=kw.dtype, device=kw.device)
     
     # raw backward fake
@@ -62,6 +64,7 @@ if optimized_kernels_is_available():
     def _(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor, grad_output: torch.Tensor,
           quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
           nlon_in: int, nlat_out: int, nlon_out: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # the raw kernel uses channels last format
         dk = torch.empty_like(kw)
         dv = torch.empty_like(vw)
         dq = torch.empty_like(qw)
@@ -87,6 +90,11 @@ if optimized_kernels_is_available():
         B, _, H, W = qw.shape
         qw = qw.reshape(B*nh, -1, H, W)
 
+        # permute to 0231
+        kw = permute_to_0231(kw)
+        vw = permute_to_0231(vw)
+        qw = permute_to_0231(qw)
+
         # convert to float32
         inp_dtype = kw.dtype
         kw = kw.to(torch.float32).contiguous()
@@ -97,11 +105,17 @@ if optimized_kernels_is_available():
                                                    col_idx, row_off,
                                                    nlon_in, nlat_out, nlon_out)
 
-        _, C, H, W = output.shape
-        output = output.reshape(B, -1, H, W)
+        #_, H, W, C = output.shape
+        #output = output.reshape(-1, H, W, C)
 
         # convert back precision
         output = output.to(dtype=inp_dtype)
+
+        # permute back to 0312
+        output = permute_to_0312(output)
+
+        # fold heads back into channel dimension
+        output = output.reshape(B, -1, H, W)
 
         return output
 
@@ -111,6 +125,7 @@ if optimized_kernels_is_available():
         bk: Union[torch.Tensor, None], bv: Union[torch.Tensor, None], bq: Union[torch.Tensor, None],
         quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
         max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        # the wrapped kernel uses channels first format
         out_shape = (k.shape[0], wv.shape[0], nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=k.dtype, device=k.device)
 
@@ -147,20 +162,30 @@ def _neighborhood_s2_attention_bwd_optimized(ctx, grad_output):
     B, _, H, W  = grad_output.shape
     grad_output = grad_output.reshape(B*nh, -1, H, W)
 
-    # save type and convert to float32
+    # permute to 0231
+    kw = permute_to_0231(kw.contiguous())
+    vw = permute_to_0231(vw.contiguous())
+    qw = permute_to_0231(qw.contiguous())
+    grad_output = permute_to_0231(grad_output.contiguous())
+
+     # save type and convert to float32
     kw_dtype = kw.dtype
     vw_dtype = vw.dtype
     qw_dtype = qw.dtype
-
-    kw = kw.to(torch.float32).contiguous()
-    vw = vw.to(torch.float32).contiguous()
-    qw = qw.to(torch.float32).contiguous()
-    grad_output = grad_output.to(torch.float32).contiguous()
+    kw = kw.to(torch.float32)
+    vw = vw.to(torch.float32)
+    qw = qw.to(torch.float32)
+    grad_output = grad_output.to(torch.float32)
 
     dkw, dvw, dqw = attention_kernels.backward.default(kw, vw, qw, grad_output,
                                                        quad_weights,
                                                        col_idx, row_off,
                                                        nlon_in, nlat_out, nlon_out)
+
+    # permute back to 0312
+    dkw = permute_to_0312(dkw)
+    dvw = permute_to_0312(dvw)
+    dqw = permute_to_0312(dqw)
 
     # weight grads
     _, C, H, W = dkw.shape

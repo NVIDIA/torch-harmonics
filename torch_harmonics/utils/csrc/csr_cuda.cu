@@ -28,26 +28,22 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "attention_cuda_utils.cuh"
-
-#include <ATen/cuda/detail/TensorInfo.cuh>
-#include <ATen/cuda/detail/KernelUtils.h>
-#include <ATen/cuda/detail/IndexUtils.cuh>
+#include <torch/all.h>
 
 #include <cuda_runtime.h>
 
 #include <cub/cub.cuh>
 #include <limits>
 
-//#include "cudamacro.h"
-#include "attention_cuda.cuh"
+#include "cudamacro.h"
+#include "csr_cuda.cuh"
 
 #define THREADS (64)
 
 #define TRANSP_WARPS_X_TILE_GENERIC (32)
 #define TRANSP_WARPS_X_TILE_SM100    (4)
 
-namespace attention_kernels {
+namespace utility_kernels {
 
 // BEGIN - CSR rows sorting kernels and functions
 __global__ void set_rlen_rids_k(const int n,
@@ -66,7 +62,7 @@ __global__ void set_rlen_rids_k(const int n,
     return;
 }   
 
-at::Tensor sortRows(int nlat_out, at::Tensor row_off, cudaStream_t stream) {
+torch::Tensor sortRows(int nlat_out, torch::Tensor row_off, cudaStream_t stream) {
 
     int64_t *_row_off_d = reinterpret_cast<int64_t *>(row_off.data_ptr());
 
@@ -110,6 +106,7 @@ at::Tensor sortRows(int nlat_out, at::Tensor row_off, cudaStream_t stream) {
     return rids_sort_d;
 }
 // END - CSR rows sorting kernels and functions
+
 
 // BEGIN - general host-side functions
 unsigned int next_pow2(unsigned int x) { 

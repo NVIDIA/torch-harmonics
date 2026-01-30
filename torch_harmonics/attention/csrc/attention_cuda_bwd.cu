@@ -41,7 +41,7 @@
 #include <cub/cub.cuh>
 #include <limits>
 
-#include "cudamacro.h"
+//#include "cudamacro.h"
 #include "attention_cuda_utils.cuh"
 
 #include <iostream>
@@ -52,153 +52,8 @@
 
 #define MAX_LOCAL_ARR_LEN (16)
 
+
 namespace attention_kernels {
-
-#if 0
-class ScopeTimer
-{
-  public:
-    explicit ScopeTimer(const std::string &label = "") :
-        label_(label), start_(std::chrono::high_resolution_clock::now())
-    {
-    }
-
-    ~ScopeTimer()
-    {
-        auto end = std::chrono::high_resolution_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start_);
-        std::cout << label_ << "Elapsed time: " << elapsed.count() << " ms" << std::endl;
-    }
-
-  private:
-    std::string label_;
-    std::chrono::high_resolution_clock::time_point start_;
-};
-
-// easier to understand version of manual shfl_xor_sync, performance appears similar
-static __device__ float __warp_sum_cub(float val)
-{
-    // use cub to reduce within a warp
-    __shared__ typename cub::WarpReduce<float>::TempStorage temp_storage;
-
-    // 1. Compute sum (initially only in lane 0)
-    float sum = cub::WarpReduce<float>(temp_storage).Sum(val);
-    // 2. Broadcast sum to all threads
-    sum = __shfl_sync(0xFFFFFFFF, sum, 0);
-    return sum;
-}
-
-// This kernel computes the backward pass for the S2 attention mechanism, using
-// shared memory as a cache and one warp per output point, warp-parallel over
-// channels, which should be layed out in the fastest dimension for coalesced
-// memory access.
-template <int BDIM_X>
-__global__ __launch_bounds__(BDIM_X) void s2_attention_bwd_dkvq_kernel(
-    int num_channels, int nlon_in, int nlat_out, int nlon_out,
-    const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> kx,
-    const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> vx,
-    const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> qy,
-    const torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dy,
-    torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dydk,
-    torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dydv,
-    torch::PackedTensorAccessor32<float, 4, torch::RestrictPtrTraits> dydq,
-    const torch::PackedTensorAccessor64<int64_t, 1, torch::RestrictPtrTraits> psi_col_idx,
-    const torch::PackedTensorAccessor64<int64_t, 1, torch::RestrictPtrTraits> psi_row_offset,
-    const torch::PackedTensorAccessor32<float, 1, torch::RestrictPtrTraits> quad_weights)
-{
-
-    extern __shared__ float sh[];
-    float *sh_alpha_k = sh + threadIdx.y * num_channels * 5;
-    float *sh_alpha_vw = sh_alpha_k + num_channels;
-    float *sh_alpha_kvw = sh_alpha_vw + num_channels;
-    float *sh_dy = sh_alpha_kvw + num_channels;
-    float *sh_qy = sh_dy + num_channels;
-    // (optionally, could use more shared memory for other intermediates)
-
-    const uint64_t batchId = blockIdx.y;
-    const uint64_t wid = uint64_t(blockIdx.x) * blockDim.y + threadIdx.y;
-    if (wid >= uint64_t(nlat_out) * nlon_in) return;
-    const int tidx = threadIdx.x;
-    const int ho = wid / nlon_out;
-    const int wo = wid - (ho * nlon_out);
-
-    // Zero shared memory
-    for (int chan = tidx; chan < num_channels; chan += WARP_SIZE) {
-        sh_alpha_k[chan] = 0.0f;
-        sh_alpha_vw[chan] = 0.0f;
-        sh_alpha_kvw[chan] = 0.0f;
-        sh_dy[chan] = dy[batchId][chan][ho][wo];
-        sh_qy[chan] = qy[batchId][chan][ho][wo];
-    }
-    float alpha_sum = 0.0f;
-    float qdotk_max = -FLT_MAX;
-    float integral = 0.0f;
-    __syncthreads();
-
-    const int64_t rbeg = psi_row_offset[ho];
-    const int64_t rend = psi_row_offset[ho + 1];
-    const int rlen = rend - rbeg;
-
-    // 1st pass: accumulate alpha_sum, integral, and shared stats, along with a progressively computed qdotk_max.
-    for (int off = 0; off < rlen; off++) {
-        const int64_t col = psi_col_idx[rbeg + off];
-        const int hi = col / nlon_in;
-        const int wi = col - (hi * nlon_in);
-        const int wip = (wi + wo) - ((wi + wo) / nlon_in) * nlon_in;
-        float qdotk = 0.0f, gdotv = 0.0f;
-        for (int chan = tidx; chan < num_channels; chan += WARP_SIZE) {
-            qdotk += sh_qy[chan] * kx[batchId][chan][hi][wip];
-            gdotv += sh_dy[chan] * vx[batchId][chan][hi][wip];
-        }
-        qdotk = __warp_sum_cub(qdotk);
-        gdotv = __warp_sum_cub(gdotv);
-        float qdotk_max_tmp = max(qdotk_max, qdotk);
-        float alpha_inz = expf(qdotk - qdotk_max_tmp) * quad_weights[hi];
-        float max_correction = expf(qdotk_max - qdotk_max_tmp);
-        alpha_sum = alpha_sum * max_correction + alpha_inz;
-        integral = integral * max_correction + alpha_inz * gdotv;
-        for (int chan = tidx; chan < num_channels; chan += WARP_SIZE) {
-            float kxval = kx[batchId][chan][hi][wip];
-            sh_alpha_k[chan] = sh_alpha_k[chan] * max_correction + alpha_inz * kxval;
-            sh_alpha_vw[chan] = sh_alpha_vw[chan] * max_correction + alpha_inz * gdotv;
-            sh_alpha_kvw[chan] = sh_alpha_kvw[chan] * max_correction + alpha_inz * kxval * gdotv;
-        }
-        qdotk_max = qdotk_max_tmp;
-    }
-
-    integral /= alpha_sum;
-
-    // Write dydq
-    for (int chan = tidx; chan < num_channels; chan += WARP_SIZE) {
-        dydq[batchId][chan][ho][wo]
-            = (sh_alpha_kvw[chan] * alpha_sum - sh_alpha_vw[chan] * sh_alpha_k[chan]) / (alpha_sum * alpha_sum);
-    }
-
-    // Third pass: accumulate gradients for k and v
-    for (int off = 0; off < rlen; off++) {
-        const int64_t col = psi_col_idx[rbeg + off];
-        const int hi = col / nlon_in;
-        const int wi = col - (hi * nlon_in);
-        const int wip = (wi + wo) - ((wi + wo) / nlon_in) * nlon_in;
-        float qdotk = 0.0f, gdotv = 0.0f;
-        for (int chan = tidx; chan < num_channels; chan += WARP_SIZE) {
-            qdotk += qy[batchId][chan][ho][wo] * kx[batchId][chan][hi][wip];
-            gdotv += sh_dy[chan] * vx[batchId][chan][hi][wip];
-        }
-        qdotk = __warp_sum_cub(qdotk);
-        gdotv = __warp_sum_cub(gdotv);
-        float alpha_inz = expf(qdotk - qdotk_max) * quad_weights[hi];
-        for (int chan = tidx; chan < num_channels; chan += WARP_SIZE) {
-            float qyval = qy[batchId][chan][ho][wo];
-            float dyval = sh_dy[chan];
-            atomicAdd(&dydk[batchId][chan][hi][wip], qyval * (alpha_inz / alpha_sum) * (gdotv - integral));
-            atomicAdd(&dydv[batchId][chan][hi][wip], (alpha_inz / alpha_sum) * dyval);
-        }
-    }
-}
-#endif
-
-// BEGIN backward kernels and functions
 
 // called with (blockDim.x=32 and blockDim.y>1, BDIM=blockDim.x*blockDim.y)
 template<int BDIM_X,
@@ -1003,16 +858,17 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Te
     CHECK_CUDA_TENSOR(psi_col_idx);
     CHECK_CUDA_TENSOR(psi_row_off);
     
-    //const size_t uo_num_channels = kx.size(1);
-    size_t nchans_in  = qy.size(1); // or kx.size(1)
-    size_t nchans_out = vx.size(1); 
+    // IMPORTANT: all input tensors are in channels last format!
+
+    size_t nchans_in  = qy.size(3); // or kx.size(3)
+    size_t nchans_out = vx.size(3); 
 
     const int batch_size = kx.size(0);
 
     // extract dtype
-    auto kx_type = kx.dtype(); // nchans_in
+    auto kx_type = kx.dtype();
     auto qy_type = qy.dtype();
-    auto vx_type = vx.dtype(); // ncahn_out
+    auto vx_type = vx.dtype();
     auto dy_type = dy.dtype();
 
     torch::Tensor kxP = kx.to(torch::kFloat32);
@@ -1020,19 +876,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Te
     torch::Tensor qyP = qy.to(torch::kFloat32);
     torch::Tensor dyP = dy.to(torch::kFloat32);
 
-    // exract memory format: this is much safer than checking is_contiguous(at::MemoryFormat::ChannelsLast)
-    // the former fails for num_channels == 1
-    bool kx_is_channels_last = kxP.strides()[1] == 1;
-    bool vx_is_channels_last = vxP.strides()[1] == 1;
-    bool qy_is_channels_last = qyP.strides()[1] == 1;
-    bool dy_is_channels_last = dyP.strides()[1] == 1;
-
-    // transpose if required
-    if (!kx_is_channels_last) { kxP = permute_4D_to0231(kxP); }
-    if (!vx_is_channels_last) { vxP = permute_4D_to0231(vxP); }
-    if (!qy_is_channels_last) { qyP = permute_4D_to0231(qyP); }
-    if (!dy_is_channels_last) { dyP = permute_4D_to0231(dyP); }
-
+    // create output tensors
     torch::Tensor dkxP = torch::zeros_like(kxP);
     torch::Tensor dvxP = torch::zeros_like(vxP);
     torch::Tensor dqyP = torch::zeros_like(qyP);
@@ -1052,10 +896,6 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Te
     torch::Tensor dkx = dkxP;
     torch::Tensor dvx = dvxP;
     torch::Tensor dqy = dqyP;
-
-    if (!kx_is_channels_last) { dkx = permute_4D_to0312(dkx); }
-    if (!vx_is_channels_last) { dvx = permute_4D_to0312(dvx); }
-    if (!qy_is_channels_last) { dqy = permute_4D_to0312(dqy); }
 
     // convert precision back to starting
     dkx = dkx.to(kx_type);

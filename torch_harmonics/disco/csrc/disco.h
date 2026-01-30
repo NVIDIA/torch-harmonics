@@ -30,15 +30,10 @@
 
 #pragma once
 
+#include <cstdint>
+#include <limits>
 #include <stdio.h>
 #include <stdlib.h>
 #include <torch/all.h>
 #include <torch/library.h>
 #include <cassert>
-
-#define CHECK_CPU_TENSOR(x) TORCH_INTERNAL_ASSERT(x.device().type() == torch::kCPU)
-#define CHECK_CONTIGUOUS_TENSOR(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
-#define CHECK_INPUT_TENSOR(x) CHECK_CONTIGUOUS_TENSOR(x)
-#define CHECK_CPU_INPUT_TENSOR(x)                                                                                     \
-    CHECK_CPU_TENSOR(x);                                                                                              \
-    CHECK_CONTIGUOUS_TENSOR(x)

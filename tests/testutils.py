@@ -30,6 +30,8 @@
 #
 
 import os
+from packaging import version
+
 import torch
 import torch.distributed as dist
 import torch_harmonics.distributed as thd
@@ -38,6 +40,20 @@ def set_seed(seed=333):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
+    return
+
+
+def disable_tf32():
+    # the api for this was changed lately in pytorch
+    if torch.cuda.is_available():
+        if version.parse(torch.__version__) >= version.parse("2.9.0"):
+            torch.backends.cuda.matmul.fp32_precision = "ieee"
+            torch.backends.cudnn.fp32_precision = "ieee"
+            torch.backends.cudnn.conv.fp32_precision = "ieee"
+            torch.backends.cudnn.rnn.fp32_precision = "ieee"
+        else:
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
     return
 
 
