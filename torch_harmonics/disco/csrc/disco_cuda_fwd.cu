@@ -771,7 +771,7 @@ static void s2_disco_fwd_dispatch(int64_t batch_size,
     // with a packed CSR:
     //
     //  val_dat[nnz/K][K], i.e. with a CSR where elements of the original K CSRs are packed in consecutive elements
-    assert(0 == (val_idx.size(0) % K));
+    assert(0 == (val_dat.size(0) % K));
 
     int64_t nrow_csr = row_off.size(0)-1;
     assert(0 == (nrow_csr % K));
