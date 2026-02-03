@@ -96,10 +96,12 @@ def get_filter_basis(kernel_shape: Union[int, Tuple[int], Tuple[int, int]], basi
 
     if basis_type == "piecewise linear":
         return PiecewiseLinearFilterBasis(kernel_shape=kernel_shape)
-    elif basis_type == "morlet":
-        return MorletFilterBasis(kernel_shape=kernel_shape)
+    elif basis_type == "harmonic":
+        return HarmonicFilterBasis(kernel_shape=kernel_shape)
     elif basis_type == "zernike":
         return ZernikeFilterBasis(kernel_shape=kernel_shape)
+    elif basis_type == "morlet":
+        raise NotImplementedError("Morlet basis functions are not supported anymore. Use harmonic basis functions with a Morlet window function instead.")
     else:
         raise ValueError(f"Unknown basis_type {basis_type}")
 
@@ -214,7 +216,7 @@ class PiecewiseLinearFilterBasis(FilterBasis):
             return self._compute_support_vals_isotropic(r, phi, r_cutoff=r_cutoff)
 
 
-class MorletFilterBasis(FilterBasis):
+class HarmonicFilterBasis(FilterBasis):
     """Morlet-style filter basis on the disk. A Gaussian is multiplied with a Fourier basis in x and y directions."""
 
     def __init__(
