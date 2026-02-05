@@ -35,7 +35,7 @@ import torch.distributed as dist
 from torch.amp import custom_fwd, custom_bwd
 
 from .utils import polar_group, azimuth_group, polar_group_size
-from .utils import is_initialized, is_distributed_polar, is_distributed_azimuth
+from .utils import is_distributed_polar, is_distributed_azimuth
 
 # helper routine to compute uneven splitting in balanced way:
 def compute_split_shapes(size: int, num_chunks: int) -> List[int]:

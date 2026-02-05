@@ -34,7 +34,6 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 
-from torch_harmonics.quadrature import _precompute_latitudes
 from .losses import get_quadrature_weights
 
 

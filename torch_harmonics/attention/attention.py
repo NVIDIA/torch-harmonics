@@ -29,15 +29,14 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import List, Tuple, Union, Optional
-from warnings import warn
+from typing import Tuple, Union, Optional
 
 import math
 
 import torch
 import torch.nn as nn
 
-from torch_harmonics.quadrature import _precompute_latitudes
+from torch_harmonics.quadrature import precompute_latitudes
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.attention._attention_utils import _neighborhood_s2_attention_torch, _neighborhood_s2_attention_optimized
 from torch_harmonics.filter_basis import get_filter_basis
@@ -96,7 +95,7 @@ class AttentionS2(nn.Module):
         self.scale = scale
 
         # integration weights
-        _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
+        _, wgl = precompute_latitudes(self.nlat_in, grid=grid_in)
         quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
         # we need to tile and flatten them accordingly
         quad_weights = torch.tile(quad_weights.reshape(-1, 1), (1, self.nlon_in)).flatten()
@@ -248,7 +247,7 @@ class NeighborhoodAttentionS2(nn.Module):
             raise ValueError("Error, theta_cutoff has to be positive.")
 
         # integration weights
-        _, wgl = _precompute_latitudes(self.nlat_in, grid=grid_in)
+        _, wgl = precompute_latitudes(self.nlat_in, grid=grid_in)
         quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 

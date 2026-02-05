@@ -35,10 +35,10 @@ import math
 import numpy as np
 import torch
 
-def _precompute_grid(n: int, grid: Optional[str]="equidistant", a: Optional[float]=0.0, b: Optional[float]=1.0,
+def _precompute_quadrature_weights(n: int, grid: Optional[str]="equidistant", a: Optional[float]=0.0, b: Optional[float]=1.0,
                      periodic: Optional[bool]=False) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Precompute grid points and weights for various quadrature rules.
+    Precompute grid points and quadrature weights for various quadrature rules.
 
     Parameters
     -----------
@@ -82,17 +82,17 @@ def _precompute_grid(n: int, grid: Optional[str]="equidistant", a: Optional[floa
     return xlg, wlg
 
 @lru_cache(typed=True, copy=True)
-def _precompute_longitudes(nlon: int):
+def precompute_longitudes(nlon: int):
 
     lons = torch.linspace(0, 2 * math.pi, nlon+1, dtype=torch.float64, requires_grad=False)[:-1]
     return lons
 
 
 @lru_cache(typed=True, copy=True)
-def _precompute_latitudes(nlat: int, grid: Optional[str]="equiangular") -> Tuple[torch.Tensor, torch.Tensor]:
+def precompute_latitudes(nlat: int, grid: Optional[str]="equiangular") -> Tuple[torch.Tensor, torch.Tensor]:
 
     # compute coordinates in the cosine theta domain
-    xlg, wlg = _precompute_grid(nlat, grid=grid, a=-1.0, b=1.0, periodic=False)
+    xlg, wlg = _precompute_quadrature_weights(nlat, grid=grid, a=-1.0, b=1.0, periodic=False)
 
     # to perform the quadrature and account for the jacobian of the sphere, the quadrature rule
     # is formulated in the cosine theta domain, which is designed to integrate functions of cos theta

@@ -596,26 +596,3 @@ class LearnablePositionEmbedding(PositionEmbedding):
         else:
             raise ValueError(f"Unknown learnable position embedding type {embed_type}")
 
-# class SpiralPositionEmbedding(PositionEmbedding):
-#     """
-#     Returns position embeddings on the torus
-#     """
-
-#     def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1):
-
-#         super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
-
-#         with torch.no_grad():
-
-#             # alternating custom position embeddings
-#             lats, _ = _precompute_latitudes(img_shape[0], grid=grid)
-#             lats = lats.reshape(-1, 1)
-#             lons = torch.linspace(0, 2 * math.pi, img_shape[1] + 1)[:-1]
-#             lons = lons.reshape(1, -1)
-
-#             # channel index
-#             k = torch.arange(self.num_chans).reshape(1, -1, 1, 1)
-#             pos_embed = torch.where(k % 2 == 0, torch.sin(k * (lons + lats)), torch.cos(k * (lons - lats)))
-
-#         # register tensor
-#         self.register_buffer("position_embeddings", pos_embed.float())

@@ -15,7 +15,7 @@
 #
 # 3. Neither the name of the copyright holder nor the names of its
 # contributors may be used to endorse or promote products derived from
-# this software without specific prior written permission.
+# this softwrae without specific prior written permission.
 #
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 # AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -29,14 +29,14 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import List, Tuple, Union, Optional
+from typing import Optional
 import math
 #import numpy as np
 
 import torch
 import torch.nn as nn
 
-from torch_harmonics.quadrature import _precompute_latitudes, _precompute_longitudes
+from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
 
 
 class ResampleS2(nn.Module):
@@ -90,10 +90,10 @@ class ResampleS2(nn.Module):
         self.grid_out = grid_out
 
         # for upscaling the latitudes we will use interpolation
-        self.lats_in, _ = _precompute_latitudes(nlat_in, grid=grid_in)
-        self.lons_in = _precompute_longitudes(nlon_in)
-        self.lats_out, _ = _precompute_latitudes(nlat_out, grid=grid_out)
-        self.lons_out = _precompute_longitudes(nlon_out)
+        self.lats_in, _ = precompute_latitudes(nlat_in, grid=grid_in)
+        self.lons_in = precompute_longitudes(nlon_in)
+        self.lats_out, _ = precompute_latitudes(nlat_out, grid=grid_out)
+        self.lons_out = precompute_longitudes(nlon_out)
 
         # in the case where some points lie outside of the range spanned by lats_in,
         # we need to expand the solution to the poles before interpolating

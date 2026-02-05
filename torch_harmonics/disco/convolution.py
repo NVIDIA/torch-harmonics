@@ -30,18 +30,15 @@
 #
 
 import abc
-from typing import List, Tuple, Union, Optional
-from warnings import warn
+from typing import Tuple, Union, Optional
 
 import math
 
 import torch
 import torch.nn as nn
 
-from functools import partial
-
 from torch_harmonics.cache import lru_cache
-from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
+from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
 from ._disco_utils import _get_psi, _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from ._disco_utils import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
@@ -231,12 +228,12 @@ def _precompute_convolution_tensor_s2(
     nlat_out, nlon_out = out_shape
 
     # precompute input and output grids
-    lats_in, win = _precompute_latitudes(nlat_in, grid=grid_in)
-    lats_out, wout = _precompute_latitudes(nlat_out, grid=grid_out)
+    lats_in, win = precompute_latitudes(nlat_in, grid=grid_in)
+    lats_out, wout = precompute_latitudes(nlat_out, grid=grid_out)
 
     # compute the phi differences
     # It's imporatant to not include the 2 pi point in the longitudes, as it is equivalent to lon=0
-    lons_in = _precompute_longitudes(nlon_in)
+    lons_in = precompute_longitudes(nlon_in)
 
     # compute quadrature weights and merge them into the convolution tensor.
     # These quadrature integrate to 1 over the sphere.

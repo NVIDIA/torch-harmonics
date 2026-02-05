@@ -38,10 +38,8 @@ import torch.amp as amp
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
 from torch_harmonics import ResampleS2
-from torch_harmonics import RealSHT, InverseRealSHT
-from torch_harmonics.quadrature import _precompute_latitudes
 
-from torch_harmonics.examples.models._layers import MLP, LayerNorm, DropPath
+from torch_harmonics.examples.models._layers import MLP, DropPath
 
 from functools import partial
 

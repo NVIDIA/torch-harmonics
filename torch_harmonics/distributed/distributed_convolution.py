@@ -29,18 +29,13 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import List, Tuple, Union, Optional
+from typing import Tuple, Union, Optional
 from itertools import accumulate
 
 import torch
-import torch.nn as nn
 
-from functools import partial
-
-from torch_harmonics.quadrature import _precompute_grid, _precompute_latitudes, _precompute_longitudes
 from torch_harmonics.disco._disco_utils import _get_psi, _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from torch_harmonics.disco._disco_utils import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
-from torch_harmonics.filter_basis import get_filter_basis
 from disco_helpers import optimized_kernels_is_available, preprocess_psi
 from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
