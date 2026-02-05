@@ -39,7 +39,7 @@ import torch
 from torch.library import opcheck
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 
-from torch_harmonics.quadrature import _precompute_latitudes, _precompute_longitudes
+from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
 
 from testutils import disable_tf32, set_seed, compare_tensors
@@ -120,12 +120,12 @@ def _precompute_convolution_tensor_dense(
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
 
-    lats_in, win = _precompute_latitudes(nlat_in, grid=grid_in)
-    lats_out, wout = _precompute_latitudes(nlat_out, grid=grid_out)
+    lats_in, win = precompute_latitudes(nlat_in, grid=grid_in)
+    lats_out, wout = precompute_latitudes(nlat_out, grid=grid_out)
 
     # compute the phi differences.
-    lons_in = _precompute_longitudes(nlon_in)
-    lons_out = _precompute_longitudes(nlon_out)
+    lons_in = precompute_longitudes(nlon_in)
+    lons_out = precompute_longitudes(nlon_out)
 
     # effective theta cutoff if multiplied with a fudge factor to avoid aliasing with grid width (especially near poles)
     theta_cutoff_eff = (1.0 + theta_eps) * theta_cutoff

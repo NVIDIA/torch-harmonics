@@ -51,8 +51,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from torch_harmonics.examples import StanfordSegmentationDataset, Stanford2D3DSDownloader, StanfordDatasetSubset, compute_stats_s2
-from torch_harmonics.quadrature import _precompute_latitudes
-from torch_harmonics.examples.losses import DiceLossS2, CrossEntropyLossS2, FocalLossS2
+from torch_harmonics.examples.losses import CrossEntropyLossS2
 from torch_harmonics.examples.metrics import IntersectionOverUnionS2, AccuracyS2
 from torch_harmonics.plotting import plot_sphere, imshow_sphere
 

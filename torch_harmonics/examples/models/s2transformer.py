@@ -35,11 +35,10 @@ import torch
 import torch.nn as nn
 import torch.amp as amp
 
-from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
+from torch_harmonics import DiscreteContinuousConvS2
 from torch_harmonics import NeighborhoodAttentionS2, AttentionS2
 from torch_harmonics import ResampleS2
 from torch_harmonics import RealSHT, InverseRealSHT
-from torch_harmonics.quadrature import _precompute_latitudes
 
 from torch_harmonics.examples.models._layers import MLP, DropPath, LayerNorm, SequencePositionEmbedding, SpectralPositionEmbedding, LearnablePositionEmbedding
 

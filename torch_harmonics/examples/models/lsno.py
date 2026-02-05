@@ -36,7 +36,7 @@ import torch.nn as nn
 import torch.amp as amp
 
 from torch_harmonics import RealSHT, InverseRealSHT
-from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
+from torch_harmonics import DiscreteContinuousConvS2
 from torch_harmonics import ResampleS2
 
 from torch_harmonics.examples.models._layers import MLP, SpectralConvS2, SequencePositionEmbedding, SpectralPositionEmbedding, LearnablePositionEmbedding

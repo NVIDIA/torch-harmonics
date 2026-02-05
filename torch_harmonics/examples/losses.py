@@ -36,12 +36,12 @@ import torch.nn.functional as F
 from typing import Optional
 from abc import ABC, abstractmethod
 
-from torch_harmonics.quadrature import _precompute_latitudes
+from torch_harmonics.quadrature import precompute_latitudes
 
 
 def get_quadrature_weights(nlat: int, nlon: int, grid: str, tile: bool = False, normalized: bool = True) -> torch.Tensor:
     # area weights
-    _, q = _precompute_latitudes(nlat=nlat, grid=grid)
+    _, q = precompute_latitudes(nlat=nlat, grid=grid)
     q = q.reshape(-1, 1) * 2 * torch.pi / nlon
 
     # numerical precision can be an issue here, make sure it sums to 1:

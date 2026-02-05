@@ -33,7 +33,7 @@
 import torch
 import torch.nn as nn
 import torch_harmonics as th
-from torch_harmonics.quadrature import _precompute_longitudes
+from torch_harmonics.quadrature import precompute_longitudes
 
 import math
 import numpy as np
@@ -112,7 +112,7 @@ class ShallowWaterSolver(nn.Module):
 
         # apply cosine transform and flip them
         lats = -torch.arcsin(cost)
-        lons = _precompute_longitudes(self.nlon)
+        lons = precompute_longitudes(self.nlon)
 
         self.lmax = self.sht.lmax
         self.mmax = self.sht.mmax

@@ -33,11 +33,11 @@ import os
 import math
 
 import torch
-from torch.utils.data import Dataset, DataLoader, Subset
+from torch.utils.data import Dataset, Subset
 
 import numpy as np
 
-from torch_harmonics.quadrature import _precompute_latitudes
+from torch_harmonics.quadrature import precompute_latitudes
 from torch_harmonics.examples.losses import get_quadrature_weights
 
 # some specifiers where to find the dataset
@@ -304,7 +304,7 @@ class Stanford2D3DSDownloader:
 
             # prepare computation of the class histogram
             class_histogram = np.zeros(num_classes)
-            _, quad_weights = _precompute_latitudes(nlat=img_shape[0], grid="equiangular")
+            _, quad_weights = precompute_latitudes(nlat=img_shape[0], grid="equiangular")
             quad_weights = quad_weights.reshape(-1, 1) * 2 * torch.pi / float(img_shape[1])
             quad_weights = quad_weights.tile(1, img_shape[1])
             quad_weights /= torch.sum(quad_weights)
