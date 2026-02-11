@@ -134,8 +134,8 @@ class RealSHT(nn.Module):
         xout = torch.zeros(out_shape, dtype=x.dtype, device=x.device)
 
         # contraction
-        xout[..., 0] = torch.einsum("...mk,mlk->...lm", x[..., : self.mmax, 0], self.weights.to(x.dtype))
-        xout[..., 1] = torch.einsum("...mk,mlk->...lm", x[..., : self.mmax, 1], self.weights.to(x.dtype))
+        xout[..., 0] = torch.einsum("...mk,mlk->...lm", x[..., : self.mmax, :, 0], self.weights.to(x.dtype))
+        xout[..., 1] = torch.einsum("...mk,mlk->...lm", x[..., : self.mmax, :, 1], self.weights.to(x.dtype))
         x = torch.view_as_complex(xout)
 
         return x
