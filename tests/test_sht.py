@@ -219,22 +219,14 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
 
         set_seed(333)
 
-        if grid == "equiangular":
-            mmax = nlat // 2
-        elif grid == "lobatto":
-            mmax = nlat - 1
-        else:
-            mmax = nlat
-        lmax = mmax
-
         # init on cpu
-        sht_host = th.RealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm)
-        isht_host = th.InverseRealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm)
+        sht_host = th.RealSHT(nlat, nlon, grid=grid, norm=norm)
+        isht_host = th.InverseRealSHT(nlat, nlon, grid=grid, norm=norm)
 
         # init on device
         with torch.device(self.device):
-            sht_device = th.RealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm)
-            isht_device = th.InverseRealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm)
+            sht_device = th.RealSHT(nlat, nlon, grid=grid, norm=norm)
+            isht_device = th.InverseRealSHT(nlat, nlon, grid=grid, norm=norm)
 
         self.assertTrue(compare_tensors(f"sht weights", sht_host.weights.cpu(), sht_device.weights.cpu(), atol=atol, rtol=rtol, verbose=verbose))
         self.assertTrue(compare_tensors(f"isht weights", isht_host.pct.cpu(), isht_device.pct.cpu(), atol=atol, rtol=rtol, verbose=verbose))

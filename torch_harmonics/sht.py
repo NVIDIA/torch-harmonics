@@ -36,6 +36,7 @@ import torch.fft
 from torch_harmonics.truncation import truncate_sht
 from torch_harmonics.quadrature import legendre_gauss_weights, lobatto_weights, clenshaw_curtiss_weights
 from torch_harmonics.legendre import _precompute_legpoly, _precompute_dlegpoly
+from torch_harmonics.fft import rfft, irfft
 
 
 class RealSHT(nn.Module):
@@ -120,7 +121,7 @@ class RealSHT(nn.Module):
         assert x.shape[-1] == self.nlon
 
         # apply real fft in the longitudinal direction
-        x = 2.0 * torch.pi * torch.fft.rfft(x, dim=-1, norm="forward")
+        x = 2.0 * torch.pi * rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
 
         # do the Legendre-Gauss quadrature
         x = torch.view_as_real(x)
@@ -235,14 +236,7 @@ class InverseRealSHT(nn.Module):
         # apply the inverse (real) FFT
         x = torch.view_as_complex(xs)
 
-        # ensure that imaginary part of 0 and nyquist components are zero
-        # this is important because not all backend algorithms provided through the
-        # irfft interface ensure that
-        x[..., 0].imag = 0.0
-        if (self.nlon % 2 == 0) and (self.nlon // 2 < self.mmax):
-            x[..., self.nlon // 2].imag = 0.0
-
-        x = torch.fft.irfft(x, n=self.nlon, dim=-1, norm="forward")
+        x = irfft(x, n=self.nlon, dim=-1, norm="forward")
 
         return x
 
@@ -334,7 +328,7 @@ class RealVectorSHT(nn.Module):
         assert x.shape[-1] == self.nlon
 
         # apply real fft in the longitudinal direction
-        x = 2.0 * torch.pi * torch.fft.rfft(x, dim=-1, norm="forward")
+        x = 2.0 * torch.pi * rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
 
         # do the Legendre-Gauss quadrature
         x = torch.view_as_real(x)
@@ -468,13 +462,6 @@ class InverseRealVectorSHT(nn.Module):
         # apply the inverse (real) FFT
         x = torch.view_as_complex(xs)
 
-        # ensure that imaginary part of 0 and nyquist components are zero
-        # this is important because not all backend algorithms provided through the
-        # irfft interface ensure that
-        x[..., 0].imag = 0.0
-        if (self.nlon % 2 == 0) and (self.nlon // 2 < self.mmax):
-            x[..., self.nlon // 2].imag = 0.0
-
-        x = torch.fft.irfft(x, n=self.nlon, dim=-1, norm="forward")
+        x = irfft(x, n=self.nlon, dim=-1, norm="forward")
 
         return x
