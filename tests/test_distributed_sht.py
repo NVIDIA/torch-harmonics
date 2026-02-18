@@ -165,11 +165,11 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         # set up handles
         if vector:
-            forward_transform_local = th.RealVectorSHT(nlat=H, nlon=W, lmax=lmax, grid=grid).to(self.device)
-            forward_transform_dist = thd.DistributedRealVectorSHT(nlat=H, nlon=W, lmax=lmax, grid=grid).to(self.device)
+            forward_transform_local = th.RealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            forward_transform_dist = thd.DistributedRealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
         else:
-            forward_transform_local = th.RealSHT(nlat=H, nlon=W, lmax=lmax, grid=grid).to(self.device)
-            forward_transform_dist = thd.DistributedRealSHT(nlat=H, nlon=W, lmax=lmax, grid=grid).to(self.device)
+            forward_transform_local = th.RealSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            forward_transform_dist = thd.DistributedRealSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
 
         # create tensors
         if vector:
@@ -264,13 +264,13 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         B, C, H, W = batch_size, num_chan, nlat, nlon
 
         if vector:
-            forward_transform_local = th.RealVectorSHT(nlat=H, nlon=W, lmax=lmax, grid=grid).to(self.device)
-            backward_transform_local = th.InverseRealVectorSHT(nlat=H, nlon=W, lmax=lmax, grid=grid).to(self.device)
-            backward_transform_dist = thd.DistributedInverseRealVectorSHT(nlat=H, nlon=W, lmax=lmax, grid=grid).to(self.device)
+            forward_transform_local = th.RealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            backward_transform_local = th.InverseRealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            backward_transform_dist = thd.DistributedInverseRealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
         else:
-            forward_transform_local = th.RealSHT(nlat=H, nlon=W, lmax=lmax, grid=grid).to(self.device)
-            backward_transform_local = th.InverseRealSHT(nlat=H, nlon=W, lmax=lmax, grid=grid).to(self.device)
-            backward_transform_dist = thd.DistributedInverseRealSHT(nlat=H, nlon=W, lmax=lmax, grid=grid).to(self.device)
+            forward_transform_local = th.RealSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            backward_transform_local = th.InverseRealSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            backward_transform_dist = thd.DistributedInverseRealSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
 
         # create tensors
         if vector:
