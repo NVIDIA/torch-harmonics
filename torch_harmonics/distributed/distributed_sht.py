@@ -38,6 +38,7 @@ import torch.nn.functional as F
 from torch_harmonics.truncation import truncate_sht
 from torch_harmonics.quadrature import legendre_gauss_weights, lobatto_weights, clenshaw_curtiss_weights
 from torch_harmonics.legendre import _precompute_legpoly, _precompute_dlegpoly
+from torch_harmonics.fft import rfft, irfft
 from torch_harmonics.distributed import polar_group_size, azimuth_group_size, distributed_transpose_azimuth, distributed_transpose_polar
 from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
 from torch_harmonics.distributed import compute_split_shapes, split_tensor_along_dim
@@ -144,10 +145,7 @@ class DistributedRealSHT(nn.Module):
             x = distributed_transpose_azimuth(x, (-3, -1), self.lon_shapes)
 
         # apply real fft in the longitudinal direction: make sure to truncate to nlon
-        x = 2.0 * torch.pi * torch.fft.rfft(x, n=self.nlon, dim=-1, norm="forward")
-
-        # truncate
-        x = x[..., :self.mmax]
+        x = 2.0 * torch.pi * rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
 
         # transpose: after this, m is split and c is local
         if self.comm_size_azimuth > 1:
@@ -300,13 +298,8 @@ class DistributedInverseRealSHT(nn.Module):
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth(x, (-3, -1), self.m_shapes)
 
-        # set DCT and nyquist frequencies to 0:
-        x[..., 0].imag = 0.0
-        if (self.nlon % 2 == 0) and (self.nlon // 2 < x.shape[-1]):
-            x[..., self.nlon // 2].imag = 0.0
-
         # apply the inverse (real) FFT
-        x = torch.fft.irfft(x, n=self.nlon, dim=-1, norm="forward")
+        x = irfft(x, n=self.nlon, dim=-1, norm="forward")
 
         # transpose: after this, m is split and channels are local
         if self.comm_size_azimuth > 1:
@@ -423,10 +416,7 @@ class DistributedRealVectorSHT(nn.Module):
             x = distributed_transpose_azimuth(x, (-4, -1), self.lon_shapes)
 
         # apply real fft in the longitudinal direction: make sure to truncate to nlon
-        x = 2.0 * torch.pi * torch.fft.rfft(x, n=self.nlon, dim=-1, norm="forward")
-
-        # truncate
-        x = x[..., :self.mmax]
+        x = 2.0 * torch.pi * rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
 
         # transpose: after this, m is split and c is local
         if self.comm_size_azimuth > 1:
@@ -601,13 +591,8 @@ class DistributedInverseRealVectorSHT(nn.Module):
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth(x, (-4, -1), self.m_shapes)
 
-        # set DCT and nyquist frequencies to zero
-        x[..., 0].imag = 0.0
-        if (self.nlon % 2 == 0) and (self.nlon // 2 < x.shape[-1]):
-            x[..., self.nlon // 2].imag = 0.0
-
         # apply the inverse (real) FFT
-        x = torch.fft.irfft(x, n=self.nlon, dim=-1, norm="forward")
+        x = irfft(x, n=self.nlon, dim=-1, norm="forward")
 
         # transpose: after this, m is split and channels are local
         if self.comm_size_azimuth > 1:
