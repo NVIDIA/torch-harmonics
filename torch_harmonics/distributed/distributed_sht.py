@@ -114,7 +114,9 @@ class DistributedRealSHT(nn.Module):
 
         # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
+        self.nlat_local = self.lat_shapes[self.comm_rank_polar]
         self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
+        self.nlon_local = self.lon_shapes[self.comm_rank_azimuth]
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
@@ -136,6 +138,9 @@ class DistributedRealSHT(nn.Module):
 
         if x.dim() < 3:
             raise ValueError(f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
+
+        assert x.shape[-2] == self.nlat_local
+        assert x.shape[-1] == self.nlon_local
 
         # we need to ensure that we can split the channels evenly
         num_chans = x.shape[-3]
@@ -247,6 +252,7 @@ class DistributedInverseRealSHT(nn.Module):
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
         self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
+        self.lmax_local = self.l_shapes[self.comm_rank_polar]
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
 
@@ -266,6 +272,9 @@ class DistributedInverseRealSHT(nn.Module):
 
         if x.dim() < 3:
             raise ValueError(f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
+
+        assert x.shape[-2] == self.lmax_local
+        assert x.shape[-1] == self.mmax_local
 
         # we need to ensure that we can split the channels evenly
         num_chans = x.shape[-3]
@@ -377,7 +386,9 @@ class DistributedRealVectorSHT(nn.Module):
 
         # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
+        self.nlat_local = self.lat_shapes[self.comm_rank_polar]
         self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
+        self.nlon_local = self.lon_shapes[self.comm_rank_azimuth]
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
@@ -407,6 +418,9 @@ class DistributedRealVectorSHT(nn.Module):
 
         if x.dim() < 4:
             raise ValueError(f"Expected tensor with at least 4 dimensions but got {x.dim()} instead")
+
+        assert x.shape[-2] == self.nlat_local
+        assert x.shape[-1] == self.nlon_local
 
         # we need to ensure that we can split the channels evenly
         num_chans = x.shape[-4]
@@ -530,7 +544,9 @@ class DistributedInverseRealVectorSHT(nn.Module):
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
         self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
+        self.lmax_local = self.l_shapes[self.comm_rank_polar]
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
+        self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
 
         # compute legende polynomials
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
@@ -548,6 +564,9 @@ class DistributedInverseRealVectorSHT(nn.Module):
 
         if x.dim() < 4:
             raise ValueError(f"Expected tensor with at least 4 dimensions but got {x.dim()} instead")
+
+        assert x.shape[-2] == self.lmax_local
+        assert x.shape[-1] == self.mmax_local
 
         # store num channels
         num_chans = x.shape[-4]
