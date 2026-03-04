@@ -47,7 +47,7 @@ from torch_harmonics.distributed import polar_group_size, azimuth_group_size
 from torch_harmonics.distributed import distributed_transpose_azimuth
 from torch_harmonics.distributed import reduce_from_polar_region, scatter_to_polar_region, gather_from_polar_region, copy_to_polar_region
 from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
-from torch_harmonics.distributed import compute_split_shapes, split_tensor_along_dim
+from torch_harmonics.distributed import compute_split_shapes
 
 
 def _split_distributed_convolution_tensor_s2(

@@ -28,6 +28,7 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
+import os
 from typing import List
 
 import torch
@@ -36,6 +37,8 @@ from torch.amp import custom_fwd, custom_bwd
 
 from .utils import polar_group, azimuth_group, polar_group_size
 from .utils import is_distributed_polar, is_distributed_azimuth
+
+_DEBUG = os.getenv("TORCH_HARMONICS_DISTRIBUTED_DEBUG", "0") == "1"
 
 # helper routine to compute uneven splitting in balanced way:
 def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
@@ -73,11 +76,21 @@ def split_tensor_along_dim(tensor, dim, num_chunks):
     return tensor_list
 
 
-def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False):
+def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False, verify_shapes=_DEBUG):
     
     # get comm params
     comm_size = dist.get_world_size(group=group)
     comm_rank = dist.get_rank(group=group)
+
+    # verify_shapes: check that dim1_split_sizes are correct:
+    if verify_shapes:
+        stens = torch.as_tensor([tensor.size(dim1)], dtype=torch.int64, device=tensor.device)
+        stens_gather = [torch.empty_like(stens) for _ in range(comm_size)]
+        stens_gather[comm_rank] = stens
+        dist.all_gather(stens_gather, stens, group=group)
+        for size_gather, size_expected in zip(stens_gather, dim1_split_sizes):
+            if size_gather.item() != size_expected:
+                raise ValueError(f"Error, dim1_split_sizes are not correct. Expected {size_expected}, got {size_gather.item()}. Please check that the number of chunks is correct.")
 
     # split and local transposition
     tsplit = split_tensor_along_dim(tensor, num_chunks=comm_size, dim=dim0)
@@ -105,8 +118,9 @@ class _DistributeTransposeAzimuth(torch.autograd.Function):
     def forward(ctx, x, dims, dim1_split_sizes):
 
         # WAR for a potential contig check torch bug for channels last contig tensors
+        x = x.contiguous()
         xlist, dim0_split_sizes, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=azimuth_group())
-        x = torch.cat(xlist, dim=dims[1])
+        x = torch.cat(xlist, dim=dims[1]).contiguous()
         ctx.dims = dims
         ctx.dim0_split_sizes = dim0_split_sizes
         
@@ -117,9 +131,10 @@ class _DistributeTransposeAzimuth(torch.autograd.Function):
     def backward(ctx, go):
         dims = ctx.dims
         dim0_split_sizes = ctx.dim0_split_sizes
+        go = go.contiguous()
         # WAR for a potential contig check torch bug for channels last contig tensors 
         gilist, _, _ = _transpose(go, dims[1], dims[0], dim0_split_sizes, group=azimuth_group())
-        gi = torch.cat(gilist, dim=dims[0])
+        gi = torch.cat(gilist, dim=dims[0]).contiguous()
         
         return gi, None, None
 
@@ -131,8 +146,9 @@ class _DistributeTransposePolar(torch.autograd.Function):
     def forward(ctx, x, dims, dim1_split_sizes):
 
         # WAR for a potential contig check torch bug for channels last contig tensors 
+        x = x.contiguous()
         xlist, dim0_split_sizes, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=polar_group())
-        x = torch.cat(xlist, dim=dims[1])
+        x = torch.cat(xlist, dim=dims[1]).contiguous()
         ctx.dims = dims
         ctx.dim0_split_sizes = dim0_split_sizes
         return x
@@ -144,8 +160,9 @@ class _DistributeTransposePolar(torch.autograd.Function):
         dims = ctx.dims
         dim0_split_sizes = ctx.dim0_split_sizes
         # WAR for a potential contig check torch bug for channels last contig tensors 
+        go = go.contiguous()
         gilist, _, _ = _transpose(go, dims[1], dims[0], dim0_split_sizes, group=polar_group())
-        gi = torch.cat(gilist, dim=dims[0])
+        gi = torch.cat(gilist, dim=dims[0]).contiguous()
         return gi, None, None
 
     
