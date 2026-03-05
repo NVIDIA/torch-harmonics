@@ -29,10 +29,8 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os
 import torch
 import torch.nn as nn
-import torch.fft
 import torch.nn.functional as F
 
 from torch_harmonics.truncation import truncate_sht

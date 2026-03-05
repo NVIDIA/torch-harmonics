@@ -30,6 +30,7 @@
 #
 
 # we need this in order to enable distributed
+from .utils import _DistributedConfig
 from .utils import init, finalize, is_initialized, polar_group, azimuth_group
 from .utils import polar_group_size, azimuth_group_size, polar_group_rank, azimuth_group_rank
 from .utils import config
@@ -46,6 +47,8 @@ from .primitives import (
     reduce_from_scatter_to_polar_region,
     gather_from_copy_to_polar_region
 )
+
+config = _DistributedConfig()
 
 # import quadrature
 from .distributed_quadrature import DistributedQuadratureS2

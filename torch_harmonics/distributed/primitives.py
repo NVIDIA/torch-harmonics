@@ -34,9 +34,9 @@ import torch
 import torch.distributed as dist
 from torch.amp import custom_fwd, custom_bwd
 
+from torch_harmonics.distributed import config
 from .utils import polar_group, azimuth_group, polar_group_size
 from .utils import is_distributed_polar, is_distributed_azimuth
-from .utils import config
 
 def _check_shapes(shapes_gather, shapes_expected):
     for idx, (size_gather, size_expected) in enumerate(zip(shapes_gather, shapes_expected)):

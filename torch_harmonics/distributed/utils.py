@@ -66,8 +66,6 @@ class _DistributedConfig:
         return f"_DistributedConfig(debug={self.debug})"
 
 
-config = _DistributedConfig()
-
 def polar_group():
     return _POLAR_PARALLEL_GROUP
 
