@@ -32,6 +32,7 @@
 # we need this in order to enable distributed
 from .utils import init, finalize, is_initialized, polar_group, azimuth_group
 from .utils import polar_group_size, azimuth_group_size, polar_group_rank, azimuth_group_rank
+from .utils import config
 from .primitives import compute_split_shapes, split_tensor_along_dim
 from .primitives import (
     distributed_transpose_azimuth,

@@ -28,7 +28,6 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
-import os
 from typing import List
 
 import torch
@@ -37,8 +36,13 @@ from torch.amp import custom_fwd, custom_bwd
 
 from .utils import polar_group, azimuth_group, polar_group_size
 from .utils import is_distributed_polar, is_distributed_azimuth
+from .utils import config
 
-_DEBUG = os.getenv("TORCH_HARMONICS_DISTRIBUTED_DEBUG", "0") == "1"
+def _check_shapes(shapes_gather, shapes_expected):
+    for idx, (size_gather, size_expected) in enumerate(zip(shapes_gather, shapes_expected)):
+        if size_gather != size_expected:
+            raise ValueError(f"Error, shapes_ are not correct. Expected {size_expected}, got {size_gather} for index {idx}. Please check that the number of chunks is correct.")
+
 
 # helper routine to compute uneven splitting in balanced way:
 def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
@@ -61,7 +65,7 @@ def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
 
     return sections
 
-    
+
 def split_tensor_along_dim(tensor, dim, num_chunks):
     """Split a tensor along a given dimension into a given number of chunks."""
     
@@ -76,8 +80,11 @@ def split_tensor_along_dim(tensor, dim, num_chunks):
     return tensor_list
 
 
-def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False, verify_shapes=_DEBUG):
+def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False, verify_shapes=None):
     
+    if verify_shapes is None:
+        verify_shapes = config.debug
+
     # get comm params
     comm_size = dist.get_world_size(group=group)
     comm_rank = dist.get_rank(group=group)
@@ -88,9 +95,8 @@ def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False,
         stens_gather = [torch.empty_like(stens) for _ in range(comm_size)]
         stens_gather[comm_rank] = stens
         dist.all_gather(stens_gather, stens, group=group)
-        for size_gather, size_expected in zip(stens_gather, dim1_split_sizes):
-            if size_gather.item() != size_expected:
-                raise ValueError(f"Error, dim1_split_sizes are not correct. Expected {size_expected}, got {size_gather.item()}. Please check that the number of chunks is correct.")
+        sizes_gather = [stens.item() for stens in stens_gather]
+        _check_shapes(sizes_gather, dim1_split_sizes)
 
     # split and local transposition
     tsplit = split_tensor_along_dim(tensor, num_chunks=comm_size, dim=dim0)
@@ -203,33 +209,54 @@ def _split(input_, dim_, group=None):
     return output
 
 
-def _gather(input_, dim_, shapes_, group=None):
+def _gather(input_, dim_, shapes_, group=None, verify_shapes=None):
     
-    comm_size = dist.get_world_size(group=group)
+    if verify_shapes is None:
+        verify_shapes = config.debug
 
-    if (shapes_ is not None) and (len(shapes_) != comm_size):
-        raise ValueError()
-    if dim_ >= input_.dim():
-        raise ValueError()
+    comm_size = dist.get_world_size(group=group)
 
     if comm_size == 1:
         return input_
+
+    if (shapes_ is not None) and (len(shapes_) != comm_size):
+        raise ValueError(f"Error, shapes_ is not correct. Expected {comm_size}, got {len(shapes_)}. Please check that the number of chunks is correct.")
+    if dim_ >= input_.dim():
+        raise ValueError(f"Error, dim_ is not correct. Expected {input_.dim()}, got {dim_}. Please check that the dimension is correct.")
+
+    # verify shapes:
+    if verify_shapes and shapes_ is not None:
+        comm_rank = dist.get_rank(group=group)
+        stens = torch.as_tensor([input_.size(dim_)], dtype=torch.int64, device=input_.device)
+        stens_gather = [torch.empty_like(stens) for _ in range(comm_size)]
+        stens_gather[comm_rank] = stens
+        dist.all_gather(stens_gather, stens, group=group)
+        sizes_gather = [stens.item() for stens in stens_gather]
+        _check_shapes(sizes_gather, shapes_)
 
     # make contiguous:
     input_ = input_.contiguous()
     input_shape = list(input_.shape)
 
-    if shapes_ is not None:
-        input_list = []
-        for src in range(comm_size):
-            input_shape[dim_] = shapes_[src]
-            input_list.append(torch.empty(input_shape, dtype=input_.dtype, device=input_.device))
-    else:
-        # assume equal shape on all ranks
-        input_list = [torch.empty_like(input_) for _ in range(comm_size)]
+    if shapes_ is None:
+        # gather shapes across ranks
+        comm_rank = dist.get_rank(group=group)
+        stens = torch.as_tensor([input_.size(dim_)], dtype=torch.int64, device=input_.device)
+        stens_gather = [torch.empty_like(stens) for _ in range(comm_size)]
+        stens_gather[comm_rank] = stens
+        dist.all_gather(stens_gather, stens, group=group)
+        shapes_ = [stens.item() for stens in stens_gather]
 
+    # now create the recv list
+    input_list = []
+    for src in range(comm_size):
+        input_shape[dim_] = shapes_[src]
+        input_list.append(torch.empty(input_shape, dtype=input_.dtype, device=input_.device))
+
+    # gather data across ranks
     dist.all_gather(input_list, input_, group=group)
 
+    # concatenate along dim
     output = torch.cat(input_list, dim=dim_)
 
     return output
