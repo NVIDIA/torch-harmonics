@@ -30,13 +30,43 @@
 #
 
 # we need this in order to enable distributed
-import torch
+import os
+
 import torch.distributed as dist
 
 # those need to be global
 _POLAR_PARALLEL_GROUP = None
 _AZIMUTH_PARALLEL_GROUP = None
 _IS_INITIALIZED = False
+
+
+class _DistributedConfig:
+    """
+    Module-level configuration for torch_harmonics.distributed.
+    Env vars are used as defaults but can be overridden programmatically, e.g.:
+
+        from torch_harmonics.distributed import config
+        config.debug = True
+    """
+
+    def __init__(self):
+        self._debug = None
+
+    @property
+    def debug(self):
+        if self._debug is None:
+            return os.getenv("TORCH_HARMONICS_DISTRIBUTED_DEBUG", "0") == "1"
+        return self._debug
+
+    @debug.setter
+    def debug(self, value):
+        self._debug = bool(value)
+
+    def __repr__(self):
+        return f"_DistributedConfig(debug={self.debug})"
+
+
+config = _DistributedConfig()
 
 def polar_group():
     return _POLAR_PARALLEL_GROUP
