@@ -48,7 +48,8 @@ from .primitives import (
     gather_from_copy_to_polar_region
 )
 
-config = _DistributedConfig()
+# set up debug configuration
+distributed_debug_config = _DistributedConfig()
 
 # import quadrature
 from .distributed_quadrature import DistributedQuadratureS2

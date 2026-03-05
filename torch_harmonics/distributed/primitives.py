@@ -34,7 +34,7 @@ import torch
 import torch.distributed as dist
 from torch.amp import custom_fwd, custom_bwd
 
-from torch_harmonics.distributed import config
+from torch_harmonics.distributed import distributed_debug_config
 from .utils import polar_group, azimuth_group, polar_group_size
 from .utils import is_distributed_polar, is_distributed_azimuth
 
@@ -83,7 +83,7 @@ def split_tensor_along_dim(tensor, dim, num_chunks):
 def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False, verify_shapes=None):
     
     if verify_shapes is None:
-        verify_shapes = config.debug
+        verify_shapes = distributed_debug_config.debug
 
     # get comm params
     comm_size = dist.get_world_size(group=group)
@@ -212,7 +212,7 @@ def _split(input_, dim_, group=None):
 def _gather(input_, dim_, shapes_, group=None, verify_shapes=None):
     
     if verify_shapes is None:
-        verify_shapes = config.debug
+        verify_shapes = distributed_debug_config.debug
 
     comm_size = dist.get_world_size(group=group)
 
