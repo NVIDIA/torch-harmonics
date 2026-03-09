@@ -47,23 +47,14 @@ def _check_shapes(shapes_gather, shapes_expected):
 # helper routine to compute uneven splitting in balanced way:
 def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
     """Compute the split shapes for a given size and number of chunks."""
-    
-    # treat trivial case first
-    if num_chunks == 1:
-        return [size]
-    
-    # first, check if we can split using div-up to balance the load: 
-    chunk_size = (size + num_chunks - 1) // num_chunks
-    last_chunk_size = max(0, size - chunk_size * (num_chunks - 1))
-    if last_chunk_size == 0:
-        # in this case, the last shard would be empty, split with floor instead:
-        chunk_size = size // num_chunks
-        last_chunk_size = size - chunk_size * (num_chunks-1)
 
-    # generate sections list
-    sections = [chunk_size for _ in range(num_chunks - 1)] + [last_chunk_size]
+    assert size >= num_chunks, (
+        f"Cannot split {size} elements into {num_chunks} chunks; "
+        f"every chunk must be non-empty."
+    )
 
-    return sections
+    base, remainder = divmod(size, num_chunks)
+    return [base + 1] * remainder + [base] * (num_chunks - remainder)
 
 
 def split_tensor_along_dim(tensor, dim, num_chunks):
