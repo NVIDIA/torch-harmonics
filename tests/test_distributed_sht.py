@@ -121,7 +121,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, None, 32,  8, "legendre-gauss", False, 1e-7, 1e-9],
             [33, 64, None,  1, 10, "equiangular", False, 1e-6, 1e-6],
             [33, 64, None,  1, 10, "legendre-gauss", False, 1e-6, 1e-6],
-            [ 4,  8, None,  1, 10, "equiangular", False, 1e-6, 1e-6],
+            [ 8, 16, None,  1, 10, "equiangular", False, 1e-6, 1e-6],
             # Vector SHT
             [32, 64, None, 32,  8, "equiangular", True, 1e-7, 1e-9],
             [32, 64, None, 32,  8, "legendre-gauss", True, 1e-7, 1e-9],
@@ -153,8 +153,6 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, 64, 32,  8, "legendre-gauss", True, 1e-7, 1e-9],
             [33, 64, 65,  1, 10, "equiangular", True, 1e-6, 1e-6],
             [33, 64, 64,  1, 10, "legendre-gauss", True, 1e-6, 1e-6],
-
-
         ], skip_on_empty=True
     )
     def test_distributed_sht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, verbose=False):
