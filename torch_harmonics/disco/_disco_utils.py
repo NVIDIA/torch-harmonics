@@ -139,6 +139,108 @@ if optimized_kernels_is_available():
     torch.library.register_autograd(
         "disco_kernels::_disco_s2_transpose_contraction_optimized", _disco_s2_transpose_contraction_bwd_optimized, setup_context=_setup_context_conv_backward)
 
+# FFT-based contraction functions
+def _densify_psi(psi_sparse: torch.Tensor, nlat_in: int, nlon_in: int):
+    """Convert sparse psi (K, nlat_out, nlat_in * nlon_in) to dense (K, nlat_out, nlat_in, nlon_in)."""
+    K, nlat_out, _ = psi_sparse.shape
+    return psi_sparse.to_dense().reshape(K, nlat_out, nlat_in, nlon_in)
+
+
+def _precompute_psi_fft_conj(psi_sparse: torch.Tensor, nlat_in: int, nlon_in: int):
+    """Densify psi and return conjugate of its rfft along the longitude axis."""
+    psi_dense = _densify_psi(psi_sparse, nlat_in, nlon_in)
+    return torch.fft.rfft(psi_dense, dim=-1).conj()
+
+
+def _disco_s2_contraction_fft(x: torch.Tensor, psi_fft_conj: torch.Tensor, nlon_out: int):
+    """
+    FFT-based DISCO S2 contraction. Replaces the loop-and-roll implementation
+    with FFT circular cross-correlation.
+
+    Parameters
+    ----------
+    x : torch.Tensor of shape (B, C, nlat_in, nlon_in)
+    psi_fft_conj : torch.Tensor of shape (K, nlat_out, nlat_in, nlon_in//2+1)
+        Precomputed conjugate FFT of the dense psi kernel.
+    nlon_out : int
+
+    Returns
+    -------
+    torch.Tensor of shape (B, C, K, nlat_out, nlon_out)
+    """
+    batch_size, n_chans, nlat_in, nlon_in = x.shape
+    kernel_size, nlat_out, _, nfreq = psi_fft_conj.shape
+    pscale = nlon_in // nlon_out
+
+    # FFT of input along longitude
+    X_f = torch.fft.rfft(x.to(torch.float32), dim=-1)  # (B*C, nlat_in, nfreq)
+    X_f = X_f.reshape(batch_size * n_chans, nlat_in, nfreq)
+
+    # Cross-correlate: einsum over nlat_in and frequency, then irfft
+    # psi_fft_conj: (K, nlat_out, nlat_in, nfreq)
+    # X_f: (B*C, nlat_in, nfreq)
+    Y_f = torch.einsum("konf,bnf->bkof", psi_fft_conj.to(X_f.dtype), X_f)
+    # Y_f: (B*C, K, nlat_out, nfreq)
+
+    # Inverse FFT
+    y = torch.fft.irfft(Y_f, n=nlon_in, dim=-1)  # (B*C, K, nlat_out, nlon_in)
+
+    # Subsample for stride
+    y = y[..., ::pscale]  # (B*C, K, nlat_out, nlon_out)
+
+    y = y.reshape(batch_size, n_chans, kernel_size, nlat_out, nlon_out).contiguous()
+    return y.to(x.dtype)
+
+
+def _disco_s2_transpose_contraction_fft(x: torch.Tensor, psi_fft_conj: torch.Tensor, nlon_out: int):
+    """
+    FFT-based DISCO S2 transpose contraction.
+
+    Parameters
+    ----------
+    x : torch.Tensor of shape (B, C, K, nlat_in, nlon_in)
+    psi_fft_conj : torch.Tensor of shape (K, nlat_out, nlat_in, nfreq)
+        Precomputed conjugate FFT of the semi-transposed dense psi kernel.
+        psi_st_dense has shape (K, nlat_out, nlat_in, nlon_out).
+    nlon_out : int
+
+    Returns
+    -------
+    torch.Tensor of shape (B, C, nlat_out, nlon_out)
+    """
+    batch_size, n_chans, kernel_size, nlat_in, nlon_in = x.shape
+    _, nlat_out, nlat_in_psi, nfreq = psi_fft_conj.shape
+
+    assert nlat_in_psi == nlat_in
+    assert nlon_out >= nlon_in
+    pscale = nlon_out // nlon_in
+
+    # Upsample x by interleaving zeros along longitude
+    x = x.reshape(batch_size * n_chans, kernel_size, nlat_in, nlon_in)
+    x_ext = torch.zeros(batch_size * n_chans, kernel_size, nlat_in, nlon_out, device=x.device, dtype=x.dtype)
+    x_ext[..., ::pscale] = x
+
+    # The loop-based code does roll(-1) BEFORE bmm for each pout.
+    # This means pout=0 uses a shift of -1, pout=1 uses -2, etc.
+    # Apply this constant offset before FFT.
+    x_ext = torch.roll(x_ext, -1, dims=-1)
+
+    # FFT of upsampled input along longitude
+    X_f = torch.fft.rfft(x_ext.to(torch.float32), dim=-1)  # (B*C, K, nlat_in, nfreq)
+
+    # Cross-correlate and sum over K and nlat_in
+    # psi_fft_conj: (K, nlat_out, nlat_in, nfreq)
+    # X_f: (B*C, K, nlat_in, nfreq)
+    Y_f = torch.einsum("koif,bkif->bof", psi_fft_conj.to(X_f.dtype), X_f)
+    # Y_f: (B*C, nlat_out, nfreq)
+
+    # Inverse FFT
+    y = torch.fft.irfft(Y_f, n=nlon_out, dim=-1)  # (B*C, nlat_out, nlon_out)
+
+    y = y.reshape(batch_size, n_chans, nlat_out, nlon_out).contiguous()
+    return y.to(x.dtype)
+
+
 # torch kernel related functions
 def _get_psi(kernel_size: int, psi_idx: torch.Tensor, psi_vals: torch.Tensor, nlat_in: int, nlon_in: int, nlat_out: int, nlon_out: int, nlat_in_local: Optional[int] = None, nlat_out_local: Optional[int] = None, semi_transposed: Optional[bool] = False):
     """Creates a sparse tensor for spherical harmonic convolution operations."""
