@@ -159,19 +159,16 @@ class DistributedRealSHT(nn.Module):
         if self.comm_size_polar > 1:
             x = distributed_transpose_polar(x, (-3, -2), self.lat_shapes)
 
-        # do the Legendre-Gauss quadrature
-        x = torch.view_as_real(x)
+        # transpose to put the contraction dim (nlat) on the fast axis
+        x = x.transpose(-1, -2)
+        x_re = x.real.contiguous()
+        x_im = x.imag.contiguous()
 
-        # contraction
-        out_shape = list(x.size())
-        out_shape[-3] = self.lmax
-        out_shape[-2] = self.mmax_local
-        xs = torch.zeros(out_shape, dtype=x.dtype, device=x.device)
-        xs[..., 0] = torch.einsum("...km,mlk->...lm", x[..., : self.mmax_local, 0], self.weights.to(x.dtype))
-        xs[..., 1] = torch.einsum("...km,mlk->...lm", x[..., : self.mmax_local, 1], self.weights.to(x.dtype))
-
-        # cast to complex
-        x = torch.view_as_complex(xs)
+        # Legendre-Gauss quadrature: contract over k=nlat (stride-1 in both operands)
+        w = self.weights.to(x_re.dtype)
+        out_re = torch.einsum("...mk,mlk->...lm", x_re, w)
+        out_im = torch.einsum("...mk,mlk->...lm", x_im, w)
+        x = torch.complex(out_re, out_im)
 
         # transpose: after this, l is split and c is local
         if self.comm_size_polar	> 1:
@@ -254,8 +251,10 @@ class DistributedInverseRealSHT(nn.Module):
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
 
-        # compute legende polynomials
+        # compute legendre polynomials
+        # store as (mmax, nlat, lmax) so the contraction dim l is stride-1
         pct = _precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        pct = pct.permute(0, 2, 1).contiguous()
 
         # split in m
         pct = split_tensor_along_dim(pct, dim=0, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth].contiguous()
@@ -281,21 +280,17 @@ class DistributedInverseRealSHT(nn.Module):
         if self.comm_size_polar > 1:
             x = distributed_transpose_polar(x, (-3, -2), self.l_shapes)
 
-        # Evaluate associated Legendre functions on the output nodes
-        x = torch.view_as_real(x)
+        # transpose to put the contraction dim (lmax) on the fast axis
+        x = x.transpose(-1, -2)
+        x_re = x.real.contiguous()
+        x_im = x.imag.contiguous()
 
-        # prepare output
-        out_shape = list(x.size())
-        out_shape[-3] = self.nlat
-        out_shape[-2] = self.mmax_local
-        xs = torch.zeros(out_shape, dtype=x.dtype, device=x.device)
-
-        # legendre transformation
-        xs[..., 0] = torch.einsum("...lm,mlk->...km", x[..., 0], self.pct.to(x.dtype))
-        xs[..., 1] = torch.einsum("...lm,mlk->...km", x[..., 1], self.pct.to(x.dtype))
-
-        # inverse FFT
-        x = torch.view_as_complex(xs)
+        # legendre transformation: contract over l=lmax (stride-1 in both operands)
+        # pct layout: (mmax_local, nlat, lmax)
+        w = self.pct.to(x_re.dtype)
+        out_re = torch.einsum("...ml,mkl->...km", x_re, w)
+        out_im = torch.einsum("...ml,mkl->...km", x_im, w)
+        x = torch.complex(out_re, out_im)
 
         if self.comm_size_polar > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
@@ -417,6 +412,7 @@ class DistributedRealVectorSHT(nn.Module):
         if x.dim() < 4:
             raise ValueError(f"Expected tensor with at least 4 dimensions but got {x.dim()} instead")
 
+        assert x.shape[-3] == 2
         assert x.shape[-2] == self.nlat_local
         assert x.shape[-1] == self.nlon_local
 
@@ -439,33 +435,27 @@ class DistributedRealVectorSHT(nn.Module):
         if self.comm_size_polar > 1:
             x = distributed_transpose_polar(x, (-4, -2), self.lat_shapes)
 
-        # do the Legendre-Gauss quadrature
-        x = torch.view_as_real(x)
+        # transpose to put the contraction dim (nlat) on the fast axis
+        x = x.transpose(-1, -2)
+        x_re = x.real.contiguous()
+        x_im = x.imag.contiguous()
 
-        # set up output tensor
-        out_shape = list(x.size())
-        out_shape[-3] = self.lmax
-        out_shape[-2] = self.mmax_local
-        xs = torch.zeros(out_shape, dtype=x.dtype, device=x.device)
+        w0 = self.weights[0].to(x_re.dtype)
+        w1 = self.weights[1].to(x_re.dtype)
 
         # contraction - spheroidal component
-        # real component
-        xs[..., 0, :, :, 0] =   torch.einsum('...km,mlk->...lm', x[..., 0, :, :, 0], self.weights[0].to(xs.dtype)) \
-                              - torch.einsum('...km,mlk->...lm', x[..., 1, :, :, 1], self.weights[1].to(xs.dtype))
-        # imag component
-        xs[..., 0, :, :, 1] =   torch.einsum('...km,mlk->...lm', x[..., 0, :, :, 1], self.weights[0].to(xs.dtype)) \
-                              + torch.einsum('...km,mlk->...lm', x[..., 1, :, :, 0], self.weights[1].to(xs.dtype))
+        s_re = torch.einsum('...mk,mlk->...lm', x_re[..., 0, :, :], w0) \
+             - torch.einsum('...mk,mlk->...lm', x_im[..., 1, :, :], w1)
+        s_im = torch.einsum('...mk,mlk->...lm', x_im[..., 0, :, :], w0) \
+             + torch.einsum('...mk,mlk->...lm', x_re[..., 1, :, :], w1)
 
         # contraction - toroidal component
-        # real component
-        xs[..., 1, :, :, 0] = - torch.einsum('...km,mlk->...lm', x[..., 0, :, :, 1], self.weights[1].to(xs.dtype)) \
-                              - torch.einsum('...km,mlk->...lm', x[..., 1, :, :, 0], self.weights[0].to(xs.dtype))
-        # imag component
-        xs[..., 1, :, :, 1] =   torch.einsum('...km,mlk->...lm', x[..., 0, :, :, 0], self.weights[1].to(xs.dtype)) \
-                              - torch.einsum('...km,mlk->...lm', x[..., 1, :, :, 1], self.weights[0].to(xs.dtype))
+        t_re = -torch.einsum('...mk,mlk->...lm', x_im[..., 0, :, :], w1) \
+              - torch.einsum('...mk,mlk->...lm', x_re[..., 1, :, :], w0)
+        t_im = torch.einsum('...mk,mlk->...lm', x_re[..., 0, :, :], w1) \
+             - torch.einsum('...mk,mlk->...lm', x_im[..., 1, :, :], w0)
 
-        # pad if required
-        x = torch.view_as_complex(xs)
+        x = torch.stack((torch.complex(s_re, s_im), torch.complex(t_re, t_im)), dim=-3).contiguous()
 
         # transpose: after this, l is split and c is local
         if self.comm_size_polar > 1:
@@ -546,8 +536,10 @@ class DistributedInverseRealVectorSHT(nn.Module):
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
 
-        # compute legende polynomials
+        # compute legendre polynomials
+        # store as (2, mmax, nlat, lmax) so the contraction dim l is stride-1
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        dpct = dpct.permute(0, 1, 3, 2).contiguous()
 
         # split in m
         dpct = split_tensor_along_dim(dpct, dim=1, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth].contiguous()
@@ -563,6 +555,7 @@ class DistributedInverseRealVectorSHT(nn.Module):
         if x.dim() < 4:
             raise ValueError(f"Expected tensor with at least 4 dimensions but got {x.dim()} instead")
 
+        assert x.shape[-3] == 2
         assert x.shape[-2] == self.lmax_local
         assert x.shape[-1] == self.mmax_local
 
@@ -573,32 +566,29 @@ class DistributedInverseRealVectorSHT(nn.Module):
         if self.comm_size_polar > 1:
             x = distributed_transpose_polar(x, (-4, -2), self.l_shapes)
 
-        # Evaluate associated Legendre functions on the output nodes
-        x = torch.view_as_real(x)
+        # transpose to put the contraction dim (lmax) on the fast axis
+        x = x.transpose(-1, -2)
+        x_re = x.real.contiguous()
+        x_im = x.imag.contiguous()
+
+        # dpct layout: (2, mmax_local, nlat, lmax) — contract over l (stride-1 in both operands)
+        d0 = self.dpct[0].to(x_re.dtype)
+        d1 = self.dpct[1].to(x_re.dtype)
 
         # contraction - spheroidal component
-        # real component
-        srl =   torch.einsum('...lm,mlk->...km', x[..., 0, :, :, 0], self.dpct[0].to(x.dtype)) \
-              - torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 1], self.dpct[1].to(x.dtype))
-        # imag component
-        sim =   torch.einsum('...lm,mlk->...km', x[..., 0, :, :, 1], self.dpct[0].to(x.dtype)) \
-              + torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 0], self.dpct[1].to(x.dtype))
+        srl = torch.einsum('...ml,mkl->...km', x_re[..., 0, :, :], d0) \
+            - torch.einsum('...ml,mkl->...km', x_im[..., 1, :, :], d1)
+        sim = torch.einsum('...ml,mkl->...km', x_im[..., 0, :, :], d0) \
+            + torch.einsum('...ml,mkl->...km', x_re[..., 1, :, :], d1)
 
         # contraction - toroidal component
-        # real component
-        trl = - torch.einsum('...lm,mlk->...km', x[..., 0, :, :, 1], self.dpct[1].to(x.dtype)) \
-              - torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 0], self.dpct[0].to(x.dtype))
-        # imag component
-        tim =   torch.einsum('...lm,mlk->...km', x[..., 0, :, :, 0], self.dpct[1].to(x.dtype)) \
-              - torch.einsum('...lm,mlk->...km', x[..., 1, :, :, 1], self.dpct[0].to(x.dtype))
+        trl = -torch.einsum('...ml,mkl->...km', x_im[..., 0, :, :], d1) \
+             - torch.einsum('...ml,mkl->...km', x_re[..., 1, :, :], d0)
+        tim = torch.einsum('...ml,mkl->...km', x_re[..., 0, :, :], d1) \
+            - torch.einsum('...ml,mkl->...km', x_im[..., 1, :, :], d0)
 
         # reassemble
-        s = torch.stack((srl, sim), -1)
-        t = torch.stack((trl, tim), -1)
-        xs = torch.stack((s, t), -4)
-
-        # convert to complex
-        x = torch.view_as_complex(xs)
+        x = torch.stack((torch.complex(srl, sim), torch.complex(trl, tim)), dim=-3).contiguous()
 
         if self.comm_size_polar > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
