@@ -123,21 +123,17 @@ class RealSHT(nn.Module):
         # apply real fft in the longitudinal direction
         x = 2.0 * torch.pi * rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
 
-        # do the Legendre-Gauss quadrature
-        x = torch.view_as_real(x)
+        # transpose to put the contraction dim (nlat) on the fast axis
+        x = x.transpose(-1, -2)
+        x_re = x.real.contiguous()
+        x_im = x.imag.contiguous()
 
-        # distributed contraction: fork
-        out_shape = list(x.size())
-        out_shape[-3] = self.lmax
-        out_shape[-2] = self.mmax
-        xout = torch.zeros(out_shape, dtype=x.dtype, device=x.device)
+        # Legendre-Gauss quadrature: contract over k=nlat (stride-1 in both operands)
+        w = self.weights.to(x_re.dtype)
+        out_re = torch.einsum("...mk,mlk->...lm", x_re, w)
+        out_im = torch.einsum("...mk,mlk->...lm", x_im, w)
 
-        # contraction
-        xout[..., 0] = torch.einsum("...km,mlk->...lm", x[..., : self.mmax, 0], self.weights.to(x.dtype))
-        xout[..., 1] = torch.einsum("...km,mlk->...lm", x[..., : self.mmax, 1], self.weights.to(x.dtype))
-        x = torch.view_as_complex(xout)
-
-        return x
+        return torch.complex(out_re, out_im)
 
 
 class InverseRealSHT(nn.Module):
@@ -204,7 +200,9 @@ class InverseRealSHT(nn.Module):
         self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
 
         # precompute associated Legendre polynomials
+        # store as (mmax, nlat, lmax) so the contraction dim l is stride-1
         pct = _precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        pct = pct.permute(0, 2, 1).contiguous()
 
         # register buffer
         self.register_buffer("pct", pct, persistent=False)
@@ -220,22 +218,19 @@ class InverseRealSHT(nn.Module):
         assert x.shape[-2] == self.lmax
         assert x.shape[-1] == self.mmax
 
-        # Evaluate associated Legendre functions on the output nodes
-        x = torch.view_as_real(x)
+        # transpose to put the contraction dim (lmax) on the fast axis
+        x = x.transpose(-1, -2)
+        x_re = x.real.contiguous()
+        x_im = x.imag.contiguous()
 
-        # prepare output
-        out_shape = list(x.size())
-        out_shape[-3] = self.nlat
-        out_shape[-2] = self.mmax
-        xs = torch.zeros(out_shape, dtype=x.dtype, device=x.device)
-
-        # legendre transformation
-        xs[..., 0] = torch.einsum("...lm,mlk->...km", x[..., 0], self.pct.to(x.dtype))
-        xs[..., 1] = torch.einsum("...lm,mlk->...km", x[..., 1], self.pct.to(x.dtype))
+        # legendre transformation: contract over l=lmax (stride-1 in both operands)
+        # pct layout: (mmax, nlat, lmax)
+        w = self.pct.to(x_re.dtype)
+        out_re = torch.einsum("...ml,mkl->...km", x_re, w)
+        out_im = torch.einsum("...ml,mkl->...km", x_im, w)
+        x = torch.complex(out_re, out_im)
 
         # apply the inverse (real) FFT
-        x = torch.view_as_complex(xs)
-
         x = irfft(x, n=self.nlon, dim=-1, norm="forward")
 
         return x
@@ -324,43 +319,34 @@ class RealVectorSHT(nn.Module):
         if x.dim() < 3:
             raise ValueError(f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
 
+        assert x.shape[-3] == 2
         assert x.shape[-2] == self.nlat
         assert x.shape[-1] == self.nlon
 
         # apply real fft in the longitudinal direction
         x = 2.0 * torch.pi * rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
 
-        # do the Legendre-Gauss quadrature
-        x = torch.view_as_real(x)
+        # transpose to put the contraction dim (nlat) on the fast axis
+        x = x.transpose(-1, -2)
+        x_re = x.real.contiguous()
+        x_im = x.imag.contiguous()
 
-        # set up output tensor
-        out_shape = list(x.size())
-        out_shape[-3] = self.lmax
-        out_shape[-2] = self.mmax
-        xout = torch.zeros(out_shape, dtype=x.dtype, device=x.device)
+        w0 = self.weights[0].to(x_re.dtype)
+        w1 = self.weights[1].to(x_re.dtype)
 
         # contraction - spheroidal component
-        # real component
-        xout[..., 0, :, :, 0] = torch.einsum("...km,mlk->...lm", x[..., 0, :, : self.mmax, 0], self.weights[0].to(x.dtype)) - torch.einsum(
-            "...km,mlk->...lm", x[..., 1, :, : self.mmax, 1], self.weights[1].to(x.dtype)
-        )
-
-        # iamg component
-        xout[..., 0, :, :, 1] = torch.einsum("...km,mlk->...lm", x[..., 0, :, : self.mmax, 1], self.weights[0].to(x.dtype)) + torch.einsum(
-            "...km,mlk->...lm", x[..., 1, :, : self.mmax, 0], self.weights[1].to(x.dtype)
-        )
+        s_re = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w0) \
+             - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w1)
+        s_im = torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w0) \
+             + torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w1)
 
         # contraction - toroidal component
-        # real component
-        xout[..., 1, :, :, 0] = -torch.einsum("...km,mlk->...lm", x[..., 0, :, : self.mmax, 1], self.weights[1].to(x.dtype)) - torch.einsum(
-            "...km,mlk->...lm", x[..., 1, :, : self.mmax, 0], self.weights[0].to(x.dtype)
-        )
-        # imag component
-        xout[..., 1, :, :, 1] = torch.einsum("...km,mlk->...lm", x[..., 0, :, : self.mmax, 0], self.weights[1].to(x.dtype)) - torch.einsum(
-            "...km,mlk->...lm", x[..., 1, :, : self.mmax, 1], self.weights[0].to(x.dtype)
-        )
+        t_re = -torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w1) \
+              - torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w0)
+        t_im = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w1) \
+             - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w0)
 
-        return torch.view_as_complex(xout)
+        return torch.stack((torch.complex(s_re, s_im), torch.complex(t_re, t_im)), dim=-3)
 
 
 class InverseRealVectorSHT(nn.Module):
@@ -423,7 +409,9 @@ class InverseRealVectorSHT(nn.Module):
         self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
 
         # precompute associated Legendre polynomials
+        # store as (2, mmax, nlat, lmax) so the contraction dim l is stride-1
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        dpct = dpct.permute(0, 1, 3, 2).contiguous()
 
         # register weights
         self.register_buffer("dpct", dpct, persistent=False)
@@ -436,32 +424,33 @@ class InverseRealVectorSHT(nn.Module):
         if x.dim() < 3:
             raise ValueError(f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
 
+        assert x.shape[-3] == 2
         assert x.shape[-2] == self.lmax
         assert x.shape[-1] == self.mmax
 
-        # Evaluate associated Legendre functions on the output nodes
-        x = torch.view_as_real(x)
+        # transpose to put the contraction dim (lmax) on the fast axis
+        x = x.transpose(-1, -2)
+        x_re = x.real.contiguous()
+        x_im = x.imag.contiguous()
+
+        # dpct layout: (2, mmax, nlat, lmax) — contract over l (stride-1 in both operands)
+        d0 = self.dpct[0].to(x_re.dtype)
+        d1 = self.dpct[1].to(x_re.dtype)
 
         # contraction - spheroidal component
-        # real component
-        srl = torch.einsum("...lm,mlk->...km", x[..., 0, :, :, 0], self.dpct[0].to(x.dtype)) - torch.einsum("...lm,mlk->...km", x[..., 1, :, :, 1], self.dpct[1].to(x.dtype))
-        # iamg component
-        sim = torch.einsum("...lm,mlk->...km", x[..., 0, :, :, 1], self.dpct[0].to(x.dtype)) + torch.einsum("...lm,mlk->...km", x[..., 1, :, :, 0], self.dpct[1].to(x.dtype))
+        srl = torch.einsum("...ml,mkl->...km", x_re[..., 0, :, :], d0) \
+            - torch.einsum("...ml,mkl->...km", x_im[..., 1, :, :], d1)
+        sim = torch.einsum("...ml,mkl->...km", x_im[..., 0, :, :], d0) \
+            + torch.einsum("...ml,mkl->...km", x_re[..., 1, :, :], d1)
 
         # contraction - toroidal component
-        # real component
-        trl = -torch.einsum("...lm,mlk->...km", x[..., 0, :, :, 1], self.dpct[1].to(x.dtype)) - torch.einsum("...lm,mlk->...km", x[..., 1, :, :, 0], self.dpct[0].to(x.dtype))
-        # imag component
-        tim = torch.einsum("...lm,mlk->...km", x[..., 0, :, :, 0], self.dpct[1].to(x.dtype)) - torch.einsum("...lm,mlk->...km", x[..., 1, :, :, 1], self.dpct[0].to(x.dtype))
+        trl = -torch.einsum("...ml,mkl->...km", x_im[..., 0, :, :], d1) \
+             - torch.einsum("...ml,mkl->...km", x_re[..., 1, :, :], d0)
+        tim = torch.einsum("...ml,mkl->...km", x_re[..., 0, :, :], d1) \
+            - torch.einsum("...ml,mkl->...km", x_im[..., 1, :, :], d0)
 
-        # reassemble
-        s = torch.stack((srl, sim), -1)
-        t = torch.stack((trl, tim), -1)
-        xs = torch.stack((s, t), -4)
-
-        # apply the inverse (real) FFT
-        x = torch.view_as_complex(xs)
-
-        x = irfft(x, n=self.nlon, dim=-1, norm="forward")
+        # reassemble and apply inverse FFT
+        xs = torch.stack((torch.complex(srl, sim), torch.complex(trl, tim)), dim=-3)
+        x = irfft(xs, n=self.nlon, dim=-1, norm="forward")
 
         return x
