@@ -68,6 +68,17 @@ class DiscreteContinuousConvS2TorchBenchmark1Degree(DiscreteContinuousConvS2Benc
         )
 
 
+@register_benchmark("disco_conv_s2_cuda_1deg")
+class DiscreteContinuousConvS2CUDABenchmark1Degree(DiscreteContinuousConvS2Benchmark):
+
+    @classmethod
+    def new(cls) -> "DiscreteContinuousConvS2CUDABenchmark1Degree":
+        return cls.new_with_shape(
+            B=scale_batch_size(64), in_channels=4, out_channels=4, nlat=180, nlon=360,
+            optimized_kernel=True,
+        )
+
+
 @register_benchmark("disco_conv_s2_fft_1deg")
 class DiscreteContinuousConvS2FFTBenchmark1Degree(DiscreteContinuousConvS2Benchmark):
 
