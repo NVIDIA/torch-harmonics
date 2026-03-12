@@ -34,6 +34,8 @@ class DiscreteContinuousConvS2Benchmark(BenchmarkABC):
         nlat: int,
         nlon: int,
         kernel_shape: int = 3,
+        optimized_kernel: bool = False,
+        use_fft_contraction: bool = False,
     ) -> Self:
         device = get_device()
         theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat - 1)
@@ -44,7 +46,8 @@ class DiscreteContinuousConvS2Benchmark(BenchmarkABC):
             out_shape=(nlat, nlon),
             kernel_shape=kernel_shape,
             theta_cutoff=theta_cutoff,
-            optimized_kernel=False,
+            optimized_kernel=optimized_kernel,
+            use_fft_contraction=use_fft_contraction,
         ).to(device)
         x = torch.randn(B, in_channels, nlat, nlon, device=device)
         return cls(conv=conv, x=x)
@@ -61,5 +64,16 @@ class DiscreteContinuousConvS2TorchBenchmark1Degree(DiscreteContinuousConvS2Benc
     @classmethod
     def new(cls) -> "DiscreteContinuousConvS2TorchBenchmark1Degree":
         return cls.new_with_shape(
-            B=scale_batch_size(4), in_channels=4, out_channels=4, nlat=180, nlon=360,
+            B=scale_batch_size(16), in_channels=4, out_channels=4, nlat=180, nlon=360,
+        )
+
+
+@register_benchmark("disco_conv_s2_fft_1deg")
+class DiscreteContinuousConvS2FFTBenchmark1Degree(DiscreteContinuousConvS2Benchmark):
+
+    @classmethod
+    def new(cls) -> "DiscreteContinuousConvS2FFTBenchmark1Degree":
+        return cls.new_with_shape(
+            B=scale_batch_size(64), in_channels=4, out_channels=4, nlat=180, nlon=360,
+            use_fft_contraction=True,
         )

@@ -66,10 +66,7 @@ class TestFFTContraction(unittest.TestCase):
         y_fft = conv_fft(x)
 
         self.assertEqual(y_ref.shape, y_fft.shape)
-        self.assertTrue(
-            torch.allclose(y_ref, y_fft, atol=atol, rtol=1e-4),
-            f"Forward max diff: {(y_ref - y_fft).abs().max().item():.2e}",
-        )
+        torch.testing.assert_close(y_ref, y_fft, atol=atol, rtol=1e-4)
 
     @parameterized.expand(
         [
@@ -122,10 +119,7 @@ class TestFFTContraction(unittest.TestCase):
         y_fft = tconv_fft(x)
 
         self.assertEqual(y_ref.shape, y_fft.shape)
-        self.assertTrue(
-            torch.allclose(y_ref, y_fft, atol=atol, rtol=1e-4),
-            f"Transpose max diff: {(y_ref - y_fft).abs().max().item():.2e}",
-        )
+        torch.testing.assert_close(y_ref, y_fft, atol=atol, rtol=1e-4)
 
     def test_fft_forward_gradient(self):
         """Test that gradients flow correctly through the FFT path."""
