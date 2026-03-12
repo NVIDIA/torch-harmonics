@@ -31,7 +31,6 @@
 
 import torch
 import torch.nn as nn
-import torch.fft
 
 from torch_harmonics.truncation import truncate_sht
 from torch_harmonics.quadrature import legendre_gauss_weights, lobatto_weights, clenshaw_curtiss_weights
