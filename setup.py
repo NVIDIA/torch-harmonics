@@ -29,11 +29,10 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os, sys
+import os
 import warnings
 
 from setuptools import setup, find_packages
-from setuptools.command.install import install
 
 # some code to handle the building of custom modules
 FORCE_CUDA_EXTENSION = os.getenv("FORCE_CUDA_EXTENSION", "0") == "1"
