@@ -34,6 +34,7 @@ from typing import Optional
 import torch
 from disco_helpers import optimized_kernels_is_available
 from . import disco_kernels
+from torch_harmonics.fft import rfft, irfft
 
 # custom kernels
 if optimized_kernels_is_available():
@@ -149,7 +150,7 @@ def _densify_psi(psi_sparse: torch.Tensor, nlat_in: int, nlon_in: int):
 def _precompute_psi_fft_conj(psi_sparse: torch.Tensor, nlat_in: int, nlon_in: int):
     """Densify psi and return conjugate of its rfft along the longitude axis."""
     psi_dense = _densify_psi(psi_sparse, nlat_in, nlon_in)
-    return torch.fft.rfft(psi_dense, dim=-1).conj()
+    return rfft(psi_dense, dim=-1).conj()
 
 
 def _disco_s2_contraction_fft(x: torch.Tensor, psi_fft_conj: torch.Tensor, nlon_out: int):
@@ -173,7 +174,7 @@ def _disco_s2_contraction_fft(x: torch.Tensor, psi_fft_conj: torch.Tensor, nlon_
     pscale = nlon_in // nlon_out
 
     # FFT of input along longitude
-    X_f = torch.fft.rfft(x.to(torch.float32), dim=-1)  # (B*C, nlat_in, nfreq)
+    X_f = rfft(x.to(torch.float32), dim=-1)  # (B*C, nlat_in, nfreq)
     X_f = X_f.reshape(batch_size * n_chans, nlat_in, nfreq)
 
     # Cross-correlate: einsum over nlat_in and frequency, then irfft
@@ -183,7 +184,7 @@ def _disco_s2_contraction_fft(x: torch.Tensor, psi_fft_conj: torch.Tensor, nlon_
     # Y_f: (B*C, K, nlat_out, nfreq)
 
     # Inverse FFT
-    y = torch.fft.irfft(Y_f, n=nlon_in, dim=-1)  # (B*C, K, nlat_out, nlon_in)
+    y = irfft(Y_f, n=nlon_in, dim=-1)  # (B*C, K, nlat_out, nlon_in)
 
     # Subsample for stride
     y = y[..., ::pscale]  # (B*C, K, nlat_out, nlon_out)
@@ -226,7 +227,7 @@ def _disco_s2_transpose_contraction_fft(x: torch.Tensor, psi_fft_conj: torch.Ten
     x_ext = torch.roll(x_ext, -1, dims=-1)
 
     # FFT of upsampled input along longitude
-    X_f = torch.fft.rfft(x_ext.to(torch.float32), dim=-1)  # (B*C, K, nlat_in, nfreq)
+    X_f = rfft(x_ext.to(torch.float32), dim=-1)  # (B*C, K, nlat_in, nfreq)
 
     # Cross-correlate and sum over K and nlat_in
     # psi_fft_conj: (K, nlat_out, nlat_in, nfreq)
@@ -235,7 +236,7 @@ def _disco_s2_transpose_contraction_fft(x: torch.Tensor, psi_fft_conj: torch.Ten
     # Y_f: (B*C, nlat_out, nfreq)
 
     # Inverse FFT
-    y = torch.fft.irfft(Y_f, n=nlon_out, dim=-1)  # (B*C, nlat_out, nlon_out)
+    y = irfft(Y_f, n=nlon_out, dim=-1)  # (B*C, nlat_out, nlon_out)
 
     y = y.reshape(batch_size, n_chans, nlat_out, nlon_out).contiguous()
     return y.to(x.dtype)
