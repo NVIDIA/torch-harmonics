@@ -8,12 +8,9 @@ from torch_harmonics.benchmark.benchmark import (
     TensorDict,
     register_benchmark,
 )
+from torch_harmonics.benchmark.hardware import get_device, scale_batch_size
 from torch_harmonics.benchmark.timer import Timer
 from torch_harmonics.disco import DiscreteContinuousConvS2
-
-
-def _get_device():
-    return torch.device("cuda", torch.cuda.current_device())
 
 
 class DiscreteContinuousConvS2Benchmark(BenchmarkABC):
@@ -38,7 +35,7 @@ class DiscreteContinuousConvS2Benchmark(BenchmarkABC):
         nlon: int,
         kernel_shape: int = 3,
     ) -> Self:
-        device = _get_device()
+        device = get_device()
         theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat - 1)
         conv = DiscreteContinuousConvS2(
             in_channels=in_channels,
@@ -64,5 +61,5 @@ class DiscreteContinuousConvS2TorchBenchmark1Degree(DiscreteContinuousConvS2Benc
     @classmethod
     def new(cls) -> "DiscreteContinuousConvS2TorchBenchmark1Degree":
         return cls.new_with_shape(
-            B=4, in_channels=4, out_channels=4, nlat=180, nlon=360,
+            B=scale_batch_size(4), in_channels=4, out_channels=4, nlat=180, nlon=360,
         )
