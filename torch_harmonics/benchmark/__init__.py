@@ -13,3 +13,4 @@ from torch_harmonics.benchmark.timer import (
 
 # Import to trigger registration of built-in benchmarks.
 import torch_harmonics.benchmark.sht  # noqa: F401
+import torch_harmonics.benchmark.disco  # noqa: F401
