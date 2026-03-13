@@ -219,7 +219,7 @@ def _disco_s2_contraction_fft(x: torch.Tensor, psi_fft_conj: torch.Tensor, gathe
     X_f_gathered = X_f[:, gather_idx, :]  # (B*C, nlat_out, bw, nfreq)
 
     # Cross-correlate: einsum over band width and frequency, then irfft
-    Y_f = torch.einsum("kowf,bowf->bkof", psi_fft_conj.to(X_f.dtype), X_f_gathered)
+    Y_f = torch.einsum("kowf,bowf->bkof", psi_fft_conj, X_f_gathered)
 
     # Inverse FFT
     y = irfft(Y_f, n=nlon_in, dim=-1)  # (B*C, K, nlat_out, nlon_in)
@@ -259,11 +259,14 @@ def _disco_s2_transpose_contraction_fft(x: torch.Tensor, psi_fft_conj: torch.Ten
     x_ext = torch.zeros(batch_size * n_chans, kernel_size, nlat_in, nlon_out, device=x.device, dtype=x.dtype)
     x_ext[..., ::pscale] = x
 
-    # Apply constant offset before FFT (matches loop-based roll(-1) convention)
-    x_ext = torch.roll(x_ext, -1, dims=-1)
-
     # FFT of upsampled input along longitude
     X_f = rfft(x_ext.to(torch.float32), dim=-1)  # (B*C, K, nlat_in, nfreq)
+
+    # Apply roll(-1) as a phase shift in frequency domain: multiply by exp(+2*pi*i*k/N)
+    # This avoids a full tensor copy from torch.roll
+    freq = torch.arange(nfreq, device=X_f.device, dtype=torch.float32)
+    phase = torch.exp(2j * torch.pi * freq / nlon_out)
+    X_f = X_f * phase
 
     # Loop over kernel index to avoid materializing a large 5D gathered tensor
     Y_f = torch.zeros(batch_size * n_chans, nlat_out, nfreq, device=X_f.device, dtype=X_f.dtype)
