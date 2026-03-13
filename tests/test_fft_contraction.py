@@ -9,7 +9,7 @@ from parameterized import parameterized
 import torch
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 
-from testutils import disable_tf32, set_seed
+from testutils import compare_tensors, disable_tf32, set_seed
 
 
 class TestFFTContraction(unittest.TestCase):
@@ -66,7 +66,7 @@ class TestFFTContraction(unittest.TestCase):
         y_fft = conv_fft(x)
 
         self.assertEqual(y_ref.shape, y_fft.shape)
-        torch.testing.assert_close(y_ref, y_fft, atol=atol, rtol=1e-4)
+        self.assertTrue(compare_tensors("fft_forward", y_ref, y_fft, atol=atol, rtol=1e-4, verbose=True))
 
     @parameterized.expand(
         [
@@ -119,7 +119,7 @@ class TestFFTContraction(unittest.TestCase):
         y_fft = tconv_fft(x)
 
         self.assertEqual(y_ref.shape, y_fft.shape)
-        torch.testing.assert_close(y_ref, y_fft, atol=atol, rtol=1e-4)
+        self.assertTrue(compare_tensors("fft_transpose", y_ref, y_fft, atol=atol, rtol=1e-4, verbose=True))
 
     def test_fft_forward_gradient(self):
         """Test that gradients flow correctly through the FFT path."""
