@@ -140,29 +140,67 @@ if optimized_kernels_is_available():
     torch.library.register_autograd(
         "disco_kernels::_disco_s2_transpose_contraction_optimized", _disco_s2_transpose_contraction_bwd_optimized, setup_context=_setup_context_conv_backward)
 
-# FFT-based contraction functions
-def _densify_psi(psi_sparse: torch.Tensor, nlat_in: int, nlon_in: int):
-    """Convert sparse psi (K, nlat_out, nlat_in * nlon_in) to dense (K, nlat_out, nlat_in, nlon_in)."""
-    K, nlat_out, _ = psi_sparse.shape
-    return psi_sparse.to_dense().reshape(K, nlat_out, nlat_in, nlon_in)
+# FFT-based contraction functions (banded representation)
+def _precompute_psi_banded(psi_sparse: torch.Tensor, nlat_in: int, nlon: int):
+    """Build a banded dense representation of psi directly from sparse COO data.
 
+    Instead of densifying the full (K, nlat_out, nlat_in, nlon) tensor, this
+    only stores the contiguous band of input latitudes that have nonzero entries
+    for each output latitude, reducing memory by ~nlat_in/band_width.
 
-def _precompute_psi_fft_conj(psi_sparse: torch.Tensor, nlat_in: int, nlon_in: int):
-    """Densify psi and return conjugate of its rfft along the longitude axis."""
-    psi_dense = _densify_psi(psi_sparse, nlat_in, nlon_in)
-    return rfft(psi_dense, dim=-1).conj()
-
-
-def _disco_s2_contraction_fft(x: torch.Tensor, psi_fft_conj: torch.Tensor, nlon_out: int):
+    Returns
+    -------
+    psi_banded_fft_conj : (K, nlat_out, max_bw, nfreq) complex tensor
+    gather_idx : (nlat_out, max_bw) long tensor of input latitude indices
     """
-    FFT-based DISCO S2 contraction. Replaces the loop-and-roll implementation
-    with FFT circular cross-correlation.
+    K, nlat_out, _ = psi_sparse.shape
+    psi = psi_sparse.coalesce()
+    indices = psi.indices()  # (3, nnz)
+    values = psi.values()    # (nnz,)
+
+    ker_idx = indices[0]
+    row_idx = indices[1]   # output lat
+    col_idx = indices[2]   # input_lat * nlon + lon
+    input_lat = col_idx // nlon
+    input_lon = col_idx % nlon
+
+    # Find min/max input lat per output lat (across all kernel indices)
+    lat_min = torch.full((nlat_out,), nlat_in, dtype=torch.long)
+    lat_max = torch.full((nlat_out,), 0, dtype=torch.long)
+    lat_min.scatter_reduce_(0, row_idx, input_lat, reduce="amin")
+    lat_max.scatter_reduce_(0, row_idx, input_lat, reduce="amax")
+
+    # Handle empty rows
+    empty = lat_min >= nlat_in
+    lat_min[empty] = 0
+    lat_max[empty] = 0
+
+    max_bw = (lat_max - lat_min + 1).max().item()
+
+    # Build banded tensor from sparse entries (no full densification)
+    psi_banded = torch.zeros(K, nlat_out, max_bw, nlon, dtype=values.dtype)
+    banded_lat = input_lat - lat_min[row_idx]
+    psi_banded[ker_idx, row_idx, banded_lat, input_lon] = values
+
+    # Precompute FFT and gather index (clamped to valid range for zero-padded bands)
+    psi_banded_fft_conj = rfft(psi_banded, dim=-1).conj()
+    gather_idx = lat_min.unsqueeze(1) + torch.arange(max_bw).unsqueeze(0)  # (nlat_out, max_bw)
+    gather_idx = gather_idx.clamp(max=nlat_in - 1)
+
+    return psi_banded_fft_conj, gather_idx
+
+
+def _disco_s2_contraction_fft(x: torch.Tensor, psi_fft_conj: torch.Tensor, gather_idx: torch.Tensor, nlon_out: int):
+    """
+    FFT-based DISCO S2 contraction using banded psi representation.
 
     Parameters
     ----------
     x : torch.Tensor of shape (B, C, nlat_in, nlon_in)
-    psi_fft_conj : torch.Tensor of shape (K, nlat_out, nlat_in, nlon_in//2+1)
-        Precomputed conjugate FFT of the dense psi kernel.
+    psi_fft_conj : torch.Tensor of shape (K, nlat_out, bw, nfreq)
+        Precomputed conjugate FFT of the banded psi kernel.
+    gather_idx : torch.Tensor of shape (nlat_out, bw)
+        Input latitude indices for each output latitude band.
     nlon_out : int
 
     Returns
@@ -170,18 +208,18 @@ def _disco_s2_contraction_fft(x: torch.Tensor, psi_fft_conj: torch.Tensor, nlon_
     torch.Tensor of shape (B, C, K, nlat_out, nlon_out)
     """
     batch_size, n_chans, nlat_in, nlon_in = x.shape
-    kernel_size, nlat_out, _, nfreq = psi_fft_conj.shape
+    kernel_size, nlat_out, bw, nfreq = psi_fft_conj.shape
     pscale = nlon_in // nlon_out
 
     # FFT of input along longitude
-    X_f = rfft(x.to(torch.float32), dim=-1)  # (B*C, nlat_in, nfreq)
+    X_f = rfft(x.to(torch.float32), dim=-1)  # (B, C, nlat_in, nfreq)
     X_f = X_f.reshape(batch_size * n_chans, nlat_in, nfreq)
 
-    # Cross-correlate: einsum over nlat_in and frequency, then irfft
-    # psi_fft_conj: (K, nlat_out, nlat_in, nfreq)
-    # X_f: (B*C, nlat_in, nfreq)
-    Y_f = torch.einsum("konf,bnf->bkof", psi_fft_conj.to(X_f.dtype), X_f)
-    # Y_f: (B*C, K, nlat_out, nfreq)
+    # Gather relevant input lats for each output lat
+    X_f_gathered = X_f[:, gather_idx, :]  # (B*C, nlat_out, bw, nfreq)
+
+    # Cross-correlate: einsum over band width and frequency, then irfft
+    Y_f = torch.einsum("kowf,bowf->bkof", psi_fft_conj.to(X_f.dtype), X_f_gathered)
 
     # Inverse FFT
     y = irfft(Y_f, n=nlon_in, dim=-1)  # (B*C, K, nlat_out, nlon_in)
@@ -193,16 +231,17 @@ def _disco_s2_contraction_fft(x: torch.Tensor, psi_fft_conj: torch.Tensor, nlon_
     return y.to(x.dtype)
 
 
-def _disco_s2_transpose_contraction_fft(x: torch.Tensor, psi_fft_conj: torch.Tensor, nlon_out: int):
+def _disco_s2_transpose_contraction_fft(x: torch.Tensor, psi_fft_conj: torch.Tensor, gather_idx: torch.Tensor, nlon_out: int):
     """
-    FFT-based DISCO S2 transpose contraction.
+    FFT-based DISCO S2 transpose contraction using banded psi representation.
 
     Parameters
     ----------
     x : torch.Tensor of shape (B, C, K, nlat_in, nlon_in)
-    psi_fft_conj : torch.Tensor of shape (K, nlat_out, nlat_in, nfreq)
-        Precomputed conjugate FFT of the semi-transposed dense psi kernel.
-        psi_st_dense has shape (K, nlat_out, nlat_in, nlon_out).
+    psi_fft_conj : torch.Tensor of shape (K, nlat_out, bw, nfreq)
+        Precomputed conjugate FFT of the banded semi-transposed psi kernel.
+    gather_idx : torch.Tensor of shape (nlat_out, bw)
+        Input latitude indices for each output latitude band.
     nlon_out : int
 
     Returns
@@ -210,9 +249,8 @@ def _disco_s2_transpose_contraction_fft(x: torch.Tensor, psi_fft_conj: torch.Ten
     torch.Tensor of shape (B, C, nlat_out, nlon_out)
     """
     batch_size, n_chans, kernel_size, nlat_in, nlon_in = x.shape
-    _, nlat_out, nlat_in_psi, nfreq = psi_fft_conj.shape
+    _, nlat_out, bw, nfreq = psi_fft_conj.shape
 
-    assert nlat_in_psi == nlat_in
     assert nlon_out >= nlon_in
     pscale = nlon_out // nlon_in
 
@@ -221,19 +259,17 @@ def _disco_s2_transpose_contraction_fft(x: torch.Tensor, psi_fft_conj: torch.Ten
     x_ext = torch.zeros(batch_size * n_chans, kernel_size, nlat_in, nlon_out, device=x.device, dtype=x.dtype)
     x_ext[..., ::pscale] = x
 
-    # The loop-based code does roll(-1) BEFORE bmm for each pout.
-    # This means pout=0 uses a shift of -1, pout=1 uses -2, etc.
-    # Apply this constant offset before FFT.
+    # Apply constant offset before FFT (matches loop-based roll(-1) convention)
     x_ext = torch.roll(x_ext, -1, dims=-1)
 
     # FFT of upsampled input along longitude
     X_f = rfft(x_ext.to(torch.float32), dim=-1)  # (B*C, K, nlat_in, nfreq)
 
-    # Cross-correlate and sum over K and nlat_in
-    # psi_fft_conj: (K, nlat_out, nlat_in, nfreq)
-    # X_f: (B*C, K, nlat_in, nfreq)
-    Y_f = torch.einsum("koif,bkif->bof", psi_fft_conj.to(X_f.dtype), X_f)
-    # Y_f: (B*C, nlat_out, nfreq)
+    # Loop over kernel index to avoid materializing a large 5D gathered tensor
+    Y_f = torch.zeros(batch_size * n_chans, nlat_out, nfreq, device=X_f.device, dtype=X_f.dtype)
+    for k in range(kernel_size):
+        X_f_k_gathered = X_f[:, k][:, gather_idx, :]  # (B*C, nlat_out, bw, nfreq)
+        Y_f += torch.einsum("owf,bowf->bof", psi_fft_conj[k].to(X_f.dtype), X_f_k_gathered)
 
     # Inverse FFT
     y = irfft(Y_f, n=nlon_out, dim=-1)  # (B*C, nlat_out, nlon_out)

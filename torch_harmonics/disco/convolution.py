@@ -41,7 +41,7 @@ from torch_harmonics.cache import lru_cache
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
 from ._disco_utils import _get_psi, _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from ._disco_utils import _disco_s2_contraction_fft, _disco_s2_transpose_contraction_fft
-from ._disco_utils import _precompute_psi_fft_conj
+from ._disco_utils import _precompute_psi_banded
 from ._disco_utils import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
 from disco_helpers import optimized_kernels_is_available, preprocess_psi
@@ -496,10 +496,11 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self.register_buffer("psi_vals", vals, persistent=False)
 
         if self.use_fft_contraction:
-            # precompute FFT of densified psi for FFT-based contraction
+            # precompute banded FFT of psi for FFT-based contraction
             psi_sparse = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out)
-            psi_fft_conj = _precompute_psi_fft_conj(psi_sparse, self.nlat_in, self.nlon_in)
+            psi_fft_conj, gather_idx = _precompute_psi_banded(psi_sparse, self.nlat_in, self.nlon_in)
             self.register_buffer("psi_fft_conj", psi_fft_conj, persistent=False)
+            self.register_buffer("psi_gather_idx", gather_idx, persistent=False)
         elif not self.optimized_kernel:
             # also store psi as COO matrix just in case for torch input
             self.psi = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out)
@@ -514,7 +515,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         if self.use_fft_contraction:
-            x = _disco_s2_contraction_fft(x, self.psi_fft_conj.to(x.device), self.nlon_out)
+            x = _disco_s2_contraction_fft(x, self.psi_fft_conj.to(x.device), self.psi_gather_idx.to(x.device), self.nlon_out)
         elif self.optimized_kernel:
             x = _disco_s2_contraction_optimized(
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
@@ -644,14 +645,11 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.register_buffer("psi_vals", vals, persistent=False)
 
         if self.use_fft_contraction:
-            # precompute FFT of semi-transposed dense psi for FFT-based transpose contraction
+            # precompute banded FFT of semi-transposed psi for FFT-based transpose contraction
             psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, semi_transposed=True)
-            # psi_st: (K, nlat_out, nlat_in * nlon_out) -> dense (K, nlat_out, nlat_in, nlon_out)
-            from ._disco_utils import _densify_psi
-            psi_st_dense = _densify_psi(psi_st, self.nlat_in, self.nlon_out)
-            # Store conjugate FFT for cross-correlation
-            psi_st_fft_conj = torch.fft.rfft(psi_st_dense, dim=-1).conj()
+            psi_st_fft_conj, psi_st_gather_idx = _precompute_psi_banded(psi_st, self.nlat_in, self.nlon_out)
             self.register_buffer("psi_st_fft_conj", psi_st_fft_conj, persistent=False)
+            self.register_buffer("psi_st_gather_idx", psi_st_gather_idx, persistent=False)
         elif not self.optimized_kernel:
             # also store psi just in case
             self.psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, semi_transposed=True)
@@ -674,7 +672,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = x.reshape(B, -1, x.shape[-3], H, W)
 
         if self.use_fft_contraction:
-            out = _disco_s2_transpose_contraction_fft(x, self.psi_st_fft_conj.to(x.device), self.nlon_out)
+            out = _disco_s2_transpose_contraction_fft(x, self.psi_st_fft_conj.to(x.device), self.psi_st_gather_idx.to(x.device), self.nlon_out)
         elif self.optimized_kernel:
             out = _disco_s2_transpose_contraction_optimized(
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
