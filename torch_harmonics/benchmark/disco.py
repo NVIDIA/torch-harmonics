@@ -49,12 +49,18 @@ class DiscreteContinuousConvS2Benchmark(BenchmarkABC):
             optimized_kernel=optimized_kernel,
             use_fft_contraction=use_fft_contraction,
         ).to(device)
-        x = torch.randn(B, in_channels, nlat, nlon, device=device)
+        x = torch.randn(B, in_channels, nlat, nlon, device=device, requires_grad=True)
         return cls(conv=conv, x=x)
 
     @final
     def run_instance(self, timer: Timer) -> TensorDict:
-        result = self.conv(self.x)
+        with timer.child("forward"):
+            result = self.conv(self.x)
+        grad_output = torch.randn_like(result)
+        with timer.child("backward"):
+            result.backward(grad_output)
+        self.conv.zero_grad()
+        self.x.grad = None
         return {"output": result.detach()}
 
 

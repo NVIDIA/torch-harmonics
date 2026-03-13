@@ -4,6 +4,11 @@ from torch_harmonics.benchmark.benchmark import (
     get_benchmarks,
     register_benchmark,
 )
+from torch_harmonics.benchmark.memory import (
+    MemoryBenchmark,
+    MemoryResult,
+    benchmark_memory,
+)
 from torch_harmonics.benchmark.timer import (
     CUDATimer,
     NullTimer,

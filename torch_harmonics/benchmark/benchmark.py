@@ -5,6 +5,7 @@ from typing import Self
 
 import torch
 
+from torch_harmonics.benchmark.memory import MemoryResult, benchmark_memory
 from torch_harmonics.benchmark.timer import (
     CPUEventPair,
     CUDATimer,
@@ -20,15 +21,19 @@ TensorDict = dict[str, torch.Tensor]
 class BenchmarkResult:
     timer: TimerResult
     cpu_time: float
+    memory: MemoryResult | None = None
 
     def __repr__(self) -> str:
-        return f"BenchmarkResult(timer={self.timer}, cpu_time={self.cpu_time})"
+        return f"BenchmarkResult(timer={self.timer}, cpu_time={self.cpu_time}, memory={self.memory})"
 
     def asdict(self) -> dict:
         return dataclasses.asdict(self)
 
     def get_logs(self, max_depth: int) -> dict[str, float]:
         logs = {"cpu_time": self.cpu_time}
+        if self.memory is not None:
+            logs["max_alloc_mb"] = self.memory.max_alloc / (1024.0 * 1024.0)
+            logs["max_reserved_mb"] = self.memory.max_reserved / (1024.0 * 1024.0)
         logs.update(self.timer.get_logs(max_depth=max_depth))
         return logs
 
@@ -53,15 +58,17 @@ class BenchmarkABC(abc.ABC):
             benchmark.run_instance(null_timer)
         timer = CUDATimer()
         cpu_timer = CPUEventPair()
-        cpu_timer.record_start()
-        for _ in range(iters):
-            with timer:
-                benchmark.run_instance(timer)
-        torch.cuda.synchronize()
-        cpu_timer.record_end()
+        with benchmark_memory() as bm:
+            cpu_timer.record_start()
+            for _ in range(iters):
+                with timer:
+                    benchmark.run_instance(timer)
+            torch.cuda.synchronize()
+            cpu_timer.record_end()
         return BenchmarkResult(
             timer=timer.result,
             cpu_time=cpu_timer.elapsed_time_ms(),
+            memory=bm.result,
         )
 
     @abc.abstractmethod
