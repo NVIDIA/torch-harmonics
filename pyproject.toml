@@ -54,6 +54,9 @@ dev = [
     "coverage>=6.5.0",
     "parameterized",
 ]
+filter_basis = [
+    "scipy>=1.9.0",
+]
 2d3ds = [
     "requests",
     "tarfile",
