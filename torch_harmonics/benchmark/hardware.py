@@ -15,9 +15,28 @@ _BATCH_SIZE_FACTORS: dict[str, float] = {
 
 _DEFAULT_BATCH_SIZE_FACTOR = 1.0
 
+_device: torch.device | None = None
+_batch_size_override: int | None = None
+
+
+def set_batch_size(batch_size: int) -> None:
+    """Override the batch size used by all benchmarks, bypassing hardware scaling."""
+    global _batch_size_override
+    _batch_size_override = batch_size
+
+
+def set_device(device: str | torch.device) -> None:
+    """Override the device used by all benchmarks."""
+    global _device
+    _device = torch.device(device)
+
 
 def get_device() -> torch.device:
-    return torch.device("cuda", torch.cuda.current_device())
+    if _device is not None:
+        return _device
+    if torch.cuda.is_available():
+        return torch.device("cuda", torch.cuda.current_device())
+    return torch.device("cpu")
 
 
 def get_batch_size_factor() -> float:
@@ -45,8 +64,12 @@ def get_batch_size_factor() -> float:
 
 
 def scale_batch_size(base: int) -> int:
-    """Scale a base batch size (tuned for Tesla T4) by the hardware factor.
+    """Return the batch size to use for a benchmark.
 
-    Always returns at least 1.
+    If a global override has been set via set_batch_size(), that value is
+    returned directly. Otherwise the base is scaled by the hardware factor
+    (tuned relative to a Tesla T4). Always returns at least 1.
     """
+    if _batch_size_override is not None:
+        return max(1, _batch_size_override)
     return max(1, round(base * get_batch_size_factor()))

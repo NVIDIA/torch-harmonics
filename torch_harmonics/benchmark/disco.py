@@ -35,24 +35,30 @@ class DiscreteContinuousConvS2Benchmark(BenchmarkABC):
         nlon: int,
         kernel_shape: int = 3,
     ) -> Self:
-        device = get_device()
-        theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat - 1)
+        cls.device = get_device()
         conv = DiscreteContinuousConvS2(
             in_channels=in_channels,
             out_channels=out_channels,
             in_shape=(nlat, nlon),
             out_shape=(nlat, nlon),
             kernel_shape=kernel_shape,
-            theta_cutoff=theta_cutoff,
+            theta_cutoff=None,
             optimized_kernel=False,
-        ).to(device)
-        x = torch.randn(B, in_channels, nlat, nlon, device=device)
+        ).to(cls.device)
+        x = torch.randn(B, in_channels, nlat, nlon, dtype=torch.float32, device=cls.device)
         return cls(conv=conv, x=x)
 
     @final
-    def run_instance(self, timer: Timer) -> TensorDict:
+    def run_instance_forward(self, timer: Timer) -> TensorDict:
         result = self.conv(self.x)
-        return {"output": result.detach()}
+        self.output = result
+        return {"outputs": result.detach()}
+
+    @final
+    def run_instance_backward(self, timer: Timer) -> TensorDict:
+        g = torch.randn_like(self.output)
+        self.output.backward(g, retain_graph=True)
+        return {"gradient": self.x.grad}
 
 
 @register_benchmark("disco_conv_s2_torch_1deg")

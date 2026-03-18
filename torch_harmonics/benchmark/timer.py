@@ -10,11 +10,13 @@ import torch
 class TimerResult:
     count: int
     avg_time: float
-    children: dict[str, "TimerResult"]
+    unit: str = "ms"
+    children: dict[str, "TimerResult"] = dataclasses.field(default_factory=dict)
 
     def get_logs(self, max_depth: int) -> dict[str, float]:
         logs = {
             "avg_time": self.avg_time,
+            "unit": self.unit,
         }
         if max_depth > 0:
             for child_name, child in self.children.items():
@@ -201,3 +203,63 @@ class CUDATimer:
 
 __: type[Timer] = CUDATimer
 del __
+
+
+class CPUTimer:
+    """Wall-clock timer with the same interface as CUDATimer, for CPU benchmarks."""
+
+    def __init__(self):
+        self._children: collections.defaultdict[str, "CPUTimer"] = (
+            collections.defaultdict(CPUTimer)
+        )
+        self._event_pairs: list[CPUEventPair] = []
+        self._entered = False
+        self._result: TimerResult | None = None
+
+    def __enter__(self):
+        if self._entered:
+            raise RuntimeError("CPUTimer is already entered.")
+        self._entered = True
+        self._event_pairs.append(CPUEventPair())
+        self._event_pairs[-1].record_start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if not self._event_pairs:
+            raise RuntimeError("CPUTimer context was not properly entered.")
+        self._event_pairs[-1].record_end()
+        self._entered = False
+        return False
+
+    def child(self, name: str) -> "CPUTimer":
+        if not self._entered:
+            raise RuntimeError(
+                "CPUTimer child cannot be used before entering the timer."
+            )
+        return self._children[name]
+
+    @property
+    def _avg_time(self) -> float:
+        if not self._event_pairs:
+            raise RuntimeError(
+                "CPUTimer report cannot be generated before entering the timer."
+            )
+        total_time = sum(ep.elapsed_time_ms() for ep in self._event_pairs)
+        return total_time / len(self._event_pairs)
+
+    def _child_reports(self) -> dict[str, TimerResult]:
+        return {name: child.result for name, child in self._children.items()}
+
+    @property
+    def result(self) -> TimerResult:
+        if self._result is None:
+            self._result = TimerResult(
+                count=len(self._event_pairs),
+                avg_time=self._avg_time,
+                children=self._child_reports(),
+            )
+        return self._result
+
+
+_: type[Timer] = CPUTimer
+del _

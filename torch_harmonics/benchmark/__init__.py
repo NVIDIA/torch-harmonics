@@ -5,6 +5,7 @@ from torch_harmonics.benchmark.benchmark import (
     register_benchmark,
 )
 from torch_harmonics.benchmark.timer import (
+    CPUTimer,
     CUDATimer,
     NullTimer,
     Timer,
