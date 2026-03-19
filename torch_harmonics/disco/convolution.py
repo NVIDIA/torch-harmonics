@@ -376,7 +376,7 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
         if out_channels % self.groups != 0:
             raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
         self.groupsize = in_channels // self.groups
-        scale = math.sqrt(1.0 / self.groupsize / self.kernel_size)
+        scale = math.sqrt(1.0 / self.groupsize) * self.filter_basis.get_init_factors().reshape(1, 1, -1)
         self.weight = nn.Parameter(scale * torch.randn(out_channels, self.groupsize, self.kernel_size))
 
         if bias:
