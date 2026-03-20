@@ -306,18 +306,6 @@ class ZernikeFilterBasis(FilterBasis):
 
         return (self.kernel_shape * (self.kernel_shape + 1)) // 2
 
-    def get_init_factors(self, device: Optional[torch.device] = None) -> torch.Tensor:
-        """Radial-only modes (m=0) get 1, all others 0. Indices are 2*l*(l+1) for l = 0, 1, 2, ..."""
-        out = torch.zeros(self.kernel_size, device=device, dtype=torch.float32)
-        l = 0
-        while True:
-            idx = 2 * (l * l + l)
-            if idx >= self.kernel_size:
-                break
-            out[idx] = 1.0
-            l += 1
-        return out / math.sqrt(self.kernel_size) / math.sqrt(l)
-
     def zernikeradial(self, r: torch.Tensor, n: torch.Tensor, m: torch.Tensor):
 
         out = torch.zeros_like(r)
@@ -424,13 +412,6 @@ class HannPolarFourierFilterBasis(FilterBasis):
     def hann_window(self, rn: torch.Tensor) -> torch.Tensor:
         """Hann window: cos^2(pi/2 * r'), smooth falloff to 0 at r'=1."""
         return torch.cos(0.5 * math.pi * rn) ** 2
-
-    def get_init_factors(self, device=None) -> torch.Tensor:
-        """Isotropic modes (m=0, no angular dependence) get 1, all others 0."""
-        out = (self._ms == 0).float()
-        if device is not None:
-            out = out.to(device)
-        return out / math.sqrt(out.sum().item())
 
     def compute_support_vals(
         self,
@@ -588,13 +569,6 @@ class FourierBesselFilterBasis(FilterBasis):
         sqrt_pi = math.sqrt(math.pi)
         angular_sqrt = torch.where(m == 0, torch.full_like(m, sqrt_2pi), torch.full_like(m, sqrt_pi))
         return (radial_norm * angular_sqrt).clamp(min=1e-12)
-
-    def get_init_factors(self, device: Optional[torch.device] = None) -> torch.Tensor:
-        """Isotropic (m=0, radial-only) basis functions get 1, all others 0."""
-        out = (self._ms == 0).float()
-        if device is not None:
-            out = out.to(device)
-        return out / math.sqrt(out.sum().item())
 
     def compute_support_vals(
         self,
