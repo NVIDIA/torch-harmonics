@@ -64,13 +64,11 @@ class BenchmarkABC(abc.ABC):
         for _ in range(warmup):
             benchmark.run_instance(null_timer)
         timer = cls._make_timer()
-        cpu_timer = CPUEventPair()
-        cpu_timer.record_start()
-        for _ in range(iters):
-            with timer:
-                benchmark.run_instance(timer)
-        cls._sync()
-        cpu_timer.record_end()
+        with CPUEventPair() as cpu_timer:
+            for _ in range(iters):
+                with timer:
+                    benchmark.run_instance(timer)
+            cls._sync()
         return BenchmarkResult(
             device=str(get_device()),
             timer=timer.result,

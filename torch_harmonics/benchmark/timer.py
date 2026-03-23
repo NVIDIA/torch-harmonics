@@ -110,6 +110,14 @@ class CPUEventPair:
         self.start_time = None
         self.end_time = None
 
+    def __enter__(self):
+        self.record_start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.record_end()
+        return False
+
     def record_start(self):
         if self.start_time is not None:
             raise RuntimeError(
