@@ -237,10 +237,15 @@ def _disco_s2_transpose_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nl
             y[:, pout, :, :] = torch.bmm(psi, x_ext.reshape(kernel_size, nlat_in * nlon_out, -1))
 
     # sum over the kernel dimension and reshape to the correct output size
-    y = y.sum(dim=0).permute(2, 1, 0).reshape(batch_size, n_chans, nlat_out, nlon_out)
-    
+    y = y.sum(dim=0)
+
     # convert datatype back to input type
-    y = y.to(xtype).contiguous()
+    y = y.to(xtype)
+
+    y = y.permute(2, 1, 0).reshape(batch_size, n_chans, nlat_out, nlon_out)
+
+    # cast to contiguous
+    y = y.contiguous()
 
     return y
 
