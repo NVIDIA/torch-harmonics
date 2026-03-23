@@ -76,26 +76,22 @@ def main(
     else:
         benchmarks_to_run = benchmarks
 
-    def get_filename(name, phase, extension) -> pathlib.Path:
+    def get_filename(name, extension) -> pathlib.Path:
         safe_name = name.replace("/", "_").replace(".", "_").lower()
         return (
             output_dir
-            / f"{safe_name}_{phase}_{safe_device_name}_{get_git_commit()}.{extension}"
+            / f"{safe_name}_{safe_device_name}_{get_git_commit()}.{extension}"
         )
 
     for name, cls in benchmarks_to_run.items():
-        for run_fn, phase in [
-            (cls.run_forward_benchmark, "forward"),
-            (cls.run_backward_benchmark, "backward"),
-        ]:
-            logging.info(f"Running {phase} benchmark: {name}")
-            result = run_fn(iters=iters)
-            result_data = json.dumps(dataclasses.asdict(result), indent=2)
-            logging.info(f"Result:\n{result_data}")
-            json_path = get_filename(name, phase, "json")
-            with open(json_path, "w") as f:
-                logging.info(f"Saving result json to {f.name}")
-                f.write(result_data)
+        logging.info(f"Running benchmark: {name}")
+        result = cls.run_benchmark(iters=iters)
+        result_data = json.dumps(dataclasses.asdict(result), indent=2)
+        logging.info(f"Result:\n{result_data}")
+        json_path = get_filename(name, "json")
+        with open(json_path, "w") as f:
+            logging.info(f"Saving result json to {f.name}")
+            f.write(result_data)
 
     return 0
 

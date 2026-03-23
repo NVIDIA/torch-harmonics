@@ -27,23 +27,21 @@ class RealSHTBenchmark(BenchmarkABC):
     @classmethod
     @final
     def new_with_shape(cls: type[Self], B: int, H: int, L: int) -> Self:
-        cls.device = get_device()
-        x = torch.randn(B, H, L, device=cls.device)
-        x.requires_grad = True
-        forward_sht = RealSHT(nlat=H, nlon=L).to(cls.device)
+        device = get_device()
+        x = torch.randn(B, H, L, device=device, requires_grad=True)
+        forward_sht = RealSHT(nlat=H, nlon=L).to(device)
         return cls(forward_sht=forward_sht, x=x)
 
     @final
-    def run_instance_forward(self, timer: Timer) -> TensorDict:
-        result = self.forward_sht(self.x)
-        self.output = result
+    def run_instance(self, timer: Timer) -> TensorDict:
+        if self.x.grad is not None:
+            self.x.grad.zero_()
+        with timer.child("forward"):
+            result = self.forward_sht(self.x)
+        with timer.child("backward"):
+            g = torch.randn_like(result)
+            result.backward(g)
         return {"output": result.detach()}
-
-    @final
-    def run_instance_backward(self, timer: Timer) -> TensorDict:
-        g = torch.randn_like(self.output)
-        self.output.backward(g, retain_graph=True)
-        return {"gradient": self.x.grad}
 
 # predefined benchmarks
 @register_benchmark("real_sht_1deg")
@@ -75,25 +73,24 @@ class InverseRealSHTBenchmark(BenchmarkABC):
     @classmethod
     @final
     def new_with_shape(cls: type[Self], B: int, H: int, L: int) -> Self:
-        cls.device = get_device()
-        x = torch.randn(B, H, L, device=cls.device)
-        forward_sht = RealSHT(nlat=H, nlon=L).to(cls.device)
+        device = get_device()
+        x = torch.randn(B, H, L, device=device)
+        forward_sht = RealSHT(nlat=H, nlon=L).to(device)
         x_hat = forward_sht(x)
-        x_hat.requires_grad = True
-        inverse_sht = InverseRealSHT(nlat=H, nlon=L).to(cls.device)
+        x_hat = x_hat.detach().requires_grad_(True)
+        inverse_sht = InverseRealSHT(nlat=H, nlon=L).to(device)
         return cls(inverse_sht=inverse_sht, x_hat=x_hat)
 
     @final
-    def run_instance_forward(self, timer: Timer) -> TensorDict:
-        result = self.inverse_sht(self.x_hat)
-        self.output = result
+    def run_instance(self, timer: Timer) -> TensorDict:
+        if self.x_hat.grad is not None:
+            self.x_hat.grad.zero_()
+        with timer.child("forward"):
+            result = self.inverse_sht(self.x_hat)
+        with timer.child("backward"):
+            g = torch.randn_like(result)
+            result.backward(g)
         return {"output": result.detach()}
-
-    @final
-    def run_instance_backward(self, timer: Timer) -> TensorDict:
-        g = torch.randn_like(self.output)
-        self.output.backward(g, retain_graph=True)
-        return {"gradient": self.x_hat.grad}
 
 # predefined benchmarks
 @register_benchmark("inverse_real_sht_1deg")
