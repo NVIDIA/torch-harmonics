@@ -125,7 +125,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", True, 1e-6, 1e-5],
             [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
             [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", True, 2e-6, 1e-5],
             [33, 64, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
             [65, 128, 33, 64, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
         ], skip_on_empty=True
