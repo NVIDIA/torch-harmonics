@@ -201,6 +201,212 @@ static void launch_kernel(int BC, int Hi, int Wi, int K, int Ho, int Wo, int64_t
     return;
 }
 
+// ---------------------------------------------------------------------------
+// Transpose backward kernel — gather-based, no global atomics.
+//
+// Sparse format is pre-sorted by (h_in, w_phase) groups (see preprocess_psi_transpose).
+// Each block owns output positions { w_phase + pscale*pp : pp in [0,Wi) } within
+// row h_in, which are disjoint across blocks → no atomicAdd needed.
+//
+// For each NZ (ker, h_out, col) in the group, thread pp loads
+//   inp[bc][ker][h_out][(pp - w_shift + Wi) % Wi]
+// directly into registers and accumulates.  No shared memory, no per-NZ sync.
+// ---------------------------------------------------------------------------
+
+template <int BDIM_X, int ELXTH, typename STORAGE_T, typename COMPUTE_T>
+__device__ void disco_bwd_t_d(const int Hi, const int Wi, const int K, const int Ho, const int Wo, const int pscale,
+                               const int64_t *__restrict__ roff, const int64_t *__restrict__ kers,
+                               const int64_t *__restrict__ rows, const int64_t *__restrict__ cols,
+                               const COMPUTE_T *__restrict__ vals, const STORAGE_T *__restrict__ inp, COMPUTE_T *__restrict__ out)
+{
+    const int     tid  = threadIdx.x;
+    const int64_t bidx = blockIdx.x; // (h_in, w_phase) group index
+    const int64_t bidy = blockIdx.y; // bc
+
+    const int64_t soff = roff[bidx];
+    const int64_t eoff = roff[bidx + 1];
+
+    // h_in and w_phase are constant for this group; read from first NZ.
+    const int64_t col0   = cols[soff];
+    const int     h_in   = (int)(col0 / Wo);
+    const int     w_phase = (int)((col0 % Wo) % pscale);
+
+    inp += bidy * K * Hi * Wi;
+    // Point directly to the output row for this (bc, h_in), offset by w_phase.
+    out += bidy * Ho * Wo + h_in * Wo + w_phase;
+
+    // Per-thread register accumulator, one slot per output position pp.
+    COMPUTE_T acc[ELXTH];
+#pragma unroll
+    for (int i = 0; i < ELXTH; i++) acc[i] = static_cast<COMPUTE_T>(0);
+
+    for (int64_t nz = soff; nz < eoff; nz++) {
+        const int64_t ker     = kers[nz];
+        const int64_t h_out   = rows[nz];
+        const int     w_shift = (int)((cols[nz] % Wo) / pscale);
+        const COMPUTE_T val   = vals[nz];
+
+        const STORAGE_T *inp_row = inp + ker * Hi * Wi + h_out * Wi;
+
+#pragma unroll
+        for (int i = 0; i < ELXTH; i++) {
+            const int pp = i * BDIM_X + tid;
+            if (pp < Wi) {
+                // Rotated-sequential load: still warp-coalesced.
+                int src = pp - w_shift;
+                if (src < 0) src += Wi;
+                acc[i] += val * static_cast<COMPUTE_T>(inp_row[src]);
+            }
+        }
+    }
+
+    // Write output: out[pscale * pp] = acc[i] (w_phase offset already applied above).
+    // w_phase + pscale*pp stays in [0, Wo) because w_phase < pscale and pp < Wi = Wo/pscale.
+#pragma unroll
+    for (int i = 0; i < ELXTH; i++) {
+        const int pp = i * BDIM_X + tid;
+        if (pp < Wi) {
+            out[pscale * pp] = acc[i];
+        }
+    }
+}
+
+template <int BDIM_X, int ELXTH, int PSCALE, typename STORAGE_T, typename COMPUTE_T>
+__global__
+    __launch_bounds__(BDIM_X) void disco_bwd_t_blk_k(const int Hi, const int Wi, const int K, const int Ho, const int Wo,
+                                                      const int pscale, const int64_t *__restrict__ roff,
+                                                      const int64_t *__restrict__ kers, const int64_t *__restrict__ rows,
+                                                      const int64_t *__restrict__ cols, const COMPUTE_T *__restrict__ vals,
+                                                      const STORAGE_T *__restrict__ inp, COMPUTE_T *__restrict__ out)
+{
+    if constexpr (PSCALE != 0) {
+        disco_bwd_t_d<BDIM_X, ELXTH, STORAGE_T, COMPUTE_T>(Hi, Wi, K, Ho, Wo, PSCALE, roff, kers, rows, cols, vals, inp, out);
+    } else {
+        disco_bwd_t_d<BDIM_X, ELXTH, STORAGE_T, COMPUTE_T>(Hi, Wi, K, Ho, Wo, pscale, roff, kers, rows, cols, vals, inp, out);
+    }
+}
+
+template <int NTH, int ELXTH, typename STORAGE_T, typename COMPUTE_T>
+static void launch_kernel_t(int BC, int Hi, int Wi, int K, int Ho, int Wo, int64_t nrows, int64_t *roff_d, int64_t *ker_d,
+                             int64_t *row_d, int64_t *col_d, COMPUTE_T *val_d, STORAGE_T *inp_d, COMPUTE_T *out_d,
+                             cudaStream_t stream)
+{
+    static_assert(sizeof(STORAGE_T) == 2 || sizeof(STORAGE_T) == 4 || sizeof(STORAGE_T) == 8);
+
+    if constexpr (ELXTH <= ELXTH_MAX) {
+        if (NTH * ELXTH >= Wi) {
+            dim3 grid(nrows, BC);
+            const int pscale = Wo / Wi;
+
+            switch (pscale) {
+            case 1:
+                disco_bwd_t_blk_k<NTH, ELXTH, 1, STORAGE_T, COMPUTE_T><<<grid, NTH, 0, stream>>>(Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d,
+                                                                             row_d, col_d, val_d, inp_d, out_d);
+                break;
+            case 2:
+                disco_bwd_t_blk_k<NTH, ELXTH, 2, STORAGE_T, COMPUTE_T><<<grid, NTH, 0, stream>>>(Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d,
+                                                                             row_d, col_d, val_d, inp_d, out_d);
+                break;
+            case 3:
+                disco_bwd_t_blk_k<NTH, ELXTH, 3, STORAGE_T, COMPUTE_T><<<grid, NTH, 0, stream>>>(Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d,
+                                                                             row_d, col_d, val_d, inp_d, out_d);
+                break;
+            default:
+                disco_bwd_t_blk_k<NTH, ELXTH, 0, STORAGE_T, COMPUTE_T><<<grid, NTH, 0, stream>>>(Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d,
+                                                                             row_d, col_d, val_d, inp_d, out_d);
+            }
+        } else {
+            launch_kernel_t<NTH, ELXTH + 1, STORAGE_T, COMPUTE_T>(BC, Hi, Wi, K, Ho, Wo, nrows, roff_d, ker_d, row_d, col_d, val_d, inp_d,
+                                          out_d, stream);
+        }
+    }
+}
+
+    torch::Tensor disco_cuda_bwd_T(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
+                                   torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo)
+    {
+        CHECK_CUDA_INPUT_TENSOR(inp);
+        CHECK_CUDA_INPUT_TENSOR(roff_idx);
+        CHECK_CUDA_INPUT_TENSOR(ker_idx);
+        CHECK_CUDA_INPUT_TENSOR(row_idx);
+        CHECK_CUDA_INPUT_TENSOR(col_idx);
+        CHECK_CUDA_INPUT_TENSOR(val);
+
+        int64_t B    = inp.size(0);
+        int64_t C    = inp.size(1);
+        int64_t BC   = B * C;
+        int64_t Hi   = inp.size(3);
+        int64_t Wi   = inp.size(4);
+        int64_t nrows = roff_idx.size(0) - 1;
+
+        int64_t out_dims[] = {B, C, Ho, Wo};
+        auto options = torch::TensorOptions().device(inp.device()).dtype(val.dtype());
+        torch::Tensor out = torch::zeros(out_dims, options);
+
+        auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+        static_assert(0 == (ELXTH_MAX % 2));
+
+        if (Wo <= 64 * ELXTH_MAX) {
+            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_t_cuda", ([&] {
+                using storage_t = scalar_t;
+                using compute_t = typename at::opmath_type<storage_t>;
+                launch_kernel_t<64, 1, storage_t, compute_t>(
+                    BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                    ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                    col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
+                    inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
+            }));
+        } else if (Wo <= 128 * ELXTH_MAX) {
+            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_t_cuda", ([&] {
+                using storage_t = scalar_t;
+                using compute_t = typename at::opmath_type<storage_t>;
+                launch_kernel_t<128, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
+                    BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                    ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                    col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
+                    inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
+            }));
+        } else if (Wo <= 256 * ELXTH_MAX) {
+            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_t_cuda", ([&] {
+                using storage_t = scalar_t;
+                using compute_t = typename at::opmath_type<storage_t>;
+                launch_kernel_t<256, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
+                    BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                    ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                    col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
+                    inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
+            }));
+        } else if (Wo <= 512 * ELXTH_MAX) {
+            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_t_cuda", ([&] {
+                using storage_t = scalar_t;
+                using compute_t = typename at::opmath_type<storage_t>;
+                launch_kernel_t<512, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
+                    BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                    ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                    col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
+                    inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
+            }));
+        } else if (Wo <= 1024 * ELXTH_MAX) {
+            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_t_cuda", ([&] {
+                using storage_t = scalar_t;
+                using compute_t = typename at::opmath_type<storage_t>;
+                launch_kernel_t<1024, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
+                    BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                    ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                    col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
+                    inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
+            }));
+        } else {
+            fprintf(stderr, "%s:%d: error, unsupported Wo value (%ld), max supported is %d\n", __FILE__, __LINE__, Wo,
+                    1024 * ELXTH_MAX);
+            exit(EXIT_FAILURE);
+        }
+
+        out = out.to(inp.dtype());
+        return out;
+    }
+
     torch::Tensor disco_cuda_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
                                  torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo)
     {
@@ -296,7 +502,8 @@ static void launch_kernel(int BC, int Hi, int Wi, int K, int Ho, int Wo, int64_t
 
     TORCH_LIBRARY_IMPL(disco_kernels, CUDA, m)
     {
-        m.impl("backward",  &disco_cuda_bwd);
+        m.impl("backward",   &disco_cuda_bwd);
+        m.impl("backward_t", &disco_cuda_bwd_T);
     }
 
 }

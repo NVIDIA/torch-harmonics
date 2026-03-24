@@ -30,6 +30,9 @@
 
 #include "disco.h"
 #include <torch/extension.h>
+#include <algorithm>
+#include <numeric>
+#include <vector>
 
 template <typename REAL_T>
 void preprocess_psi_kernel(int64_t nnz, int64_t K, int64_t Ho, int64_t *ker_h, int64_t *row_h, int64_t *col_h,
@@ -97,49 +100,132 @@ void preprocess_psi_kernel(int64_t nnz, int64_t K, int64_t Ho, int64_t *ker_h, i
 }
 
 
-torch::Tensor preprocess_psi(const int64_t K, const int64_t Ho, torch::Tensor ker_idx, torch::Tensor row_idx,
-                             torch::Tensor col_idx, torch::Tensor val)
+// ---------------------------------------------------------------------------
+// Transpose preprocessing: sort NZ entries by (h_in, w_phase) so the backward
+// kernel can gather without atomic writes to global memory.
+//
+// Sort key = h_in * pscale + w_phase  where:
+//   h_in    = col_val / nlon_in
+//   w_phase = (col_val % nlon_in) % pscale
+//   pscale  = nlon_in / nlon_out
+//
+// Within a group all NZs share the same (h_in, w_phase) and therefore write
+// to the same exclusive set of output positions {w_phase + pscale*pp}, so no
+// global atomics are needed in the backward kernel.
+// ---------------------------------------------------------------------------
+template <typename REAL_T>
+void preprocess_psi_transpose_kernel(int64_t nnz, int64_t nlat_in, int64_t nlon_in, int64_t nlon_out,
+                                     int64_t *ker_h, int64_t *row_h, int64_t *col_h,
+                                     int64_t *roff_h, REAL_T *val_h, int64_t &nrows)
 {
+    const int64_t Wo     = nlon_in;           // backward output longitude count
+    const int64_t pscale = nlon_in / nlon_out; // Wo / Wi
 
+    // Compute sort key for a NZ entry given its col value.
+    auto sort_key = [&](int64_t col) -> int64_t {
+        return (col / Wo) * pscale + (col % Wo) % pscale;
+    };
+
+    // Argsort by sort_key (stable to keep original relative order within groups).
+    std::vector<int64_t> order(nnz);
+    std::iota(order.begin(), order.end(), 0LL);
+    std::stable_sort(order.begin(), order.end(), [&](int64_t a, int64_t b) {
+        return sort_key(col_h[a]) < sort_key(col_h[b]);
+    });
+
+    // Apply permutation into temporary buffers, then copy back.
+    int64_t *ker_s = new int64_t[nnz];
+    int64_t *row_s = new int64_t[nnz];
+    int64_t *col_s = new int64_t[nnz];
+    REAL_T  *val_s = new REAL_T[nnz];
+
+    for (int64_t i = 0; i < nnz; i++) {
+        ker_s[i] = ker_h[order[i]];
+        row_s[i] = row_h[order[i]];
+        col_s[i] = col_h[order[i]];
+        val_s[i] = val_h[order[i]];
+    }
+    for (int64_t i = 0; i < nnz; i++) {
+        ker_h[i] = ker_s[i]; row_h[i] = row_s[i];
+        col_h[i] = col_s[i]; val_h[i] = val_s[i];
+    }
+    delete[] ker_s; delete[] row_s; delete[] col_s; delete[] val_s;
+
+    // Build row offsets: new row whenever (h_in, w_phase) changes.
+    nrows = 1;
+    roff_h[0] = 0;
+    for (int64_t i = 1; i < nnz; i++) {
+        if (sort_key(col_h[i - 1]) == sort_key(col_h[i])) continue;
+        roff_h[nrows++] = i;
+        if (nrows > nlat_in * pscale) {
+            fprintf(stderr, "%s:%d: error, exceeded max transposed rows (%ld)\n",
+                    __FILE__, __LINE__, (long)(nlat_in * pscale));
+            exit(EXIT_FAILURE);
+        }
+    }
+    roff_h[nrows] = nnz;
+}
+
+// Unified wrapper for both forward and transpose preprocessing.
+//
+// transpose=false  Sort by (ker, h_out); uses K and Ho.
+//                  max rows = K * Ho
+//
+// transpose=true   Sort by (h_in, w_phase); uses Ho (as nlat_in), nlon_in, nlon_out.
+//                  max rows = nlat_in * pscale  where pscale = nlon_in / nlon_out
+//                  K is unused in this mode.
+torch::Tensor preprocess_psi(const int64_t K, const int64_t Ho,
+                              const int64_t nlon_in, const int64_t nlon_out,
+                              torch::Tensor ker_idx, torch::Tensor row_idx,
+                              torch::Tensor col_idx, torch::Tensor val,
+                              bool transpose)
+{
     CHECK_CONTIGUOUS_TENSOR(ker_idx);
     CHECK_CONTIGUOUS_TENSOR(row_idx);
     CHECK_CONTIGUOUS_TENSOR(col_idx);
     CHECK_CONTIGUOUS_TENSOR(val);
 
-    // get the input device and make sure all tensors are on the same device
     auto device = ker_idx.device();
-    TORCH_INTERNAL_ASSERT(device.type() == row_idx.device().type() && (device.type() == col_idx.device().type()) && (device.type() == val.device().type()));
+    TORCH_INTERNAL_ASSERT(device.type() == row_idx.device().type() &&
+                          device.type() == col_idx.device().type() &&
+                          device.type() == val.device().type());
 
-    // move to cpu
     ker_idx = ker_idx.to(torch::kCPU);
     row_idx = row_idx.to(torch::kCPU);
     col_idx = col_idx.to(torch::kCPU);
-    val = val.to(torch::kCPU);
+    val     = val.to(torch::kCPU);
 
-    int64_t nnz = val.size(0);
-    int64_t *ker_h = ker_idx.data_ptr<int64_t>();
-    int64_t *row_h = row_idx.data_ptr<int64_t>();
-    int64_t *col_h = col_idx.data_ptr<int64_t>();
-    int64_t *roff_h = new int64_t[Ho * K + 1];
+    int64_t nnz     = val.size(0);
+    int64_t pscale  = (nlon_out > 0) ? nlon_in / nlon_out : 1;
+    int64_t max_rows = transpose ? Ho * pscale : K * Ho;
+    int64_t *roff_h  = new int64_t[max_rows + 1];
     int64_t nrows;
 
-    AT_DISPATCH_FLOATING_TYPES(val.scalar_type(), "preprocess_psi", ([&] {
-                                   preprocess_psi_kernel<scalar_t>(nnz, K, Ho, ker_h, row_h, col_h, roff_h,
-                                                                   val.data_ptr<scalar_t>(), nrows);
-                               }));
+    if (transpose) {
+        AT_DISPATCH_FLOATING_TYPES(val.scalar_type(), "preprocess_psi_transpose", ([&] {
+            preprocess_psi_transpose_kernel<scalar_t>(
+                nnz, Ho, nlon_in, nlon_out,
+                ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                col_idx.data_ptr<int64_t>(), roff_h,
+                val.data_ptr<scalar_t>(), nrows);
+        }));
+    } else {
+        AT_DISPATCH_FLOATING_TYPES(val.scalar_type(), "preprocess_psi", ([&] {
+            preprocess_psi_kernel<scalar_t>(
+                nnz, K, Ho,
+                ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                col_idx.data_ptr<int64_t>(), roff_h,
+                val.data_ptr<scalar_t>(), nrows);
+        }));
+    }
 
-    // create output tensor
-    auto roff_idx = torch::empty({nrows + 1}, row_idx.options());
-    int64_t *roff_out_h = roff_idx.data_ptr<int64_t>();
-
-    for (int64_t i = 0; i < (nrows + 1); i++) { roff_out_h[i] = roff_h[i]; }
+    auto roff_idx = torch::empty({nrows + 1}, ker_idx.options());
+    int64_t *roff_out = roff_idx.data_ptr<int64_t>();
+    for (int64_t i = 0; i <= nrows; i++) roff_out[i] = roff_h[i];
     delete[] roff_h;
 
-    // move to original device
-    ker_idx = ker_idx.to(device);
-    row_idx = row_idx.to(device);
-    col_idx = col_idx.to(device);
-    val = val.to(device);
+    ker_idx  = ker_idx.to(device);  row_idx = row_idx.to(device);
+    col_idx  = col_idx.to(device);  val     = val.to(device);
     roff_idx = roff_idx.to(device);
 
     return roff_idx;
@@ -168,7 +254,13 @@ bool optimized_kernels_is_available() {
 
 PYBIND11_MODULE(disco_helpers, m)
 {
-    m.def("preprocess_psi", &preprocess_psi, "Sort psi matrix, required for using CUDA kernels.");
+    m.def("preprocess_psi", &preprocess_psi,
+          "Sort psi matrix for CUDA kernels. "
+          "transpose=False: sort by (ker, h_out) for the forward kernel. "
+          "transpose=True:  sort by (h_in, w_phase) for the atomic-free backward kernel.",
+          py::arg("K"), py::arg("Ho"), py::arg("nlon_in"), py::arg("nlon_out"),
+          py::arg("ker_idx"), py::arg("row_idx"), py::arg("col_idx"), py::arg("val"),
+          py::arg("transpose") = false);
     m.def("cuda_kernels_is_available", &cuda_kernels_is_available, "Check if CUDA kernels are available.");
     m.def("optimized_kernels_is_available", &optimized_kernels_is_available, "Check if optimized kernels (CUDA or C++) are available.");
 }

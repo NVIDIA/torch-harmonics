@@ -93,11 +93,41 @@ namespace disco_kernels {
         return out;
     }
 
+    torch::Tensor disco_cpu_bwd_t(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
+        torch::Tensor col_idx, torch::Tensor vals, int64_t K, int64_t Ho, int64_t Wo) {
+
+        // sanity checks
+        CHECK_CPU_INPUT_TENSOR(inp);
+        CHECK_CPU_INPUT_TENSOR(roff_idx);
+        CHECK_CPU_INPUT_TENSOR(ker_idx);
+        CHECK_CPU_INPUT_TENSOR(row_idx);
+        CHECK_CPU_INPUT_TENSOR(col_idx);
+        CHECK_CPU_INPUT_TENSOR(vals);
+
+        auto out = torch::zeros({inp.size(0), inp.size(1), Ho, Wo}, inp.options());
+
+        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_t_cpu", ([&] {
+            disco_bwd_t_cpu<scalar_t>(
+                inp.size(0), inp.size(1), K, inp.size(3), inp.size(4),
+                Ho, Wo, vals.size(0), roff_idx.size(0) - 1,
+                inp.packed_accessor64<scalar_t, 5>(),
+                roff_idx.packed_accessor64<int64_t, 1>(),
+                ker_idx.packed_accessor64<int64_t, 1>(),
+                row_idx.packed_accessor64<int64_t, 1>(),
+                col_idx.packed_accessor64<int64_t, 1>(),
+                vals.packed_accessor64<scalar_t, 1>(),
+                out.packed_accessor64<scalar_t, 4>());
+        }));
+
+        return out;
+    }
+
     // Implement the operators: CPU
     TORCH_LIBRARY_IMPL(disco_kernels, CPU, m)
     {
-        m.impl("forward",  &disco_cpu_fwd);
+        m.impl("forward",   &disco_cpu_fwd);
         m.impl("backward",  &disco_cpu_bwd);
+        m.impl("backward_t", &disco_cpu_bwd_t);
     }
 
 }

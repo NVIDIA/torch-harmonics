@@ -150,4 +150,47 @@ namespace disco_kernels {
         }
     }
 
+    template <typename scalar_t>
+    static void disco_bwd_t_cpu(
+        int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi,
+        int64_t Ho, int64_t Wo, int64_t nnz, int64_t nnr,
+        const torch::PackedTensorAccessor64<scalar_t, 5> inp,
+        const torch::PackedTensorAccessor64<int64_t, 1> roff_idx,
+        const torch::PackedTensorAccessor64<int64_t, 1> ker_idx,
+        const torch::PackedTensorAccessor64<int64_t, 1> row_idx,
+        const torch::PackedTensorAccessor64<int64_t, 1> col_idx,
+        const torch::PackedTensorAccessor64<scalar_t, 1> vals,
+        torch::PackedTensorAccessor64<scalar_t, 4> out) {
+
+        const int64_t pscale = static_cast<int64_t>(Wo / Wi);
+
+        // Each transposed row writes to an exclusive set of output positions
+        // (same h_in, same w_phase), so collapsing all three loops is race-free.
+        #pragma omp parallel for collapse(3)
+        for (int64_t b = 0; b < B; b++) {
+            for (int64_t c = 0; c < C; c++) {
+                for (int64_t row = 0; row < nnr; row++) {
+
+                    int64_t col0    = col_idx[roff_idx[row]];
+                    int64_t h_in    = col0 / Wo;
+                    int64_t w_phase = (col0 % Wo) % pscale;
+
+                    for (int64_t z = roff_idx[row]; z < roff_idx[row + 1]; z++) {
+
+                        int64_t ker     = ker_idx[z];
+                        int64_t h_out   = row_idx[z];
+                        int64_t w_shift = (col_idx[z] % Wo) / pscale;
+                        scalar_t val    = vals[z];
+
+                        for (int64_t pp = 0; pp < Wi; pp++) {
+                            int64_t src = pp - w_shift;
+                            if (src < 0) src += Wi;
+                            out[b][c][h_in][w_phase + pscale * pp] += val * inp[b][c][ker][h_out][src];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
 }
