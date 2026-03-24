@@ -36,7 +36,7 @@ import torch
 
 from torch_harmonics.disco._disco_utils import _get_psi, _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from torch_harmonics.disco._disco_utils import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
-from disco_helpers import optimized_kernels_is_available, preprocess_psi
+from disco_helpers import preprocess_psi
 from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
     DiscreteContinuousConv,
@@ -223,7 +223,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         if self.optimized_kernel:
             # preprocessed data-structure for GPU kernel
-            roff_idx = preprocess_psi(self.kernel_size, self.nlat_out_local, ker_idx, row_idx, col_idx, vals).contiguous()
+            roff_idx = preprocess_psi(self.kernel_size, self.nlat_out_local, self.nlon_out, self.nlon_in,
+                                      ker_idx, row_idx, col_idx, vals, transpose=False).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
         # save all datastructures
@@ -402,7 +403,8 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         if self.optimized_kernel:
             # preprocessed data-structure for GPU kernel
-            roff_idx = preprocess_psi(self.kernel_size, self.nlat_in_local, ker_idx, row_idx, col_idx, vals).contiguous()
+            roff_idx = preprocess_psi(self.kernel_size, self.nlat_in_local, self.nlon_in, self.nlon_out,
+                                      ker_idx, row_idx, col_idx, vals, transpose=False).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
         # save all datastructures

@@ -41,7 +41,7 @@ from torch_harmonics.cache import lru_cache
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
 from ._disco_utils import _get_psi, _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from ._disco_utils import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
-from ._disco_utils import _disco_s2_contraction_optimized_t
+from ._disco_utils import _disco_s2_contraction_optimized_t, _disco_s2_transpose_contraction_optimized_t
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
 from disco_helpers import optimized_kernels_is_available, preprocess_psi
 
@@ -482,8 +482,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         if self.optimized_kernel:
             # preprocessed data-structure for GPU forward kernel (sorted by ker, h_out)
-            roff_idx = preprocess_psi(self.kernel_size, self.nlat_out, 0, 0,
-                                      ker_idx, row_idx, col_idx, vals).contiguous()
+            roff_idx = preprocess_psi(self.kernel_size, self.nlat_out, self.nlon_out, self.nlon_in,
+                                      ker_idx, row_idx, col_idx, vals, transpose=False).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
             # preprocessed data-structure for GPU transpose backward kernel
@@ -492,7 +492,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             row_idx_T  = row_idx.clone()
             col_idx_T  = col_idx.clone()
             vals_T     = vals.clone()
-            roff_T_idx = preprocess_psi(0, self.nlat_in, self.nlon_in, self.nlon_out,
+            roff_T_idx = preprocess_psi(self.kernel_size, self.nlat_in, self.nlon_in, self.nlon_out,
                                         ker_idx_T, row_idx_T, col_idx_T, vals_T, transpose=True).contiguous()
             self.register_buffer("psi_T_roff_idx", roff_T_idx, persistent=False)
             self.register_buffer("psi_T_ker_idx",  ker_idx_T,  persistent=False)
@@ -638,10 +638,24 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         vals = vals.contiguous()
 
         if self.optimized_kernel:
-            # preprocessed data-structure for GPU kernel
-            roff_idx = preprocess_psi(self.kernel_size, self.nlat_in, 0, 0,
+            # preprocessed data-structure for GPU forward kernel (sorted by ker, h_out)
+            roff_idx = preprocess_psi(self.kernel_size, self.nlat_in, self.nlon_in, self.nlon_out,
                                       ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+
+            # preprocessed data-structure for GPU transpose backward kernel
+            # (separate copies sorted by (h_in, w_phase) for atomic-free gather)
+            ker_idx_T  = ker_idx.clone()
+            row_idx_T  = row_idx.clone()
+            col_idx_T  = col_idx.clone()
+            vals_T     = vals.clone()
+            roff_T_idx = preprocess_psi(self.kernel_size, self.nlat_out, self.nlon_out, self.nlon_in,
+                                        ker_idx_T, row_idx_T, col_idx_T, vals_T, transpose=True).contiguous()
+            self.register_buffer("psi_T_roff_idx", roff_T_idx, persistent=False)
+            self.register_buffer("psi_T_ker_idx",  ker_idx_T,  persistent=False)
+            self.register_buffer("psi_T_row_idx",  row_idx_T,  persistent=False)
+            self.register_buffer("psi_T_col_idx",  col_idx_T,  persistent=False)
+            self.register_buffer("psi_T_vals",     vals_T,     persistent=False)
 
         # save all datastructures
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
@@ -671,8 +685,10 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = x.reshape(B, -1, x.shape[-3], H, W)
 
         if self.optimized_kernel:
-            out = _disco_s2_transpose_contraction_optimized(
-                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
+            out = _disco_s2_transpose_contraction_optimized_t(
+                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
+                self.psi_T_roff_idx, self.psi_T_ker_idx, self.psi_T_row_idx, self.psi_T_col_idx, self.psi_T_vals,
+                self.kernel_size, self.nlat_out, self.nlon_out
             )
         else:
             out = _disco_s2_transpose_contraction_torch(x, self.psi_st.to(x.device), self.nlon_out)

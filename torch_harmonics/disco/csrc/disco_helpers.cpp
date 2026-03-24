@@ -195,9 +195,8 @@ torch::Tensor preprocess_psi(const int64_t K, const int64_t Ho,
     col_idx = col_idx.to(torch::kCPU);
     val     = val.to(torch::kCPU);
 
-    int64_t nnz     = val.size(0);
-    int64_t pscale  = (nlon_out > 0) ? nlon_in / nlon_out : 1;
-    int64_t max_rows = transpose ? Ho * pscale : K * Ho;
+    int64_t nnz      = val.size(0);
+    int64_t max_rows = transpose ? Ho * (nlon_in / nlon_out) : K * Ho;
     int64_t *roff_h  = new int64_t[max_rows + 1];
     int64_t nrows;
 
