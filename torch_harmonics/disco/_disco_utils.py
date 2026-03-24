@@ -134,20 +134,30 @@ def _setup_context_conv_backward_t(ctx, inputs, output):
     (inp, roff_idx, ker_idx, row_idx, col_idx, vals,
      roff_T_idx, ker_T_idx, row_T_idx, col_T_idx, vals_T,
      kernel_size, nlat_out, nlon_out) = inputs
-    ctx.save_for_backward(roff_T_idx, ker_T_idx, row_T_idx, col_T_idx, vals_T)
+    ctx.save_for_backward(roff_idx, ker_idx, row_idx, col_idx, vals,
+                          roff_T_idx, ker_T_idx, row_T_idx, col_T_idx, vals_T)
     ctx.kernel_size = kernel_size
     ctx.nlat_in = inp.shape[-2]
     ctx.nlon_in = inp.shape[-1]
+    ctx.nlon_out = nlon_out
 
 def _disco_s2_contraction_bwd_optimized_t(ctx, grad_output):
-    roff_T_idx, ker_T_idx, row_T_idx, col_T_idx, vals_T = ctx.saved_tensors
+    (roff_idx, ker_idx, row_idx, col_idx, vals,
+     roff_T_idx, ker_T_idx, row_T_idx, col_T_idx, vals_T) = ctx.saved_tensors
 
     if ctx.needs_input_grad[0]:
         gtype = grad_output.dtype
         grad_output = grad_output.to(torch.float32).contiguous()
-        grad_input = disco_kernels.backward_t.default(
-            grad_output, roff_T_idx, ker_T_idx, row_T_idx, col_T_idx, vals_T,
-            ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
+        if ctx.nlon_in == ctx.nlon_out:
+            # pscale=1: T-sorted rows collapse to nlat_in groups (vs K*nlat_in for the
+            # atomic kernel), giving K× less parallelism. Fall back to backward.default.
+            grad_input = disco_kernels.backward.default(
+                grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
+                ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
+        else:
+            grad_input = disco_kernels.backward_t.default(
+                grad_output, roff_T_idx, ker_T_idx, row_T_idx, col_T_idx, vals_T,
+                ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
         grad_input = grad_input.to(gtype)
     else:
         grad_input = None
@@ -179,7 +189,12 @@ if optimized_kernels_is_available():
         kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
         itype = inp.dtype
         inp = inp.to(torch.float32).contiguous()
-        out = disco_kernels.backward_t.default(inp, roff_T_idx, ker_T_idx, row_T_idx, col_T_idx, vals_T, kernel_size, nlat_out, nlon_out)
+        if nlon_out == inp.shape[-1]:
+            # pscale=1: T-sorted rows collapse to nlat_out groups (vs K*nlat_out for the
+            # atomic kernel), giving K× less parallelism. Fall back to backward.default.
+            out = disco_kernels.backward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+        else:
+            out = disco_kernels.backward_t.default(inp, roff_T_idx, ker_T_idx, row_T_idx, col_T_idx, vals_T, kernel_size, nlat_out, nlon_out)
         return out.to(itype)
 
     @torch.library.register_fake("disco_kernels::_disco_s2_transpose_contraction_optimized_t")
