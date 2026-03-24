@@ -39,10 +39,15 @@ class BenchmarkResult:
 class BenchmarkABC(abc.ABC):
     @classmethod
     @abc.abstractmethod
-    def new(cls: type[Self]) -> Self:
+    def new(cls: type[Self], batch_size_factor: float = 1.0) -> Self:
         """
         Initialize any state needed for the benchmark.
         This will be called once before the benchmark is run.
+
+        Args:
+            batch_size_factor: Combined hardware and user-requested scale factor
+                to apply to the base batch size. Each benchmark defines its own
+                base batch size and multiplies it by this factor.
         """
         pass
 
@@ -58,9 +63,9 @@ class BenchmarkABC(abc.ABC):
             torch.cuda.synchronize()
 
     @classmethod
-    def run_benchmark(cls, iters=10, warmup=1) -> BenchmarkResult:
+    def run_benchmark(cls, iters=10, warmup=1, batch_size_factor: float = 1.0) -> BenchmarkResult:
         null_timer = NullTimer()
-        benchmark = cls.new()
+        benchmark = cls.new(batch_size_factor=batch_size_factor)
         for _ in range(warmup):
             benchmark.run_instance(null_timer)
         timer = cls._make_timer()

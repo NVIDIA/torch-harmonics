@@ -56,9 +56,9 @@ def get_batch_size_factor() -> float:
     return factor
 
 
-def scale_batch_size(base: int) -> int:
-    """Scale a base batch size (tuned for Tesla T4) by the hardware factor.
+def scale_batch_size(base: int, factor: float) -> int:
+    """Scale a base batch size by the given factor.
 
     Always returns at least 1.
     """
-    return max(1, round(base * get_batch_size_factor()))
+    return max(1, round(base * factor))

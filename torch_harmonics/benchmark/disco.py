@@ -22,7 +22,7 @@ class DiscreteContinuousConvS2Benchmark(BenchmarkABC):
 
     @classmethod
     @abc.abstractmethod
-    def new(cls) -> "DiscreteContinuousConvS2Benchmark": ...
+    def new(cls, batch_size_factor: float = 1.0) -> "DiscreteContinuousConvS2Benchmark": ...
 
     @classmethod
     @final
@@ -64,7 +64,7 @@ class DiscreteContinuousConvS2Benchmark(BenchmarkABC):
 class DiscreteContinuousConvS2TorchBenchmark1Degree(DiscreteContinuousConvS2Benchmark):
 
     @classmethod
-    def new(cls) -> "DiscreteContinuousConvS2TorchBenchmark1Degree":
+    def new(cls, batch_size_factor: float = 1.0) -> "DiscreteContinuousConvS2TorchBenchmark1Degree":
         return cls.new_with_shape(
-            B=scale_batch_size(4), in_channels=4, out_channels=4, nlat=180, nlon=360,
+            B=scale_batch_size(4, batch_size_factor), in_channels=4, out_channels=4, nlat=180, nlon=360,
         )

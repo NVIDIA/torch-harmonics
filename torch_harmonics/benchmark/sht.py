@@ -22,7 +22,7 @@ class RealSHTBenchmark(BenchmarkABC):
 
     @classmethod
     @abc.abstractmethod
-    def new(cls) -> "RealSHTBenchmark": ...
+    def new(cls, batch_size_factor: float = 1.0) -> "RealSHTBenchmark": ...
 
     @classmethod
     @final
@@ -48,15 +48,15 @@ class RealSHTBenchmark(BenchmarkABC):
 class RealSHTBenchmark1Degree(RealSHTBenchmark):
 
     @classmethod
-    def new(cls) -> "RealSHTBenchmark1Degree":
-        return cls.new_with_shape(B=scale_batch_size(4096), H=180, L=360)
+    def new(cls, batch_size_factor: float = 1.0) -> "RealSHTBenchmark1Degree":
+        return cls.new_with_shape(B=scale_batch_size(4096, batch_size_factor), H=180, L=360)
 
 @register_benchmark("real_sht_quarter_deg")
 class RealSHTBenchmarkQuarterDegree(RealSHTBenchmark):
 
     @classmethod
-    def new(cls) -> "RealSHTBenchmarkQuarterDegree":
-        return cls.new_with_shape(B=scale_batch_size(1), H=721, L=1440)
+    def new(cls, batch_size_factor: float = 1.0) -> "RealSHTBenchmarkQuarterDegree":
+        return cls.new_with_shape(B=scale_batch_size(1, batch_size_factor), H=721, L=1440)
 
 
 class InverseRealSHTBenchmark(BenchmarkABC):
@@ -68,7 +68,7 @@ class InverseRealSHTBenchmark(BenchmarkABC):
 
     @classmethod
     @abc.abstractmethod
-    def new(cls) -> "InverseRealSHTBenchmark": ...
+    def new(cls, batch_size_factor: float = 1.0) -> "InverseRealSHTBenchmark": ...
 
     @classmethod
     @final
@@ -97,12 +97,12 @@ class InverseRealSHTBenchmark(BenchmarkABC):
 class InverseRealSHTBenchmark1Degree(InverseRealSHTBenchmark):
 
     @classmethod
-    def new(cls) -> "InverseRealSHTBenchmark1Degree":
-        return cls.new_with_shape(B=scale_batch_size(4096), H=180, L=360)
+    def new(cls, batch_size_factor: float = 1.0) -> "InverseRealSHTBenchmark1Degree":
+        return cls.new_with_shape(B=scale_batch_size(4096, batch_size_factor), H=180, L=360)
 
 @register_benchmark("inverse_real_sht_quarter_deg")
 class InverseRealSHTBenchmarkQuarterDegree(InverseRealSHTBenchmark):
 
     @classmethod
-    def new(cls) -> "InverseRealSHTBenchmarkQuarterDegree":
-        return cls.new_with_shape(B=scale_batch_size(1), H=721, L=1440)
+    def new(cls, batch_size_factor: float = 1.0) -> "InverseRealSHTBenchmarkQuarterDegree":
+        return cls.new_with_shape(B=scale_batch_size(1, batch_size_factor), H=721, L=1440)
