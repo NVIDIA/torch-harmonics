@@ -166,6 +166,9 @@ class PiecewiseLinearFilterBasis(FilterBasis):
 
     def _compute_support_vals_anisotropic(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float):
 
+        # shift phi tensor by pi/4 and bring it into the [0, 2pi) range
+        phi = phi + math.pi / 4
+
         # enumerator for basis function
         ikernel = torch.arange(self.kernel_size, device=r.device).reshape(-1, 1, 1)
 
@@ -261,6 +264,9 @@ class HarmonicFilterBasis(FilterBasis):
 
     def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float, width: float = 1.0):
 
+        # shift phi tensor by pi/4 and bring it into the [0, 2pi) range
+        phi = phi + math.pi / 4
+
         # enumerator for basis function
         ikernel = torch.arange(self.kernel_size, device=r.device).reshape(-1, 1, 1)
         nkernel = ikernel % self.kernel_shape[1]
@@ -325,6 +331,9 @@ class ZernikeFilterBasis(FilterBasis):
         return torch.where(m < 0, self.zernikeradial(r, n, -m) * torch.sin(m * phi), self.zernikeradial(r, n, m) * torch.cos(m * phi))
 
     def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float, width: float = 0.25):
+
+        # shift phi tensor by pi/4 and bring it into the [0, 2pi) range
+        phi = phi + math.pi / 4
 
         # enumerator for basis function
         ikernel = torch.arange(self.kernel_size, device=r.device).reshape(-1, 1, 1)
@@ -419,6 +428,10 @@ class HannPolarFourierFilterBasis(FilterBasis):
         phi: torch.Tensor,
         r_cutoff: float,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+
+
+        # shift phi tensor by pi/4 and bring it into the [0, 2pi) range
+        phi = phi + math.pi / 4
 
         K = self.kernel_size
 
@@ -587,6 +600,9 @@ class FourierBesselFilterBasis(FilterBasis):
         ms = self._ms.to(r.device)
         cosines = self._cosines.to(r.device)
         alphas = self._alphas.float().to(r.device)
+
+        # shift phi tensor by pi/4 and bring it into the [0, 2pi) range
+        phi = phi + math.pi / 4
 
         # r shape can be [ntheta, nr] or [1, ntheta, nr] — normalise to 3D
         if r.dim() == 2:
