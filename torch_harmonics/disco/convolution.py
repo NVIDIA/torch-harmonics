@@ -46,7 +46,7 @@ from disco_helpers import optimized_kernels_is_available, preprocess_psi
 
 
 def _normalize_convolution_tensor_s2(
-    psi_idx, psi_vals, in_shape, out_shape, kernel_size, quad_weights, transpose_normalization=False, basis_norm_mode="mean", merge_quadrature=False, eps=1e-9
+    psi_idx, psi_vals, in_shape, out_shape, kernel_size, quad_weights, theta_cutoff, transpose_normalization=False, basis_norm_mode="mean", merge_quadrature=False, eps=1e-9
 ):
     """Normalizes convolution tensor values based on specified normalization mode.
 
@@ -313,6 +313,7 @@ def _precompute_convolution_tensor_s2(
         out_shape,
         kernel_size,
         quad_weights,
+        theta_cutoff,
         transpose_normalization=transpose_normalization,
         basis_norm_mode=basis_norm_mode,
         merge_quadrature=merge_quadrature,
