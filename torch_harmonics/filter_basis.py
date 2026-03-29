@@ -89,6 +89,21 @@ class FilterBasis(metaclass=abc.ABCMeta):
 
         raise NotImplementedError
 
+    def compute_l2_norms(self, r_cutoff: float = 1.0, nr: int = 40, nphi: int = 100) -> torch.Tensor:
+        """Numerically compute the L2 norm of each basis function on the disk of radius r_cutoff."""
+        phi = torch.linspace(0, 2 * math.pi, nphi)
+        r = torch.linspace(0, r_cutoff, nr)
+        r, phi = torch.meshgrid(r, phi, indexing="ij")
+
+        dr = r_cutoff / (nr - 1)
+        dphi = 2 * math.pi / (nphi - 1)
+
+        iidx, vals = self.compute_support_vals(r, phi, r_cutoff=r_cutoff)
+        psi = torch.sparse_coo_tensor(iidx.t(), vals, size=(self.kernel_size, nr, nphi)).to_dense()
+
+        norms_sq = (psi**2 * r.unsqueeze(0) * dr * dphi).sum(dim=(-2, -1))
+        return norms_sq.sqrt()
+
     def get_init_factors(self, device: Optional[torch.device] = None) -> torch.Tensor:
         """
         Return per-basis factors for initializing DISCO convolution weights.
@@ -344,8 +359,14 @@ class ZernikeFilterBasis(FilterBasis):
         n = nkernel[iidx[:, 0], 0, 0]
         l = lkernel[iidx[:, 0], 0, 0]
 
-        # computes the Zernike polynomials using helper functions
-        vals = self.zernikepoly(r, phi, n, l)
+        # L2 normalization on the unit disk (measure r dr dphi)
+        # radial: int_0^1 R_n^|m|(r)^2 r dr = 1/(2(n+1))
+        # angular: int_0^{2pi} cos^2(m phi) dphi = 2pi (m=0) or pi (m!=0)
+        m = 2 * l - n
+        epsilon_m = torch.where(m == 0, 2.0, 1.0)
+        norm = torch.sqrt(math.pi * epsilon_m / (2.0 * (n.float() + 1))).clamp(min=1e-12)
+
+        vals = self.zernikepoly(r, phi, n, l) / norm
 
         return iidx, vals
 
@@ -421,20 +442,22 @@ class FourierBesselFilterBasis(FilterBasis):
     def kernel_size(self) -> int:
         return len(self._ms)
 
-    def _norm(self, m: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
-        """L2 norm of psi = J_m(alpha*r)*cos(m*phi) or sin(m*phi) on the unit disk (measure r dr dphi).
-        Radial: integral_0^1 J_m(alpha r)^2 r dr = J_{m+1}(alpha)^2/2.
-        Angular: integral_0^{2pi} cos^2(m*phi) dphi = 2pi (m=0) or pi (m>0).
-        So full norm = sqrt(2pi)*radial_norm for m=0, sqrt(pi)*radial_norm for m>0.
+    def compute_l2_norms(self, **kwargs) -> torch.Tensor:
+        """Analytic L2 norms of the Fourier-Bessel basis on the disk.
+
+        Radial: integral_0^1 J_m(alpha r)^2 r dr = J_{m+1}(alpha)^2 / 2.
+        Angular: integral_0^{2pi} cos^2(m phi) dphi = 2pi (m=0) or pi (m>0).
         """
         from scipy.special import jn as scipy_jn
 
-        j_next = torch.tensor([float(scipy_jn(int(mi) + 1, float(a))) for mi, a in zip(m, alpha)], dtype=torch.float32, device=m.device)
+        ms = self._ms
+        alphas = self._alphas
+
+        j_next = torch.tensor([float(scipy_jn(int(mi) + 1, float(a))) for mi, a in zip(ms, alphas)], dtype=torch.float32)
         radial_norm = (j_next.abs() / math.sqrt(2)).clamp(min=1e-12)
-        # full_norm = radial_norm * sqrt(angular_integral): 2pi for m=0, pi for m>0
         sqrt_2pi = math.sqrt(2 * math.pi)
         sqrt_pi = math.sqrt(math.pi)
-        angular_sqrt = torch.where(m == 0, torch.full_like(m, sqrt_2pi), torch.full_like(m, sqrt_pi))
+        angular_sqrt = torch.where(ms == 0, torch.full_like(ms, sqrt_2pi), torch.full_like(ms, sqrt_pi))
         return (radial_norm * angular_sqrt).clamp(min=1e-12)
 
     def compute_support_vals(
@@ -497,7 +520,7 @@ class FourierBesselFilterBasis(FilterBasis):
         )
 
         # L2 normalisation
-        norms = self._norm(ms, alphas).reshape(K, 1, 1)
+        norms = self.compute_l2_norms().to(device=r.device).reshape(K, 1, 1)
         vals_full = radial * angular / norms
 
         # Apply support mask (broadcast)
