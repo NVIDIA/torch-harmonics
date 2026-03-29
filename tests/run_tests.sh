@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Set default parameters
-default_grid_size_lat=2
+default_grid_size_lat=1
 default_grid_size_lon=1
-default_run_distributed=true
+default_run_distributed=false
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
