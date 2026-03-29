@@ -52,7 +52,7 @@ void preprocess_psi_kernel(int64_t nnz, int64_t K, int64_t Ho, int64_t *ker_h, i
     int64_t *ker_sort = new int64_t[nnz];
     int64_t *row_sort = new int64_t[nnz];
     int64_t *col_sort = new int64_t[nnz];
-    float *val_sort = new float[nnz];
+    REAL_T *val_sort = new REAL_T[nnz];
 
     for (int64_t i = 0; i < nnz; i++) {
 
