@@ -153,10 +153,14 @@ def _normalize_convolution_tensor_s2(
             elif basis_norm_mode == "none":
                 b = 0.0
                 s = 1.0
+            elif basis_norm_mode == "area ratio":
+                # this should be double-checked
+                b = 0.0
+                s = (1.0 - math.cos(theta_cutoff)) / 2.0 / 2.0
             else:
                 raise ValueError(f"Unknown basis normalization mode {basis_norm_mode}.")
 
-            psi_vals[iidx] = (psi_vals[iidx] - b)/ (s + eps)
+            psi_vals[iidx] = (psi_vals[iidx] - b)/ s
 
             if merge_quadrature:
                 psi_vals[iidx] = psi_vals[iidx] * q[iidx]
