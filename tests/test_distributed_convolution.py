@@ -39,11 +39,11 @@ import torch_harmonics.distributed as thd
 
 from testutils import (
     set_seed,
-    setup_module, 
-    teardown_module, 
+    setup_module,
+    teardown_module,
     setup_class_from_context,
-    split_tensor_hw, 
-    gather_tensor_hw, 
+    split_tensor_hw,
+    gather_tensor_hw,
     compare_tensors,
 )
 
@@ -65,28 +65,28 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
     def _split_helper(self, tensor):
         return split_tensor_hw(
-            tensor, 
+            tensor,
             hdim=-2,
-            wdim=-1, 
-            hsize=self.grid_size_h, 
-            wsize=self.grid_size_w, 
-            hrank=self.hrank, 
+            wdim=-1,
+            hsize=self.grid_size_h,
+            wsize=self.grid_size_w,
+            hrank=self.hrank,
             wrank=self.wrank
         )
 
     def _gather_helper_fwd(self, tensor, convolution_dist):
 
         tensor_gather = gather_tensor_hw(
-            tensor, 
-            hdim=-2, 
-            wdim=-1, 
-            hshapes=convolution_dist.lat_out_shapes, 
-            wshapes=convolution_dist.lon_out_shapes, 
-            hsize=self.grid_size_h, 
-            wsize=self.grid_size_w, 
-            hrank=self.hrank, 
-            wrank=self.wrank, 
-            hgroup=self.h_group, 
+            tensor,
+            hdim=-2,
+            wdim=-1,
+            hshapes=convolution_dist.lat_out_shapes,
+            wshapes=convolution_dist.lon_out_shapes,
+            hsize=self.grid_size_h,
+            wsize=self.grid_size_w,
+            hrank=self.hrank,
+            wrank=self.wrank,
+            hgroup=self.h_group,
             wgroup=self.w_group
         )
 
@@ -95,16 +95,16 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
     def _gather_helper_bwd(self, tensor, convolution_dist):
 
         tensor_gather = gather_tensor_hw(
-            tensor, 
-            hdim=-2, 
-            wdim=-1, 
-            hshapes=convolution_dist.lat_in_shapes, 
-            wshapes=convolution_dist.lon_in_shapes, 
-            hsize=self.grid_size_h, 
-            wsize=self.grid_size_w, 
-            hrank=self.hrank, 
-            wrank=self.wrank, 
-            hgroup=self.h_group, 
+            tensor,
+            hdim=-2,
+            wdim=-1,
+            hshapes=convolution_dist.lat_in_shapes,
+            wshapes=convolution_dist.lon_in_shapes,
+            hsize=self.grid_size_h,
+            wsize=self.grid_size_w,
+            hrank=self.hrank,
+            wrank=self.wrank,
+            hgroup=self.h_group,
             wgroup=self.w_group
         )
 
@@ -112,26 +112,34 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
-            [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", True, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
-            [33, 64, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", True, 1e-6, 1e-5],
-            [65, 128, 33, 64, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", False, 1e-6, 1e-5],
+            # fp32 tests
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+            [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+            [33, 64, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+            [65, 128, 33, 64, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+            # fp64 tests
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, 1e-6, 1e-6],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, 1e-6, 1e-6],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, 1e-6, 1e-6],
+            [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, 1e-6, 1e-6],
+            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float64, False, 1e-6, 1e-6],
+            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float64, True, 1e-6, 1e-6],
         ], skip_on_empty=True
     )
     def test_distributed_disco_conv(
-        self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, kernel_shape, basis_type, basis_norm_mode, groups, grid_in, grid_out, transpose, atol, rtol, verbose=True
+        self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, kernel_shape, basis_type, basis_norm_mode, groups, grid_in, grid_out, dtype, transpose, atol, rtol, verbose=True
     ):
 
         set_seed(333)
@@ -154,11 +162,11 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
         # set up handles
         if transpose:
-            conv_local = th.DiscreteContinuousConvTransposeS2(**disco_args).to(self.device)
-            conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args).to(self.device)
+            conv_local = th.DiscreteContinuousConvTransposeS2(**disco_args).to(dtype=dtype, device=self.device)
+            conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args).to(dtype=dtype, device=self.device)
         else:
-            conv_local = th.DiscreteContinuousConvS2(**disco_args).to(self.device)
-            conv_dist = thd.DistributedDiscreteContinuousConvS2(**disco_args).to(self.device)
+            conv_local = th.DiscreteContinuousConvS2(**disco_args).to(dtype=dtype, device=self.device)
+            conv_dist = thd.DistributedDiscreteContinuousConvS2(**disco_args).to(dtype=dtype, device=self.device)
 
         # copy the weights from the local conv into the dist conv
         with torch.no_grad():
@@ -167,7 +175,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
                 conv_dist.bias.copy_(conv_local.bias)
 
         # create tensors
-        inp_full = torch.randn((B, C, H, W), dtype=torch.float32, device=self.device)
+        inp_full = torch.randn((B, C, H, W), dtype=dtype, device=self.device)
 
         # local conv
         # FWD pass

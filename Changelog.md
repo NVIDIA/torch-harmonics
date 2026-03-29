@@ -10,6 +10,7 @@
 * Decreasing problem sizes for some tests, allowing for faster execution
 * Adding an additional caching test based of contents of a torch tensor
 * DistributedRealVectorSHT now does truncation correctly, previously this was not guaranteed
+* Double precision support for DISCO convolution
 
 ### v0.8.1
 

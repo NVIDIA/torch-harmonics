@@ -102,7 +102,7 @@ def _split_distributed_convolution_tensor_s2(
 
     # make results contiguous
     idx = idx.contiguous()
-    vals = vals.to(dtype=torch.float32).contiguous()
+    vals = vals.contiguous()
 
     return idx, vals
 

@@ -114,8 +114,8 @@ def _normalize_convolution_tensor_s2(
     q = quad_weights[ilat_in].reshape(-1)
 
     # buffer to store intermediate values
-    vnorm = torch.zeros(kernel_size, nlat_out, device=psi_vals.device)
-    support = torch.zeros(kernel_size, nlat_out, device=psi_vals.device)
+    vnorm = torch.zeros(kernel_size, nlat_out, dtype=psi_vals.dtype, device=psi_vals.device)
+    support = torch.zeros(kernel_size, nlat_out, dtype=psi_vals.dtype, device=psi_vals.device)
 
     # loop through dimensions to compute the norms
     for ik in range(kernel_size):
@@ -311,7 +311,7 @@ def _precompute_convolution_tensor_s2(
     )
 
     out_idx = out_idx.contiguous()
-    out_vals = out_vals.to(dtype=torch.float32).contiguous()
+    out_vals = out_vals.contiguous()
 
     return out_idx, out_vals, out_roff
 
