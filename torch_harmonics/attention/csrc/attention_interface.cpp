@@ -56,6 +56,9 @@ namespace attention_kernels {
     TORCH_LIBRARY(attention_kernels, m) {
         m.def("forward(Tensor kx, Tensor vx, Tensor qy, Tensor quad_weights, Tensor col_idx, Tensor row_off, int nlon_in, int nlat_out, int nlon_out) -> Tensor", {at::Tag::pt2_compliant_tag});
         m.def("backward(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor quad_weights, Tensor col_idx, Tensor row_off, int nlon_in, int nlat_out, int nlon_out) -> (Tensor, Tensor, Tensor)", {at::Tag::pt2_compliant_tag});
+        m.def("forward_ring_step(Tensor kx, Tensor vx, Tensor qy, Tensor(a!) y_acc, Tensor(b!) alpha_sum_buf, Tensor(c!) qdotk_max_buf, Tensor quad_weights, Tensor col_idx, Tensor row_off, Tensor row_idx, int nlon_in, int lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out) -> ()");
+        m.def("backward_ring_step_pass1(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor(a!) alpha_sum_buf, Tensor(b!) qdotk_max_buf, Tensor(c!) integral_buf, Tensor(d!) alpha_k_buf, Tensor(e!) alpha_kvw_buf, Tensor quad_weights, Tensor col_idx, Tensor row_off, Tensor row_idx, int nlon_in, int lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out) -> ()");
+        m.def("backward_ring_step_pass2(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor alpha_sum_buf, Tensor qdotk_max_buf, Tensor integral_norm_buf, Tensor(a!) dkx, Tensor(b!) dvx, Tensor quad_weights, Tensor col_idx, Tensor row_off, Tensor row_idx, int nlon_in, int lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out) -> ()");
     }
 
 }

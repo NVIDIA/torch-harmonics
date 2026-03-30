@@ -122,7 +122,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         skip_on_empty=True,
     )
     @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
-    def test_custom_implementation(self, batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, use_qknorm, atol, rtol, verbose=True):
+    def test_custom_implementation(self, batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, use_qknorm, atol, rtol, verbose=False):
         """Tests numerical equivalence between the custom (CUDA) implementation and the reference torch implementation"""
 
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):

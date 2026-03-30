@@ -63,3 +63,6 @@ from .distributed_convolution import DistributedDiscreteContinuousConvTransposeS
 
 # import resampling
 from .distributed_resample import DistributedResampleS2
+
+# import distributed neighborhood attention
+from .distributed_attention import DistributedNeighborhoodAttentionS2
