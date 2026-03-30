@@ -28,7 +28,6 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import math
 from itertools import accumulate
 from typing import Optional, Tuple, Union
 
@@ -38,150 +37,13 @@ import torch.distributed as dist
 
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
 
-from .utils import polar_group, azimuth_group
+from .utils import azimuth_group
 from .utils import polar_group_size, polar_group_rank
 from .utils import azimuth_group_size, azimuth_group_rank
-from .primitives import compute_split_shapes
+from .primitives import compute_split_shapes, get_group_neighbors, polar_halo_exchange
 
 from attention_helpers import optimized_kernels_is_available
 from torch_harmonics.attention import attention_kernels
-
-
-# ---------------------------------------------------------------------------
-# helpers: lat halo and lon ring exchange
-# ---------------------------------------------------------------------------
-
-def _get_group_neighbors(group):
-    group_size = dist.get_world_size(group)
-    global_rank = dist.get_rank()
-    group_ranks = dist.get_process_group_ranks(group)
-    my_rank_id = group_ranks.index(global_rank)
-    prev_rank = group_ranks[(my_rank_id - 1) % group_size]
-    next_rank = group_ranks[(my_rank_id + 1) % group_size]
-
-    return prev_rank, next_rank
-
-class _LatHaloExchangeFn(torch.autograd.Function):
-    """Differentiable lat halo exchange for polar-distributed tensors.
-
-    Forward: gathers r_lat rows from neighbouring polar ranks and returns a
-             halo-padded tensor of shape [B, C, H_local + 2*r_lat, W].
-    Backward: communicates halo gradient contributions back to their owning
-              ranks and accumulates them onto the local input gradient.
-
-    Ranks at the polar boundary (rank 0 / rank group_size-1) receive
-    zero-padding on the missing side in the forward pass; the corresponding
-    halo-gradient portion is discarded in the backward (no neighbour to send
-    it to), which is the correct adjoint of padding with zeros.
-    """
-
-    @staticmethod
-    def forward(ctx, x, r_lat, polar_group):
-        ctx.r_lat       = r_lat
-        ctx.polar_group = polar_group
-
-        group_size = dist.get_world_size(polar_group)
-        # this needs to be the global rank, not the group rank
-        global_rank = dist.get_rank()
-        group_rank = dist.get_rank(polar_group)
-        ctx.group_size  = group_size
-        ctx.group_rank  = group_rank
-        prev_rank, next_rank = _get_group_neighbors(polar_group)
-        ctx.prev_rank = prev_rank
-        ctx.next_rank = next_rank
-        ctx.H           = x.shape[2]
-
-        B, C, H, W = x.shape
-        device, dtype = x.device, x.dtype
-
-        # setup send buffers
-        send_top = x[:, :, :r_lat, :].contiguous()   # top r_lat rows → rank-1
-        send_bot = x[:, :, -r_lat:, :].contiguous()  # bottom r_lat rows → rank+1
-
-        # setup recv buffers
-        recv_top = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
-        recv_bot = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
-
-        ops = []
-        if group_rank > 0:
-            ops.append(dist.P2POp(dist.isend, send_top, prev_rank, polar_group))
-            ops.append(dist.P2POp(dist.irecv, recv_top, prev_rank, polar_group))
-        if group_rank < group_size - 1:
-            ops.append(dist.P2POp(dist.isend, send_bot, next_rank, polar_group))
-            ops.append(dist.P2POp(dist.irecv, recv_bot, next_rank, polar_group))
-
-        if ops:
-            reqs = dist.batch_isend_irecv(ops)
-            for req in reqs:
-                req.wait()
-
-        return torch.cat([recv_top, x, recv_bot], dim=2).contiguous()
-
-    @staticmethod
-    def backward(ctx, dout):
-        r_lat       = ctx.r_lat
-        polar_group = ctx.polar_group
-        group_size   = ctx.group_size
-        group_rank  = ctx.group_rank
-        H           = ctx.H
-        prev_rank = ctx.prev_rank
-        next_rank = ctx.next_rank
-
-        B, C, _, W = dout.shape
-        device, dtype = dout.device, dout.dtype
-
-        # Direct gradient for the local (non-halo) rows.
-        dx = dout[:, :, r_lat:r_lat + H, :].contiguous().clone()
-
-        # The halo slices carry gradients that belong to neighbouring ranks:
-        #   dout[:, :, :r_lat, :]       → came FROM rank-1; send gradient back to rank-1
-        #   dout[:, :, r_lat + H:, :]   → came FROM rank+1; send gradient back to rank+1
-        # Simultaneously receive from each neighbour the gradient they owe us
-        # for the rows we sent them in the forward pass.
-        send_to_prev = dout[:, :, :r_lat, :].contiguous()
-        send_to_next = dout[:, :, r_lat + H:, :].contiguous()
-
-        recv_from_prev = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
-        recv_from_next = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
-
-        ops = []
-        if group_rank > 0:
-            ops.append(dist.P2POp(dist.isend, send_to_prev, prev_rank, polar_group))
-            ops.append(dist.P2POp(dist.irecv, recv_from_prev, prev_rank, polar_group))
-        if group_rank < group_size - 1:
-            ops.append(dist.P2POp(dist.isend, send_to_next, next_rank, polar_group))
-            ops.append(dist.P2POp(dist.irecv, recv_from_next, next_rank, polar_group))
-
-        if ops:
-            reqs = dist.batch_isend_irecv(ops)
-            for req in reqs:
-                req.wait()
-
-        # Accumulate gradient contributions for rows we sent in the forward.
-        # recv_from_prev = gradient for our top r_lat rows (sent as prev rank's recv_bot)
-        # recv_from_next = gradient for our bottom r_lat rows (sent as next rank's recv_top)
-        if group_rank > 0:
-            dx[:, :, :r_lat, :] = dx[:, :, :r_lat, :] + recv_from_prev
-        if group_rank < group_size - 1:
-            dx[:, :, H - r_lat:, :] = dx[:, :, H - r_lat:, :] + recv_from_next
-
-        # Gradients for r_lat and polar_group are None (not tensors / non-differentiable)
-        return dx, None, None
-
-
-def _ring_step(chunk: torch.Tensor, az_group) -> Tuple[torch.Tensor, list]:
-    """Send chunk to the previous rank, receive the next chunk from the next rank.
-
-    Returns (recv_buf, requests).  Call req.wait() before using recv_buf.
-    """
-    send_to, recv_from = _get_group_neighbors(az_group)
-    recv_buf  = torch.empty_like(chunk)
-    ops = [
-        dist.P2POp(dist.isend, chunk,    send_to,   az_group),
-        dist.P2POp(dist.irecv, recv_buf, recv_from, az_group),
-    ]
-    reqs = dist.batch_isend_irecv(ops)
-    return recv_buf, reqs
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +52,7 @@ def _ring_step(chunk: torch.Tensor, az_group) -> Tuple[torch.Tensor, list]:
 
 def _ring_kv(kw_chunk, vw_chunk, az_group, next_nlon_kw, next_nlon_kv):
     """Async send current chunks, receive next chunks with known shapes."""
-    send_to, recv_from = _get_group_neighbors(az_group)
+    send_to, recv_from = get_group_neighbors(az_group)
     B, C_k, H, _ = kw_chunk.shape
     B, C_v, H, _ = vw_chunk.shape
     recv_kw = torch.empty(B, C_k, H, next_nlon_kw, device=kw_chunk.device, dtype=kw_chunk.dtype)
@@ -234,7 +96,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         az_rank: int,
         az_size: int,
     ):
-        B, C_k, H_halo, _  = kw.shape
+        B, _, _, _  = kw.shape
         _, C_v, _,      _  = vw.shape
         device = kw.device
 
@@ -288,7 +150,6 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         ctx.lat_halo_start   = lat_halo_start
         ctx.nlat_out_local   = nlat_out_local
         ctx.nlon_out_local   = nlon_out_local
-        ctx.r_lat            = r_lat
         ctx.az_group         = az_group
         ctx.az_rank          = az_rank
         ctx.az_size          = az_size
@@ -307,7 +168,6 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         lat_halo_start   = ctx.lat_halo_start
         nlat_out_local   = ctx.nlat_out_local
         nlon_out_local   = ctx.nlon_out_local
-        r_lat            = ctx.r_lat
         az_group         = ctx.az_group
         az_rank          = ctx.az_rank
         az_size          = ctx.az_size
@@ -580,7 +440,6 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
             return 0
 
         lat_lo = self.lat_lo_out
-        lat_hi = lat_lo + self.nlat_out_local
 
         col_idx = self.psi_col_idx_local
         roff    = self.psi_roff_idx_local
@@ -637,8 +496,8 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         # Use differentiable halo exchange when there is an actual polar split;
         # otherwise fall through to the identity (no-op).
         if self.r_lat > 0 and self.comm_size_polar > 1:
-            key_halo   = _LatHaloExchangeFn.apply(key_proj,   self.r_lat, polar_group())
-            value_halo = _LatHaloExchangeFn.apply(value_proj, self.r_lat, polar_group())
+            key_halo   = polar_halo_exchange(key_proj,   self.r_lat)
+            value_halo = polar_halo_exchange(value_proj, self.r_lat)
         else:
             key_halo   = key_proj
             value_halo = value_proj
