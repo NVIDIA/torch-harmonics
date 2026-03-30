@@ -382,7 +382,21 @@ void launch_spc_attn_fwd(int nloc,      // "BDIM_X*nloc" >= nchans_out
 
         //size_t shsize = sizeof(FLOATV_T)*nchans_out * block.y; // block.y > 1 iif block.x==32
         size_t shsize = sizeof(FLOATV_T)*nchans_in * block.y; // block.y > 1 iif block.x==32
-
+#if 0
+        printf("Launching s2_attn_fwd_special_vec_k<%d, %d, %d, %d, float%s><<<(%d, %d), (%d, %d), %zu, ...>>> with:\n"
+               "\tnchans_in:  %d\n"
+               "\tnchans_out: %d\n"
+               "\tnlat_in: %d\n"
+               "\tnlon_in: %d\n"
+               "\tnlat_out: %d\n"
+               "\tnlon_out: %d\n",
+               BDIM_X, BDIM_Y,
+               (nchans_in >= BDIM_X*(CUR_LOC_SIZE-1) && nchans_in <= BDIM_X* CUR_LOC_SIZE),
+               CUR_LOC_SIZE,
+               sizeof(FLOATV_T)==16?"4":"",
+               grid.x, grid.y, block.x, block.y, shsize,
+               nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out);
+#endif
         // nloc determines the size of local arrays used to store
         // y vectors, of length nchans_out;
         // if nchans_in is >= BDIM_X*(nloc-1) and <= BDIM_X*nloc
