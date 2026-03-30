@@ -35,8 +35,20 @@ import torch.distributed as dist
 from torch.amp import custom_fwd, custom_bwd
 
 from .utils import config as thd_config
-from .utils import polar_group, azimuth_group, polar_group_size
+from .utils import polar_group, azimuth_group, polar_group_size, polar_group_rank
 from .utils import is_distributed_polar, is_distributed_azimuth
+
+
+def get_group_neighbors(group):
+    group_size = dist.get_world_size(group)
+    global_rank = dist.get_rank()
+    group_ranks = dist.get_process_group_ranks(group)
+    my_rank_id = group_ranks.index(global_rank)
+    prev_rank = group_ranks[(my_rank_id - 1) % group_size]
+    next_rank = group_ranks[(my_rank_id + 1) % group_size]
+
+    return prev_rank, next_rank
+
 
 def _check_shapes(msg, shapes_gather, shapes_expected):
     for idx, (size_gather, size_expected) in enumerate(zip(shapes_gather, shapes_expected)):
@@ -527,3 +539,122 @@ def reduce_from_scatter_to_polar_region(input_, dim_):
 @torch.compiler.disable()
 def gather_from_copy_to_polar_region(input_, dim_, shapes_):
     return _GatherFromCopyToPolarRegion.apply(input_, dim_, shapes_)
+
+
+# ---------------------------------------------------------------------------
+# nearest neighbor exchange algorithms
+# ---------------------------------------------------------------------------
+class _PolarHaloExchangeFn(torch.autograd.Function):
+    """Differentiable lat halo exchange for polar-distributed tensors.
+
+    Forward: gathers r_lat rows from neighbouring polar ranks and returns a
+             halo-padded tensor of shape [B, C, H_local + 2*r_lat, W].
+    Backward: communicates halo gradient contributions back to their owning
+              ranks and accumulates them onto the local input gradient.
+
+    Ranks at the polar boundary (rank 0 / rank group_size-1) receive
+    zero-padding on the missing side in the forward pass; the corresponding
+    halo-gradient portion is discarded in the backward (no neighbour to send
+    it to), which is the correct adjoint of padding with zeros.
+    """
+
+    @staticmethod
+    @custom_fwd(device_type="cuda")
+    def forward(ctx, x, r_lat):
+
+        if not is_distributed_polar():
+            return x
+
+        ctx.r_lat       = r_lat
+        group_size = polar_group_size()
+        group_rank = polar_group_rank()
+        ctx.group_size  = group_size
+        ctx.group_rank  = group_rank
+        prev_rank, next_rank = get_group_neighbors(polar_group())
+        ctx.prev_rank = prev_rank
+        ctx.next_rank = next_rank
+        ctx.H           = x.shape[2]
+
+        B, C, H, W = x.shape
+        device, dtype = x.device, x.dtype
+
+        # setup send buffers
+        send_top = x[:, :, :r_lat, :].contiguous()   # top r_lat rows → rank-1
+        send_bot = x[:, :, -r_lat:, :].contiguous()  # bottom r_lat rows → rank+1
+
+        # setup recv buffers
+        recv_top = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
+        recv_bot = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
+
+        ops = []
+        if group_rank > 0:
+            ops.append(dist.P2POp(dist.isend, send_top, prev_rank, polar_group()))
+            ops.append(dist.P2POp(dist.irecv, recv_top, prev_rank, polar_group()))
+        if group_rank < group_size - 1:
+            ops.append(dist.P2POp(dist.isend, send_bot, next_rank, polar_group()))
+            ops.append(dist.P2POp(dist.irecv, recv_bot, next_rank, polar_group()))
+
+        if ops:
+            reqs = dist.batch_isend_irecv(ops)
+            for req in reqs:
+                req.wait()
+
+        return torch.cat([recv_top, x, recv_bot], dim=2).contiguous()
+
+    @staticmethod
+    @custom_bwd(device_type="cuda")
+    def backward(ctx, dout):
+
+        if not is_distributed_polar():
+            return dout, None
+
+        r_lat       = ctx.r_lat
+        group_size   = ctx.group_size
+        group_rank  = ctx.group_rank
+        H           = ctx.H
+        prev_rank = ctx.prev_rank
+        next_rank = ctx.next_rank
+
+        B, C, _, W = dout.shape
+        device, dtype = dout.device, dout.dtype
+
+        # Direct gradient for the local (non-halo) rows.
+        dx = dout[:, :, r_lat:r_lat + H, :].contiguous().clone()
+
+        # The halo slices carry gradients that belong to neighbouring ranks:
+        #   dout[:, :, :r_lat, :]       → came FROM rank-1; send gradient back to rank-1
+        #   dout[:, :, r_lat + H:, :]   → came FROM rank+1; send gradient back to rank+1
+        # Simultaneously receive from each neighbour the gradient they owe us
+        # for the rows we sent them in the forward pass.
+        send_to_prev = dout[:, :, :r_lat, :].contiguous()
+        send_to_next = dout[:, :, r_lat + H:, :].contiguous()
+
+        recv_from_prev = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
+        recv_from_next = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
+
+        ops = []
+        if group_rank > 0:
+            ops.append(dist.P2POp(dist.isend, send_to_prev, prev_rank, polar_group()))
+            ops.append(dist.P2POp(dist.irecv, recv_from_prev, prev_rank, polar_group()))
+        if group_rank < group_size - 1:
+            ops.append(dist.P2POp(dist.isend, send_to_next, next_rank, polar_group()))
+            ops.append(dist.P2POp(dist.irecv, recv_from_next, next_rank, polar_group()))
+
+        if ops:
+            reqs = dist.batch_isend_irecv(ops)
+            for req in reqs:
+                req.wait()
+
+        # Accumulate gradient contributions for rows we sent in the forward.
+        # recv_from_prev = gradient for our top r_lat rows (sent as prev rank's recv_bot)
+        # recv_from_next = gradient for our bottom r_lat rows (sent as next rank's recv_top)
+        if group_rank > 0:
+            dx[:, :, :r_lat, :] = dx[:, :, :r_lat, :] + recv_from_prev
+        if group_rank < group_size - 1:
+            dx[:, :, H - r_lat:, :] = dx[:, :, H - r_lat:, :] + recv_from_next
+
+        # Gradients for r_lat is None (not tensors / non-differentiable)
+        return dx, None
+
+def polar_halo_exchange(x, r_lat):
+    return _PolarHaloExchangeFn.apply(x, r_lat)
