@@ -255,7 +255,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         rtol,
         verbose=True,
     ):
+        # for AMP dtypes, the module and input stay in float32; autocast handles the rest
         is_amp = dtype in (torch.float16, torch.bfloat16)
+        module_dtype = torch.float32 if is_amp else dtype
 
         if is_amp and self.device.type == "cpu":
             raise unittest.SkipTest("skipping test because CPU does not support AMP autocast for this dtype")
@@ -270,9 +272,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         use_optimized_kernels = optimized_kernels_is_available()
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             use_optimized_kernels = False
-
-        # for AMP dtypes, the module and input stay in float32; autocast handles the rest
-        module_dtype = torch.float32 if is_amp else dtype
 
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
@@ -350,10 +349,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # FWD and BWD pass
         x.requires_grad = True
-        if is_amp:
-            with torch.autocast(device_type=self.device.type, dtype=dtype):
-                y = conv(x)
-        else:
+        with torch.autocast(device_type=self.device.type, dtype=dtype):
             y = conv(x)
         grad_input = torch.randn_like(y)
         y.backward(grad_input)
@@ -446,16 +442,15 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         rtol,
         verbose=False,
     ):
+        # for AMP dtypes, the module and input stay in float32; autocast handles the rest
         is_amp = dtype in (torch.float16, torch.bfloat16)
+        module_dtype = torch.float32 if is_amp else dtype
 
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
 
         if is_amp and self.device.type == "cpu":
             raise unittest.SkipTest("skipping test because CPU does not support AMP autocast for this dtype")
-
-        # for AMP dtypes, the module and input stay in float32; autocast handles the rest
-        module_dtype = torch.float32 if is_amp else dtype
 
         # disable tf32
         disable_tf32()
@@ -514,10 +509,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # FWD and BWD pass
         inp.requires_grad = True
-        if is_amp:
-            with torch.amp.autocast(device_type=self.device.type, dtype=dtype):
-                out_naive = conv_naive(inp)
-        else:
+        with torch.amp.autocast(device_type=self.device.type, dtype=dtype):
             out_naive = conv_naive(inp)
         grad_input = torch.randn_like(out_naive)
         out_naive.backward(grad_input)
@@ -525,10 +517,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # perform the reference computation
         inp.grad = None
-        if is_amp:
-            with torch.amp.autocast(device_type=self.device.type, dtype=dtype):
-                out_opt = conv_opt(inp)
-        else:
+        with torch.amp.autocast(device_type=self.device.type, dtype=dtype):
             out_opt = conv_opt(inp)
         out_opt.backward(grad_input)
         inp_grad_opt = inp.grad.clone()
