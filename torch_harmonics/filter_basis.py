@@ -89,14 +89,14 @@ class FilterBasis(metaclass=abc.ABCMeta):
 
         raise NotImplementedError
 
-    def compute_l2_norms(self, r_cutoff: float = 1.0, nr: int = 40, nphi: int = 100) -> torch.Tensor:
+    def compute_l2_norms(self, r_cutoff: float = 1.0, nr: int = 50, nphi: int = 200) -> torch.Tensor:
         """Numerically compute the L2 norm of each basis function on the disk of radius r_cutoff."""
-        phi = torch.linspace(0, 2 * math.pi, nphi)
+        # open interval in phi to avoid double-counting the periodic endpoint
+        dphi = 2 * math.pi / nphi
+        phi = torch.arange(nphi) * dphi
+        dr = r_cutoff / (nr - 1)
         r = torch.linspace(0, r_cutoff, nr)
         r, phi = torch.meshgrid(r, phi, indexing="ij")
-
-        dr = r_cutoff / (nr - 1)
-        dphi = 2 * math.pi / (nphi - 1)
 
         iidx, vals = self.compute_support_vals(r, phi, r_cutoff=r_cutoff)
         psi = torch.sparse_coo_tensor(iidx.t(), vals, size=(self.kernel_size, nr, nphi)).to_dense()
@@ -257,6 +257,8 @@ class HarmonicFilterBasis(FilterBasis):
 
         super().__init__(kernel_shape=kernel_shape)
 
+        self._l2_norms = self.compute_l2_norms()
+
     @property
     def kernel_size(self):
 
@@ -291,8 +293,13 @@ class HarmonicFilterBasis(FilterBasis):
         harmonic = torch.where(n % 2 == 1, torch.sin(torch.ceil(n / 2) * math.pi * x / width), torch.cos(torch.ceil(n / 2) * math.pi * x / width))
         harmonic *= torch.where(m % 2 == 1, torch.sin(torch.ceil(m / 2) * math.pi * y / width), torch.cos(torch.ceil(m / 2) * math.pi * y / width))
 
-        # computes the envelope. To ensure that the curve is roughly 0 at the boundary, we rescale the Gaussian by 0.25
+        # computes the envelope
         vals = self.hann_window(r, width=width) * harmonic
+
+        # L2 normalization (skip during the initial norm computation in __init__)
+        if hasattr(self, "_l2_norms"):
+            norms = self._l2_norms.to(device=vals.device)
+            vals = vals / norms[iidx[:, 0]].clamp(min=1e-12)
 
         return iidx, vals
 
