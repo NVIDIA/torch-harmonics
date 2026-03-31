@@ -28,74 +28,8 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "disco.h"
+#include "disco_helpers.h"
 #include <torch/extension.h>
-
-template <typename REAL_T>
-void preprocess_psi_kernel(int64_t nnz, int64_t K, int64_t Ho, int64_t *ker_h, int64_t *row_h, int64_t *col_h,
-                           int64_t *roff_h, REAL_T *val_h, int64_t &nrows)
-{
-
-    int64_t *Koff = new int64_t[K];
-    for (int i = 0; i < K; i++) { Koff[i] = 0; }
-
-    for (int64_t i = 0; i < nnz; i++) { Koff[ker_h[i]]++; }
-
-    int64_t prev = Koff[0];
-    Koff[0] = 0;
-    for (int i = 1; i < K; i++) {
-        int64_t save = Koff[i];
-        Koff[i] = prev + Koff[i - 1];
-        prev = save;
-    }
-
-    int64_t *ker_sort = new int64_t[nnz];
-    int64_t *row_sort = new int64_t[nnz];
-    int64_t *col_sort = new int64_t[nnz];
-    REAL_T *val_sort = new REAL_T[nnz];
-
-    for (int64_t i = 0; i < nnz; i++) {
-
-        const int64_t ker = ker_h[i];
-        const int64_t off = Koff[ker]++;
-
-        ker_sort[off] = ker;
-        row_sort[off] = row_h[i];
-        col_sort[off] = col_h[i];
-        val_sort[off] = val_h[i];
-    }
-    for (int64_t i = 0; i < nnz; i++) {
-        ker_h[i] = ker_sort[i];
-        row_h[i] = row_sort[i];
-        col_h[i] = col_sort[i];
-        val_h[i] = val_sort[i];
-    }
-
-    delete[] Koff;
-    delete[] ker_sort;
-    delete[] row_sort;
-    delete[] col_sort;
-    delete[] val_sort;
-
-    // compute rows offsets
-    nrows = 1;
-    roff_h[0] = 0;
-    for (int64_t i = 1; i < nnz; i++) {
-
-        if (row_h[i - 1] == row_h[i]) continue;
-        roff_h[nrows++] = i;
-
-        if (nrows > Ho * K) {
-            fprintf(stderr, "%s:%d: error, found more rows in the K COOs than Ho*K (%ld)\n", __FILE__, __LINE__,
-                    int64_t(Ho) * K);
-            exit(EXIT_FAILURE);
-        }
-    }
-    roff_h[nrows] = nnz;
-
-    return;
-}
-
 
 torch::Tensor preprocess_psi(const int64_t K, const int64_t Ho, torch::Tensor ker_idx, torch::Tensor row_idx,
                              torch::Tensor col_idx, torch::Tensor val)
