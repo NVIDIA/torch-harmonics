@@ -552,7 +552,8 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
     if (!vx_is_channels_last) { vxP = permute_4D_to0231(vxP); }
     if (!qy_is_channels_last) { qyP = permute_4D_to0231(qyP); }
 
-    torch::Tensor yP = torch::empty_like(vxP);
+    int64_t out_dims[] = {batch_size, nlat_out, nlon_out, nchans_out};
+    torch::Tensor yP = torch::empty(out_dims, kxP.options());
 
     s2_attn_fwd_dispatch(batch_size,
                          nchans_in,

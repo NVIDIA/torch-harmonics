@@ -77,6 +77,8 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             [4, 4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
             [4, 4, 8, 4, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
             [4, 8, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
+            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
+            [4, 8, 4, 4, (6, 12), (12, 24), "equiangular", "equiangular", 1e-5, 1e-3],
             [4, 1, 1, 1, (2, 4), (2, 4), "equiangular", "equiangular", 1e-5, 1e-3],
             [4, 1, 4, 1, (2, 4), (2, 4), "equiangular", "equiangular", 1e-5, 1e-3],
             [4, 4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-5, 1e-3],
