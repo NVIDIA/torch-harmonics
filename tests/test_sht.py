@@ -770,7 +770,7 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
-    def test_vector_forward_inverse(self, nlat, nlon, batch_size, norm, grid, atol, rtol, verbose=True):
+    def test_vector_forward_inverse(self, nlat, nlon, batch_size, norm, grid, atol, rtol, verbose=False):
         """ivsht(vsht(v)) ≈ v for a band-limited spatial vector field.
 
         Unlike the gradient/curl consistency tests — which start in spectral space

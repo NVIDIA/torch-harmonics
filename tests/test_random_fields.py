@@ -141,5 +141,48 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
         self.assertTrue(torch.isfinite(u).all(), "output contains non-finite values")
 
 
+@parameterized_class(("device"), _devices)
+class TestGaussianRandomFieldS2Probabilistic(unittest.TestCase):
+    """Statistical tests for GaussianRandomFieldS2. All use fixed seeds for determinism."""
+
+    @parameterized.expand(
+        [
+            [16, 2.0, 3.0, "equiangular",    500, 0.2],
+            [16, 2.0, 3.0, "legendre-gauss", 500, 0.2],
+        ]
+    )
+    def test_zero_mean(self, nlat, alpha, tau, grid, num_samples, atol, verbose=False):
+        """Sample mean over many realizations is near zero (DC spectral coefficient is forced to 0)."""
+        field = GaussianRandomFieldS2(nlat, alpha=alpha, tau=tau, grid=grid).to(self.device)
+
+        set_seed(333)
+        u = field(num_samples)  # (num_samples, nlat, 2*nlat)
+
+        batch_mean = u.mean(dim=0)
+        expected = torch.zeros_like(batch_mean)
+        self.assertTrue(compare_tensors("zero mean", batch_mean, expected, atol=atol, rtol=0.0, verbose=verbose))
+
+    @parameterized.expand(
+        [
+            [16, 2.0, 4.0, 3.0, "equiangular",    200],
+            [16, 2.0, 4.0, 3.0, "legendre-gauss", 200],
+        ]
+    )
+    def test_power_spectrum_ordering(self, nlat, alpha_rough, alpha_smooth, tau, grid, num_samples, verbose=False):
+        """Larger alpha suppresses high-degree modes → lower total variance (smoother field)."""
+        field_rough  = GaussianRandomFieldS2(nlat, alpha=alpha_rough,  tau=tau, grid=grid).to(self.device)
+        field_smooth = GaussianRandomFieldS2(nlat, alpha=alpha_smooth, tau=tau, grid=grid).to(self.device)
+
+        set_seed(333)
+        u_rough  = field_rough(num_samples)
+        set_seed(333)
+        u_smooth = field_smooth(num_samples)
+
+        self.assertLess(
+            u_smooth.var().item(), u_rough.var().item(),
+            "Larger alpha should produce a smoother (lower-variance) field",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
