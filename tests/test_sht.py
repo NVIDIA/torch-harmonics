@@ -348,7 +348,7 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         ))
 
         # ---- f = cos θ ----
-        f_costheta = cost.unsqueeze(-1).expand(nlat, nlon)
+        f_costheta = cost.unsqueeze(-1).expand(nlat, nlon).contiguous()
         with torch.no_grad():
             c_cos = sht(f_costheta)  # (lmax, mmax), complex
 
