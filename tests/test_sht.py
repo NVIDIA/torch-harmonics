@@ -374,6 +374,26 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             atol=atol, rtol=rtol, verbose=verbose,
         ))
 
+        # ---- batched: both signals together ----
+        # Exercises the leading batch dimensions (..., nlat, nlon) that the
+        # single-sample checks above never reach.
+        f_batch = torch.stack([f_const, f_costheta], dim=0)  # (2, nlat, nlon)
+        with torch.no_grad():
+            c_batch = sht(f_batch)  # (2, lmax, mmax)
+
+        self.assertTrue(compare_tensors(
+            "batch f=1 matches unbatched",
+            c_batch[0],
+            c_const,
+            atol=atol, rtol=rtol, verbose=verbose,
+        ))
+        self.assertTrue(compare_tensors(
+            "batch f=cosθ matches unbatched",
+            c_batch[1],
+            c_cos,
+            atol=atol, rtol=rtol, verbose=verbose,
+        ))
+
     @parameterized.expand(
         [
             [32, 64, 16, "ortho",   "equiangular",    1e-9, 1e-9],
