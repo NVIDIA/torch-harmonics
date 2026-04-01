@@ -68,8 +68,11 @@ class GaussianRandomFieldS2(torch.nn.Module):
         # Inverse SHT
         self.isht = InverseRealSHT(self.nlat, 2*self.nlat, grid=grid, norm='backward').to(dtype=dtype)
 
+        lmax = self.isht.lmax
+        mmax = self.isht.mmax
+
         #Square root of the eigenvalues of C.
-        sqrt_eig = torch.as_tensor([j*(j+1) for j in range(self.nlat)]).view(self.nlat,1).repeat(1, self.nlat+1)
+        sqrt_eig = torch.as_tensor([j*(j+1) for j in range(lmax)]).view(lmax,1).repeat(1, mmax)
         sqrt_eig = torch.tril(sigma*(((sqrt_eig/radius**2) + tau**2)**(-alpha/2.0)))
         sqrt_eig[0,0] = 0.0
         sqrt_eig = sqrt_eig.unsqueeze(0)
@@ -89,7 +92,9 @@ class GaussianRandomFieldS2(torch.nn.Module):
 
         #Sample Gaussian noise.
         if xi is None:
-            xi = self.gaussian_noise.sample(torch.Size((N, self.nlat, self.nlat + 1, 2))).squeeze()
+            lmax = self.isht.lmax
+            mmax = self.isht.mmax
+            xi = self.gaussian_noise.sample(torch.Size((N, lmax, mmax, 2))).squeeze()
             xi = torch.view_as_complex(xi)
         
         #Karhunen-Loeve expansion.
