@@ -36,6 +36,8 @@ import torch
 
 from torch_harmonics.disco._disco_utils import _get_psi, _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from torch_harmonics.disco._disco_utils import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
+from torch_harmonics.disco._disco_utils import _disco_s2_contraction_fft, _disco_s2_transpose_contraction_fft
+from torch_harmonics.disco._disco_utils import _precompute_psi_banded
 from disco_helpers import optimized_kernels_is_available, preprocess_psi
 from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
@@ -138,6 +140,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         Whether to use bias
     theta_cutoff: Optional[float]
         Theta cutoff for the filter basis
+    use_fft_contraction: Optional[bool]
+        Whether to use FFT-based contraction
 
     Returns
     -------
@@ -164,8 +168,9 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         optimized_kernel: Optional[bool] = True,
+        use_fft_contraction: Optional[bool] = False,
     ):
-        super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
+        super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel, use_fft_contraction)
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
@@ -232,8 +237,13 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
 
-        # store psi jic:
-        if not self.optimized_kernel:
+        # store psi for the appropriate contraction mode
+        if self.use_fft_contraction:
+            psi_sparse = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local)
+            psi_fft_conj, gather_idx = _precompute_psi_banded(psi_sparse, self.nlat_in_local, self.nlon_in)
+            self.register_buffer("psi_fft_conj", psi_fft_conj, persistent=False)
+            self.register_buffer("psi_gather_idx", gather_idx, persistent=False)
+        elif not self.optimized_kernel:
             self.psi = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local)
 
     def extra_repr(self):
@@ -252,7 +262,9 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth(x, (1, -1), self.lon_in_shapes)
 
-        if self.optimized_kernel:
+        if self.use_fft_contraction:
+            x = _disco_s2_contraction_fft(x, self.psi_fft_conj.to(x.device), self.psi_gather_idx.to(x.device), self.nlon_out)
+        elif self.optimized_kernel:
             x = _disco_s2_contraction_optimized(
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out_local, self.nlon_out
             )
@@ -312,6 +324,8 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         Whether to use bias
     theta_cutoff: Optional[float]
         Theta cutoff for the filter basis
+    use_fft_contraction: Optional[bool]
+        Whether to use FFT-based contraction
 
     Returns
     -------
@@ -340,8 +354,9 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         optimized_kernel: Optional[bool] = True,
+        use_fft_contraction: Optional[bool] = False,
     ):
-        super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
+        super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel, use_fft_contraction)
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
@@ -411,8 +426,13 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_vals", vals, persistent=False)
 
-        # store psi as COO
-        if not self.optimized_kernel:
+        # store psi for the appropriate contraction mode
+        if self.use_fft_contraction:
+            psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local, semi_transposed=True)
+            psi_st_fft_conj, psi_st_gather_idx = _precompute_psi_banded(psi_st, self.nlat_in, self.nlon_out)
+            self.register_buffer("psi_st_fft_conj", psi_st_fft_conj, persistent=False)
+            self.register_buffer("psi_st_gather_idx", psi_st_gather_idx, persistent=False)
+        elif not self.optimized_kernel:
             self.psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local, semi_transposed=True)
 
     def extra_repr(self):
@@ -441,7 +461,9 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = gather_from_polar_region(x, -2, self.lat_in_shapes)
         x = copy_to_polar_region(x)
 
-        if self.optimized_kernel:
+        if self.use_fft_contraction:
+            out = _disco_s2_transpose_contraction_fft(x, self.psi_st_fft_conj.to(x.device), self.psi_st_gather_idx.to(x.device), self.nlon_out)
+        elif self.optimized_kernel:
             out = _disco_s2_transpose_contraction_optimized(
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out_local, self.nlon_out
             )
