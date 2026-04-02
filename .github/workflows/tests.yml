@@ -36,4 +36,5 @@ jobs:
           ./tests/test_cache.py \
           ./tests/test_quadrature.py \
           ./tests/test_resample.py \
-          ./tests/test_random_fields.py
+          ./tests/test_random_fields.py \
+          ./tests/test_spectral_convolution.py
