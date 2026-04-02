@@ -68,7 +68,7 @@ class TestQuadrature(unittest.TestCase):
         out = quad(data)
 
         expected_value = 1.0 if normalize else 4.0 * torch.pi
-        expected = torch.full((batch_size, num_chan), expected_value, device=self.device)
+        expected = torch.full((batch_size, num_chan), expected_value, dtype=torch.float32, device=self.device)
 
         self.assertTrue(compare_tensors(f"output", out, expected, atol=atol, rtol=rtol, verbose=verbose))
 
@@ -93,7 +93,7 @@ class TestQuadrature(unittest.TestCase):
         # cos(theta) on the grid: precompute_latitudes returns colatitude angles
         # theta in [0, pi], so cos(theta) in [-1, 1]
         lats, _ = precompute_latitudes(nlat, grid=grid)
-        cos_theta = torch.cos(lats).to(self.device)  # shape [nlat]
+        cos_theta = torch.cos(lats).to(torch.float32).to(self.device)  # shape [nlat]
         # broadcast over batch=1, channel=1, and all longitudes
         f = cos_theta.view(1, 1, nlat, 1).expand(1, 1, nlat, nlon)
 
@@ -120,7 +120,7 @@ class TestQuadrature(unittest.TestCase):
         set_seed(333)
 
         lats, _ = precompute_latitudes(nlat, grid=grid)
-        cos2_theta = torch.cos(lats).pow(2).to(self.device)  # shape [nlat]
+        cos2_theta = torch.cos(lats).pow(2).to(dtype=torch.float32, device=self.device)  # shape [nlat]
         f = cos2_theta.view(1, 1, nlat, 1).expand(1, 1, nlat, nlon)
 
         for normalize, expected_val in [(False, 4.0 * math.pi / 3.0), (True, 1.0 / 3.0)]:
