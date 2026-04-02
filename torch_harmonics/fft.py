@@ -77,6 +77,9 @@ def irfft(x: torch.Tensor, n: Optional[int] = None, dim: int = -1, **kwargs) -> 
     # ensure that imaginary part of 0 and nyquist components are zero
     # this is important because not all backend algorithms provided through the
     # irfft interface ensure that
+    if x.requires_grad:
+        # this ensures that we create a contiguous new tensor we can overwrite:
+        x = x.clone()
     x[..., 0].imag = 0.0
     if (n % 2 == 0) and (n // 2 < x.size(dim)):
         x[..., n // 2].imag = 0.0
