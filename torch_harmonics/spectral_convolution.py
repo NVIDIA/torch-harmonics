@@ -146,12 +146,14 @@ class SpectralConvS2(nn.Module):
     def forward(self, x):
         dtype = x.dtype
 
-        # compute integral in case if bias is used
-        if hasattr(self, "spectral_bias"):
-            integral = self.quadrature(x)
-
         with torch.amp.autocast(device_type=x.device.type, enabled=False):
             x = x.to(torch.float32)
+
+            # compute integral in case if bias is used
+            if hasattr(self, "spectral_bias"):
+                integral = self.quadrature(x)
+
+            # perform SHT
             x = self.sht(x).contiguous()
 
         # store the shapes
