@@ -458,8 +458,10 @@ class TestSpectralConvS2(unittest.TestCase):
             grid_out="equiangular",
             bias=True,
         ).to(self.device)
-        # give the bias a nonzero value so it has an effect on the output
-        conv.spectral_bias.data.fill_(0.1)
+
+        with torch.no_grad():
+            # give the bias a nonzero value so it has an effect on the output
+            conv.spectral_bias.data.fill_(0.1)
 
         x = torch.randn(2, channels, nlat, nlon, device=self.device)
         loss = conv(x).sum()

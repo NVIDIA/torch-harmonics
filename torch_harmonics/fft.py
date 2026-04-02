@@ -67,18 +67,31 @@ def rfft(x: torch.Tensor, nmodes: Optional[int] = None, dim: int = -1, **kwargs)
 
 def irfft(x: torch.Tensor, n: Optional[int] = None, dim: int = -1, **kwargs) -> torch.Tensor:
     """
-    Torch version of IRFFT handles paddign and truncation correctly.
+    Torch version of IRFFT handles padding and truncation correctly.
     This routine only applies Hermitian symmetry to avoid artifacts which occur depending on the backend.
     """
 
     if n is None:
         n = 2 * (x.size(dim) - 1)
 
+    # Explicitly pad the half-spectrum to n//2+1 before calling fft.irfft.
+    # When x.size(dim) < n//2+1 (truncated spectrum), fft.irfft zero-pads
+    # internally in the forward pass, but its backward (an rfft of the spatial
+    # gradient) configures the MKL DFTI descriptor using x.size(dim) as the
+    # half-spectrum length.  That makes the plan inconsistent with the actual
+    # transform length n and triggers:
+    #   "MKL FFT error: Intel oneMKL DFTI ERROR: Inconsistent configuration parameters"
+    # Padding here makes the sizes explicit and unambiguous for both forward and
+    # backward, at no change to the mathematical result.
+    n_half = n // 2 + 1
+    if x.size(dim) < n_half:
+        x = _pad_dim_right(x, dim, n_half)
+
     # ensure that imaginary part of 0 and nyquist components are zero
     # this is important because not all backend algorithms provided through the
     # irfft interface ensure that
     if x.requires_grad:
-        # this ensures that we create a contiguous new tensor we can overwrite:
+        # clone to avoid in-place modification of a graph tensor
         x = x.clone()
     x[..., 0].imag = 0.0
     if (n % 2 == 0) and (n // 2 < x.size(dim)):
