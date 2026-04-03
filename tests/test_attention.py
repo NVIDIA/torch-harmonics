@@ -42,7 +42,7 @@ from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
 from torch_harmonics.attention._attention_utils import _neighborhood_s2_attention_torch
 from torch_harmonics.attention import cuda_kernels_is_available, optimized_kernels_is_available
 
-from testutils import set_seed, compare_tensors
+from testutils import disable_tf32, set_seed, compare_tensors
 
 if not optimized_kernels_is_available():
     print(f"Warning: Couldn't import optimized disco convolution kernels")
@@ -93,6 +93,10 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
 
+        # disable tf32
+        disable_tf32()
+
+        # set seed
         set_seed(333)
 
         nlat_in, nlon_in = in_shape
@@ -159,6 +163,10 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             # comparing CPU with itself does not make sense
             return
 
+        # disable tf32
+        disable_tf32()
+
+        # set seed
         set_seed(333)
 
         nlat_in, nlon_in = in_shape
@@ -228,6 +236,10 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
 
+        # disable tf32
+        disable_tf32()
+
+        # set seed
         set_seed(333)
 
         nlat_in, nlon_in = in_shape
@@ -333,6 +345,10 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
 
+        # disable tf32
+        disable_tf32()
+
+        # set seed
         set_seed(333)
 
         # extract some parameters

@@ -2,3 +2,4 @@
 omit =
     */distributed/*
     */examples/*
+    */plotting.py

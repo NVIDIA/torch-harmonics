@@ -208,6 +208,19 @@ def _precompute_dlegpoly(mmax: int, lmax: int, t: torch.Tensor,
             dpct[1, m, l] = 0.5 * math.sqrt((2*l+1)/(2*l+3)) * \
                 ( math.sqrt((l-m+1)*(l-m+2)) * pct[m-1, l+1] + math.sqrt((l+m+1)*(l+m+2)) * pct[m+1, l+1] )
 
+    # For schmidt normalization, pct[m, l+1] carries degree-(l+1) scaling 1/sqrt(2l+3)
+    # (forward) or sqrt(2l+3) (inverse), but the dpct[1] recurrence was derived for
+    # ortho where there is no per-degree factor.  Correct dpct[1] back to the proper
+    # degree-l schmidt normalization.
+    if norm == "schmidt":
+        l_vals = torch.arange(lmax, dtype=torch.float64, device=t.device)
+        if not inverse:
+            correction = torch.sqrt((2.0 * l_vals + 3.0) / (2.0 * l_vals + 1.0))
+        else:
+            correction = torch.sqrt((2.0 * l_vals + 1.0) / (2.0 * l_vals + 3.0))
+        # dpct[1] shape: (mmax, lmax, len(t)); correction shape: (lmax,) -> broadcast
+        dpct[1] = dpct[1] * correction[None, :, None]
+
     if csphase:
         for m in range(1, mmax, 2):
             dpct[:, m] *= -1
