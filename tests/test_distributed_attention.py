@@ -95,13 +95,15 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             wgroup=self.w_group,
         )
 
-    def _gather_helper_bwd(self, tensor, attn_dist):
+    def _gather_helper_bwd(self, tensor, attn_dist, use_out_shapes=False):
+        hshapes = attn_dist.lat_out_shapes if use_out_shapes else attn_dist.lat_in_shapes
+        wshapes = attn_dist.lon_out_shapes if use_out_shapes else attn_dist.lon_in_shapes
         return gather_tensor_hw(
             tensor,
             hdim=-2,
             wdim=-1,
-            hshapes=attn_dist.lat_in_shapes,
-            wshapes=attn_dist.lon_in_shapes,
+            hshapes=hshapes,
+            wshapes=wshapes,
             hsize=self.grid_size_h,
             wsize=self.grid_size_w,
             hrank=self.hrank,
@@ -116,7 +118,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 1,   8,    8, "equiangular", "equiangular", 1e-5, 1e-4],
-            # [64, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", 1e-5, 1e-4],
+            [64, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", 1e-5, 1e-4],
             [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", 1e-5, 1e-4],
         ],
         skip_on_empty=True,
@@ -208,7 +210,8 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         # ---- compare backward ----
         for inp in ["q", "k", "v"]:
-            igrad_gather = self._gather_helper_bwd(igrad_local[inp], attn_dist)
+            use_out = (inp == "q")
+            igrad_gather = self._gather_helper_bwd(igrad_local[inp], attn_dist, use_out_shapes=use_out)
             self.assertTrue(compare_tensors(f"input gradient {inp}", igrad_full[inp], igrad_gather, atol=atol, rtol=rtol, verbose=verbose))
 
 
