@@ -37,7 +37,7 @@ import torch.distributed as dist
 
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
 
-from .utils import azimuth_group
+from .utils import azimuth_group, polar_group
 from .utils import polar_group_size, polar_group_rank
 from .utils import azimuth_group_size, azimuth_group_rank
 from .primitives import compute_split_shapes, get_group_neighbors, polar_halo_exchange
@@ -434,28 +434,40 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         self.register_buffer("psi_row_idx_local",  row_idx_local,   persistent=False)
 
     def _compute_r_lat(self) -> int:
-        """Max lat halo radius needed for this rank's output lat range."""
+        """Max lat halo radius needed across all polar ranks.
+
+        Computed locally from the global psi (built identically on every rank
+        by the base class), so no communication is required.
+        """
 
         if polar_group_size() == 1:
             return 0
 
-        lat_lo = self.lat_lo_out
+        col_idx = self.psi_col_idx  # global, all nlat_out rows
+        if col_idx.numel() == 0:
+            return 0
 
-        col_idx = self.psi_col_idx_local
-        roff    = self.psi_roff_idx_local
-        nlon_in = self.nlon_in
+        lat_in_starts = list(accumulate([0] + self.lat_in_shapes[:-1]))
+        roff = self.psi_roff_idx
 
-        hi_global = (col_idx // nlon_in).long()
+        r = 0
+        for rank in range(self.comm_size_polar):
+            lat_in_lo  = lat_in_starts[rank]
+            lat_in_hi  = lat_in_lo + self.lat_in_shapes[rank]
+            lat_out_lo = self.lat_out_starts[rank]
+            lat_out_hi = lat_out_lo + self.lat_out_shapes[rank]
 
-        # output lat indices for each entry
-        ho_indices = torch.zeros(col_idx.shape[0], dtype=torch.long, device=col_idx.device)
-        for ho_local in range(self.nlat_out_local):
-            b = roff[ho_local].item()
-            e = roff[ho_local + 1].item()
-            ho_indices[b:e] = ho_local + lat_lo
+            start = roff[lat_out_lo].item()
+            end   = roff[lat_out_hi].item()
+            if start == end:
+                continue
 
-        r = (hi_global - ho_indices).abs().max().item() if col_idx.numel() > 0 else 0
-        return int(r)
+            hi = (col_idx[start:end] // self.nlon_in).long()
+            r_top = max(0, lat_in_lo - int(hi.min().item()))
+            r_bot = max(0, int(hi.max().item()) - (lat_in_hi - 1))
+            r = max(r, r_top, r_bot)
+
+        return r
 
     # -----------------------------------------------------------------------
 
