@@ -111,37 +111,18 @@ jobs:
     - name: Build manylinux wheels
       env:
         CIBW_BEFORE_BUILD: |
+          set -e
           pip install --upgrade pip setuptools wheel setuptools-scm
-          if [ "${{ matrix.torch-cuda }}" = "cpu" ]; then
-            pip install --no-cache-dir torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
-          else
-            pip install --no-cache-dir torch==${{ matrix.torch-version }}+${{ matrix.torch-cuda }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
-          fi
+          pip install --no-cache-dir torch==${{ matrix.torch-version }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
           pip install numpy
-          export SETUPTOOLS_SCM_PRETEND_VERSION="${{ env.BASE_VERSION }}+torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }}"
-          export TORCH_HARMONICS_ENABLE_OPENMP=1
-          if [ "${{ matrix.cuda-version }}" != "none" ]; then
-            export CUDA_HOME=/usr/local/cuda-${{ matrix.cuda-version }}
-            export PATH=$CUDA_HOME/bin:$PATH
-            export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
-          fi
         CIBW_BEFORE_TEST: |
-          echo "Installing PyTorch for testing..."
-          if [ "${{ matrix.torch-cuda }}" = "cpu" ]; then
-            pip install torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
-          else
-            pip install torch==${{ matrix.torch-version }}+${{ matrix.torch-cuda }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
-          fi
+          set -e
+          pip install torch==${{ matrix.torch-version }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
           pip install numpy
-          if [ "${{ matrix.cuda-version }}" != "none" ]; then
-            export CUDA_HOME=/usr/local/cuda-${{ matrix.cuda-version }}
-            export PATH=$CUDA_HOME/bin:$PATH
-            export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
-          fi
         CIBW_TEST_INSIDE: true
         TORCH_CUDA_VERSION: ${{ matrix.cuda-version }}
         TORCH_CUDA_ARCH_LIST: ${{ env.TORCH_CUDA_ARCH_LIST }}
-        CIBW_ENVIRONMENT: "SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.BASE_VERSION }}+torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }}"
+        CIBW_ENVIRONMENT: "SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.BASE_VERSION }}+torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }} TORCH_HARMONICS_ENABLE_OPENMP=1"
 
       run: |
         cibuildwheel --platform linux
