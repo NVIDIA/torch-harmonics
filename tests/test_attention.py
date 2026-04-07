@@ -418,5 +418,40 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         threshold = _perf_test_thresholds[self.device.type]["bwd_ms"]
         self.assertTrue(duration <= threshold, msg=f"Backward execution time on device {self.device.type} is too high: {duration:.2f} ms > {threshold:.2f} ms")
 
+    def test_wrong_shape_assertions(self):
+        """Verify that forward raises ValueError on spatial-shape mismatches."""
+        B, C = 2, 16
+        in_shape  = (12, 24)
+        out_shape = (6,  12)
+        nlat_in, nlon_in   = in_shape
+        nlat_out, nlon_out = out_shape
+
+        model = NeighborhoodAttentionS2(
+            in_channels=C,
+            in_shape=in_shape,
+            out_shape=out_shape,
+            grid_in="equiangular",
+            grid_out="equiangular",
+            num_heads=1,
+            bias=False,
+        ).to(self.device)
+
+        q  = torch.randn(B, C, nlat_out, nlon_out, device=self.device)
+        kv = torch.randn(B, C, nlat_in,  nlon_in,  device=self.device)
+
+        # 1. Self-attention on an up/downsampling module: a single tensor cannot
+        #    simultaneously satisfy in_shape (for k/v) and out_shape (for q).
+        with self.assertRaises(ValueError):
+            model(q)  # key defaults to query, but key must have in_shape
+
+        # 2. q_shape == k_shape != v_shape: key carries out_shape instead of in_shape.
+        with self.assertRaises(ValueError):
+            model(q, q, kv)
+
+        # 3. q_shape == v_shape != k_shape: value carries out_shape instead of in_shape.
+        with self.assertRaises(ValueError):
+            model(q, kv, q)
+
+
 if __name__ == "__main__":
     unittest.main()
