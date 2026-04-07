@@ -29,7 +29,8 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os, sys
+import os
+import sys
 import warnings
 
 from setuptools import setup, find_packages
@@ -153,7 +154,6 @@ def get_ext_modules():
                 extra_compile_args=get_compile_args("disco")
             )
         )
-    cmdclass["build_ext"] = BuildExtension
 
     # ATTENTION
     # Create a single extension that includes both CPU and CUDA code
@@ -194,7 +194,6 @@ if __name__ == "__main__":
     ext_modules, cmdclass = get_ext_modules()
 
     if not ext_modules:
-        import sys
         # Allow metadata-only phase to proceed; fail loudly if this is an actual build attempt
         if any(arg in sys.argv for arg in ("build_ext", "build", "install", "bdist_wheel")):
             raise RuntimeError("PyTorch is required to build torch-harmonics extensions. Please install PyTorch first.")
@@ -206,7 +205,7 @@ if __name__ == "__main__":
         cmdclass=cmdclass,
         python_requires=">=3.9",
         install_requires=[
-            "torch>=2.4.0",
+            "torch>=2.8.0",
             "numpy>=1.22.4",
         ],
         extras_require={
