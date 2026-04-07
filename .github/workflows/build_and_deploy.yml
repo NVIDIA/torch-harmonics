@@ -146,7 +146,7 @@ jobs:
         path: wheelhouse/*.whl
 
     - name: Upload to TestPyPI (for testing)
-      if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
+      if: (github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') && matrix.torch-version == '2.11.0' && matrix.torch-cuda == 'cu130'
       env:
         TWINE_USERNAME: __token__
         TWINE_PASSWORD: ${{ secrets.TEST_PYPI_PASSWORD }}
@@ -155,7 +155,7 @@ jobs:
         python -m twine upload --verbose --repository testpypi wheelhouse/*.whl
 
     - name: Upload to PyPI (production)
-      if: startsWith(github.ref, 'refs/tags/')
+      if: startsWith(github.ref, 'refs/tags/') && matrix.torch-version == '2.11.0' && matrix.torch-cuda == 'cu130'
       env:
         TWINE_USERNAME: __token__
         TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
