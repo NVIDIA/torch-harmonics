@@ -28,41 +28,48 @@ jobs:
     strategy:
       matrix:
         include:
-          # PyTorch 2.8.0 with CUDA 12.6, 12.8, 12.9
+          # PyTorch 2.8.0 with CUDA 12.6, 12.8, 12.9 — last version supporting Python 3.9
           # cu126 index tops out at 2.8.0
           - torch-version: '2.8.0'
             torch-cuda: 'cu126'
             cuda-version: '12.6'
+            python-builds: 'cp39-* cp310-* cp311-* cp312-*'
           - torch-version: '2.8.0'
             torch-cuda: 'cu128'
             cuda-version: '12.8'
+            python-builds: 'cp39-* cp310-* cp311-* cp312-*'
           - torch-version: '2.8.0'
             torch-cuda: 'cu129'
             cuda-version: '12.9'
+            python-builds: 'cp39-* cp310-* cp311-* cp312-*'
 
-          # PyTorch 2.9.1 with CUDA 12.8, 13.0
+          # PyTorch 2.9.1+ dropped Python 3.9 (EOL Oct 2025)
           - torch-version: '2.9.1'
             torch-cuda: 'cu128'
             cuda-version: '12.8'
+            python-builds: 'cp310-* cp311-* cp312-*'
           - torch-version: '2.9.1'
             torch-cuda: 'cu130'
             cuda-version: '13.0'
+            python-builds: 'cp310-* cp311-* cp312-*'
 
-          # PyTorch 2.10.0 with CUDA 12.8, 13.0
           - torch-version: '2.10.0'
             torch-cuda: 'cu128'
             cuda-version: '12.8'
+            python-builds: 'cp310-* cp311-* cp312-*'
           - torch-version: '2.10.0'
             torch-cuda: 'cu130'
             cuda-version: '13.0'
+            python-builds: 'cp310-* cp311-* cp312-*'
 
-          # PyTorch 2.11.0 with CUDA 12.8, 13.0
           - torch-version: '2.11.0'
             torch-cuda: 'cu128'
             cuda-version: '12.8'
+            python-builds: 'cp310-* cp311-* cp312-*'
           - torch-version: '2.11.0'
             torch-cuda: 'cu130'
             cuda-version: '13.0'
+            python-builds: 'cp310-* cp311-* cp312-*'
 
     steps:
     - uses: actions/checkout@v4
@@ -111,6 +118,7 @@ jobs:
           set -e
           pip install torch==${{ matrix.torch-version }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
           pip install numpy
+        CIBW_BUILD: ${{ matrix.python-builds }}
         CIBW_TEST_INSIDE: true
         TORCH_CUDA_VERSION: ${{ matrix.cuda-version }}
         TORCH_CUDA_ARCH_LIST: ${{ env.TORCH_CUDA_ARCH_LIST }}
