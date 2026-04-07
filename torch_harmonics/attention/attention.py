@@ -330,6 +330,13 @@ class NeighborhoodAttentionS2(nn.Module):
         # change this later to allow arbitrary number of batch dims
         assert (query.dim() == key.dim()) and (key.dim() == value.dim()) and (value.dim() == 4)
 
+        if query.shape[-2] != self.nlat_out or query.shape[-1] != self.nlon_out:
+            raise ValueError(f"query spatial shape {(query.shape[-2], query.shape[-1])} does not match out_shape {(self.nlat_out, self.nlon_out)}")
+        if key.shape[-2] != self.nlat_in or key.shape[-1] != self.nlon_in:
+            raise ValueError(f"key spatial shape {(key.shape[-2], key.shape[-1])} does not match in_shape {(self.nlat_in, self.nlon_in)}")
+        if value.shape[-2] != self.nlat_in or value.shape[-1] != self.nlon_in:
+            raise ValueError(f"value spatial shape {(value.shape[-2], value.shape[-1])} does not match in_shape {(self.nlat_in, self.nlon_in)}")
+
         # do the scaling
         query_scaled = query * self.scale
 
