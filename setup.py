@@ -190,11 +190,7 @@ def get_ext_modules():
 
 if __name__ == "__main__":
 
-    if any(cmd in sys.argv for cmd in ["build_ext", "bdist_wheel", "install", "develop"]):
-        ext_modules, cmdclass = get_ext_modules()
-    else:
-        ext_modules = []
-        cmdclass = {}
+    ext_modules, cmdclass = get_ext_modules()
 
     setup(
         name="torch_harmonics",
