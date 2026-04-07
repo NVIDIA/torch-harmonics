@@ -29,6 +29,7 @@ jobs:
       matrix:
         include:
           # PyTorch 2.8.0 with CUDA 12.6, 12.8, 12.9
+          # cu126 index tops out at 2.8.0
           - torch-version: '2.8.0'
             torch-cuda: 'cu126'
             cuda-version: '12.6'
@@ -39,10 +40,7 @@ jobs:
             torch-cuda: 'cu129'
             cuda-version: '12.9'
 
-          # PyTorch 2.9.1 with CUDA 12.6, 12.8, 13.0
-          - torch-version: '2.9.1'
-            torch-cuda: 'cu126'
-            cuda-version: '12.6'
+          # PyTorch 2.9.1 with CUDA 12.8, 13.0
           - torch-version: '2.9.1'
             torch-cuda: 'cu128'
             cuda-version: '12.8'
@@ -50,10 +48,7 @@ jobs:
             torch-cuda: 'cu130'
             cuda-version: '13.0'
 
-          # PyTorch 2.10.0 with CUDA 12.6, 12.8, 13.0
-          - torch-version: '2.10.0'
-            torch-cuda: 'cu126'
-            cuda-version: '12.6'
+          # PyTorch 2.10.0 with CUDA 12.8, 13.0
           - torch-version: '2.10.0'
             torch-cuda: 'cu128'
             cuda-version: '12.8'
@@ -61,10 +56,7 @@ jobs:
             torch-cuda: 'cu130'
             cuda-version: '13.0'
 
-          # PyTorch 2.11.0 with CUDA 12.6, 12.8, 13.0
-          - torch-version: '2.11.0'
-            torch-cuda: 'cu126'
-            cuda-version: '12.6'
+          # PyTorch 2.11.0 with CUDA 12.8, 13.0
           - torch-version: '2.11.0'
             torch-cuda: 'cu128'
             cuda-version: '12.8'
