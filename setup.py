@@ -96,7 +96,8 @@ def get_ext_modules():
             print("CPU-only extensions will be built")
 
     except (ImportError, TypeError, AssertionError, AttributeError) as e:
-        raise RuntimeError(f"PyTorch is required to build torch-harmonics. Please install PyTorch first. Error: {e}")
+        warnings.warn(f"PyTorch is not available, extensions will not be built: {e}")
+        return [], {}
 
     ext_modules = []
     cmdclass = {}
@@ -191,6 +192,12 @@ def get_ext_modules():
 if __name__ == "__main__":
 
     ext_modules, cmdclass = get_ext_modules()
+
+    if not ext_modules:
+        import sys
+        # Allow metadata-only phase to proceed; fail loudly if this is an actual build attempt
+        if any(arg in sys.argv for arg in ("build_ext", "build", "install", "bdist_wheel")):
+            raise RuntimeError("PyTorch is required to build torch-harmonics extensions. Please install PyTorch first.")
 
     setup(
         name="torch_harmonics",
