@@ -215,5 +215,39 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             self.assertTrue(compare_tensors(f"input gradient {inp}", igrad_full[inp], igrad_gather, atol=atol, rtol=rtol, verbose=verbose))
 
 
+    def test_wrong_shape_assertions(self):
+        """Verify that forward raises ValueError on spatial-shape mismatches."""
+        B, C = 2, 16
+        in_shape  = (64, 128)
+        out_shape = (32,  64)
+
+        attn = thd.DistributedNeighborhoodAttentionS2(
+            in_channels=C,
+            in_shape=in_shape,
+            out_shape=out_shape,
+            grid_in="equiangular",
+            grid_out="equiangular",
+            num_heads=1,
+            bias=False,
+        ).to(self.device)
+
+        # Build correctly-shaped local tensors using the module's own local extents.
+        q_local = torch.randn(B, C, attn.nlat_out_local, attn.nlon_out_local, device=self.device)
+        k_local = torch.randn(B, C, attn.nlat_in_local,  attn.nlon_in_local,  device=self.device)
+
+        # 1. Self-attention on an up/downsampling module: a single tensor cannot
+        #    simultaneously satisfy in_shape (for k/v) and out_shape (for q).
+        with self.assertRaises(ValueError):
+            attn(q_local)  # key defaults to query, but key must have in_shape
+
+        # 2. q_shape == k_shape != v_shape: key carries out_shape instead of in_shape.
+        with self.assertRaises(ValueError):
+            attn(q_local, q_local, k_local)
+
+        # 3. q_shape == v_shape != k_shape: value carries out_shape instead of in_shape.
+        with self.assertRaises(ValueError):
+            attn(q_local, k_local, q_local)
+
+
 if __name__ == "__main__":
     unittest.main()
