@@ -145,6 +145,27 @@ jobs:
         name: wheel-torch-${{ matrix.torch-version }}-${{ matrix.torch-cuda }}
         path: wheelhouse/*.whl
 
+    - name: Repack wheels for PyPI (strip local version identifier)
+      if: matrix.torch-version == '2.11.0' && matrix.torch-cuda == 'cu130'
+      run: |
+        pip install wheel
+        mkdir -p pypi-wheelhouse
+        for whl in wheelhouse/*.whl; do
+          tmpdir=$(mktemp -d)
+          python -m wheel unpack "$whl" --dest "$tmpdir"
+          pkg_dir="$tmpdir/$(ls "$tmpdir")"
+          dist_info=$(ls "$pkg_dir" | grep '\.dist-info$')
+          base_ver=$(grep '^Version:' "$pkg_dir/$dist_info/METADATA" | sed 's/Version: //' | sed 's/+.*//')
+          pkg_name=$(echo "$dist_info" | sed 's/-[^-]*\.dist-info//')
+          sed -i "s/^Version:.*/Version: $base_ver/" "$pkg_dir/$dist_info/METADATA"
+          new_dist_info="${pkg_name}-${base_ver}.dist-info"
+          [ "$dist_info" != "$new_dist_info" ] && mv "$pkg_dir/$dist_info" "$pkg_dir/$new_dist_info"
+          new_pkg_dir="$tmpdir/${pkg_name}-${base_ver}"
+          [ "$pkg_dir" != "$new_pkg_dir" ] && mv "$pkg_dir" "$new_pkg_dir"
+          python -m wheel pack "$new_pkg_dir" --dest pypi-wheelhouse/
+          rm -rf "$tmpdir"
+        done
+
     - name: Upload to TestPyPI (for testing)
       if: (github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') && matrix.torch-version == '2.11.0' && matrix.torch-cuda == 'cu130'
       env:
@@ -152,7 +173,7 @@ jobs:
         TWINE_PASSWORD: ${{ secrets.TEST_PYPI_PASSWORD }}
       run: |
         python -m pip install twine
-        python -m twine upload --verbose --repository testpypi wheelhouse/*.whl
+        python -m twine upload --verbose --repository testpypi pypi-wheelhouse/*.whl
 
     - name: Upload to PyPI (production)
       if: startsWith(github.ref, 'refs/tags/') && matrix.torch-version == '2.11.0' && matrix.torch-cuda == 'cu130'
@@ -161,4 +182,4 @@ jobs:
         TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
       run: |
         python -m pip install twine
-        python -m twine upload wheelhouse/*.whl
+        python -m twine upload pypi-wheelhouse/*.whl
