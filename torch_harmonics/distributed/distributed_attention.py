@@ -485,6 +485,13 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
 
         assert query.dim() == 4
 
+        if query.shape[-2] != self.nlat_out_local or query.shape[-1] != self.nlon_out_local:
+            raise ValueError(f"query spatial shape {(query.shape[-2], query.shape[-1])} does not match local out_shape {(self.nlat_out_local, self.nlon_out_local)}")
+        if key.shape[-2] != self.nlat_in_local or key.shape[-1] != self.nlon_in_local:
+            raise ValueError(f"key spatial shape {(key.shape[-2], key.shape[-1])} does not match local in_shape {(self.nlat_in_local, self.nlon_in_local)}")
+        if value.shape[-2] != self.nlat_in_local or value.shape[-1] != self.nlon_in_local:
+            raise ValueError(f"value spatial shape {(value.shape[-2], value.shape[-1])} does not match local in_shape {(self.nlat_in_local, self.nlon_in_local)}")
+
         # scale query
         query_scaled = query * self.scale
 
