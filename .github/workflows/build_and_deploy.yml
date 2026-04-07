@@ -1,0 +1,195 @@
+name: Build and Deploy Manylinux Wheels
+
+# Trigger workflow on PRs, tags, and manual dispatch
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      torch_version:
+        description: 'PyTorch version to build (e.g., 2.4.0)'
+        required: false
+        default: ''
+      cuda_version:
+        description: 'CUDA version to build (e.g., cu121, cpu)'
+        required: false
+        default: ''
+
+env:
+  CUDA_ARCH_MAP: '{"11.8": "8.0;8.6;8.9;+PTX", "12.1": "8.0;8.6;8.9;9.0;+PTX", "12.4": "8.0;8.6;8.9;9.0;+PTX", "12.6": "8.0;8.6;8.9;9.0;+PTX", "12.8": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "none": ""}'
+
+jobs:
+  build-manylinux-wheels:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # # PyTorch 2.4.x with multiple CUDA versions
+          # - torch-version: '2.4.0'
+          #   torch-cuda: 'cpu'
+          #   cuda-version: 'none'
+          # - torch-version: '2.4.0'
+          #   torch-cuda: 'cu118'
+          #   cuda-version: '11.8'
+          # - torch-version: '2.4.0'
+          #   torch-cuda: 'cu121'
+          #   cuda-version: '12.1'
+          # - torch-version: '2.4.0'
+          #   torch-cuda: 'cu124'
+          #   cuda-version: '12.4'
+
+          # # PyTorch 2.5.x with multiple CUDA versions
+          # - torch-version: '2.5.0'
+          #   torch-cuda: 'cpu'
+          #   cuda-version: 'none'
+          # - torch-version: '2.5.0'
+          #   torch-cuda: 'cu118'
+          #   cuda-version: '11.8'
+          # - torch-version: '2.5.0'
+          #   torch-cuda: 'cu121'
+          #   cuda-version: '12.1'
+          # - torch-version: '2.5.0'
+          #   torch-cuda: 'cu124'
+          #   cuda-version: '12.4'
+
+          # PyTorch 2.6.x with multiple CUDA versions
+          - torch-version: '2.6.0'
+            torch-cuda: 'cpu'
+            cuda-version: 'none'
+          # - torch-version: '2.6.0'
+          #   torch-cuda: 'cu118'
+          #   cuda-version: '11.8'
+          # - torch-version: '2.6.0'
+          #   torch-cuda: 'cu124'
+          #   cuda-version: '12.4'
+          # - torch-version: '2.6.0'
+          #   torch-cuda: 'cu126'
+          #   cuda-version: '12.6'
+
+          # PyTorch 2.7.x with multiple CUDA versions
+          - torch-version: '2.7.0'
+            torch-cuda: 'cpu'
+            cuda-version: 'none'
+          # - torch-version: '2.7.0'
+          #   torch-cuda: 'cu118'
+          #   cuda-version: '11.8'
+          # - torch-version: '2.7.0'
+          #   torch-cuda: 'cu126'
+          #   cuda-version: '12.6'
+          # - torch-version: '2.7.0'
+          #   torch-cuda: 'cu128'
+          #   cuda-version: '12.8'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # - name: Free Disk Space
+    #   run: |
+    #     sudo rm -rf /usr/local/.ghcup
+    #     sudo rm -rf /opt/hostedtoolcache/CodeQL
+    #     sudo rm -rf /usr/local/lib/android/sdk/ndk
+    #     sudo rm -rf /usr/share/dotnet
+    #     sudo rm -rf /opt/ghc
+    #     sudo rm -rf /usr/local/share/boost
+    #     sudo apt-get clean
+    #     echo "Disk space after cleanup:"
+    #     df -h
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install cibuildwheel
+      run: |
+        python -m pip install cibuildwheel
+
+    - name: Set CUDA architecture list
+      run: |
+        ARCH_LIST=$(echo "$CUDA_ARCH_MAP" | jq -r '.["${{ matrix.cuda-version }}"]')
+        echo "TORCH_CUDA_ARCH_LIST=$ARCH_LIST" >> $GITHUB_ENV
+
+    - name: Extract base version from pyproject.toml
+      run: |
+        BASE_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['tool']['setuptools_scm']['fallback_version'])" 2>/dev/null || \
+                       python -c "import tomli; print(tomli.load(open('pyproject.toml', 'rb'))['tool']['setuptools_scm']['fallback_version'])")
+        echo "BASE_VERSION=$BASE_VERSION" >> $GITHUB_ENV
+        echo "Base version: $BASE_VERSION"
+
+    - name: Build manylinux wheels
+      env:
+        CIBW_BEFORE_BUILD: |
+          pip install --upgrade pip setuptools wheel setuptools-scm
+          if [ "${{ matrix.torch-cuda }}" = "cpu" ]; then
+            pip install --no-cache-dir torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
+          else
+            pip install --no-cache-dir torch==${{ matrix.torch-version }}+${{ matrix.torch-cuda }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
+          fi
+          pip install numpy
+          export SETUPTOOLS_SCM_PRETEND_VERSION="${{ env.BASE_VERSION }}+torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }}"
+          export TORCH_HARMONICS_ENABLE_OPENMP=1
+          if [ "${{ matrix.cuda-version }}" != "none" ]; then
+            export CUDA_HOME=/usr/local/cuda-${{ matrix.cuda-version }}
+            export PATH=$CUDA_HOME/bin:$PATH
+            export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+          fi
+        CIBW_BEFORE_TEST: |
+          echo "Installing PyTorch for testing..."
+          if [ "${{ matrix.torch-cuda }}" = "cpu" ]; then
+            pip install torch==${{ matrix.torch-version }}+cpu --index-url https://download.pytorch.org/whl/cpu
+          else
+            pip install torch==${{ matrix.torch-version }}+${{ matrix.torch-cuda }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
+          fi
+          pip install numpy
+          if [ "${{ matrix.cuda-version }}" != "none" ]; then
+            export CUDA_HOME=/usr/local/cuda-${{ matrix.cuda-version }}
+            export PATH=$CUDA_HOME/bin:$PATH
+            export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+          fi
+        CIBW_TEST_INSIDE: true
+        TORCH_CUDA_VERSION: ${{ matrix.cuda-version }}
+        TORCH_CUDA_ARCH_LIST: ${{ env.TORCH_CUDA_ARCH_LIST }}
+        CIBW_ENVIRONMENT: "SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.BASE_VERSION }}+torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }}"
+
+      run: |
+        cibuildwheel --platform linux
+
+    - name: Inspect built wheels and .so files
+      if: always()
+      run: |
+        echo "Listing wheelhouse contents:"
+        ls -lh wheelhouse/
+        echo "Checking .so symbols and ABI:"
+        for so in wheelhouse/*.so; do
+          echo "==== $so ===="
+          nm -D "$so" | grep exception_ptr || echo "No exception_ptr symbols found"
+          strings "$so" | grep ABI || echo "No ABI macro found in $so"
+        done
+
+    - name: Upload wheel artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: wheel-torch-${{ matrix.torch-version }}-${{ matrix.torch-cuda }}
+        path: wheelhouse/*.whl
+
+    - name: Upload to TestPyPI (for testing)
+      if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
+      env:
+        TWINE_USERNAME: __token__
+        TWINE_PASSWORD: ${{ secrets.TEST_PYPI_PASSWORD }}
+      run: |
+        python -m pip install twine
+        python -m twine upload --verbose --repository testpypi wheelhouse/*.whl
+
+    - name: Upload to PyPI (production)
+      if: startsWith(github.ref, 'refs/tags/')
+      env:
+        TWINE_USERNAME: __token__
+        TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
+      run: |
+        python -m pip install twine
+        python -m twine upload wheelhouse/*.whl
