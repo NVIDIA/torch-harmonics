@@ -102,7 +102,7 @@ jobs:
         CIBW_TEST_INSIDE: true
         TORCH_CUDA_VERSION: ${{ matrix.cuda-version }}
         TORCH_CUDA_ARCH_LIST: ${{ env.TORCH_CUDA_ARCH_LIST }}
-        CIBW_ENVIRONMENT: "SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.BASE_VERSION }}+torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }} TORCH_HARMONICS_ENABLE_OPENMP=1"
+        CIBW_ENVIRONMENT: "SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.BASE_VERSION }}+torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }} TORCH_HARMONICS_ENABLE_OPENMP=1 TORCHINDUCTOR_COMPILE_THREADS=1"
 
       run: |
         cibuildwheel --platform linux
