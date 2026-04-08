@@ -19,6 +19,8 @@ BUILD_MATRIX = [
     {"torch": "2.8.0", "cuda": "cu129", "cuda_version": "12.9"},
     {"torch": "2.9.1", "cuda": "cu130", "cuda_version": "13.0"},
     {"torch": "2.11.0", "cuda": "cu130", "cuda_version": "13.0"},
+    # CPU-only build based on latest PyTorch
+    {"torch": "2.11.0", "cuda": "cpu", "cuda_version": "none"},
 ]
 
 def get_version():

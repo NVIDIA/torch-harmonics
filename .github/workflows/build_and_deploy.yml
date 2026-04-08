@@ -50,6 +50,11 @@ jobs:
             torch-cuda: 'cu130'
             cuda-version: '13.0'
             python-builds: 'cp310-* cp311-* cp312-*'
+          # CPU-only build based on latest PyTorch
+          - torch-version: '2.11.0'
+            torch-cuda: 'cpu'
+            cuda-version: 'none'
+            python-builds: 'cp310-* cp311-* cp312-*'
 
     steps:
     - uses: actions/checkout@v4
