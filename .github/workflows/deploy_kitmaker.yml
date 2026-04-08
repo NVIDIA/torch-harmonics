@@ -1,0 +1,270 @@
+name: Deploy to pypi.nvidia.com via Kitmaker Portal
+
+# Manually triggered only — go to Actions tab, select this workflow, click "Run workflow".
+# Provide the run ID of the build workflow run whose wheels you want to deploy
+# (visible in the URL of any Actions run: /actions/runs/<run_id>).
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Build workflow run ID to deploy from (find in the Actions tab URL)'
+        required: true
+
+jobs:
+  deploy-kitmaker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Download all four CUDA variant artifacts produced by the build workflow.
+      # Each lands in artifacts/wheel-torch-<version>-<cuda>/ as a subdirectory.
+      - name: Download all wheel artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "${{ inputs.run_id }}" \
+            --pattern "wheel-torch-*" \
+            --dir artifacts/
+          echo "Downloaded artifacts:"
+          ls artifacts/
+
+      # Resolve the git tag that the build run was triggered from.
+      - name: Determine release tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=$(gh run view "${{ inputs.run_id }}" --json headBranch -q .headBranch)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Deploying tag: $TAG"
+
+      # Create the GitHub release (if it doesn't exist) so wheels can be attached as
+      # public assets — Kitmaker needs a publicly accessible URL for each wheel.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" \
+            --title "Release ${{ steps.tag.outputs.tag }}" \
+            --generate-notes || true
+
+      # For each CUDA variant:
+      #   1. Repack wheels: strip local version identifier (+torch...) and update
+      #      the package Name in METADATA to torch-harmonics-cu<ver> so each CUDA
+      #      variant is a distinct project on pypi.nvidia.com.
+      #   2. Upload repacked wheels to the GitHub release as public assets.
+      #   3. Submit a Kitmaker Portal release request for that CUDA variant's project.
+      #
+      # Required repository secrets (create each project in kitmaker-portal.nvidia.com first):
+      #   KITMAKER_API_TOKEN         — service account token (shared across projects)
+      #   KITMAKER_PROJECT_ID_CU126   — project ID for torch-harmonics-cu126
+      #   KITMAKER_PROJECT_ID_CU128   — project ID for torch-harmonics-cu128
+      #   KITMAKER_PROJECT_ID_CU129   — project ID for torch-harmonics-cu129
+      #   KITMAKER_PROJECT_ID_CU130   — project ID for torch-harmonics-cu130
+      #   KITMAKER_PROJECT_ID_LATEST  — project ID for torch-harmonics-latest (latest torch + CUDA)
+      - name: Repack, upload and release all CUDA variants
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
+          KITMAKER_PROJECT_ID_CU126: ${{ secrets.KITMAKER_PROJECT_ID_CU126 }}
+          KITMAKER_PROJECT_ID_CU128: ${{ secrets.KITMAKER_PROJECT_ID_CU128 }}
+          KITMAKER_PROJECT_ID_CU129: ${{ secrets.KITMAKER_PROJECT_ID_CU129 }}
+          KITMAKER_PROJECT_ID_CU130: ${{ secrets.KITMAKER_PROJECT_ID_CU130 }}
+          KITMAKER_PROJECT_ID_LATEST: ${{ secrets.KITMAKER_PROJECT_ID_LATEST }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+          pip install wheel
+
+          # Map artifact directory name -> (cuda_suffix, project_id_env_var)
+          declare -A CUDA_FOR_ARTIFACT=(
+            [wheel-torch-2.6.0-cu126]="cu126"
+            [wheel-torch-2.7.0-cu128]="cu128"
+            [wheel-torch-2.8.0-cu129]="cu129"
+            [wheel-torch-2.9.1-cu130]="cu130"
+          )
+          declare -A PROJECT_ID_VAR=(
+            [cu126]="KITMAKER_PROJECT_ID_CU126"
+            [cu128]="KITMAKER_PROJECT_ID_CU128"
+            [cu129]="KITMAKER_PROJECT_ID_CU129"
+            [cu130]="KITMAKER_PROJECT_ID_CU130"
+          )
+
+          for artifact_path in artifacts/wheel-torch-*/; do
+            artifact=$(basename "$artifact_path")
+            cuda="${CUDA_FOR_ARTIFACT[$artifact]}"
+
+            if [ -z "$cuda" ]; then
+              echo "Unknown artifact $artifact, skipping"
+              continue
+            fi
+
+            pkg_name="torch-harmonics-${cuda}"
+            pkg_name_underscore="torch_harmonics_${cuda}"
+            project_id_var="${PROJECT_ID_VAR[$cuda]}"
+            project_id="${!project_id_var}"
+            outdir="pypi-wheelhouse/${cuda}"
+            mkdir -p "$outdir"
+
+            echo "--- Processing $artifact → $pkg_name ---"
+
+            for whl in "$artifact_path"*.whl; do
+              tmpdir=$(mktemp -d)
+              python -m wheel unpack "$whl" --dest "$tmpdir"
+              pkg_dir="$tmpdir/$(ls "$tmpdir")"
+              dist_info=$(ls "$pkg_dir" | grep '\.dist-info$')
+
+              # Strip local version identifier and update package name in METADATA
+              base_ver=$(grep '^Version:' "$pkg_dir/$dist_info/METADATA" \
+                          | sed 's/Version: //' | sed 's/+.*//')
+              sed -i "s/^Version:.*/Version: $base_ver/" "$pkg_dir/$dist_info/METADATA"
+              sed -i "s/^Name:.*/Name: $pkg_name/" "$pkg_dir/$dist_info/METADATA"
+
+              # Rename dist-info dir and unpacked package dir to match new name+version
+              new_dist_info="${pkg_name_underscore}-${base_ver}.dist-info"
+              [ "$dist_info" != "$new_dist_info" ] \
+                && mv "$pkg_dir/$dist_info" "$pkg_dir/$new_dist_info"
+              new_pkg_dir="$tmpdir/${pkg_name_underscore}-${base_ver}"
+              [ "$pkg_dir" != "$new_pkg_dir" ] && mv "$pkg_dir" "$new_pkg_dir"
+
+              python -m wheel pack "$new_pkg_dir" --dest "$outdir/"
+              rm -rf "$tmpdir"
+            done
+
+            echo "Repacked wheels for $pkg_name:"
+            ls -lh "$outdir/"
+
+            # Upload to GitHub release so Kitmaker has a public URL to pull from
+            for whl in "$outdir/"*.whl; do
+              echo "Uploading $(basename "$whl")..."
+              gh release upload "$TAG" "$whl" --clobber
+            done
+
+            # Build Kitmaker payload and submit release
+            BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
+            PAYLOAD=$(python3 -c "
+          import json, glob, os
+          base = os.environ['BASE_URL']
+          pkg  = os.environ['PKG_NAME']
+          pid  = os.environ['PROJECT_ID']
+          wheels = sorted([os.path.basename(w) for w in glob.glob('${outdir}/*.whl')])
+          body = {
+              'project_name': pkg,
+              'payload': [
+                  {'pic': 'tkurth@nvidia.com', 'job_type': 'wheel-release-job',
+                   'url': f'{base}/{w}', 'upload': True}
+                  for w in wheels
+              ]
+          }
+          print(json.dumps(body, indent=2))
+          " BASE_URL="$BASE_URL" PKG_NAME="$pkg_name" PROJECT_ID="$project_id")
+
+            echo "Submitting $(echo "$PAYLOAD" \
+              | python3 -c "import json,sys; print(len(json.load(sys.stdin)['payload']),'wheels')") to Kitmaker for $pkg_name..."
+
+            RESPONSE=$(curl -s -X POST \
+              "https://kitmaker-portal.nvidia.com/api/v0/projects/${project_id}/releases" \
+              -H "Authorization: Bearer ${KITMAKER_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "$PAYLOAD")
+
+            echo "Response: $RESPONSE"
+            python3 -c "
+          import json, sys
+          r = json.load(sys.stdin)
+          if 'release_uuid' in r:
+              print('Release submitted. UUID:', r['release_uuid'])
+          else:
+              print('ERROR:', json.dumps(r, indent=2))
+              sys.exit(1)
+          " <<< "$RESPONSE"
+
+            echo "--- Done: $pkg_name ---"
+          done
+
+          # Also publish the latest CUDA variant (cu130 = torch 2.9.1 + CUDA 13.0)
+          # under a separate "torch-harmonics-latest" project for convenience.
+          LATEST_CUDA="cu130"
+          LATEST_ARTIFACT="wheel-torch-2.9.1-cu130"
+          LATEST_PKG="torch-harmonics-latest"
+          LATEST_PKG_UNDERSCORE="torch_harmonics_latest"
+          LATEST_PROJECT_ID="${KITMAKER_PROJECT_ID_LATEST}"
+          LATEST_OUTDIR="pypi-wheelhouse/latest"
+          mkdir -p "$LATEST_OUTDIR"
+
+          echo "--- Processing latest (${LATEST_ARTIFACT}) → ${LATEST_PKG} ---"
+
+          if [ -d "artifacts/${LATEST_ARTIFACT}" ]; then
+            for whl in "artifacts/${LATEST_ARTIFACT}/"*.whl; do
+              tmpdir=$(mktemp -d)
+              python -m wheel unpack "$whl" --dest "$tmpdir"
+              pkg_dir="$tmpdir/$(ls "$tmpdir")"
+              dist_info=$(ls "$pkg_dir" | grep '\.dist-info$')
+
+              base_ver=$(grep '^Version:' "$pkg_dir/$dist_info/METADATA" \
+                          | sed 's/Version: //' | sed 's/+.*//')
+              sed -i "s/^Version:.*/Version: $base_ver/" "$pkg_dir/$dist_info/METADATA"
+              sed -i "s/^Name:.*/Name: $LATEST_PKG/" "$pkg_dir/$dist_info/METADATA"
+
+              new_dist_info="${LATEST_PKG_UNDERSCORE}-${base_ver}.dist-info"
+              [ "$dist_info" != "$new_dist_info" ] \
+                && mv "$pkg_dir/$dist_info" "$pkg_dir/$new_dist_info"
+              new_pkg_dir="$tmpdir/${LATEST_PKG_UNDERSCORE}-${base_ver}"
+              [ "$pkg_dir" != "$new_pkg_dir" ] && mv "$pkg_dir" "$new_pkg_dir"
+
+              python -m wheel pack "$new_pkg_dir" --dest "$LATEST_OUTDIR/"
+              rm -rf "$tmpdir"
+            done
+
+            echo "Repacked wheels for $LATEST_PKG:"
+            ls -lh "$LATEST_OUTDIR/"
+
+            for whl in "$LATEST_OUTDIR/"*.whl; do
+              echo "Uploading $(basename "$whl")..."
+              gh release upload "$TAG" "$whl" --clobber
+            done
+
+            BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
+            PAYLOAD=$(python3 -c "
+          import json, glob, os
+          base = os.environ['BASE_URL']
+          pkg  = os.environ['PKG_NAME']
+          pid  = os.environ['PROJECT_ID']
+          wheels = sorted([os.path.basename(w) for w in glob.glob('${LATEST_OUTDIR}/*.whl')])
+          body = {
+              'project_name': pkg,
+              'payload': [
+                  {'pic': 'tkurth@nvidia.com', 'job_type': 'wheel-release-job',
+                   'url': f'{base}/{w}', 'upload': True}
+                  for w in wheels
+              ]
+          }
+          print(json.dumps(body, indent=2))
+          " BASE_URL="$BASE_URL" PKG_NAME="$LATEST_PKG" PROJECT_ID="$LATEST_PROJECT_ID")
+
+            echo "Submitting $(echo "$PAYLOAD" \
+              | python3 -c "import json,sys; print(len(json.load(sys.stdin)['payload']),'wheels')") to Kitmaker for $LATEST_PKG..."
+
+            RESPONSE=$(curl -s -X POST \
+              "https://kitmaker-portal.nvidia.com/api/v0/projects/${LATEST_PROJECT_ID}/releases" \
+              -H "Authorization: Bearer ${KITMAKER_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "$PAYLOAD")
+
+            echo "Response: $RESPONSE"
+            python3 -c "
+          import json, sys
+          r = json.load(sys.stdin)
+          if 'release_uuid' in r:
+              print('Release submitted. UUID:', r['release_uuid'])
+          else:
+              print('ERROR:', json.dumps(r, indent=2))
+              sys.exit(1)
+          " <<< "$RESPONSE"
+
+            echo "--- Done: $LATEST_PKG ---"
+          else
+            echo "WARNING: artifact ${LATEST_ARTIFACT} not found, skipping latest"
+          fi
