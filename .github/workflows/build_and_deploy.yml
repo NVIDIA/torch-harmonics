@@ -163,6 +163,24 @@ jobs:
           rm -rf "$tmpdir"
         done
 
+    - name: Inspect repacked wheels and .so files
+      if: always() && (matrix.torch-version == '2.11.0' && matrix.torch-cuda == 'cu130')
+      run: |
+        echo "Listing pypi-wheelhouse contents:"
+        ls -lh pypi-wheelhouse/
+        echo "Checking .so symbols and ABI:"
+        for whl in pypi-wheelhouse/*.whl; do
+          echo "==== $whl ===="
+          tmpdir=$(mktemp -d)
+          python -m zipfile -e "$whl" "$tmpdir"
+          for so in $(find "$tmpdir" -name '*.so'); do
+            echo "  -- $so --"
+            nm -D "$so" | grep exception_ptr || echo "  No exception_ptr symbols found"
+            strings "$so" | grep ABI || echo "  No ABI macro found"
+          done
+          rm -rf "$tmpdir"
+        done
+
     - name: Check wheel sizes (must be <= 100 MB)
       run: |
         WHL_DIR=$([ -d pypi-wheelhouse ] && echo pypi-wheelhouse || echo wheelhouse)
