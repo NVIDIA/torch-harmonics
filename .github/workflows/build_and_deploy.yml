@@ -166,9 +166,21 @@ jobs:
     - name: Inspect repacked wheels and .so files
       if: always() && (matrix.torch-version == '2.11.0' && matrix.torch-cuda == 'cu130')
       run: |
-        echo "Listing pypi-wheelhouse contents:"
+        pip install twine auditwheel
+
+        echo "=== twine check ==="
+        python -m twine check pypi-wheelhouse/*.whl
+
+        echo "=== auditwheel check ==="
+        for whl in wheelhouse/*.whl; do
+          echo "-- $whl --"
+          auditwheel check "$whl"
+        done
+
+        echo "=== Listing pypi-wheelhouse contents ==="
         ls -lh pypi-wheelhouse/
-        echo "Checking .so symbols and ABI:"
+
+        echo "=== Checking .so symbols and ABI ==="
         for whl in pypi-wheelhouse/*.whl; do
           echo "==== $whl ===="
           tmpdir=$(mktemp -d)
