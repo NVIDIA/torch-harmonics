@@ -2,3 +2,7 @@
 __pycache__
 *.so
 checkpoints
+
+# Kitmaker deployment secrets (never commit)
+scripts/kitmaker.env
+*.env
