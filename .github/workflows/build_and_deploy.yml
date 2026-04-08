@@ -109,12 +109,15 @@ jobs:
         TORCH_CUDA_ARCH_LIST: ${{ env.TORCH_CUDA_ARCH_LIST }}
         CIBW_ENVIRONMENT: "SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.BASE_VERSION }}+torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }} TORCH_HARMONICS_ENABLE_OPENMP=1 TORCHINDUCTOR_COMPILE_THREADS=1"
         CIBW_REPAIR_WHEEL_COMMAND_LINUX: |
-          auditwheel repair -w {dest_dir} {wheel}
+          set -e
+          TORCH_LIB=$(python -c "import torch, os; print(os.path.join(os.path.dirname(torch.__file__), 'lib'))")
+          EXCLUDES=$(find "$TORCH_LIB" -maxdepth 1 -name '*.so*' | xargs -I{} basename {} | sort -u | sed 's/^/--exclude /' | tr '\n' ' ')
+          LD_LIBRARY_PATH="$TORCH_LIB:${LD_LIBRARY_PATH:-}" auditwheel repair $EXCLUDES -w {dest_dir} {wheel}
           for whl in {dest_dir}/*.whl; do
             python -m wheel unpack "$whl" --dest /tmp/strip_tmp
+            rm -f "$whl"
             find /tmp/strip_tmp -name '*.so' -exec strip --strip-debug {} \;
             python -m wheel pack /tmp/strip_tmp/* --dest {dest_dir}
-            rm -f "$whl"
             rm -rf /tmp/strip_tmp
           done
 
