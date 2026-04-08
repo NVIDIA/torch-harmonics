@@ -171,10 +171,10 @@ jobs:
         echo "=== twine check ==="
         python -m twine check pypi-wheelhouse/*.whl
 
-        echo "=== auditwheel check ==="
+        echo "=== auditwheel show ==="
         for whl in wheelhouse/*.whl; do
           echo "-- $whl --"
-          auditwheel check "$whl"
+          auditwheel show "$whl"
         done
 
         echo "=== Listing pypi-wheelhouse contents ==="
