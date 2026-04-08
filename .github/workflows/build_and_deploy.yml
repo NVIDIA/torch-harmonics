@@ -153,7 +153,7 @@ jobs:
         TWINE_PASSWORD: ${{ secrets.TEST_PYPI_PASSWORD }}
       run: |
         python -m pip install twine
-        python -m twine upload --verbose --repository testpypi pypi-wheelhouse/*.whl
+        python -m twine upload --verbose --skip-existing --repository testpypi pypi-wheelhouse/*.whl
 
     - name: Upload to PyPI (production)
       if: startsWith(github.ref, 'refs/tags/') && matrix.torch-version == '2.11.0' && matrix.torch-cuda == 'cu130'
