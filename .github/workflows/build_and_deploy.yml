@@ -20,7 +20,7 @@ on:
         default: ''
 
 env:
-  CUDA_ARCH_MAP: '{"12.6": "8.0;8.6;8.9;9.0;+PTX", "12.8": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "12.9": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "13.0": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "none": ""}'
+  CUDA_ARCH_MAP: '{"12.8": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "12.9": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "13.0": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "none": ""}'
 
 jobs:
   build-manylinux-wheels:
@@ -30,10 +30,6 @@ jobs:
         include:
           # One build per CUDA version, using the oldest torch that supports it.
           # This gives the widest torch runtime compatibility for each CUDA variant.
-          - torch-version: '2.6.0'
-            torch-cuda: 'cu126'
-            cuda-version: '12.6'
-            python-builds: 'cp39-* cp310-* cp311-* cp312-*'
           - torch-version: '2.7.0'
             torch-cuda: 'cu128'
             cuda-version: '12.8'
@@ -42,8 +38,11 @@ jobs:
             torch-cuda: 'cu129'
             cuda-version: '12.9'
             python-builds: 'cp310-* cp311-* cp312-*'
-          # torch 2.9.1 dropped Python 3.9 (EOL Oct 2025)
           - torch-version: '2.9.1'
+            torch-cuda: 'cu130'
+            cuda-version: '13.0'
+            python-builds: 'cp310-* cp311-* cp312-*'
+          - torch-version: '2.11.0'
             torch-cuda: 'cu130'
             cuda-version: '13.0'
             python-builds: 'cp310-* cp311-* cp312-*'
