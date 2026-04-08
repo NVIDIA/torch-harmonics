@@ -124,22 +124,6 @@ jobs:
       run: |
         cibuildwheel --platform linux
 
-    - name: Check wheel sizes (must be <= 100 MB)
-      run: |
-        MAX_SIZE_BYTES=100000000
-        FAILED=0
-        for whl in wheelhouse/*.whl; do
-          SIZE_BYTES=$(stat -c%s "$whl")
-          SIZE_MB=$(awk "BEGIN {printf \"%.2f\", $SIZE_BYTES / 1000000}")
-          if [ "$SIZE_BYTES" -gt "$MAX_SIZE_BYTES" ]; then
-            echo "FAIL: $whl is ${SIZE_MB} MB (> 100 MB)"
-            FAILED=1
-          else
-            echo "OK:   $whl is ${SIZE_MB} MB"
-          fi
-        done
-        [ "$FAILED" -eq 0 ] || exit 1
-
     - name: Inspect built wheels and .so files
       if: always()
       run: |
@@ -178,6 +162,23 @@ jobs:
           python -m wheel pack "$new_pkg_dir" --dest pypi-wheelhouse/
           rm -rf "$tmpdir"
         done
+
+    - name: Check wheel sizes (must be <= 100 MB)
+      run: |
+        WHL_DIR=$([ -d pypi-wheelhouse ] && echo pypi-wheelhouse || echo wheelhouse)
+        MAX_SIZE_BYTES=100000000
+        FAILED=0
+        for whl in "$WHL_DIR"/*.whl; do
+          SIZE_BYTES=$(stat -c%s "$whl")
+          SIZE_MB=$(awk "BEGIN {printf \"%.2f\", $SIZE_BYTES / 1000000}")
+          if [ "$SIZE_BYTES" -gt "$MAX_SIZE_BYTES" ]; then
+            echo "FAIL: $whl is ${SIZE_MB} MB (> 100 MB)"
+            FAILED=1
+          else
+            echo "OK:   $whl is ${SIZE_MB} MB"
+          fi
+        done
+        [ "$FAILED" -eq 0 ] || exit 1
 
     - name: Upload to TestPyPI (for testing)
       if: (github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') && matrix.torch-version == '2.11.0' && matrix.torch-cuda == 'cu130'
