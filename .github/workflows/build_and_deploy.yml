@@ -193,6 +193,12 @@ jobs:
           rm -rf "$tmpdir"
         done
 
+        echo "=== Install + import test ==="
+        python -m venv /tmp/test_venv
+        /tmp/test_venv/bin/pip install --quiet torch==${{ matrix.torch-version }} --index-url https://download.pytorch.org/whl/cpu
+        /tmp/test_venv/bin/pip install --quiet pypi-wheelhouse/*cp311*.whl
+        /tmp/test_venv/bin/python -c "import torch_harmonics; print('import OK, version:', torch_harmonics.__version__)"
+
     - name: Check wheel sizes (must be <= 100 MB)
       run: |
         WHL_DIR=$([ -d pypi-wheelhouse ] && echo pypi-wheelhouse || echo wheelhouse)
