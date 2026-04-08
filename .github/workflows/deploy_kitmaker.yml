@@ -58,6 +58,7 @@ jobs:
       #
       # Required repository secrets (create each project in kitmaker-portal.nvidia.com first):
       #   KITMAKER_API_TOKEN         — service account token (shared across projects)
+      #   KITMAKER_PROJECT_ID_CU126   — project ID for torch-harmonics-cu126
       #   KITMAKER_PROJECT_ID_CU128   — project ID for torch-harmonics-cu128
       #   KITMAKER_PROJECT_ID_CU129   — project ID for torch-harmonics-cu129
       #   KITMAKER_PROJECT_ID_CU130   — project ID for torch-harmonics-cu130
@@ -66,6 +67,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
+          KITMAKER_PROJECT_ID_CU126: ${{ secrets.KITMAKER_PROJECT_ID_CU126 }}
           KITMAKER_PROJECT_ID_CU128: ${{ secrets.KITMAKER_PROJECT_ID_CU128 }}
           KITMAKER_PROJECT_ID_CU129: ${{ secrets.KITMAKER_PROJECT_ID_CU129 }}
           KITMAKER_PROJECT_ID_CU130: ${{ secrets.KITMAKER_PROJECT_ID_CU130 }}
@@ -78,11 +80,13 @@ jobs:
 
           # Map artifact directory name -> (cuda_suffix, project_id_env_var)
           declare -A CUDA_FOR_ARTIFACT=(
+            [wheel-torch-2.6.0-cu126]="cu126"
             [wheel-torch-2.7.0-cu128]="cu128"
             [wheel-torch-2.8.0-cu129]="cu129"
             [wheel-torch-2.9.1-cu130]="cu130"
           )
           declare -A PROJECT_ID_VAR=(
+            [cu126]="KITMAKER_PROJECT_ID_CU126"
             [cu128]="KITMAKER_PROJECT_ID_CU128"
             [cu129]="KITMAKER_PROJECT_ID_CU129"
             [cu130]="KITMAKER_PROJECT_ID_CU130"
