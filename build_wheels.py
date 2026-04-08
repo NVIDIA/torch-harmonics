@@ -10,28 +10,15 @@ import subprocess
 import shutil
 from pathlib import Path
 
-# PyTorch/CUDA combinations following PyTorch ecosystem conventions
+# PyTorch/CUDA combinations following PyTorch ecosystem conventions.
+# One build per CUDA version, using the oldest torch that supports it.
+# This gives the widest torch runtime compatibility for each CUDA variant.
 BUILD_MATRIX = [
-    # PyTorch 2.8.0 with CUDA 12.6, 12.8, 12.9
-    {"torch": "2.8.0", "cuda": "cu126", "cuda_version": "12.6"},
-    {"torch": "2.8.0", "cuda": "cu128", "cuda_version": "12.8"},
+    {"torch": "2.6.0", "cuda": "cu126", "cuda_version": "12.6"},
+    {"torch": "2.7.0", "cuda": "cu128", "cuda_version": "12.8"},
     {"torch": "2.8.0", "cuda": "cu129", "cuda_version": "12.9"},
-
-    # PyTorch 2.9.1 with CUDA 12.6, 12.8, 13.0
-    {"torch": "2.9.1", "cuda": "cu126", "cuda_version": "12.6"},
-    {"torch": "2.9.1", "cuda": "cu128", "cuda_version": "12.8"},
     {"torch": "2.9.1", "cuda": "cu130", "cuda_version": "13.0"},
-
-    # PyTorch 2.10.0 with CUDA 12.6, 12.8, 13.0
-    {"torch": "2.10.0", "cuda": "cu126", "cuda_version": "12.6"},
-    {"torch": "2.10.0", "cuda": "cu128", "cuda_version": "12.8"},
-    {"torch": "2.10.0", "cuda": "cu130", "cuda_version": "13.0"},
-
-    # PyTorch 2.11.0 with CUDA 12.6, 12.8, 13.0
-    {"torch": "2.11.0", "cuda": "cu126", "cuda_version": "12.6"},
-    {"torch": "2.11.0", "cuda": "cu128", "cuda_version": "12.8"},
     {"torch": "2.11.0", "cuda": "cu130", "cuda_version": "13.0"},
-
 ]
 
 def get_version():
