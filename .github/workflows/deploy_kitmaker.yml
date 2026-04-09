@@ -9,6 +9,10 @@ on:
       run_id:
         description: 'Build workflow run ID to deploy from (find in the Actions tab URL)'
         required: true
+      dry_run:
+        description: 'Validate wheels with Kitmaker (upload=false) without publishing to PyPI'
+        type: boolean
+        default: false
       create_github_release:
         description: 'Create a public GitHub release with wheel assets (releases should normally go through Kitmaker only)'
         type: boolean
@@ -77,7 +81,7 @@ jobs:
             [ -z "$cuda" ] && echo "Unknown artifact $artifact, skipping" && continue
 
             pkg_name="torch-harmonics-${cuda}"
-            pkg_name_underscore="torch_harmonics_${cuda}"
+            pkg_name_underscore="${pkg_name//-/_}"
             outdir="pypi-wheelhouse/${cuda}"
             mkdir -p "$outdir"
 
@@ -170,6 +174,8 @@ jobs:
           KITMAKER_PROJECT_ID_CU130: ${{ secrets.KITMAKER_PROJECT_ID_CU130 }}
           KITMAKER_PROJECT_ID_CUDA_LATEST: ${{ secrets.KITMAKER_PROJECT_ID_CUDA_LATEST }}
           KITMAKER_PROJECT_ID_CPU_LATEST: ${{ secrets.KITMAKER_PROJECT_ID_CPU_LATEST }}
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_REPO_ID: ${{ secrets.ARTIFACTORY_REPO_ID }}
           TAG: ${{ steps.tag.outputs.tag }}
           REPO: ${{ github.repository }}
         run: |
@@ -185,7 +191,9 @@ jobs:
             esac
           }
 
-          BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
+          # Kitmaker fetches wheels from Artifactory (uploaded in the previous step).
+          # The /artifactory/ path segment is required for direct HTTP downloads.
+          BASE_URL="${ARTIFACTORY_URL}/artifactory/${ARTIFACTORY_REPO_ID}/wheels"
 
           for cuda_dir in pypi-wheelhouse/*/; do
             [ -d "$cuda_dir" ] || continue
@@ -201,16 +209,21 @@ jobs:
 
             echo "--- $pkg_name ---"
 
-            PAYLOAD=$(PKG_NAME="$pkg_name" CUDA_DIR="$cuda_dir" BASE_URL="$BASE_URL" python3 -c "
+            # upload=false triggers validation only (no publish) — used for dry_run.
+            upload_flag="true"
+            [ "${{ inputs.dry_run }}" = "true" ] && upload_flag="false"
+
+            PAYLOAD=$(PKG_NAME="$pkg_name" CUDA_DIR="$cuda_dir" BASE_URL="$BASE_URL" UPLOAD="$upload_flag" python3 -c "
           import json, glob, os
-          base = os.environ['BASE_URL']
-          pkg  = os.environ['PKG_NAME']
+          base   = os.environ['BASE_URL']
+          pkg    = os.environ['PKG_NAME']
+          upload = os.environ['UPLOAD'] == 'true'
           wheels = sorted([os.path.basename(w) for w in glob.glob(os.environ['CUDA_DIR'] + '/*.whl')])
           body = {
               'project_name': pkg,
               'payload': [
                   {'pic': 'tkurth@nvidia.com', 'job_type': 'wheel-release-job',
-                   'url': f'{base}/{w}', 'upload': True}
+                   'url': f'{base}/{w}', 'upload': upload}
                   for w in wheels
               ]
           }
@@ -218,7 +231,11 @@ jobs:
           ")
 
             num_wheels=$(echo "$PAYLOAD" | python3 -c "import json,sys; print(len(json.load(sys.stdin)['payload']))")
-            echo "Submitting $num_wheels wheel(s) to Kitmaker for $pkg_name..."
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "Submitting $num_wheels wheel(s) to Kitmaker for validation (upload=false)..."
+            else
+              echo "Submitting $num_wheels wheel(s) to Kitmaker for $pkg_name..."
+            fi
 
             RESPONSE=$(curl -s -X POST \
               "https://kitmaker-portal.nvidia.com/api/v0/projects/${project_id}/releases" \
@@ -249,9 +266,15 @@ jobs:
           ")
               echo "  Status: $status"
               case "$status" in
-                success|completed) echo "Release completed successfully."; break ;;
-                failed|error)      echo "ERROR: Release failed."; echo "$STATUS_RESPONSE"; exit 1 ;;
-                *)                 sleep 10 ;;
+                success|completed)
+                  if [ "${{ inputs.dry_run }}" = "true" ]; then
+                    echo "Validation passed (dry run — wheels were NOT published)."
+                  else
+                    echo "Release completed successfully."
+                  fi
+                  break ;;
+                failed|error) echo "ERROR: Release failed."; echo "$STATUS_RESPONSE"; exit 1 ;;
+                *)            sleep 10 ;;
               esac
             done
 
