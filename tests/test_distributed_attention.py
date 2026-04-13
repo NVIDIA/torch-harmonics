@@ -115,17 +115,27 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
     @parameterized.expand(
         [
             # nlat_in, nlon_in, nlat_out, nlon_out, batch_size, in_channels, num_heads, k_channels, out_channels, grid_in, grid_out, use_qknorm, atol, rtol
+            # same shape tests
             [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 1,   8,    8, "equiangular", "equiangular", False, 1e-5, 1e-4],
-            [64, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
             [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            # downsampling tests
+            [64, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [65, 128, 33,  64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [32,  64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [33,  64, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
             # same cases with QK norm enabled
             [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 1,   8,    8, "equiangular", "equiangular", True, 1e-5, 1e-4],
-            [64, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
             [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            # downsampling tests
+            [64, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [65, 128, 33,  64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            # upsampling tests
+            [32,  64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [33,  64, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
         ],
         skip_on_empty=True,
     )
