@@ -330,6 +330,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         grid_out: Optional[str] = "equiangular",
         num_heads: Optional[int] = 1,
         scale: Optional[Union[torch.Tensor, float]] = None,
+        use_qknorm: Optional[bool] = False,
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         k_channels: Optional[int] = None,
@@ -343,7 +344,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         super().__init__(
             in_channels, in_shape, out_shape,
             grid_in=grid_in, grid_out=grid_out,
-            num_heads=num_heads, scale=scale, bias=bias,
+            num_heads=num_heads, scale=scale, use_qknorm=use_qknorm, bias=bias,
             theta_cutoff=theta_cutoff, k_channels=k_channels,
             out_channels=out_channels,
             optimized_kernel=True,
@@ -492,13 +493,26 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         if value.shape[-2] != self.nlat_in_local or value.shape[-1] != self.nlon_in_local:
             raise ValueError(f"value spatial shape {(value.shape[-2], value.shape[-1])} does not match local in_shape {(self.nlat_in_local, self.nlon_in_local)}")
 
-        # scale query
-        query_scaled = query * self.scale
-
         # ---- 1. project to k/v/q ----
-        key_proj   = nn.functional.conv2d(key,          self.k_weights, bias=self.k_bias)
-        value_proj = nn.functional.conv2d(value,        self.v_weights, bias=self.v_bias)
-        query_proj = nn.functional.conv2d(query_scaled, self.q_weights, bias=self.q_bias)
+        key_proj   = nn.functional.conv2d(key,   self.k_weights, bias=self.k_bias)
+        value_proj = nn.functional.conv2d(value, self.v_weights, bias=self.v_bias)
+        query_proj = nn.functional.conv2d(query, self.q_weights, bias=self.q_bias)
+
+        # QK normalization (must come before scale)
+        if self.q_norm_weights is not None:
+            B, C, H, W = query_proj.shape
+            query_proj = query_proj.reshape(B, self.num_heads, -1, H, W).permute(0,1,3,4,2)
+            query_proj = nn.functional.rms_norm(query_proj, normalized_shape=self.q_norm_weights.shape, weight=1 + self.q_norm_weights)
+            query_proj = query_proj.permute(0,1,4,2,3).reshape(B, C, H, W).contiguous()
+
+        if self.k_norm_weights is not None:
+            B, C, H, W = key_proj.shape
+            key_proj = key_proj.reshape(B, self.num_heads, -1, H, W).permute(0,1,3,4,2)
+            key_proj = nn.functional.rms_norm(key_proj, normalized_shape=self.k_norm_weights.shape, weight=1 + self.k_norm_weights)
+            key_proj = key_proj.permute(0,1,4,2,3).reshape(B, C, H, W).contiguous()
+
+        # scale after normalization
+        query_proj = query_proj * self.scale
 
         # fold num_heads into batch
         B, _, H, W = key_proj.shape
