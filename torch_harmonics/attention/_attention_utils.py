@@ -477,6 +477,7 @@ def _neighborhood_s2_attention_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, 
 def _neighborhood_s2_attention_torch(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor,
                                      quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
                                      max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+
     # reshape, folding num heads into batch dim
     B, _, H, W = kw.shape
     kw = kw.reshape(B*nh, -1, H, W)
