@@ -108,18 +108,18 @@ class AttentionS2(nn.Module):
         log_quad_weights = torch.log(quad_weights).reshape(1,1,-1)
         self.register_buffer("log_quad_weights", log_quad_weights, persistent=False)
 
-        # learnable parameters
-        # TODO: double-check that this gives us the correct initialization magnitudes
-        # the standard MHA uses xavier uniform, NATTEN uses kaiming. Let's use that for now
+        # learnable parameters — Xavier uniform init matching PyTorch MHA convention:
+        # bound = sqrt(6 / (fan_in + fan_out)) for each projection
         if self.k_channels % self.num_heads != 0:
             raise ValueError(f"Please make sure that number of heads {self.num_heads} divides k_channels {self.k_channels} evenly.")
         if self.out_channels % self.num_heads != 0:
             raise ValueError(f"Please make sure that number of heads {self.num_heads} divides out_channels {self.out_channels} evenly.")
-        scale_qkv = math.sqrt(3.0 / self.in_channels)
-        self.q_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
-        self.k_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
-        self.v_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.out_channels, self.in_channels, 1, 1) - 1))
+        scale_qk   = math.sqrt(6.0 / (self.in_channels + self.k_channels))
+        scale_v    = math.sqrt(6.0 / (self.in_channels + self.out_channels))
         scale_proj = math.sqrt(3.0 / self.out_channels)
+        self.q_weights = nn.Parameter(scale_qk   * (2 * torch.rand(self.k_channels,   self.in_channels,  1, 1) - 1))
+        self.k_weights = nn.Parameter(scale_qk   * (2 * torch.rand(self.k_channels,   self.in_channels,  1, 1) - 1))
+        self.v_weights = nn.Parameter(scale_v    * (2 * torch.rand(self.out_channels,  self.in_channels,  1, 1) - 1))
         self.proj_weights = nn.Parameter(scale_proj * (2 * torch.rand(self.out_channels, self.out_channels, 1, 1) - 1))
 
         if bias:
@@ -300,18 +300,18 @@ class NeighborhoodAttentionS2(nn.Module):
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
-        # learnable parameters
-        # TODO: double-check that this gives us the correct initialization magnitudes
-        # the standard MHA uses xavier uniform, NATTEN uses kaiming. Let's use that for now
+        # learnable parameters — Xavier uniform init matching PyTorch MHA convention:
+        # bound = sqrt(6 / (fan_in + fan_out)) for each projection
         if self.k_channels % self.num_heads != 0:
             raise ValueError(f"Please make sure that number of heads {self.num_heads} divides k_channels {self.k_channels} evenly.")
         if self.out_channels % self.num_heads != 0:
             raise ValueError(f"Please make sure that number of heads {self.num_heads} divides out_channels {self.out_channels} evenly.")
-        scale_qkv = math.sqrt(3.0 / self.in_channels)
-        self.q_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
-        self.k_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
-        self.v_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.out_channels, self.in_channels, 1, 1) - 1))
+        scale_qk   = math.sqrt(6.0 / (self.in_channels + self.k_channels))
+        scale_v    = math.sqrt(6.0 / (self.in_channels + self.out_channels))
         scale_proj = math.sqrt(3.0 / self.out_channels)
+        self.q_weights = nn.Parameter(scale_qk   * (2 * torch.rand(self.k_channels,   self.in_channels,  1, 1) - 1))
+        self.k_weights = nn.Parameter(scale_qk   * (2 * torch.rand(self.k_channels,   self.in_channels,  1, 1) - 1))
+        self.v_weights = nn.Parameter(scale_v    * (2 * torch.rand(self.out_channels,  self.in_channels,  1, 1) - 1))
         self.proj_weights = nn.Parameter(scale_proj * (2 * torch.rand(self.out_channels, self.out_channels, 1, 1) - 1))
 
         if scale is not None:
