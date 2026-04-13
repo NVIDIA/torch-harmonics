@@ -114,12 +114,18 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # nlat_in, nlon_in, nlat_out, nlon_out, batch_size, in_channels, num_heads, k_channels, out_channels, grid_in, grid_out, atol, rtol
-            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", 1e-5, 1e-4],
-            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", 1e-5, 1e-4],
-            [64, 128, 64, 128, 2, 16, 1,   8,    8, "equiangular", "equiangular", 1e-5, 1e-4],
-            [64, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", 1e-5, 1e-4],
-            [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", 1e-5, 1e-4],
+            # nlat_in, nlon_in, nlat_out, nlon_out, batch_size, in_channels, num_heads, k_channels, out_channels, grid_in, grid_out, use_qknorm, atol, rtol
+            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 1,   8,    8, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            # same cases with QK norm enabled
+            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 1,   8,    8, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [64, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
         ],
         skip_on_empty=True,
     )
@@ -127,7 +133,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         self,
         nlat_in, nlon_in, nlat_out, nlon_out,
         batch_size, in_channels, num_heads, k_channels, out_channels,
-        grid_in, grid_out,
+        grid_in, grid_out, use_qknorm,
         atol, rtol,
         verbose=True,
     ):
@@ -143,6 +149,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             grid_out=grid_out,
             num_heads=num_heads,
             bias=True,
+            use_qknorm=use_qknorm,
             k_channels=k_channels,
             out_channels=out_channels,
         )
@@ -161,6 +168,9 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
                 attn_dist.v_bias.copy_(attn_serial.v_bias)
                 attn_dist.q_bias.copy_(attn_serial.q_bias)
                 attn_dist.proj_bias.copy_(attn_serial.proj_bias)
+            if use_qknorm:
+                attn_dist.q_norm_weights.copy_(attn_serial.q_norm_weights)
+                attn_dist.k_norm_weights.copy_(attn_serial.k_norm_weights)
 
         # Helper: create inputs
         inp_full = {
