@@ -35,6 +35,7 @@ import unittest
 from parameterized import parameterized, parameterized_class
 
 import torch
+import torch.nn.functional as F
 from torch.library import opcheck
 
 # from torch.autograd import gradcheck
@@ -71,23 +72,35 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # Format: [batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
-            [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            [4, 4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            [4, 4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            [4, 4, 8, 4, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            [4, 8, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular", "equiangular", 1e-5, 1e-3],
-            [4, 8, 4, 4, (6, 12), (12, 24), "equiangular", "equiangular", 1e-5, 1e-3],
-            [4, 1, 1, 1, (2, 4), (2, 4), "equiangular", "equiangular", 1e-5, 1e-3],
-            [4, 1, 4, 1, (2, 4), (2, 4), "equiangular", "equiangular", 1e-5, 1e-3],
-            [4, 4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", 1e-5, 1e-3],
-            [4, 4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", 1e-5, 1e-3],
+            # Format: [batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, use_qknorm, atol, rtol]
+            [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],
+            [4, 4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],
+            [4, 4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],
+            [4, 4, 8, 4, (6, 12), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],
+            [4, 8, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],
+            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],
+            [4, 8, 4, 4, (6, 12), (12, 24), "equiangular", "equiangular", False, 1e-5, 1e-3],
+            [4, 1, 1, 1, (2, 4), (2, 4), "equiangular", "equiangular", False, 1e-5, 1e-3],
+            [4, 1, 4, 1, (2, 4), (2, 4), "equiangular", "equiangular", False, 1e-5, 1e-3],
+            [4, 4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", False, 1e-5, 1e-3],
+            [4, 4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", False, 1e-5, 1e-3],
+            # same cases with QK norm enabled
+            [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
+            [4, 4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
+            [4, 4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
+            [4, 4, 8, 4, (6, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
+            [4, 8, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
+            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
+            [4, 8, 4, 4, (6, 12), (12, 24), "equiangular", "equiangular", True, 1e-5, 1e-3],
+            [4, 1, 1, 1, (2, 4), (2, 4), "equiangular", "equiangular", True, 1e-5, 1e-3],
+            [4, 1, 4, 1, (2, 4), (2, 4), "equiangular", "equiangular", True, 1e-5, 1e-3],
+            [4, 4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", True, 1e-5, 1e-3],
+            [4, 4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", True, 1e-5, 1e-3],
         ],
         skip_on_empty=True,
     )
     @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
-    def test_custom_implementation(self, batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=True):
+    def test_custom_implementation(self, batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, use_qknorm, atol, rtol, verbose=True):
         """Tests numerical equivalence between the custom (CUDA) implementation and the reference torch implementation"""
 
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
@@ -111,10 +124,10 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         inputs_opt = {k: v.detach().clone().to(self.device).requires_grad_() for k, v in inputs_ref.items()}
 
         # reference input and model
-        model_ref = NeighborhoodAttentionS2(in_channels=channels, out_channels=channels_out, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, optimized_kernel=False).to(self.device)
+        model_ref = NeighborhoodAttentionS2(in_channels=channels, out_channels=channels_out, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, use_qknorm=use_qknorm, optimized_kernel=False).to(self.device)
 
         # Device model and inputs
-        model_opt = NeighborhoodAttentionS2(in_channels=channels, out_channels=channels_out, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, optimized_kernel=True).to(self.device)
+        model_opt = NeighborhoodAttentionS2(in_channels=channels, out_channels=channels_out, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, use_qknorm=use_qknorm, optimized_kernel=True).to(self.device)
 
         # Synchronize parameters of model
         model_opt.load_state_dict(model_ref.state_dict())
@@ -320,10 +333,12 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             "q": torch.randn(batch_size, channels, nlat_out, nlon_out, requires_grad=True, device=self.device, dtype=torch.float32),
         }
 
-        test_inputs = (inputs["k"], inputs["v"], inputs["q"], 
-                       att.k_weights, att.v_weights, att.q_weights, 
-                       att.k_bias, att.v_bias, att.q_bias, 
-                       att.quad_weights, att.psi_col_idx, att.psi_roff_idx, 
+        kw = F.conv2d(inputs["k"], att.k_weights, att.k_bias)
+        vw = F.conv2d(inputs["v"], att.v_weights, att.v_bias)
+        qw = F.conv2d(inputs["q"], att.q_weights, att.q_bias) * att.scale
+
+        test_inputs = (kw, vw, qw,
+                       att.quad_weights, att.psi_col_idx, att.psi_roff_idx,
                        att.psi_max_nnz, att.num_heads, nlon_in, nlat_out, nlon_out)
 
         opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs)
