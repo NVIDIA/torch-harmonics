@@ -50,6 +50,7 @@ from torch_harmonics.attention import attention_kernels
 # autograd.Function for the ring-step attention kernel calls
 # ---------------------------------------------------------------------------
 
+@torch.compiler.disable()
 def _ring_kv(kw_chunk, vw_chunk, az_group, next_nlon_kw, next_nlon_kv):
     """Async send current chunks, receive next chunks with known shapes."""
     send_to, recv_from = get_group_neighbors(az_group)
@@ -81,7 +82,6 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
 
     @staticmethod
     def forward(
-        ctx,
         kw, vw, qw,
         psi_col_idx, psi_roff_idx, psi_row_idx,
         quad_weights,
@@ -134,14 +134,30 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
             if step < az_size - 1:
                 for req in reqs:
                     req.wait()
-                kw_chunk = recv_kw
-                vw_chunk = recv_vw
+                kw_chunk = recv_kw.clone()
+                vw_chunk = recv_vw.clone()
 
         # Finalize: y = y_acc / alpha_sum  (both channels-last layout)
         y_out = y_acc / alpha_sum.unsqueeze(-1)           # [B, H, W, C_v]
         y_out = y_out.permute(0, 3, 1, 2).contiguous()   # [B, C_v, H, W]
 
-        # Save for backward (kw/vw: channels-first; scalars: [B,H,W])
+        # alpha_sum and qdotk_max are returned so setup_context can save them;
+        # they are marked non-differentiable there, so backward still only
+        # receives one gradient argument (dy for y_out).
+        return y_out, alpha_sum, qdotk_max
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        (kw, vw, qw,
+         psi_col_idx, psi_roff_idx, psi_row_idx,
+         quad_weights,
+         nlon_in, lon_chunk_starts, nlon_kx_list,
+         lat_halo_start, nlat_out_local, nlon_out_local,
+         r_lat, az_group, az_rank, az_size) = inputs
+        y_out, alpha_sum, qdotk_max = output
+        # alpha_sum and qdotk_max are internal accumulators, not true outputs;
+        # marking them non-differentiable keeps backward's signature as (ctx, dy).
+        ctx.mark_non_differentiable(alpha_sum, qdotk_max)
         ctx.save_for_backward(kw, vw, qw, psi_col_idx, psi_roff_idx, psi_row_idx,
                               quad_weights, alpha_sum, qdotk_max)
         ctx.nlon_in          = nlon_in
@@ -153,10 +169,10 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         ctx.az_group         = az_group
         ctx.az_rank          = az_rank
         ctx.az_size          = az_size
-        return y_out
 
     @staticmethod
-    def backward(ctx, dy):
+    def backward(ctx, dy, _dalpha_sum, _dqdotk_max):
+        # _dalpha_sum and _dqdotk_max are always None (non-differentiable outputs)
         (kw, vw, qw,
          psi_col_idx, psi_roff_idx, psi_row_idx,
          quad_weights,
@@ -217,8 +233,8 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
             if step < az_size - 1:
                 for req in reqs:
                     req.wait()
-                kw_chunk = recv_kw
-                vw_chunk = recv_vw
+                kw_chunk = recv_kw.clone()
+                vw_chunk = recv_vw.clone()
 
         # Finalize pass-1: normalize integral, compute dqy
         # Use the SAVED forward alpha_sum/qdotk_max (same values, but authoritative)
@@ -278,8 +294,8 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                     nlon_kx_list[next_src], nlon_kx_list[next_src])
                 for req in reqs:
                     req.wait()
-                kw_chunk = recv_kw
-                vw_chunk = recv_vw
+                kw_chunk = recv_kw.clone()
+                vw_chunk = recv_vw.clone()
 
         if az_size > 1 and az_group is not None:
             dist.all_reduce(dkw_full_cl, group=az_group)
@@ -299,8 +315,8 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # Return grads for (kw, vw, qw, psi_col, psi_roff, psi_row, quad_weights,
         #                   nlon_in, lon_chunk_starts, nlon_kx_list, lat_halo_start,
         #                   nlat_out_local, nlon_out_local, r_lat,
-        #                   az_group, az_rank, az_size, polar_group)
-        return dkw, dvw, dqy, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None
+        #                   az_group, az_rank, az_size)
+        return dkw, dvw, dqy, None, None, None, None, None, None, None, None, None, None, None, None, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +556,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         lat_halo_start = lat_in_starts[self.comm_rank_polar] - self.r_lat
 
         # ---- 3. ring attention ----
-        out = _RingNeighborhoodAttentionFn.apply(
+        out, _, _ = _RingNeighborhoodAttentionFn.apply(
             key_halo,
             value_halo,
             query_proj,
