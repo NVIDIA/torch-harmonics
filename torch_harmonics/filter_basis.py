@@ -77,12 +77,14 @@ class FilterBasis(metaclass=abc.ABCMeta):
 
         raise NotImplementedError
 
-    # @abc.abstractmethod
-    # def compute_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float):
-    #     """
-    #     Computes the values of the filter basis
-    #     """
-    #     raise NotImplementedError
+    @property
+    @abc.abstractmethod
+    def isotropic_mask(self):
+        """Return a list of bools of length kernel_size.
+        True for isotropic (axisymmetric / m=0) basis functions,
+        False for anisotropic (directional / m!=0) ones."""
+
+        raise NotImplementedError
 
     @abc.abstractmethod
     def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float):
@@ -153,6 +155,16 @@ class PiecewiseLinearFilterBasis(FilterBasis):
     def kernel_size(self):
         """Compute the number of basis functions in the kernel."""
         return (self.kernel_shape[0] // 2) * self.kernel_shape[1] + self.kernel_shape[0] % 2
+
+    @property
+    def isotropic_mask(self):
+        nr, nphi = self.kernel_shape
+        if nphi == 1:
+            return [True] * self.kernel_size
+        mask = [False] * self.kernel_size
+        if nr % 2 == 1:
+            mask[0] = True
+        return mask
 
     def _compute_support_vals_isotropic(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float):
 
@@ -264,6 +276,12 @@ class HarmonicFilterBasis(FilterBasis):
 
         return self.kernel_shape[0] * self.kernel_shape[1]
 
+    @property
+    def isotropic_mask(self):
+        mask = [False] * self.kernel_size
+        mask[0] = True
+        return mask
+
     def gaussian_window(self, r: torch.Tensor, width: float = 1.0):
 
         return 1 / (2 * math.pi * width**2) * torch.exp(-0.5 * r**2 / (width**2))
@@ -323,6 +341,15 @@ class ZernikeFilterBasis(FilterBasis):
     def kernel_size(self):
 
         return (self.kernel_shape * (self.kernel_shape + 1)) // 2
+
+    @property
+    def isotropic_mask(self):
+        mask = []
+        for n in range(self.kernel_shape):
+            for l in range(n + 1):
+                m = 2 * l - n
+                mask.append(m == 0)
+        return mask
 
     def zernikeradial(self, r: torch.Tensor, n: torch.Tensor, m: torch.Tensor):
 
@@ -448,6 +475,10 @@ class FourierBesselFilterBasis(FilterBasis):
     @property
     def kernel_size(self) -> int:
         return len(self._ms)
+
+    @property
+    def isotropic_mask(self):
+        return [bool(m == 0) for m in self._ms.tolist()]
 
     def compute_l2_norms(self, **kwargs) -> torch.Tensor:
         """Analytic L2 norms of the Fourier-Bessel basis on the disk.
