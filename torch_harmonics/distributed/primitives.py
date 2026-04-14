@@ -35,6 +35,7 @@ import torch.distributed as dist
 
 from .utils import config as thd_config
 from .utils import polar_group, azimuth_group, polar_group_size, polar_group_rank
+from .utils import azimuth_group_size
 from .utils import is_distributed_polar, is_distributed_azimuth
 
 
@@ -137,8 +138,11 @@ class _DistributeTransposeAzimuth(torch.autograd.Function):
 
     @staticmethod
     def forward(x, dims, dim1_split_sizes):
-        # WAR for a potential contig check torch bug for channels last contig tensors
         x = x.contiguous()
+        
+        if not is_distributed_azimuth():
+            return x
+
         xlist, _, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=azimuth_group())
         return torch.cat(xlist, dim=dims[1]).contiguous()
 
@@ -146,18 +150,18 @@ class _DistributeTransposeAzimuth(torch.autograd.Function):
     def setup_context(ctx, inputs, output):
         x, dims, _ = inputs
         ctx.dims = dims
-        comm_size = dist.get_world_size(group=azimuth_group())
-        ctx.dim0_split_sizes = compute_split_shapes(x.shape[dims[0]], comm_size)
+        if is_distributed_azimuth():
+            ctx.dim0_split_sizes = compute_split_shapes(x.shape[dims[0]], azimuth_group_size())
 
     @staticmethod
     def backward(ctx, go):
+        go = go.contiguous()
+        
         if not is_distributed_azimuth():
-            # WAR for a potential contig check torch bug for channels last contig tensors
-            return go.contiguous(), None, None
+            return go, None, None
+
         dims = ctx.dims
         dim0_split_sizes = ctx.dim0_split_sizes
-        # WAR for a potential contig check torch bug for channels last contig tensors
-        go = go.contiguous()
         gilist, _, _ = _transpose(go, dims[1], dims[0], dim0_split_sizes, group=azimuth_group())
         gi = torch.cat(gilist, dim=dims[0]).contiguous()
         return gi, None, None
@@ -167,8 +171,11 @@ class _DistributeTransposePolar(torch.autograd.Function):
 
     @staticmethod
     def forward(x, dims, dim1_split_sizes):
-        # WAR for a potential contig check torch bug for channels last contig tensors
         x = x.contiguous()
+        
+        if not is_distributed_polar():
+            return x
+        
         xlist, _, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=polar_group())
         return torch.cat(xlist, dim=dims[1]).contiguous()
 
@@ -176,15 +183,18 @@ class _DistributeTransposePolar(torch.autograd.Function):
     def setup_context(ctx, inputs, output):
         x, dims, _ = inputs
         ctx.dims = dims
-        comm_size = dist.get_world_size(group=polar_group())
-        ctx.dim0_split_sizes = compute_split_shapes(x.shape[dims[0]], comm_size)
+        if is_distributed_polar():
+            ctx.dim0_split_sizes = compute_split_shapes(x.shape[dims[0]], polar_group_size())
 
     @staticmethod
     def backward(ctx, go):
+        go = go.contiguous()
+
+        if not is_distributed_polar():
+            return go, None, None
+        
         dims = ctx.dims
         dim0_split_sizes = ctx.dim0_split_sizes
-        # WAR for a potential contig check torch bug for channels last contig tensors
-        go = go.contiguous()
         gilist, _, _ = _transpose(go, dims[1], dims[0], dim0_split_sizes, group=polar_group())
         gi = torch.cat(gilist, dim=dims[0]).contiguous()
         return gi, None, None
