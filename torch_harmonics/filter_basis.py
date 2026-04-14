@@ -32,6 +32,7 @@
 import abc
 from typing import Tuple, Union, Optional
 import math
+import warnings
 
 import torch
 
@@ -128,8 +129,13 @@ def get_filter_basis(kernel_shape: Union[int, Tuple[int], Tuple[int, int]], basi
     elif basis_type == "fourier-bessel":
         return FourierBesselFilterBasis(kernel_shape=kernel_shape)
     elif basis_type == "morlet":
-        # legacy basis type, now harmonic
-        raise NotImplementedError("Morlet basis functions are not supported anymore. Use harmonic basis functions with a Morlet window function instead.")
+        warnings.warn(
+            "The 'morlet' basis type is deprecated and will be removed in a future release. "
+            "Use 'harmonic' basis type with a Morlet window function instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return HarmonicFilterBasis(kernel_shape=kernel_shape)
     else:
         raise ValueError(f"Unknown basis_type {basis_type}")
 
