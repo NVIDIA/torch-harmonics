@@ -33,12 +33,15 @@ import unittest
 from parameterized import parameterized
 
 import torch
+import torch.distributed as dist
 import torch_harmonics.distributed as thd
 from torch_harmonics.distributed import (
     compute_split_shapes,
     scatter_to_polar_region,
     gather_from_polar_region,
     distributed_transpose_polar,
+    reduce_from_polar_region,
+    reduce_from_azimuth_region,
 )
 
 from testutils import (
@@ -47,6 +50,7 @@ from testutils import (
     teardown_module,
     setup_class_from_context,
     split_tensor_dim,
+    compare_tensors,
 )
 
 _DIST_CTX = {}
@@ -202,6 +206,129 @@ class TestDistributedTranspose(unittest.TestCase):
 
         self.assertEqual(x_gathered.shape, x_full.shape)
         self.assertTrue(torch.equal(x_gathered, x_full))
+
+
+class TestDistributedReduce(unittest.TestCase):
+    """
+    Test reduce_from_polar_region and reduce_from_azimuth_region.
+
+    Forward: each rank holds a different local tensor.  The reduce primitive
+    must produce the same result as manually gathering all local tensors and
+    summing them (the "local sum + global sum" path).
+
+    Backward: the adjoint of a broadcast-sum (all_reduce) is the identity –
+    the upstream gradient flows through each rank unchanged.  We verify this
+    by comparing the computed input gradient against the upstream gradient dy.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        setup_class_from_context(cls, _DIST_CTX)
+
+    # ------------------------------------------------------------------
+    # Reference helpers – use dist.all_gather so we never call the op
+    # under test as part of the reference computation.
+    # ------------------------------------------------------------------
+
+    def _polar_gather_sum(self, x_local):
+        """Global sum over the polar group via all_gather + Python sum."""
+        polar_size = thd.polar_group_size()
+        if polar_size > 1:
+            x_all = [torch.empty_like(x_local) for _ in range(polar_size)]
+            dist.all_gather(x_all, x_local.detach().contiguous(), group=thd.polar_group())
+            return torch.stack(x_all, dim=0).sum(dim=0)
+        else:
+            return x_local.detach().clone()
+
+    def _azimuth_gather_sum(self, x_local):
+        """Global sum over the azimuth group via all_gather + Python sum."""
+        az_size = thd.azimuth_group_size()
+        if az_size > 1:
+            x_all = [torch.empty_like(x_local) for _ in range(az_size)]
+            dist.all_gather(x_all, x_local.detach().contiguous(), group=thd.azimuth_group())
+            return torch.stack(x_all, dim=0).sum(dim=0)
+        else:
+            return x_local.detach().clone()
+
+    # ------------------------------------------------------------------
+    # Tests
+    # ------------------------------------------------------------------
+
+    @parameterized.expand(
+        [
+            # B,  C,   H,  W
+            [2,   8,  16, 32],
+            [1,   4,   7, 13],
+            [3,  16,   8, 16],
+        ],
+        skip_on_empty=True,
+    )
+    def test_reduce_from_polar_region_fwd_bwd(self, B, C, H, W):
+        set_seed(333)
+
+        # Give each rank a distinct contribution so that a missing reduce is
+        # immediately visible: x_local = randn + hrank.
+        x_local = torch.randn(B, C, H, W, device=self.device) + float(self.hrank)
+
+        # --- Forward reference: gather-and-sum without using the primitive ---
+        ref = self._polar_gather_sum(x_local)
+
+        # --- Distributed forward ---
+        x = x_local.clone().requires_grad_(True)
+        out = reduce_from_polar_region(x)
+
+        self.assertTrue(
+            compare_tensors("reduce_from_polar_region fwd", ref, out,
+                            atol=1e-5, rtol=1e-4, verbose=True),
+            "forward output does not match the reference global sum",
+        )
+
+        # --- Backward: the gradient must pass through unchanged ---
+        dy = torch.randn_like(out)
+        out.backward(dy)
+
+        self.assertTrue(
+            compare_tensors("reduce_from_polar_region bwd", dy, x.grad,
+                            atol=1e-5, rtol=1e-4, verbose=True),
+            "input gradient does not match the upstream gradient (expected pass-through)",
+        )
+
+    @parameterized.expand(
+        [
+            # B,  C,   H,  W
+            [2,   8,  16, 32],
+            [1,   4,   7, 13],
+            [3,  16,   8, 16],
+        ],
+        skip_on_empty=True,
+    )
+    def test_reduce_from_azimuth_region_fwd_bwd(self, B, C, H, W):
+        set_seed(333)
+
+        x_local = torch.randn(B, C, H, W, device=self.device) + float(self.wrank)
+
+        # --- Forward reference ---
+        ref = self._azimuth_gather_sum(x_local)
+
+        # --- Distributed forward ---
+        x = x_local.clone().requires_grad_(True)
+        out = reduce_from_azimuth_region(x)
+
+        self.assertTrue(
+            compare_tensors("reduce_from_azimuth_region fwd", ref, out,
+                            atol=1e-5, rtol=1e-4, verbose=True),
+            "forward output does not match the reference global sum",
+        )
+
+        # --- Backward: pass-through ---
+        dy = torch.randn_like(out)
+        out.backward(dy)
+
+        self.assertTrue(
+            compare_tensors("reduce_from_azimuth_region bwd", dy, x.grad,
+                            atol=1e-5, rtol=1e-4, verbose=True),
+            "input gradient does not match the upstream gradient (expected pass-through)",
+        )
 
 
 if __name__ == "__main__":
