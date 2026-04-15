@@ -1,4 +1,4 @@
-name: Build and Deploy Manylinux Wheels
+name: Build Manylinux Wheels
 
 # Trigger on version tags and manual dispatch
 on:
