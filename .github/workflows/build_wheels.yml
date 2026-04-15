@@ -59,18 +59,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # - name: Free Disk Space
-    #   run: |
-    #     sudo rm -rf /usr/local/.ghcup
-    #     sudo rm -rf /opt/hostedtoolcache/CodeQL
-    #     sudo rm -rf /usr/local/lib/android/sdk/ndk
-    #     sudo rm -rf /usr/share/dotnet
-    #     sudo rm -rf /opt/ghc
-    #     sudo rm -rf /usr/local/share/boost
-    #     sudo apt-get clean
-    #     echo "Disk space after cleanup:"
-    #     df -h
-
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -104,7 +92,6 @@ jobs:
           pip install torch==${{ matrix.torch-version }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
           pip install numpy
         CIBW_BUILD: ${{ matrix.python-builds }}
-        CIBW_TEST_INSIDE: true
         TORCH_CUDA_VERSION: ${{ matrix.cuda-version }}
         TORCH_CUDA_ARCH_LIST: ${{ env.TORCH_CUDA_ARCH_LIST }}
         CIBW_ENVIRONMENT: "SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.BASE_VERSION }}+torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }} TORCH_HARMONICS_ENABLE_OPENMP=1 TORCHINDUCTOR_COMPILE_THREADS=1"
@@ -130,10 +117,16 @@ jobs:
         echo "Listing wheelhouse contents:"
         ls -lh wheelhouse/
         echo "Checking .so symbols and ABI:"
-        for so in wheelhouse/*.so; do
-          echo "==== $so ===="
-          nm -D "$so" | grep exception_ptr || echo "No exception_ptr symbols found"
-          strings "$so" | grep ABI || echo "No ABI macro found in $so"
+        for whl in wheelhouse/*.whl; do
+          echo "==== $whl ===="
+          tmpdir=$(mktemp -d)
+          python -m zipfile -e "$whl" "$tmpdir"
+          for so in $(find "$tmpdir" -name '*.so'); do
+            echo "  -- $so --"
+            nm -D "$so" | grep exception_ptr || echo "  No exception_ptr symbols found"
+            strings "$so" | grep ABI || echo "  No ABI macro found"
+          done
+          rm -rf "$tmpdir"
         done
 
     - name: Upload wheel artifacts
