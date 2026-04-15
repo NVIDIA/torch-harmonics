@@ -19,12 +19,13 @@
 * Distributed module: fixed `finalize()` bug where process group was not properly destroyed
 * Query functions `torch_harmonics.disco.optimized_kernels_is_available` and `torch_harmonics.attention.optimized_kernels_is_available` for checking optimized layer availability
 * Quadrature helper functions `precompute_latitudes` and `precompute_longitudes` are now public API
-* Comprehensive SHT test suite now covering vector SHT, Schmidt normalization, batch dimensions, and multiple grid types
-* New test suites for `SpectralConvS2`, `QuadratureS2`, `GaussianRandomFieldS2`, and `ResampleS2`
-* Enhanced DISCO convolution tests covering different input/output channel counts and double precision
-* Enhanced attention tests with up/downsampling and `opcheck` integration
-* New distributed tests for primitives, quadrature, and spectral convolution
-* Shared test utilities module (`testutils.py`)
+* added new tests:
+    * Comprehensive SHT test suite now covering vector SHT, Schmidt normalization, batch dimensions, and multiple grid types
+    * New test suites for `SpectralConvS2`, `QuadratureS2`, `GaussianRandomFieldS2`, and `ResampleS2`
+     Enhanced DISCO convolution tests covering different input/output channel counts and double precision
+    * Enhanced attention tests with up/downsampling and `opcheck` integration
+    * New distributed tests for primitives, quadrature, and spectral convolution
+    * Shared test utilities module (`testutils.py`)
 
 ### v0.8.2
 * Adding Driscoll-Healy (spectral) convolutions
