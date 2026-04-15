@@ -1,13 +1,10 @@
 name: Build and Deploy Manylinux Wheels
 
-# Trigger workflow on PRs, tags, and manual dispatch
+# Trigger on version tags and manual dispatch
 on:
   push:
     tags:
       - 'v*'
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       torch_version:
