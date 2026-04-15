@@ -6,15 +6,6 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      torch_version:
-        description: 'PyTorch version to build (e.g., 2.4.0)'
-        required: false
-        default: ''
-      cuda_version:
-        description: 'CUDA version to build (e.g., cu121, cpu)'
-        required: false
-        default: ''
 
 env:
   CUDA_ARCH_MAP: '{"12.6": "8.0;8.6;8.9;9.0;+PTX", "12.8": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "12.9": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "13.0": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "none": ""}'
