@@ -51,8 +51,10 @@ fallback_version = "0.9.0"
 [project.optional-dependencies]
 dev = [
     "pytest>=6.0.0",
+    "pytest-cov>=3.0.0",
     "coverage>=6.5.0",
     "parameterized",
+    "scipy>=1.9.0",
 ]
 filter_basis = [
     "scipy>=1.9.0",
