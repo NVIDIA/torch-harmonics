@@ -107,12 +107,14 @@ def _normalize_convolution_tensor_s2(
             DeprecationWarning,
             stacklevel=2,
         )
+        basis_norm_mode = "nodal"
     elif basis_norm_mode == "area ratio":
         warnings.warn(
             'basis_norm_mode="area ratio" is deprecated, use "geometric" instead.',
             DeprecationWarning,
             stacklevel=2,
         )
+        basis_norm_mode = "geometric"
 
     # reshape the indices implicitly to be ikernel, out_shape[0], in_shape[0], in_shape[1]
     idx = torch.stack([psi_idx[0], psi_idx[1], psi_idx[2] // in_shape[1], psi_idx[2] % in_shape[1]], dim=0)
@@ -176,7 +178,7 @@ def _normalize_convolution_tensor_s2(
             elif basis_norm_mode == "none":
                 b = 0.0
                 s = 1.0
-            elif basis_norm_mode in ["geometric", "area ratio"]:
+            elif basis_norm_mode == "geometric":
                 b = 0.0
                 s = (1.0 - math.cos(theta_cutoff)) / 2.0 / 2.0
             else:
