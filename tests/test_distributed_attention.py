@@ -191,7 +191,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         # ---- serial forward ----
         out_full = attn_serial(inp_full["q"], inp_full["k"], inp_full["v"])
-        
+
         torch.cuda.synchronize()
 
         # ---- serial backward ----
