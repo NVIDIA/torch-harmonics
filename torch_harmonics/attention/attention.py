@@ -35,6 +35,7 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from torch_harmonics.quadrature import precompute_latitudes
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
@@ -77,6 +78,7 @@ class AttentionS2(nn.Module):
             grid_in: Optional[str] = "equiangular",
             grid_out: Optional[str] = "equiangular",
             scale: Optional[Union[torch.Tensor, float]] = None,
+            use_qknorm: Optional[bool] = False,
             bias: Optional[bool] = True,
             k_channels: Optional[int] = None,
             out_channels: Optional[int] = None,
@@ -106,18 +108,18 @@ class AttentionS2(nn.Module):
         log_quad_weights = torch.log(quad_weights).reshape(1,1,-1)
         self.register_buffer("log_quad_weights", log_quad_weights, persistent=False)
 
-        # learnable parameters
-        # TODO: double-check that this gives us the correct initialization magnitudes
-        # the standard MHA uses xavier uniform, NATTEN uses kaiming. Let's use that for now
+        # learnable parameters — Xavier uniform init matching PyTorch MHA convention:
+        # bound = sqrt(6 / (fan_in + fan_out)) for each projection
         if self.k_channels % self.num_heads != 0:
             raise ValueError(f"Please make sure that number of heads {self.num_heads} divides k_channels {self.k_channels} evenly.")
         if self.out_channels % self.num_heads != 0:
             raise ValueError(f"Please make sure that number of heads {self.num_heads} divides out_channels {self.out_channels} evenly.")
-        scale_qkv = math.sqrt(3.0 / self.in_channels)
-        self.q_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
-        self.k_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
-        self.v_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.out_channels, self.in_channels, 1, 1) - 1))
+        scale_qk   = math.sqrt(6.0 / (self.in_channels + self.k_channels))
+        scale_v    = math.sqrt(6.0 / (self.in_channels + self.out_channels))
         scale_proj = math.sqrt(3.0 / self.out_channels)
+        self.q_weights = nn.Parameter(scale_qk   * (2 * torch.rand(self.k_channels,   self.in_channels,  1, 1) - 1))
+        self.k_weights = nn.Parameter(scale_qk   * (2 * torch.rand(self.k_channels,   self.in_channels,  1, 1) - 1))
+        self.v_weights = nn.Parameter(scale_v    * (2 * torch.rand(self.out_channels,  self.in_channels,  1, 1) - 1))
         self.proj_weights = nn.Parameter(scale_proj * (2 * torch.rand(self.out_channels, self.out_channels, 1, 1) - 1))
 
         if bias:
@@ -130,6 +132,13 @@ class AttentionS2(nn.Module):
             self.k_bias = None
             self.v_bias = None
             self.proj_bias = None
+
+        if use_qknorm:
+            self.q_norm_weights = nn.Parameter(torch.zeros(self.k_channels // self.num_heads))
+            self.k_norm_weights = nn.Parameter(torch.zeros(self.k_channels // self.num_heads))
+        else:
+            self.q_norm_weights = None
+            self.k_norm_weights = None
 
 
     def extra_repr(self):
@@ -147,7 +156,7 @@ class AttentionS2(nn.Module):
         # change this later to allow arbitrary number of batch dims
         assert (query.dim() == key.dim()) and (key.dim() == value.dim()) and (value.dim() == 4)
 
-        # perform MLP
+        # perform QKV projections
         query = nn.functional.conv2d(query, self.q_weights, bias=self.q_bias)
         key = nn.functional.conv2d(key, self.k_weights, bias=self.k_bias)
         value = nn.functional.conv2d(value, self.v_weights, bias=self.v_bias)
@@ -168,8 +177,18 @@ class AttentionS2(nn.Module):
         B, _, C, H, W = value.shape
         value = value.permute(0,1,3,4,2).reshape(B, self.num_heads, H*W, C)
 
-        # multiply the query, key and value tensors
-        out = nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=self.log_quad_weights, dropout_p=self.drop_rate, scale=self.scale)
+        if self.q_norm_weights is not None:
+            query = F.rms_norm(query, normalized_shape=self.q_norm_weights.shape, weight=1 + self.q_norm_weights)
+        if self.k_norm_weights is not None:
+            key = F.rms_norm(key, normalized_shape=self.k_norm_weights.shape, weight=1 + self.k_norm_weights)
+
+        # apply scale — if scale is a tensor (e.g. learnable), multiply into query
+        # directly since SDPA only accepts a float scale
+        if isinstance(self.scale, torch.Tensor):
+            query = query * self.scale
+            out = F.scaled_dot_product_attention(query, key, value, attn_mask=self.log_quad_weights, dropout_p=self.drop_rate, scale=1.0)
+        else:
+            out = F.scaled_dot_product_attention(query, key, value, attn_mask=self.log_quad_weights, dropout_p=self.drop_rate, scale=self.scale)
 
         # reshape
         B, _, _, C = out.shape
@@ -220,6 +239,7 @@ class NeighborhoodAttentionS2(nn.Module):
         grid_out: Optional[str] = "equiangular",
         num_heads: Optional[int] = 1,
         scale: Optional[Union[torch.Tensor, float]] = None,
+        use_qknorm: Optional[bool] = False,
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         k_channels: Optional[int] = None,
@@ -280,24 +300,24 @@ class NeighborhoodAttentionS2(nn.Module):
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
-        # learnable parameters
-        # TODO: double-check that this gives us the correct initialization magnitudes
-        # the standard MHA uses xavier uniform, NATTEN uses kaiming. Let's use that for now
+        # learnable parameters — Xavier uniform init matching PyTorch MHA convention:
+        # bound = sqrt(6 / (fan_in + fan_out)) for each projection
         if self.k_channels % self.num_heads != 0:
             raise ValueError(f"Please make sure that number of heads {self.num_heads} divides k_channels {self.k_channels} evenly.")
         if self.out_channels % self.num_heads != 0:
             raise ValueError(f"Please make sure that number of heads {self.num_heads} divides out_channels {self.out_channels} evenly.")
-        scale_qkv = math.sqrt(3.0 / self.in_channels)
-        self.q_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
-        self.k_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
-        self.v_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.out_channels, self.in_channels, 1, 1) - 1))
+        scale_qk   = math.sqrt(6.0 / (self.in_channels + self.k_channels))
+        scale_v    = math.sqrt(6.0 / (self.in_channels + self.out_channels))
         scale_proj = math.sqrt(3.0 / self.out_channels)
+        self.q_weights = nn.Parameter(scale_qk   * (2 * torch.rand(self.k_channels,   self.in_channels,  1, 1) - 1))
+        self.k_weights = nn.Parameter(scale_qk   * (2 * torch.rand(self.k_channels,   self.in_channels,  1, 1) - 1))
+        self.v_weights = nn.Parameter(scale_v    * (2 * torch.rand(self.out_channels,  self.in_channels,  1, 1) - 1))
         self.proj_weights = nn.Parameter(scale_proj * (2 * torch.rand(self.out_channels, self.out_channels, 1, 1) - 1))
 
         if scale is not None:
             self.scale = scale
         else:
-            self.scale = 1 / math.sqrt(self.k_channels)
+            self.scale = 1 / math.sqrt(self.k_channels // self.num_heads)
 
         if bias:
             self.q_bias = nn.Parameter(torch.zeros(self.k_channels))
@@ -309,6 +329,13 @@ class NeighborhoodAttentionS2(nn.Module):
             self.k_bias = None
             self.v_bias = None
             self.proj_bias = None
+
+        if use_qknorm:
+            self.q_norm_weights = nn.Parameter(torch.zeros(self.k_channels // self.num_heads))
+            self.k_norm_weights = nn.Parameter(torch.zeros(self.k_channels // self.num_heads))
+        else:
+            self.q_norm_weights = None
+            self.k_norm_weights = None
 
         if self.optimized_kernel:
             self.attention_handle = _neighborhood_s2_attention_optimized
@@ -330,7 +357,32 @@ class NeighborhoodAttentionS2(nn.Module):
         # change this later to allow arbitrary number of batch dims
         assert (query.dim() == key.dim()) and (key.dim() == value.dim()) and (value.dim() == 4)
 
-        # do the scaling
+        if query.shape[-2] != self.nlat_out or query.shape[-1] != self.nlon_out:
+            raise ValueError(f"query spatial shape {(query.shape[-2], query.shape[-1])} does not match out_shape {(self.nlat_out, self.nlon_out)}")
+        if key.shape[-2] != self.nlat_in or key.shape[-1] != self.nlon_in:
+            raise ValueError(f"key spatial shape {(key.shape[-2], key.shape[-1])} does not match in_shape {(self.nlat_in, self.nlon_in)}")
+        if value.shape[-2] != self.nlat_in or value.shape[-1] != self.nlon_in:
+            raise ValueError(f"value spatial shape {(value.shape[-2], value.shape[-1])} does not match in_shape {(self.nlat_in, self.nlon_in)}")
+
+        # perform QKV projections
+        query = nn.functional.conv2d(query, self.q_weights, bias=self.q_bias)
+        key = nn.functional.conv2d(key, self.k_weights, bias=self.k_bias)
+        value = nn.functional.conv2d(value, self.v_weights, bias=self.v_bias)
+
+        # perform QK normalization (must come before scale)
+        if self.q_norm_weights is not None:
+            B, C, H, W = query.shape
+            query = query.reshape(B, self.num_heads, -1, H, W).permute(0,1,3,4,2)
+            query = F.rms_norm(query, normalized_shape=self.q_norm_weights.shape, weight=1 + self.q_norm_weights)
+            query = query.permute(0,1,4,2,3).reshape(B, C, H, W).contiguous()
+
+        if self.k_norm_weights is not None:
+            B, C, H, W = key.shape
+            key = key.reshape(B, self.num_heads, -1, H, W).permute(0,1,3,4,2)
+            key = F.rms_norm(key, normalized_shape=self.k_norm_weights.shape, weight=1 + self.k_norm_weights)
+            key = key.permute(0,1,4,2,3).reshape(B, C, H, W).contiguous()
+
+        # scale after normalization
         query_scaled = query * self.scale
 
         # TODO: insert dimension checks for input
@@ -338,12 +390,6 @@ class NeighborhoodAttentionS2(nn.Module):
             key,
             value,
             query_scaled,
-            self.k_weights,
-            self.v_weights,
-            self.q_weights,
-            self.k_bias,
-            self.v_bias,
-            self.q_bias,
             self.quad_weights,
             self.psi_col_idx,
             self.psi_roff_idx,

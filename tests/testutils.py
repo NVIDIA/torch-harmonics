@@ -127,8 +127,10 @@ def setup_distributed_context(ctx):
 
 
 def teardown_distributed_context(ctx):
+    device_ids = [ctx.device.index] if ctx.device.type == "cuda" else None
+    dist.barrier(device_ids=device_ids)
     thd.finalize()
-    dist.destroy_process_group(None)
+    dist.destroy_process_group()
 
     return
 

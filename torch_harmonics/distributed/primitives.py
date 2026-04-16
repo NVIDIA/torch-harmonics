@@ -32,11 +32,23 @@ from typing import List
 
 import torch
 import torch.distributed as dist
-from torch.amp import custom_fwd, custom_bwd
 
 from .utils import config as thd_config
-from .utils import polar_group, azimuth_group, polar_group_size
+from .utils import polar_group, polar_group_size, polar_group_rank
+from .utils import azimuth_group, azimuth_group_size
 from .utils import is_distributed_polar, is_distributed_azimuth
+
+
+def get_group_neighbors(group):
+    group_size = dist.get_world_size(group)
+    global_rank = dist.get_rank()
+    group_ranks = dist.get_process_group_ranks(group)
+    my_rank_id = group_ranks.index(global_rank)
+    prev_rank = group_ranks[(my_rank_id - 1) % group_size]
+    next_rank = group_ranks[(my_rank_id + 1) % group_size]
+
+    return prev_rank, next_rank
+
 
 def _check_shapes(msg, shapes_gather, shapes_expected):
     for idx, (size_gather, size_expected) in enumerate(zip(shapes_gather, shapes_expected)):
@@ -125,52 +137,59 @@ def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False,
 class _DistributeTransposeAzimuth(torch.autograd.Function):
 
     @staticmethod
-    @custom_fwd(device_type="cuda")
-    def forward(ctx, x, dims, dim1_split_sizes):
-
+    def forward(x, dims, dim1_split_sizes):
+        if not is_distributed_azimuth():
+            return x
         # WAR for a potential contig check torch bug for channels last contig tensors
         x = x.contiguous()
-        xlist, dim0_split_sizes, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=azimuth_group())
-        x = torch.cat(xlist, dim=dims[1]).contiguous()
-        ctx.dims = dims
-        ctx.dim0_split_sizes = dim0_split_sizes
-        
-        return x
+        xlist, _, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=azimuth_group())
+        return torch.cat(xlist, dim=dims[1]).contiguous()
 
     @staticmethod
-    @custom_bwd(device_type="cuda")
+    def setup_context(ctx, inputs, output):
+        x, dims, _ = inputs
+        ctx.dims = dims
+        if is_distributed_azimuth():
+            ctx.dim0_split_sizes = compute_split_shapes(x.shape[dims[0]], azimuth_group_size())
+
+    @staticmethod
     def backward(ctx, go):
+        if not is_distributed_azimuth():
+            return go, None, None
         dims = ctx.dims
         dim0_split_sizes = ctx.dim0_split_sizes
+        # WAR for a potential contig check torch bug for channels last contig tensors
         go = go.contiguous()
-        # WAR for a potential contig check torch bug for channels last contig tensors 
         gilist, _, _ = _transpose(go, dims[1], dims[0], dim0_split_sizes, group=azimuth_group())
         gi = torch.cat(gilist, dim=dims[0]).contiguous()
-        
         return gi, None, None
 
-    
+
 class _DistributeTransposePolar(torch.autograd.Function):
 
     @staticmethod
-    @custom_fwd(device_type="cuda")
-    def forward(ctx, x, dims, dim1_split_sizes):
-
-        # WAR for a potential contig check torch bug for channels last contig tensors 
+    def forward(x, dims, dim1_split_sizes):
+        if not is_distributed_polar():
+            return x
+        # WAR for a potential contig check torch bug for channels last contig tensors
         x = x.contiguous()
-        xlist, dim0_split_sizes, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=polar_group())
-        x = torch.cat(xlist, dim=dims[1]).contiguous()
-        ctx.dims = dims
-        ctx.dim0_split_sizes = dim0_split_sizes
-        return x
+        xlist, _, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=polar_group())
+        return torch.cat(xlist, dim=dims[1]).contiguous()
 
     @staticmethod
-    @custom_bwd(device_type="cuda")
-    def backward(ctx, go):
+    def setup_context(ctx, inputs, output):
+        x, dims, _ = inputs
+        ctx.dims = dims
+        if is_distributed_polar():
+            ctx.dim0_split_sizes = compute_split_shapes(x.shape[dims[0]], polar_group_size())
 
+    @staticmethod
+    def backward(ctx, go):
+        if not is_distributed_polar():
+            return go, None, None
         dims = ctx.dims
         dim0_split_sizes = ctx.dim0_split_sizes
-        # WAR for a potential contig check torch bug for channels last contig tensors 
+        # WAR for a potential contig check torch bug for channels last contig tensors
         go = go.contiguous()
         gilist, _, _ = _transpose(go, dims[1], dims[0], dim0_split_sizes, group=polar_group())
         gi = torch.cat(gilist, dim=dims[0]).contiguous()
@@ -296,25 +315,25 @@ def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
 
 
 class _CopyToPolarRegion(torch.autograd.Function):
-    
+
     @staticmethod
     def symbolic(graph, input_):
         return input_
-    
-    @staticmethod
-    @custom_fwd(device_type="cuda")
-    def forward(ctx, input_):
-        
-        return input_
-    
-    @staticmethod
-    @custom_bwd(device_type="cuda")
-    def backward(ctx, grad_output):
 
+    @staticmethod
+    def forward(input_):
+        return input_
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        pass
+
+    @staticmethod
+    def backward(ctx, grad_output):
         if is_distributed_polar():
             return _reduce(grad_output, group=polar_group())
         else:
-            return grad_output, None
+            return grad_output
 
 
 class _CopyToAzimuthRegion(torch.autograd.Function):
@@ -324,19 +343,19 @@ class _CopyToAzimuthRegion(torch.autograd.Function):
         return input_
 
     @staticmethod
-    @custom_fwd(device_type="cuda")
-    def forward(ctx, input_):
-
+    def forward(input_):
         return input_
 
     @staticmethod
-    @custom_bwd(device_type="cuda")
-    def backward(ctx, grad_output):
+    def setup_context(ctx, inputs, output):
+        pass
 
+    @staticmethod
+    def backward(ctx, grad_output):
         if is_distributed_azimuth():
             return _reduce(grad_output, group=azimuth_group())
         else:
-            return grad_output, None
+            return grad_output
 
 
 class _ScatterToPolarRegion(torch.autograd.Function):
@@ -346,19 +365,20 @@ class _ScatterToPolarRegion(torch.autograd.Function):
         return _split(input_, dim_, group=polar_group())
 
     @staticmethod
-    @custom_fwd(device_type="cuda")
-    def forward(ctx, input_, dim_):
+    def forward(input_, dim_):
         if is_distributed_polar():
-            ctx.dim = dim_
-            ctx.split_shapes = compute_split_shapes(
-                input_.shape[dim_], polar_group_size()
-            )
             return _split(input_, dim_, group=polar_group())
         else:
             return input_
 
     @staticmethod
-    @custom_bwd(device_type="cuda")
+    def setup_context(ctx, inputs, output):
+        input_, dim_ = inputs
+        ctx.dim = dim_
+        if is_distributed_polar():
+            ctx.split_shapes = compute_split_shapes(input_.shape[dim_], polar_group_size())
+
+    @staticmethod
     def backward(ctx, grad_output):
         if is_distributed_polar():
             return _gather(grad_output, ctx.dim, ctx.split_shapes, polar_group()), None
@@ -373,16 +393,18 @@ class _GatherFromPolarRegion(torch.autograd.Function):
         return _gather(input_, dim_, shapes_, polar_group())
 
     @staticmethod
-    @custom_fwd(device_type="cuda")
-    def forward(ctx, input_, dim_, shapes_):
+    def forward(input_, dim_, shapes_):
         if is_distributed_polar():
-            ctx.dim = dim_
             return _gather(input_, dim_, shapes_, group=polar_group())
         else:
             return input_
 
     @staticmethod
-    @custom_bwd(device_type="cuda")
+    def setup_context(ctx, inputs, output):
+        _, dim_, _ = inputs
+        ctx.dim = dim_
+
+    @staticmethod
     def backward(ctx, grad_output):
         if is_distributed_polar():
             return _split(grad_output, ctx.dim, group=polar_group()), None, None
@@ -391,7 +413,7 @@ class _GatherFromPolarRegion(torch.autograd.Function):
 
     
 class _ReduceFromPolarRegion(torch.autograd.Function):
-    
+
     @staticmethod
     def symbolic(graph, input_):
         if is_distributed_polar():
@@ -400,21 +422,23 @@ class _ReduceFromPolarRegion(torch.autograd.Function):
             return input_
 
     @staticmethod
-    @custom_fwd(device_type="cuda")
-    def forward(ctx, input_):
+    def forward(input_):
         if is_distributed_polar():
             return _reduce(input_, group=polar_group())
         else:
             return input_
 
     @staticmethod
-    @custom_bwd(device_type="cuda")
+    def setup_context(ctx, inputs, output):
+        pass
+
+    @staticmethod
     def backward(ctx, grad_output):
         return grad_output
 
-    
+
 class _ReduceFromAzimuthRegion(torch.autograd.Function):
- 
+
     @staticmethod
     def symbolic(graph, input_):
         if is_distributed_azimuth():
@@ -423,15 +447,17 @@ class _ReduceFromAzimuthRegion(torch.autograd.Function):
             return input_
 
     @staticmethod
-    @custom_fwd(device_type="cuda")
-    def forward(ctx, input_):
+    def forward(input_):
         if is_distributed_azimuth():
             return _reduce(input_, group=azimuth_group())
         else:
             return input_
 
     @staticmethod
-    @custom_bwd(device_type="cuda")
+    def setup_context(ctx, inputs, output):
+        pass
+
+    @staticmethod
     def backward(ctx, grad_output):
         return grad_output
 
@@ -446,19 +472,20 @@ class _ReduceFromScatterToPolarRegion(torch.autograd.Function):
             return input_
 
     @staticmethod
-    @custom_fwd(device_type="cuda")
-    def forward(ctx, input_, dim_):
+    def forward(input_, dim_):
         if is_distributed_polar():
-            ctx.dim = dim_
-            ctx.split_shapes = compute_split_shapes(
-                input_.shape[dim_], polar_group_size()
-            )
             return _reduce_scatter(input_, dim_, group=polar_group())
         else:
             return input_
 
     @staticmethod
-    @custom_bwd(device_type="cuda")
+    def setup_context(ctx, inputs, output):
+        input_, dim_ = inputs
+        ctx.dim = dim_
+        if is_distributed_polar():
+            ctx.split_shapes = compute_split_shapes(input_.shape[dim_], polar_group_size())
+
+    @staticmethod
     def backward(ctx, grad_output):
         if is_distributed_polar():
             return _gather(grad_output, ctx.dim, ctx.split_shapes, polar_group()), None
@@ -476,16 +503,18 @@ class _GatherFromCopyToPolarRegion(torch.autograd.Function):
             return input_
 
     @staticmethod
-    @custom_fwd(device_type="cuda")
-    def forward(ctx, input_, dim_, shapes_):
+    def forward(input_, dim_, shapes_):
         if is_distributed_polar():
-            ctx.dim = dim_
             return _gather(input_, dim_, shapes_, group=polar_group())
         else:
             return input_
 
     @staticmethod
-    @custom_bwd(device_type="cuda")
+    def setup_context(ctx, inputs, output):
+        _, dim_, _ = inputs
+        ctx.dim = dim_
+
+    @staticmethod
     def backward(ctx, grad_output):
         if is_distributed_polar():
             return _reduce_scatter(grad_output, ctx.dim, use_fp32=True, group=polar_group()), None, None
@@ -500,15 +529,19 @@ def distributed_transpose_azimuth(input_, dims_, shapes_):
 def distributed_transpose_polar(input_, dims_, shapes_):
     return _DistributeTransposePolar.apply(input_, dims_, shapes_)
 
+@torch.compiler.disable()
 def copy_to_polar_region(input_):
     return _CopyToPolarRegion.apply(input_)
 
+@torch.compiler.disable()
 def copy_to_azimuth_region(input_):
     return _CopyToAzimuthRegion.apply(input_)
         
+@torch.compiler.disable()
 def reduce_from_polar_region(input_):
     return _ReduceFromPolarRegion.apply(input_)
 
+@torch.compiler.disable()
 def reduce_from_azimuth_region(input_):
     return _ReduceFromAzimuthRegion.apply(input_)
 
@@ -527,3 +560,127 @@ def reduce_from_scatter_to_polar_region(input_, dim_):
 @torch.compiler.disable()
 def gather_from_copy_to_polar_region(input_, dim_, shapes_):
     return _GatherFromCopyToPolarRegion.apply(input_, dim_, shapes_)
+
+
+# ---------------------------------------------------------------------------
+# nearest neighbor exchange algorithms
+# ---------------------------------------------------------------------------
+class _PolarHaloExchangeFn(torch.autograd.Function):
+    """Differentiable lat halo exchange for polar-distributed tensors.
+
+    Forward: gathers r_lat rows from neighbouring polar ranks and returns a
+             halo-padded tensor of shape [B, C, H_local + 2*r_lat, W].
+    Backward: communicates halo gradient contributions back to their owning
+              ranks and accumulates them onto the local input gradient.
+
+    Ranks at the polar boundary (rank 0 / rank group_size-1) receive
+    zero-padding on the missing side in the forward pass; the corresponding
+    halo-gradient portion is discarded in the backward (no neighbour to send
+    it to), which is the correct adjoint of padding with zeros.
+    """
+
+    @staticmethod
+    def forward(x, r_lat):
+
+        if not is_distributed_polar():
+            return x
+
+        group_size = polar_group_size()
+        group_rank = polar_group_rank()
+        prev_rank, next_rank = get_group_neighbors(polar_group())
+
+        B, C, H, W = x.shape
+        device, dtype = x.device, x.dtype
+
+        # setup send buffers
+        send_top = x[:, :, :r_lat, :].contiguous()   # top r_lat rows → rank-1
+        send_bot = x[:, :, -r_lat:, :].contiguous()  # bottom r_lat rows → rank+1
+
+        # setup recv buffers
+        recv_top = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
+        recv_bot = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
+
+        ops = []
+        if group_rank > 0:
+            ops.append(dist.P2POp(dist.isend, send_top, prev_rank, polar_group()))
+            ops.append(dist.P2POp(dist.irecv, recv_top, prev_rank, polar_group()))
+        if group_rank < group_size - 1:
+            ops.append(dist.P2POp(dist.isend, send_bot, next_rank, polar_group()))
+            ops.append(dist.P2POp(dist.irecv, recv_bot, next_rank, polar_group()))
+
+        if ops:
+            reqs = dist.batch_isend_irecv(ops)
+            for req in reqs:
+                req.wait()
+
+        return torch.cat([recv_top, x, recv_bot], dim=2).contiguous()
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        x, r_lat = inputs
+        ctx.r_lat = r_lat
+        ctx.H     = x.shape[2]
+        if is_distributed_polar():
+            ctx.group_size = polar_group_size()
+            ctx.group_rank = polar_group_rank()
+            prev_rank, next_rank = get_group_neighbors(polar_group())
+            ctx.prev_rank  = prev_rank
+            ctx.next_rank  = next_rank
+
+    @staticmethod
+    def backward(ctx, dout):
+
+        if not is_distributed_polar():
+            return dout, None
+
+        r_lat       = ctx.r_lat
+        group_size   = ctx.group_size
+        group_rank  = ctx.group_rank
+        H           = ctx.H
+        prev_rank = ctx.prev_rank
+        next_rank = ctx.next_rank
+
+        B, C, _, W = dout.shape
+        device, dtype = dout.device, dout.dtype
+
+        # Direct gradient for the local (non-halo) rows.
+        dx = dout[:, :, r_lat:r_lat + H, :].contiguous().clone()
+
+        # The halo slices carry gradients that belong to neighbouring ranks:
+        #   dout[:, :, :r_lat, :]       → came FROM rank-1; send gradient back to rank-1
+        #   dout[:, :, r_lat + H:, :]   → came FROM rank+1; send gradient back to rank+1
+        # Simultaneously receive from each neighbour the gradient they owe us
+        # for the rows we sent them in the forward pass.
+        send_to_prev = dout[:, :, :r_lat, :].contiguous()
+        send_to_next = dout[:, :, r_lat + H:, :].contiguous()
+
+        recv_from_prev = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
+        recv_from_next = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
+
+        ops = []
+        if group_rank > 0:
+            ops.append(dist.P2POp(dist.isend, send_to_prev, prev_rank, polar_group()))
+            ops.append(dist.P2POp(dist.irecv, recv_from_prev, prev_rank, polar_group()))
+        if group_rank < group_size - 1:
+            ops.append(dist.P2POp(dist.isend, send_to_next, next_rank, polar_group()))
+            ops.append(dist.P2POp(dist.irecv, recv_from_next, next_rank, polar_group()))
+
+        if ops:
+            reqs = dist.batch_isend_irecv(ops)
+            for req in reqs:
+                req.wait()
+
+        # Accumulate gradient contributions for rows we sent in the forward.
+        # recv_from_prev = gradient for our top r_lat rows (sent as prev rank's recv_bot)
+        # recv_from_next = gradient for our bottom r_lat rows (sent as next rank's recv_top)
+        if group_rank > 0:
+            dx[:, :, :r_lat, :] = dx[:, :, :r_lat, :] + recv_from_prev
+        if group_rank < group_size - 1:
+            dx[:, :, H - r_lat:, :] = dx[:, :, H - r_lat:, :] + recv_from_next
+
+        # Gradients for r_lat is None (not tensors / non-differentiable)
+        return dx, None
+
+@torch.compiler.disable()
+def polar_halo_exchange(x, r_lat):
+    return _PolarHaloExchangeFn.apply(x, r_lat)
