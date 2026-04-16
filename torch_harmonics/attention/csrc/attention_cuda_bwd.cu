@@ -698,21 +698,7 @@ void launch_spc_attn_bwd(int nloc,      // "BDIM_X*nloc" >= nchans_out
         dim3 grid(DIV_UP(nlat_out*nlon_out, block.y), batch_size);
 
         size_t shsize = sizeof(FLOATV_T)*(nchans_in+nchans_out) * block.y; // 2 arrays per cta, block.y > 1 iif block.x==32
-#if 0
-        printf("Launching s2_attn_bwd_special_vec_k<%d, %d, %d, %d, float%s><<<(%d, %d), (%d, %d), %zu, ...>>> with:\n"
-               "\tnchans_in:  %d\n"
-               "\tnchans_out: %d\n"
-               "\tnlat_in: %d\n"
-               "\tnlon_in: %d\n"
-               "\tnlat_out: %d\n"
-               "\tnlon_out: %d\n",
-               BDIM_X, BDIM_Y,
-               (nchans_out >= BDIM_X*(CUR_LOC_SIZE-1) && nchans_out <= BDIM_X* CUR_LOC_SIZE),
-               CUR_LOC_SIZE,
-               sizeof(FLOATV_T)==16?"4":"",
-               grid.x, grid.y, block.x, block.y, shsize,
-               nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out);
-#endif
+
         // nloc determines the size of local arrays used to store
         // temporary buffers loc_k__[], loc_vw_[] and loc_kvw[],
         // of size nchans_in each;
