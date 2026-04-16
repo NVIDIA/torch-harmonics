@@ -34,8 +34,8 @@ import torch
 import torch.distributed as dist
 
 from .utils import config as thd_config
-from .utils import polar_group, azimuth_group, polar_group_size, polar_group_rank
-from .utils import azimuth_group_size
+from .utils import polar_group, polar_group_size, polar_group_rank
+from .utils import azimuth_group, azimuth_group_size
 from .utils import is_distributed_polar, is_distributed_azimuth
 
 
