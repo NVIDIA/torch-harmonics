@@ -116,6 +116,16 @@ def get_ext_modules():
         )
     )
 
+    ext_modules.append(
+        CppExtension(
+            "spectral_helpers",
+            [
+                "torch_harmonics/spectral/csrc/spectral_helpers.cpp",
+            ],
+            extra_compile_args=get_helpers_compile_args(),
+        )
+    )
+
     if BUILD_CPP:
         # DISCO
         # Create a single extension that includes both CPU and CUDA code
@@ -175,6 +185,36 @@ def get_ext_modules():
                     "torch_harmonics.attention._C",
                     attention_sources,
                     extra_compile_args=get_compile_args("attention")
+                )
+            )
+        cmdclass["build_ext"] = BuildExtension
+
+        # SPECTRAL
+        spectral_sources = [
+            "torch_harmonics/spectral/csrc/spectral_interface.cpp",
+            "torch_harmonics/spectral/csrc/spectral_cpu.cpp",
+        ]
+
+        if BUILD_CUDA:
+            print("Compiling spectral CUDA kernels for torch-harmonics.")
+            spectral_sources.extend(
+                [
+                    "torch_harmonics/spectral/csrc/spectral_cuda.cu",
+                ]
+            )
+            ext_modules.append(
+                CUDAExtension(
+                    "torch_harmonics.spectral._C",
+                    spectral_sources,
+                    extra_compile_args=get_compile_args("spectral"),
+                )
+            )
+        else:
+            ext_modules.append(
+                CppExtension(
+                    "torch_harmonics.spectral._C",
+                    spectral_sources,
+                    extra_compile_args=get_compile_args("spectral"),
                 )
             )
         cmdclass["build_ext"] = BuildExtension

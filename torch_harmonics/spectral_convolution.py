@@ -38,6 +38,11 @@ import math
 from torch_harmonics.quadrature import QuadratureS2
 from torch_harmonics.truncation import truncate_sht
 from torch_harmonics import RealSHT, InverseRealSHT
+from torch_harmonics.spectral._spectral_utils import (
+    can_use_fused_spectral_contract,
+    fused_spectral_contract,
+    fused_spectral_contract_prepacked,
+)
 
 
 class SpectralConvS2(nn.Module):
@@ -94,6 +99,10 @@ class SpectralConvS2(nn.Module):
         grid_in: Optional[str]="equiangular",
         grid_out: Optional[str]="equiangular",
         bias: Optional[bool]=False,
+        use_fused_contract: Optional[bool]=False,
+        fused_bf16: Optional[bool]=True,
+        fused_precision: Optional[str]=None,
+        fused_accum_fp32: Optional[bool]=True,
     ):
         super().__init__()
 
@@ -104,6 +113,18 @@ class SpectralConvS2(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.num_groups = num_groups
+        self.use_fused_contract = bool(use_fused_contract)
+        self.fused_bf16 = bool(fused_bf16)
+        if fused_precision is None:
+            self.fused_precision = "bf16" if self.fused_bf16 else "fp32"
+        else:
+            self.fused_precision = str(fused_precision).lower()
+        if self.fused_precision not in {"fp32", "bf16", "fp16"}:
+            raise ValueError(f"Unsupported fused_precision '{self.fused_precision}'. Choose from fp32, bf16, fp16.")
+        self.fused_accum_fp32 = bool(fused_accum_fp32)
+        self._fused_cached_weight_key = None
+        self._fused_cached_weight_re = None
+        self._fused_cached_weight_im = None
 
         # compute truncation
         lmax_in, mmax_in = truncate_sht(in_shape[0], in_shape[1], grid=grid_in)
@@ -128,7 +149,7 @@ class SpectralConvS2(nn.Module):
         scale[0] *= math.sqrt(2.0)
         self.weight = nn.Parameter(scale * torch.randn(*weight_shape, dtype=torch.complex64))
 
-        if bias == True:
+        if bias:
             self.spectral_bias = nn.Parameter(
                 torch.zeros(1, self.out_channels, self.lmax, self.mmax, dtype=torch.complex64)
             )
@@ -164,9 +185,44 @@ class SpectralConvS2(nn.Module):
             x = x + integral.reshape(B, C, 1, 1) * self.spectral_bias
 
         # perform contraction
-        x = x.reshape(B, self.num_groups, C // self.num_groups, H, W)
-        xp = self._contract_lwise(x, self.weight)
-        x = xp.reshape(B, self.out_channels, H, W).contiguous()
+        if self.use_fused_contract and can_use_fused_spectral_contract(x, self.weight, self.num_groups):
+            # In inference, cache prepacked weights to avoid per-forward
+            # permutation/casting overhead in the fused path.
+            if not self.training:
+                cache_key = (self.weight.data_ptr(), self.weight._version, x.device)
+                if self._fused_cached_weight_key != cache_key:
+                    target_dtype = torch.float32
+                    if self.fused_precision == "bf16":
+                        target_dtype = torch.bfloat16
+                    elif self.fused_precision == "fp16":
+                        target_dtype = torch.float16
+                    w_packed = self.weight.permute(0, 3, 2, 1).reshape(
+                        self.num_groups * self.lmax,
+                        self.out_channels // self.num_groups,
+                        self.in_channels // self.num_groups,
+                    )
+                    self._fused_cached_weight_re = torch.real(w_packed).to(target_dtype).contiguous()
+                    self._fused_cached_weight_im = torch.imag(w_packed).to(target_dtype).contiguous()
+                    self._fused_cached_weight_key = cache_key
+                x = fused_spectral_contract_prepacked(
+                    x,
+                    self._fused_cached_weight_re,
+                    self._fused_cached_weight_im,
+                    self.num_groups,
+                    accum_fp32=self.fused_accum_fp32,
+                )
+            else:
+                x = fused_spectral_contract(
+                    x,
+                    self.weight,
+                    self.num_groups,
+                    gemm_dtype=self.fused_precision,
+                    accum_fp32=self.fused_accum_fp32,
+                )
+        else:
+            x = x.reshape(B, self.num_groups, C // self.num_groups, H, W)
+            xp = self._contract_lwise(x, self.weight)
+            x = xp.reshape(B, self.out_channels, H, W).contiguous()
 
         with torch.amp.autocast(device_type=x.device.type, enabled=False):
             x = self.isht(x)

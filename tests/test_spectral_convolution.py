@@ -38,6 +38,12 @@ from torch_harmonics.spectral_convolution import SpectralConvS2
 
 from testutils import disable_tf32, set_seed, compare_tensors
 
+try:
+    from spectral_helpers import optimized_kernels_is_available
+except Exception:
+    def optimized_kernels_is_available():
+        return False
+
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
     _devices.append((torch.device("cuda"),))
@@ -330,6 +336,127 @@ class TestSpectralConvS2(unittest.TestCase):
                 "zero weights zero output",
                 y, torch.zeros_like(y),
                 atol=0.0, rtol=0.0,
+                verbose=verbose,
+            )
+        )
+
+    @parameterized.expand(
+        [
+            [32, 64, 4, 4, 1, torch.float32, 1e-5, 1e-4],
+            [32, 64, 4, 4, 2, torch.float32, 1e-5, 1e-4],
+            [32, 64, 4, 4, 1, torch.bfloat16, 5e-3, 5e-2],
+        ],
+        skip_on_empty=True,
+    )
+    def test_fused_forward_matches_baseline(self, nlat, nlon, in_channels, out_channels, num_groups, dtype, atol, rtol, verbose=False):
+        """Fused forward path should match baseline einsum contraction."""
+        if self.device.type != "cuda":
+            self.skipTest("Fused spectral kernel test requires CUDA")
+        if not optimized_kernels_is_available():
+            self.skipTest("Optimized spectral kernels are not available")
+
+        disable_tf32()
+        set_seed(333)
+
+        conv_base = SpectralConvS2(
+            in_shape=(nlat, nlon),
+            out_shape=(nlat, nlon),
+            in_channels=in_channels,
+            out_channels=out_channels,
+            num_groups=num_groups,
+            grid_in="equiangular",
+            grid_out="equiangular",
+            use_fused_contract=False,
+        ).to(self.device)
+        conv_base.eval()
+
+        conv_fused = SpectralConvS2(
+            in_shape=(nlat, nlon),
+            out_shape=(nlat, nlon),
+            in_channels=in_channels,
+            out_channels=out_channels,
+            num_groups=num_groups,
+            grid_in="equiangular",
+            grid_out="equiangular",
+            use_fused_contract=True,
+            fused_bf16=True,
+            fused_accum_fp32=True,
+        ).to(self.device)
+        conv_fused.eval()
+        conv_fused.weight.data.copy_(conv_base.weight.data)
+
+        x = torch.randn(2, in_channels, nlat, nlon, device=self.device, dtype=dtype)
+
+        with torch.no_grad():
+            y_base = conv_base(x)
+            y_fused = conv_fused(x)
+
+        self.assertTrue(
+            compare_tensors("fused forward parity", y_base, y_fused, atol=atol, rtol=rtol, verbose=verbose)
+        )
+
+    @parameterized.expand(
+        [
+            [16, 32, 4, 4, 1, 1e-5, 1e-4],
+            [16, 32, 4, 4, 2, 1e-5, 1e-4],
+        ],
+        skip_on_empty=True,
+    )
+    def test_fused_backward_matches_baseline(self, nlat, nlon, in_channels, out_channels, num_groups, atol, rtol, verbose=False):
+        """Fused path should produce input/weight gradients close to baseline."""
+        if self.device.type != "cuda":
+            self.skipTest("Fused spectral kernel test requires CUDA")
+        if not optimized_kernels_is_available():
+            self.skipTest("Optimized spectral kernels are not available")
+
+        disable_tf32()
+        set_seed(333)
+
+        conv_base = SpectralConvS2(
+            in_shape=(nlat, nlon),
+            out_shape=(nlat, nlon),
+            in_channels=in_channels,
+            out_channels=out_channels,
+            num_groups=num_groups,
+            grid_in="equiangular",
+            grid_out="equiangular",
+            use_fused_contract=False,
+        ).to(self.device)
+
+        conv_fused = SpectralConvS2(
+            in_shape=(nlat, nlon),
+            out_shape=(nlat, nlon),
+            in_channels=in_channels,
+            out_channels=out_channels,
+            num_groups=num_groups,
+            grid_in="equiangular",
+            grid_out="equiangular",
+            use_fused_contract=True,
+            fused_bf16=True,
+            fused_accum_fp32=True,
+        ).to(self.device)
+        conv_fused.weight.data.copy_(conv_base.weight.data)
+
+        x_base = torch.randn(2, in_channels, nlat, nlon, device=self.device, dtype=torch.float32, requires_grad=True)
+        x_fused = x_base.detach().clone().requires_grad_(True)
+
+        y_base = conv_base(x_base)
+        y_fused = conv_fused(x_fused)
+        grad_out = torch.randn_like(y_base)
+
+        y_base.backward(grad_out)
+        y_fused.backward(grad_out)
+
+        self.assertTrue(
+            compare_tensors("fused grad parity (input)", x_base.grad, x_fused.grad, atol=atol, rtol=rtol, verbose=verbose)
+        )
+        self.assertTrue(
+            compare_tensors(
+                "fused grad parity (weight)",
+                conv_base.weight.grad,
+                conv_fused.weight.grad,
+                atol=atol,
+                rtol=rtol,
                 verbose=verbose,
             )
         )
