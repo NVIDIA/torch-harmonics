@@ -29,7 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-__version__ = "0.9.0"
+__version__ = "0.9.1a0"
 
 from .truncation import truncate_sht
 from .quadrature import QuadratureS2
