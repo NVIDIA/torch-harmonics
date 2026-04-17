@@ -30,6 +30,7 @@
 #
 
 import abc
+import warnings
 from typing import Tuple, Union, Optional
 
 import math
@@ -46,7 +47,18 @@ from disco_helpers import optimized_kernels_is_available, preprocess_psi
 
 
 def _normalize_convolution_tensor_s2(
-    psi_idx, psi_vals, in_shape, out_shape, kernel_size, quad_weights, transpose_normalization=False, basis_norm_mode="mean", merge_quadrature=False, eps=1e-9
+    psi_idx,
+    psi_vals,
+    in_shape,
+    out_shape,
+    kernel_size,
+    quad_weights,
+    theta_cutoff,
+    transpose_normalization=False,
+    basis_norm_mode="mean",
+    merge_quadrature=False,
+    isotropic_mask=None,
+    eps=1e-9,
 ):
     """Normalizes convolution tensor values based on specified normalization mode.
 
@@ -72,7 +84,7 @@ def _normalize_convolution_tensor_s2(
     transpose_normalization: bool
         If True, applies normalization in transpose direction.
     basis_norm_mode: str
-        Normalization mode, one of ["none", "individual", "mean", "support"].
+        Normalization mode, one of ["none", "nodal", "modal", "mean", "support", "geometric"].
     merge_quadrature: bool
         If True, multiplies values by quadrature weights.
     eps: float
@@ -89,9 +101,20 @@ def _normalize_convolution_tensor_s2(
         If basis_norm_mode is not one of the supported modes.
     """
 
-    # exit here if no normalization is needed
-    if basis_norm_mode == "none":
-        return psi_vals
+    if basis_norm_mode == "individual":
+        warnings.warn(
+            'basis_norm_mode="individual" is deprecated, use "nodal" instead.',
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        basis_norm_mode = "nodal"
+    elif basis_norm_mode == "area ratio":
+        warnings.warn(
+            'basis_norm_mode="area ratio" is deprecated, use "geometric" instead.',
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        basis_norm_mode = "geometric"
 
     # reshape the indices implicitly to be ikernel, out_shape[0], in_shape[0], in_shape[1]
     idx = torch.stack([psi_idx[0], psi_idx[1], psi_idx[2] // in_shape[1], psi_idx[2] % in_shape[1]], dim=0)
@@ -114,7 +137,8 @@ def _normalize_convolution_tensor_s2(
     q = quad_weights[ilat_in].reshape(-1)
 
     # buffer to store intermediate values
-    vnorm = torch.zeros(kernel_size, nlat_out, dtype=psi_vals.dtype, device=psi_vals.device)
+    bias = torch.zeros(kernel_size, nlat_out, dtype=psi_vals.dtype, device=psi_vals.device)
+    scale = torch.zeros(kernel_size, nlat_out, dtype=psi_vals.dtype, device=psi_vals.device)
     support = torch.zeros(kernel_size, nlat_out, dtype=psi_vals.dtype, device=psi_vals.device)
 
     # loop through dimensions to compute the norms
@@ -124,12 +148,16 @@ def _normalize_convolution_tensor_s2(
             # find indices corresponding to the given output latitude and kernel basis function
             iidx = torch.argwhere((ikernel == ik) & (ilat_out == ilat))
 
-            # compute the 1-norm
-            # vnorm[ik, ilat] = torch.sqrt(torch.sum(psi_vals[iidx].abs().pow(2) * q[iidx]))
-            vnorm[ik, ilat] = torch.sum(psi_vals[iidx].abs() * q[iidx])
-
             # compute the support
             support[ik, ilat] = torch.sum(q[iidx])
+
+            # for modal normalization, subtract the weighted mean from anisotropic modes
+            # so that directional modes integrate to zero over their support
+            is_isotropic = isotropic_mask[ik] if isotropic_mask is not None else (ik == 0)
+            if basis_norm_mode == "modal" and not is_isotropic and support[ik, ilat].abs() > eps:
+                bias[ik, ilat] = torch.sum(psi_vals[iidx] * q[iidx]) / support[ik, ilat]
+
+            scale[ik, ilat] = torch.sum((psi_vals[iidx] - bias[ik, ilat]).abs() * q[iidx])
 
     # loop over values and renormalize
     for ik in range(kernel_size):
@@ -137,18 +165,26 @@ def _normalize_convolution_tensor_s2(
 
             iidx = torch.argwhere((ikernel == ik) & (ilat_out == ilat))
 
-            if basis_norm_mode == "individual":
-                val = vnorm[ik, ilat]
+            if basis_norm_mode in ["nodal", "modal"]:
+                b = bias[ik, ilat]
+                s = scale[ik, ilat]
             elif basis_norm_mode == "mean":
-                val = vnorm[ik, :].mean()
+                if ilat == 0:
+                    b = bias[ik, :].mean()
+                    s = scale[ik, :].mean()
             elif basis_norm_mode == "support":
-                val = support[ik, ilat]
+                b = 0.0
+                s = support[ik, ilat]
             elif basis_norm_mode == "none":
-                val = 1.0
+                b = 0.0
+                s = 1.0
+            elif basis_norm_mode == "geometric":
+                b = 0.0
+                s = (1.0 - math.cos(theta_cutoff)) / 2.0 / 2.0
             else:
                 raise ValueError(f"Unknown basis normalization mode {basis_norm_mode}.")
 
-            psi_vals[iidx] = psi_vals[iidx] / (val + eps)
+            psi_vals[iidx] = (psi_vals[iidx] - b) / max(s, eps)
 
             if merge_quadrature:
                 psi_vals[iidx] = psi_vals[iidx] * q[iidx]
@@ -164,13 +200,13 @@ def _precompute_convolution_tensor_s2(
     in_shape: Tuple[int],
     out_shape: Tuple[int],
     filter_basis: FilterBasis,
-    grid_in: Optional[str]="equiangular",
-    grid_out: Optional[str]="equiangular",
-    theta_cutoff: Optional[float]=0.01 * math.pi,
-    theta_eps: Optional[float]=1e-3,
-    transpose_normalization: Optional[bool]=False,
-    basis_norm_mode: Optional[str]="mean",
-    merge_quadrature: Optional[bool]=False,
+    grid_in: Optional[str] = "equiangular",
+    grid_out: Optional[str] = "equiangular",
+    theta_cutoff: Optional[float] = 0.01 * math.pi,
+    theta_eps: Optional[float] = 1e-3,
+    transpose_normalization: Optional[bool] = False,
+    basis_norm_mode: Optional[str] = "nodal",
+    merge_quadrature: Optional[bool] = False,
 ):
     r"""
     Precomputes the rotated filters at positions $R^{-1}_j \omega_i = R^{-1}_j R_i \nu = Y(-\theta_j)Z(\phi_i - \phi_j)Y(\theta_j)\nu$.
@@ -305,9 +341,11 @@ def _precompute_convolution_tensor_s2(
         out_shape,
         kernel_size,
         quad_weights,
+        theta_cutoff,
         transpose_normalization=transpose_normalization,
         basis_norm_mode=basis_norm_mode,
         merge_quadrature=merge_quadrature,
+        isotropic_mask=filter_basis.isotropic_mask,
     )
 
     out_idx = out_idx.contiguous()
@@ -368,7 +406,7 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
         if out_channels % self.groups != 0:
             raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
         self.groupsize = in_channels // self.groups
-        scale = math.sqrt(1.0 / self.groupsize / self.kernel_size)
+        scale = math.sqrt(1.0 / self.groupsize) * self.filter_basis.get_init_factors().reshape(1, 1, -1)
         self.weight = nn.Parameter(scale * torch.randn(out_channels, self.groupsize, self.kernel_size))
 
         if bias:
@@ -436,7 +474,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         out_shape: Tuple[int],
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
         basis_type: Optional[str] = "piecewise linear",
-        basis_norm_mode: Optional[str] = "mean",
+        basis_norm_mode: Optional[str] = "nodal",
         groups: Optional[int] = 1,
         grid_in: Optional[str] = "equiangular",
         grid_out: Optional[str] = "equiangular",
@@ -575,7 +613,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         out_shape: Tuple[int],
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
         basis_type: Optional[str] = "piecewise linear",
-        basis_norm_mode: Optional[str] = "mean",
+        basis_norm_mode: Optional[str] = "nodal",
         groups: Optional[int] = 1,
         grid_in: Optional[str] = "equiangular",
         grid_out: Optional[str] = "equiangular",

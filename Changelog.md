@@ -2,6 +2,12 @@
 
 ## Versioning
 
+### v0.9.1
+
+* Added Fourier-Bessel basis functions
+* New `modal` filter basis normalization mode subtracts the mean to reduce spectral leakage
+* New `geometric` mode uses the theoretical area measure of the spherical cap to normalize
+
 ### v0.9.0
 
 * New CPU backend (OpenMP-accelerated) for both DISCO convolution and attention layers
@@ -28,6 +34,7 @@
     * Shared test utilities module (`testutils.py`)
 
 ### v0.8.2
+
 * Adding Driscoll-Healy (spectral) convolutions
 * Adding QuadratureS2 method which allows to integrate a spherical field over one of the supported grids
 * Adding tests for QuadratureS2 and Driscoll-Healy spectral convolutions

@@ -211,8 +211,10 @@ if __name__ == "__main__":
         extras_require={
             "dev": [
                 "pytest>=6.0.0",
+                "pytest-cov>=3.0.0",
                 "coverage>=6.5.0",
                 "parameterized",
+                "scipy>=1.9.0",
             ],
             "2d3ds": [
                 "requests",

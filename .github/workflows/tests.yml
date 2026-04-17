@@ -22,13 +22,12 @@ jobs:
         python3 -m pip install --upgrade pip setuptools wheel
         python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
 
-    - name: Install package
+    - name: Install package with dev dependencies
       run: |
-        python3 -m pip install --no-build-isolation -e .
+        python3 -m pip install --no-build-isolation -e ".[dev]"
 
     - name: Test with pytest
       run: |
-        python3 -m pip install pytest pytest-cov parameterized
         python3 -m pytest --cov-report term --cov-report json --cov-config=.coveragerc --cov=torch_harmonics \
           --ignore-glob="**/test_distributed_*" ./tests/
 

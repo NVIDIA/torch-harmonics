@@ -43,7 +43,7 @@ dependencies = [
 
 
 [tool.setuptools_scm]
-fallback_version = "0.9.0"
+fallback_version = "0.9.1a0"
 
 [tool.setuptools.packages.find]
     include = ["torch_harmonics*"]
@@ -51,8 +51,13 @@ fallback_version = "0.9.0"
 [project.optional-dependencies]
 dev = [
     "pytest>=6.0.0",
+    "pytest-cov>=3.0.0",
     "coverage>=6.5.0",
     "parameterized",
+    "scipy>=1.9.0",
+]
+filter_basis = [
+    "scipy>=1.9.0",
 ]
 2d3ds = [
     "requests",
