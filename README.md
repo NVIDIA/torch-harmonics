@@ -46,6 +46,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 [**Overview**](#overview) | [**Installation**](#installation) | [**More information**](#more-about-torch-harmonics) | [**Getting started**](#getting-started) | [**Contributors**](#contributors) | [**Cite us**](#cite-us) | [**References**](#references)
 
 [![tests](https://github.com/NVIDIA/torch-harmonics/actions/workflows/tests.yml/badge.svg)](https://github.com/NVIDIA/torch-harmonics/actions/workflows/tests.yml)
+[![coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/bonevbs/5d08af0f7f08ac865934a1929f198ffd/raw/torch_harmonics_coverage.json)](https://github.com/NVIDIA/torch-harmonics/actions/workflows/tests.yml)
 [![pypi](https://img.shields.io/pypi/v/torch_harmonics)](https://pypi.org/project/torch_harmonics/)
 
 ## Overview
@@ -75,19 +76,41 @@ torch-harmonics has been used to implement a variety of differentiable PDE solve
 
 
 ## Installation
-A simple installation from source can be directly done from PyPI. Make sure to disable build isolation via the `--no-build-isolation` flag to ensure that custom CPU kernels for spherical convolutions and attention are built with the existing torch installation:
-```bash
-pip install --no-build-isolation torch-harmonics
-```
-If you are planning to use spherical convolutions on CUDA capable GPUs, you might need to take additional steps: if built inside a container or the CUDA devices are not found automatically, please set the `FORCE_CUDA_EXTENSION` flag. You may also want to set appropriate architectures with the `TORCH_CUDA_ARCH_LIST` flag. We recommend to pick just the sm architecture you are actually planning to use since this reduces compilation time significantly.
-```bash
-export FORCE_CUDA_EXTENSION=1
-export TORCH_CUDA_ARCH_LIST="7.0 7.2 7.5 8.0 8.6 8.7 9.0 10.0+PTX"
-pip install --no-build-isolation torch-harmonics
-```
-:warning: Please note that the custom CUDA extensions currently only support CUDA architectures >= 7.0.
 
-If you want to actively develop torch-harmonics, we recommend building it in your environment from github:
+### Prebuilt wheels
+
+Prebuilt Linux wheels with compiled CUDA extensions are available on [pypi.nvidia.com](https://pypi.nvidia.com). Pick the package matching your CUDA toolkit version:
+
+| CUDA | Package | Min PyTorch | Install command |
+|------|---------|-------------|-----------------|
+| 12.6 | `torch-harmonics-cu126` | 2.6.0 | `pip install torch-harmonics-cu126 --extra-index-url https://pypi.nvidia.com` |
+| 12.8 | `torch-harmonics-cu128` | 2.7.0 | `pip install torch-harmonics-cu128 --extra-index-url https://pypi.nvidia.com` |
+| 12.9 | `torch-harmonics-cu129` | 2.8.0 | `pip install torch-harmonics-cu129 --extra-index-url https://pypi.nvidia.com` |
+| 13.0 | `torch-harmonics-cu130` | 2.9.1 | `pip install torch-harmonics-cu130 --extra-index-url https://pypi.nvidia.com` |
+
+If you don't need a specific CUDA version, use one of the rolling aliases:
+
+```bash
+# latest CUDA build
+pip install torch-harmonics-cuda-latest --extra-index-url https://pypi.nvidia.com
+
+# CPU only
+pip install torch-harmonics-cpu-latest --extra-index-url https://pypi.nvidia.com
+```
+
+> **Tip:** Run `nvidia-smi` to check your driver's CUDA version.
+
+### PyPI
+
+The vanilla `torch-harmonics` package on [PyPI](https://pypi.org/project/torch_harmonics/) ships a CPU-only prebuilt wheel. This version is built for the newest PyTorch release. For GPU support, use the NVIDIA PyPI packages above.
+
+```bash
+pip install torch-harmonics
+```
+
+### Building from source
+
+If your OS, PyTorch or CUDA toolkit version is not covered by the available wheels, we recomment building torch-harmonics from the GitHub repository. Use `--no-build-isolation` so that custom CPU and CUDA kernels compile against your existing torch installation:
 
 ```bash
 git clone git@github.com:NVIDIA/torch-harmonics.git
@@ -95,7 +118,17 @@ cd torch-harmonics
 pip install --no-build-isolation -e .
 ```
 
-Alternatively, use the Dockerfile to build your custom container after cloning:
+If CUDA devices are not detected automatically (e.g. inside a container), set the `FORCE_CUDA_EXTENSION` flag. Set `TORCH_CUDA_ARCH_LIST` to only the architectures you need to reduce compilation time:
+
+```bash
+export FORCE_CUDA_EXTENSION=1
+export TORCH_CUDA_ARCH_LIST="8.0 8.6 9.0 10.0+PTX"
+pip install --no-build-isolation -e .
+```
+
+:warning: Custom CUDA extensions require architectures >= 7.0.
+
+Alternatively, build a Docker container:
 
 ```bash
 git clone git@github.com:NVIDIA/torch-harmonics.git

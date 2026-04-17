@@ -2,6 +2,31 @@
 
 ## Versioning
 
+### v0.9.0
+
+* New CPU backend (OpenMP-accelerated) for both DISCO convolution and attention layers
+* Pre-compiled manylinux wheels for multiple PyTorch and CUDA versions, available on PyPI and pypi.nvidia.com
+* Revised truncation logic for the SHT: centralized in new `truncation.py` module, enforcing triangular truncation (`lmax = min(lmax, mmax)`) across all SHT classes. Note: truncation for equiangular/equidistant grids changed from `nlat` to `(nlat+1)//2`
+* SHT performance improvements: contraction dimensions are now transposed to be stride-1 before einsum, and real/imaginary parts are split into separate contiguous tensors
+* New `fft.py` wrapper module with proper Hermitian symmetry enforcement in `irfft` and explicit mode truncation in `rfft`
+* Full PyTorch 2 custom operator compatibility for DISCO and attention layers using `torch.library` registration, enabling `torch.compile` and `torch.export`
+* Restructured DISCO convolution and attention code into proper subpackages (`torch_harmonics/disco/`, `torch_harmonics/attention/`)
+* Added double precision support for DISCO convolution
+* Fixed Schmidt normalization for derivatives of associated Legendre polynomials
+* Fixed up/downsampling in attention layers when input and output shapes differ
+* Fixed `GaussianRandomFieldS2` to use `isht.lmax`/`isht.mmax` for compatibility with revised truncation logic
+* Distributed module: added shape verification for transpose and gather operations, controllable via `TORCH_HARMONICS_DISTRIBUTED_DEBUG`
+* Distributed module: fixed `finalize()` bug where process group was not properly destroyed
+* Query functions `torch_harmonics.disco.optimized_kernels_is_available` and `torch_harmonics.attention.optimized_kernels_is_available` for checking optimized layer availability
+* Quadrature helper functions `precompute_latitudes` and `precompute_longitudes` are now public API
+* added new tests:
+    * Comprehensive SHT test suite now covering vector SHT, Schmidt normalization, batch dimensions, and multiple grid types
+    * New test suites for `SpectralConvS2`, `QuadratureS2`, `GaussianRandomFieldS2`, and `ResampleS2`
+     Enhanced DISCO convolution tests covering different input/output channel counts and double precision
+    * Enhanced attention tests with up/downsampling and `opcheck` integration
+    * New distributed tests for primitives, quadrature, and spectral convolution
+    * Shared test utilities module (`testutils.py`)
+
 ### v0.8.2
 * Adding Driscoll-Healy (spectral) convolutions
 * Adding QuadratureS2 method which allows to integrate a spherical field over one of the supported grids
