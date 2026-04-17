@@ -184,7 +184,7 @@ def _normalize_convolution_tensor_s2(
             else:
                 raise ValueError(f"Unknown basis normalization mode {basis_norm_mode}.")
 
-            psi_vals[iidx] = (psi_vals[iidx] - b) / s
+            psi_vals[iidx] = (psi_vals[iidx] - b) / max(s, eps)
 
             if merge_quadrature:
                 psi_vals[iidx] = psi_vals[iidx] * q[iidx]
