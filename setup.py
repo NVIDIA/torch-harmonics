@@ -67,6 +67,7 @@ def get_compile_args(module_name):
 def get_helpers_compile_args(BUILD_CPP, BUILD_CUDA):
     return {
         'cxx': [
+            '-O2',
             f'-DBUILD_CPP={1 if BUILD_CPP else 0}',
             f'-DBUILD_CUDA={1 if BUILD_CUDA else 0}'
         ],
