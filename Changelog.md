@@ -2,6 +2,10 @@
 
 ## Versioning
 
+### v0.9.1
+
+* hotfix for torch builds that inline `decref_pyobject`
+
 ### v0.9.0
 
 * New CPU backend (OpenMP-accelerated) for both DISCO convolution and attention layers
