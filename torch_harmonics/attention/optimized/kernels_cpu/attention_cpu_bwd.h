@@ -52,7 +52,6 @@ namespace attention_kernels {
     // online softmax; the redundancy is the price of avoiding a large per-output
     // alpha cache.
     // -----------------------------------------------------------------------
-
     template <typename scalar_t>
     void s2_attn_bwd_kernel(
         const torch::PackedTensorAccessor64<scalar_t, 4> kx_arr,
