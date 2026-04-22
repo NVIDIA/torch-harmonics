@@ -30,7 +30,7 @@
 # build after cloning in directoy torch_harmonics via
 # docker build . -t torch_harmonics
 
-FROM nvcr.io/nvidia/pytorch:25.12-py3
+FROM nvcr.io/nvidia/pytorch:26.02-py3
 
 # we need this for tests
 RUN pip install parameterized

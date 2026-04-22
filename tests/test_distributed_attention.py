@@ -136,6 +136,9 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             # upsampling tests
             [32,  64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
             [33,  64, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            # mixed-grid upsampling: legendre-gauss input → equiangular output, non-integer ratios
+            [32,  64, 97, 192, 2, 16, 1, None, None, "legendre-gauss", "equiangular", False, 1e-5, 1e-4],
+            [32,  64, 97, 192, 2, 16, 1, None, None, "legendre-gauss", "equiangular", True,  1e-5, 1e-4],
         ],
         skip_on_empty=True,
     )
