@@ -209,6 +209,10 @@ static void launch_kernel(int BC, int Hi, int Wi, int K, int Ho, int Wo, int64_t
         int64_t Wi = inp.size(3);
         int64_t nrows = roff_idx.size(0) - 1;
 
+        // the kernel uses pscale = Wi / Wo; require an integer ratio so the p-shift is exact
+        TORCH_CHECK(Wi % Wo == 0,
+                    "Wi (", Wi, ") must be an integer multiple of Wo (", Wo, ")");
+
         // allocate output
         int64_t out_dims[] = {B, C, K, Ho, Wo};
         auto options = torch::TensorOptions().device(inp.device()).dtype(inp.dtype());

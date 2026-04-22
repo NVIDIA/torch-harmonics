@@ -79,12 +79,22 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             [4, 4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],
             [4, 4, 8, 4, (6, 12), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],
             [4, 8, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],
-            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],
-            [4, 8, 4, 4, (6, 12), (12, 24), "equiangular", "equiangular", False, 1e-5, 1e-3],
             [4, 1, 1, 1, (2, 4), (2, 4), "equiangular", "equiangular", False, 1e-5, 1e-3],
             [4, 1, 4, 1, (2, 4), (2, 4), "equiangular", "equiangular", False, 1e-5, 1e-3],
             [4, 4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", False, 1e-5, 1e-3],
             [4, 4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", False, 1e-5, 1e-3],
+            # downsampling: nlon_in must be an integer multiple of nlon_out (pscale = nlon_in / nlon_out)
+            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # lat 2x, lon 2x (pscale=2)
+            [4, 4, 4, 1, (6, 12),  (6, 6),  "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # lon-only, pscale=2
+            [4, 4, 4, 1, (12, 24), (6, 8),  "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # pscale=3
+            [4, 4, 4, 1, (12, 24), (3, 6),  "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # pscale=4
+            [4, 4, 4, 1, (12, 12), (6, 12), "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # lat-only, pscale=1
+            [4, 4, 4, 1, (12, 24), (6, 12), "legendre-gauss", "legendre-gauss", False, 1e-5, 1e-3],  # LG grid, pscale=2
+            # odd latitude sizes
+            [4, 4, 4, 1, (7, 12),  (5, 6),  "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd-odd lat, pscale=2
+            [4, 4, 4, 1, (9, 12),  (5, 4),  "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd-odd lat, pscale=3
+            [4, 4, 4, 1, (11, 24), (7, 12), "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd-odd lat, pscale=2
+            [4, 4, 4, 1, (12, 24), (11, 24),"equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd nlat_out only, pscale=1  
             # same cases with QK norm enabled
             [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
             [4, 4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
@@ -97,6 +107,18 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             [4, 1, 4, 1, (2, 4), (2, 4), "equiangular", "equiangular", True, 1e-5, 1e-3],
             [4, 4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", True, 1e-5, 1e-3],
             [4, 4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", True, 1e-5, 1e-3],
+            # downsampling: nlon_in must be an integer multiple of nlon_out (pscale = nlon_in / nlon_out)
+            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # lat 2x, lon 2x (pscale=2)
+            [4, 4, 4, 1, (6, 12),  (6, 6),  "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # lon-only, pscale=2
+            [4, 4, 4, 1, (12, 24), (6, 8),  "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # pscale=3
+            [4, 4, 4, 1, (12, 24), (3, 6),  "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # pscale=4
+            [4, 4, 4, 1, (12, 12), (6, 12), "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # lat-only, pscale=1
+            [4, 4, 4, 1, (12, 24), (6, 12), "legendre-gauss", "legendre-gauss", True, 1e-5, 1e-3],  # LG grid, pscale=2
+            # odd latitude sizes
+            [4, 4, 4, 1, (7, 12),  (5, 6),  "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd-odd lat, pscale=2
+            [4, 4, 4, 1, (9, 12),  (5, 4),  "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd-odd lat, pscale=3
+            [4, 4, 4, 1, (11, 24), (7, 12), "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd-odd lat, pscale=2
+            [4, 4, 4, 1, (12, 24), (11, 24),"equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd nlat_out only, pscale=1    
         ],
         skip_on_empty=True,
     )
@@ -162,7 +184,17 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     @parameterized.expand(
         [
             # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
-            [2, 64, 1, (25, 48), (25, 48), "equiangular", "equiangular", 5e-2, 1e-4],
+            # same shape
+            [2, 64, 1, (25, 48), (25, 48),    "equiangular",    "equiangular",    5e-2, 1e-4],
+            # downsampling: nlon_in must be an integer multiple of nlon_out (pscale = nlon_in / nlon_out)
+            [2, 16, 1, (24, 48), (12, 24),    "equiangular",    "equiangular",    5e-2, 1e-4],  # lat 2x, lon 2x (pscale=2)
+            [2, 16, 1, (12, 24), (12, 12),    "equiangular",    "equiangular",    5e-2, 1e-4],  # lon-only, pscale=2
+            [2, 16, 1, (12, 24), (6, 8),      "equiangular",    "equiangular",    5e-2, 1e-4],  # pscale=3
+            [2, 16, 1, (24, 48), (6, 12),     "equiangular",    "equiangular",    5e-2, 1e-4],  # pscale=4
+            [2, 16, 1, (24, 48), (12, 24),    "legendre-gauss", "legendre-gauss", 5e-2, 1e-4],  # LG grid, pscale=2
+            # odd latitude sizes
+            [2, 16, 1, (11, 24), (7, 12),     "equiangular",    "equiangular",    5e-2, 1e-4],  # odd-odd lat, pscale=2
+            [2, 16, 1, (13, 24), (9, 8),      "equiangular",    "equiangular",    5e-2, 1e-4],  # odd-odd lat, pscale=3
         ],
         skip_on_empty=True,
     )
@@ -188,14 +220,16 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         }
         inputs_device = {k: v.detach().clone().to(self.device).requires_grad_() for k, v in inputs_host.items()}
 
-        # reference input and model
+        # reference input and model (use default local theta_cutoff so the test is sensitive
+        # to the (wi + pscale*wo) % nlon_in shift; a global cutoff makes every input a neighbor
+        # of every output and collapses the shift to a permutation the result is invariant to)
         att_host = NeighborhoodAttentionS2(
-            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, theta_cutoff=2 * torch.pi
+            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True
         )
 
         # Device model and inputs
         att_device = NeighborhoodAttentionS2(
-            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, theta_cutoff=2 * torch.pi
+            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True
         ).to(self.device)
 
         # Synchronize parameters of model
@@ -239,7 +273,17 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         skip_on_empty=True,
     )
     def test_neighborhood_global_equivalence(self, batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
-        """Tests numerical equivalence between the global spherical attention module and the neighborhood spherical attention module with the neighborhood set ot the whole sphere"""
+        """Tests that NeighborhoodAttentionS2 reduces to the global AttentionS2 when its neighborhood covers the whole sphere.
+
+        Passing ``theta_cutoff = 2 * pi`` forces every input point into the support of every output point,
+        so the sparse psi mechanism in NeighborhoodAttentionS2 becomes mathematically identical to the dense
+        softmax(Q Kt) V computation in AttentionS2 (with the same quadrature weights applied).
+
+        Cases are restricted to ``in_shape == out_shape`` because the neighborhood kernel advances the input
+        column index by ``pscale * wo`` where ``pscale = nlon_in / nlon_out``; only when the two grids match
+        does that shift reproduce the translation-invariant behavior of the global attention. With
+        downsampling the shift maps multiple outputs to the same input column set, and the two modules are
+        not expected to agree numerically."""
 
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")

@@ -162,13 +162,16 @@ def _neighborhood_s2_attention_fwd_torch(kx: torch.Tensor, vx: torch.Tensor, qy:
                                          quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
                                          nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
 
+    # one output lon step corresponds to pscale input lon steps; require an integer ratio
+    assert nlon_in % nlon_out == 0, f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})"
+    pscale = nlon_in // nlon_out
 
     # prepare result tensor
     out_shape = (qy.shape[0], vx.shape[1], nlat_out, nlon_out)
     y = torch.zeros(out_shape, dtype=qy.dtype, device=qy.device)
 
     for ho in range(nlat_out):
-        
+
 	    # get number of nonzeros
         zstart = row_off[ho]
         zend = row_off[ho+1]
@@ -185,7 +188,7 @@ def _neighborhood_s2_attention_fwd_torch(kx: torch.Tensor, vx: torch.Tensor, qy:
                 hi = nz_col_idx // nlon_in
                 # account for output shift and ensure positive index due to circular condition
                 wi = nz_col_idx % nlon_in
-                wip = (wi + wo) % nlon_in
+                wip = (wi + pscale * wo) % nlon_in
 
                 # compute correlation & softmax numerator
                 q_ho_wo = qy[:, :, ho, wo]
@@ -223,6 +226,9 @@ def _neighborhood_s2_attention_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, 
     # output
     # dvx: B, Cout, Hi, Wi
 
+    assert nlon_in % nlon_out == 0, f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})"
+    pscale = nlon_in // nlon_out
+
     dvx = torch.zeros_like(vx)
     batch_size = dy.shape[0]
 
@@ -244,7 +250,7 @@ def _neighborhood_s2_attention_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 hi = nz_col_idx // nlon_in
                 # account for output shift and ensure positive index due to circular condition
                 wi = nz_col_idx % nlon_in
-                wip = (wi+wo) % nlon_in
+                wip = (wi + pscale * wo) % nlon_in
 
                 # compute correlation & softmax numerator
                 q_ho_wo = qy[:, :, ho, wo]
@@ -260,7 +266,7 @@ def _neighborhood_s2_attention_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 hi = nz_col_idx // nlon_in
                 # account for output shift and ensure positive index due to circular condition
                 wi = nz_col_idx % nlon_in
-                wip = (wi+wo) % nlon_in
+                wip = (wi + pscale * wo) % nlon_in
                 alpha_nz[:,idz-zstart] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max) * quad_weights[hi]
                 alpha_sum[:] += alpha_nz[:,idz-zstart]
 
@@ -271,7 +277,7 @@ def _neighborhood_s2_attention_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 hi = nz_col_idx // nlon_in
                 # account for output shift and ensure positive index due to circular condition
                 wi = nz_col_idx % nlon_in
-                wip = (wi+wo) % nlon_in
+                wip = (wi + pscale * wo) % nlon_in
                 dvx[:,:,hi, wip] += (alpha_nz[:, None, idz-zstart] / alpha_sum[:, None]) * dy[:,:,ho,wo]
 
     return dvx
@@ -291,6 +297,9 @@ def _neighborhood_s2_attention_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, 
     # quad_weights: Hi
     # output
     # dkx: B, C, Hi, Wi
+
+    assert nlon_in % nlon_out == 0, f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})"
+    pscale = nlon_in // nlon_out
 
     dkx = torch.zeros_like(kx)
     batch_size = dy.shape[0]
@@ -314,7 +323,7 @@ def _neighborhood_s2_attention_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 hj = nz_col_idx // nlon_in
                 # account for output shift and ensure positive index due to circular condition
                 wj = nz_col_idx % nlon_in
-                wjp = (wj+wo) % nlon_in
+                wjp = (wj + pscale * wo) % nlon_in
 
                 # compute correlation & softmax numerator
                 q_ho_wo = qy[:, :, ho, wo]
@@ -330,7 +339,7 @@ def _neighborhood_s2_attention_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 hj = nz_col_idx // nlon_in
                 # account for output shift and ensure positive index due to circular condition
                 wj = nz_col_idx % nlon_in
-                wjp = (wj+wo) % nlon_in
+                wjp = (wj + pscale * wo) % nlon_in
 
                 alpha[:, idz-zstart] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max) * quad_weights[hj]
                 alpha_sum[:] += alpha[:, idz-zstart]
@@ -350,7 +359,7 @@ def _neighborhood_s2_attention_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 hi = nz_col_idx // nlon_in
                 # account for output shift and ensure positive index due to circular condition
                 wi = nz_col_idx % nlon_in
-                wip = (wi+wo) % nlon_in
+                wip = (wi + pscale * wo) % nlon_in
 
                 # compute correlation & softmax numerator
                 gdotv = torch.sum(dy[:,:,ho, wo] * vx[:,:,hi, wip], dim=1)
@@ -373,6 +382,9 @@ def _neighborhood_s2_attention_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, 
     # quad_weights: Hi
     # output
     # dq: B, C, Ho, Wo
+
+    assert nlon_in % nlon_out == 0, f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})"
+    pscale = nlon_in // nlon_out
 
     batch_size = dy.shape[0]
     channels_in = kx.shape[1]
@@ -402,7 +414,7 @@ def _neighborhood_s2_attention_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 hi = nz_col_idx // nlon_in
                 # account for output shift and ensure positive index due to circular condition
                 wi = nz_col_idx % nlon_in
-                wip = (wi+wo) % nlon_in
+                wip = (wi + pscale * wo) % nlon_in
 
                 idz_i = idz-zstart
 
@@ -420,7 +432,7 @@ def _neighborhood_s2_attention_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 hi = nz_col_idx // nlon_in
                 # account for output shift and ensure positive index due to circular condition
                 wi = nz_col_idx % nlon_in
-                wip = (wi+wo) % nlon_in
+                wip = (wi + pscale * wo) % nlon_in
 
                 q_ho_wo = qy[:, :, ho, wo]
                 k_hi_wi = kx[:, :, hi, wip]

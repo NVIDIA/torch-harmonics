@@ -507,7 +507,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self.nlat_out, self.nlon_out = out_shape
 
         # make sure the p-shift works by checking that longitudes are divisible
-        assert self.nlon_in % self.nlon_out == 0
+        assert self.nlon_in % self.nlon_out == 0, \
+            f"nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}) for the DISCO p-shift to be exact"
 
         # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
         if theta_cutoff is None:
@@ -646,7 +647,8 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.nlat_out, self.nlon_out = out_shape
 
         # make sure the p-shift works by checking that longitudes are divisible
-        assert self.nlon_out % self.nlon_in == 0
+        assert self.nlon_out % self.nlon_in == 0, \
+            f"nlon_out ({self.nlon_out}) must be an integer multiple of nlon_in ({self.nlon_in}) for the DISCO transpose p-shift to be exact"
 
         # bandlimit
         if theta_cutoff is None:

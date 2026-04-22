@@ -86,6 +86,9 @@ void s2_attn_fwd_generic_vec_k(int nchan_in,   // no. of FLOATV_T elements along
     const int wo = wid - (h*nlon_out);
     const int ho = row_idx[h];
 
+    // one output lon step corresponds to pscale input lon steps (requires nlon_in % nlon_out == 0)
+    const int pscale = nlon_in / nlon_out;
+
     for(int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
         shy[chan] = __vset<FLOATV_T>(0.f);
     }
@@ -112,7 +115,8 @@ void s2_attn_fwd_generic_vec_k(int nchan_in,   // no. of FLOATV_T elements along
 
         const int hi = col / nlon_in;
         const int wi = col - (hi*nlon_in);
-        const int wip = (wi+wo) - ((wi+wo) / nlon_in) * nlon_in;
+        const int wi_wo = wi + pscale*wo;
+        const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
 
         const FLOATV_T *_kx = kx + int64_t(hi)*nlon_in*nchan_in  + int64_t(wip)*nchan_in;
         const FLOATV_T *_vx = vx + int64_t(hi)*nlon_in*nchan_out + int64_t(wip)*nchan_out;
@@ -203,6 +207,9 @@ void s2_attn_fwd_special_vec_k(int nchan_in,  // no. of FLOATV_T elements along 
     const int wo = ctaid - (h*nlon_out);
     const int ho = row_idx[h];
 
+    // one output lon step corresponds to pscale input lon steps (requires nlon_in % nlon_out == 0)
+    const int pscale = nlon_in / nlon_out;
+
     kx += int64_t(batch)*nlat_in*nlon_in*nchan_in;
     qy += int64_t(batch)*nlat_out*nlon_out*nchan_in + int64_t(ho)*nlon_out*nchan_in + int64_t(wo)*nchan_in;
     if constexpr(CHIN_AS_OUT) {
@@ -248,7 +255,8 @@ void s2_attn_fwd_special_vec_k(int nchan_in,  // no. of FLOATV_T elements along 
 
         const int hi = col / nlon_in;
         const int wi = col - (hi*nlon_in);
-        const int wip = (wi+wo) - ((wi+wo) / nlon_in) * nlon_in;
+        const int wi_wo = wi + pscale*wo;
+        const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
 
         const FLOATV_T *_kx = kx + int64_t(hi)*nlon_in*nchan_in  + int64_t(wip)*nchan_in;
         const FLOATV_T *_vx = vx + int64_t(hi)*nlon_in*nchan_out + int64_t(wip)*nchan_out;
@@ -530,8 +538,11 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
     CHECK_CUDA_TENSOR(psi_col_idx);
     CHECK_CUDA_TENSOR(psi_row_off);
 
+    TORCH_CHECK(nlon_in % nlon_out == 0,
+                "nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (", nlon_out, ")");
+
     size_t nchans_in  = qy.size(1); // or kx.size(1)
-    size_t nchans_out = vx.size(1); 
+    size_t nchans_out = vx.size(1);
 
     const int batch_size = kx.size(0);
 

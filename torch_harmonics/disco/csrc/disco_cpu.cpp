@@ -35,7 +35,7 @@ namespace disco_kernels {
     // cpu ops
     torch::Tensor disco_cpu_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
         torch::Tensor col_idx, torch::Tensor vals, int64_t K, int64_t Ho, int64_t Wo) {
-        
+
         // sanity checks
         CHECK_CPU_INPUT_TENSOR(inp);
         CHECK_CPU_INPUT_TENSOR(roff_idx);
@@ -43,6 +43,10 @@ namespace disco_kernels {
         CHECK_CPU_INPUT_TENSOR(row_idx);
         CHECK_CPU_INPUT_TENSOR(col_idx);
         CHECK_CPU_INPUT_TENSOR(vals);
+
+        // the kernel uses pscale = Wi / Wo; require an integer ratio so the p-shift is exact
+        TORCH_CHECK(inp.size(3) % Wo == 0,
+                    "Wi (", inp.size(3), ") must be an integer multiple of Wo (", Wo, ")");
 
         // initialize output tensor
         auto out = torch::zeros({inp.size(0), inp.size(1), K, Ho, Wo}, inp.options());
@@ -65,7 +69,7 @@ namespace disco_kernels {
 
     torch::Tensor disco_cpu_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
         torch::Tensor col_idx, torch::Tensor vals, int64_t K, int64_t Ho, int64_t Wo) {
-        
+
         // sanity checks
         CHECK_CPU_INPUT_TENSOR(inp);
         CHECK_CPU_INPUT_TENSOR(roff_idx);
@@ -73,6 +77,10 @@ namespace disco_kernels {
         CHECK_CPU_INPUT_TENSOR(row_idx);
         CHECK_CPU_INPUT_TENSOR(col_idx);
         CHECK_CPU_INPUT_TENSOR(vals);
+
+        // the kernel uses pscale = Wo / Wi; require an integer ratio so the p-shift is exact
+        TORCH_CHECK(Wo % inp.size(4) == 0,
+                    "Wo (", Wo, ") must be an integer multiple of Wi (", inp.size(4), ")");
 
         // initialize output tensor
         auto out = torch::zeros({inp.size(0), inp.size(1), Ho, Wo}, inp.options());
