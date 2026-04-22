@@ -50,6 +50,9 @@ namespace attention_kernels {
         const int64_t nlon_in, const int64_t nlat_out, const int64_t nlon_out,
         const int64_t batch_size, const int64_t nchannels_in, const int64_t nchannels_out) {
 
+        // one output lon step corresponds to pscale input lon steps (requires nlon_in % nlon_out == 0)
+        const int64_t pscale = nlon_in / nlon_out;
+
         // some parameters
         const int64_t block_wo = CACHE_BLOCK_SIZE;
         const int64_t nblock_wo = static_cast<int64_t>((nlon_out + block_wo - 1) / block_wo);
@@ -90,7 +93,7 @@ namespace attention_kernels {
                                 
                             // loop over wo block
                             for (int64_t wo = wo_start; wo < wo_end; wo++) {
-                                int64_t wip = (wi + wo) % nlon_in;
+                                int64_t wip = (wi + pscale * wo) % nlon_in;
     
                                 float qdotk = 0.0;
                                 //#pragma omp simd reduction(+:qdotk)
@@ -138,6 +141,9 @@ namespace attention_kernels {
         const int64_t nlon_in, const int64_t nlat_out, const int64_t nlon_out,
         const int64_t batch_size, const int64_t nchannels_in, const int64_t nchannels_out) {
 
+        // one output lon step corresponds to pscale input lon steps (requires nlon_in % nlon_out == 0)
+        const int64_t pscale = nlon_in / nlon_out;
+
         // compute dqy and dkx
         #pragma omp parallel for collapse(2)
         for (int64_t b = 0; b < batch_size; b++) {
@@ -171,7 +177,7 @@ namespace attention_kernels {
                             int64_t hi = static_cast<int64_t>(nz_col_idx / nlon_in);
                             // account for output shift and ensure positive index due to circular condition
                             int64_t wi = nz_col_idx % nlon_in;
-                            int64_t wip = (wi+wo) % nlon_in;
+                            int64_t wip = (wi + pscale * wo) % nlon_in;
         
                             // compute correlation & softmax numerator
                             qdotk_nz[idz-zstart] = 0.0;
@@ -220,7 +226,7 @@ namespace attention_kernels {
                             int64_t hi = static_cast<int64_t>(nz_col_idx / nlon_in);
                             // account for output shift and ensure positive index due to circular condition
                             int64_t wi = nz_col_idx % nlon_in;
-                            int64_t wip = (wi+wo) % nlon_in;
+                            int64_t wip = (wi + pscale * wo) % nlon_in;
         
                             // dkx: alpha normalization
                             float alpha_norm = std::exp(qdotk_nz[idz-zstart] - qdotk_max) * quad_weights_arr[hi] / alpha_sum;
@@ -265,7 +271,7 @@ namespace attention_kernels {
                             int64_t hi = static_cast<int64_t>(nz_col_idx / nlon_in);
                             // account for output shift and ensure positive index due to circular condition
                             int64_t wi = nz_col_idx % nlon_in;
-                            int64_t wip = (wi+wo) % nlon_in;
+                            int64_t wip = (wi + pscale * wo) % nlon_in;
         
                             // compute correlation & softmax numerator
                             qdotk_nz[idz-zstart] = 0.0;
@@ -292,7 +298,7 @@ namespace attention_kernels {
                             int64_t hi = static_cast<int64_t>(nz_col_idx / nlon_in);
                             // account for output shift and ensure positive index due to circular condition
                             int64_t wi = nz_col_idx % nlon_in;
-                            int64_t wip = (wi+wo) % nlon_in;
+                            int64_t wip = (wi + pscale * wo) % nlon_in;
         
                             // recompute alpha
                             float alpha_norm = std::exp(qdotk_nz[idz-zstart] - qdotk_max) * quad_weights_arr[hi] / alpha_sum;

@@ -97,6 +97,9 @@ class AttentionS2(nn.Module):
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
 
+        assert self.nlon_in % self.nlon_out == 0, \
+            f"nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}) for the attention p-shift to be exact"
+
         self.in_channels = in_channels
         self.num_heads = num_heads
         self.k_channels = in_channels if k_channels is None else k_channels
@@ -265,6 +268,9 @@ class NeighborhoodAttentionS2(nn.Module):
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
+
+        assert self.nlon_in % self.nlon_out == 0, \
+            f"nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}) for the attention p-shift to be exact"
 
         self.in_channels = in_channels
         self.num_heads = num_heads

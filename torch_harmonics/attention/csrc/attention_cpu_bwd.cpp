@@ -58,6 +58,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_cpu(tor
     CHECK_CPU_INPUT_TENSOR(col_idx);
     CHECK_CPU_INPUT_TENSOR(row_off);
 
+    TORCH_CHECK(nlon_in % nlon_out == 0,
+                "nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (", nlon_out, ")");
+
     // change to channels first:
     bool kx_is_channels_last = kx.strides()[1] == 1;
     bool vx_is_channels_last = vx.strides()[1] == 1;
