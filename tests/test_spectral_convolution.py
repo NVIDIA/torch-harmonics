@@ -76,9 +76,6 @@ class TestSpectralConvS2(unittest.TestCase):
     def test_zonal_rotation_equivariance(self, nlat, nlon, in_channels, out_channels, num_groups, lon_shift, verbose=False):
         """Conv(Roll(x, k)) ≈ Roll(Conv(x), k) for any longitude shift k."""
 
-        # disable tf32
-        disable_tf32()
-
         # set seed
         set_seed(333)
 
@@ -128,9 +125,6 @@ class TestSpectralConvS2(unittest.TestCase):
     )
     def test_grouped_convolution_consistency(self, nlat, nlon, in_channels, out_channels, num_groups, verbose=False):
         """num_groups > 1 equals running separate num_groups=1 convs on channel subsets."""
-
-        # disable tf32
-        disable_tf32()
 
         # set seed
         set_seed(333)
@@ -203,9 +197,6 @@ class TestSpectralConvS2(unittest.TestCase):
         if dtype == torch.float16 and self.device.type == "cpu":
             self.skipTest("float16 arithmetic is not supported on CPU")
 
-        # disable tf32
-        disable_tf32()
-
         # set seed
         set_seed(333)
 
@@ -249,9 +240,6 @@ class TestSpectralConvS2(unittest.TestCase):
     )
     def test_batch_independence(self, nlat, nlon, in_channels, out_channels, num_groups, atol, rtol, verbose=True):
         """Two identical samples in a batch must produce bitwise-identical outputs."""
-
-        # disable tf32
-        disable_tf32()
 
         # set seed
         set_seed(333)
@@ -301,9 +289,6 @@ class TestSpectralConvS2(unittest.TestCase):
     )
     def test_zero_weights_zero_output(self, nlat, nlon, in_channels, out_channels, num_groups, verbose=False):
         """Zeroing all weights must produce an exactly-zero output."""
-
-        # disable tf32
-        disable_tf32()
 
         # set seed
         set_seed(333)
@@ -359,7 +344,6 @@ class TestSpectralConvS2(unittest.TestCase):
     )
     def test_spectral_bias_zero_equals_no_bias(self, nlat, nlon, channels, num_groups, verbose=False):
         """Zero spectral_bias must produce the same output as bias=False."""
-        disable_tf32()
         set_seed(333)
 
         conv_no_bias = SpectralConvS2(
@@ -408,7 +392,6 @@ class TestSpectralConvS2(unittest.TestCase):
     )
     def test_spectral_bias_nonzero_changes_output(self, nlat, nlon, channels, num_groups, verbose=False):
         """A nonzero spectral_bias must change the output relative to zero bias."""
-        disable_tf32()
         set_seed(333)
 
         conv = SpectralConvS2(
@@ -446,7 +429,6 @@ class TestSpectralConvS2(unittest.TestCase):
     )
     def test_spectral_bias_gradient(self, nlat, nlon, channels, num_groups, verbose=False):
         """Gradients must flow back to spectral_bias after a backward pass."""
-        disable_tf32()
         set_seed(333)
 
         conv = SpectralConvS2(

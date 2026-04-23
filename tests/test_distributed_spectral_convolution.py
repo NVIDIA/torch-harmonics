@@ -38,11 +38,12 @@ import torch_harmonics as th
 import torch_harmonics.distributed as thd
 
 from testutils import (
+    disable_tf32,
     set_seed,
-    setup_module, 
-    teardown_module, 
+    setup_module,
+    teardown_module,
     setup_class_from_context,
-    split_tensor_hw, 
+    split_tensor_hw,
     split_tensor_dim,
     gather_tensor_hw,
     compare_tensors,
@@ -63,6 +64,7 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         setup_class_from_context(cls, _DIST_CTX)
+        disable_tf32()
 
     def _split_helper(self, tensor):
         return split_tensor_hw(

@@ -61,6 +61,7 @@ def random_sht_coeffs(batch_size, lmax, mmax, device, zero_l0=False):
 class TestLegendrePolynomials(unittest.TestCase):
     """Test the associated Legendre polynomials (CPU/CUDA if available)."""
     def setUp(self):
+        disable_tf32()
         self.cml = lambda m, l: math.sqrt((2 * l + 1) / 4 / math.pi) * math.sqrt(math.factorial(l - m) / math.factorial(l + m))
         self.pml = dict()
 
@@ -98,6 +99,9 @@ class TestLegendrePolynomials(unittest.TestCase):
 class TestSphericalHarmonicTransform(unittest.TestCase):
     """Test the spherical harmonic transform (CPU/CUDA if available)."""
 
+    def setUp(self):
+        disable_tf32()
+
     @parameterized.expand(
         [
             # even-even
@@ -126,9 +130,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
     def test_forward_inverse(self, nlat, nlon, batch_size, norm, grid, atol, rtol, verbose=False):
         if verbose:
             print(f"Testing real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization on {self.device.type} device")
-
-        # disable tf32
-        disable_tf32()
 
         # set seed
         set_seed(333)
@@ -192,9 +193,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         if verbose:
             print(f"Testing gradients of real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization")
 
-        # disable tf32
-        disable_tf32()
-
         # set seed
         set_seed(333)
 
@@ -244,9 +242,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         """
         if verbose:
             print(f"Testing cross-norm consistency on {nlat}x{nlon} {grid} grid on {self.device.type}")
-
-        # disable tf32
-        disable_tf32()
 
         # set seed
         set_seed(333)
@@ -309,9 +304,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         """
         if verbose:
             print(f"Testing known-function SHT on {nlat}x{nlon} {grid} grid with {norm} norm on {self.device.type}")
-
-        # disable tf32
-        disable_tf32()
 
         sht = th.RealSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
         lmax = sht.lmax
@@ -423,9 +415,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         if verbose:
             print(f"Testing csphase sign flip on {nlat}x{nlon} {grid} grid with {norm} norm on {self.device.type}")
 
-        # disable tf32
-        disable_tf32()
-
         # set seed
         set_seed(333)
 
@@ -479,9 +468,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         if verbose:
             print(f"Testing Parseval's theorem on {nlat}x{nlon} {grid} grid with {norm} normalization on {self.device.type}")
 
-        # disable tf32
-        disable_tf32()
-
         # set seed
         set_seed(333)
 
@@ -533,9 +519,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         if verbose:
             print(f"Testing device instantiation of real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization")
 
-        # disable tf32
-        disable_tf32()
-
         # set seed
         set_seed(333)
 
@@ -572,6 +555,9 @@ class TestSphericalHarmonicsFunctions(unittest.TestCase):
     modes together, doubling the amplitude of each mode.
     """
 
+    def setUp(self):
+        disable_tf32()
+
     @parameterized.expand(
         [
             [12, 24, "legendre-gauss", 1e-9, 1e-9],
@@ -585,9 +571,6 @@ class TestSphericalHarmonicsFunctions(unittest.TestCase):
         functions and that the self inner-products equal 1 (m=0) or 2 (m>0)."""
         if verbose:
             print(f"Testing Y_lm orthogonality on {nlat}x{nlon} {grid} grid on {self.device.type}")
-
-        # disable tf32
-        disable_tf32()
 
         # set seed
         set_seed(333)
@@ -657,6 +640,9 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
     dP/dtheta or P/sin(theta) terms, and incorrect l*(l+1) normalization.
     """
 
+    def setUp(self):
+        disable_tf32()
+
     @parameterized.expand(
         [
             [32, 64, 16, "ortho",   "legendre-gauss", 1e-7, 1e-7],
@@ -679,9 +665,6 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         """
         if verbose:
             print(f"Testing gradient consistency on {nlat}x{nlon} {grid} grid with {norm} norm on {self.device.type}")
-
-        # disable tf32
-        disable_tf32()
 
         # set seed
         set_seed(333)
@@ -727,9 +710,6 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         """
         if verbose:
             print(f"Testing curl consistency on {nlat}x{nlon} {grid} grid with {norm} norm on {self.device.type}")
-
-        # disable tf32
-        disable_tf32()
 
         # set seed
         set_seed(333)
@@ -780,9 +760,6 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         """
         if verbose:
             print(f"Testing vector SHT forward-inverse on {nlat}x{nlon} {grid} grid with {norm} norm on {self.device.type}")
-
-        # disable tf32
-        disable_tf32()
 
         # set seed
         set_seed(333)
@@ -841,9 +818,6 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         """
         if verbose:
             print(f"Testing vector Parseval's theorem on {nlat}x{nlon} {grid} grid with {norm} norm on {self.device.type}")
-
-        # disable tf32
-        disable_tf32()
 
         # set seed
         set_seed(333)

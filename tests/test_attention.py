@@ -65,6 +65,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     """Test the neighborhood attention module (CPU/CUDA if available)."""
     
     def setUp(self):
+        disable_tf32()
         torch.manual_seed(333)
         if self.device.type == "cuda":
             torch.cuda.manual_seed(333)
@@ -92,9 +93,6 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
-
-        # disable tf32
-        disable_tf32()
 
         # set seed
         set_seed(333)
@@ -162,9 +160,6 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         if (self.device.type == "cpu"):
             # comparing CPU with itself does not make sense
             return
-
-        # disable tf32
-        disable_tf32()
 
         # set seed
         set_seed(333)
@@ -235,9 +230,6 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
-
-        # disable tf32
-        disable_tf32()
 
         # set seed
         set_seed(333)
@@ -344,9 +336,6 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
-
-        # disable tf32
-        disable_tf32()
 
         # set seed
         set_seed(333)
