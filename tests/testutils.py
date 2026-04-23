@@ -30,6 +30,7 @@
 #
 
 import os
+import contextlib
 from packaging import version
 
 import torch
@@ -55,6 +56,22 @@ def disable_tf32():
             torch.backends.cuda.matmul.allow_tf32 = False
             torch.backends.cudnn.allow_tf32 = False
     return
+
+
+@contextlib.contextmanager
+def maybe_autocast(device_type, dtype):
+    """Unified precision context for tests that parameterize over multiple dtypes.
+
+    - fp16 / bf16 → torch.autocast(device_type, dtype).
+    - fp32 / fp64 → no-op. The caller is expected to have already cast module + inputs
+      to the target dtype; PyTorch's autocast only supports fp16/bf16 as target dtypes,
+      and entering it with fp32/fp64 triggers a "target dtype is not supported" warning.
+    """
+    if dtype in (torch.float16, torch.bfloat16):
+        with torch.autocast(device_type=device_type, dtype=dtype):
+            yield
+    else:
+        yield
 
 
 def setup_distributed_context(ctx):
