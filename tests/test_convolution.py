@@ -462,9 +462,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         is_amp = dtype in (torch.float16, torch.bfloat16)
         module_dtype = torch.float32 if is_amp else dtype
 
-        if is_amp and self.device.type == "cpu":
-            raise unittest.SkipTest("skipping test because CPU does not support AMP autocast for this dtype")
-
         # set seed
         set_seed(333)
 
@@ -652,9 +649,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
-
-        if is_amp and self.device.type == "cpu":
-            raise unittest.SkipTest("skipping test because CPU does not support AMP autocast for this dtype")
 
         # set seed
         set_seed(333)
