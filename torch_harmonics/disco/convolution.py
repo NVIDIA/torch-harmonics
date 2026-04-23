@@ -146,14 +146,6 @@ def _normalize_convolution_tensor_s2(
     # get the quadrature weights
     q = quad_weights[ilat_in].reshape(-1)
 
-    # "none" skips bias/scale computation entirely; only quadrature merging matters
-    if basis_norm_mode == "none":
-        if merge_quadrature:
-            psi_vals = psi_vals * q
-            if transpose_normalization:
-                psi_vals = psi_vals / correction_factor
-        return psi_vals
-
     # buffer to store intermediate values
     bias = torch.zeros(kernel_size, nlat_out, dtype=psi_vals.dtype, device=psi_vals.device)
     scale = torch.zeros(kernel_size, nlat_out, dtype=psi_vals.dtype, device=psi_vals.device)
@@ -205,6 +197,9 @@ def _normalize_convolution_tensor_s2(
             elif basis_norm_mode == "geometric":
                 b = 0.0
                 s = geometric_scale
+            elif basis_norm_mode == "none":
+                b = 0.0
+                s = 1.0
             else:
                 raise ValueError(f"Unknown basis normalization mode {basis_norm_mode}.")
 
