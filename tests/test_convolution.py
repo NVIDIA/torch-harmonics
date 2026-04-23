@@ -45,7 +45,7 @@ from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.filter_basis import get_filter_basis
 from disco_helpers import preprocess_psi
 
-from testutils import disable_tf32, set_seed, compare_tensors
+from testutils import disable_tf32, set_seed, compare_tensors, maybe_autocast
 
 if not optimized_kernels_is_available():
     print(f"Warning: Couldn't import optimized disco convolution kernels")
@@ -54,12 +54,6 @@ if not optimized_kernels_is_available():
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
     _devices.append((torch.device("cuda"),))
-
-# PyTorch CPU autocast doesn't support fp16/bf16 autograd for our ops, so AMP parameter
-# rows are only meaningful on CUDA. Gate them at collection time to avoid skip noise on
-# CPU-only runs (the in-test SkipTest still handles the CPU class variant when CUDA is
-# available, since parameterized_class also generates that variant).
-_AMP_SUPPORTED = torch.cuda.is_available()
 
 # perf thresholds
 # CPU results normalized to 16 OpenMP threads,
@@ -94,29 +88,6 @@ def _normalize_convolution_tensor_dense(
         n_olat = nlat_in
     else:
         n_olat = nlat_out
-
-    # "none" skips bias/scale computation entirely; still mirror the sparse layout by rolling
-    # the r=0 slice into the other r slices (the sparse impl stores only r=0 and rolls at
-    # contraction time), then apply optional quadrature merging
-    if basis_norm_mode == "none":
-        pscale = nlon_in // nlon_out
-        for ik in range(kernel_size):
-            for ilat in range(n_olat):
-                if transpose_normalization:
-                    for r in range(1, nlon_out):
-                        psi[ik, :, r, ilat, :] = torch.roll(psi[ik, :, 0, ilat, :], r * pscale, dims=-1)
-                else:
-                    for r in range(1, nlon_out):
-                        psi[ik, ilat, r, :, :] = torch.roll(psi[ik, ilat, 0, :, :], r * pscale, dims=-1)
-
-        if transpose_normalization:
-            if merge_quadrature:
-                psi = quad_weights.reshape(1, -1, 1, 1, 1) * psi / correction_factor
-        else:
-            if merge_quadrature:
-                psi = quad_weights.reshape(1, 1, 1, -1, 1) * psi
-
-        return psi
 
     bias_arr = torch.zeros(kernel_size, n_olat, dtype=psi.dtype, device=psi.device)
     scale_arr = torch.zeros(kernel_size, n_olat, dtype=psi.dtype, device=psi.device)
@@ -173,6 +144,9 @@ def _normalize_convolution_tensor_dense(
             elif basis_norm_mode == "geometric":
                 b = 0.0
                 s = geometric_scale
+            elif basis_norm_mode == "none":
+                b = 0.0
+                s = 1.0
             else:
                 raise ValueError(f"Unknown basis normalization mode {basis_norm_mode}.")
 
@@ -449,8 +423,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
             [8, 4, 2, (12, 24), (24, 48), (3), "zernike", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
             [8, 4, 2, (12, 24), (24, 48), (3, 3), "fourier-bessel", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
-        ] + ([
-            # fp16 tests (AMP) — only collected when AMP is supported (CUDA available)
+            # fp16 tests (AMP)
             # regular convolution
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, 2e-2, 1e-2],
             [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, 2e-2, 1e-2],
@@ -464,7 +437,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             # transpose convolution
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, 5e-2, 5e-2],
             [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, 5e-2, 5e-2],
-        ] if _AMP_SUPPORTED else []),
+        ],
         skip_on_empty=True,
     )
     def test_sparse_against_dense(
@@ -576,7 +549,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # FWD and BWD pass
         x.requires_grad = True
-        with torch.autocast(device_type=self.device.type, dtype=dtype):
+        with maybe_autocast(self.device.type, dtype):
             y = conv(x)
         grad_input = torch.randn_like(y)
         y.backward(grad_input)
@@ -637,8 +610,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "geometric", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
             [8, 4, 2, (21, 40), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
             [8, 4, 2, (21, 40), (41, 80), (2, 2), "harmonic", "modal", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
-        ] + ([
-            # fp16 tests (AMP) — only collected when AMP is supported (CUDA available)
+            # fp16 tests (AMP)
             # regular convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, 1e-2, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, 1e-2, 1e-2],
@@ -652,7 +624,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             # transpose convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, 1e-2, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, 1e-2, 1e-2],
-        ] if _AMP_SUPPORTED else []),
+        ],
         skip_on_empty=True,
     )
     @unittest.skipUnless((optimized_kernels_is_available()), "skipping test because optimized kernels are not available")
@@ -738,7 +710,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # FWD and BWD pass
         inp.requires_grad = True
-        with torch.amp.autocast(device_type=self.device.type, dtype=dtype):
+        with maybe_autocast(self.device.type, dtype):
             out_naive = conv_naive(inp)
         grad_input = torch.randn_like(out_naive)
         out_naive.backward(grad_input)
@@ -746,7 +718,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # perform the reference computation
         inp.grad = None
-        with torch.amp.autocast(device_type=self.device.type, dtype=dtype):
+        with maybe_autocast(self.device.type, dtype):
             out_opt = conv_opt(inp)
         out_opt.backward(grad_input)
         inp_grad_opt = inp.grad.clone()
