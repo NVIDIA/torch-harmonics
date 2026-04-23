@@ -340,12 +340,13 @@ class HarmonicFilterBasis(FilterBasis):
         n = nkernel[iidx[:, 0], 0, 0]
         m = mkernel[iidx[:, 0], 0, 0]
 
-        # cast to r.dtype so fp64 callers get fp64 arithmetic (Long / int otherwise promotes to default float)
-        n_f = n.to(r.dtype)
-        m_f = m.to(r.dtype)
+        # harmonic frequencies along x and y, one per basis function
+        # (cast to r.dtype so fp64 callers get fp64 arithmetic — Long / int would promote to default float)
+        freq_x = torch.ceil(n.to(r.dtype) / 2)
+        freq_y = torch.ceil(m.to(r.dtype) / 2)
 
-        harmonic = torch.where(n % 2 == 1, torch.sin(torch.ceil(n_f / 2) * math.pi * x / width), torch.cos(torch.ceil(n_f / 2) * math.pi * x / width))
-        harmonic *= torch.where(m % 2 == 1, torch.sin(torch.ceil(m_f / 2) * math.pi * y / width), torch.cos(torch.ceil(m_f / 2) * math.pi * y / width))
+        harmonic = torch.where(n % 2 == 1, torch.sin(freq_x * math.pi * x / width), torch.cos(freq_x * math.pi * x / width))
+        harmonic *= torch.where(m % 2 == 1, torch.sin(freq_y * math.pi * y / width), torch.cos(freq_y * math.pi * y / width))
 
         # computes the envelope
         vals = self.hann_window(r, width=width) * harmonic
@@ -435,8 +436,7 @@ class ZernikeFilterBasis(FilterBasis):
         m = 2 * l - n
         # compute in r.dtype so fp64 callers get fp64 norm precision (else Long.float() forces fp32)
         epsilon_m = torch.where(m == 0, 2.0, 1.0).to(r.dtype)
-        n_f = n.to(r.dtype)
-        norm = torch.sqrt(math.pi * epsilon_m / (2.0 * (n_f + 1))).clamp(min=1e-12)
+        norm = torch.sqrt(math.pi * epsilon_m / (2.0 * (n.to(r.dtype) + 1))).clamp(min=1e-12)
 
         vals = self.zernikepoly(r, phi, n, l) / norm
 
