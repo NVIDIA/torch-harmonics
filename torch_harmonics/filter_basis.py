@@ -93,12 +93,15 @@ class FilterBasis(metaclass=abc.ABCMeta):
         raise NotImplementedError
 
     def compute_l2_norms(self, r_cutoff: float = 1.0, nr: int = 50, nphi: int = 200) -> torch.Tensor:
-        """Numerically compute the L2 norm of each basis function on the disk of radius r_cutoff."""
+        """Numerically compute the L2 norm of each basis function on the disk of radius r_cutoff.
+
+        Evaluated in fp64 so the returned norms are precision-faithful for fp64 callers.
+        """
         # open interval in phi to avoid double-counting the periodic endpoint
         dphi = 2 * math.pi / nphi
-        phi = torch.arange(nphi) * dphi
+        phi = torch.arange(nphi, dtype=torch.float64) * dphi
         dr = r_cutoff / (nr - 1)
-        r = torch.linspace(0, r_cutoff, nr)
+        r = torch.linspace(0, r_cutoff, nr, dtype=torch.float64)
         r, phi = torch.meshgrid(r, phi, indexing="ij")
 
         iidx, vals = self.compute_support_vals(r, phi, r_cutoff=r_cutoff)
@@ -322,7 +325,7 @@ class HarmonicFilterBasis(FilterBasis):
 
         # L2 normalization (skip during the initial norm computation in __init__)
         if hasattr(self, "_l2_norms"):
-            norms = self._l2_norms.to(device=vals.device)
+            norms = self._l2_norms.to(device=vals.device, dtype=vals.dtype)
             vals = vals / norms[iidx[:, 0]].clamp(min=1e-12)
 
         return iidx, vals
@@ -473,7 +476,7 @@ class FourierBesselFilterBasis(FilterBasis):
         # sort by eigenvalue (= alpha^2)
         entries.sort(key=lambda e: e[0])
 
-        self._ms = torch.tensor([e[1] for e in entries], dtype=torch.float32)
+        self._ms = torch.tensor([e[1] for e in entries], dtype=torch.float64)
         self._ns = torch.tensor([e[2] for e in entries], dtype=torch.long)
         self._cosines = torch.tensor([e[3] for e in entries], dtype=torch.bool)
         self._alphas = torch.tensor([e[0] for e in entries], dtype=torch.float64)
@@ -497,7 +500,7 @@ class FourierBesselFilterBasis(FilterBasis):
         ms = self._ms
         alphas = self._alphas
 
-        j_next = torch.tensor([float(scipy_jn(int(mi) + 1, float(a))) for mi, a in zip(ms, alphas)], dtype=torch.float32)
+        j_next = torch.tensor([float(scipy_jn(int(mi) + 1, float(a))) for mi, a in zip(ms, alphas)], dtype=torch.float64)
         radial_norm = (j_next.abs() / math.sqrt(2)).clamp(min=1e-12)
         sqrt_2pi = math.sqrt(2 * math.pi)
         sqrt_pi = math.sqrt(math.pi)
@@ -518,9 +521,10 @@ class FourierBesselFilterBasis(FilterBasis):
         """
         K = self.kernel_size
 
-        ms = self._ms.to(r.device)
+        # honor the caller's dtype: basis constants are stored in fp64, cast to r.dtype at use
+        ms = self._ms.to(device=r.device, dtype=r.dtype)
         cosines = self._cosines.to(r.device)
-        alphas = self._alphas.float().to(r.device)
+        alphas = self._alphas.to(device=r.device, dtype=r.dtype)
 
         # r shape can be [ntheta, nr] or [1, ntheta, nr] — normalise to 3D
         if r.dim() == 2:
@@ -538,10 +542,10 @@ class FourierBesselFilterBasis(FilterBasis):
         rn = r / r_cutoff
 
         # Evaluate J_m(alpha * r_normalised)
-        # torch has no Bessel, so use scipy via numpy detour
+        # torch has no Bessel, so use scipy via numpy detour — evaluate in fp64 regardless of caller
         from scipy.special import jn as scipy_jn
 
-        rn_np = rn.squeeze(0).cpu().numpy()
+        rn_np = rn.squeeze(0).to(dtype=torch.float64).cpu().numpy()
 
         # build [K, ntheta, nr] radial values
         radial_parts = []
@@ -553,7 +557,7 @@ class FourierBesselFilterBasis(FilterBasis):
         import numpy as np
 
         radial_np = np.stack(radial_parts, axis=0)
-        radial = torch.tensor(radial_np, dtype=torch.float32, device=r.device)
+        radial = torch.tensor(radial_np, dtype=r.dtype, device=r.device)
 
         # Angular part
         phi_b = phi
@@ -564,7 +568,7 @@ class FourierBesselFilterBasis(FilterBasis):
         )
 
         # L2 normalisation
-        norms = self.compute_l2_norms().to(device=r.device).reshape(K, 1, 1)
+        norms = self.compute_l2_norms().to(device=r.device, dtype=r.dtype).reshape(K, 1, 1)
         vals_full = radial * angular / norms
 
         # Apply support mask (broadcast)
