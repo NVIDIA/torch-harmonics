@@ -38,6 +38,17 @@ import torch
 
 from torch_harmonics.cache import lru_cache
 
+# scipy is only required for FourierBesselFilterBasis, which needs Bessel functions.
+# Import lazily at module load so plain users who don't need that basis aren't forced
+# to install scipy; availability is checked in FourierBesselFilterBasis.__init__.
+try:
+    import numpy as np
+    from scipy.special import jn as _scipy_jn, jn_zeros as _scipy_jn_zeros
+
+    _SCIPY_AVAILABLE = True
+except ImportError:
+    _SCIPY_AVAILABLE = False
+
 
 def _circle_dist(x1: torch.Tensor, x2: torch.Tensor):
     return torch.minimum(torch.abs(x1 - x2), torch.abs(2 * math.pi - torch.abs(x1 - x2)))
@@ -60,6 +71,10 @@ class FilterBasis(metaclass=abc.ABCMeta):
     ):
 
         self.kernel_shape = kernel_shape
+        # subclasses that L2-normalize their basis (e.g. HarmonicFilterBasis) populate this in __init__
+        # after super().__init__(). While None, compute_support_vals should skip the L2 division — this
+        # is what allows compute_l2_norms() to call compute_support_vals() during initial norm computation.
+        self._l2_norms = None
 
     def __repr__(self):
         class_name = self.__class__.__name__
@@ -112,9 +127,12 @@ class FilterBasis(metaclass=abc.ABCMeta):
 
     def get_init_factors(self, device: Optional[torch.device] = None) -> torch.Tensor:
         """
-        Return per-basis factors for initializing DISCO convolution weights.
-        Used when init_from_basis=True so the initial kernel reflects the basis (e.g. L2-normalized).
-        Shape: (kernel_size,). Default: ones.
+        Return per-basis scaling factors for initializing DISCO convolution weights.
+        Applied element-wise along the kernel_size dimension of the random init so subclasses can
+        bias the initialization toward the basis (e.g. compensating for its L2 norm).
+
+        Shape: (kernel_size,). Default: torch.ones(kernel_size) / sqrt(kernel_size), which reproduces
+        the scalar 1/sqrt(groupsize * kernel_size) init used historically.
         """
         return torch.ones(self.kernel_size, device=device, dtype=torch.float32) / math.sqrt(self.kernel_size)
 
@@ -184,11 +202,12 @@ class PiecewiseLinearFilterBasis(FilterBasis):
         nr = self.kernel_shape[0]
         dr = 2 * r_cutoff / (nr + 1)
 
-        # compute the support
+        # compute the support (cast to r.dtype so fp64 callers stay in fp64)
+        ikernel_f = ikernel.to(r.dtype)
         if nr % 2 == 1:
-            ir = ikernel * dr
+            ir = ikernel_f * dr
         else:
-            ir = (ikernel + 0.5) * dr
+            ir = (ikernel_f + 0.5) * dr
 
         # find the indices where the rotated position falls into the support of the kernel
         iidx = torch.argwhere(((r - ir).abs() <= dr) & (r <= r_cutoff))
@@ -208,12 +227,13 @@ class PiecewiseLinearFilterBasis(FilterBasis):
         dphi = 2.0 * math.pi / nphi
 
         # disambiguate even and uneven cases and compute the support
+        # (do the integer arithmetic on Long, then cast to r.dtype before scaling by dr/dphi)
         if nr % 2 == 1:
-            ir = ((ikernel - 1) // nphi + 1) * dr
-            iphi = ((ikernel - 1) % nphi) * dphi - math.pi
+            ir = ((ikernel - 1) // nphi + 1).to(r.dtype) * dr
+            iphi = ((ikernel - 1) % nphi).to(r.dtype) * dphi - math.pi
         else:
-            ir = (ikernel // nphi + 0.5) * dr
-            iphi = (ikernel % nphi) * dphi - math.pi
+            ir = ((ikernel // nphi).to(r.dtype) + 0.5) * dr
+            iphi = (ikernel % nphi).to(r.dtype) * dphi - math.pi
 
         # find the indices where the rotated position falls into the support of the kernel
         if nr % 2 == 1:
@@ -264,7 +284,8 @@ class PiecewiseLinearFilterBasis(FilterBasis):
 
 
 class HarmonicFilterBasis(FilterBasis):
-    """Morlet-style filter basis on the disk. A Gaussian is multiplied with a Fourier basis in x and y directions."""
+    """Hann-windowed Fourier basis on the disk: a Hann window in radius multiplied with a tensor-product
+    sine/cosine basis in the Cartesian (x, y) coordinates on the disk."""
 
     def __init__(
         self,
@@ -317,14 +338,18 @@ class HarmonicFilterBasis(FilterBasis):
         n = nkernel[iidx[:, 0], 0, 0]
         m = mkernel[iidx[:, 0], 0, 0]
 
-        harmonic = torch.where(n % 2 == 1, torch.sin(torch.ceil(n / 2) * math.pi * x / width), torch.cos(torch.ceil(n / 2) * math.pi * x / width))
-        harmonic *= torch.where(m % 2 == 1, torch.sin(torch.ceil(m / 2) * math.pi * y / width), torch.cos(torch.ceil(m / 2) * math.pi * y / width))
+        # cast to r.dtype so fp64 callers get fp64 arithmetic (Long / int otherwise promotes to default float)
+        n_f = n.to(r.dtype)
+        m_f = m.to(r.dtype)
+
+        harmonic = torch.where(n % 2 == 1, torch.sin(torch.ceil(n_f / 2) * math.pi * x / width), torch.cos(torch.ceil(n_f / 2) * math.pi * x / width))
+        harmonic *= torch.where(m % 2 == 1, torch.sin(torch.ceil(m_f / 2) * math.pi * y / width), torch.cos(torch.ceil(m_f / 2) * math.pi * y / width))
 
         # computes the envelope
         vals = self.hann_window(r, width=width) * harmonic
 
-        # L2 normalization (skip during the initial norm computation in __init__)
-        if hasattr(self, "_l2_norms"):
+        # L2 normalization (skip during the initial norm computation in __init__, when _l2_norms is still None)
+        if self._l2_norms is not None:
             norms = self._l2_norms.to(device=vals.device, dtype=vals.dtype)
             vals = vals / norms[iidx[:, 0]].clamp(min=1e-12)
 
@@ -406,8 +431,10 @@ class ZernikeFilterBasis(FilterBasis):
         # radial: int_0^1 R_n^|m|(r)^2 r dr = 1/(2(n+1))
         # angular: int_0^{2pi} cos^2(m phi) dphi = 2pi (m=0) or pi (m!=0)
         m = 2 * l - n
-        epsilon_m = torch.where(m == 0, 2.0, 1.0)
-        norm = torch.sqrt(math.pi * epsilon_m / (2.0 * (n.float() + 1))).clamp(min=1e-12)
+        # compute in r.dtype so fp64 callers get fp64 norm precision (else Long.float() forces fp32)
+        epsilon_m = torch.where(m == 0, 2.0, 1.0).to(r.dtype)
+        n_f = n.to(r.dtype)
+        norm = torch.sqrt(math.pi * epsilon_m / (2.0 * (n_f + 1))).clamp(min=1e-12)
 
         vals = self.zernikepoly(r, phi, n, l) / norm
 
@@ -438,6 +465,12 @@ class FourierBesselFilterBasis(FilterBasis):
 
     def __init__(self, kernel_shape: Union[int, Tuple[int], Tuple[int, int]]):
 
+        if not _SCIPY_AVAILABLE:
+            raise ImportError(
+                "FourierBesselFilterBasis requires scipy. "
+                "Install with: pip install torch-harmonics[filter_basis]"
+            )
+
         if isinstance(kernel_shape, int):
             kernel_shape = (kernel_shape, kernel_shape)
         if isinstance(kernel_shape, (tuple, list)):
@@ -456,8 +489,6 @@ class FourierBesselFilterBasis(FilterBasis):
 
     def _build_index(self):
         """Build the ordered list of (m, n, cosine) triples."""
-
-        from scipy.special import jn_zeros as _scipy_jn_zeros
 
         nmax = self.kernel_shape[0]  # max radial order
         mmax = self.kernel_shape[1]  # max azimuthal order
@@ -489,23 +520,29 @@ class FourierBesselFilterBasis(FilterBasis):
     def isotropic_mask(self):
         return [bool(m == 0) for m in self._ms.tolist()]
 
-    def compute_l2_norms(self, **kwargs) -> torch.Tensor:
-        """Analytic L2 norms of the Fourier-Bessel basis on the disk.
+    def compute_l2_norms(self, r_cutoff: float = 1.0, nr: int = 50, nphi: int = 200) -> torch.Tensor:
+        """Analytic L2 norms of the Fourier-Bessel basis on a disk of radius r_cutoff.
 
-        Radial: integral_0^1 J_m(alpha r)^2 r dr = J_{m+1}(alpha)^2 / 2.
+        The L2 norm scales linearly with r_cutoff (radial integral picks up an R factor,
+        the angular integral is R-independent).
+
+        nr and nphi are accepted for signature compatibility with the base class and are
+        unused here — the analytic formula doesn't need a discretization grid.
+
+        Radial: integral_0^R J_m(alpha r/R)^2 r dr = R^2 * J_{m+1}(alpha)^2 / 2.
         Angular: integral_0^{2pi} cos^2(m phi) dphi = 2pi (m=0) or pi (m>0).
         """
-        from scipy.special import jn as scipy_jn
+        del nr, nphi
 
         ms = self._ms
         alphas = self._alphas
 
-        j_next = torch.tensor([float(scipy_jn(int(mi) + 1, float(a))) for mi, a in zip(ms, alphas)], dtype=torch.float64)
+        j_next = torch.tensor([float(_scipy_jn(int(mi) + 1, float(a))) for mi, a in zip(ms, alphas)], dtype=torch.float64)
         radial_norm = (j_next.abs() / math.sqrt(2)).clamp(min=1e-12)
         sqrt_2pi = math.sqrt(2 * math.pi)
         sqrt_pi = math.sqrt(math.pi)
         angular_sqrt = torch.where(ms == 0, torch.full_like(ms, sqrt_2pi), torch.full_like(ms, sqrt_pi))
-        return (radial_norm * angular_sqrt).clamp(min=1e-12)
+        return (r_cutoff * radial_norm * angular_sqrt).clamp(min=1e-12)
 
     def compute_support_vals(
         self,
@@ -543,8 +580,6 @@ class FourierBesselFilterBasis(FilterBasis):
 
         # Evaluate J_m(alpha * r_normalised)
         # torch has no Bessel, so use scipy via numpy detour — evaluate in fp64 regardless of caller
-        from scipy.special import jn as scipy_jn
-
         rn_np = rn.squeeze(0).to(dtype=torch.float64).cpu().numpy()
 
         # build [K, ntheta, nr] radial values
@@ -552,9 +587,7 @@ class FourierBesselFilterBasis(FilterBasis):
         for k in range(K):
             m_k = int(ms[k].item())
             a_k = float(alphas[k].item())
-            radial_parts.append(scipy_jn(m_k, a_k * rn_np))
-
-        import numpy as np
+            radial_parts.append(_scipy_jn(m_k, a_k * rn_np))
 
         radial_np = np.stack(radial_parts, axis=0)
         radial = torch.tensor(radial_np, dtype=r.dtype, device=r.device)
