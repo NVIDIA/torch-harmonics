@@ -81,12 +81,22 @@ def _normalize_convolution_tensor_s2(
         Number of kernel basis functions.
     quad_weights: torch.Tensor
         Quadrature weights for numerical integration.
+    theta_cutoff: float
+        Angular cutoff of the filter support (radians). Required by the "geometric" mode,
+        which normalizes by the theoretical area measure of the spherical cap of half-angle
+        theta_cutoff; unused by other modes.
     transpose_normalization: bool
         If True, applies normalization in transpose direction.
     basis_norm_mode: str
         Normalization mode, one of ["none", "nodal", "modal", "mean", "support", "geometric"].
+        The legacy names "individual" and "area ratio" are accepted as deprecated aliases
+        for "nodal" and "geometric" respectively; each emits a DeprecationWarning.
     merge_quadrature: bool
         If True, multiplies values by quadrature weights.
+    isotropic_mask: Optional[Sequence[bool]]
+        Per-kernel-index boolean mask; True marks an axisymmetric (m=0) basis function.
+        Used by the "modal" mode to decide which kernels get a weighted-mean bias
+        subtraction (anisotropic only). If None, only kernel index 0 is treated as isotropic.
     eps: float
         Small epsilon value to prevent division by zero.
 
@@ -136,6 +146,14 @@ def _normalize_convolution_tensor_s2(
     # get the quadrature weights
     q = quad_weights[ilat_in].reshape(-1)
 
+    # "none" skips bias/scale computation entirely; only quadrature merging matters
+    if basis_norm_mode == "none":
+        if merge_quadrature:
+            psi_vals = psi_vals * q
+            if transpose_normalization:
+                psi_vals = psi_vals / correction_factor
+        return psi_vals
+
     # buffer to store intermediate values
     bias = torch.zeros(kernel_size, nlat_out, dtype=psi_vals.dtype, device=psi_vals.device)
     scale = torch.zeros(kernel_size, nlat_out, dtype=psi_vals.dtype, device=psi_vals.device)
@@ -159,6 +177,16 @@ def _normalize_convolution_tensor_s2(
 
             scale[ik, ilat] = torch.sum((psi_vals[iidx] - bias[ik, ilat]).abs() * q[iidx])
 
+    # precompute the per-ik mean for "mean" mode so we don't rely on Python function-scope
+    # reuse of b/s across ilat iterations inside the loop below
+    if basis_norm_mode == "mean":
+        bias_per_ik = bias.mean(dim=1)
+        scale_per_ik = scale.mean(dim=1)
+
+    # precompute the "geometric" scalar once; it's ik/ilat-independent
+    if basis_norm_mode == "geometric":
+        geometric_scale = (1.0 - math.cos(theta_cutoff)) / 2.0 / 2.0
+
     # loop over values and renormalize
     for ik in range(kernel_size):
         for ilat in range(nlat_out):
@@ -169,18 +197,14 @@ def _normalize_convolution_tensor_s2(
                 b = bias[ik, ilat]
                 s = scale[ik, ilat]
             elif basis_norm_mode == "mean":
-                if ilat == 0:
-                    b = bias[ik, :].mean()
-                    s = scale[ik, :].mean()
+                b = bias_per_ik[ik]
+                s = scale_per_ik[ik]
             elif basis_norm_mode == "support":
                 b = 0.0
                 s = support[ik, ilat]
-            elif basis_norm_mode == "none":
-                b = 0.0
-                s = 1.0
             elif basis_norm_mode == "geometric":
                 b = 0.0
-                s = (1.0 - math.cos(theta_cutoff)) / 2.0 / 2.0
+                s = geometric_scale
             else:
                 raise ValueError(f"Unknown basis normalization mode {basis_norm_mode}.")
 

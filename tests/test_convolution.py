@@ -55,6 +55,12 @@ _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
     _devices.append((torch.device("cuda"),))
 
+# PyTorch CPU autocast doesn't support fp16/bf16 autograd for our ops, so AMP parameter
+# rows are only meaningful on CUDA. Gate them at collection time to avoid skip noise on
+# CPU-only runs (the in-test SkipTest still handles the CPU class variant when CUDA is
+# available, since parameterized_class also generates that variant).
+_AMP_SUPPORTED = torch.cuda.is_available()
+
 # perf thresholds
 # CPU results normalized to 16 OpenMP threads,
 # GPU results normalized to V100 16 GB GPU
@@ -89,6 +95,29 @@ def _normalize_convolution_tensor_dense(
     else:
         n_olat = nlat_out
 
+    # "none" skips bias/scale computation entirely; still mirror the sparse layout by rolling
+    # the r=0 slice into the other r slices (the sparse impl stores only r=0 and rolls at
+    # contraction time), then apply optional quadrature merging
+    if basis_norm_mode == "none":
+        pscale = nlon_in // nlon_out
+        for ik in range(kernel_size):
+            for ilat in range(n_olat):
+                if transpose_normalization:
+                    for r in range(1, nlon_out):
+                        psi[ik, :, r, ilat, :] = torch.roll(psi[ik, :, 0, ilat, :], r * pscale, dims=-1)
+                else:
+                    for r in range(1, nlon_out):
+                        psi[ik, ilat, r, :, :] = torch.roll(psi[ik, ilat, 0, :, :], r * pscale, dims=-1)
+
+        if transpose_normalization:
+            if merge_quadrature:
+                psi = quad_weights.reshape(1, -1, 1, 1, 1) * psi / correction_factor
+        else:
+            if merge_quadrature:
+                psi = quad_weights.reshape(1, 1, 1, -1, 1) * psi
+
+        return psi
+
     bias_arr = torch.zeros(kernel_size, n_olat, dtype=psi.dtype, device=psi.device)
     scale_arr = torch.zeros(kernel_size, n_olat, dtype=psi.dtype, device=psi.device)
     support_arr = torch.zeros(kernel_size, n_olat, dtype=psi.dtype, device=psi.device)
@@ -120,24 +149,30 @@ def _normalize_convolution_tensor_dense(
     # entries (e.g. anisotropic modes at the poles where scale ≈ 0).
     pscale = nlon_in // nlon_out
 
+    # precompute the per-ik mean for "mean" mode so we don't rely on Python function-scope
+    # reuse of b/s across ilat iterations inside the loop below
+    if basis_norm_mode == "mean":
+        bias_per_ik = bias_arr.mean(dim=1)
+        scale_per_ik = scale_arr.mean(dim=1)
+
+    # precompute the "geometric" scalar once; it's ik/ilat-independent
+    if basis_norm_mode == "geometric":
+        geometric_scale = (1.0 - math.cos(theta_cutoff)) / 2.0 / 2.0
+
     for ik in range(kernel_size):
         for ilat in range(n_olat):
             if basis_norm_mode in ["nodal", "modal"]:
                 b = bias_arr[ik, ilat]
                 s = scale_arr[ik, ilat]
             elif basis_norm_mode == "mean":
-                if ilat == 0:
-                    b = bias_arr[ik, :].mean()
-                    s = scale_arr[ik, :].mean()
+                b = bias_per_ik[ik]
+                s = scale_per_ik[ik]
             elif basis_norm_mode == "support":
                 b = 0.0
                 s = support_arr[ik, ilat]
-            elif basis_norm_mode == "none":
-                b = 0.0
-                s = 1.0
             elif basis_norm_mode == "geometric":
                 b = 0.0
-                s = (1.0 - math.cos(theta_cutoff)) / 2.0 / 2.0
+                s = geometric_scale
             else:
                 raise ValueError(f"Unknown basis normalization mode {basis_norm_mode}.")
 
@@ -414,7 +449,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
             [8, 4, 2, (12, 24), (24, 48), (3), "zernike", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
             [8, 4, 2, (12, 24), (24, 48), (3, 3), "fourier-bessel", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
-            # fp16 tests (AMP)
+        ] + ([
+            # fp16 tests (AMP) — only collected when AMP is supported (CUDA available)
             # regular convolution
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, 2e-2, 1e-2],
             [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, 2e-2, 1e-2],
@@ -428,7 +464,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             # transpose convolution
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, 5e-2, 5e-2],
             [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, 5e-2, 5e-2],
-        ],
+        ] if _AMP_SUPPORTED else []),
         skip_on_empty=True,
     )
     def test_sparse_against_dense(
@@ -601,7 +637,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "geometric", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
             [8, 4, 2, (21, 40), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
             [8, 4, 2, (21, 40), (41, 80), (2, 2), "harmonic", "modal", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
-            # fp16 tests (AMP)
+        ] + ([
+            # fp16 tests (AMP) — only collected when AMP is supported (CUDA available)
             # regular convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, 1e-2, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, 1e-2, 1e-2],
@@ -615,7 +652,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             # transpose convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, 1e-2, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, 1e-2, 1e-2],
-        ],
+        ] if _AMP_SUPPORTED else []),
         skip_on_empty=True,
     )
     @unittest.skipUnless((optimized_kernels_is_available()), "skipping test because optimized kernels are not available")
