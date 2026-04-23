@@ -38,11 +38,13 @@ import torch
 
 from torch_harmonics.cache import lru_cache
 
+# numpy is always available as a transitive dependency of torch
+import numpy as np
+
 # scipy is only required for FourierBesselFilterBasis, which needs Bessel functions.
 # Import lazily at module load so plain users who don't need that basis aren't forced
 # to install scipy; availability is checked in FourierBesselFilterBasis.__init__.
 try:
-    import numpy as np
     from scipy.special import jn as _scipy_jn, jn_zeros as _scipy_jn_zeros
 
     _SCIPY_AVAILABLE = True
@@ -203,11 +205,11 @@ class PiecewiseLinearFilterBasis(FilterBasis):
         dr = 2 * r_cutoff / (nr + 1)
 
         # compute the support (cast to r.dtype so fp64 callers stay in fp64)
-        ikernel_f = ikernel.to(r.dtype)
+        ikernel = ikernel.to(r.dtype)
         if nr % 2 == 1:
-            ir = ikernel_f * dr
+            ir = ikernel * dr
         else:
-            ir = (ikernel_f + 0.5) * dr
+            ir = (ikernel + 0.5) * dr
 
         # find the indices where the rotated position falls into the support of the kernel
         iidx = torch.argwhere(((r - ir).abs() <= dr) & (r <= r_cutoff))
