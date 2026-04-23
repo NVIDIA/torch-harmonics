@@ -532,8 +532,6 @@ class FourierBesselFilterBasis(FilterBasis):
         Radial: integral_0^R J_m(alpha r/R)^2 r dr = R^2 * J_{m+1}(alpha)^2 / 2.
         Angular: integral_0^{2pi} cos^2(m phi) dphi = 2pi (m=0) or pi (m>0).
         """
-        del nr, nphi
-
         ms = self._ms
         alphas = self._alphas
 
