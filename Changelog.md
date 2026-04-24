@@ -7,6 +7,9 @@
 * Added Fourier-Bessel basis functions
 * New `modal` filter basis normalization mode subtracts the mean to reduce spectral leakage
 * New `geometric` mode uses the theoretical area measure of the spherical cap to normalize
+* Added optional QK normalization (`use_qknorm`) to `AttentionS2` and `NeighborhoodAttentionS2`
+* Refactored attention custom autograd to perform QKV projections outside the custom op, letting torch handle conv2d gradients natively
+* **Breaking**: default attention scale in `NeighborhoodAttentionS2` changed from `1/sqrt(k_channels)` to `1/sqrt(k_channels // num_heads)` to match standard MHA head-dim scaling; affects users relying on the default with `num_heads > 1`
 
 ### v0.9.0
 
