@@ -120,17 +120,47 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 1,   8,    8, "equiangular", "equiangular", False, 1e-5, 1e-4],
             [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
-            # downsampling tests
+            # downsampling tests, pscale=2 (lat+lon)
             [64, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
             [65, 128, 33,  64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            # pscale=3 downsampling (exercises pscale*wo kernel arithmetic)
+            [64,  96, 32,  32, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            # pscale=4 downsampling
+            [64, 128, 32,  32, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            # lon-only downsampling (same nlat; isolates azimuth ring with pscale_lon=2, no lat halo)
+            [64, 128, 64,  64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            # lat-only downsampling (same nlon, pscale_lon=1; isolates polar halo exchange)
+            [64, 128, 32, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            # odd nlat_in -> even nlat_out, pscale_lon=2
+            [65, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            # legendre-gauss grid (same-shape + downsampling)
+            [64, 128, 64, 128, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", False, 1e-5, 1e-4],
+            [64, 128, 32,  64, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", False, 1e-5, 1e-4],
+            # mixed grid: equiangular input -> legendre-gauss output
+            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular",    "legendre-gauss", False, 1e-5, 1e-4],
+            [64, 128, 32,  64, 2, 16, 1, None, None, "equiangular",    "legendre-gauss", False, 1e-5, 1e-4],
+            # heads=4 with asymmetric channels (k=32, out=16; in=16)
+            [64, 128, 64, 128, 2, 16, 4,  32,   16, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 128, 32,  64, 2, 16, 4,  32,   16, "equiangular", "equiangular", False, 1e-5, 1e-4],
             # same cases with QK norm enabled
             [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 1,   8,    8, "equiangular", "equiangular", True, 1e-5, 1e-4],
             [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
-            # downsampling tests with QK norm enabled
+            # downsampling tests with QK norm enabled, pscale=2
             [64, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
             [65, 128, 33,  64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            # pscale=3 / pscale=4 downsampling with QK norm
+            [64,  96, 32,  32, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [64, 128, 32,  32, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            # lon-only / lat-only downsampling with QK norm
+            [64, 128, 64,  64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [64, 128, 32, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            # odd nlat_in -> even nlat_out with QK norm
+            [65, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            # legendre-gauss grid with QK norm
+            [64, 128, 64, 128, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", True, 1e-5, 1e-4],
+            [64, 128, 32,  64, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", True, 1e-5, 1e-4],
             # upsampling is not supported by the kernel yet (serial layer asserts nlon_in % nlon_out == 0)
         ],
         skip_on_empty=True,

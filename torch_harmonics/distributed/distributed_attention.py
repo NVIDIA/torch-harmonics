@@ -86,6 +86,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         psi_col_idx, psi_roff_idx, psi_row_idx,
         quad_weights,
         nlon_in: int,
+        pscale: int,
         lon_chunk_starts: list,
         nlon_kx_list: list,
         lat_halo_start: int,
@@ -127,7 +128,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                 kw_chunk, vw_chunk, qw,
                 y_acc, alpha_sum, qdotk_max,
                 quad_weights, psi_col_idx, psi_roff_idx, psi_row_idx,
-                nlon_in, lon_lo_kx, lat_halo_start,
+                nlon_in, pscale, lon_lo_kx, lat_halo_start,
                 nlat_out_local, nlon_out_local,
             )
 
@@ -151,7 +152,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         (kw, vw, qw,
          psi_col_idx, psi_roff_idx, psi_row_idx,
          quad_weights,
-         nlon_in, lon_chunk_starts, nlon_kx_list,
+         nlon_in, pscale, lon_chunk_starts, nlon_kx_list,
          lat_halo_start, nlat_out_local, nlon_out_local,
          r_lat, az_group, az_rank, az_size) = inputs
         y_out, alpha_sum, qdotk_max = output
@@ -161,6 +162,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         ctx.save_for_backward(kw, vw, qw, psi_col_idx, psi_roff_idx, psi_row_idx,
                               quad_weights, alpha_sum, qdotk_max)
         ctx.nlon_in          = nlon_in
+        ctx.pscale           = pscale
         ctx.lon_chunk_starts = lon_chunk_starts
         ctx.nlon_kx_list     = nlon_kx_list
         ctx.lat_halo_start   = lat_halo_start
@@ -179,6 +181,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
          fwd_alpha_sum, fwd_qdotk_max) = ctx.saved_tensors
 
         nlon_in          = ctx.nlon_in
+        pscale           = ctx.pscale
         lon_chunk_starts = ctx.lon_chunk_starts
         nlon_kx_list     = ctx.nlon_kx_list
         lat_halo_start   = ctx.lat_halo_start
@@ -226,7 +229,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                 bwd_alpha_sum, bwd_qdotk_max, integral_buf,
                 alpha_k_buf, alpha_kvw_buf,
                 quad_weights, psi_col_idx, psi_roff_idx, psi_row_idx,
-                nlon_in, lon_lo_kx, lat_halo_start,
+                nlon_in, pscale, lon_lo_kx, lat_halo_start,
                 nlat_out_local, nlon_out_local,
             )
 
@@ -280,7 +283,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                 fwd_alpha_sum, fwd_qdotk_max, integral_norm,
                 dkw_chunk_cl, dvw_chunk_cl,
                 quad_weights, psi_col_idx, psi_roff_idx, psi_row_idx,
-                nlon_in, lon_lo_kx, lat_halo_start,
+                nlon_in, pscale, lon_lo_kx, lat_halo_start,
                 nlat_out_local, nlon_out_local,
             )
 
@@ -313,10 +316,10 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # middle H_in rows as the gradient for key_proj/value_proj.
 
         # Return grads for (kw, vw, qw, psi_col, psi_roff, psi_row, quad_weights,
-        #                   nlon_in, lon_chunk_starts, nlon_kx_list, lat_halo_start,
+        #                   nlon_in, pscale, lon_chunk_starts, nlon_kx_list, lat_halo_start,
         #                   nlat_out_local, nlon_out_local, r_lat,
         #                   az_group, az_rank, az_size)
-        return dkw, dvw, dqy, None, None, None, None, None, None, None, None, None, None, None, None, None, None
+        return dkw, dvw, dqy, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -449,14 +452,17 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         end   = roff_global[lat_hi].item()
         col_idx_local = col_idx_global[start:end].clone()
 
-        # Shift wi by lon_lo_out:
-        # col stores hi_global * nlon_in + wi_canonical
-        # We want   hi_global * nlon_in + (wi_canonical + lon_lo_out) % nlon_in
+        # Shift wi by pscale * lon_lo_out so the kernel can reconstruct wip from wo_local:
+        # col stores hi_global * nlon_in + wi_canonical. For global wo_global = lon_lo_out + wo_local,
+        # the target input column is (wi_canonical + pscale * wo_global) % nlon_in. The kernel evaluates
+        # (wi_shifted + pscale * wo_local) % nlon_in, so pre-shifting by pscale * lon_lo_out absorbs
+        # the rank-offset piece. pscale = 1 when nlon_in == nlon_out (same-shape case).
         nlon_in   = self.nlon_in
         lon_lo    = self.lon_lo_out
+        pscale    = self.nlon_in // self.nlon_out
         hi_global = col_idx_local // nlon_in
         wi_canon  = col_idx_local - hi_global * nlon_in
-        wi_shifted = (wi_canon + lon_lo) % nlon_in
+        wi_shifted = (wi_canon + pscale * lon_lo) % nlon_in
         col_idx_shifted = hi_global * nlon_in + wi_shifted
 
         # Build sorted row_idx for local output rows (0-indexed within local range)
@@ -574,6 +580,9 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         lat_halo_start = lat_in_starts[self.comm_rank_polar] - self.r_lat
 
         # ---- 3. ring attention ----
+        # Global pscale — the kernel must not infer this from local shapes,
+        # because kernel `nlon_out` is nlon_out_local which differs when az_size > 1.
+        pscale = self.nlon_in // self.nlon_out
         out, _, _ = _RingNeighborhoodAttentionFn.apply(
             key_halo,
             value_halo,
@@ -583,6 +592,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
             self.psi_row_idx_local,
             self.quad_weights,
             self.nlon_in,
+            pscale,
             self.lon_in_starts,         # lon chunk starts for kv (same as lon_in)
             self.lon_in_shapes,         # lon chunk sizes for kv
             lat_halo_start,

@@ -71,7 +71,7 @@ if optimized_kernels_is_available():
     def _(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor,
           y_acc: torch.Tensor, alpha_sum_buf: torch.Tensor, qdotk_max_buf: torch.Tensor,
           quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor, row_idx: torch.Tensor,
-          nlon_in: int, lon_lo_kx: int, lat_halo_start: int, nlat_out: int, nlon_out: int) -> None:
+          nlon_in: int, pscale: int, lon_lo_kx: int, lat_halo_start: int, nlat_out: int, nlon_out: int) -> None:
         pass
 
     @torch.library.register_fake("attention_kernels::backward_ring_step_pass1")
@@ -79,7 +79,7 @@ if optimized_kernels_is_available():
           alpha_sum_buf: torch.Tensor, qdotk_max_buf: torch.Tensor, integral_buf: torch.Tensor,
           alpha_k_buf: torch.Tensor, alpha_kvw_buf: torch.Tensor,
           quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor, row_idx: torch.Tensor,
-          nlon_in: int, lon_lo_kx: int, lat_halo_start: int, nlat_out: int, nlon_out: int) -> None:
+          nlon_in: int, pscale: int, lon_lo_kx: int, lat_halo_start: int, nlat_out: int, nlon_out: int) -> None:
         pass
 
     @torch.library.register_fake("attention_kernels::backward_ring_step_pass2")
@@ -87,7 +87,7 @@ if optimized_kernels_is_available():
           alpha_sum_buf: torch.Tensor, qdotk_max_buf: torch.Tensor, integral_norm_buf: torch.Tensor,
           dkx: torch.Tensor, dvx: torch.Tensor,
           quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor, row_idx: torch.Tensor,
-          nlon_in: int, lon_lo_kx: int, lat_halo_start: int, nlat_out: int, nlon_out: int) -> None:
+          nlon_in: int, pscale: int, lon_lo_kx: int, lat_halo_start: int, nlat_out: int, nlon_out: int) -> None:
         pass
 
     # forward

@@ -943,7 +943,8 @@ TORCH_LIBRARY_IMPL(attention_kernels, CUDA, m)
 
 // Pass 1: accumulate softmax statistics across ring steps.
 // After all ring steps, finalize dqy in Python using the accumulated state.
-// col_idx must have wi pre-shifted by lon_lo_out (see Python __init__ preprocessing).
+// col_idx must have wi pre-shifted by pscale * lon_lo_out (see Python __init__ preprocessing,
+// where pscale = nlon_in / nlon_out).
 template<int BDIM_X, typename FLOATV_T>
 __global__
 __launch_bounds__(BDIM_X)
@@ -953,6 +954,7 @@ void s2_attn_bwd_ring_step_pass1_generic_vec_k(
     int nlat_halo,
     int nlon_kx,
     int nlon_in,
+    int pscale,           // GLOBAL pscale = nlon_in / nlon_out_global
     int lon_lo_kx,
     int lat_halo_start,
     int nlat_out,
@@ -1018,6 +1020,9 @@ void s2_attn_bwd_ring_step_pass1_generic_vec_k(
     if constexpr(std::is_same<FLOATV_T, float4>::value) { __syncwarp(); }
 #endif
 
+    // `pscale` is the GLOBAL ratio nlon_in / nlon_out_global, passed by the caller.
+    // The kernel's `nlon_out` is the LOCAL output width (nlon_out_local), not the global one.
+
     const int64_t rbeg = row_off[ho];
     const int64_t rend = row_off[ho + 1];
     col_idx += rbeg;
@@ -1027,7 +1032,10 @@ void s2_attn_bwd_ring_step_pass1_generic_vec_k(
         const int64_t col   = col_idx[off];
         const int hi_global = col / nlon_in;
         const int wi        = col - (hi_global * nlon_in);
-        const int wip       = (wi + wo) - ((wi + wo) / nlon_in) * nlon_in;
+        // wip = (wi + pscale * wo_local) % nlon_in
+        //     = (wi_canonical + pscale * (lon_lo_out + wo_local)) % nlon_in
+        const int wi_wo     = wi + pscale * wo;
+        const int wip       = wi_wo - (wi_wo / nlon_in) * nlon_in;
 
         if (wip < lon_lo_kx || wip >= lon_lo_kx + nlon_kx) continue;
 
@@ -1088,6 +1096,7 @@ void s2_attn_bwd_ring_step_pass2_generic_vec_k(
     int nlat_halo,
     int nlon_kx,
     int nlon_in,
+    int pscale,           // GLOBAL pscale = nlon_in / nlon_out_global
     int lon_lo_kx,
     int lat_halo_start,
     int nlat_out,
@@ -1146,6 +1155,9 @@ void s2_attn_bwd_ring_step_pass2_generic_vec_k(
     if constexpr(std::is_same<FLOATV_T, float4>::value) { __syncwarp(); }
 #endif
 
+    // `pscale` is the GLOBAL ratio nlon_in / nlon_out_global, passed by the caller.
+    // The kernel's `nlon_out` is the LOCAL output width (nlon_out_local), not the global one.
+
     const int64_t rbeg = row_off[ho];
     const int64_t rend = row_off[ho + 1];
     col_idx += rbeg;
@@ -1155,7 +1167,10 @@ void s2_attn_bwd_ring_step_pass2_generic_vec_k(
         const int64_t col   = col_idx[off];
         const int hi_global = col / nlon_in;
         const int wi        = col - (hi_global * nlon_in);
-        const int wip       = (wi + wo) - ((wi + wo) / nlon_in) * nlon_in;
+        // wip = (wi + pscale * wo_local) % nlon_in
+        //     = (wi_canonical + pscale * (lon_lo_out + wo_local)) % nlon_in
+        const int wi_wo     = wi + pscale * wo;
+        const int wip       = wi_wo - (wi_wo / nlon_in) * nlon_in;
 
         if (wip < lon_lo_kx || wip >= lon_lo_kx + nlon_kx) continue;
 
@@ -1209,7 +1224,7 @@ void s2_attn_bwd_ring_step_pass2_generic_vec_k(
 
 static void s2_attn_bwd_ring_step_pass1_dispatch(
     int64_t batch_size, int64_t nchans_in, int64_t nchans_out,
-    int64_t nlon_in, int64_t nlat_halo, int64_t nlon_kx,
+    int64_t nlon_in, int64_t pscale, int64_t nlat_halo, int64_t nlon_kx,
     int64_t lon_lo_kx, int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out,
     at::Tensor kxP, at::Tensor vxP, at::Tensor qyP, at::Tensor dyP,
     at::Tensor row_idx, at::Tensor row_off, at::Tensor col_idx, at::Tensor quad_weights,
@@ -1248,7 +1263,7 @@ static void s2_attn_bwd_ring_step_pass1_dispatch(
         s2_attn_bwd_ring_step_pass1_generic_vec_k<THREADS, float>
             <<<grid, block, shsize, stream>>>(
                 nchans_in, nchans_out, nlat_halo, nlon_kx,
-                nlon_in, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
+                nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
                 _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
                 _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw);
         CHECK_ERROR("s2_attn_bwd_ring_step_pass1_generic_vec_k<float>");
@@ -1266,7 +1281,7 @@ static void s2_attn_bwd_ring_step_pass1_dispatch(
         s2_attn_bwd_ring_step_pass1_generic_vec_k<THREADS, float4>
             <<<grid, block, shsize, stream>>>(
                 nchans_in/VEC_SIZE, nchans_out/VEC_SIZE, nlat_halo, nlon_kx,
-                nlon_in, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
+                nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
                 _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights,
                 _alpha_sum, _qdotk_max, _integral, _alpha_k4, _alpha_kvw4);
         CHECK_ERROR("s2_attn_bwd_ring_step_pass1_generic_vec_k<float4>");
@@ -1275,7 +1290,7 @@ static void s2_attn_bwd_ring_step_pass1_dispatch(
 
 static void s2_attn_bwd_ring_step_pass2_dispatch(
     int64_t batch_size, int64_t nchans_in, int64_t nchans_out,
-    int64_t nlon_in, int64_t nlat_halo, int64_t nlon_kx,
+    int64_t nlon_in, int64_t pscale, int64_t nlat_halo, int64_t nlon_kx,
     int64_t lon_lo_kx, int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out,
     at::Tensor kxP, at::Tensor vxP, at::Tensor qyP, at::Tensor dyP,
     at::Tensor row_idx, at::Tensor row_off, at::Tensor col_idx, at::Tensor quad_weights,
@@ -1314,7 +1329,7 @@ static void s2_attn_bwd_ring_step_pass2_dispatch(
         s2_attn_bwd_ring_step_pass2_generic_vec_k<THREADS, float>
             <<<grid, block, shsize, stream>>>(
                 nchans_in, nchans_out, nlat_halo, nlon_kx,
-                nlon_in, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
+                nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
                 _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
                 _alpha_sum, _qdotk_max, _integral_n, _dkxp, _dvxp);
         CHECK_ERROR("s2_attn_bwd_ring_step_pass2_generic_vec_k<float>");
@@ -1331,7 +1346,7 @@ static void s2_attn_bwd_ring_step_pass2_dispatch(
         s2_attn_bwd_ring_step_pass2_generic_vec_k<THREADS, float4>
             <<<grid, block, shsize, stream>>>(
                 nchans_in/VEC_SIZE, nchans_out/VEC_SIZE, nlat_halo, nlon_kx,
-                nlon_in, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
+                nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
                 _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights,
                 _alpha_sum, _qdotk_max, _integral_n, _dkxp4, _dvxp4);
         CHECK_ERROR("s2_attn_bwd_ring_step_pass2_generic_vec_k<float4>");
@@ -1343,7 +1358,7 @@ void s2_attention_bwd_ring_step_pass1_cuda(
     at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf, at::Tensor integral_buf,
     at::Tensor alpha_k_buf, at::Tensor alpha_kvw_buf,
     at::Tensor quad_weights, at::Tensor psi_col_idx, at::Tensor psi_row_off, at::Tensor psi_row_idx,
-    int64_t nlon_in, int64_t lon_lo_kx, int64_t lat_halo_start,
+    int64_t nlon_in, int64_t pscale, int64_t lon_lo_kx, int64_t lat_halo_start,
     int64_t nlat_out, int64_t nlon_out)
 {
     CHECK_CUDA_INPUT_TENSOR(kx); CHECK_CUDA_INPUT_TENSOR(vx);
@@ -1371,7 +1386,7 @@ void s2_attention_bwd_ring_step_pass1_cuda(
 
     s2_attn_bwd_ring_step_pass1_dispatch(
         batch_size, nchans_in, nchans_out,
-        nlon_in, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start,
+        nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start,
         nlat_out, nlon_out,
         kxP, vxP, qyP, dyP,
         psi_row_idx, psi_row_off, psi_col_idx, quad_weights,
@@ -1385,7 +1400,7 @@ void s2_attention_bwd_ring_step_pass2_cuda(
     at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf, at::Tensor integral_norm_buf,
     at::Tensor dkx, at::Tensor dvx,
     at::Tensor quad_weights, at::Tensor psi_col_idx, at::Tensor psi_row_off, at::Tensor psi_row_idx,
-    int64_t nlon_in, int64_t lon_lo_kx, int64_t lat_halo_start,
+    int64_t nlon_in, int64_t pscale, int64_t lon_lo_kx, int64_t lat_halo_start,
     int64_t nlat_out, int64_t nlon_out)
 {
     CHECK_CUDA_INPUT_TENSOR(kx); CHECK_CUDA_INPUT_TENSOR(vx);
@@ -1415,7 +1430,7 @@ void s2_attention_bwd_ring_step_pass2_cuda(
     // dkx/dvx are already in channels-last format (allocated that way in Python)
     s2_attn_bwd_ring_step_pass2_dispatch(
         batch_size, nchans_in, nchans_out,
-        nlon_in, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start,
+        nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start,
         nlat_out, nlon_out,
         kxP, vxP, qyP, dyP,
         psi_row_idx, psi_row_off, psi_col_idx, quad_weights,
