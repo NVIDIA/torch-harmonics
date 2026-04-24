@@ -384,6 +384,24 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         self.nlat_out_local = self.lat_out_shapes[self.comm_rank_polar]
         self.nlon_out_local = self.lon_out_shapes[self.comm_rank_azimuth]
 
+        # Downsampling invariant: every azimuth rank must carry the same lon pscale.
+        # The global `nlon_in % nlon_out == 0` check is inherited from the serial
+        # NeighborhoodAttentionS2.__init__, but that is not sufficient in distributed:
+        # if compute_split_shapes hands different ranks different local pscales
+        # (e.g. nlon_in=12, nlon_out=4, comm_size_azimuth=3 -> [4,4,4] vs [2,1,1]),
+        # the p-shift mapping in the ring exchange is ill-defined.
+        pscale_lon = self.nlon_in // self.nlon_out
+        for r, (lon_in_r, lon_out_r) in enumerate(zip(self.lon_in_shapes, self.lon_out_shapes)):
+            if lon_in_r != pscale_lon * lon_out_r:
+                raise ValueError(
+                    f"DistributedNeighborhoodAttentionS2: inconsistent azimuth split at rank {r}: "
+                    f"nlon_in_local={lon_in_r}, nlon_out_local={lon_out_r}. "
+                    f"Every azimuth rank must satisfy nlon_in_local == (nlon_in // nlon_out) * nlon_out_local "
+                    f"= {pscale_lon} * nlon_out_local. "
+                    f"Choose (nlon_in, nlon_out, comm_size_azimuth) so that compute_split_shapes "
+                    f"produces uniform local pscale."
+                )
+
         # global lon offsets
         self.lon_in_starts  = list(accumulate([0] + self.lon_in_shapes[:-1]))
         self.lon_out_starts = list(accumulate([0] + self.lon_out_shapes[:-1]))
