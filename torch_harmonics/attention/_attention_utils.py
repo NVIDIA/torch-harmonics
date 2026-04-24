@@ -33,7 +33,6 @@ import math
 from typing import Union, Tuple
 
 import torch
-import torch.nn.functional as F
 from attention_helpers import optimized_kernels_is_available
 from . import attention_kernels
 
