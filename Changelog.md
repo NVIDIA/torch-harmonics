@@ -7,14 +7,12 @@
 * Added Fourier-Bessel basis functions
 * New `modal` filter basis normalization mode subtracts the mean to reduce spectral leakage
 * New `geometric` mode uses the theoretical area measure of the spherical cap to normalize
-* Added optional QK normalization (`use_qknorm`) to `AttentionS2` and `NeighborhoodAttentionS2`
 * Refactored attention custom autograd to perform QKV projections outside the custom op, letting torch handle conv2d gradients natively
 * **Breaking**: default attention scale in `NeighborhoodAttentionS2` changed from `1/sqrt(k_channels)` to `1/sqrt(k_channels // num_heads)` to match standard MHA head-dim scaling; affects users relying on the default with `num_heads > 1`
 * Support for DistributedNeighborhoodAttentionS2. This layer uses a 2-stage kernel to compute the attention per spatial parallel rank and performs an online update using ring exchange. Neighboring points in latitude are gathered using halo exchange
 * Added proper shape checks in all attention layers
 * Optional QK normalization (`use_qknorm=True`) for `AttentionS2` and `NeighborhoodAttentionS2`, applying per-head RMS normalization to Q and K projections
-* Fixed weight initialization in `AttentionS2` and `NeighborhoodAttentionS2`: Q/K/V projections now use correct gain factors when innput dim != embedding dim
-* Fixed default attention scale in `NeighborhoodAttentionS2`: now divides by `k_channels // num_heads` instead of `k_channels`
+* Fixed weight initialization in `AttentionS2` and `NeighborhoodAttentionS2`: Q/K/V projections now use correct gain factors when input dim != embedding dim
 * New distributed primitives: differentiable `polar_halo_exchange` and `get_group_neighbors` to support distributed attention
 * New ring-step CUDA kernels for distributed attention: forward (`s2_attn_fwd_ring_step`) and two-pass backward (`s2_attn_bwd_ring_step_pass1/2`)
 * Improved robustness of distributed transpose and better `torch.compile` compatibility

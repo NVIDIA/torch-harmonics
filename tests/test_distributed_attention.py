@@ -123,22 +123,15 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             # downsampling tests
             [64, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
             [65, 128, 33,  64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
-            [32,  64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
-            [33,  64, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
             # same cases with QK norm enabled
             [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 1,   8,    8, "equiangular", "equiangular", True, 1e-5, 1e-4],
             [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
-            # downsampling tests
+            # downsampling tests with QK norm enabled
             [64, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
             [65, 128, 33,  64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
-            # upsampling tests
-            [32,  64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
-            [33,  64, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
-            # mixed-grid upsampling: legendre-gauss input → equiangular output, non-integer ratios
-            [32,  64, 97, 192, 2, 16, 1, None, None, "legendre-gauss", "equiangular", False, 1e-5, 1e-4],
-            [32,  64, 97, 192, 2, 16, 1, None, None, "legendre-gauss", "equiangular", True,  1e-5, 1e-4],
+            # upsampling is not supported by the kernel yet (serial layer asserts nlon_in % nlon_out == 0)
         ],
         skip_on_empty=True,
     )
