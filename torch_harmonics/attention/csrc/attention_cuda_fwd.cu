@@ -596,7 +596,8 @@ TORCH_LIBRARY_IMPL(attention_kernels, CUDA, m)
 
 // BEGIN - forward ring step kernel and functions
 // Ring step variant: processes one KV chunk per call, accumulates into external state buffers.
-// col_idx must have wi pre-shifted by lon_lo_out (see Python __init__ preprocessing).
+// col_idx must have wi pre-shifted by pscale * lon_lo_out (see Python __init__ preprocessing,
+// where pscale = nlon_in / nlon_out).
 
 template<int BDIM_X,
          typename FLOATV_T>
@@ -608,6 +609,7 @@ void s2_attn_fwd_ring_step_generic_vec_k(
     int nlat_halo,        // number of lat rows in kx/vx chunk (with halo)
     int nlon_kx,          // number of lon columns in kx/vx chunk
     int nlon_in,          // GLOBAL nlon_in (for modular arithmetic)
+    int pscale,           // GLOBAL pscale = nlon_in / nlon_out_global
     int lon_lo_kx,        // global lon start of kx chunk
     int lat_halo_start,   // global lat index of first row in kx chunk
     int nlat_out,         // local output lat size
@@ -617,7 +619,7 @@ void s2_attn_fwd_ring_step_generic_vec_k(
     const FLOATV_T *__restrict__ qy,           // [batch][nlat_out][nlon_out][nchan_in]
     const int32_t  *__restrict__ row_idx,
     const int64_t  *__restrict__ row_off,
-    const int64_t  *__restrict__ col_idx,      // wi already shifted by lon_lo_out
+    const int64_t  *__restrict__ col_idx,      // wi already shifted by pscale * lon_lo_out
     const float    *__restrict__ quad_weights, // [nlat_in_global]
     FLOATV_T *__restrict__ y_acc,              // [batch][nlat_out][nlon_out][nchan_out] (in/out)
     float    *__restrict__ alpha_sum_buf,      // [batch][nlat_out][nlon_out] (in/out)
@@ -654,6 +656,10 @@ void s2_attn_fwd_ring_step_generic_vec_k(
         shy[chan] = y_acc[chan];
     }
 
+    // `pscale` is the GLOBAL ratio nlon_in / nlon_out_global, passed by the caller.
+    // Computing it here as `nlon_in / nlon_out` would be wrong because the kernel's
+    // `nlon_out` is the LOCAL output width (nlon_out_local), not the global one.
+
     const int64_t rbeg = row_off[ho];
     const int64_t rend = row_off[ho + 1];
     col_idx += rbeg;
@@ -663,11 +669,13 @@ void s2_attn_fwd_ring_step_generic_vec_k(
         const int64_t col = col_idx[off];
 
         // col_idx stores hi_global * nlon_in + wi_shifted
-        // where wi_shifted = (wi_canonical + lon_lo_out) % nlon_in (baked in at Python __init__)
+        // where wi_shifted = (wi_canonical + pscale * lon_lo_out) % nlon_in (baked in at Python __init__)
         const int hi_global = col / nlon_in;
         const int wi        = col - (hi_global * nlon_in);
-        // wip = (wi + wo_local) % nlon_in = (wi_canonical + lon_lo_out + wo_local) % nlon_in
-        const int wip       = (wi + wo) - ((wi + wo) / nlon_in) * nlon_in;
+        // wip = (wi + pscale * wo_local) % nlon_in
+        //     = (wi_canonical + pscale * (lon_lo_out + wo_local)) % nlon_in
+        const int wi_wo     = wi + pscale * wo;
+        const int wip       = wi_wo - (wi_wo / nlon_in) * nlon_in;
 
         // Skip neighbors not in current kx chunk
         if (wip < lon_lo_kx || wip >= lon_lo_kx + nlon_kx) continue;
@@ -711,6 +719,7 @@ static void s2_attn_fwd_ring_step_dispatch(
     int64_t nchans_in,
     int64_t nchans_out,
     int64_t nlon_in,
+    int64_t pscale,
     int64_t nlat_halo,
     int64_t nlon_kx,
     int64_t lon_lo_kx,
@@ -757,7 +766,7 @@ static void s2_attn_fwd_ring_step_dispatch(
         s2_attn_fwd_ring_step_generic_vec_k<THREADS, float>
             <<<grid, block, shsize, stream>>>(
                 nchans_in, nchans_out, nlat_halo, nlon_kx,
-                nlon_in, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
+                nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
                 _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights,
                 _y_acc, _alpha_sum, _qdotk_max);
         CHECK_ERROR("s2_attn_fwd_ring_step_generic_vec_k<float>");
@@ -773,7 +782,7 @@ static void s2_attn_fwd_ring_step_dispatch(
         s2_attn_fwd_ring_step_generic_vec_k<THREADS, float4>
             <<<grid, block, shsize, stream>>>(
                 nchans_in / VEC_SIZE, nchans_out / VEC_SIZE,
-                nlat_halo, nlon_kx, nlon_in, lon_lo_kx, lat_halo_start,
+                nlat_halo, nlon_kx, nlon_in, pscale, lon_lo_kx, lat_halo_start,
                 nlat_out, nlon_out,
                 _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights,
                 _yacc4, _alpha_sum, _qdotk_max);
@@ -793,6 +802,7 @@ void s2_attention_fwd_ring_step_cuda(
     at::Tensor psi_row_off,
     at::Tensor psi_row_idx,
     int64_t nlon_in,
+    int64_t pscale,
     int64_t lon_lo_kx,
     int64_t lat_halo_start,
     int64_t nlat_out,
@@ -829,7 +839,7 @@ void s2_attention_fwd_ring_step_cuda(
 
     s2_attn_fwd_ring_step_dispatch(
         batch_size, nchans_in, nchans_out,
-        nlon_in, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start,
+        nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start,
         nlat_out, nlon_out,
         kxP, vxP, qyP,
         psi_row_idx, psi_row_off, psi_col_idx,
