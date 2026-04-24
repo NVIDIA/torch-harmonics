@@ -154,11 +154,12 @@ def get_filter_basis(kernel_shape: Union[int, Tuple[int], Tuple[int, int]], basi
     elif basis_type == "morlet":
         warnings.warn(
             "The 'morlet' basis type is deprecated and will be removed in a future release. "
-            "Use 'harmonic' basis type with a Morlet window function instead.",
+            "Use 'harmonic' instead. The 'morlet' alias disables L2 normalization of the basis "
+            "functions for backwards compatibility.",
             DeprecationWarning,
             stacklevel=2,
         )
-        return HarmonicFilterBasis(kernel_shape=kernel_shape)
+        return HarmonicFilterBasis(kernel_shape=kernel_shape, normalize=False)
     else:
         raise ValueError(f"Unknown basis_type {basis_type}")
 
@@ -292,6 +293,7 @@ class HarmonicFilterBasis(FilterBasis):
     def __init__(
         self,
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
+        normalize: bool = True,
     ):
 
         if isinstance(kernel_shape, int):
@@ -301,7 +303,8 @@ class HarmonicFilterBasis(FilterBasis):
 
         super().__init__(kernel_shape=kernel_shape)
 
-        self._l2_norms = self.compute_l2_norms()
+        if normalize:
+            self._l2_norms = self.compute_l2_norms()
 
     @property
     def kernel_size(self):
@@ -434,7 +437,6 @@ class ZernikeFilterBasis(FilterBasis):
         # radial: int_0^1 R_n^|m|(r)^2 r dr = 1/(2(n+1))
         # angular: int_0^{2pi} cos^2(m phi) dphi = 2pi (m=0) or pi (m!=0)
         m = 2 * l - n
-        # compute in r.dtype so fp64 callers get fp64 norm precision (else Long.float() forces fp32)
         epsilon_m = torch.where(m == 0, 2.0, 1.0).to(r.dtype)
         norm = torch.sqrt(math.pi * epsilon_m / (2.0 * (n.to(r.dtype) + 1))).clamp(min=1e-12)
 
