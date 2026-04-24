@@ -130,7 +130,8 @@ class _DistributeTransposeAzimuth(torch.autograd.Function):
 
         # short-circuit when the azimuth group isn't initialized (e.g., single-rank runs)
         if not is_distributed_azimuth():
-            return x
+            # WAR for a potential contig check torch bug for channels last contig tensors
+            return x.contiguous()
 
         # WAR for a potential contig check torch bug for channels last contig tensors
         x = x.contiguous()
@@ -145,7 +146,8 @@ class _DistributeTransposeAzimuth(torch.autograd.Function):
     @custom_bwd(device_type="cuda")
     def backward(ctx, go):
         if not is_distributed_azimuth():
-            return go, None, None
+            # WAR for a potential contig check torch bug for channels last contig tensors
+            return go.contiguous(), None, None
         dims = ctx.dims
         dim0_split_sizes = ctx.dim0_split_sizes
         go = go.contiguous()
@@ -164,7 +166,8 @@ class _DistributeTransposePolar(torch.autograd.Function):
 
         # short-circuit when the polar group isn't initialized (e.g., single-rank runs)
         if not is_distributed_polar():
-            return x
+            # WAR for a potential contig check torch bug for channels last contig tensors
+            return x.contiguous()
 
         # WAR for a potential contig check torch bug for channels last contig tensors
         x = x.contiguous()
@@ -179,7 +182,8 @@ class _DistributeTransposePolar(torch.autograd.Function):
     def backward(ctx, go):
 
         if not is_distributed_polar():
-            return go, None, None
+            # WAR for a potential contig check torch bug for channels last contig tensors
+            return go.contiguous(), None, None
         dims = ctx.dims
         dim0_split_sizes = ctx.dim0_split_sizes
         # WAR for a potential contig check torch bug for channels last contig tensors
