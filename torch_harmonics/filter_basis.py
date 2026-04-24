@@ -117,8 +117,10 @@ class FilterBasis(metaclass=abc.ABCMeta):
         # open interval in phi to avoid double-counting the periodic endpoint
         dphi = 2 * math.pi / nphi
         phi = torch.arange(nphi, dtype=torch.float64) * dphi
-        dr = r_cutoff / (nr - 1)
-        r = torch.linspace(0, r_cutoff, nr, dtype=torch.float64)
+        # midpoint rule in r: matches the open-interval phi convention,
+        # avoids the closed-grid area bias, and gives O(h^2) convergence
+        dr = r_cutoff / nr
+        r = (torch.arange(nr, dtype=torch.float64) + 0.5) * dr
         r, phi = torch.meshgrid(r, phi, indexing="ij")
 
         iidx, vals = self.compute_support_vals(r, phi, r_cutoff=r_cutoff)
