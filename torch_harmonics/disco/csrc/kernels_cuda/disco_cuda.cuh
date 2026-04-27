@@ -30,7 +30,7 @@
 
 #pragma once
 
-#include "disco.h"
+#include "../disco.h"
 
 #include <cuda_runtime.h>
 #include <c10/cuda/CUDAStream.h>

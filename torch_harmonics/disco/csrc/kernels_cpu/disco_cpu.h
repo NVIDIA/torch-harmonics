@@ -30,7 +30,7 @@
 
 #pragma once
 
-#include "disco.h"
+#include "../disco.h"
 
 #define CACHE_BLOCK_SIZE (64)
 

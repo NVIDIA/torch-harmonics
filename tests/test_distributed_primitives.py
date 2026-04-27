@@ -37,6 +37,7 @@ import torch.distributed as dist
 import torch_harmonics.distributed as thd
 from torch_harmonics.distributed import (
     compute_split_shapes,
+    split_tensor_along_dim,
     scatter_to_polar_region,
     gather_from_polar_region,
     distributed_transpose_polar,
@@ -329,6 +330,101 @@ class TestDistributedReduce(unittest.TestCase):
                             atol=1e-5, rtol=1e-4, verbose=True),
             "input gradient does not match the upstream gradient (expected pass-through)",
         )
+
+
+class TestRingExchange(unittest.TestCase):
+    """Ring exchange across the azimuth group, as used by
+    DistributedNeighborhoodAttentionS2.
+
+    Strategy:
+      1. Build a global tensor that is identical on every rank (fixed seed)
+         and split it deterministically into `az_size` chunks along its last
+         dimension.
+      2. Each rank starts holding its own chunk (`az_rank`).
+      3. Walk the ring for `az_size` steps. At step t, every rank should be
+         holding the chunk that originally belonged to rank
+         `(az_rank + t) mod az_size`. We compare against the corresponding
+         slice of the global tensor before each exchange.
+      4. After verifying, post a non-blocking ring exchange (send to prev,
+         recv from next) and continue.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        setup_class_from_context(cls, _DIST_CTX)
+        if not torch.cuda.is_available():
+            raise unittest.SkipTest(
+                "Ring exchange uses dist.batch_isend_irecv which currently "
+                "requires the NCCL backend (CUDA)"
+            )
+
+    @parameterized.expand(
+        [
+            # B,  C,  H, nlon_global
+            [ 2, 16,  8,  64],
+            [ 2, 16,  8,  65],   # uneven split: shapes differ across ranks
+            [ 1,  4,  3,  16],
+            [ 4,  8, 16, 128],
+        ],
+        skip_on_empty=True,
+    )
+    def test_ring_kv_full_cycle(self, B, C, H, nlon_global):
+        # _ring_kv lives in distributed_attention because it's the only caller;
+        # the function itself is a generic ring-exchange primitive.
+        from torch_harmonics.distributed.distributed_attention import _ring_kv
+
+        az_group = thd.azimuth_group()
+        az_size  = thd.azimuth_group_size()
+        az_rank  = thd.azimuth_group_rank()
+
+        # az_size == 1 is intentionally not skipped: the ring is then a no-op
+        # (the loop runs once, verifies the local chunk equals the reference,
+        # and exits without posting any P2POp). That is itself worth confirming.
+
+        # Same seed everywhere → every rank reconstructs the identical global
+        # tensor and so the per-source reference chunks all agree.
+        set_seed(333)
+        # Use different channel counts for kw and vw to catch any accidental
+        # cross-tensor bleed (e.g. wrong send/recv ordering inside _ring_kv).
+        kw_full = torch.randn(B, C,     H, nlon_global, device=self.device, dtype=torch.float32)
+        vw_full = torch.randn(B, C + 1, H, nlon_global, device=self.device, dtype=torch.float32)
+
+        kw_ref = split_tensor_along_dim(kw_full, dim=-1, num_chunks=az_size)
+        vw_ref = split_tensor_along_dim(vw_full, dim=-1, num_chunks=az_size)
+
+        # Each rank starts holding its own chunk.
+        kw_chunk = kw_ref[az_rank].clone()
+        vw_chunk = vw_ref[az_rank].clone()
+
+        for step in range(az_size):
+            src_rank = (az_rank + step) % az_size
+
+            self.assertTrue(
+                torch.equal(kw_chunk, kw_ref[src_rank]),
+                f"step {step} on rank {az_rank}: kw_chunk does not match "
+                f"reference chunk from source rank {src_rank}",
+            )
+            self.assertTrue(
+                torch.equal(vw_chunk, vw_ref[src_rank]),
+                f"step {step} on rank {az_rank}: vw_chunk does not match "
+                f"reference chunk from source rank {src_rank}",
+            )
+
+            # No exchange after the last verification.
+            if step == az_size - 1:
+                break
+
+            # Next source rank determines the receive-buffer width because
+            # the global split can be uneven.
+            next_src  = (az_rank + step + 1) % az_size
+            next_nlon = kw_ref[next_src].shape[-1]
+            recv_kw, recv_vw, reqs = _ring_kv(
+                kw_chunk, vw_chunk, az_group, next_nlon, next_nlon,
+            )
+            for req in reqs:
+                req.wait()
+            kw_chunk = recv_kw.clone()
+            vw_chunk = recv_vw.clone()
 
 
 if __name__ == "__main__":

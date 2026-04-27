@@ -30,7 +30,7 @@
 
 #pragma once
 
-#include "attention.h"
+#include "../attention.h"
 #include <vector>
 
 namespace attention_kernels {
