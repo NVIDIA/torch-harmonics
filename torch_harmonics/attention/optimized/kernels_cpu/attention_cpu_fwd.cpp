@@ -35,7 +35,7 @@ using namespace torch::indexing;
 namespace attention_kernels {
 
     torch::Tensor s2_attention_fwd_cpu(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor quad_weights,
-                                       at::Tensor col_idx, at::Tensor row_off, 
+                                       at::Tensor col_idx, at::Tensor row_off,
                                        int64_t nlon_in, int64_t nlat_out, int64_t nlon_out) {
         // sanity checks
         CHECK_CPU_INPUT_TENSOR(kx);
@@ -45,8 +45,15 @@ namespace attention_kernels {
         CHECK_CPU_INPUT_TENSOR(col_idx);
         CHECK_CPU_INPUT_TENSOR(row_off);
 
-        TORCH_CHECK(nlon_in % nlon_out == 0,
-                    "nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (", nlon_out, ")");
+        // direction selection: downsample / self-attention iff nlon_in is an integer
+        // multiple of nlon_out; upsample iff nlon_out is an integer multiple of
+        // nlon_in. The nlon_in == nlon_out (self-attention) case satisfies both and
+        // routes through the gather kernel below (pscale == 1).
+        const bool downsample = (nlon_in % nlon_out == 0);
+        const bool upsample   = (nlon_out % nlon_in == 0);
+        TORCH_CHECK(downsample || upsample,
+                    "either nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (", nlon_out,
+                    "), or vice versa");
 
         // change to channels first:
         bool kx_is_channels_last = kx.strides()[1] == 1;
@@ -61,6 +68,7 @@ namespace attention_kernels {
         const int64_t batch_size = kx.size(0);
         const int64_t nchannels_out = vx.size(1);
         const int64_t nchannels_in = qy.size(1);
+        const int64_t nlat_in = kx.size(2);
 
         // prepare result tensor
         auto y = torch::zeros({batch_size, nchannels_out, nlat_out, nlon_out}, qy.options());
@@ -74,8 +82,13 @@ namespace attention_kernels {
         auto kx_arr = kx.packed_accessor64<float, 4>();
         auto y_arr = y.packed_accessor64<float, 4>();
 
-        s2_attn_fwd_kernel<float>(kx_arr, vx_arr, qy_arr, quad_weights_arr, col_idx_arr, roff_arr, y_arr, 
-            nlon_in, nlat_out, nlon_out, batch_size, nchannels_in, nchannels_out);
+        if (downsample) {
+            s2_attn_fwd_kernel<float>(kx_arr, vx_arr, qy_arr, quad_weights_arr, col_idx_arr, roff_arr, y_arr,
+                nlon_in, nlat_out, nlon_out, batch_size, nchannels_in, nchannels_out);
+        } else {
+            s2_attn_fwd_upsample_kernel<float>(kx_arr, vx_arr, qy_arr, quad_weights_arr, col_idx_arr, roff_arr, y_arr,
+                nlon_in, nlat_in, nlat_out, nlon_out, batch_size, nchannels_in, nchannels_out);
+        }
 
         // permute back
         if (!qy_is_channels_last) { y = y.contiguous(at::MemoryFormat::Contiguous); }
