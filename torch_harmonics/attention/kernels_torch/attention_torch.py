@@ -475,16 +475,16 @@ torch.library.register_autograd("attention_kernels::_neighborhood_s2_attention_t
 # Symmetry with DISCO's transpose module:
 #   psi is precomputed by calling _precompute_convolution_tensor_s2 with in_shape
 #   and out_shape swapped, so rows of psi index the (smaller) input grid and
-#   cols encode (ho_big, wo_big_ref) on the (larger) output grid as
-#   ho_big * nlon_out + wo_big_ref.
+#   cols encode (ho_big, wo_big) on the (larger) output grid as
+#   ho_big * nlon_out + wo_big.
 #
 # Translation invariance: psi is built for input (hi_small, wi_small=0).
 # For wi_small > 0 we shift the stored output column index by pscale_out * wi_small
 # where pscale_out = nlon_out / nlon_in.
 #
 # Forward is a 2-pass scatter softmax (classical, not online):
-#   pass 1: for every (input, output-neighbor) pair, update qdotk_max[ho, wo]
-#   pass 2: with max fixed, accumulate alpha_sum[ho, wo] and y_acc[ho, wo]
+#   pass 1: for every (input, output-neighbor) pair, update qdotk_max[ho, wop]
+#   pass 2: with max fixed, accumulate alpha_sum[ho, wop] and y_acc[ho, wop]
 #   finalize: y = y_acc / alpha_sum
 # The backward references rebuild the softmax state on the fly (same pattern as
 # the downsample torch references; reference code, not meant to be fast).
@@ -495,7 +495,7 @@ def _neighborhood_s2_attention_upsample_fwd_torch(kx: torch.Tensor, vx: torch.Te
 
     kx, vx: [B, C_k/C_v, nlat_in, nlon_in]   (small grid = INPUT)
     qy:     [B, C_k,     nlat_out, nlon_out] (large grid = OUTPUT)
-    col_idx/row_off: psi built with swapped shapes; rows=nlat_in, cols=(ho*nlon_out + wo_ref)
+    col_idx/row_off: psi built with swapped shapes; rows=nlat_in, cols=(ho*nlon_out + wo)
     """
 
     assert nlon_out % nlon_in == 0, f"nlon_out ({nlon_out}) must be an integer multiple of nlon_in ({nlon_in})"
@@ -519,11 +519,11 @@ def _neighborhood_s2_attention_upsample_fwd_torch(kx: torch.Tensor, vx: torch.Te
             for idz in range(zstart, zend):
                 col = int(col_idx[idz])
                 ho = col // nlon_out
-                wo_ref = col % nlon_out
-                wo = (wo_ref + pscale_out * wi) % nlon_out
+                wo = col % nlon_out
+                wop = (wo + pscale_out * wi) % nlon_out
 
-                qdotk = torch.sum(qy[:, :, ho, wo] * kx[:, :, hi, wi], dim=1)   # [B]
-                qdotk_max[:, ho, wo] = torch.maximum(qdotk_max[:, ho, wo], qdotk)
+                qdotk = torch.sum(qy[:, :, ho, wop] * kx[:, :, hi, wi], dim=1)   # [B]
+                qdotk_max[:, ho, wop] = torch.maximum(qdotk_max[:, ho, wop], qdotk)
 
     # pass 2: with max fixed, accumulate alpha_sum and y_acc
     for hi in range(nlat_in):
@@ -533,13 +533,13 @@ def _neighborhood_s2_attention_upsample_fwd_torch(kx: torch.Tensor, vx: torch.Te
             for idz in range(zstart, zend):
                 col = int(col_idx[idz])
                 ho = col // nlon_out
-                wo_ref = col % nlon_out
-                wo = (wo_ref + pscale_out * wi) % nlon_out
+                wo = col % nlon_out
+                wop = (wo + pscale_out * wi) % nlon_out
 
-                qdotk = torch.sum(qy[:, :, ho, wo] * kx[:, :, hi, wi], dim=1)   # [B]
-                alpha = torch.exp(qdotk - qdotk_max[:, ho, wo]) * quad_weights[hi]
-                alpha_sum[:, ho, wo] += alpha
-                y_acc[:, :, ho, wo] += alpha.unsqueeze(1) * vx[:, :, hi, wi]
+                qdotk = torch.sum(qy[:, :, ho, wop] * kx[:, :, hi, wi], dim=1)   # [B]
+                alpha = torch.exp(qdotk - qdotk_max[:, ho, wop]) * quad_weights[hi]
+                alpha_sum[:, ho, wop] += alpha
+                y_acc[:, :, ho, wop] += alpha.unsqueeze(1) * vx[:, :, hi, wi]
 
     # finalize
     y = y_acc / alpha_sum.unsqueeze(1)
@@ -551,8 +551,8 @@ def _neighborhood_s2_attention_upsample_bwd_dv_torch(kx: torch.Tensor, vx: torch
                                                       nlon_in: int, nlat_out: int, nlon_out: int):
     """Scatter gradient w.r.t. vx.
 
-    dvx[b, c, hi, wi] = sum over output neighbors (ho, wo) of  alpha_norm * dy[b, c, ho, wo]
-    where alpha_norm = alpha[ho,wo,hi,wi] / alpha_sum[ho,wo].
+    dvx[b, c, hi, wi] = sum over output neighbors (ho, wop) of  alpha_norm * dy[b, c, ho, wop]
+    where alpha_norm = alpha[ho,wop,hi,wi] / alpha_sum[ho,wop].
     """
 
     assert nlon_out % nlon_in == 0
@@ -570,9 +570,10 @@ def _neighborhood_s2_attention_upsample_bwd_dv_torch(kx: torch.Tensor, vx: torch
             for idz in range(zstart, zend):
                 col = int(col_idx[idz])
                 ho = col // nlon_out
-                wo = (col % nlon_out + pscale_out * wi) % nlon_out
-                qdotk = torch.sum(qy[:, :, ho, wo] * kx[:, :, hi, wi], dim=1)
-                qdotk_max[:, ho, wo] = torch.maximum(qdotk_max[:, ho, wo], qdotk)
+                wo = col % nlon_out
+                wop = (wo + pscale_out * wi) % nlon_out
+                qdotk = torch.sum(qy[:, :, ho, wop] * kx[:, :, hi, wi], dim=1)
+                qdotk_max[:, ho, wop] = torch.maximum(qdotk_max[:, ho, wop], qdotk)
 
     alpha_sum = torch.zeros((B, nlat_out, nlon_out), dtype=dtype, device=device)
     for hi in range(nlat_in):
@@ -581,9 +582,10 @@ def _neighborhood_s2_attention_upsample_bwd_dv_torch(kx: torch.Tensor, vx: torch
             for idz in range(zstart, zend):
                 col = int(col_idx[idz])
                 ho = col // nlon_out
-                wo = (col % nlon_out + pscale_out * wi) % nlon_out
-                qdotk = torch.sum(qy[:, :, ho, wo] * kx[:, :, hi, wi], dim=1)
-                alpha_sum[:, ho, wo] += torch.exp(qdotk - qdotk_max[:, ho, wo]) * quad_weights[hi]
+                wo = col % nlon_out
+                wop = (wo + pscale_out * wi) % nlon_out
+                qdotk = torch.sum(qy[:, :, ho, wop] * kx[:, :, hi, wi], dim=1)
+                alpha_sum[:, ho, wop] += torch.exp(qdotk - qdotk_max[:, ho, wop]) * quad_weights[hi]
 
     # scatter dvx
     dvx = torch.zeros_like(vx)
@@ -593,11 +595,12 @@ def _neighborhood_s2_attention_upsample_bwd_dv_torch(kx: torch.Tensor, vx: torch
             for idz in range(zstart, zend):
                 col = int(col_idx[idz])
                 ho = col // nlon_out
-                wo = (col % nlon_out + pscale_out * wi) % nlon_out
-                qdotk = torch.sum(qy[:, :, ho, wo] * kx[:, :, hi, wi], dim=1)
-                alpha = torch.exp(qdotk - qdotk_max[:, ho, wo]) * quad_weights[hi]
-                alpha_norm = alpha / alpha_sum[:, ho, wo]                         # [B]
-                dvx[:, :, hi, wi] += alpha_norm.unsqueeze(1) * dy[:, :, ho, wo]
+                wo = col % nlon_out
+                wop = (wo + pscale_out * wi) % nlon_out
+                qdotk = torch.sum(qy[:, :, ho, wop] * kx[:, :, hi, wi], dim=1)
+                alpha = torch.exp(qdotk - qdotk_max[:, ho, wop]) * quad_weights[hi]
+                alpha_norm = alpha / alpha_sum[:, ho, wop]                         # [B]
+                dvx[:, :, hi, wi] += alpha_norm.unsqueeze(1) * dy[:, :, ho, wop]
 
     return dvx
 
@@ -607,9 +610,9 @@ def _neighborhood_s2_attention_upsample_bwd_dk_torch(kx: torch.Tensor, vx: torch
                                                       nlon_in: int, nlat_out: int, nlon_out: int):
     """Scatter gradient w.r.t. kx.
 
-    dkx[b, c, hi, wi] = sum over output neighbors (ho, wo) of
-         qy[b, c, ho, wo] * alpha_norm * (dy . v[hi, wi] - integral[ho, wo])
-    where integral[ho, wo] = sum_j alpha_norm_j * (dy . v_j).
+    dkx[b, c, hi, wi] = sum over output neighbors (ho, wop) of
+         qy[b, c, ho, wop] * alpha_norm * (dy . v[hi, wi] - integral[ho, wop])
+    where integral[ho, wop] = sum_j alpha_norm_j * (dy . v_j).
     """
 
     assert nlon_out % nlon_in == 0
@@ -627,9 +630,10 @@ def _neighborhood_s2_attention_upsample_bwd_dk_torch(kx: torch.Tensor, vx: torch
             for idz in range(zstart, zend):
                 col = int(col_idx[idz])
                 ho = col // nlon_out
-                wo = (col % nlon_out + pscale_out * wi) % nlon_out
-                qdotk = torch.sum(qy[:, :, ho, wo] * kx[:, :, hi, wi], dim=1)
-                qdotk_max[:, ho, wo] = torch.maximum(qdotk_max[:, ho, wo], qdotk)
+                wo = col % nlon_out
+                wop = (wo + pscale_out * wi) % nlon_out
+                qdotk = torch.sum(qy[:, :, ho, wop] * kx[:, :, hi, wi], dim=1)
+                qdotk_max[:, ho, wop] = torch.maximum(qdotk_max[:, ho, wop], qdotk)
 
     # --- pass 2: alpha_sum and integral per output ---
     alpha_sum = torch.zeros((B, nlat_out, nlon_out), dtype=dtype, device=device)
@@ -640,12 +644,13 @@ def _neighborhood_s2_attention_upsample_bwd_dk_torch(kx: torch.Tensor, vx: torch
             for idz in range(zstart, zend):
                 col = int(col_idx[idz])
                 ho = col // nlon_out
-                wo = (col % nlon_out + pscale_out * wi) % nlon_out
-                qdotk = torch.sum(qy[:, :, ho, wo] * kx[:, :, hi, wi], dim=1)
-                alpha = torch.exp(qdotk - qdotk_max[:, ho, wo]) * quad_weights[hi]
-                alpha_sum[:, ho, wo] += alpha
-                gdotv = torch.sum(dy[:, :, ho, wo] * vx[:, :, hi, wi], dim=1)     # [B]
-                integral[:, ho, wo] += alpha * gdotv
+                wo = col % nlon_out
+                wop = (wo + pscale_out * wi) % nlon_out
+                qdotk = torch.sum(qy[:, :, ho, wop] * kx[:, :, hi, wi], dim=1)
+                alpha = torch.exp(qdotk - qdotk_max[:, ho, wop]) * quad_weights[hi]
+                alpha_sum[:, ho, wop] += alpha
+                gdotv = torch.sum(dy[:, :, ho, wop] * vx[:, :, hi, wi], dim=1)     # [B]
+                integral[:, ho, wop] += alpha * gdotv
     integral = integral / alpha_sum
 
     # --- pass 3: scatter dkx ---
@@ -656,12 +661,13 @@ def _neighborhood_s2_attention_upsample_bwd_dk_torch(kx: torch.Tensor, vx: torch
             for idz in range(zstart, zend):
                 col = int(col_idx[idz])
                 ho = col // nlon_out
-                wo = (col % nlon_out + pscale_out * wi) % nlon_out
-                qdotk = torch.sum(qy[:, :, ho, wo] * kx[:, :, hi, wi], dim=1)
-                alpha = torch.exp(qdotk - qdotk_max[:, ho, wo]) * quad_weights[hi]
-                alpha_norm = alpha / alpha_sum[:, ho, wo]                         # [B]
-                gdotv = torch.sum(dy[:, :, ho, wo] * vx[:, :, hi, wi], dim=1)     # [B]
-                dkx[:, :, hi, wi] += qy[:, :, ho, wo] * (alpha_norm * (gdotv - integral[:, ho, wo])).unsqueeze(1)
+                wo = col % nlon_out
+                wop = (wo + pscale_out * wi) % nlon_out
+                qdotk = torch.sum(qy[:, :, ho, wop] * kx[:, :, hi, wi], dim=1)
+                alpha = torch.exp(qdotk - qdotk_max[:, ho, wop]) * quad_weights[hi]
+                alpha_norm = alpha / alpha_sum[:, ho, wop]                         # [B]
+                gdotv = torch.sum(dy[:, :, ho, wop] * vx[:, :, hi, wi], dim=1)     # [B]
+                dkx[:, :, hi, wi] += qy[:, :, ho, wop] * (alpha_norm * (gdotv - integral[:, ho, wop])).unsqueeze(1)
 
     return dkx
 
@@ -671,8 +677,8 @@ def _neighborhood_s2_attention_upsample_bwd_dq_torch(kx: torch.Tensor, vx: torch
                                                       nlon_in: int, nlat_out: int, nlon_out: int):
     """Scatter gradient w.r.t. qy.
 
-    dqy[b, c, ho, wo] = (alpha_kvw * alpha_sum - alpha_vw * alpha_k) / alpha_sum^2
-    where the alpha_* accumulators are sums over (hi, wi) neighbors of (ho, wo).
+    dqy[b, c, ho, wop] = (alpha_kvw * alpha_sum - alpha_vw * alpha_k) / alpha_sum^2
+    where the alpha_* accumulators are sums over (hi, wi) neighbors of (ho, wop).
     We accumulate them per output cell by scattering from all (hi, wi) inputs.
     """
 
@@ -692,9 +698,10 @@ def _neighborhood_s2_attention_upsample_bwd_dq_torch(kx: torch.Tensor, vx: torch
             for idz in range(zstart, zend):
                 col = int(col_idx[idz])
                 ho = col // nlon_out
-                wo = (col % nlon_out + pscale_out * wi) % nlon_out
-                qdotk = torch.sum(qy[:, :, ho, wo] * kx[:, :, hi, wi], dim=1)
-                qdotk_max[:, ho, wo] = torch.maximum(qdotk_max[:, ho, wo], qdotk)
+                wo = col % nlon_out
+                wop = (wo + pscale_out * wi) % nlon_out
+                qdotk = torch.sum(qy[:, :, ho, wop] * kx[:, :, hi, wi], dim=1)
+                qdotk_max[:, ho, wop] = torch.maximum(qdotk_max[:, ho, wop], qdotk)
 
     # --- pass 2: alpha_sum, alpha_k, alpha_vw, alpha_kvw per output ---
     alpha_sum = torch.zeros((B, nlat_out, nlon_out), dtype=dtype, device=device)
@@ -708,15 +715,16 @@ def _neighborhood_s2_attention_upsample_bwd_dq_torch(kx: torch.Tensor, vx: torch
             for idz in range(zstart, zend):
                 col = int(col_idx[idz])
                 ho = col // nlon_out
-                wo = (col % nlon_out + pscale_out * wi) % nlon_out
-                qdotk = torch.sum(qy[:, :, ho, wo] * kx[:, :, hi, wi], dim=1)
-                alpha = torch.exp(qdotk - qdotk_max[:, ho, wo]) * quad_weights[hi]   # [B]
-                gdotv = torch.sum(dy[:, :, ho, wo] * vx[:, :, hi, wi], dim=1)         # [B]
+                wo = col % nlon_out
+                wop = (wo + pscale_out * wi) % nlon_out
+                qdotk = torch.sum(qy[:, :, ho, wop] * kx[:, :, hi, wi], dim=1)
+                alpha = torch.exp(qdotk - qdotk_max[:, ho, wop]) * quad_weights[hi]   # [B]
+                gdotv = torch.sum(dy[:, :, ho, wop] * vx[:, :, hi, wi], dim=1)         # [B]
 
-                alpha_sum[:, ho, wo] += alpha
-                alpha_vw[:, ho, wo] += alpha * gdotv
-                alpha_k[:, :, ho, wo] += alpha.unsqueeze(1) * kx[:, :, hi, wi]
-                alpha_kvw[:, :, ho, wo] += (alpha * gdotv).unsqueeze(1) * kx[:, :, hi, wi]
+                alpha_sum[:, ho, wop] += alpha
+                alpha_vw[:, ho, wop] += alpha * gdotv
+                alpha_k[:, :, ho, wop] += alpha.unsqueeze(1) * kx[:, :, hi, wi]
+                alpha_kvw[:, :, ho, wop] += (alpha * gdotv).unsqueeze(1) * kx[:, :, hi, wi]
 
     alpha_sum_1 = alpha_sum.unsqueeze(1)
     dqy = (alpha_kvw * alpha_sum_1 - alpha_vw.unsqueeze(1) * alpha_k) / (alpha_sum_1 * alpha_sum_1)

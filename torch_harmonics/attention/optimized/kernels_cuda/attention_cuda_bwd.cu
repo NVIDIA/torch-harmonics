@@ -54,6 +54,26 @@
 
 namespace attention_kernels {
 
+// scatter-direction dispatcher, defined in attention_cuda_bwd_upsample.cu;
+// called by s2_attention_bwd_dkvq_cuda when nlon_out % nlon_in == 0.
+void s2_attn_bwd_upsample_dispatch(int batch_size,
+                                    size_t nchans_in,
+                                    size_t nchans_out,
+                                    int64_t nlon_in,
+                                    int64_t nlat_in,
+                                    int64_t nlat_out,
+                                    int64_t nlon_out,
+                                    torch::Tensor kxP,
+                                    torch::Tensor vxP,
+                                    torch::Tensor qyP,
+                                    torch::Tensor dyP,
+                                    torch::Tensor psi_row_off,
+                                    torch::Tensor psi_col_idx,
+                                    torch::Tensor quad_weights,
+                                    torch::Tensor dkxP,
+                                    torch::Tensor dvxP,
+                                    torch::Tensor dqyP);
+
 // BEGIN backward kernels and functions
 
 // called with (blockDim.x=32 and blockDim.y>1, BDIM=blockDim.x*blockDim.y)
@@ -869,14 +889,21 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Te
     CHECK_CUDA_TENSOR(psi_col_idx);
     CHECK_CUDA_TENSOR(psi_row_off);
 
-    TORCH_CHECK(nlon_in % nlon_out == 0,
-                "nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (", nlon_out, ")");
+    // direction selection: gather (self / downsample) iff nlon_in is an integer
+    // multiple of nlon_out; scatter (upsample) iff nlon_out is an integer multiple
+    // of nlon_in. Self-attention satisfies both and routes through the gather path.
+    const bool downsample = (nlon_in % nlon_out == 0);
+    const bool upsample   = (nlon_out % nlon_in == 0);
+    TORCH_CHECK(downsample || upsample,
+                "either nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (", nlon_out,
+                "), or vice versa");
 
     //const size_t uo_num_channels = kx.size(1);
     size_t nchans_in  = qy.size(1); // or kx.size(1)
     size_t nchans_out = vx.size(1);
 
     const int batch_size = kx.size(0);
+    const int64_t nlat_in = kx.size(2);
 
     // extract dtype
     auto kx_type = kx.dtype(); // nchans_in
@@ -906,17 +933,32 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Te
     torch::Tensor dvxP = torch::zeros_like(vxP);
     torch::Tensor dqyP = torch::zeros_like(qyP);
 
-    s2_attn_bwd_dispatch(batch_size,
-                         nchans_in,
-                         nchans_out,
-                         nlon_in,
-                         nlat_out,
-                         nlon_out,
-                         kxP, vxP, qyP, dyP,
-                         psi_row_off,
-                         psi_col_idx,
-                         quad_weights,
-                         dkxP, dvxP, dqyP);
+    if (downsample) {
+        s2_attn_bwd_dispatch(batch_size,
+                             nchans_in,
+                             nchans_out,
+                             nlon_in,
+                             nlat_out,
+                             nlon_out,
+                             kxP, vxP, qyP, dyP,
+                             psi_row_off,
+                             psi_col_idx,
+                             quad_weights,
+                             dkxP, dvxP, dqyP);
+    } else {
+        s2_attn_bwd_upsample_dispatch(batch_size,
+                                       nchans_in,
+                                       nchans_out,
+                                       nlon_in,
+                                       nlat_in,
+                                       nlat_out,
+                                       nlon_out,
+                                       kxP, vxP, qyP, dyP,
+                                       psi_row_off,
+                                       psi_col_idx,
+                                       quad_weights,
+                                       dkxP, dvxP, dqyP);
+    }
 
     torch::Tensor dkx = dkxP;
     torch::Tensor dvx = dvxP;

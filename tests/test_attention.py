@@ -29,6 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import math
 import os
 from time import perf_counter_ns
 import unittest
@@ -40,8 +41,21 @@ from torch.library import opcheck
 
 # from torch.autograd import gradcheck
 from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
-from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhood_s2_attention_torch
+from torch_harmonics.attention.kernels_torch.attention_torch import (
+    _neighborhood_s2_attention_torch,
+    _neighborhood_s2_attention_fwd_torch,
+    _neighborhood_s2_attention_bwd_dv_torch,
+    _neighborhood_s2_attention_bwd_dk_torch,
+    _neighborhood_s2_attention_bwd_dq_torch,
+    _neighborhood_s2_attention_upsample_fwd_torch,
+    _neighborhood_s2_attention_upsample_bwd_dv_torch,
+    _neighborhood_s2_attention_upsample_bwd_dk_torch,
+    _neighborhood_s2_attention_upsample_bwd_dq_torch,
+)
 from torch_harmonics.attention import cuda_kernels_is_available, optimized_kernels_is_available
+from torch_harmonics.quadrature import precompute_latitudes
+from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
+from torch_harmonics.filter_basis import get_filter_basis
 
 from testutils import disable_tf32, set_seed, compare_tensors
 
@@ -156,10 +170,6 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
-        # CUDA upsample optimized kernel is not yet implemented; CPU is.
-        if (self.device.type == "cuda") and (nlon_out > nlon_in):
-            raise unittest.SkipTest("CUDA upsample optimized kernel not yet implemented")
-
         # Helper: create inputs
         inputs_ref = {
             "k": torch.randn(batch_size, channels, nlat_in, nlon_in, requires_grad=True, device=self.device, dtype=torch.float32),
@@ -244,10 +254,6 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
-
-        # CUDA upsample optimized kernel is not yet implemented; CPU is.
-        if nlon_out > nlon_in:
-            raise unittest.SkipTest("CUDA upsample optimized kernel not yet implemented")
 
         # Helper: create inputs
         inputs_host = {
@@ -380,6 +386,99 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
     @parameterized.expand(
         [
+            # Format: [batch_size, channels_in, channels_out, shape, grid, atol, rtol]
+            [2, 4, 4, (4,  8),  "equiangular",    1e-5, 1e-4],
+            [2, 4, 8, (4,  8),  "equiangular",    1e-5, 1e-4],
+            [2, 8, 4, (4,  8),  "equiangular",    1e-5, 1e-4],
+            [2, 4, 4, (6, 12),  "legendre-gauss", 1e-5, 1e-4],
+            [2, 4, 4, (6, 12),  "lobatto",        1e-5, 1e-4],
+        ],
+        skip_on_empty=True,
+    )
+    def test_self_attention_kernel_equivalence(self, batch_size, channels_in, channels_out, shape, grid, atol, rtol, verbose=False):
+        """For nlat_in == nlat_out and nlon_in == nlon_out the gather (downsample) and
+        scatter (upsample) torch reference math kernels must produce numerically identical
+        forward and backward results: the p-shift collapses to pscale = pscale_out = 1, so
+        both formulations describe the same self-attention computation, just with the psi
+        sparsity pattern stored as either rows-by-output (gather) or rows-by-input (scatter).
+
+        This is a pure-Python equivalence check on the math fns themselves; the C++/CUDA
+        dispatcher always routes self-attention through the gather kernel, so this test
+        exercises the upsample math that the dispatcher would otherwise hide.
+
+        Restricted to CPU: a CPU-vs-CUDA divergence on these pure-PyTorch math fns would
+        indicate a PyTorch bug, not a bug in our code.
+        """
+
+        if self.device.type != "cpu":
+            raise unittest.SkipTest("kernel-equivalence check runs only on CPU")
+
+        set_seed(333)
+
+        nlat, nlon = shape
+        # head-folded shapes; pass directly to the math fns (which expect [B, C, H, W]).
+        kw = torch.randn(batch_size, channels_in,  nlat, nlon, dtype=torch.float32, device=self.device)
+        vw = torch.randn(batch_size, channels_out, nlat, nlon, dtype=torch.float32, device=self.device)
+        qw = torch.randn(batch_size, channels_in,  nlat, nlon, dtype=torch.float32, device=self.device)
+
+        # quadrature weights on the (input == output) grid
+        _, wgl = precompute_latitudes(nlat, grid=grid)
+        quad_weights = (2.0 * torch.pi * wgl.to(torch.float32) / nlon).to(self.device)
+
+        # neighborhood pattern; theta_cutoff heuristics for self-attention agree (nlat_in == nlat_out)
+        fb = get_filter_basis(kernel_shape=1, basis_type="zernike")
+        theta_cutoff = math.pi / float(nlat - 1)
+
+        # gather psi (rows by ho, cols by hi*nlon + wi_canonical)
+        idx_g, _, roff_g = _precompute_convolution_tensor_s2(
+            shape, shape, fb,
+            grid_in=grid, grid_out=grid,
+            theta_cutoff=theta_cutoff,
+            transpose_normalization=False,
+            basis_norm_mode="none",
+            merge_quadrature=True,
+        )
+        col_g  = idx_g[2].contiguous().to(self.device)
+        roff_g = roff_g.contiguous().to(self.device)
+
+        # scatter psi (rows by hi, cols by ho*nlon + wo_canonical) — shapes swapped + transpose_normalization=True
+        idx_s, _, roff_s = _precompute_convolution_tensor_s2(
+            shape, shape, fb,
+            grid_in=grid, grid_out=grid,
+            theta_cutoff=theta_cutoff,
+            transpose_normalization=True,
+            basis_norm_mode="none",
+            merge_quadrature=True,
+        )
+        col_s  = idx_s[2].contiguous().to(self.device)
+        roff_s = roff_s.contiguous().to(self.device)
+
+        # ---- forward ----
+        y_g = _neighborhood_s2_attention_fwd_torch(
+            kw, vw, qw, quad_weights, col_g, roff_g, nlon, nlat, nlon)
+        y_s = _neighborhood_s2_attention_upsample_fwd_torch(
+            kw, vw, qw, quad_weights, col_s, roff_s, nlon, nlat, nlon)
+
+        self.assertTrue(compare_tensors("fwd output (gather vs scatter)", y_s, y_g, atol=atol, rtol=rtol, verbose=verbose))
+
+        # ---- backward (dvx, dkx, dqy individually) ----
+        dy = torch.randn_like(y_g)
+
+        dvx_g = _neighborhood_s2_attention_bwd_dv_torch(kw, vw, qw, dy, quad_weights, col_g, roff_g, nlon, nlat, nlon)
+        dkx_g = _neighborhood_s2_attention_bwd_dk_torch(kw, vw, qw, dy, quad_weights, col_g, roff_g, nlon, nlat, nlon)
+        dqy_g = _neighborhood_s2_attention_bwd_dq_torch(kw, vw, qw, dy, quad_weights, col_g, roff_g, nlon, nlat, nlon)
+
+        dvx_s = _neighborhood_s2_attention_upsample_bwd_dv_torch(kw, vw, qw, dy, quad_weights, col_s, roff_s, nlon, nlat, nlon)
+        dkx_s = _neighborhood_s2_attention_upsample_bwd_dk_torch(kw, vw, qw, dy, quad_weights, col_s, roff_s, nlon, nlat, nlon)
+        dqy_s = _neighborhood_s2_attention_upsample_bwd_dq_torch(kw, vw, qw, dy, quad_weights, col_s, roff_s, nlon, nlat, nlon)
+
+        self.assertTrue(compare_tensors("bwd dv (gather vs scatter)", dvx_s, dvx_g, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("bwd dk (gather vs scatter)", dkx_s, dkx_g, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("bwd dq (gather vs scatter)", dqy_s, dqy_g, atol=atol, rtol=rtol, verbose=verbose))
+
+
+    @parameterized.expand(
+        [
             # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
             # one row per dispatcher code path (gather / scatter); pscale=2 covers
             # the wip = (wi + pscale*wo) % nlon_in shift, which the trivial self-attention
@@ -399,10 +498,6 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
-
-        # CUDA upsample optimized kernel is not yet implemented; CPU is.
-        if (self.device.type == "cuda") and (nlon_out > nlon_in):
-            raise unittest.SkipTest("CUDA upsample optimized kernel not yet implemented")
 
         att = NeighborhoodAttentionS2(
             in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=False, optimized_kernel=True

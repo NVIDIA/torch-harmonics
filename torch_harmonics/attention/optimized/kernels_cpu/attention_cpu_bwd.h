@@ -292,26 +292,20 @@ namespace attention_kernels {
         #pragma omp parallel for collapse(2)
         for (int64_t b = 0; b < batch_size; b++) {
             for (int64_t ci = 0; ci < nchannels_in; ci++) {
+
                 for (int64_t ho = 0; ho < nlat_out; ho++) {
                     for (int64_t bwo = 0; bwo < nblock_wo; bwo++) {
 
                         int64_t wo_start = bwo * block_wo;
                         int64_t wo_end = std::min(nlon_out, wo_start + block_wo);
 
+                        std::array<float, block_wo> alpha_sum{};
+                        std::array<float, block_wo> alpha_vw{};
+                        std::array<float, block_wo> alpha_k{};
+                        std::array<float, block_wo> alpha_kvw{};
+                        std::array<float, block_wo> integral{};
                         std::array<float, block_wo> qdotk_max;
-                        std::array<float, block_wo> alpha_sum;
-                        std::array<float, block_wo> alpha_vw;
-                        std::array<float, block_wo> alpha_k;
-                        std::array<float, block_wo> alpha_kvw;
-                        std::array<float, block_wo> integral;
-                        for (int64_t wob = 0; wob < block_wo; wob++) {
-                            qdotk_max[wob] = -std::numeric_limits<float>::max();
-                            alpha_sum[wob] = 0.0;
-                            alpha_vw[wob] = 0.0;
-                            alpha_k[wob] = 0.0;
-                            alpha_kvw[wob] = 0.0;
-                            integral[wob] = 0.0;
-                        }
+                        qdotk_max.fill(-std::numeric_limits<float>::max());
 
                         // ---- pass 1: qdotk_max[wo] ----
                         for (int64_t hi = 0; hi < nlat_in; hi++) {
@@ -351,13 +345,13 @@ namespace attention_kernels {
                                     int64_t wo_diff = (wo - wo_canonical + nlon_out) % nlon_out;
                                     if (wo_diff % pscale_out != 0) continue;
                                     int64_t wi = wo_diff / pscale_out;
+                                    int64_t wob = wo - wo_start;
 
                                     float qdotk = 0.0;
                                     for (int64_t cit = 0; cit < nchannels_in; cit++) {
                                         qdotk += static_cast<float>(qy_arr[b][cit][ho][wo] * kx_arr[b][cit][hi][wi]);
                                     }
 
-                                    int64_t wob = wo - wo_start;
                                     float alpha = std::exp(qdotk - qdotk_max[wob]) * static_cast<float>(quad_weights_arr[hi]);
 
                                     float gdotv = 0.0;
@@ -396,13 +390,13 @@ namespace attention_kernels {
                                     int64_t wo_diff = (wo - wo_canonical + nlon_out) % nlon_out;
                                     if (wo_diff % pscale_out != 0) continue;
                                     int64_t wi = wo_diff / pscale_out;
+                                    int64_t wob = wo - wo_start;
 
                                     float qdotk = 0.0;
                                     for (int64_t cit = 0; cit < nchannels_in; cit++) {
                                         qdotk += static_cast<float>(qy_arr[b][cit][ho][wo] * kx_arr[b][cit][hi][wi]);
                                     }
 
-                                    int64_t wob = wo - wo_start;
                                     float alpha_norm = std::exp(qdotk - qdotk_max[wob]) * static_cast<float>(quad_weights_arr[hi]) / alpha_sum[wob];
 
                                     float gdotv = 0.0;
@@ -425,18 +419,16 @@ namespace attention_kernels {
         #pragma omp parallel for collapse(2)
         for (int64_t b = 0; b < batch_size; b++) {
             for (int64_t co = 0; co < nchannels_out; co++) {
+
                 for (int64_t ho = 0; ho < nlat_out; ho++) {
                     for (int64_t bwo = 0; bwo < nblock_wo; bwo++) {
 
                         int64_t wo_start = bwo * block_wo;
                         int64_t wo_end = std::min(nlon_out, wo_start + block_wo);
 
+                        std::array<float, block_wo> alpha_sum{};
                         std::array<float, block_wo> qdotk_max;
-                        std::array<float, block_wo> alpha_sum;
-                        for (int64_t wob = 0; wob < block_wo; wob++) {
-                            qdotk_max[wob] = -std::numeric_limits<float>::max();
-                            alpha_sum[wob] = 0.0;
-                        }
+                        qdotk_max.fill(-std::numeric_limits<float>::max());
 
                         // ---- pass 1: qdotk_max[wo] ----
                         for (int64_t hi = 0; hi < nlat_in; hi++) {
@@ -452,12 +444,13 @@ namespace attention_kernels {
                                     int64_t wo_diff = (wo - wo_canonical + nlon_out) % nlon_out;
                                     if (wo_diff % pscale_out != 0) continue;
                                     int64_t wi = wo_diff / pscale_out;
+                                    int64_t wob = wo - wo_start;
 
                                     float qdotk = 0.0;
                                     for (int64_t cit = 0; cit < nchannels_in; cit++) {
                                         qdotk += static_cast<float>(qy_arr[b][cit][ho][wo] * kx_arr[b][cit][hi][wi]);
                                     }
-                                    qdotk_max[wo - wo_start] = std::max(qdotk_max[wo - wo_start], qdotk);
+                                    qdotk_max[wob] = std::max(qdotk_max[wob], qdotk);
                                 }
                             }
                         }
@@ -476,12 +469,13 @@ namespace attention_kernels {
                                     int64_t wo_diff = (wo - wo_canonical + nlon_out) % nlon_out;
                                     if (wo_diff % pscale_out != 0) continue;
                                     int64_t wi = wo_diff / pscale_out;
+                                    int64_t wob = wo - wo_start;
 
                                     float qdotk = 0.0;
                                     for (int64_t cit = 0; cit < nchannels_in; cit++) {
                                         qdotk += static_cast<float>(qy_arr[b][cit][ho][wo] * kx_arr[b][cit][hi][wi]);
                                     }
-                                    alpha_sum[wo - wo_start] += std::exp(qdotk - qdotk_max[wo - wo_start]) * static_cast<float>(quad_weights_arr[hi]);
+                                    alpha_sum[wob] += std::exp(qdotk - qdotk_max[wob]) * static_cast<float>(quad_weights_arr[hi]);
                                 }
                             }
                         }
@@ -500,12 +494,12 @@ namespace attention_kernels {
                                     int64_t wo_diff = (wo - wo_canonical + nlon_out) % nlon_out;
                                     if (wo_diff % pscale_out != 0) continue;
                                     int64_t wi = wo_diff / pscale_out;
+                                    int64_t wob = wo - wo_start;
 
                                     float qdotk = 0.0;
                                     for (int64_t cit = 0; cit < nchannels_in; cit++) {
                                         qdotk += static_cast<float>(qy_arr[b][cit][ho][wo] * kx_arr[b][cit][hi][wi]);
                                     }
-                                    int64_t wob = wo - wo_start;
                                     float alpha_norm = std::exp(qdotk - qdotk_max[wob]) * static_cast<float>(quad_weights_arr[hi]) / alpha_sum[wob];
                                     dvx_arr[b][co][hi][wi] += static_cast<scalar_t>(alpha_norm * static_cast<float>(dy_arr[b][co][ho][wo]));
                                 }
