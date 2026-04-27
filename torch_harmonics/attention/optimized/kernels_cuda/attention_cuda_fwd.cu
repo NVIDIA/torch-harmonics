@@ -50,6 +50,23 @@
 
 namespace attention_kernels {
 
+// scatter-direction launcher, defined in attention_cuda_fwd_upsample.cu;
+// called by s2_attention_fwd_cuda when nlon_out % nlon_in == 0.
+void s2_attn_fwd_upsample_dispatch(int batch_size,
+                              size_t nchans_in,
+                              size_t nchans_out,
+                              int64_t nlon_in,
+                              int64_t nlat_in,
+                              int64_t nlat_out,
+                              int64_t nlon_out,
+                              torch::Tensor kxP,
+                              torch::Tensor vxP,
+                              torch::Tensor qyP,
+                              torch::Tensor psi_row_off,
+                              torch::Tensor psi_col_idx,
+                              torch::Tensor quad_weights,
+                              torch::Tensor yP);
+
 // called with (blockDim.x=32 and blockDim.y>1, BDIM_X=blockDim.x*blockDim.y)
 template<int BDIM_X,
          typename FLOATV_T> // either float or float4
@@ -538,13 +555,20 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
     CHECK_CUDA_TENSOR(psi_col_idx);
     CHECK_CUDA_TENSOR(psi_row_off);
 
-    TORCH_CHECK(nlon_in % nlon_out == 0,
-                "nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (", nlon_out, ")");
+    // direction selection: gather (self / downsample) iff nlon_in is an integer
+    // multiple of nlon_out; scatter (upsample) iff nlon_out is an integer multiple
+    // of nlon_in. Self-attention satisfies both and routes through the gather path.
+    const bool downsample = (nlon_in % nlon_out == 0);
+    const bool upsample   = (nlon_out % nlon_in == 0);
+    TORCH_CHECK(downsample || upsample,
+                "either nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (", nlon_out,
+                "), or vice versa");
 
     size_t nchans_in  = qy.size(1); // or kx.size(1)
     size_t nchans_out = vx.size(1);
 
     const int batch_size = kx.size(0);
+    const int64_t nlat_in = kx.size(2);
 
     // extract dtype
     auto qy_type = qy.dtype();
@@ -566,17 +590,32 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
     int64_t out_dims[] = {batch_size, nlat_out, nlon_out, nchans_out};
     torch::Tensor yP = torch::empty(out_dims, kxP.options());
 
-    s2_attn_fwd_dispatch(batch_size,
-                         nchans_in,
-                         nchans_out,
-                         nlon_in,
-                         nlat_out,
-                         nlon_out,
-                         kxP, vxP, qyP,
-                         psi_row_off,
-                         psi_col_idx,
-                         quad_weights,
-                         yP);
+    if (downsample) {
+        s2_attn_fwd_dispatch(batch_size,
+                             nchans_in,
+                             nchans_out,
+                             nlon_in,
+                             nlat_out,
+                             nlon_out,
+                             kxP, vxP, qyP,
+                             psi_row_off,
+                             psi_col_idx,
+                             quad_weights,
+                             yP);
+    } else {
+        s2_attn_fwd_upsample_dispatch(batch_size,
+                                 nchans_in,
+                                 nchans_out,
+                                 nlon_in,
+                                 nlat_in,
+                                 nlat_out,
+                                 nlon_out,
+                                 kxP, vxP, qyP,
+                                 psi_row_off,
+                                 psi_col_idx,
+                                 quad_weights,
+                                 yP);
+    }
 
     torch::Tensor y = yP;
     if (!qy_is_channels_last) { y = permute_4D_to0312(y); }
