@@ -94,7 +94,18 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             [4, 4, 4, 1, (7, 12),  (5, 6),  "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd-odd lat, pscale=2
             [4, 4, 4, 1, (9, 12),  (5, 4),  "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd-odd lat, pscale=3
             [4, 4, 4, 1, (11, 24), (7, 12), "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd-odd lat, pscale=2
-            [4, 4, 4, 1, (12, 24), (11, 24),"equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd nlat_out only, pscale=1  
+            [4, 4, 4, 1, (12, 24), (11, 24),"equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd nlat_out only, pscale=1
+            # upsampling: mirror of the downsampling rows above (in_shape ↔ out_shape, grid_in ↔ grid_out)
+            [4, 8, 4, 4, (6, 12),  (12, 24),"equiangular",    "equiangular",    False, 1e-5, 1e-3],  # pscale_out=2
+            [4, 4, 4, 1, (6, 6),   (6, 12), "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # lon-only, pscale_out=2
+            [4, 4, 4, 1, (6, 8),   (12, 24),"equiangular",    "equiangular",    False, 1e-5, 1e-3],  # pscale_out=3
+            [4, 4, 4, 1, (3, 6),   (12, 24),"equiangular",    "equiangular",    False, 1e-5, 1e-3],  # pscale_out=4
+            [4, 4, 4, 1, (6, 12),  (12, 12),"equiangular",    "equiangular",    False, 1e-5, 1e-3],  # lat-only, pscale_out=1
+            [4, 4, 4, 1, (6, 12),  (12, 24),"legendre-gauss", "legendre-gauss", False, 1e-5, 1e-3],  # LG grid, pscale_out=2
+            [4, 4, 4, 1, (5, 6),   (7, 12), "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd-odd lat, pscale_out=2
+            [4, 4, 4, 1, (5, 4),   (9, 12), "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd-odd lat, pscale_out=3
+            [4, 4, 4, 1, (7, 12),  (11, 24),"equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd-odd lat, pscale_out=2
+            [4, 4, 4, 1, (11, 24), (12, 24),"equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd nlat_in only, pscale_out=1
             # same cases with QK norm enabled
             [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
             [4, 4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
@@ -117,7 +128,18 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             [4, 4, 4, 1, (7, 12),  (5, 6),  "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd-odd lat, pscale=2
             [4, 4, 4, 1, (9, 12),  (5, 4),  "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd-odd lat, pscale=3
             [4, 4, 4, 1, (11, 24), (7, 12), "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd-odd lat, pscale=2
-            [4, 4, 4, 1, (12, 24), (11, 24),"equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd nlat_out only, pscale=1    
+            [4, 4, 4, 1, (12, 24), (11, 24),"equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd nlat_out only, pscale=1
+            # upsampling: mirror of the downsampling rows above (in_shape ↔ out_shape, grid_in ↔ grid_out)
+            [4, 8, 4, 4, (6, 12),  (12, 24),"equiangular",    "equiangular",    True, 1e-5, 1e-3],  # pscale_out=2
+            [4, 4, 4, 1, (6, 6),   (6, 12), "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # lon-only, pscale_out=2
+            [4, 4, 4, 1, (6, 8),   (12, 24),"equiangular",    "equiangular",    True, 1e-5, 1e-3],  # pscale_out=3
+            [4, 4, 4, 1, (3, 6),   (12, 24),"equiangular",    "equiangular",    True, 1e-5, 1e-3],  # pscale_out=4
+            [4, 4, 4, 1, (6, 12),  (12, 12),"equiangular",    "equiangular",    True, 1e-5, 1e-3],  # lat-only, pscale_out=1
+            [4, 4, 4, 1, (6, 12),  (12, 24),"legendre-gauss", "legendre-gauss", True, 1e-5, 1e-3],  # LG grid, pscale_out=2
+            [4, 4, 4, 1, (5, 6),   (7, 12), "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd-odd lat, pscale_out=2
+            [4, 4, 4, 1, (5, 4),   (9, 12), "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd-odd lat, pscale_out=3
+            [4, 4, 4, 1, (7, 12),  (11, 24),"equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd-odd lat, pscale_out=2
+            [4, 4, 4, 1, (11, 24), (12, 24),"equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd nlat_in only, pscale_out=1
         ],
         skip_on_empty=True,
     )
@@ -133,6 +155,10 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
+
+        # CUDA upsample optimized kernel is not yet implemented; CPU is.
+        if (self.device.type == "cuda") and (nlon_out > nlon_in):
+            raise unittest.SkipTest("CUDA upsample optimized kernel not yet implemented")
 
         # Helper: create inputs
         inputs_ref = {
@@ -194,6 +220,14 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             # odd latitude sizes
             [2, 16, 1, (11, 24), (7, 12),     "equiangular",    "equiangular",    5e-2, 1e-4],  # odd-odd lat, pscale=2
             [2, 16, 1, (13, 24), (9, 8),      "equiangular",    "equiangular",    5e-2, 1e-4],  # odd-odd lat, pscale=3
+            # upsampling: mirror of the downsampling rows above (in_shape ↔ out_shape, grid_in ↔ grid_out)
+            [2, 16, 1, (12, 24), (24, 48),    "equiangular",    "equiangular",    5e-2, 1e-4],  # pscale_out=2
+            [2, 16, 1, (12, 12), (12, 24),    "equiangular",    "equiangular",    5e-2, 1e-4],  # lon-only, pscale_out=2
+            [2, 16, 1, (6, 8),   (12, 24),    "equiangular",    "equiangular",    5e-2, 1e-4],  # pscale_out=3
+            [2, 16, 1, (6, 12),  (24, 48),    "equiangular",    "equiangular",    5e-2, 1e-4],  # pscale_out=4
+            [2, 16, 1, (12, 24), (24, 48),    "legendre-gauss", "legendre-gauss", 5e-2, 1e-4],  # LG grid, pscale_out=2
+            [2, 16, 1, (7, 12),  (11, 24),    "equiangular",    "equiangular",    5e-2, 1e-4],  # odd-odd lat, pscale_out=2
+            [2, 16, 1, (9, 8),   (13, 24),    "equiangular",    "equiangular",    5e-2, 1e-4],  # odd-odd lat, pscale_out=3
         ],
         skip_on_empty=True,
     )
@@ -210,6 +244,10 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
+
+        # CUDA upsample optimized kernel is not yet implemented; CPU is.
+        if nlon_out > nlon_in:
+            raise unittest.SkipTest("CUDA upsample optimized kernel not yet implemented")
 
         # Helper: create inputs
         inputs_host = {
@@ -343,7 +381,11 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     @parameterized.expand(
         [
             # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
-            [4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", 1e-2, 0],
+            # one row per dispatcher code path (gather / scatter); pscale=2 covers
+            # the wip = (wi + pscale*wo) % nlon_in shift, which the trivial self-attention
+            # case (pscale=1) would not.
+            [4, 4, 1, (12, 24),(6, 12),  "equiangular", "equiangular", 1e-2, 0],  # downsample, pscale=2
+            [4, 4, 1, (6, 12), (12, 24), "equiangular", "equiangular", 1e-2, 0],  # upsample, pscale_out=2
         ],
         skip_on_empty=True,
     )
@@ -358,8 +400,12 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
+        # CUDA upsample optimized kernel is not yet implemented; CPU is.
+        if (self.device.type == "cuda") and (nlon_out > nlon_in):
+            raise unittest.SkipTest("CUDA upsample optimized kernel not yet implemented")
+
         att = NeighborhoodAttentionS2(
-            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=False, theta_cutoff=2 * torch.pi, optimized_kernel=True
+            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=False, optimized_kernel=True
         ).to(self.device)
 
         inputs = {
