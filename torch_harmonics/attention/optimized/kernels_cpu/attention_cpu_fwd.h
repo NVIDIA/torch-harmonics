@@ -90,15 +90,11 @@ namespace attention_kernels {
                         int64_t zstart = roff_arr[ho];
                         int64_t zend = roff_arr[ho+1];
 
-                        // init temp aray to zero
-                        std::array<float, block_wo> alpha_sum;
+                        // init temp arrays
+                        std::array<float, block_wo> alpha_sum{};
+                        std::array<float, block_wo> y_tmp{};
                         std::array<float, block_wo> qdotk_max;
-                        std::array<float, block_wo> y_tmp;
-                        for (int64_t wob = 0; wob < block_wo; wob++) {
-                            alpha_sum[wob] = 0.0;
-                            qdotk_max[wob] = -std::numeric_limits<float>::max();
-                            y_tmp[wob] = 0.0;
-                        }
+                        qdotk_max.fill(-std::numeric_limits<float>::max());
 
                         // loop over nonzeros
                         for (int64_t idz = zstart; idz < zend; idz++) {
@@ -113,6 +109,7 @@ namespace attention_kernels {
                             // loop over wo block
                             for (int64_t wo = wo_start; wo < wo_end; wo++) {
                                 int64_t wip = (wi + pscale * wo) % nlon_in;
+                                int64_t wob = wo - wo_start;
 
                                 float qdotk = 0.0;
                                 //#pragma omp simd reduction(+:qdotk)
@@ -121,17 +118,17 @@ namespace attention_kernels {
                                 }
 
                                 // update tmp max
-                                float qdotk_max_tmp = std::max(qdotk_max[wo-wo_start], qdotk);
+                                float qdotk_max_tmp = std::max(qdotk_max[wob], qdotk);
 
                                 // alpha sum update
                                 float alpha = std::exp(qdotk - qdotk_max_tmp) * static_cast<float>(quad_weights_arr[hi]);
-                                alpha_sum[wo-wo_start] = alpha + alpha_sum[wo-wo_start] * std::exp(qdotk_max[wo-wo_start] - qdotk_max_tmp);
+                                alpha_sum[wob] = alpha + alpha_sum[wob] * std::exp(qdotk_max[wob] - qdotk_max_tmp);
 
                                 // update output
-                                y_tmp[wo-wo_start] = y_tmp[wo-wo_start] * std::exp(qdotk_max[wo-wo_start] - qdotk_max_tmp) + alpha * static_cast<float>(vx_arr[b][co][hi][wip]);
+                                y_tmp[wob] = y_tmp[wob] * std::exp(qdotk_max[wob] - qdotk_max_tmp) + alpha * static_cast<float>(vx_arr[b][co][hi][wip]);
 
                                 // define new max
-                                qdotk_max[wo-wo_start] = qdotk_max_tmp;
+                                qdotk_max[wob] = qdotk_max_tmp;
                             }
                         }
 
@@ -207,14 +204,10 @@ namespace attention_kernels {
                         int64_t wo_end = std::min(nlon_out, wo_start + block_wo);
 
                         // per-block softmax state (classical, not online)
+                        std::array<float, block_wo> alpha_sum{};
+                        std::array<float, block_wo> y_tmp{};
                         std::array<float, block_wo> qdotk_max;
-                        std::array<float, block_wo> alpha_sum;
-                        std::array<float, block_wo> y_tmp;
-                        for (int64_t wob = 0; wob < block_wo; wob++) {
-                            qdotk_max[wob] = -std::numeric_limits<float>::max();
-                            alpha_sum[wob] = 0.0;
-                            y_tmp[wob] = 0.0;
-                        }
+                        qdotk_max.fill(-std::numeric_limits<float>::max());
 
                         // -------------------------------------------------------------
                         // pass 1: find qdotk_max[wo] over all (input, neighbor) pairs
