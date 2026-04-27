@@ -169,6 +169,8 @@ def get_ext_modules():
             "torch_harmonics/attention/csrc/attention_cuda_utils.cu",
             "torch_harmonics/attention/csrc/attention_cuda_fwd.cu",
             "torch_harmonics/attention/csrc/attention_cuda_bwd.cu",
+            "torch_harmonics/attention/csrc/attention_cuda_fwd_ring.cu",
+            "torch_harmonics/attention/csrc/attention_cuda_bwd_ring.cu",
         ])
         ext_modules.append(
             CUDAExtension(
