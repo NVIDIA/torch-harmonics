@@ -40,7 +40,7 @@ from torch.library import opcheck
 
 # from torch.autograd import gradcheck
 from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
-from torch_harmonics.attention._attention_utils import _neighborhood_s2_attention_torch
+from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhood_s2_attention_torch
 from torch_harmonics.attention import cuda_kernels_is_available, optimized_kernels_is_available
 
 from testutils import disable_tf32, set_seed, compare_tensors

@@ -1,6 +1,6 @@
 # coding=utf-8
 
-# SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 #
 # Redistribution and use in source and binary forms, with or without
@@ -28,14 +28,3 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
-
-# Shared backward-context helper used by both the torch reference kernels
-# (in kernels_torch/) and the optimized custom_op path (in optimized/).
-def _setup_context_attention_backward(ctx, inputs, output):
-    kw, vw, qw, quad_weights, col_idx, row_off, max_psi_nnz, nh, nlon_in, nlat_out, nlon_out = inputs
-    ctx.save_for_backward(col_idx, row_off, quad_weights, kw, vw, qw)
-    ctx.nh = nh
-    ctx.max_psi_nnz = max_psi_nnz
-    ctx.nlon_in = nlon_in
-    ctx.nlat_out = nlat_out
-    ctx.nlon_out = nlon_out

@@ -1,0 +1,436 @@
+# coding=utf-8
+
+# SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+# list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+# this list of conditions and the following disclaimer in the documentation
+# and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+# contributors may be used to endorse or promote products derived from
+# this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+"""
+Pure-PyTorch reference implementations of the neighborhood S2 attention kernels,
+plus the matching ``torch.library`` custom_op + autograd registration that
+exposes them under the ``attention_kernels::_neighborhood_s2_attention_torch``
+operator name.
+
+These mirror the C++/CUDA kernels in ``optimized/kernels_cpu`` and
+``optimized/kernels_cuda``. Performance is intentionally not the focus — the
+implementations use the qdotk_max online-softmax trick (see
+https://arxiv.org/abs/1805.02867) but are written in plain PyTorch loops, which
+makes them slow but easy to read and useful as a correctness reference for the
+optimized paths.
+"""
+
+import torch
+
+from .. import attention_kernels
+from .._attention_utils import _setup_context_attention_backward
+
+
+# torch kernels
+# uses qdotk_max update trick to avoid two loops when computing the softmax
+# see e.g., https://arxiv.org/abs/1805.02867
+# and https://alexdremov.me/understanding-flash-attention-writing-the-algorithm-from-scratch-in-triton/
+def _neighborhood_s2_attention_fwd_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor,
+                                         quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+                                         nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+
+    # one output lon step corresponds to pscale input lon steps; require an integer ratio
+    assert nlon_in % nlon_out == 0, f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})"
+    pscale = nlon_in // nlon_out
+
+    # prepare result tensor
+    out_shape = (qy.shape[0], vx.shape[1], nlat_out, nlon_out)
+    y = torch.zeros(out_shape, dtype=qy.dtype, device=qy.device)
+
+    for ho in range(nlat_out):
+
+	    # get number of nonzeros
+        zstart = row_off[ho]
+        zend = row_off[ho+1]
+
+        for wo in range(nlon_out):
+
+            alpha_sum = torch.zeros((y.shape[0],), dtype=y.dtype, device=y.device)
+            qdotk_max = torch.zeros((y.shape[0],), dtype=y.dtype, device=y.device)
+
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hi = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wi = nz_col_idx % nlon_in
+                wip = (wi + pscale * wo) % nlon_in
+
+                # compute correlation & softmax numerator
+                q_ho_wo = qy[:, :, ho, wo]
+                k_hi_wip = kx[:, :, hi, wip]
+                qdotk = torch.sum(q_ho_wo * k_hi_wip, dim=1)
+
+                # tmp max
+                qdotk_max_tmp = torch.maximum(qdotk_max, qdotk)
+
+                # alpha sum update
+                alpha = torch.exp(qdotk - qdotk_max_tmp) * quad_weights[hi]
+                alpha_sum = alpha + alpha_sum * torch.exp(qdotk_max - qdotk_max_tmp)
+                # update output
+                y[:,:,ho,wo] = y[:,:,ho,wo] * torch.exp(qdotk_max - qdotk_max_tmp).unsqueeze(1) + alpha[:, None] * vx[:,:,hi,wip]
+
+                # define new max
+                qdotk_max = qdotk_max_tmp
+
+            y[:,:,ho,wo] = y[:,:,ho,wo] / alpha_sum[:, None]
+
+    return y
+
+# Explicit gradient w.r.t. vx: dM/dv
+# provided as a reference for CUDA & other hand-written gradients
+def _neighborhood_s2_attention_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
+                                            quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+                                            nlon_in: int, nlat_out: int, nlon_out: int):
+
+    # shapes:
+    # input
+    # kx: B, C, Hi, Wi
+    # vx: B, Cout, Hi, Wi
+    # qy: B, Cout, Ho, Wo
+    # quad_weights: Hi
+    # output
+    # dvx: B, Cout, Hi, Wi
+
+    assert nlon_in % nlon_out == 0, f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})"
+    pscale = nlon_in // nlon_out
+
+    dvx = torch.zeros_like(vx)
+    batch_size = dy.shape[0]
+
+    for ho in range(nlat_out):
+
+        # get number of nonzeros
+        zstart = row_off[ho]
+        zend = row_off[ho+1]
+
+        for wo in range(nlon_out):
+
+            alpha_nz = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
+            qdotk_nz = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
+            alpha_sum = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hi = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wi = nz_col_idx % nlon_in
+                wip = (wi + pscale * wo) % nlon_in
+
+                # compute correlation & softmax numerator
+                q_ho_wo = qy[:, :, ho, wo]
+                k_hi_wi = kx[:, :, hi, wip]
+                qdotk_nz[:,idz-zstart] = torch.sum(q_ho_wo * k_hi_wi, dim=1)
+
+            qdotk_max, _ = torch.max(qdotk_nz, dim=1)
+
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hi = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wi = nz_col_idx % nlon_in
+                wip = (wi + pscale * wo) % nlon_in
+                alpha_nz[:,idz-zstart] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max) * quad_weights[hi]
+                alpha_sum[:] += alpha_nz[:,idz-zstart]
+
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hi = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wi = nz_col_idx % nlon_in
+                wip = (wi + pscale * wo) % nlon_in
+                dvx[:,:,hi, wip] += (alpha_nz[:, None, idz-zstart] / alpha_sum[:, None]) * dy[:,:,ho,wo]
+
+    return dvx
+
+
+# Explicit gradient w.r.t. kx: dM/dk
+# provided as a reference for CUDA & other hand-written gradients
+def _neighborhood_s2_attention_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
+                                            quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+                                            nlon_in: int, nlat_out: int, nlon_out: int):
+
+    # shapes:
+    # input
+    # kx: B, C, Hi, Wi
+    # vx: B, Cout, Hi, Wi
+    # qy: B, C, Ho, Wo
+    # quad_weights: Hi
+    # output
+    # dkx: B, C, Hi, Wi
+
+    assert nlon_in % nlon_out == 0, f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})"
+    pscale = nlon_in // nlon_out
+
+    dkx = torch.zeros_like(kx)
+    batch_size = dy.shape[0]
+
+    for ho in range(nlat_out):
+
+        # get number of nonzeros
+        zstart = row_off[ho]
+        zend = row_off[ho+1]
+
+        for wo in range(nlon_out):
+
+            qdotk_nz = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
+            integral = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
+            alpha = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
+            alpha_sum = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hj = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wj = nz_col_idx % nlon_in
+                wjp = (wj + pscale * wo) % nlon_in
+
+                # compute correlation & softmax numerator
+                q_ho_wo = qy[:, :, ho, wo]
+                k_hj_wjp = kx[:, :, hj, wjp]
+                qdotk_nz[:,idz-zstart] = torch.sum(q_ho_wo * k_hj_wjp, dim=1)
+
+            qdotk_max, _ = torch.max(qdotk_nz, dim=1)
+
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hj = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wj = nz_col_idx % nlon_in
+                wjp = (wj + pscale * wo) % nlon_in
+
+                alpha[:, idz-zstart] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max) * quad_weights[hj]
+                alpha_sum[:] += alpha[:, idz-zstart]
+
+                # input dot
+                gdotv = torch.sum(dy[:,:,ho, wo] * vx[:,:,hj, wjp], dim=1)
+
+                # integral term
+                integral[:] += alpha[:, idz-zstart] * gdotv[:]
+
+            integral[:] = integral[:] / alpha_sum[:]
+
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hi = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wi = nz_col_idx % nlon_in
+                wip = (wi + pscale * wo) % nlon_in
+
+                # compute correlation & softmax numerator
+                gdotv = torch.sum(dy[:,:,ho, wo] * vx[:,:,hi, wip], dim=1)
+
+                dkx[:,:,hi,wip] += qy[:, :, ho, wo] * (alpha[:, None, idz-zstart] / alpha_sum[:, None]) * (gdotv[:, None] - integral[:, None])
+
+    return dkx
+
+# Explicit gradient w.r.t. qy: dM/dq
+# provided as a reference for CUDA & other hand-written gradients
+def _neighborhood_s2_attention_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
+                                            quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+                                            nlon_in: int, nlat_out: int, nlon_out: int):
+
+    # shapes:
+    # input
+    # kx: B, C, Hi, Wi
+    # vx: B, Cout, Hi, Wi
+    # qy: B, C, Ho, Wo
+    # quad_weights: Hi
+    # output
+    # dq: B, C, Ho, Wo
+
+    assert nlon_in % nlon_out == 0, f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})"
+    pscale = nlon_in // nlon_out
+
+    batch_size = dy.shape[0]
+    channels_in = kx.shape[1]
+    channels_out = vx.shape[1]
+
+    dqy = torch.zeros_like(qy)
+
+    for ho in range(nlat_out):
+
+        # get number of nonzeros
+        zstart = row_off[ho]
+        zend = row_off[ho+1]
+
+        for wo in range(nlon_out):
+
+            alpha = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
+            qdotk_nz = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
+            alpha_k = torch.zeros((batch_size, channels_in), dtype=dy.dtype, device=dy.device)
+            alpha_vw = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
+            alpha_kvw = torch.zeros((batch_size, channels_in), dtype=dy.dtype, device=dy.device)
+            alpha_sum = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
+            alpha_sum2 = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hi = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wi = nz_col_idx % nlon_in
+                wip = (wi + pscale * wo) % nlon_in
+
+                idz_i = idz-zstart
+
+                # compute correlation & softmax numerator
+                q_ho_wo = qy[:, :, ho, wo]
+                k_hi_wi = kx[:, :, hi, wip]
+                qdotk_nz[:,idz-zstart] = torch.sum(q_ho_wo * k_hi_wi, dim=1)
+
+            qdotk_max,_ = qdotk_nz.max(dim=1)
+
+            for idz in range(zstart, zend):
+                nz_col_idx = col_idx[idz]
+
+                # compute input indices from psi datastructure
+                hi = nz_col_idx // nlon_in
+                # account for output shift and ensure positive index due to circular condition
+                wi = nz_col_idx % nlon_in
+                wip = (wi + pscale * wo) % nlon_in
+
+                q_ho_wo = qy[:, :, ho, wo]
+                k_hi_wi = kx[:, :, hi, wip]
+                idz_i = idz-zstart
+                alpha[:, idz_i] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max) * quad_weights[hi]
+                alpha_sum[:] += alpha[:, idz_i]
+
+                gdotv = torch.sum(dy[:,:,ho, wo] * vx[:,:,hi, wip], dim=1)
+                alpha_k[:,:] += alpha[:, None, idz_i] * k_hi_wi
+                alpha_vw[:] += alpha[:, idz_i] * gdotv[:]
+                alpha_kvw[:,:] += alpha[:, None, idz_i] * k_hi_wi * gdotv[:,None]
+
+            dqy[:,:,ho,wo] = (alpha_kvw * alpha_sum[:,None] - alpha_vw[:, None] * alpha_k) / (alpha_sum[:,None] * alpha_sum[:,None])
+
+    return dqy
+
+@torch.library.custom_op("attention_kernels::_neighborhood_s2_attention_torch", mutates_args=())
+def _neighborhood_s2_attention_torch(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor,
+                                     quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+                                     max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+
+    # reshape, folding num heads into batch dim
+    B, _, H, W = kw.shape
+    kw = kw.reshape(B*nh, -1, H, W)
+    B, _, H, W = vw.shape
+    vw = vw.reshape(B*nh, -1, H, W)
+    B, _, H, W = qw.shape
+    qw = qw.reshape(B*nh, -1, H, W)
+
+    kw = kw.to(torch.float32)
+    vw = vw.to(torch.float32)
+    qw = qw.to(torch.float32)
+
+    output = _neighborhood_s2_attention_fwd_torch(kw, vw, qw, quad_weights,
+                                                  col_idx, row_off,
+                                                  nlon_in, nlat_out, nlon_out)
+
+    _, _, H, W = output.shape
+    output = output.reshape(B, -1, H, W)
+
+    return output
+
+@torch.library.register_fake("attention_kernels::_neighborhood_s2_attention_torch")
+def _(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor,
+      quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
+      max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+    out_shape = (kw.shape[0], vw.shape[1], nlat_out, nlon_out)
+    return torch.empty(out_shape, dtype=kw.dtype, device=kw.device)
+
+def _neighborhood_s2_attention_bwd_torch(ctx, grad_output):
+    col_idx, row_off, quad_weights, kw, vw, qw = ctx.saved_tensors
+    nh = ctx.nh
+    nlon_in = ctx.nlon_in
+    nlat_out = ctx.nlat_out
+    nlon_out = ctx.nlon_out
+
+    # check if we need the grads at all
+    kw_needs_grad = ctx.needs_input_grad[0]
+    vw_needs_grad = ctx.needs_input_grad[1]
+    qw_needs_grad = ctx.needs_input_grad[2]
+
+    # reshape, folding num heads into batch dim
+    B, _, H, W = kw.shape
+    kw = kw.reshape(B*nh, -1, H, W)
+    B, _, H, W = vw.shape
+    vw = vw.reshape(B*nh, -1, H, W)
+    B, _, H, W = qw.shape
+    qw = qw.reshape(B*nh, -1, H, W)
+    B, _, H, W  = grad_output.shape
+    grad_output = grad_output.reshape(B*nh, -1, H, W)
+
+    if vw_needs_grad:
+        dvw = _neighborhood_s2_attention_bwd_dv_torch(kw, vw, qw, grad_output,
+                                                      quad_weights,
+                                                      col_idx, row_off,
+                                                      nlon_in, nlat_out, nlon_out)
+        _, _, H, W = dvw.shape
+        dvw = dvw.reshape(B, -1, H, W)
+    else:
+        dvw = None
+
+    if kw_needs_grad:
+        dkw = _neighborhood_s2_attention_bwd_dk_torch(kw, vw, qw, grad_output,
+                                                      quad_weights,
+                                                      col_idx, row_off,
+                                                      nlon_in, nlat_out, nlon_out)
+        _, _, H, W = dkw.shape
+        dkw = dkw.reshape(B, -1, H, W)
+    else:
+        dkw = None
+
+    if qw_needs_grad:
+        dqw = _neighborhood_s2_attention_bwd_dq_torch(kw, vw, qw, grad_output,
+                                                      quad_weights,
+                                                      col_idx, row_off,
+                                                      nlon_in, nlat_out, nlon_out)
+        _, _, H, W = dqw.shape
+        dqw = dqw.reshape(B, -1, H, W)
+    else:
+        dqw = None
+
+    return dkw, dvw, dqw, \
+            None, None, None, None, None, None, None, None
+
+# register backward
+torch.library.register_autograd("attention_kernels::_neighborhood_s2_attention_torch", _neighborhood_s2_attention_bwd_torch, setup_context=_setup_context_attention_backward)

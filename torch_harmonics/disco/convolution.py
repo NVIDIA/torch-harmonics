@@ -40,8 +40,9 @@ import torch.nn as nn
 
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
-from ._disco_utils import _get_psi, _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
-from ._disco_utils import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
+from ._disco_utils import _get_psi
+from .optimized.disco_optimized import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
+from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
 from disco_helpers import optimized_kernels_is_available, preprocess_psi
 
