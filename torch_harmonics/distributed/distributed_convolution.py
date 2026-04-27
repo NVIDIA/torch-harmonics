@@ -34,8 +34,9 @@ from itertools import accumulate
 
 import torch
 
-from torch_harmonics.disco._disco_utils import _get_psi, _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
-from torch_harmonics.disco._disco_utils import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
+from torch_harmonics.disco._disco_utils import _get_psi
+from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
+from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from disco_helpers import optimized_kernels_is_available, preprocess_psi
 from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
