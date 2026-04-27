@@ -58,8 +58,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_cpu(tor
     CHECK_CPU_INPUT_TENSOR(col_idx);
     CHECK_CPU_INPUT_TENSOR(row_off);
 
-    TORCH_CHECK(nlon_in % nlon_out == 0,
-                "nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (", nlon_out, ")");
+    // direction selection: same convention as the forward wrapper. Self-attention
+    // (nlon_in == nlon_out) satisfies both checks and routes through the gather
+    // kernel below (pscale == 1).
+    const bool downsample = (nlon_in % nlon_out == 0);
+    const bool upsample   = (nlon_out % nlon_in == 0);
+    TORCH_CHECK(downsample || upsample,
+                "either nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (", nlon_out,
+                "), or vice versa");
 
     // change to channels first:
     bool kx_is_channels_last = kx.strides()[1] == 1;
@@ -80,6 +86,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_cpu(tor
     const int64_t batch_size = kx.size(0);
     const int64_t nchannels_out = vx.size(1);
     const int64_t nchannels_in = qy.size(1);
+    const int64_t nlat_in = kx.size(2);
 
     // extract accessors
     auto kx_arr = kx.packed_accessor64<float, 4>();
@@ -95,10 +102,17 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_cpu(tor
     auto dvx_arr = dvx.packed_accessor64<float, 4>();
     auto dkx_arr = dkx.packed_accessor64<float, 4>();
 
-    s2_attn_bwd_kernel<float>(kx_arr, vx_arr, qy_arr, dy_arr,
-        quad_weights_arr, col_idx_arr, roff_arr, dqy_arr, dvx_arr, dkx_arr,
-        nlon_in, nlat_out, nlon_out,
-        batch_size, nchannels_in, nchannels_out);
+    if (downsample) {
+        s2_attn_bwd_kernel<float>(kx_arr, vx_arr, qy_arr, dy_arr,
+            quad_weights_arr, col_idx_arr, roff_arr, dqy_arr, dvx_arr, dkx_arr,
+            nlon_in, nlat_out, nlon_out,
+            batch_size, nchannels_in, nchannels_out);
+    } else {
+        s2_attn_bwd_upsample_kernel<float>(kx_arr, vx_arr, qy_arr, dy_arr,
+            quad_weights_arr, col_idx_arr, roff_arr, dqy_arr, dvx_arr, dkx_arr,
+            nlon_in, nlat_in, nlat_out, nlon_out,
+            batch_size, nchannels_in, nchannels_out);
+    }
 
     // permute back
     if (!qy_is_channels_last) { dqy = dqy.contiguous(at::MemoryFormat::Contiguous); }

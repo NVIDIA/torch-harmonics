@@ -37,7 +37,7 @@ from .sht import RealSHT, InverseRealSHT, RealVectorSHT, InverseRealVectorSHT
 from .spectral_convolution import SpectralConvS2
 from .disco import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 from .resample import ResampleS2
-from .attention import AttentionS2, NeighborhoodAttentionS2, NeighborhoodAttentionUpsampleS2
+from .attention import AttentionS2, NeighborhoodAttentionS2
 from . import quadrature
 from . import random_fields
 from . import examples

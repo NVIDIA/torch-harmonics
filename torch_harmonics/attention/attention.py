@@ -40,7 +40,7 @@ import torch.nn.functional as F
 from torch_harmonics.quadrature import precompute_latitudes
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_optimized
-from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhood_s2_attention_torch, _neighborhood_s2_attention_upsample_torch
+from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhood_s2_attention_torch
 from torch_harmonics.filter_basis import get_filter_basis
 from attention_helpers import optimized_kernels_is_available
 
@@ -270,8 +270,13 @@ class NeighborhoodAttentionS2(nn.Module):
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
 
-        assert self.nlon_in % self.nlon_out == 0, \
-            f"nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}) for the attention p-shift to be exact"
+        # direction selection: gather (self / downsample) iff nlon_in is an integer
+        # multiple of nlon_out; scatter (upsample) iff nlon_out is an integer multiple
+        # of nlon_in. Self-attention (nlon_in == nlon_out) satisfies both and falls
+        # through the gather path with pscale == 1.
+        self.upsample = (self.nlon_out % self.nlon_in == 0) and (self.nlon_in % self.nlon_out != 0)
+        assert (self.nlon_in % self.nlon_out == 0) or self.upsample, \
+            f"either nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}), or vice versa, for the attention p-shift to be exact"
 
         self.in_channels = in_channels
         self.num_heads = num_heads
@@ -279,16 +284,21 @@ class NeighborhoodAttentionS2(nn.Module):
         self.out_channels = in_channels if out_channels is None else out_channels
         self.optimized_kernel = optimized_kernel and optimized_kernels_is_available()
 
-        # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
+        # heuristic to compute theta cutoff based on the bandlimit of the input field
+        # and overlaps of the basis functions. For upsample we follow DISCO's transpose
+        # convention and use the coarser (input) grid spacing.
         if theta_cutoff is None:
-            self.theta_cutoff = torch.pi / float(self.nlat_out - 1)
+            if self.upsample:
+                self.theta_cutoff = torch.pi / float(self.nlat_in - 1)
+            else:
+                self.theta_cutoff = torch.pi / float(self.nlat_out - 1)
         else:
             self.theta_cutoff = theta_cutoff
 
         if self.theta_cutoff <= 0.0:
             raise ValueError("Error, theta_cutoff has to be positive.")
 
-        # integration weights
+        # integration weights live on the input grid
         _, wgl = precompute_latitudes(self.nlat_in, grid=grid_in)
         quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
         self.register_buffer("quad_weights", quad_weights, persistent=False)
@@ -298,18 +308,32 @@ class NeighborhoodAttentionS2(nn.Module):
         # is identical to convolutions with a constant filter function
         fb = get_filter_basis(kernel_shape=1, basis_type="zernike")
 
-        # precompute the neighborhood sparsity pattern
-        idx, _, roff = _precompute_convolution_tensor_s2(
-            in_shape,
-            out_shape,
-            fb,
-            grid_in=grid_in,
-            grid_out=grid_out,
-            theta_cutoff=self.theta_cutoff,
-            transpose_normalization=False,
-            basis_norm_mode="none",
-            merge_quadrature=True,
-        )
+        # precompute the neighborhood sparsity pattern. For upsample we mirror DISCO's
+        # transpose module: pass shapes swapped + transpose_normalization=True so that
+        # rows of psi index the (smaller) input grid and cols encode the (larger)
+        # output grid as ho_big * nlon_out + wo_big_canonical.
+        if self.upsample:
+            idx, _, roff = _precompute_convolution_tensor_s2(
+                out_shape, in_shape,
+                fb,
+                grid_in=grid_out,
+                grid_out=grid_in,
+                theta_cutoff=self.theta_cutoff,
+                transpose_normalization=True,
+                basis_norm_mode="none",
+                merge_quadrature=True,
+            )
+        else:
+            idx, _, roff = _precompute_convolution_tensor_s2(
+                in_shape, out_shape,
+                fb,
+                grid_in=grid_in,
+                grid_out=grid_out,
+                theta_cutoff=self.theta_cutoff,
+                transpose_normalization=False,
+                basis_norm_mode="none",
+                merge_quadrature=True,
+            )
 
         # this is kept for legacy resons in case we want to resuse sorting of these entries
         row_idx = idx[1, ...].contiguous()
@@ -412,197 +436,6 @@ class NeighborhoodAttentionS2(nn.Module):
             key,
             value,
             query_scaled,
-            self.quad_weights,
-            self.psi_col_idx,
-            self.psi_roff_idx,
-            self.psi_max_nnz,
-            self.num_heads,
-            self.nlon_in,
-            self.nlat_out,
-            self.nlon_out,
-        )
-
-        out = nn.functional.conv2d(out, self.proj_weights, bias=self.proj_bias)
-
-        return out
-
-
-class NeighborhoodAttentionUpsampleS2(nn.Module):
-    """
-    Neighborhood attention on the 2-sphere for the upsample direction (nlon_out >= nlon_in,
-    with nlon_out % nlon_in == 0). Mirrors :class:`torch_harmonics.disco.convolution.DiscreteContinuousConvTransposeS2`
-    in design: psi is precomputed with ``in_shape`` and ``out_shape`` swapped, and the
-    forward contraction is scatter-style (iterate over input cells, contribute to each
-    output cell that has the input as a neighbor), using the classical 2-pass softmax
-    (max then accumulate) so that contributions to a given output can be aggregated in
-    any order via ``atomicAdd`` once the per-output max is fixed.
-
-    Parameters are identical in meaning to :class:`NeighborhoodAttentionS2`; the constraint
-    on the longitudes is inverted.
-
-    Parameters
-    -----------
-    in_channels: int
-        Number of channels of the input signal.
-    in_shape: tuple
-        Shape of the input grid (the smaller grid for upsample).
-    out_shape: tuple
-        Shape of the output grid (the larger grid for upsample).
-    grid_in: str, optional
-        Input grid type, ``"equiangular"`` by default.
-    grid_out: str, optional
-        Output grid type, ``"equiangular"`` by default.
-    num_heads: int, optional
-        Number of attention heads.
-    scale: float or torch.Tensor, optional
-        Scale applied to the query (defaults to ``1 / sqrt(k_channels)``).
-    bias: bool, optional
-        If specified, adds bias to input / output projection layers.
-    theta_cutoff: float, optional
-        Neighborhood size. Defaults to ``pi / (nlat_in - 1)`` (same as DISCO transpose:
-        the heuristic uses the coarser — i.e. INPUT — grid's lat spacing, because the
-        filter support is measured relative to input cells).
-    k_channels: int, optional
-        Key/query channel width.
-    out_channels: int, optional
-        Value/output channel width.
-    optimized_kernel: bool, optional
-        Reserved for future CUDA backend; currently only the torch reference path
-        is available and setting this to ``True`` is a no-op.
-    """
-
-    def __init__(
-        self,
-        in_channels: int,
-        in_shape: Tuple[int],
-        out_shape: Tuple[int],
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
-        num_heads: Optional[int] = 1,
-        scale: Optional[Union[torch.Tensor, float]] = None,
-        bias: Optional[bool] = True,
-        theta_cutoff: Optional[float] = None,
-        k_channels: Optional[int] = None,
-        out_channels: Optional[int] = None,
-        optimized_kernel: Optional[bool] = True,
-    ):
-        super().__init__()
-
-        self.nlat_in, self.nlon_in = in_shape
-        self.nlat_out, self.nlon_out = out_shape
-
-        # inverted relative to NeighborhoodAttentionS2
-        assert self.nlon_out % self.nlon_in == 0, \
-            f"nlon_out ({self.nlon_out}) must be an integer multiple of nlon_in ({self.nlon_in}) for the attention upsample p-shift to be exact"
-
-        self.in_channels = in_channels
-        self.num_heads = num_heads
-        self.k_channels = in_channels if k_channels is None else k_channels
-        self.out_channels = in_channels if out_channels is None else out_channels
-        # TODO: wire a CUDA scatter kernel; for now we only have the torch reference
-        self.optimized_kernel = False
-
-        # theta_cutoff heuristic: use the coarser (input, small) grid's lat spacing,
-        # mirroring DiscreteContinuousConvTransposeS2
-        if theta_cutoff is None:
-            self.theta_cutoff = torch.pi / float(self.nlat_in - 1)
-        else:
-            self.theta_cutoff = theta_cutoff
-
-        if self.theta_cutoff <= 0.0:
-            raise ValueError("Error, theta_cutoff has to be positive.")
-
-        # integration weights live on the INPUT (small) grid — the integration domain
-        _, wgl = precompute_latitudes(self.nlat_in, grid=grid_in)
-        quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
-        self.register_buffer("quad_weights", quad_weights, persistent=False)
-
-        # precompute the neighborhood sparsity pattern with SWAPPED shapes, identical
-        # recipe to DiscreteContinuousConvTransposeS2:
-        #   rows of psi index the small (input) grid; cols encode the large (output)
-        #   grid as ho_big * nlon_out + wo_big_ref.
-        fb = get_filter_basis(kernel_shape=1, basis_type="zernike")
-        idx, _, roff = _precompute_convolution_tensor_s2(
-            out_shape,                 # large grid treated as "in"
-            in_shape,                  # small grid treated as "out"
-            fb,
-            grid_in=grid_out,
-            grid_out=grid_in,
-            theta_cutoff=self.theta_cutoff,
-            transpose_normalization=True,
-            basis_norm_mode="none",
-            merge_quadrature=True,
-        )
-
-        row_idx = idx[1, ...].contiguous()
-        col_idx = idx[2, ...].contiguous()
-        roff_idx = roff.contiguous()
-
-        self.psi_max_nnz = col_idx.max().item() + 1
-        self.register_buffer("psi_row_idx", row_idx, persistent=False)
-        self.register_buffer("psi_col_idx", col_idx, persistent=False)
-        self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
-
-        # learnable parameters — same init as NeighborhoodAttentionS2
-        if self.k_channels % self.num_heads != 0:
-            raise ValueError(f"Please make sure that number of heads {self.num_heads} divides k_channels {self.k_channels} evenly.")
-        if self.out_channels % self.num_heads != 0:
-            raise ValueError(f"Please make sure that number of heads {self.num_heads} divides out_channels {self.out_channels} evenly.")
-        scale_qkv = math.sqrt(3.0 / self.in_channels)
-        self.q_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
-        self.k_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
-        self.v_weights = nn.Parameter(scale_qkv * (2 * torch.rand(self.out_channels, self.in_channels, 1, 1) - 1))
-        scale_proj = math.sqrt(3.0 / self.out_channels)
-        self.proj_weights = nn.Parameter(scale_proj * (2 * torch.rand(self.out_channels, self.out_channels, 1, 1) - 1))
-
-        if scale is not None:
-            self.scale = scale
-        else:
-            self.scale = 1 / math.sqrt(self.k_channels)
-
-        if bias:
-            self.q_bias = nn.Parameter(torch.zeros(self.k_channels))
-            self.k_bias = nn.Parameter(torch.zeros(self.k_channels))
-            self.v_bias = nn.Parameter(torch.zeros(self.out_channels))
-            self.proj_bias = nn.Parameter(torch.zeros(self.out_channels))
-        else:
-            self.q_bias = None
-            self.k_bias = None
-            self.v_bias = None
-            self.proj_bias = None
-
-        # only torch reference path available for now
-        self.attention_handle = _neighborhood_s2_attention_upsample_torch
-
-    def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}, theta_cutoff={self.theta_cutoff}"
-
-    def forward(self, query: torch.Tensor, key: Optional[torch.Tensor] = None, value: Optional[torch.Tensor] = None) -> torch.Tensor:
-
-        # cross-attention by construction: query lives on the LARGE (out) grid,
-        # key/value live on the SMALL (in) grid. The key=None / value=None shortcut
-        # would only make sense if in_shape == out_shape, which our assertion forbids
-        # unless nlon_in == nlon_out (same-shape) — we still accept the shortcut so
-        # that same-shape cross-checks against NeighborhoodAttentionS2 are possible.
-        if key is None:
-            key = query
-        if value is None:
-            value = query
-
-        assert (query.dim() == key.dim()) and (key.dim() == value.dim()) and (value.dim() == 4)
-
-        query_scaled = query * self.scale
-
-        out = self.attention_handle(
-            key,
-            value,
-            query_scaled,
-            self.k_weights,
-            self.v_weights,
-            self.q_weights,
-            self.k_bias,
-            self.v_bias,
-            self.q_bias,
             self.quad_weights,
             self.psi_col_idx,
             self.psi_roff_idx,
