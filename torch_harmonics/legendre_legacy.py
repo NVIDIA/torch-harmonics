@@ -2,7 +2,7 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-#
+# 
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -40,18 +40,11 @@ def clm(l: int, m: int) -> float:
     """Defines the normalization factor to orthonormalize the Spherical Harmonics."""
     return math.sqrt((2*l + 1) / 4 / math.pi) * math.sqrt(math.factorial(l-m) / math.factorial(l+m))
 
-
-@torch.no_grad()
-def legpoly(mmax: int, lmax: int, x: torch.Tensor, norm: Optional[str]="ortho", inverse: Optional[bool]=False, csphase: Optional[bool]=True) -> torch.Tensor:
+def legpoly_legacy(mmax: int, lmax: int, x: torch.Tensor, norm: Optional[str]="ortho", inverse: Optional[bool]=False, csphase: Optional[bool]=True) -> torch.Tensor:
     """
     Computes the values of (-1)^m c^l_m P^l_m(x) at the positions specified by x.
     The resulting tensor has shape (mmax, lmax, len(x)). The Condon-Shortley Phase (-1)^m
     can be turned off optionally.
-
-    The three-term recurrence has a sequential dependence in degree ``l`` (each ``l``
-    reads ``l-1`` and ``l-2``), but for fixed ``l`` all orders ``m`` are independent;
-    the inner ``m``-loop is therefore vectorized as a single tensor op, turning what
-    would be O(nmax^2) kernel launches into O(nmax).
 
     Parameters
     -----------
@@ -81,51 +74,49 @@ def legpoly(mmax: int, lmax: int, x: torch.Tensor, norm: Optional[str]="ortho", 
     [3] Schrama, E.; Orbit integration based upon interpolated gravitational gradients
     """
 
-    nmax = max(mmax, lmax)
+    # compute the tensor P^m_n:
+    nmax = max(mmax,lmax)
     vdm = torch.zeros((nmax, nmax, len(x)), dtype=torch.float64, device=x.device, requires_grad=False)
-
+        
     norm_factor = 1.0 if norm == "ortho" else math.sqrt(4 * math.pi)
     norm_factor = 1.0 / norm_factor if inverse else norm_factor
 
-    vdm[0, 0, :] = norm_factor / math.sqrt(4 * math.pi)
+    # initial values to start the recursion
+    vdm[0,0,:] = norm_factor / math.sqrt(4 * math.pi)
 
-    # diagonal and sub-diagonal: inherently sequential in l, but only O(nmax) ops
+    # fill the diagonal and the lower diagonal
     for l in range(1, nmax):
         vdm[l-1, l, :] = math.sqrt(2*l + 1) * x * vdm[l-1, l-1, :]
-        vdm[l, l, :] = torch.sqrt((2*l + 1) * (1 + x) * (1 - x) / 2 / l) * vdm[l-1, l-1, :]
+        vdm[l, l, :] = torch.sqrt( (2*l + 1) * (1 + x) * (1 - x) / 2 / l ) * vdm[l-1, l-1, :]
 
-    # three-term recurrence: vectorize across m for each fixed l.
-    # vdm[m, l] depends only on vdm[m, l-1] and vdm[m, l-2], so all m at fixed l are independent.
+    # fill the remaining values on the upper triangle and multiply b
     for l in range(2, nmax):
-        m = torch.arange(0, l-1, dtype=torch.float64, device=x.device)
-        a_lm = torch.sqrt((2*l - 1) / (l - m) * (2*l + 1) / (l + m))
-        b_lm = torch.sqrt((l + m - 1) / (l - m) * (2*l + 1) / (2*l - 3) * (l - m - 1) / (l + m))
-        vdm[:l-1, l, :] = a_lm.unsqueeze(-1) * x.unsqueeze(0) * vdm[:l-1, l-1, :] \
-                        - b_lm.unsqueeze(-1) * vdm[:l-1, l-2, :]
+        for m in range(0, l-1):
+            vdm[m, l, :] = x * math.sqrt((2*l - 1) / (l - m) * (2*l + 1) / (l + m)) * vdm[m, l-1, :] \
+                            - math.sqrt((l + m - 1) / (l - m) * (2*l + 1) / (2*l - 3) * (l - m - 1) / (l + m)) * vdm[m, l-2, :]
 
     if norm == "schmidt":
-        l_vec = torch.arange(nmax, dtype=torch.float64, device=x.device)
-        factor = torch.sqrt(2 * l_vec + 1)
-        if inverse:
-            vdm = vdm * factor.view(1, -1, 1)
-        else:
-            vdm = vdm / factor.view(1, -1, 1)
+        for l in range(0, nmax):
+            if inverse:
+                vdm[:, l, : ] = vdm[:, l, : ] * math.sqrt(2*l + 1)
+            else:
+                vdm[:, l, : ] = vdm[:, l, : ] / math.sqrt(2*l + 1)
 
     vdm = vdm[:mmax, :lmax]
 
     if csphase:
-        vdm[1::2] *= -1
+        for m in range(1, mmax, 2):
+            vdm[m] *= -1
 
     return vdm
 
-
 @lru_cache(typed=True, copy=True)
-@torch.no_grad()
-def _precompute_legpoly(mmax: int, lmax: int, t: torch.Tensor,
+def _precompute_legpoly_legacy(mmax: int , lmax: int, t: torch.Tensor,
                         norm: Optional[str]="ortho", inverse: Optional[bool]=False, csphase: Optional[bool]=True) -> torch.Tensor:
     r"""
     Computes the values of (-1)^m c^l_m P^l_m(\cos \theta) at the positions specified by t (theta).
-    The resulting tensor has shape (mmax, lmax, len(t)).
+    The resulting tensor has shape (mmax, lmax, len(x)). The Condon-Shortley Phase (-1)^m
+    can be turned off optionally.
 
     Parameters
     -----------
@@ -146,22 +137,25 @@ def _precompute_legpoly(mmax: int, lmax: int, t: torch.Tensor,
     -------
     out: torch.Tensor
         Tensor of Legendre polynomial values
-    """
-    return legpoly(mmax, lmax, torch.cos(t), norm=norm, inverse=inverse, csphase=csphase)
 
+    References
+    ----------
+    [1] Schaeffer, N.; Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
+    [2] Rapp, R.H.; A Fortran Program for the Computation of Gravimetric Quantities from High Degree Spherical Harmonic Expansions, Ohio State University Columbus; report; 1982;
+        https://apps.dtic.mil/sti/citations/ADA123406
+    [3] Schrama, E.; Orbit integration based upon interpolated gravitational gradients
+    """
+
+    return legpoly_legacy(mmax, lmax, torch.cos(t), norm=norm, inverse=inverse, csphase=csphase)
 
 @lru_cache(typed=True, copy=True)
-@torch.no_grad()
-def _precompute_dlegpoly(mmax: int, lmax: int, t: torch.Tensor,
+def _precompute_dlegpoly_legacy(mmax: int, lmax: int, t: torch.Tensor,
                          norm: Optional[str]="ortho", inverse: Optional[bool]=False, csphase: Optional[bool]=True) -> torch.Tensor:
     r"""
-    Computes the values of the derivatives $\frac{d}{d \theta} P^m_l(\cos \theta)$ as well as
-    $\frac{1}{\sin \theta} P^m_l(\cos \theta)$ (with the implicit $-jm$ factor stripped),
-    needed for the vector spherical harmonics. The resulting tensor has shape
+    Computes the values of the derivatives $\frac{d}{d \theta} P^m_l(\cos \theta)$
+    at the positions specified by t (theta), as well as $\frac{1}{\sin \theta} P^m_l(\cos \theta)$,
+    needed for the computation of the vector spherical harmonics. The resulting tensor has shape
     (2, mmax, lmax, len(t)).
-
-    There is no inter-iteration dependence here -- each entry depends only on values from the
-    precomputed associated Legendre table -- so both ``m`` and ``l`` axes are vectorized at once.
 
     Parameters
     -----------
@@ -181,62 +175,54 @@ def _precompute_dlegpoly(mmax: int, lmax: int, t: torch.Tensor,
     Returns
     -------
     out: torch.Tensor
-        Tensor of derivative Legendre polynomial values
+        Tensor of Legendre polynomial values
 
     References
     ----------
-    [1] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
+    [2] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
     """
 
-    pct = _precompute_legpoly(mmax+1, lmax+1, t, norm=norm, inverse=inverse, csphase=False)
+    pct = _precompute_legpoly_legacy(mmax+1, lmax+1, t, norm=norm, inverse=inverse, csphase=False)
 
     dpct = torch.zeros((2, mmax, lmax, len(t)), dtype=torch.float64, device=t.device, requires_grad=False)
 
-    # (mmax, lmax) coefficient grids
-    m_idx = torch.arange(mmax, dtype=torch.float64, device=t.device)
-    l_idx = torch.arange(lmax, dtype=torch.float64, device=t.device)
-    m_g = m_idx.view(mmax, 1)
-    l_g = l_idx.view(1, lmax)
+    # fill the derivative terms wrt theta
+    for l in range(0, lmax):
 
-    # advanced indices for pct lookups along the m axis. m_minus_1 is clamped (the m=0
-    # column of the result is gated out by the mask below and overwritten afterwards).
-    m_minus_1 = (m_idx - 1).clamp(min=0).long()  # (mmax,)
-    m_plus_1  = (m_idx + 1).long()               # (mmax,); max value mmax, valid in pct (mmax+1 rows)
+        # m = 0
+        dpct[0, 0, l] = - math.sqrt(l*(l+1)) * pct[1, l]
 
-    # mask of entries set by the interior+boundary recurrence: 1 <= m <= l.
-    # the m=l boundary is naturally produced by the general formula (the (l-m) term vanishes).
-    mask = ((m_g >= 1) & (m_g <= l_g)).unsqueeze(-1)
+        # 0 < m < l
+        for m in range(1, min(l, mmax)):
+            dpct[0, m, l] = 0.5 * ( math.sqrt((l+m)*(l-m+1)) * pct[m-1, l] - math.sqrt((l-m)*(l+m+1)) * pct[m+1, l] )
 
-    # --- dpct[0]: d/dtheta P^m_l for 1 <= m <= l ---
-    a0 = torch.sqrt(torch.clamp((l_g + m_g) * (l_g - m_g + 1), min=0.0))
-    b0 = torch.sqrt(torch.clamp((l_g - m_g) * (l_g + m_g + 1), min=0.0))
-    pct_mm1_l = pct[m_minus_1, :lmax]
-    pct_mp1_l = pct[m_plus_1,  :lmax]
-    dpct[0, ...] = mask * 0.5 * (a0.unsqueeze(-1) * pct_mm1_l - b0.unsqueeze(-1) * pct_mp1_l)
+        # m == l
+        if mmax > l:
+            dpct[0, l, l] = math.sqrt(l/2) * pct[l-1, l]
 
-    # m=0 row: dpct[0, 0, l] = -sqrt(l(l+1)) * pct[1, l]
-    coef_m0 = -torch.sqrt(l_idx * (l_idx + 1))
-    dpct[0, 0, :] = coef_m0.unsqueeze(-1) * pct[1, :lmax]
+        # fill the - 1j m P^m_l / sin(phi). as this component is purely imaginary,
+        # we won't store it explicitly in a complex array
+        for m in range(1, min(l+1, mmax)):
+            # this component is implicitly complex
+            # we do not divide by m here as this cancels with the derivative of the exponential
+            dpct[1, m, l] = 0.5 * math.sqrt((2*l+1)/(2*l+3)) * \
+                ( math.sqrt((l-m+1)*(l-m+2)) * pct[m-1, l+1] + math.sqrt((l+m+1)*(l+m+2)) * pct[m+1, l+1] )
 
-    # --- dpct[1]: -1j m P^m_l / sin(theta) (imag part stripped) for 1 <= m <= l ---
-    c1 = torch.sqrt((2*l_g + 1) / (2*l_g + 3))
-    a1 = torch.sqrt(torch.clamp((l_g - m_g + 1) * (l_g - m_g + 2), min=0.0))
-    b1 = torch.sqrt((l_g + m_g + 1) * (l_g + m_g + 2))
-    pct_mm1_lp1 = pct[m_minus_1, 1:lmax+1]
-    pct_mp1_lp1 = pct[m_plus_1,  1:lmax+1]
-    dpct[1, ...] = mask * 0.5 * c1.unsqueeze(-1) * (a1.unsqueeze(-1) * pct_mm1_lp1 + b1.unsqueeze(-1) * pct_mp1_lp1)
-
-    # schmidt correction for dpct[1] -- the recurrence above was derived for ortho; pct[m, l+1]
-    # carries degree-(l+1) schmidt scaling 1/sqrt(2l+3) (forward) or sqrt(2l+3) (inverse), so
-    # we rescale back to the proper degree-l schmidt normalization.
+    # For schmidt normalization, pct[m, l+1] carries degree-(l+1) scaling 1/sqrt(2l+3)
+    # (forward) or sqrt(2l+3) (inverse), but the dpct[1] recurrence was derived for
+    # ortho where there is no per-degree factor.  Correct dpct[1] back to the proper
+    # degree-l schmidt normalization.
     if norm == "schmidt":
+        l_vals = torch.arange(lmax, dtype=torch.float64, device=t.device)
         if not inverse:
-            correction = torch.sqrt((2*l_idx + 3) / (2*l_idx + 1))
+            correction = torch.sqrt((2.0 * l_vals + 3.0) / (2.0 * l_vals + 1.0))
         else:
-            correction = torch.sqrt((2*l_idx + 1) / (2*l_idx + 3))
-        dpct[1, ...] = dpct[1, ...] * correction.view(1, -1, 1)
+            correction = torch.sqrt((2.0 * l_vals + 1.0) / (2.0 * l_vals + 3.0))
+        # dpct[1] shape: (mmax, lmax, len(t)); correction shape: (lmax,) -> broadcast
+        dpct[1] = dpct[1] * correction[None, :, None]
 
     if csphase:
-        dpct[:, 1::2, :] *= -1
+        for m in range(1, mmax, 2):
+            dpct[:, m] *= -1
 
     return dpct
