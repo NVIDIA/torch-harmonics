@@ -41,7 +41,11 @@ from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTran
 
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
-from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
+from torch_harmonics.disco.convolution import (
+    _precompute_convolution_tensor_s2,
+    _normalize_convolution_tensor_s2,
+    _normalize_convolution_tensor_s2_legacy,
+)
 from torch_harmonics.filter_basis import get_filter_basis
 from disco_helpers import preprocess_psi
 
@@ -353,6 +357,93 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         if verbose:
             print(f"\nintegrity OK: nnz={ker_idx.shape[0]}, per-kernel={counts[0].item()}, nrows={roff_idx.shape[0]-1}")
+
+
+    # Vectorized _normalize_convolution_tensor_s2 vs the loop-based legacy reference.
+    # One downsampling harmonic config (anisotropic kernels exercise the "modal" path);
+    # full cross-product of basis_norm_mode x merge_quadrature x transpose_normalization.
+    @parameterized.expand(
+        [
+            # in_shape, out_shape, kernel_shape, basis_type, grid_in, grid_out, mode, merge, transpose
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "none",      False, False],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "none",      False, True ],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "none",      True,  False],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "none",      True,  True ],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "nodal",     False, False],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "nodal",     False, True ],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "nodal",     True,  False],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "nodal",     True,  True ],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "modal",     False, False],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "modal",     False, True ],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "modal",     True,  False],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "modal",     True,  True ],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "mean",      False, False],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "mean",      False, True ],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "mean",      True,  False],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "mean",      True,  True ],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "support",   False, False],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "support",   False, True ],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "support",   True,  False],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "support",   True,  True ],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "geometric", False, False],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "geometric", False, True ],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "geometric", True,  False],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "equiangular", "equiangular", "geometric", True,  True ],
+        ],
+        skip_on_empty=True,
+    )
+    def test_normalize_matches_legacy(self, in_shape, out_shape, kernel_shape, basis_type,
+                                      grid_in, grid_out, basis_norm_mode, merge_quadrature,
+                                      transpose_normalization, verbose=False):
+        """Vectorized _normalize_convolution_tensor_s2 must agree with the legacy
+        loop-based reference for every (basis_norm_mode, merge_quadrature, transpose_normalization)."""
+
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        filter_basis = get_filter_basis(kernel_shape=kernel_shape, basis_type=basis_type)
+        kernel_size = filter_basis.kernel_size
+        theta_cutoff = torch.pi / float(nlat_out - 1)
+
+        # build raw (un-normalized) psi via precompute with mode="none" + merge_quadrature=False;
+        # the internal normalize call is then a no-op so out_vals are the raw filter values.
+        idx, vals_raw, _ = _precompute_convolution_tensor_s2(
+            in_shape=in_shape,
+            out_shape=out_shape,
+            filter_basis=filter_basis,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            theta_cutoff=theta_cutoff,
+            transpose_normalization=False,
+            basis_norm_mode="none",
+            merge_quadrature=False,
+        )
+
+        # quadrature weights mirror the precompute's choice: win for non-transpose, wout for transpose
+        _, win  = precompute_latitudes(nlat_in,  grid=grid_in)
+        _, wout = precompute_latitudes(nlat_out, grid=grid_out)
+        quad_weights = (wout if transpose_normalization else win).reshape(-1, 1) / nlon_in / 2.0
+
+        ref = _normalize_convolution_tensor_s2_legacy(
+            idx, vals_raw.clone(), in_shape, out_shape, kernel_size,
+            quad_weights, theta_cutoff,
+            transpose_normalization=transpose_normalization,
+            basis_norm_mode=basis_norm_mode,
+            merge_quadrature=merge_quadrature,
+            isotropic_mask=filter_basis.isotropic_mask,
+        )
+        new = _normalize_convolution_tensor_s2(
+            idx, vals_raw.clone(), in_shape, out_shape, kernel_size,
+            quad_weights, theta_cutoff,
+            transpose_normalization=transpose_normalization,
+            basis_norm_mode=basis_norm_mode,
+            merge_quadrature=merge_quadrature,
+            isotropic_mask=filter_basis.isotropic_mask,
+        )
+        self.assertTrue(compare_tensors(
+            f"normalize(mode={basis_norm_mode}, merge={merge_quadrature}, transpose={transpose_normalization})",
+            new, ref, atol=1e-9, rtol=1e-9, verbose=verbose,
+        ))
 
 
     @parameterized.expand(
