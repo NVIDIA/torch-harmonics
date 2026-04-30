@@ -61,7 +61,136 @@ def _normalize_convolution_tensor_s2(
     isotropic_mask=None,
     eps=1e-9,
 ):
-    """Normalizes convolution tensor values based on specified normalization mode.
+    """Normalize the sparse DISCO convolution tensor (vectorized).
+
+    Equivalent to :func:`_normalize_convolution_tensor_s2_legacy` but expressed via a
+    single ``scatter_add_`` per reduced quantity instead of a per-(ikernel, ilat_out)
+    Python double loop. Each nonzero is assigned a flat group id
+    ``gid = ikernel * nlat_out + ilat_out`` and all per-group sums (support, bias
+    numerator, scale) are accumulated in one pass.
+
+    Parameters and return value match :func:`_normalize_convolution_tensor_s2_legacy`;
+    see that function's docstring for the full description.
+    """
+
+    if basis_norm_mode == "individual":
+        warnings.warn(
+            'basis_norm_mode="individual" is deprecated, use "nodal" instead.',
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        basis_norm_mode = "nodal"
+    elif basis_norm_mode == "area ratio":
+        warnings.warn(
+            'basis_norm_mode="area ratio" is deprecated, use "geometric" instead.',
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        basis_norm_mode = "geometric"
+
+    # reshape the indices implicitly to be ikernel, out_shape[0], in_shape[0], in_shape[1]
+    idx = torch.stack([psi_idx[0], psi_idx[1], psi_idx[2] // in_shape[1], psi_idx[2] % in_shape[1]], dim=0)
+
+    ikernel = idx[0]
+    if transpose_normalization:
+        ilat_out = idx[2]
+        ilat_in = idx[1]
+        # deliberately swap input/output shapes to handle transpose normalization with the same code
+        nlat_out = in_shape[0]
+        correction_factor = out_shape[1] / in_shape[1]
+    else:
+        ilat_out = idx[1]
+        ilat_in = idx[2]
+        nlat_out = out_shape[0]
+
+    # quadrature weight per nonzero
+    q = quad_weights[ilat_in].reshape(-1)
+
+    # group id per nonzero: (ikernel, ilat_out) -> flat index in [0, kernel_size * nlat_out)
+    n_groups = kernel_size * nlat_out
+    gid = ikernel * nlat_out + ilat_out
+
+    # support[ik, ilat] = sum_{nonzeros in group} q
+    support_flat = torch.zeros(n_groups, dtype=psi_vals.dtype, device=psi_vals.device)
+    support_flat.scatter_add_(0, gid, q)
+    support = support_flat.view(kernel_size, nlat_out)
+
+    # bias[ik, ilat] -- only nonzero for "modal" mode on anisotropic kernels.
+    # Quadrature-weighted mean of psi_vals over the (ik, ilat) neighborhood.
+    bias = torch.zeros(kernel_size, nlat_out, dtype=psi_vals.dtype, device=psi_vals.device)
+    if basis_norm_mode == "modal":
+        if isotropic_mask is not None:
+            iso = torch.as_tensor(isotropic_mask, dtype=torch.bool, device=psi_vals.device)
+        else:
+            iso = torch.zeros(kernel_size, dtype=torch.bool, device=psi_vals.device)
+            iso[0] = True
+        aniso_per_nz = (~iso)[ikernel].to(psi_vals.dtype)
+        bias_num_flat = torch.zeros(n_groups, dtype=psi_vals.dtype, device=psi_vals.device)
+        bias_num_flat.scatter_add_(0, gid, psi_vals * q * aniso_per_nz)
+        # divide; isotropic kernels have bias_num=0 so result stays 0; clamp protects empty groups
+        bias = (bias_num_flat / support_flat.clamp(min=eps)).view(kernel_size, nlat_out)
+        # mirror the legacy `support[ik, ilat].abs() > eps` guard
+        bias = torch.where(support.abs() > eps, bias, torch.zeros_like(bias))
+
+    # scale[ik, ilat] = sum |psi_vals - bias[ik, ilat]| * q over the neighborhood
+    bias_per_nz = bias.view(-1)[gid]
+    scale_flat = torch.zeros(n_groups, dtype=psi_vals.dtype, device=psi_vals.device)
+    scale_flat.scatter_add_(0, gid, (psi_vals - bias_per_nz).abs() * q)
+    scale = scale_flat.view(kernel_size, nlat_out)
+
+    # per-mode (b, s) selection per nonzero, then renormalize in a single elementwise pass
+    if basis_norm_mode in ("nodal", "modal"):
+        b_per_nz = bias.view(-1)[gid]
+        s_per_nz = scale.view(-1)[gid]
+        psi_vals = (psi_vals - b_per_nz) / s_per_nz.clamp(min=eps)
+    elif basis_norm_mode == "mean":
+        # average over latitudes per kernel; bias is zero in this mode but we keep the
+        # mean(dim=1) to mirror the legacy formulation exactly
+        bias_per_ik = bias.mean(dim=1)
+        scale_per_ik = scale.mean(dim=1)
+        b_per_nz = bias_per_ik[ikernel]
+        s_per_nz = scale_per_ik[ikernel]
+        psi_vals = (psi_vals - b_per_nz) / s_per_nz.clamp(min=eps)
+    elif basis_norm_mode == "support":
+        s_per_nz = support.view(-1)[gid]
+        psi_vals = psi_vals / s_per_nz.clamp(min=eps)
+    elif basis_norm_mode == "geometric":
+        geometric_scale = (1.0 - math.cos(theta_cutoff)) / 2.0 / 2.0
+        psi_vals = psi_vals / max(geometric_scale, eps)
+    elif basis_norm_mode == "none":
+        # legacy does `(psi - 0) / max(1.0, eps)`; for any realistic eps < 1 this is the
+        # identity, but mirror the formula exactly so we match for pathological eps >= 1
+        psi_vals = psi_vals / max(1.0, eps)
+    else:
+        raise ValueError(f"Unknown basis normalization mode {basis_norm_mode}.")
+
+    if merge_quadrature:
+        psi_vals = psi_vals * q
+
+    if transpose_normalization and merge_quadrature:
+        psi_vals = psi_vals / correction_factor
+
+    return psi_vals
+
+
+def _normalize_convolution_tensor_s2_legacy(
+    psi_idx,
+    psi_vals,
+    in_shape,
+    out_shape,
+    kernel_size,
+    quad_weights,
+    theta_cutoff,
+    transpose_normalization=False,
+    basis_norm_mode="mean",
+    merge_quadrature=False,
+    isotropic_mask=None,
+    eps=1e-9,
+):
+    """Loop-based reference for :func:`_normalize_convolution_tensor_s2`.
+
+    Retained for cross-validation. The vectorized implementation in
+    :func:`_normalize_convolution_tensor_s2` is the live one used by the precompute path.
 
     This function applies different normalization strategies to the convolution tensor
     values based on the basis_norm_mode parameter. It can normalize individual basis
