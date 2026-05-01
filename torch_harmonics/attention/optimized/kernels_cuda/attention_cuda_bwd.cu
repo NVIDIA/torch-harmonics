@@ -354,7 +354,7 @@ void s2_attn_bwd_special_vec_k(int nchan_in,  // no. of FLOATV_T elements along 
 
     vx += int64_t(batch)*nlat_in*nlon_in*nchan_out;// + tidx;
     dy += int64_t(batch)*nlat_out*nlon_out*nchan_out + int64_t(ho)*nlon_out*nchan_out + int64_t(wo)*nchan_out;// + tidx;
-    if (CHOUT_AS_IN) {
+    if constexpr(CHOUT_AS_IN) {
         vx += tidx;
         dy += tidx;
     }
