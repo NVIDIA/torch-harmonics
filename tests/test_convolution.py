@@ -33,18 +33,14 @@ import os
 from time import perf_counter_ns
 import unittest
 from parameterized import parameterized, parameterized_class
-import math
 
 import torch
 from torch.library import opcheck
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 
-from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
-from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
-from torch_harmonics.filter_basis import get_filter_basis
-from disco_helpers import preprocess_psi
 
+from disco_test_utils import normalize_convolution_tensor_dense, precompute_convolution_tensor_dense
 from testutils import disable_tf32, set_seed, compare_tensors, maybe_autocast
 
 if not optimized_kernels_is_available():
@@ -64,296 +60,12 @@ _perf_test_thresholds = {"cpu": {"fwd_ms": 100, "bwd_ms": 90},
 _run_perf_tests = (os.getenv("TORCH_HARMONICS_RUN_PERF_TESTS", "0") == "1")
 
 
-def _normalize_convolution_tensor_dense(
-    psi,
-    quad_weights,
-    transpose_normalization=False,
-    basis_norm_mode="none",
-    merge_quadrature=False,
-    isotropic_mask=None,
-    theta_cutoff=None,
-    in_support=None,
-    eps=1e-9,
-):
-    """Discretely normalizes the convolution tensor.
-
-    Mirrors the normalization logic in _normalize_convolution_tensor_s2
-    for all supported normalization modes.
-    """
-
-    kernel_size, nlat_out, nlon_out, nlat_in, nlon_in = psi.shape
-    correction_factor = nlon_out / nlon_in
-
-    if transpose_normalization:
-        n_olat = nlat_in
-    else:
-        n_olat = nlat_out
-
-    bias_arr = torch.zeros(kernel_size, n_olat, dtype=psi.dtype, device=psi.device)
-    scale_arr = torch.zeros(kernel_size, n_olat, dtype=psi.dtype, device=psi.device)
-    support_arr = torch.zeros(kernel_size, n_olat, dtype=psi.dtype, device=psi.device)
-
-    for ik in range(kernel_size):
-        for ilat in range(n_olat):
-            if transpose_normalization:
-                entries = psi[ik, :, 0, ilat, :]
-                q = quad_weights[:nlat_out, 0].unsqueeze(1).expand_as(entries)
-                smask = in_support[ik, :, 0, ilat, :] if in_support is not None else (entries.abs() > 0)
-            else:
-                entries = psi[ik, ilat, 0, :, :]
-                q = quad_weights[:nlat_in, 0].unsqueeze(1).expand_as(entries)
-                smask = in_support[ik, ilat, 0, :, :] if in_support is not None else (entries.abs() > 0)
-
-            q_masked = q * smask
-            support_arr[ik, ilat] = q_masked.sum()
-
-            is_isotropic = isotropic_mask[ik] if isotropic_mask is not None else (ik == 0)
-            if basis_norm_mode == "modal" and not is_isotropic and support_arr[ik, ilat].abs() > eps:
-                bias_arr[ik, ilat] = (entries * q_masked).sum() / support_arr[ik, ilat]
-
-            scale_arr[ik, ilat] = ((entries - bias_arr[ik, ilat]).abs() * q_masked).sum()
-
-    # The sparse implementation stores one longitude slice and reuses it for all
-    # output longitudes via rolling during contraction. We mirror this: normalize
-    # only the r=0 slice, then fill other slices with cyclic shifts. Normalizing
-    # each slice independently would amplify floating-point noise at near-zero
-    # entries (e.g. anisotropic modes at the poles where scale ≈ 0).
-    pscale = nlon_in // nlon_out
-
-    # precompute the per-ik mean for "mean" mode so we don't rely on Python function-scope
-    # reuse of b/s across ilat iterations inside the loop below
-    if basis_norm_mode == "mean":
-        bias_per_ik = bias_arr.mean(dim=1)
-        scale_per_ik = scale_arr.mean(dim=1)
-
-    # precompute the "geometric" scalar once; it's ik/ilat-independent
-    if basis_norm_mode == "geometric":
-        geometric_scale = (1.0 - math.cos(theta_cutoff)) / 2.0 / 2.0
-
-    for ik in range(kernel_size):
-        for ilat in range(n_olat):
-            if basis_norm_mode in ["nodal", "modal"]:
-                b = bias_arr[ik, ilat]
-                s = scale_arr[ik, ilat]
-            elif basis_norm_mode == "mean":
-                b = bias_per_ik[ik]
-                s = scale_per_ik[ik]
-            elif basis_norm_mode == "support":
-                b = 0.0
-                s = support_arr[ik, ilat]
-            elif basis_norm_mode == "geometric":
-                b = 0.0
-                s = geometric_scale
-            elif basis_norm_mode == "none":
-                b = 0.0
-                s = 1.0
-            else:
-                raise ValueError(f"Unknown basis normalization mode {basis_norm_mode}.")
-
-            if transpose_normalization:
-                slc0 = psi[ik, :, 0, ilat, :]
-                mask0 = in_support[ik, :, 0, ilat, :] if in_support is not None else (slc0 != 0)
-                psi[ik, :, 0, ilat, :] = torch.where(mask0, (slc0 - b) / max(s, eps), slc0)
-                for r in range(1, nlon_out):
-                    psi[ik, :, r, ilat, :] = torch.roll(psi[ik, :, 0, ilat, :], r * pscale, dims=-1)
-            else:
-                slc0 = psi[ik, ilat, 0, :, :]
-                mask0 = in_support[ik, ilat, 0, :, :] if in_support is not None else (slc0 != 0)
-                psi[ik, ilat, 0, :, :] = torch.where(mask0, (slc0 - b) / max(s, eps), slc0)
-                for r in range(1, nlon_out):
-                    psi[ik, ilat, r, :, :] = torch.roll(psi[ik, ilat, 0, :, :], r * pscale, dims=-1)
-
-    if transpose_normalization:
-        if merge_quadrature:
-            psi = quad_weights.reshape(1, -1, 1, 1, 1) * psi / correction_factor
-    else:
-        if merge_quadrature:
-            psi = quad_weights.reshape(1, 1, 1, -1, 1) * psi
-
-    return psi
-
-
-def _precompute_convolution_tensor_dense(
-    in_shape,
-    out_shape,
-    filter_basis,
-    grid_in="equiangular",
-    grid_out="equiangular",
-    theta_cutoff=0.01 * math.pi,
-    theta_eps=1e-3,
-    transpose_normalization=False,
-    basis_norm_mode="none",
-    merge_quadrature=False,
-):
-    """Helper routine to compute the convolution Tensor in a dense fashion."""
-    assert len(in_shape) == 2
-    assert len(out_shape) == 2
-
-    kernel_size = filter_basis.kernel_size
-
-    nlat_in, nlon_in = in_shape
-    nlat_out, nlon_out = out_shape
-
-    lats_in, win = precompute_latitudes(nlat_in, grid=grid_in)
-    lats_out, wout = precompute_latitudes(nlat_out, grid=grid_out)
-
-    # compute the phi differences.
-    lons_in = precompute_longitudes(nlon_in)
-    lons_out = precompute_longitudes(nlon_out)
-
-    # effective theta cutoff if multiplied with a fudge factor to avoid aliasing with grid width (especially near poles)
-    theta_cutoff_eff = (1.0 + theta_eps) * theta_cutoff
-
-    # compute quadrature weights that will be merged into the Psi tensor
-    if transpose_normalization:
-        quad_weights = wout.reshape(-1, 1) / nlon_in / 2.0
-    else:
-        quad_weights = win.reshape(-1, 1) / nlon_in / 2.0
-
-    # array for accumulating non-zero indices and tracking filter support
-    out = torch.zeros(kernel_size, nlat_out, nlon_out, nlat_in, nlon_in, dtype=torch.float64, device=lons_in.device)
-    in_support = torch.zeros_like(out, dtype=torch.bool)
-
-    for t in range(nlat_out):
-        for p in range(nlon_out):
-            alpha = -lats_out[t]
-            beta = lons_in - lons_out[p]
-            gamma = lats_in.reshape(-1, 1)
-
-            # compute latitude of the rotated position
-            z = -torch.cos(beta) * torch.sin(alpha) * torch.sin(gamma) + torch.cos(alpha) * torch.cos(gamma)
-
-            # compute cartesian coordinates of the rotated position
-            x = torch.cos(alpha) * torch.cos(beta) * torch.sin(gamma) + torch.cos(gamma) * torch.sin(alpha)
-            y = torch.sin(beta) * torch.sin(gamma) * torch.ones_like(alpha)
-
-            # normalize instead of clipping to ensure correct range
-            norm = torch.sqrt(x * x + y * y + z * z)
-            x = x / norm
-            y = y / norm
-            z = z / norm
-
-            # compute spherical coordinates
-            theta = torch.arccos(z)
-            phi = torch.arctan2(y, x)
-            phi = torch.where(phi < 0.0, phi + 2 * torch.pi, phi)
-
-            # find the indices where the rotated position falls into the support of the kernel
-            iidx, vals = filter_basis.compute_support_vals(theta, phi, r_cutoff=theta_cutoff_eff)
-            out[iidx[:, 0], t, p, iidx[:, 1], iidx[:, 2]] = vals
-            in_support[iidx[:, 0], t, p, iidx[:, 1], iidx[:, 2]] = True
-
-    # take care of normalization
-    out = _normalize_convolution_tensor_dense(
-        out,
-        quad_weights=quad_weights,
-        transpose_normalization=transpose_normalization,
-        basis_norm_mode=basis_norm_mode,
-        merge_quadrature=merge_quadrature,
-        isotropic_mask=filter_basis.isotropic_mask,
-        theta_cutoff=theta_cutoff,
-        in_support=in_support,
-    )
-
-    return out
-
-
 @parameterized_class(("device"), _devices)
 class TestDiscreteContinuousConvolution(unittest.TestCase):
     """Test the discrete-continuous convolution module (CPU/CUDA if available)."""
 
     def setUp(self):
         disable_tf32()
-
-    @parameterized.expand(
-        [
-            # harmonic
-            [(16, 32), (16, 32), (1, 1), "harmonic", "mean", "equiangular", "equiangular"],
-            [(16, 32), (16, 32), (3, 3), "harmonic", "mean", "equiangular", "equiangular"],
-            [(17, 32), (17, 32), (3, 3), "harmonic", "mean", "equiangular", "equiangular"],
-            [(16, 32), (16, 32), (3, 4), "harmonic", "mean", "equiangular", "equiangular"],
-            [(16, 32), (16, 32), (3, 2), "harmonic", "mean", "equiangular", "equiangular"],
-            [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "equiangular", "equiangular"],
-            [(16, 32), (8, 16), (3, 4), "harmonic", "mean", "equiangular", "equiangular"],
-            # zernike
-            [(16, 32), (16, 32), (1), "zernike", "mean", "equiangular", "equiangular"],
-            [(16, 32), (16, 32), (3), "zernike", "mean", "equiangular", "equiangular"],
-            [(17, 32), (17, 32), (3), "zernike", "mean", "equiangular", "equiangular"],
-            [(16, 32), (8, 16), (3), "zernike", "mean", "equiangular", "equiangular"],
-            # fourier-bessel
-            [(16, 32), (16, 32), (3, 3), "fourier-bessel", "mean", "equiangular", "equiangular"],
-            [(17, 32), (17, 32), (3, 3), "fourier-bessel", "mean", "equiangular", "equiangular"],
-            [(16, 32), (8, 16), (3, 3), "fourier-bessel", "mean", "equiangular", "equiangular"],
-            # exercise each normalization mode at least once
-            [(16, 32), (16, 32), (3, 3), "harmonic", "nodal", "equiangular", "equiangular"],
-            [(16, 32), (16, 32), (3, 3), "harmonic", "modal", "equiangular", "equiangular"],
-            [(16, 32), (16, 32), (3, 3), "harmonic", "support", "equiangular", "equiangular"],
-            [(16, 32), (16, 32), (3, 3), "harmonic", "geometric", "equiangular", "equiangular"],
-            [(16, 32), (16, 32), (3, 3), "harmonic", "none", "equiangular", "equiangular"],
-            # mixed grid
-            [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "legendre-gauss", "equiangular"],
-            [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "equiangular", "legendre-gauss"],
-        ],
-        skip_on_empty=True,
-    )
-    def test_convolution_tensor_integrity(self, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, verbose=False):
-        """Structural invariants of the sparse psi datastructure after precompute + preprocess_psi.
-
-        Note: intentionally excludes the "piecewise linear" basis, whose per-kernel radial support
-        yields non-uniform (row, col) sets across kernel indices. The remaining bases share a
-        full-disk support across all kernel basis functions and therefore satisfy the invariants
-        the optimized DISCO kernel relies on.
-        """
-
-        nlat_in, nlon_in = in_shape
-        nlat_out, nlon_out = out_shape
-
-        filter_basis = get_filter_basis(kernel_shape=kernel_shape, basis_type=basis_type)
-
-        theta_cutoff = torch.pi / float(nlat_out - 1)
-
-        idx, vals, _ = _precompute_convolution_tensor_s2(
-            in_shape=in_shape,
-            out_shape=out_shape,
-            filter_basis=filter_basis,
-            grid_in=grid_in,
-            grid_out=grid_out,
-            theta_cutoff=theta_cutoff,
-            transpose_normalization=False,
-            basis_norm_mode=basis_norm_mode,
-            merge_quadrature=True,
-        )
-
-        ker_idx = idx[0, ...].contiguous()
-        row_idx = idx[1, ...].contiguous()
-        col_idx = idx[2, ...].contiguous()
-        vals = vals.contiguous()
-
-        # sort + row offsets (preprocess_psi mutates ker/row/col/vals in place)
-        roff_idx = preprocess_psi(filter_basis.kernel_size, nlat_out, ker_idx, row_idx, col_idx, vals).contiguous()
-
-        # 1) shape consistency
-        self.assertEqual(ker_idx.shape[0], row_idx.shape[0])
-        self.assertEqual(ker_idx.shape[0], col_idx.shape[0])
-        self.assertEqual(ker_idx.shape[0], vals.shape[0])
-
-        # 2) roff_idx covers every (kernel, output-latitude) row exactly once
-        self.assertEqual(roff_idx.shape[0] - 1, filter_basis.kernel_size * nlat_out)
-
-        # 3) same number of nnz per kernel basis function
-        _, counts = torch.unique(ker_idx, return_counts=True)
-        self.assertTrue(torch.all(counts == counts[0]), f"multiplicity in ker_idx is not uniform: counts={counts.tolist()}")
-
-        # 4) same (row, col) support pattern across all kernel basis functions
-        row_idx_ref = row_idx[ker_idx == 0]
-        col_idx_ref = col_idx[ker_idx == 0]
-        for k in range(1, filter_basis.kernel_size):
-            self.assertTrue(torch.equal(row_idx_ref, row_idx[ker_idx == k]), f"row_idx differs for kernel index {k}")
-            self.assertTrue(torch.equal(col_idx_ref, col_idx[ker_idx == k]), f"col_idx differs for kernel index {k}")
-
-        if verbose:
-            print(f"\nintegrity OK: nnz={ker_idx.shape[0]}, per-kernel={counts[0].item()}, nrows={roff_idx.shape[0]-1}")
-
 
     @parameterized.expand(
         [
@@ -499,7 +211,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # psi comparison in float64 (both sides come from precompute in float64)
         if transpose:
-            psi_dense = _precompute_convolution_tensor_dense(
+            psi_dense = precompute_convolution_tensor_dense(
                 out_shape,
                 in_shape,
                 filter_basis,
@@ -515,7 +227,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
             self.assertTrue(torch.allclose(psi, psi_dense[:, :, 0].reshape(-1, nlat_in, nlat_out * nlon_out)))
         else:
-            psi_dense = _precompute_convolution_tensor_dense(
+            psi_dense = precompute_convolution_tensor_dense(
                 in_shape,
                 out_shape,
                 filter_basis,

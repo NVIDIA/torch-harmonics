@@ -32,6 +32,49 @@
 
 #include "disco.h"
 
+#include <algorithm>
+
+template <typename REAL_T>
+void pack_psi_dense_kernel(int64_t K, int64_t Ho, int64_t Wi, int64_t nbr_pad, int64_t nrows,
+                           const int64_t *ker_h, const int64_t *row_h, const int64_t *col_h,
+                           const REAL_T *val_h, const int64_t *roff_h,
+                           int64_t *idx_out_h, REAL_T *val_out_h, int64_t *count_out_h)
+{
+    // idx_out: [K, Ho, nbr_pad, 2]   -> (hi, wi_base)
+    // val_out: [K, Ho, nbr_pad]
+    // count_out: [K, Ho]
+    // outputs are assumed pre-zeroed by the caller.
+
+    for (int64_t i = 0; i < nrows; i++) {
+
+        const int64_t soff = roff_h[i];
+        const int64_t eoff = roff_h[i + 1];
+        const int64_t k    = ker_h[soff];
+        const int64_t ho   = row_h[soff];
+        const int64_t cnt  = eoff - soff;
+
+        if (cnt > nbr_pad) {
+            fprintf(stderr,
+                    "%s:%d: error, row (k=%ld, ho=%ld) has %ld entries, exceeds nbr_pad=%ld\n",
+                    __FILE__, __LINE__, (long)k, (long)ho, (long)cnt, (long)nbr_pad);
+            exit(EXIT_FAILURE);
+        }
+
+        const int64_t row_base = (k * Ho + ho) * nbr_pad;
+
+        for (int64_t off = 0; off < cnt; off++) {
+            const int64_t col = col_h[soff + off];
+            const int64_t hi  = col / Wi;
+            const int64_t wi  = col % Wi;
+            idx_out_h[(row_base + off) * 2 + 0] = hi;
+            idx_out_h[(row_base + off) * 2 + 1] = wi;
+            val_out_h[row_base + off]           = val_h[soff + off];
+        }
+
+        count_out_h[k * Ho + ho] = cnt;
+    }
+}
+
 template <typename REAL_T>
 void preprocess_psi_kernel(int64_t nnz, int64_t K, int64_t Ho, int64_t *ker_h, int64_t *row_h, int64_t *col_h,
                            int64_t *roff_h, REAL_T *val_h, int64_t &nrows)
