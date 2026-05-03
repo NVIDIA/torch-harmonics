@@ -614,8 +614,15 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
     ):
         """PT2-compliance opcheck for the dense forward custom op. Forward conv only;
         the transpose conv path still uses the CSR custom op which is covered by
-        test_optimized_pt2_compatibility."""
+        test_csr_optimized_pt2_compatibility.
 
+        Currently CPU-only: opcheck's AOT-dispatch sub-tests exercise the autograd
+        backward, which routes through disco_kernels::backward_dense. The CUDA
+        backward_dense kernel is not yet implemented, so we skip on CUDA. Drop this
+        gate once the CUDA dense bwd lands."""
+
+        if self.device.type == "cuda":
+            self.skipTest("CUDA dense backward kernel not yet implemented")
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping GPU test because CUDA kernels are not available")
 

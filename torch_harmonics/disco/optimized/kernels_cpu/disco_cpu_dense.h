@@ -66,11 +66,55 @@ namespace disco_kernels {
                                 const int64_t hi      = pack_idx[k][ho][nz][0];
                                 const int64_t wi_base = pack_idx[k][ho][nz][1];
                                 const scalar_t v      = pack_val[k][ho][nz];
-                                int64_t wi = wi_base + pscale * wo;
-                                if (wi >= Wi) wi -= Wi;
+                                const int64_t wi = (wi_base + pscale * wo) % Wi;
                                 acc += v * inp[b][c][hi][wi];
                             }
                             out[b][c][k][ho][wo] = acc;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Dense-packed-psi backward (CPU baseline). The same packed psi consumed by
+    // disco_fwd_dense is reused without any explicit transposition: the bwd
+    // kernel iterates psi rows (k, hi) — the second dim of pack_idx is the fwd
+    // ho axis, which is the bwd kernel's "Hi" dim — and scatters into
+    //   out[b, c, ho, (wo_base + pscale * wi) mod Wo]
+    // where (ho, wo_base) = pack_idx[k, hi, nz] and pscale = Wo / Wi. Naming
+    // mirrors disco_bwd_csr: in the bwd kernel local view, Hi/Wi index dout
+    // and Ho/Wo index dinp.
+    //
+    // OpenMP parallelizes (b, c) only — different (b, c) threads write to
+    // disjoint slabs of out, so the inner scatter is race-free without atomics
+    // or per-thread accumulators.
+    template <typename scalar_t>
+    static void disco_bwd_dense(
+        int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi,
+        int64_t Ho, int64_t Wo, int64_t NBR_PAD,
+        const torch::PackedTensorAccessor64<scalar_t, 5> inp,
+        const torch::PackedTensorAccessor64<int64_t, 4> pack_idx,
+        const torch::PackedTensorAccessor64<scalar_t, 3> pack_val,
+        const torch::PackedTensorAccessor64<int64_t, 2> pack_count,
+        torch::PackedTensorAccessor64<scalar_t, 4> out) {
+
+        const int64_t pscale = Wo / Wi;
+
+        #pragma omp parallel for collapse(2)
+        for (int64_t b = 0; b < B; b++) {
+            for (int64_t c = 0; c < C; c++) {
+                for (int64_t k = 0; k < K; k++) {
+                    for (int64_t hi = 0; hi < Hi; hi++) {
+                        const int64_t cnt = pack_count[k][hi];
+                        for (int64_t nz = 0; nz < cnt; nz++) {
+                            const int64_t ho      = pack_idx[k][hi][nz][0];
+                            const int64_t wo_base = pack_idx[k][hi][nz][1];
+                            const scalar_t v      = pack_val[k][hi][nz];
+                            for (int64_t wi = 0; wi < Wi; wi++) {
+                                const int64_t wo = (wo_base + pscale * wi) % Wo;
+                                out[b][c][ho][wo] += v * inp[b][c][k][hi][wi];
+                            }
                         }
                     }
                 }

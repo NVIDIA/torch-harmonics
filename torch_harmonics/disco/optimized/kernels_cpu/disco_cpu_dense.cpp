@@ -72,9 +72,51 @@ namespace disco_kernels {
         return out;
     }
 
+    torch::Tensor disco_cpu_bwd_dense(torch::Tensor inp, torch::Tensor pack_idx, torch::Tensor pack_val,
+        torch::Tensor pack_count, int64_t K, int64_t Ho, int64_t Wo) {
+
+        // sanity checks
+        CHECK_CPU_INPUT_TENSOR(inp);
+        CHECK_CPU_INPUT_TENSOR(pack_idx);
+        CHECK_CPU_INPUT_TENSOR(pack_val);
+        CHECK_CPU_INPUT_TENSOR(pack_count);
+
+        // pscale = Wo / Wi; require an integer ratio so the p-shift is exact.
+        // bwd input shape is [B, C, K, Hi, Wi]; the 4th dim is Wi.
+        TORCH_CHECK(Wo % inp.size(4) == 0,
+                    "Wo (", Wo, ") must be an integer multiple of Wi (", inp.size(4), ")");
+
+        // pack is keyed by (K, Hi=inp.size(3))
+        TORCH_CHECK(pack_idx.dim()   == 4 && pack_idx.size(0)   == K && pack_idx.size(1)   == inp.size(3) && pack_idx.size(3) == 2,
+                    "pack_idx must have shape [K, Hi, NBR_PAD, 2] with Hi == inp.size(3)");
+        TORCH_CHECK(pack_val.dim()   == 3 && pack_val.size(0)   == K && pack_val.size(1)   == inp.size(3),
+                    "pack_val must have shape [K, Hi, NBR_PAD]");
+        TORCH_CHECK(pack_count.dim() == 2 && pack_count.size(0) == K && pack_count.size(1) == inp.size(3),
+                    "pack_count must have shape [K, Hi]");
+
+        const int64_t NBR_PAD = pack_idx.size(2);
+
+        // initialize output tensor
+        auto out = torch::zeros({inp.size(0), inp.size(1), Ho, Wo}, inp.options());
+
+        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_dense_cpu", ([&] {
+            disco_bwd_dense<scalar_t>(
+                inp.size(0), inp.size(1), K, inp.size(3), inp.size(4),
+                Ho, Wo, NBR_PAD,
+                inp.packed_accessor64<scalar_t, 5>(),
+                pack_idx.packed_accessor64<int64_t, 4>(),
+                pack_val.packed_accessor64<scalar_t, 3>(),
+                pack_count.packed_accessor64<int64_t, 2>(),
+                out.packed_accessor64<scalar_t, 4>());
+        }));
+
+        return out;
+    }
+
     TORCH_LIBRARY_IMPL(disco_kernels, CPU, m)
     {
         m.impl("forward_dense",  &disco_cpu_fwd_dense);
+        m.impl("backward_dense", &disco_cpu_bwd_dense);
     }
 
 }

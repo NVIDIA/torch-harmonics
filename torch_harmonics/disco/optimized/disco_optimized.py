@@ -59,6 +59,13 @@ if optimized_kernels_is_available():
         out_shape = (inp.shape[0], inp.shape[1], kernel_size, nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
+    # raw dense backward fake
+    @torch.library.register_fake("disco_kernels::backward_dense")
+    def _(inp: torch.Tensor, pack_idx: torch.Tensor, pack_val: torch.Tensor,
+          pack_count: torch.Tensor, kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        out_shape = (inp.shape[0], inp.shape[1], nlat_out, nlon_out)
+        return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
+
     # forward
     @torch.library.custom_op("disco_kernels::_disco_s2_contraction_optimized", mutates_args=())
     def _disco_s2_contraction_optimized(
@@ -161,26 +168,26 @@ if optimized_kernels_is_available():
     torch.library.register_autograd(
         "disco_kernels::_disco_s2_contraction_optimized", _disco_s2_contraction_bwd_optimized, setup_context=_setup_context_conv_backward)
 
-# dense convolution forward — bwd routes through the existing CSR transpose
-# contraction kernel. The autograd context only needs to retain the CSR psi
-# (the packed buffers are an fwd-only optimization).
+# dense convolution forward — bwd routes through the dense bwd kernel using the
+# packed psi. (Note: until the CUDA dense bwd is added, this path only works on
+# CPU; on CUDA the dispatch into backward_dense will fail.)
 def _setup_context_conv_dense_backward(ctx, inputs, output):
-    inp, _pi, _pv, _pc, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out = inputs
-    ctx.save_for_backward(roff_idx, ker_idx, row_idx, col_idx, vals)
+    inp, pack_idx, pack_val, pack_count, _ri, _ki, _rwi, _ci, _v, kernel_size, nlat_out, nlon_out = inputs
+    ctx.save_for_backward(pack_idx, pack_val, pack_count)
     ctx.kernel_size = kernel_size
     ctx.nlat_in = inp.shape[-2]
     ctx.nlon_in = inp.shape[-1]
 
 def _disco_s2_contraction_dense_bwd_optimized(ctx, grad_output):
-    roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
+    pack_idx, pack_val, pack_count = ctx.saved_tensors
 
     if ctx.needs_input_grad[0]:
         gtype = grad_output.dtype
         cdtype = _compute_dtype(gtype)
         grad_output = grad_output.to(cdtype).contiguous()
-        vals = vals.to(cdtype)
-        grad_input = disco_kernels.backward_csr.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
-                                                    ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
+        pack_val = pack_val.to(cdtype)
+        grad_input = disco_kernels.backward_dense.default(grad_output, pack_idx, pack_val, pack_count,
+                                                         ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
         grad_input = grad_input.to(gtype)
     else:
         grad_input = None
