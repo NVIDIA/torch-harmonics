@@ -37,7 +37,7 @@
 namespace disco_kernels {
 
     template <typename scalar_t>
-    static void disco_fwd_cpu(
+    static void disco_fwd_csr(
         int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi, 
         int64_t Ho, int64_t Wo, int64_t nnz, int64_t nnr,
         const torch::PackedTensorAccessor64<scalar_t, 4> inp,
@@ -103,7 +103,7 @@ namespace disco_kernels {
     }
 
     template <typename scalar_t>
-    static void disco_bwd_cpu(
+    static void disco_bwd_csr(
         int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi, 
         int64_t Ho, int64_t Wo, int64_t nnz, int64_t nnr,
         const torch::PackedTensorAccessor64<scalar_t, 5> inp,

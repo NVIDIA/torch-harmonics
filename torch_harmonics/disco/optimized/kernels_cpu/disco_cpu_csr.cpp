@@ -28,12 +28,12 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "disco_cpu.h"
+#include "disco_cpu_csr.h"
 
 namespace disco_kernels {
 
     // cpu ops
-    torch::Tensor disco_cpu_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
+    torch::Tensor disco_cpu_fwd_csr(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
         torch::Tensor col_idx, torch::Tensor vals, int64_t K, int64_t Ho, int64_t Wo) {
 
         // sanity checks
@@ -52,7 +52,7 @@ namespace disco_kernels {
         auto out = torch::zeros({inp.size(0), inp.size(1), K, Ho, Wo}, inp.options());
 
         AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cpu", ([&] {
-            disco_fwd_cpu<scalar_t>(
+            disco_fwd_csr<scalar_t>(
                 inp.size(0), inp.size(1), K, inp.size(2), inp.size(3), 
                 Ho, Wo, vals.size(0), roff_idx.size(0) - 1,
                 inp.packed_accessor64<scalar_t, 4>(), 
@@ -67,7 +67,7 @@ namespace disco_kernels {
         return out;
     }
 
-    torch::Tensor disco_cpu_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
+    torch::Tensor disco_cpu_bwd_csr(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
         torch::Tensor col_idx, torch::Tensor vals, int64_t K, int64_t Ho, int64_t Wo) {
 
         // sanity checks
@@ -86,7 +86,7 @@ namespace disco_kernels {
         auto out = torch::zeros({inp.size(0), inp.size(1), Ho, Wo}, inp.options());
 
         AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_cpu", ([&] {
-            disco_bwd_cpu<scalar_t>(
+            disco_bwd_csr<scalar_t>(
                 inp.size(0), inp.size(1), K, inp.size(3), 
                 inp.size(4), Ho, Wo, vals.size(0), roff_idx.size(0) - 1,
                 inp.packed_accessor64<scalar_t, 5>(), 
@@ -104,8 +104,8 @@ namespace disco_kernels {
     // Implement the operators: CPU
     TORCH_LIBRARY_IMPL(disco_kernels, CPU, m)
     {
-        m.impl("forward",  &disco_cpu_fwd);
-        m.impl("backward",  &disco_cpu_bwd);
+        m.impl("forward_csr",  &disco_cpu_fwd_csr);
+        m.impl("backward_csr",  &disco_cpu_bwd_csr);
     }
 
 }

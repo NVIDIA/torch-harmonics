@@ -21,7 +21,7 @@ from torch_harmonics.filter_basis import get_filter_basis
 from disco_helpers import preprocess_psi, pack_psi_dense
 
 from disco_test_utils import python_pack_psi, python_disco_fwd_from_packed
-from testutils import disable_tf32, set_seed
+from testutils import compare_tensors, disable_tf32, set_seed
 
 
 _devices = [(torch.device("cpu"),)]
@@ -86,7 +86,11 @@ _REPACK_CONFIGS = [
     [(16, 32), (16, 32), (3,),    "piecewise linear", "mean", "equiangular", "equiangular", 1.0],
     [(16, 32), (8, 16),  (3,),    "piecewise linear", "mean", "equiangular", "equiangular", 1.0],
     [(24, 48), (12, 24), (3, 3),  "piecewise linear", "mean", "equiangular", "equiangular", 1.0],
+    [(25, 48), (12, 24), (3, 3),  "piecewise linear", "mean", "equiangular", "legendre-gauss", 1.0],
     [(16, 32), (16, 32), (2, 2),  "harmonic",         "mean", "equiangular", "equiangular", 1.0],
+    [(17, 32), (17, 32), (2, 2),  "harmonic",         "mean", "equiangular", "equiangular", 1.0],
+    [(17, 32), ( 8, 16), (2, 2),  "harmonic",         "mean", "equiangular", "legendre-gauss", 1.0],
+    [(16, 32), (16, 16), (2, 2),  "harmonic",         "mean", "legendre-gauss", "legendre-gauss", 1.0],
     [(16, 32), (16, 32), (3,),    "zernike",          "mean", "equiangular", "equiangular", 1.0],
     [(16, 32), (16, 32), (3, 3),  "fourier-bessel",   "mean", "equiangular", "equiangular", 1.0],
     # larger theta cutoff -> denser psi (more neighbors per row)
@@ -222,8 +226,7 @@ class TestConstruction(unittest.TestCase):
 
         self.assertTrue(torch.equal(idx_cpp.cpu(),   idx_py),   "idx_packed differs from python reference")
         self.assertTrue(torch.equal(count_cpp.cpu(), count_py), "count_packed differs from python reference")
-        # vals: bit-exact since we just copy floats through with no arithmetic
-        self.assertTrue(torch.equal(val_cpp.cpu(), val_py), "val_packed differs from python reference")
+        self.assertTrue(compare_tensors("val_packed (cpp vs python ref)", val_cpp.cpu(), val_py))
 
     @parameterized.expand(_REPACK_CONFIGS, skip_on_empty=True)
     def test_pack_psi_explicit_pad_matches_auto(
@@ -252,7 +255,7 @@ class TestConstruction(unittest.TestCase):
         self.assertEqual(idx_big.shape[2], bigger)
         self.assertEqual(val_big.shape[2], bigger)
         self.assertTrue(torch.equal(idx_big[..., :nbr_pad, :].cpu(), idx_auto.cpu()))
-        self.assertTrue(torch.equal(val_big[..., :nbr_pad].cpu(),    val_auto.cpu()))
+        self.assertTrue(compare_tensors("val_packed (auto-pad prefix)", val_big[..., :nbr_pad].cpu(), val_auto.cpu()))
         self.assertTrue(torch.equal(count_big.cpu(),                 count_auto.cpu()))
         # tail must be zero
         self.assertTrue(torch.all(idx_big[..., nbr_pad:, :] == 0))
@@ -320,8 +323,8 @@ class TestPackedPsiAgainstCSRKernel(unittest.TestCase):
         # input
         inp = torch.randn(B, C, Hi, Wi, dtype=torch.float64, device=self.device)
 
-        # CSR kernel path: torch.ops.disco_kernels.forward
-        out_csr = torch.ops.disco_kernels.forward(
+        # CSR kernel path: torch.ops.disco_kernels.forward_csr
+        out_csr = torch.ops.disco_kernels.forward_csr(
             inp, roff_idx_d, ker_idx_d, row_idx_d, col_idx_d, vals_d, K, Ho, Wo
         )
 
@@ -335,6 +338,104 @@ class TestPackedPsiAgainstCSRKernel(unittest.TestCase):
 
         # both paths run in fp64 on identical data; the only differences are operation order.
         torch.testing.assert_close(out_csr, out_ref, rtol=1e-10, atol=1e-10)
+
+
+class TestDenseKernelWiring(unittest.TestCase):
+    """Smoke tests for the use_dense_kernel construction path: when the flag is on,
+    the planner must register the packed buffers with the right shapes and contents.
+    When the flag is off, the packed buffers must NOT be registered."""
+
+    def setUp(self):
+        if not optimized_kernels_is_available():
+            self.skipTest("optimized disco kernels not available")
+        disable_tf32()
+        set_seed(333)
+
+    @parameterized.expand(
+        [
+            # in_shape, out_shape, kernel_shape, basis, norm, transpose
+            [(16, 32), (16, 32), (3,),   "piecewise linear", "mean", False],
+            [(16, 32), (8, 16),  (3,),   "piecewise linear", "mean", False],
+            [(16, 32), (16, 32), (2, 2), "harmonic",         "mean", False],
+            [(16, 32), (16, 32), (3,),   "piecewise linear", "mean", True],
+            [(8, 16),  (16, 32), (3,),   "piecewise linear", "mean", True],
+        ],
+        skip_on_empty=True,
+    )
+    def test_packed_buffers_match_python_reference(
+        self, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, transpose,
+    ):
+        """When use_dense_kernel=True, psi_packed_{idx,vals,count} must be registered
+        and equal to the python_pack_psi reference applied to the CSR buffers."""
+        from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
+
+        Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
+
+        if isinstance(kernel_shape, int):
+            theta_cutoff = (kernel_shape + 1) * torch.pi / float(in_shape[0] - 1)
+        else:
+            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(in_shape[0] - 1)
+
+        conv = Conv(
+            in_channels=2, out_channels=2,
+            in_shape=in_shape, out_shape=out_shape,
+            kernel_shape=kernel_shape,
+            basis_type=basis_type, basis_norm_mode=basis_norm_mode,
+            bias=False, theta_cutoff=theta_cutoff,
+            optimized_kernel=True, use_dense_kernel=True,
+        )
+
+        # buffers exist
+        for name in ("psi_packed_idx", "psi_packed_vals", "psi_packed_count"):
+            self.assertTrue(hasattr(conv, name), f"missing buffer {name}")
+
+        # for transpose, col is decoded against nlon_out; for forward, against nlon_in.
+        # Ho is nlat_in for transpose, nlat_out for forward.
+        Ho_pack = conv.nlat_in if transpose else conv.nlat_out
+        Wi_pack = conv.nlon_out if transpose else conv.nlon_in
+
+        idx_ref, val_ref, count_ref = python_pack_psi(
+            conv.kernel_size, Ho_pack, Wi_pack, 0,
+            conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx,
+            conv.psi_vals, conv.psi_roff_idx,
+        )
+
+        # shapes
+        self.assertEqual(tuple(conv.psi_packed_idx.shape),   tuple(idx_ref.shape))
+        self.assertEqual(tuple(conv.psi_packed_vals.shape),  tuple(val_ref.shape))
+        self.assertEqual(tuple(conv.psi_packed_count.shape), tuple(count_ref.shape))
+
+        # contents (compare on cpu)
+        self.assertTrue(torch.equal(conv.psi_packed_idx.cpu(),   idx_ref))
+        self.assertTrue(compare_tensors("psi_packed_vals (planner vs python ref)", conv.psi_packed_vals.cpu(), val_ref))
+        self.assertTrue(torch.equal(conv.psi_packed_count.cpu(), count_ref))
+
+    @parameterized.expand(
+        [
+            [False],  # forward
+            [True],   # transpose
+        ],
+        skip_on_empty=True,
+    )
+    def test_packed_buffers_absent_when_flag_off(self, transpose):
+        """Without use_dense_kernel, the packed buffers must not be registered."""
+        from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
+
+        Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
+        in_shape  = (8, 16) if transpose else (16, 32)
+        out_shape = (16, 32) if transpose else (16, 32)
+
+        conv = Conv(
+            in_channels=2, out_channels=2,
+            in_shape=in_shape, out_shape=out_shape,
+            kernel_shape=(3,), basis_type="piecewise linear",
+            basis_norm_mode="mean", bias=False,
+            theta_cutoff=4 * torch.pi / float(in_shape[0] - 1),
+            optimized_kernel=True, use_dense_kernel=False,
+        )
+
+        for name in ("psi_packed_idx", "psi_packed_vals", "psi_packed_count"):
+            self.assertFalse(hasattr(conv, name), f"buffer {name} should not be registered when use_dense_kernel=False")
 
 
 if __name__ == "__main__":

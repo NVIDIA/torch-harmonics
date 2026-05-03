@@ -515,7 +515,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         skip_on_empty=True,
     )
     @unittest.skipUnless((optimized_kernels_is_available()), "skipping test because optimized kernels are not available")
-    def test_optimized_pt2_compatibility(
+    def test_csr_optimized_pt2_compatibility(
         self,
         batch_size,
         in_channels,
@@ -589,6 +589,246 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # this one should pass
         #opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_aot_dispatch_dynamic")
 
+
+    @parameterized.expand(
+        [
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular"],
+            [8, 4, 2, (16, 32), (8,  16), (3), "piecewise linear", "mean", "equiangular", "equiangular"],
+        ],
+        skip_on_empty=True,
+    )
+    @unittest.skipUnless((optimized_kernels_is_available()), "skipping test because optimized kernels are not available")
+    def test_dense_optimized_pt2_compatibility(
+        self,
+        batch_size,
+        in_channels,
+        out_channels,
+        in_shape,
+        out_shape,
+        kernel_shape,
+        basis_type,
+        basis_norm_mode,
+        grid_in,
+        grid_out,
+        verbose=False,
+    ):
+        """PT2-compliance opcheck for the dense forward custom op. Forward conv only;
+        the transpose conv path still uses the CSR custom op which is covered by
+        test_optimized_pt2_compatibility."""
+
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping GPU test because CUDA kernels are not available")
+
+        if verbose:
+            print(f"Testing dense DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
+
+        set_seed(333)
+
+        nlat_in, nlon_in = in_shape
+
+        if isinstance(kernel_shape, int):
+            theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
+        else:
+            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
+
+        conv = DiscreteContinuousConvS2(
+            in_channels, out_channels, in_shape, out_shape, kernel_shape,
+            basis_type=basis_type, basis_norm_mode=basis_norm_mode,
+            groups=1, grid_in=grid_in, grid_out=grid_out, bias=False,
+            theta_cutoff=theta_cutoff,
+            optimized_kernel=True, use_dense_kernel=True,
+        ).to(self.device)
+
+        inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
+
+        # full input tuple: dense fwd buffers + CSR buffers (saved by autograd for the
+        # backward path which routes through disco_kernels.backward_csr).
+        test_inputs = (
+            inp,
+            conv.psi_packed_idx, conv.psi_packed_vals, conv.psi_packed_count,
+            conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals,
+            conv.kernel_size, conv.nlat_out, conv.nlon_out,
+        )
+
+        opcheck(torch.ops.disco_kernels._disco_s2_contraction_dense_optimized, test_inputs)
+
+
+    # ------------------------------------------------------------------
+    # dense-kernel forward tests
+    # ------------------------------------------------------------------
+    # Two correctness comparators for the optimized dense kernel:
+    #   1) dense optimized vs the naive dense reference (ground truth via einsum
+    #      against the dense psi tensor)
+    #   2) dense optimized vs the existing optimized CSR kernel (regression)
+    # Both instantiate two parallel module instances (one with use_dense_kernel
+    # on, one off / a dense reference) with synced weights, then run forward.
+    #
+    # Transpose-conv cases are still parameterized but skip at runtime: the
+    # transpose forward is the bwd direction of the regular conv, and we only
+    # have the dense fwd kernel for now.
+
+    @parameterized.expand(
+        [
+            # B, Cin, Cout, in_shape, out_shape, kernel_shape, basis, norm, grid_in, grid_out, transpose
+            # forward: square equiangular, even and odd nlat
+            [1, 4, 2, (16, 32), (16, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", False],
+            [1, 4, 2, (17, 32), (17, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", False],
+            # forward: downsampling
+            [1, 4, 2, (16, 32), ( 8, 16), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", False],
+            # forward: harmonic basis
+            [1, 4, 2, (16, 32), (16, 32), (2, 2), "harmonic",         "mean", "equiangular", "equiangular", False],
+            [1, 4, 2, (17, 32), (17, 32), (2, 2), "harmonic",         "mean", "equiangular", "equiangular", False],
+            # forward: mixed grid (equiangular -> legendre-gauss)
+            [1, 4, 2, (17, 32), (16, 32), (3,),   "piecewise linear", "mean", "equiangular", "legendre-gauss", False],
+            [1, 4, 2, (17, 32), ( 8, 16), (3,),   "piecewise linear", "mean", "equiangular", "legendre-gauss", False],
+            # transpose: square equiangular, even and odd nlat
+            [1, 4, 2, (16, 32), (16, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", True],
+            [1, 4, 2, (17, 32), (17, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", True],
+            # transpose: upsampling
+            [1, 4, 2, ( 8, 16), (16, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", True],
+            # transpose: mixed grid (legendre-gauss -> equiangular), upsampling
+            [1, 4, 2, (16, 32), (17, 32), (3,),   "piecewise linear", "mean", "legendre-gauss", "equiangular", True],
+            [1, 4, 2, ( 8, 16), (17, 32), (3,),   "piecewise linear", "mean", "legendre-gauss", "equiangular", True],
+        ],
+        skip_on_empty=True,
+    )
+    def test_dense_optimized_against_naive_dense(
+        self, batch_size, in_channels, out_channels, in_shape, out_shape, kernel_shape,
+        basis_type, basis_norm_mode, grid_in, grid_out, transpose,
+    ):
+        """Dense kernel forward (full module) vs the naive dense reference (einsum
+        against the dense psi tensor + weight). fwd-only for now — transpose=True
+        cases skip until the dense bwd kernel exists."""
+
+        if not optimized_kernels_is_available():
+            self.skipTest("optimized disco kernels not available")
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            self.skipTest("CUDA disco kernel not available")
+        if transpose:
+            self.skipTest("dense kernel for transpose conv not yet implemented")
+
+        set_seed(333)
+
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        if isinstance(kernel_shape, int):
+            theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
+        else:
+            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
+
+        conv = DiscreteContinuousConvS2(
+            in_channels, out_channels, in_shape, out_shape, kernel_shape,
+            basis_type=basis_type, basis_norm_mode=basis_norm_mode,
+            groups=1, grid_in=grid_in, grid_out=grid_out, bias=False,
+            theta_cutoff=theta_cutoff,
+            optimized_kernel=True, use_dense_kernel=True,
+        ).to(self.device)
+
+        # naive dense psi reference (fp64 like in test_sparse_against_dense)
+        psi_dense = precompute_convolution_tensor_dense(
+            in_shape, out_shape, conv.filter_basis,
+            grid_in=grid_in, grid_out=grid_out,
+            theta_cutoff=theta_cutoff,
+            transpose_normalization=False,
+            basis_norm_mode=basis_norm_mode,
+            merge_quadrature=True,
+        ).to(self.device)
+
+        # snapshot the weight for the einsum reference
+        w_ref = conv.weight.detach().clone()
+
+        inp = torch.randn(batch_size, in_channels, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
+
+        # full module forward through the dense kernel path
+        out = conv(inp)
+
+        # naive dense reference: apply psi, then apply weight (matches the module's
+        # einsum chain in test_sparse_against_dense)
+        psi_ref = psi_dense.to(inp.dtype)
+        y = torch.einsum("ftpqr,bcqr->bcftp", psi_ref, inp)
+        y = torch.einsum("oif,biftp->botp", w_ref, y)
+
+        self.assertTrue(compare_tensors(
+            "dense forward vs naive dense reference", out, y,
+            atol=1e-4, rtol=1e-4, verbose=True,
+        ))
+
+    @parameterized.expand(
+        [
+            # B, Cin, Cout, in_shape, out_shape, kernel_shape, basis, norm, grid_in, grid_out, transpose
+            # forward: square equiangular, even and odd nlat
+            [1, 4, 2, (16, 32), (16, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", False],
+            [1, 4, 2, (17, 32), (17, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", False],
+            # forward: downsampling
+            [1, 4, 2, (16, 32), ( 8, 16), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", False],
+            # forward: harmonic basis
+            [1, 4, 2, (16, 32), (16, 32), (2, 2), "harmonic",         "mean", "equiangular", "equiangular", False],
+            [1, 4, 2, (17, 32), (17, 32), (2, 2), "harmonic",         "mean", "equiangular", "equiangular", False],
+            # forward: mixed grid (equiangular -> legendre-gauss)
+            [1, 4, 2, (17, 32), (16, 32), (3,),   "piecewise linear", "mean", "equiangular", "legendre-gauss", False],
+            [1, 4, 2, (17, 32), ( 8, 16), (3,),   "piecewise linear", "mean", "equiangular", "legendre-gauss", False],
+            # transpose: square equiangular, even and odd nlat
+            [1, 4, 2, (16, 32), (16, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", True],
+            [1, 4, 2, (17, 32), (17, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", True],
+            # transpose: upsampling
+            [1, 4, 2, ( 8, 16), (16, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", True],
+            # transpose: mixed grid (legendre-gauss -> equiangular), upsampling
+            [1, 4, 2, (16, 32), (17, 32), (3,),   "piecewise linear", "mean", "legendre-gauss", "equiangular", True],
+            [1, 4, 2, ( 8, 16), (17, 32), (3,),   "piecewise linear", "mean", "legendre-gauss", "equiangular", True],
+        ],
+        skip_on_empty=True,
+    )
+    def test_dense_optimized_against_csr_optimized(
+        self, batch_size, in_channels, out_channels, in_shape, out_shape, kernel_shape,
+        basis_type, basis_norm_mode, grid_in, grid_out, transpose,
+    ):
+        """Dense kernel forward (full module) vs the optimized CSR kernel forward.
+        Two parallel module instances differing only in use_dense_kernel; weights
+        synced explicitly so the only remaining difference is the kernel."""
+
+        if not optimized_kernels_is_available():
+            self.skipTest("optimized disco kernels not available")
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            self.skipTest("CUDA disco kernel not available")
+        if transpose:
+            self.skipTest("dense kernel for transpose conv not yet implemented")
+
+        set_seed(333)
+
+        nlat_in, nlon_in = in_shape
+
+        if isinstance(kernel_shape, int):
+            theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
+        else:
+            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
+
+        common_kwargs = dict(
+            in_channels=in_channels, out_channels=out_channels,
+            in_shape=in_shape, out_shape=out_shape,
+            kernel_shape=kernel_shape,
+            basis_type=basis_type, basis_norm_mode=basis_norm_mode,
+            groups=1, grid_in=grid_in, grid_out=grid_out, bias=False,
+            theta_cutoff=theta_cutoff,
+            optimized_kernel=True,
+        )
+
+        conv_dense = DiscreteContinuousConvS2(**common_kwargs, use_dense_kernel=True).to(self.device)
+        conv_csr   = DiscreteContinuousConvS2(**common_kwargs, use_dense_kernel=False).to(self.device)
+
+        # sync weights so the only difference is which kernel runs
+        with torch.no_grad():
+            conv_csr.weight.copy_(conv_dense.weight)
+
+        inp = torch.randn(batch_size, in_channels, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
+
+        out_dense = conv_dense(inp)
+        out_csr   = conv_csr(inp)
+
+        self.assertTrue(compare_tensors(
+            "dense forward vs csr forward", out_dense, out_csr,
+            atol=1e-5, rtol=1e-5, verbose=True,
+        ))
 
     @parameterized.expand(
         [

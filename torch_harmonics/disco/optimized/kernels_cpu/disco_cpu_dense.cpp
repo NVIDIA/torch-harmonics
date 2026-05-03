@@ -1,0 +1,80 @@
+// coding=utf-8
+//
+// SPDX-FileCopyrightText: Copyright (c) 2026 The torch-harmonics Authors. All rights reserved.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// 1. Redistributions of source code must retain the above copyright notice, this
+// list of conditions and the following disclaimer.
+//
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+// this list of conditions and the following disclaimer in the documentation
+// and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+// contributors may be used to endorse or promote products derived from
+// this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+#include "disco_cpu_dense.h"
+
+namespace disco_kernels {
+
+    torch::Tensor disco_cpu_fwd_dense(torch::Tensor inp, torch::Tensor pack_idx, torch::Tensor pack_val,
+        torch::Tensor pack_count, int64_t K, int64_t Ho, int64_t Wo) {
+
+        // sanity checks
+        CHECK_CPU_INPUT_TENSOR(inp);
+        CHECK_CPU_INPUT_TENSOR(pack_idx);
+        CHECK_CPU_INPUT_TENSOR(pack_val);
+        CHECK_CPU_INPUT_TENSOR(pack_count);
+
+        // pscale = Wi / Wo; require an integer ratio so the p-shift is exact
+        TORCH_CHECK(inp.size(3) % Wo == 0,
+                    "Wi (", inp.size(3), ") must be an integer multiple of Wo (", Wo, ")");
+
+        // shape sanity
+        TORCH_CHECK(pack_idx.dim()   == 4 && pack_idx.size(0)   == K && pack_idx.size(1)   == Ho && pack_idx.size(3) == 2,
+                    "pack_idx must have shape [K, Ho, NBR_PAD, 2]");
+        TORCH_CHECK(pack_val.dim()   == 3 && pack_val.size(0)   == K && pack_val.size(1)   == Ho,
+                    "pack_val must have shape [K, Ho, NBR_PAD]");
+        TORCH_CHECK(pack_count.dim() == 2 && pack_count.size(0) == K && pack_count.size(1) == Ho,
+                    "pack_count must have shape [K, Ho]");
+
+        const int64_t NBR_PAD = pack_idx.size(2);
+
+        // initialize output tensor
+        auto out = torch::zeros({inp.size(0), inp.size(1), K, Ho, Wo}, inp.options());
+
+        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_dense_cpu", ([&] {
+            disco_fwd_dense<scalar_t>(
+                inp.size(0), inp.size(1), K, inp.size(2), inp.size(3),
+                Ho, Wo, NBR_PAD,
+                inp.packed_accessor64<scalar_t, 4>(),
+                pack_idx.packed_accessor64<int64_t, 4>(),
+                pack_val.packed_accessor64<scalar_t, 3>(),
+                pack_count.packed_accessor64<int64_t, 2>(),
+                out.packed_accessor64<scalar_t, 5>());
+        }));
+
+        return out;
+    }
+
+    TORCH_LIBRARY_IMPL(disco_kernels, CPU, m)
+    {
+        m.impl("forward_dense",  &disco_cpu_fwd_dense);
+    }
+
+}

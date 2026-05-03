@@ -130,14 +130,16 @@ def get_ext_modules():
     # Create a single extension that includes both CPU and CUDA code
     disco_sources = [
         "torch_harmonics/disco/optimized/disco_interface.cpp",
-        "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu.cpp"
+        "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_csr.cpp",
+        "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_dense.cpp",
     ]
 
     if BUILD_CUDA:
         print(f"Compiling custom CUDA kernels for torch-harmonics.")
         disco_sources.extend([
-            "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd.cu",
-            "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd.cu",
+            "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_csr.cu",
+            "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd_csr.cu",
+            "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_dense.cu",
         ])
         ext_modules.append(
             CUDAExtension(

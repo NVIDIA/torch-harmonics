@@ -41,10 +41,14 @@ import torch.nn as nn
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
 from ._disco_utils import _get_psi
-from .optimized.disco_optimized import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
+from .optimized.disco_optimized import (
+    _disco_s2_contraction_optimized,
+    _disco_s2_contraction_dense_optimized,
+    _disco_s2_transpose_contraction_optimized,
+)
 from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
-from disco_helpers import optimized_kernels_is_available, preprocess_psi
+from disco_helpers import optimized_kernels_is_available, preprocess_psi, pack_psi_dense
 
 
 def _normalize_convolution_tensor_s2(
@@ -408,11 +412,16 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
         groups: Optional[int] = 1,
         bias: Optional[bool] = True,
         optimized_kernel: Optional[bool] = True,
+        use_dense_kernel: Optional[bool] = False,
     ):
         super().__init__()
 
         self.kernel_shape = kernel_shape
         self.optimized_kernel = optimized_kernel and optimized_kernels_is_available()
+        # opt-in routing through the dense-packed-psi kernel. When set, the
+        # planner additionally emits the packed buffers; otherwise only the
+        # CSR buffers exist on the module.
+        self.use_dense_kernel = use_dense_kernel and self.optimized_kernel
 
         # get the filter basis functions
         self.filter_basis = get_filter_basis(kernel_shape=kernel_shape, basis_type=basis_type)
@@ -501,8 +510,9 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         optimized_kernel: Optional[bool] = True,
+        use_dense_kernel: Optional[bool] = False,
     ):
-        super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
+        super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel, use_dense_kernel)
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
@@ -543,6 +553,17 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_out, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
+            if self.use_dense_kernel:
+                # dense-packed psi for the dense kernel path; col is decoded
+                # against nlon_in for the forward direction.
+                psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(
+                    self.kernel_size, self.nlat_out, self.nlon_in, 0,
+                    ker_idx, row_idx, col_idx, vals, roff_idx,
+                )
+                self.register_buffer("psi_packed_idx",   psi_packed_idx.contiguous(),   persistent=False)
+                self.register_buffer("psi_packed_vals",  psi_packed_vals.contiguous(),  persistent=False)
+                self.register_buffer("psi_packed_count", psi_packed_count.contiguous(), persistent=False)
+
         # save all datastructures
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
@@ -562,7 +583,14 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
-        if self.optimized_kernel:
+        if self.use_dense_kernel:
+            x = _disco_s2_contraction_dense_optimized(
+                x,
+                self.psi_packed_idx, self.psi_packed_vals, self.psi_packed_count,
+                self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
+                self.kernel_size, self.nlat_out, self.nlon_out,
+            )
+        elif self.optimized_kernel:
             x = _disco_s2_contraction_optimized(
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
             )
@@ -641,8 +669,9 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         optimized_kernel: Optional[bool] = True,
+        use_dense_kernel: Optional[bool] = False,
     ):
-        super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
+        super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel, use_dense_kernel)
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
@@ -684,6 +713,18 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_in, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
+            if self.use_dense_kernel:
+                # dense-packed psi for the dense kernel path; for transpose, col
+                # indexes into the (out lat, out lon) plane so we decode against
+                # nlon_out.
+                psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(
+                    self.kernel_size, self.nlat_in, self.nlon_out, 0,
+                    ker_idx, row_idx, col_idx, vals, roff_idx,
+                )
+                self.register_buffer("psi_packed_idx",   psi_packed_idx.contiguous(),   persistent=False)
+                self.register_buffer("psi_packed_vals",  psi_packed_vals.contiguous(),  persistent=False)
+                self.register_buffer("psi_packed_count", psi_packed_count.contiguous(), persistent=False)
+
         # save all datastructures
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
@@ -711,7 +752,10 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
         x = x.reshape(B, -1, x.shape[-3], H, W)
 
-        if self.optimized_kernel:
+        if self.use_dense_kernel:
+            # TODO(step 3): route through the dense-packed kernel op once it exists.
+            raise NotImplementedError("dense disco transpose forward kernel is not yet implemented")
+        elif self.optimized_kernel:
             out = _disco_s2_transpose_contraction_optimized(
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
             )
