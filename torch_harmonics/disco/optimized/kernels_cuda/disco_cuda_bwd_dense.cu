@@ -29,24 +29,28 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // =====================================================================================
-// Disco backward — dense-packed psi (CUDA baseline)
+// Disco backward — dense-packed psi (CUDA, shmem-staged accumulator)
 // =====================================================================================
 //
-// Consumes the same (K, Hi, NBR_PAD)-packed psi produced by pack_psi_dense (no
-// transpose) and computes
+// Same packed psi as the fwd kernel. For each (b, c, k, hi) row of dout, threads
+// parallelize wi (BDIM_X * ELXTH >= Wi). The owned dout values live in registers.
 //
-//   dinp[b, c, ho, (wo_base + pscale * wi) mod Wo] +=
-//       val[k, hi, nz] * dout[b, c, k, hi, wi]
+// Shmem holds a per-CTA accumulator for the *output* row currently being written
+// to. Layout: [pscale][2 * BDIM_X * ELXTH] — one shmem row per residue class
+// (mod pscale) of the bwd output column wo. The "2 *" duplication is for
+// wrap-around handling: a write at logical position (wo_base + pscale*wi) that
+// falls past Wi can land in the second half and be summed back during flush.
 //
-// where (ho, wo_base) = pack_idx[k, hi, nz] (using the bwd kernel's local
-// naming: Hi == nlat_out_fwd, Wi == nlon_out_fwd, Ho == nlat_in_fwd, Wo ==
-// nlon_in_fwd, pscale = Wo / Wi).
+// For each nz with (ho, wo_base, val):
+//   - On ho transition: flush shmem to dinp[b, c, ho_prev, *] via gmem
+//     atomicAdd, then zero shmem.
+//   - Compute residue / quotient of wo_base, accumulate val * dout[wi] into
+//     __sh[residue][quotient + pp] for each thread-owned wi position pp.
 //
-// Parallelization (baseline): one CTA per (BC, k*Hi); threads parallelize wi.
-// Multiple (k, hi, nz) entries can target the same (b, c, ho, wo) cell of
-// dinp, so the scatter uses atomicAdd. (B, C) slabs of dinp are disjoint
-// across CTAs.gather variants (no atomics) live in separate translation units
-// once they exist.
+// The packed psi inherits col-sorted ordering from preprocess_psi (cols are
+// non-decreasing within each (k, hi) row), so same-ho entries are contiguous
+// and each distinct ho triggers exactly one flush. This keeps the gmem
+// atomicAdds proportional to (#distinct ho) × Wi rather than cnt × Wi.
 // =====================================================================================
 
 #include "../disco.h"
@@ -57,21 +61,19 @@
 
 namespace disco_kernels {
 
-template <int BDIM_X, typename T>
-__global__ __launch_bounds__(BDIM_X)
-void disco_bwd_dense_blk_k(int Hi, int Wi, int K, int Ho, int Wo, int NBR_PAD, int pscale,
-                           const int64_t *__restrict__ pack_idx,
-                           const T       *__restrict__ pack_val,
-                           const int64_t *__restrict__ pack_count,
-                           const T       *__restrict__ inp,
-                           T             *__restrict__ out)
+template <int BDIM_X, int ELXTH, typename T>
+__device__ void disco_bwd_dense_d(int Hi, int Wi, int K, int Ho, int Wo, int NBR_PAD, int pscale,
+                                  const int64_t *__restrict__ pack_idx,
+                                  const T       *__restrict__ pack_val,
+                                  const int64_t *__restrict__ pack_count,
+                                  const T       *__restrict__ inp,
+                                  T             *__restrict__ out)
 {
-    const int bc = blockIdx.y;          // b * C + c
-    const int kh = blockIdx.x;          // k * Hi + hi
-    const int k  = kh / Hi;
-    const int hi = kh - k * Hi;
-
     const int tid = threadIdx.x;
+    const int bc  = blockIdx.y;          // b * C + c
+    const int kh  = blockIdx.x;          // k * Hi + hi
+    const int k   = kh / Hi;
+    const int hi  = kh - k * Hi;
 
     const int64_t kh_off = (int64_t)k * Hi + hi;
     const int64_t *idx_kh = pack_idx + kh_off * NBR_PAD * 2;
@@ -83,21 +85,139 @@ void disco_bwd_dense_blk_k(int Hi, int Wi, int K, int Ho, int Wo, int NBR_PAD, i
     // dinp[b, c, :, :]
     T       *out_b  = out + (int64_t)bc * Ho * Wo;
 
-    for (int wi = tid; wi < Wi; wi += BDIM_X) {
-        const T g = inp_kh[wi];
+    // Empty (k, hi) row (can occur in the distributed case after the lat split).
+    // dinp is allocated zeroed, so leaving these CTAs idle is correct.
+    if (cnt == 0) return;
 
-        for (int nz = 0; nz < cnt; nz++) {
-            const int ho      = (int)idx_kh[nz * 2 + 0];
-            const int wo_base = (int)idx_kh[nz * 2 + 1];
-            const T   v       = val_kh[nz];
+    // Shmem accumulator: T __sh[pscale][2 * BDIM_X * ELXTH], aligned for double.
+    extern __shared__ __align__(sizeof(double)) unsigned char __sh_raw[];
+    T(*__sh)[BDIM_X * ELXTH * 2] = reinterpret_cast<T(*)[BDIM_X * ELXTH * 2]>(__sh_raw);
 
-            // wo_base + pscale * wi < 2 * Wo, single subtract suffices.
-            int wo = wo_base + pscale * wi;
-            if (wo >= Wo) wo -= Wo;
+    // Cache the dout row in registers for this CTA's wi positions.
+    T __reg[ELXTH];
+    #pragma unroll
+    for (int i = 0; i < ELXTH; i++) {
+        __reg[i] = (i * BDIM_X + tid < Wi) ? inp_kh[i * BDIM_X + tid] : static_cast<T>(0);
+    }
 
-            atomicAdd(&out_b[(int64_t)ho * Wo + wo], v * g);
+    // Reset shmem (all residue rows, full 2*BDIM_X*ELXTH width).
+    for (int r = 0; r < pscale; r++) {
+        #pragma unroll
+        for (int j = 0; j < 2 * BDIM_X * ELXTH; j += BDIM_X) {
+            __sh[r][j + tid] = static_cast<T>(0);
         }
     }
+    __syncthreads();
+
+    int ho_prev = (int)idx_kh[0];
+
+    for (int nz = 0; nz < cnt; nz++) {
+        const int ho      = (int)idx_kh[nz * 2 + 0];
+        const int wo_base = (int)idx_kh[nz * 2 + 1];
+        const T   v       = val_kh[nz];
+
+        // On ho transition: flush shmem to dinp[b, c, ho_prev, *] and zero.
+        if (ho != ho_prev) {
+            __syncthreads();
+            for (int r = 0; r < pscale; r++) {
+                for (int j = tid; j < Wi; j += BDIM_X) {
+                    const T s = __sh[r][j] + __sh[r][Wi + j];
+                    atomicAdd(&out_b[(int64_t)ho_prev * Wo + j * pscale + r], s);
+                    __sh[r][j]      = static_cast<T>(0);
+                    __sh[r][Wi + j] = static_cast<T>(0);
+                }
+            }
+            __syncthreads();
+            ho_prev = ho;
+        }
+
+        // wo_full = wo_base + pscale * wi, decomposed as residue r = wo_full mod pscale,
+        // quotient q = wo_full / pscale (mod Wi via the duplicated 2*Wi shmem layout).
+        // r is invariant in pscale (all pp share the same residue as wo_base);
+        // q depends on pp = i*BDIM_X + tid.
+        const int w_mod_ps = wo_base % pscale;
+        const int w_div_ps = wo_base / pscale;
+
+        #pragma unroll
+        for (int i = 0; i < ELXTH; i++) {
+            const int pp = i * BDIM_X + tid;
+            __sh[w_mod_ps][w_div_ps + pp] += v * __reg[i];
+        }
+
+        // Sync between nz iterations to avoid races on overlapping shmem cells
+        // when the next nz's (residue, quotient + pp) collides with the current
+        // one across different threads.
+        __syncthreads();
+    }
+    __syncthreads();
+
+    // Final flush for the last ho_prev row.
+    for (int r = 0; r < pscale; r++) {
+        for (int j = tid; j < Wi; j += BDIM_X) {
+            const T s = __sh[r][j] + __sh[r][Wi + j];
+            atomicAdd(&out_b[(int64_t)ho_prev * Wo + j * pscale + r], s);
+        }
+    }
+}
+
+template <int BDIM_X, int ELXTH, int PSCALE, typename T>
+__global__ __launch_bounds__(BDIM_X)
+void disco_bwd_dense_blk_k(int Hi, int Wi, int K, int Ho, int Wo, int NBR_PAD, int pscale,
+                           const int64_t *__restrict__ pack_idx,
+                           const T       *__restrict__ pack_val,
+                           const int64_t *__restrict__ pack_count,
+                           const T       *__restrict__ inp,
+                           T             *__restrict__ out)
+{
+    if constexpr (PSCALE != 0) {
+        disco_bwd_dense_d<BDIM_X, ELXTH, T>(Hi, Wi, K, Ho, Wo, NBR_PAD, PSCALE,
+                                            pack_idx, pack_val, pack_count, inp, out);
+    } else {
+        disco_bwd_dense_d<BDIM_X, ELXTH, T>(Hi, Wi, K, Ho, Wo, NBR_PAD, pscale,
+                                            pack_idx, pack_val, pack_count, inp, out);
+    }
+}
+
+template <int NTH, int ELXTH, typename T>
+static void launch_dense_bwd(int B, int C, int K, int Hi, int Wi, int Ho, int Wo,
+                             int NBR_PAD,
+                             const int64_t *pack_idx, const T *pack_val,
+                             const int64_t *pack_count, const T *inp, T *out,
+                             cudaStream_t stream)
+{
+    if constexpr (ELXTH <= ELXTH_MAX) {
+        if (NTH * ELXTH >= Wi) {
+            dim3 grid((unsigned)(K * Hi), (unsigned)(B * C));
+            const int pscale = Wo / Wi;
+            const size_t shmem = sizeof(T) * (size_t)(2 * (NTH * ELXTH) * pscale);
+
+            switch (pscale) {
+            case 1:
+                disco_bwd_dense_blk_k<NTH, ELXTH, 1, T><<<grid, NTH, shmem, stream>>>(
+                    Hi, Wi, K, Ho, Wo, NBR_PAD, pscale,
+                    pack_idx, pack_val, pack_count, inp, out);
+                break;
+            case 2:
+                disco_bwd_dense_blk_k<NTH, ELXTH, 2, T><<<grid, NTH, shmem, stream>>>(
+                    Hi, Wi, K, Ho, Wo, NBR_PAD, pscale,
+                    pack_idx, pack_val, pack_count, inp, out);
+                break;
+            case 3:
+                disco_bwd_dense_blk_k<NTH, ELXTH, 3, T><<<grid, NTH, shmem, stream>>>(
+                    Hi, Wi, K, Ho, Wo, NBR_PAD, pscale,
+                    pack_idx, pack_val, pack_count, inp, out);
+                break;
+            default:
+                disco_bwd_dense_blk_k<NTH, ELXTH, 0, T><<<grid, NTH, shmem, stream>>>(
+                    Hi, Wi, K, Ho, Wo, NBR_PAD, pscale,
+                    pack_idx, pack_val, pack_count, inp, out);
+            }
+        } else {
+            launch_dense_bwd<NTH, ELXTH + 1, T>(B, C, K, Hi, Wi, Ho, Wo, NBR_PAD,
+                                                pack_idx, pack_val, pack_count, inp, out, stream);
+        }
+    }
+    return;
 }
 
 torch::Tensor disco_cuda_bwd_dense(torch::Tensor inp,
@@ -116,7 +236,6 @@ torch::Tensor disco_cuda_bwd_dense(torch::Tensor inp,
     // bwd input shape: [B, C, K, Hi=nlat_out_fwd, Wi=nlon_out_fwd]
     const int64_t Hi = inp.size(3);
     const int64_t Wi = inp.size(4);
-    const int64_t BC = B * C;
 
     TORCH_CHECK(inp.size(2) == K, "inp.size(2) must equal K (got ", inp.size(2), " vs ", K, ")");
     TORCH_CHECK(Wo % Wi == 0,
@@ -130,26 +249,73 @@ torch::Tensor disco_cuda_bwd_dense(torch::Tensor inp,
                 "pack_count must have shape [K, Hi]");
 
     const int64_t NBR_PAD = pack_idx.size(2);
-    const int     pscale  = (int)(Wo / Wi);
 
+    // dinp is zero-initialized; empty (k, hi) rows from the distributed lat split
+    // are then represented correctly without the kernel having to touch them.
     auto options = torch::TensorOptions().device(inp.device()).dtype(inp.dtype());
     auto out = torch::zeros({B, C, Ho, Wo}, options);
 
     auto stream = at::cuda::getCurrentCUDAStream().stream();
 
-    constexpr int BDIM_X = 256;
-    dim3 grid((unsigned)(K * Hi), (unsigned)BC);
-    dim3 block(BDIM_X);
+    static_assert(0 == (ELXTH_MAX % 2));
 
-    AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_bwd_dense_cuda", ([&] {
-        disco_bwd_dense_blk_k<BDIM_X, scalar_t><<<grid, block, 0, stream>>>(
-            (int)Hi, (int)Wi, (int)K, (int)Ho, (int)Wo, (int)NBR_PAD, pscale,
-            pack_idx.data_ptr<int64_t>(),
-            pack_val.data_ptr<scalar_t>(),
-            pack_count.data_ptr<int64_t>(),
-            inp.data_ptr<scalar_t>(),
-            out.data_ptr<scalar_t>());
-    }));
+    // Dispatch table mirrors disco_cuda_bwd_csr: keyed on Wo, the inner check is
+    // NTH*ELXTH >= Wi (the kernel's parallelism axis).
+    if (Wo <= 64 * ELXTH_MAX) {
+        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_bwd_dense_cuda", ([&] {
+            launch_dense_bwd<64, 1, scalar_t>(
+                (int)B, (int)C, (int)K, (int)Hi, (int)Wi, (int)Ho, (int)Wo, (int)NBR_PAD,
+                pack_idx.data_ptr<int64_t>(),
+                pack_val.data_ptr<scalar_t>(),
+                pack_count.data_ptr<int64_t>(),
+                inp.data_ptr<scalar_t>(),
+                out.data_ptr<scalar_t>(), stream);
+        }));
+    } else if (Wo <= 128 * ELXTH_MAX) {
+        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_bwd_dense_cuda", ([&] {
+            launch_dense_bwd<128, (ELXTH_MAX / 2) + 1, scalar_t>(
+                (int)B, (int)C, (int)K, (int)Hi, (int)Wi, (int)Ho, (int)Wo, (int)NBR_PAD,
+                pack_idx.data_ptr<int64_t>(),
+                pack_val.data_ptr<scalar_t>(),
+                pack_count.data_ptr<int64_t>(),
+                inp.data_ptr<scalar_t>(),
+                out.data_ptr<scalar_t>(), stream);
+        }));
+    } else if (Wo <= 256 * ELXTH_MAX) {
+        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_bwd_dense_cuda", ([&] {
+            launch_dense_bwd<256, (ELXTH_MAX / 2) + 1, scalar_t>(
+                (int)B, (int)C, (int)K, (int)Hi, (int)Wi, (int)Ho, (int)Wo, (int)NBR_PAD,
+                pack_idx.data_ptr<int64_t>(),
+                pack_val.data_ptr<scalar_t>(),
+                pack_count.data_ptr<int64_t>(),
+                inp.data_ptr<scalar_t>(),
+                out.data_ptr<scalar_t>(), stream);
+        }));
+    } else if (Wo <= 512 * ELXTH_MAX) {
+        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_bwd_dense_cuda", ([&] {
+            launch_dense_bwd<512, (ELXTH_MAX / 2) + 1, scalar_t>(
+                (int)B, (int)C, (int)K, (int)Hi, (int)Wi, (int)Ho, (int)Wo, (int)NBR_PAD,
+                pack_idx.data_ptr<int64_t>(),
+                pack_val.data_ptr<scalar_t>(),
+                pack_count.data_ptr<int64_t>(),
+                inp.data_ptr<scalar_t>(),
+                out.data_ptr<scalar_t>(), stream);
+        }));
+    } else if (Wo <= 1024 * ELXTH_MAX) {
+        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_bwd_dense_cuda", ([&] {
+            launch_dense_bwd<1024, (ELXTH_MAX / 2) + 1, scalar_t>(
+                (int)B, (int)C, (int)K, (int)Hi, (int)Wi, (int)Ho, (int)Wo, (int)NBR_PAD,
+                pack_idx.data_ptr<int64_t>(),
+                pack_val.data_ptr<scalar_t>(),
+                pack_count.data_ptr<int64_t>(),
+                inp.data_ptr<scalar_t>(),
+                out.data_ptr<scalar_t>(), stream);
+        }));
+    } else {
+        fprintf(stderr, "%s:%d: error, unsupported Wo value (%ld), max supported is %d\n",
+                __FILE__, __LINE__, Wo, 1024 * ELXTH_MAX);
+        exit(EXIT_FAILURE);
+    }
 
     return out;
 }
