@@ -236,8 +236,11 @@ def python_pack_psi(K, Ho, Wi, nbr_pad, ker_idx, row_idx, col_idx, vals, roff_id
         count_out: int64 [K, Ho]
     """
     nrows = roff_idx.numel() - 1
-    if nrows != K * Ho:
-        raise ValueError(f"expected nrows == K*Ho ({K*Ho}), got {nrows}")
+    # nrows equals the number of (k, ho) pairs with at least one entry.
+    # For the serial conv this is K*Ho, but the distributed lat-split can
+    # leave some local rows empty (nrows < K*Ho).
+    if nrows > K * Ho:
+        raise ValueError(f"expected nrows <= K*Ho ({K*Ho}), got {nrows}")
 
     diffs = roff_idx[1:] - roff_idx[:-1]
     max_nbr = int(diffs.max().item()) if nrows > 0 else 0

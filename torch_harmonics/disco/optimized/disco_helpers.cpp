@@ -111,8 +111,13 @@ pack_psi_dense(const int64_t K, const int64_t Ho, const int64_t Wi, const int64_
     auto roff_cpu = roff_idx.to(torch::kCPU);
 
     const int64_t nrows = roff_cpu.size(0) - 1;
-    TORCH_CHECK(nrows == K * Ho,
-                "pack_psi_dense expects roff_idx.size(0)-1 == K*Ho (got nrows=", nrows,
+    // After preprocess_psi, nrows equals the number of (k, ho) pairs that have
+    // at least one nz entry. For the serial conv this is K*Ho, but in the
+    // distributed case the latitude split can leave some local (k, ho) rows
+    // empty, so nrows < K*Ho is legitimate. The kernel uses pack_count to
+    // bound the inner loop and emits zeros for empty cells.
+    TORCH_CHECK(nrows <= K * Ho,
+                "pack_psi_dense expects roff_idx.size(0)-1 <= K*Ho (got nrows=", nrows,
                 ", K=", K, ", Ho=", Ho, "); make sure preprocess_psi was run first");
 
     // resolve nbr_pad: <= 0 means auto-pad to max row length

@@ -67,8 +67,8 @@ if optimized_kernels_is_available():
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
     # forward
-    @torch.library.custom_op("disco_kernels::_disco_s2_contraction_optimized", mutates_args=())
-    def _disco_s2_contraction_optimized(
+    @torch.library.custom_op("disco_kernels::_disco_s2_contraction_optimized_csr", mutates_args=())
+    def _disco_s2_contraction_optimized_csr(
         inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
         row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
         kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
@@ -80,14 +80,11 @@ if optimized_kernels_is_available():
         out = out.to(itype)
         return out
 
-    # dense forward (consumes packed psi for fwd; saves CSR psi for bwd, which
-    # routes through the existing transpose contraction kernel)
-    @torch.library.custom_op("disco_kernels::_disco_s2_contraction_dense_optimized", mutates_args=())
-    def _disco_s2_contraction_dense_optimized(
+    # dense forward — consumes packed psi for both fwd and bwd
+    @torch.library.custom_op("disco_kernels::_disco_s2_contraction_optimized_dense", mutates_args=())
+    def _disco_s2_contraction_optimized_dense(
         inp: torch.Tensor,
         psi_packed_idx: torch.Tensor, psi_packed_vals: torch.Tensor, psi_packed_count: torch.Tensor,
-        psi_roff_idx: torch.Tensor, psi_ker_idx: torch.Tensor, psi_row_idx: torch.Tensor,
-        psi_col_idx: torch.Tensor, psi_vals: torch.Tensor,
         kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
         itype = inp.dtype
         cdtype = _compute_dtype(itype)
@@ -100,8 +97,8 @@ if optimized_kernels_is_available():
         return out
 
     # transpose
-    @torch.library.custom_op("disco_kernels::_disco_s2_transpose_contraction_optimized", mutates_args=())
-    def _disco_s2_transpose_contraction_optimized(
+    @torch.library.custom_op("disco_kernels::_disco_s2_transpose_contraction_optimized_csr", mutates_args=())
+    def _disco_s2_transpose_contraction_optimized_csr(
         inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
         row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
         kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
@@ -113,8 +110,24 @@ if optimized_kernels_is_available():
         out = out.to(itype)
         return out
 
+    # transpose, dense — fwd uses backward_dense, bwd uses forward_dense
+    @torch.library.custom_op("disco_kernels::_disco_s2_transpose_contraction_optimized_dense", mutates_args=())
+    def _disco_s2_transpose_contraction_optimized_dense(
+        inp: torch.Tensor,
+        psi_packed_idx: torch.Tensor, psi_packed_vals: torch.Tensor, psi_packed_count: torch.Tensor,
+        kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        itype = inp.dtype
+        cdtype = _compute_dtype(itype)
+        inp = inp.to(cdtype).contiguous()
+        psi_packed_vals = psi_packed_vals.to(cdtype)
+        out = disco_kernels.backward_dense.default(
+            inp, psi_packed_idx, psi_packed_vals, psi_packed_count,
+            kernel_size, nlat_out, nlon_out)
+        out = out.to(itype)
+        return out
+
     # forward fake
-    @torch.library.register_fake("disco_kernels::_disco_s2_contraction_optimized")
+    @torch.library.register_fake("disco_kernels::_disco_s2_contraction_optimized_csr")
     def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
           row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
           kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
@@ -122,20 +135,26 @@ if optimized_kernels_is_available():
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
     # dense forward fake
-    @torch.library.register_fake("disco_kernels::_disco_s2_contraction_dense_optimized")
+    @torch.library.register_fake("disco_kernels::_disco_s2_contraction_optimized_dense")
     def _(inp: torch.Tensor,
           psi_packed_idx: torch.Tensor, psi_packed_vals: torch.Tensor, psi_packed_count: torch.Tensor,
-          psi_roff_idx: torch.Tensor, psi_ker_idx: torch.Tensor, psi_row_idx: torch.Tensor,
-          psi_col_idx: torch.Tensor, psi_vals: torch.Tensor,
           kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
         out_shape = (inp.shape[0], inp.shape[1], kernel_size, nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
     # transpose fake
-    @torch.library.register_fake("disco_kernels::_disco_s2_transpose_contraction_optimized")
+    @torch.library.register_fake("disco_kernels::_disco_s2_transpose_contraction_optimized_csr")
     def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
           row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
         kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        out_shape = (inp.shape[0], inp.shape[1], nlat_out, nlon_out)
+        return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
+
+    # transpose dense fake
+    @torch.library.register_fake("disco_kernels::_disco_s2_transpose_contraction_optimized_dense")
+    def _(inp: torch.Tensor,
+          psi_packed_idx: torch.Tensor, psi_packed_vals: torch.Tensor, psi_packed_count: torch.Tensor,
+          kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
         out_shape = (inp.shape[0], inp.shape[1], nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
@@ -166,13 +185,12 @@ def _disco_s2_contraction_bwd_optimized(ctx, grad_output):
 
 if optimized_kernels_is_available():
     torch.library.register_autograd(
-        "disco_kernels::_disco_s2_contraction_optimized", _disco_s2_contraction_bwd_optimized, setup_context=_setup_context_conv_backward)
+        "disco_kernels::_disco_s2_contraction_optimized_csr", _disco_s2_contraction_bwd_optimized, setup_context=_setup_context_conv_backward)
 
-# dense convolution forward — bwd routes through the dense bwd kernel using the
-# packed psi. (Note: until the CUDA dense bwd is added, this path only works on
-# CPU; on CUDA the dispatch into backward_dense will fail.)
+# dense convolution forward — bwd routes through backward_dense, consuming the
+# same packed psi as the fwd kernel.
 def _setup_context_conv_dense_backward(ctx, inputs, output):
-    inp, pack_idx, pack_val, pack_count, _ri, _ki, _rwi, _ci, _v, kernel_size, nlat_out, nlon_out = inputs
+    inp, pack_idx, pack_val, pack_count, kernel_size, nlat_out, nlon_out = inputs
     ctx.save_for_backward(pack_idx, pack_val, pack_count)
     ctx.kernel_size = kernel_size
     ctx.nlat_in = inp.shape[-2]
@@ -192,14 +210,13 @@ def _disco_s2_contraction_dense_bwd_optimized(ctx, grad_output):
     else:
         grad_input = None
 
-    # 12 inputs: inp, psi_packed_idx, psi_packed_vals, psi_packed_count,
-    #            psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals,
-    #            kernel_size, nlat_out, nlon_out
-    return grad_input, None, None, None, None, None, None, None, None, None, None, None
+    # 7 inputs: inp, psi_packed_idx, psi_packed_vals, psi_packed_count,
+    #           kernel_size, nlat_out, nlon_out
+    return grad_input, None, None, None, None, None, None
 
 if optimized_kernels_is_available():
     torch.library.register_autograd(
-        "disco_kernels::_disco_s2_contraction_dense_optimized",
+        "disco_kernels::_disco_s2_contraction_optimized_dense",
         _disco_s2_contraction_dense_bwd_optimized,
         setup_context=_setup_context_conv_dense_backward)
 
@@ -222,4 +239,29 @@ def _disco_s2_transpose_contraction_bwd_optimized(ctx, grad_output):
 
 if optimized_kernels_is_available():
     torch.library.register_autograd(
-        "disco_kernels::_disco_s2_transpose_contraction_optimized", _disco_s2_transpose_contraction_bwd_optimized, setup_context=_setup_context_conv_backward)
+        "disco_kernels::_disco_s2_transpose_contraction_optimized_csr", _disco_s2_transpose_contraction_bwd_optimized, setup_context=_setup_context_conv_backward)
+
+# Transpose convolution related, dense
+def _disco_s2_transpose_contraction_dense_bwd_optimized(ctx, grad_output):
+    pack_idx, pack_val, pack_count = ctx.saved_tensors
+
+    if ctx.needs_input_grad[0]:
+        gtype = grad_output.dtype
+        cdtype = _compute_dtype(gtype)
+        grad_output = grad_output.to(cdtype).contiguous()
+        pack_val = pack_val.to(cdtype)
+        grad_input = disco_kernels.forward_dense.default(grad_output, pack_idx, pack_val, pack_count,
+                                                        ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
+        grad_input = grad_input.to(gtype)
+    else:
+        grad_input = None
+
+    # 7 inputs: inp, psi_packed_idx, psi_packed_vals, psi_packed_count,
+    #           kernel_size, nlat_out, nlon_out
+    return grad_input, None, None, None, None, None, None
+
+if optimized_kernels_is_available():
+    torch.library.register_autograd(
+        "disco_kernels::_disco_s2_transpose_contraction_optimized_dense",
+        _disco_s2_transpose_contraction_dense_bwd_optimized,
+        setup_context=_setup_context_conv_dense_backward)

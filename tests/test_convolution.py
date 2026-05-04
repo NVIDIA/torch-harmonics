@@ -60,6 +60,149 @@ _perf_test_thresholds = {"cpu": {"fwd_ms": 100, "bwd_ms": 90},
 _run_perf_tests = (os.getenv("TORCH_HARMONICS_RUN_PERF_TESTS", "0") == "1")
 
 
+# ---------------------------------------------------------------------------
+# Base parameter lists for the kernel-correctness tests. Each row is a base
+# config (without use_dense_kernel); the decorators below cross-product these
+# with [False, True] so each config is exercised against both the CSR and the
+# dense kernels.
+# ---------------------------------------------------------------------------
+
+_SPARSE_AGAINST_DENSE_BASE_CONFIGS = [
+    # B, Cin, Cout, in_shape, out_shape, kernel_shape, basis, norm, grid_in, grid_out, dtype, transpose, atol, rtol
+    # fp32 tests
+    # regular convolution
+    [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (16, 32), (8, 16), (3), "piecewise linear", "nodal", "equiangular", "equiangular",  torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (24, 48), (12, 24), (3, 3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (24, 48), (12, 24), (4, 3), "piecewise linear", "none", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (24, 48), (12, 24), (2, 1), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (24, 48), (12, 24), (3), "zernike", "nodal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (24, 48), (12, 24), (3, 3), "harmonic", "nodal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (24, 48), (12, 24), (3, 3), "fourier-bessel", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (16, 24), (8, 8), (3), "piecewise linear", "mean", "equiangular", "equiangular",  torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (18, 36), (6, 12), (7), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "equiangular", "legendre-gauss", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "legendre-gauss", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "nodal", "legendre-gauss", "legendre-gauss", torch.float32, False, 1e-4, 1e-4],
+    # regular convolution — modal, support, geometric normalization
+    [8, 4, 2, (24, 48), (12, 24), (3, 3), "piecewise linear", "modal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "modal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (24, 48), (12, 24), (3), "zernike", "modal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (24, 48), (12, 24), (3, 3), "fourier-bessel", "modal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (24, 48), (12, 24), (3), "piecewise linear", "support", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "support", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (24, 48), (12, 24), (3, 3), "piecewise linear", "geometric", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (24, 48), (12, 24), (3, 3), "fourier-bessel", "geometric", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "geometric", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    # transpose convolution
+    [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "nodal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (12, 24), (24, 48), (3, 3), "piecewise linear", "mean", "equiangular", "equiangular",  torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (12, 24), (24, 48), (4, 3), "piecewise linear", "none", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (12, 24), (24, 48), (2, 1), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (12, 24), (24, 48), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (12, 24), (24, 48), (3, 3), "fourier-bessel", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (8, 8), (16, 24), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (6, 12), (18, 36), (7), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "equiangular", "legendre-gauss", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "legendre-gauss", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", torch.float32, True, 1e-4, 1e-4],
+    # transpose convolution — modal, support, geometric normalization
+    [8, 4, 2, (12, 24), (24, 48), (3, 3), "piecewise linear", "modal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "modal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (12, 24), (24, 48), (3), "zernike", "modal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (12, 24), (24, 48), (3, 3), "fourier-bessel", "modal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (12, 24), (24, 48), (3), "piecewise linear", "support", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "support", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (12, 24), (24, 48), (3, 3), "piecewise linear", "geometric", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (12, 24), (24, 48), (3, 3), "fourier-bessel", "geometric", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "geometric", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    # fp64 tests
+    # regular convolution
+    [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
+    [8, 4, 2, (16, 32), (8, 16), (3), "piecewise linear", "nodal", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
+    [8, 4, 2, (24, 48), (12, 24), (3, 3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
+    [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
+    [8, 4, 2, (24, 48), (12, 24), (3), "zernike", "mean", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
+    [8, 4, 2, (24, 48), (12, 24), (3, 3), "fourier-bessel", "nodal", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
+    # transpose convolution
+    [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
+    [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
+    [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
+    [8, 4, 2, (12, 24), (24, 48), (3), "zernike", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
+    [8, 4, 2, (12, 24), (24, 48), (3, 3), "fourier-bessel", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
+    # fp16 tests (AMP)
+    # regular convolution
+    [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, 2e-2, 1e-2],
+    [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, 2e-2, 1e-2],
+    # transpose convolution
+    [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, True, 2e-2, 1e-2],
+    [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, True, 2e-2, 1e-2],
+    # bf16 tests (AMP)
+    # regular convolution
+    [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, 5e-2, 5e-2],
+    [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, 5e-2, 5e-2],
+    # transpose convolution
+    [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, 5e-2, 5e-2],
+    [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, 5e-2, 5e-2],
+]
+
+
+_OPTIMIZED_AGAINST_TORCH_BASE_CONFIGS = [
+    # B, Cin, Cout, in_shape, out_shape, kernel_shape, basis, norm, grid_in, grid_out, dtype, transpose, atol, rtol
+    # fp32 tests
+    # regular convolution
+    [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "nodal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (41, 80), (41, 80), (2, 3), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "modal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (41, 80), (41, 80), (3, 3), "fourier-bessel", "geometric", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (41, 80), (41, 80), (3, 3), "harmonic", "modal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (41, 80), (21, 40), (3), "piecewise linear", "nodal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (41, 80), (21, 40), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (41, 80), (21, 40), (2, 1), "harmonic", "geometric", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    [8, 4, 2, (41, 80), (21, 40), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+    # transpose convolution
+    [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "modal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (41, 80), (41, 80), (2, 3), "harmonic", "nodal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (41, 80), (41, 80), (3, 3), "fourier-bessel", "modal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (41, 80), (41, 80), (3, 3), "harmonic", "geometric", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (21, 40), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (21, 40), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (21, 40), (41, 80), (2, 1), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    [8, 4, 2, (21, 40), (41, 80), (3), "zernike", "nodal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+    # fp64 tests
+    # regular convolution
+    [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
+    [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "modal", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
+    [8, 4, 2, (41, 80), (21, 40), (3), "piecewise linear", "nodal", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
+    # transpose convolution
+    [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "geometric", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
+    [8, 4, 2, (21, 40), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
+    [8, 4, 2, (21, 40), (41, 80), (2, 2), "harmonic", "modal", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
+    # fp16 tests (AMP)
+    # regular convolution
+    [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, 1e-2, 1e-2],
+    [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, 1e-2, 1e-2],
+    # transpose convolution
+    [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, True, 1e-2, 1e-2],
+    [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, True, 1e-2, 1e-2],
+    # bf16 tests (AMP)
+    # regular convolution
+    [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, 1e-2, 1e-2],
+    [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, 1e-2, 1e-2],
+    # transpose convolution
+    [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, 1e-2, 1e-2],
+    [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, 1e-2, 1e-2],
+]
+
+
 @parameterized_class(("device"), _devices)
 class TestDiscreteContinuousConvolution(unittest.TestCase):
     """Test the discrete-continuous convolution module (CPU/CUDA if available)."""
@@ -69,86 +212,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # fp32 tests
-            # regular convolution
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (16, 32), (8, 16), (3), "piecewise linear", "nodal", "equiangular", "equiangular",  torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (24, 48), (12, 24), (3, 3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (24, 48), (12, 24), (4, 3), "piecewise linear", "none", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (24, 48), (12, 24), (2, 1), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (24, 48), (12, 24), (3), "zernike", "nodal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (24, 48), (12, 24), (3, 3), "harmonic", "nodal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (24, 48), (12, 24), (3, 3), "fourier-bessel", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (16, 24), (8, 8), (3), "piecewise linear", "mean", "equiangular", "equiangular",  torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (18, 36), (6, 12), (7), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "equiangular", "legendre-gauss", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "legendre-gauss", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "nodal", "legendre-gauss", "legendre-gauss", torch.float32, False, 1e-4, 1e-4],
-            # regular convolution — modal, support, geometric normalization
-            [8, 4, 2, (24, 48), (12, 24), (3, 3), "piecewise linear", "modal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "modal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (24, 48), (12, 24), (3), "zernike", "modal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (24, 48), (12, 24), (3, 3), "fourier-bessel", "modal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (24, 48), (12, 24), (3), "piecewise linear", "support", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "support", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (24, 48), (12, 24), (3, 3), "piecewise linear", "geometric", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (24, 48), (12, 24), (3, 3), "fourier-bessel", "geometric", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "geometric", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            # transpose convolution
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "nodal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (12, 24), (24, 48), (3, 3), "piecewise linear", "mean", "equiangular", "equiangular",  torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (12, 24), (24, 48), (4, 3), "piecewise linear", "none", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (12, 24), (24, 48), (2, 1), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (12, 24), (24, 48), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (12, 24), (24, 48), (3, 3), "fourier-bessel", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (8, 8), (16, 24), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (6, 12), (18, 36), (7), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "equiangular", "legendre-gauss", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "legendre-gauss", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", torch.float32, True, 1e-4, 1e-4],
-            # transpose convolution — modal, support, geometric normalization
-            [8, 4, 2, (12, 24), (24, 48), (3, 3), "piecewise linear", "modal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "modal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (12, 24), (24, 48), (3), "zernike", "modal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (12, 24), (24, 48), (3, 3), "fourier-bessel", "modal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (12, 24), (24, 48), (3), "piecewise linear", "support", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "support", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (12, 24), (24, 48), (3, 3), "piecewise linear", "geometric", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (12, 24), (24, 48), (3, 3), "fourier-bessel", "geometric", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "geometric", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            # fp64 tests
-            # regular convolution
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
-            [8, 4, 2, (16, 32), (8, 16), (3), "piecewise linear", "nodal", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
-            [8, 4, 2, (24, 48), (12, 24), (3, 3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
-            [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
-            [8, 4, 2, (24, 48), (12, 24), (3), "zernike", "mean", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
-            [8, 4, 2, (24, 48), (12, 24), (3, 3), "fourier-bessel", "nodal", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
-            # transpose convolution
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
-            [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
-            [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
-            [8, 4, 2, (12, 24), (24, 48), (3), "zernike", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
-            [8, 4, 2, (12, 24), (24, 48), (3, 3), "fourier-bessel", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
-            # fp16 tests (AMP)
-            # regular convolution
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, 2e-2, 1e-2],
-            [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, 2e-2, 1e-2],
-            # transpose convolution
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, True, 2e-2, 1e-2],
-            [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, True, 2e-2, 1e-2],
-            # bf16 tests (AMP)
-            # regular convolution
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, 5e-2, 5e-2],
-            [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, 5e-2, 5e-2],
-            # transpose convolution
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, 5e-2, 5e-2],
-            [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, 5e-2, 5e-2],
+            base + [use_dense_kernel]
+            for base in _SPARSE_AGAINST_DENSE_BASE_CONFIGS
+            for use_dense_kernel in (False, True)
         ],
         skip_on_empty=True,
     )
@@ -168,6 +234,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         transpose,
         atol,
         rtol,
+        use_dense_kernel,
         verbose=True,
     ):
         # for AMP dtypes, the module and input stay in float32; autocast handles the rest
@@ -181,6 +248,12 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         use_optimized_kernels = optimized_kernels_is_available()
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             use_optimized_kernels = False
+
+        # the dense path requires the optimized kernels to be active; skip the
+        # use_dense_kernel=True row otherwise (would silently fall back to the
+        # torch path, double-running the same test).
+        if use_dense_kernel and not use_optimized_kernels:
+            self.skipTest("use_dense_kernel requires optimized kernels")
 
         nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
@@ -205,11 +278,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             bias=False,
             theta_cutoff=theta_cutoff,
             optimized_kernel=use_optimized_kernels,
+            use_dense_kernel=use_dense_kernel,
         ).to(self.device)
 
         filter_basis = conv.filter_basis
 
-        # psi comparison in float64 (both sides come from precompute in float64)
+        # psi comparison in float64 (both sides come from precompute in float64).
+        # The sparse psi sanity-check uses conv.psi_idx / conv.psi_vals which are
+        # only registered in CSR mode (use_dense_kernel=False).
         if transpose:
             psi_dense = precompute_convolution_tensor_dense(
                 out_shape,
@@ -223,9 +299,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
                 merge_quadrature=True,
             ).to(self.device)
 
-            psi = torch.sparse_coo_tensor(conv.psi_idx, conv.psi_vals, size=(conv.kernel_size, conv.nlat_in, conv.nlat_out * conv.nlon_out)).to_dense()
+            if not use_dense_kernel:
+                psi = torch.sparse_coo_tensor(conv.psi_idx, conv.psi_vals, size=(conv.kernel_size, conv.nlat_in, conv.nlat_out * conv.nlon_out)).to_dense()
 
-            self.assertTrue(torch.allclose(psi, psi_dense[:, :, 0].reshape(-1, nlat_in, nlat_out * nlon_out)))
+                self.assertTrue(compare_tensors(
+                    "psi (transpose) vs dense reference",
+                    psi, psi_dense[:, :, 0].reshape(-1, nlat_in, nlat_out * nlon_out),
+                    verbose=verbose,
+                ))
         else:
             psi_dense = precompute_convolution_tensor_dense(
                 in_shape,
@@ -239,9 +320,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
                 merge_quadrature=True,
             ).to(self.device)
 
-            psi = torch.sparse_coo_tensor(conv.psi_idx, conv.psi_vals, size=(conv.kernel_size, conv.nlat_out, conv.nlat_in * conv.nlon_in)).to_dense()
+            if not use_dense_kernel:
+                psi = torch.sparse_coo_tensor(conv.psi_idx, conv.psi_vals, size=(conv.kernel_size, conv.nlat_out, conv.nlat_in * conv.nlon_in)).to_dense()
 
-            self.assertTrue(torch.allclose(psi, psi_dense[:, :, 0].reshape(-1, nlat_out, nlat_in * nlon_in)))
+                self.assertTrue(compare_tensors(
+                    "psi (forward) vs dense reference",
+                    psi, psi_dense[:, :, 0].reshape(-1, nlat_out, nlat_in * nlon_in),
+                    verbose=verbose,
+                ))
 
         # cast module to the target dtype for forward/backward
         if module_dtype != torch.float32:
@@ -287,52 +373,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # fp32 tests
-            # regular convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "nodal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (2, 3), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "modal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (3, 3), "fourier-bessel", "geometric", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (3, 3), "harmonic", "modal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (21, 40), (3), "piecewise linear", "nodal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (21, 40), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (21, 40), (2, 1), "harmonic", "geometric", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (21, 40), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            # transpose convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "modal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (2, 3), "harmonic", "nodal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (3, 3), "fourier-bessel", "modal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (41, 80), (41, 80), (3, 3), "harmonic", "geometric", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (21, 40), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (21, 40), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (21, 40), (41, 80), (2, 1), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (21, 40), (41, 80), (3), "zernike", "nodal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            # fp64 tests
-            # regular convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "modal", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
-            [8, 4, 2, (41, 80), (21, 40), (3), "piecewise linear", "nodal", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
-            # transpose convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "geometric", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
-            [8, 4, 2, (21, 40), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
-            [8, 4, 2, (21, 40), (41, 80), (2, 2), "harmonic", "modal", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
-            # fp16 tests (AMP)
-            # regular convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, 1e-2, 1e-2],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, 1e-2, 1e-2],
-            # transpose convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, True, 1e-2, 1e-2],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, True, 1e-2, 1e-2],
-            # bf16 tests (AMP)
-            # regular convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, 1e-2, 1e-2],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, 1e-2, 1e-2],
-            # transpose convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, 1e-2, 1e-2],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, 1e-2, 1e-2],
+            base + [use_dense_kernel]
+            for base in _OPTIMIZED_AGAINST_TORCH_BASE_CONFIGS
+            for use_dense_kernel in (False, True)
         ],
         skip_on_empty=True,
     )
@@ -353,6 +396,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         transpose,
         atol,
         rtol,
+        use_dense_kernel,
         verbose=False,
     ):
         # for AMP dtypes, the module and input stay in float32; autocast handles the rest
@@ -365,8 +409,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # set seed
         set_seed(333)
 
-        nlat_in, nlon_in = in_shape
-        nlat_out, nlon_out = out_shape
+        nlat_in, _ = in_shape
 
         if isinstance(kernel_shape, int):
             theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
@@ -405,6 +448,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             bias=False,
             theta_cutoff=theta_cutoff,
             optimized_kernel=True,
+            use_dense_kernel=use_dense_kernel,
         ).to(dtype=module_dtype, device=self.device)
 
         # create a copy of the weight
@@ -439,20 +483,26 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", False, 1e-4, 1e-4],
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
-            [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", True, 1e-4, 1e-4],
+            base + [use_dense_kernel]
+            for base in (
+                [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
+                [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", False, 1e-4, 1e-4],
+                [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
+                [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", True, 1e-4, 1e-4],
+            )
+            for use_dense_kernel in (False, True)
         ],
         skip_on_empty=True,
     )
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA is not available")
-    def test_device_instantiation(self, batch_size, in_channels, out_channels, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, transpose, atol, rtol, verbose=False):
+    def test_device_instantiation(self, batch_size, in_channels, out_channels, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, transpose, atol, rtol, use_dense_kernel, verbose=False):
+
+        if use_dense_kernel and not optimized_kernels_is_available():
+            self.skipTest("use_dense_kernel requires optimized kernels")
 
         set_seed(333)
 
-        nlat_in, nlon_in = in_shape
-        nlat_out, nlon_out = out_shape
+        nlat_in, _ = in_shape
 
         if isinstance(kernel_shape, int):
             theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
@@ -476,6 +526,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             grid_out=grid_out,
             bias=False,
             theta_cutoff=theta_cutoff,
+            use_dense_kernel=use_dense_kernel,
         )
 
         #torch.set_default_device(self.device)
@@ -493,15 +544,24 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
                 grid_out=grid_out,
                 bias=False,
                 theta_cutoff=theta_cutoff,
+                use_dense_kernel=use_dense_kernel,
             )
 
         # since we specified the device specifier everywhere, it should always
-        # use the cpu and it should be the same everywhere
-        self.assertTrue(compare_tensors(f"psi col idx", conv_host.psi_col_idx.cpu(), conv_device.psi_col_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors(f"psi row idx", conv_host.psi_row_idx.cpu(), conv_device.psi_row_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors(f"psi roff idx", conv_host.psi_roff_idx.cpu(), conv_device.psi_roff_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors(f"psi vals", conv_host.psi_vals.cpu(), conv_device.psi_vals.cpu(), atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors(f"psi idx", conv_host.psi_idx.cpu(), conv_device.psi_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
+        # use the cpu and it should be the same everywhere.
+        # CSR buffers are only registered when use_dense_kernel is off; packed
+        # buffers are only registered when it is on. Compare whichever set is
+        # applicable to the current parameterization.
+        if use_dense_kernel:
+            self.assertTrue(compare_tensors(f"psi packed idx",   conv_host.psi_packed_idx.cpu(),   conv_device.psi_packed_idx.cpu(),   atol=atol, rtol=rtol, verbose=verbose))
+            self.assertTrue(compare_tensors(f"psi packed vals",  conv_host.psi_packed_vals.cpu(),  conv_device.psi_packed_vals.cpu(),  atol=atol, rtol=rtol, verbose=verbose))
+            self.assertTrue(compare_tensors(f"psi packed count", conv_host.psi_packed_count.cpu(), conv_device.psi_packed_count.cpu(), atol=atol, rtol=rtol, verbose=verbose))
+        else:
+            self.assertTrue(compare_tensors(f"psi col idx",  conv_host.psi_col_idx.cpu(),  conv_device.psi_col_idx.cpu(),  atol=atol, rtol=rtol, verbose=verbose))
+            self.assertTrue(compare_tensors(f"psi row idx",  conv_host.psi_row_idx.cpu(),  conv_device.psi_row_idx.cpu(),  atol=atol, rtol=rtol, verbose=verbose))
+            self.assertTrue(compare_tensors(f"psi roff idx", conv_host.psi_roff_idx.cpu(), conv_device.psi_roff_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
+            self.assertTrue(compare_tensors(f"psi vals",     conv_host.psi_vals.cpu(),     conv_device.psi_vals.cpu(),     atol=atol, rtol=rtol, verbose=verbose))
+            self.assertTrue(compare_tensors(f"psi idx",      conv_host.psi_idx.cpu(),      conv_device.psi_idx.cpu(),      atol=atol, rtol=rtol, verbose=verbose))
 
 
     @parameterized.expand(
@@ -540,8 +600,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         set_seed(333)
 
-        nlat_in, nlon_in = in_shape
-        nlat_out, nlon_out = out_shape
+        nlat_in, _ = in_shape
 
         if isinstance(kernel_shape, int):
             theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
@@ -574,26 +633,28 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
                        conv.kernel_size, conv.nlat_out, conv.nlon_out)
 
         if not transpose:
-            opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs)
+            opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized_csr, test_inputs)
         else:
-            opcheck(torch.ops.disco_kernels._disco_s2_transpose_contraction_optimized, test_inputs)
+            opcheck(torch.ops.disco_kernels._disco_s2_transpose_contraction_optimized_csr, test_inputs)
 
         # if a test fails, those help to disambiguate the error
         # schema
-        #opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_schema")
+        #opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized_csr, test_inputs, test_utils="test_schema")
         # fake tensor
-        #opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_faketensor")
+        #opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized_csr, test_inputs, test_utils="test_faketensor")
         # test AOT stuff
         # this is expected to fail if the output shapes are dependent on input shapes (which is the case for DISCO)
-        #opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_aot_dispatch_static")
+        #opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized_csr, test_inputs, test_utils="test_aot_dispatch_static")
         # this one should pass
-        #opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_aot_dispatch_dynamic")
+        #opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized_csr, test_inputs, test_utils="test_aot_dispatch_dynamic")
 
 
     @parameterized.expand(
         [
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular"],
-            [8, 4, 2, (16, 32), (8,  16), (3), "piecewise linear", "mean", "equiangular", "equiangular"],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False],
+            [8, 4, 2, (16, 32), (8,  16), (3), "piecewise linear", "mean", "equiangular", "equiangular", False],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True],
+            [8, 4, 2, (8,  16), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True],
         ],
         skip_on_empty=True,
     )
@@ -610,35 +671,28 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         basis_norm_mode,
         grid_in,
         grid_out,
+        transpose,
         verbose=False,
     ):
-        """PT2-compliance opcheck for the dense forward custom op. Forward conv only;
-        the transpose conv path still uses the CSR custom op which is covered by
-        test_csr_optimized_pt2_compatibility.
+        """PT2-compliance opcheck for the dense custom ops (forward + transpose)."""
 
-        Currently CPU-only: opcheck's AOT-dispatch sub-tests exercise the autograd
-        backward, which routes through disco_kernels::backward_dense. The CUDA
-        backward_dense kernel is not yet implemented, so we skip on CUDA. Drop this
-        gate once the CUDA dense bwd lands."""
-
-        if self.device.type == "cuda":
-            self.skipTest("CUDA dense backward kernel not yet implemented")
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping GPU test because CUDA kernels are not available")
 
         if verbose:
-            print(f"Testing dense DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
+            print(f"Testing dense DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device, transpose={transpose}")
 
         set_seed(333)
 
-        nlat_in, nlon_in = in_shape
+        nlat_in, _ = in_shape
 
         if isinstance(kernel_shape, int):
             theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
         else:
             theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
 
-        conv = DiscreteContinuousConvS2(
+        Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
+        conv = Conv(
             in_channels, out_channels, in_shape, out_shape, kernel_shape,
             basis_type=basis_type, basis_norm_mode=basis_norm_mode,
             groups=1, grid_in=grid_in, grid_out=grid_out, bias=False,
@@ -646,196 +700,25 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             optimized_kernel=True, use_dense_kernel=True,
         ).to(self.device)
 
-        inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
+        # transpose conv's contraction op consumes a 5D input [B, C, K, Hi, Wi]
+        # (after the einsum chain in the module forward); the regular conv's
+        # consumes a 4D input [B, C, Hi, Wi].
+        if transpose:
+            inp = torch.randn(batch_size, in_channels, conv.kernel_size, *in_shape, device=self.device)
+        else:
+            inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
 
-        # full input tuple: dense fwd buffers + CSR buffers (saved by autograd for the
-        # backward path which routes through disco_kernels.backward_csr).
         test_inputs = (
             inp,
             conv.psi_packed_idx, conv.psi_packed_vals, conv.psi_packed_count,
-            conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals,
             conv.kernel_size, conv.nlat_out, conv.nlon_out,
         )
 
-        opcheck(torch.ops.disco_kernels._disco_s2_contraction_dense_optimized, test_inputs)
-
-
-    # ------------------------------------------------------------------
-    # dense-kernel forward tests
-    # ------------------------------------------------------------------
-    # Two correctness comparators for the optimized dense kernel:
-    #   1) dense optimized vs the naive dense reference (ground truth via einsum
-    #      against the dense psi tensor)
-    #   2) dense optimized vs the existing optimized CSR kernel (regression)
-    # Both instantiate two parallel module instances (one with use_dense_kernel
-    # on, one off / a dense reference) with synced weights, then run forward.
-    #
-    # Transpose-conv cases are still parameterized but skip at runtime: the
-    # transpose forward is the bwd direction of the regular conv, and we only
-    # have the dense fwd kernel for now.
-
-    @parameterized.expand(
-        [
-            # B, Cin, Cout, in_shape, out_shape, kernel_shape, basis, norm, grid_in, grid_out, transpose
-            # forward: square equiangular, even and odd nlat
-            [1, 4, 2, (16, 32), (16, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", False],
-            [1, 4, 2, (17, 32), (17, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", False],
-            # forward: downsampling
-            [1, 4, 2, (16, 32), ( 8, 16), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", False],
-            # forward: harmonic basis
-            [1, 4, 2, (16, 32), (16, 32), (2, 2), "harmonic",         "mean", "equiangular", "equiangular", False],
-            [1, 4, 2, (17, 32), (17, 32), (2, 2), "harmonic",         "mean", "equiangular", "equiangular", False],
-            # forward: mixed grid (equiangular -> legendre-gauss)
-            [1, 4, 2, (17, 32), (16, 32), (3,),   "piecewise linear", "mean", "equiangular", "legendre-gauss", False],
-            [1, 4, 2, (17, 32), ( 8, 16), (3,),   "piecewise linear", "mean", "equiangular", "legendre-gauss", False],
-            # transpose: square equiangular, even and odd nlat
-            [1, 4, 2, (16, 32), (16, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", True],
-            [1, 4, 2, (17, 32), (17, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", True],
-            # transpose: upsampling
-            [1, 4, 2, ( 8, 16), (16, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", True],
-            # transpose: mixed grid (legendre-gauss -> equiangular), upsampling
-            [1, 4, 2, (16, 32), (17, 32), (3,),   "piecewise linear", "mean", "legendre-gauss", "equiangular", True],
-            [1, 4, 2, ( 8, 16), (17, 32), (3,),   "piecewise linear", "mean", "legendre-gauss", "equiangular", True],
-        ],
-        skip_on_empty=True,
-    )
-    def test_dense_optimized_against_naive_dense(
-        self, batch_size, in_channels, out_channels, in_shape, out_shape, kernel_shape,
-        basis_type, basis_norm_mode, grid_in, grid_out, transpose,
-    ):
-        """Dense kernel forward (full module) vs the naive dense reference (einsum
-        against the dense psi tensor + weight). fwd-only for now — transpose=True
-        cases skip until the dense bwd kernel exists."""
-
-        if not optimized_kernels_is_available():
-            self.skipTest("optimized disco kernels not available")
-        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
-            self.skipTest("CUDA disco kernel not available")
         if transpose:
-            self.skipTest("dense kernel for transpose conv not yet implemented")
-
-        set_seed(333)
-
-        nlat_in, nlon_in = in_shape
-        nlat_out, nlon_out = out_shape
-
-        if isinstance(kernel_shape, int):
-            theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
+            opcheck(torch.ops.disco_kernels._disco_s2_transpose_contraction_optimized_dense, test_inputs)
         else:
-            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
+            opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized_dense, test_inputs)
 
-        conv = DiscreteContinuousConvS2(
-            in_channels, out_channels, in_shape, out_shape, kernel_shape,
-            basis_type=basis_type, basis_norm_mode=basis_norm_mode,
-            groups=1, grid_in=grid_in, grid_out=grid_out, bias=False,
-            theta_cutoff=theta_cutoff,
-            optimized_kernel=True, use_dense_kernel=True,
-        ).to(self.device)
-
-        # naive dense psi reference (fp64 like in test_sparse_against_dense)
-        psi_dense = precompute_convolution_tensor_dense(
-            in_shape, out_shape, conv.filter_basis,
-            grid_in=grid_in, grid_out=grid_out,
-            theta_cutoff=theta_cutoff,
-            transpose_normalization=False,
-            basis_norm_mode=basis_norm_mode,
-            merge_quadrature=True,
-        ).to(self.device)
-
-        # snapshot the weight for the einsum reference
-        w_ref = conv.weight.detach().clone()
-
-        inp = torch.randn(batch_size, in_channels, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
-
-        # full module forward through the dense kernel path
-        out = conv(inp)
-
-        # naive dense reference: apply psi, then apply weight (matches the module's
-        # einsum chain in test_sparse_against_dense)
-        psi_ref = psi_dense.to(inp.dtype)
-        y = torch.einsum("ftpqr,bcqr->bcftp", psi_ref, inp)
-        y = torch.einsum("oif,biftp->botp", w_ref, y)
-
-        self.assertTrue(compare_tensors(
-            "dense forward vs naive dense reference", out, y,
-            atol=1e-4, rtol=1e-4, verbose=True,
-        ))
-
-    @parameterized.expand(
-        [
-            # B, Cin, Cout, in_shape, out_shape, kernel_shape, basis, norm, grid_in, grid_out, transpose
-            # forward: square equiangular, even and odd nlat
-            [1, 4, 2, (16, 32), (16, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", False],
-            [1, 4, 2, (17, 32), (17, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", False],
-            # forward: downsampling
-            [1, 4, 2, (16, 32), ( 8, 16), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", False],
-            # forward: harmonic basis
-            [1, 4, 2, (16, 32), (16, 32), (2, 2), "harmonic",         "mean", "equiangular", "equiangular", False],
-            [1, 4, 2, (17, 32), (17, 32), (2, 2), "harmonic",         "mean", "equiangular", "equiangular", False],
-            # forward: mixed grid (equiangular -> legendre-gauss)
-            [1, 4, 2, (17, 32), (16, 32), (3,),   "piecewise linear", "mean", "equiangular", "legendre-gauss", False],
-            [1, 4, 2, (17, 32), ( 8, 16), (3,),   "piecewise linear", "mean", "equiangular", "legendre-gauss", False],
-            # transpose: square equiangular, even and odd nlat
-            [1, 4, 2, (16, 32), (16, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", True],
-            [1, 4, 2, (17, 32), (17, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", True],
-            # transpose: upsampling
-            [1, 4, 2, ( 8, 16), (16, 32), (3,),   "piecewise linear", "mean", "equiangular", "equiangular", True],
-            # transpose: mixed grid (legendre-gauss -> equiangular), upsampling
-            [1, 4, 2, (16, 32), (17, 32), (3,),   "piecewise linear", "mean", "legendre-gauss", "equiangular", True],
-            [1, 4, 2, ( 8, 16), (17, 32), (3,),   "piecewise linear", "mean", "legendre-gauss", "equiangular", True],
-        ],
-        skip_on_empty=True,
-    )
-    def test_dense_optimized_against_csr_optimized(
-        self, batch_size, in_channels, out_channels, in_shape, out_shape, kernel_shape,
-        basis_type, basis_norm_mode, grid_in, grid_out, transpose,
-    ):
-        """Dense kernel forward (full module) vs the optimized CSR kernel forward.
-        Two parallel module instances differing only in use_dense_kernel; weights
-        synced explicitly so the only remaining difference is the kernel."""
-
-        if not optimized_kernels_is_available():
-            self.skipTest("optimized disco kernels not available")
-        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
-            self.skipTest("CUDA disco kernel not available")
-        if transpose:
-            self.skipTest("dense kernel for transpose conv not yet implemented")
-
-        set_seed(333)
-
-        nlat_in, nlon_in = in_shape
-
-        if isinstance(kernel_shape, int):
-            theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
-        else:
-            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
-
-        common_kwargs = dict(
-            in_channels=in_channels, out_channels=out_channels,
-            in_shape=in_shape, out_shape=out_shape,
-            kernel_shape=kernel_shape,
-            basis_type=basis_type, basis_norm_mode=basis_norm_mode,
-            groups=1, grid_in=grid_in, grid_out=grid_out, bias=False,
-            theta_cutoff=theta_cutoff,
-            optimized_kernel=True,
-        )
-
-        conv_dense = DiscreteContinuousConvS2(**common_kwargs, use_dense_kernel=True).to(self.device)
-        conv_csr   = DiscreteContinuousConvS2(**common_kwargs, use_dense_kernel=False).to(self.device)
-
-        # sync weights so the only difference is which kernel runs
-        with torch.no_grad():
-            conv_csr.weight.copy_(conv_dense.weight)
-
-        inp = torch.randn(batch_size, in_channels, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
-
-        out_dense = conv_dense(inp)
-        out_csr   = conv_csr(inp)
-
-        self.assertTrue(compare_tensors(
-            "dense forward vs csr forward", out_dense, out_csr,
-            atol=1e-5, rtol=1e-5, verbose=True,
-        ))
 
     @parameterized.expand(
         [

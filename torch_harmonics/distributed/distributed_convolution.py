@@ -35,9 +35,14 @@ from itertools import accumulate
 import torch
 
 from torch_harmonics.disco._disco_utils import _get_psi
-from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
+from torch_harmonics.disco.optimized.disco_optimized import (
+    _disco_s2_contraction_optimized_csr,
+    _disco_s2_contraction_optimized_dense,
+    _disco_s2_transpose_contraction_optimized_csr,
+    _disco_s2_transpose_contraction_optimized_dense,
+)
 from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
-from disco_helpers import optimized_kernels_is_available, preprocess_psi
+from disco_helpers import optimized_kernels_is_available, preprocess_psi, pack_psi_dense
 from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
     DiscreteContinuousConv,
@@ -165,8 +170,9 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         optimized_kernel: Optional[bool] = True,
+        use_dense_kernel: Optional[bool] = False,
     ):
-        super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
+        super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel, use_dense_kernel)
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
@@ -225,13 +231,27 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         if self.optimized_kernel:
             # preprocessed data-structure for GPU kernel
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_out_local, ker_idx, row_idx, col_idx, vals).contiguous()
-            self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
-        # save all datastructures
-        self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
-        self.register_buffer("psi_row_idx", row_idx, persistent=False)
-        self.register_buffer("psi_col_idx", col_idx, persistent=False)
-        self.register_buffer("psi_vals", vals, persistent=False)
+            if self.use_dense_kernel:
+                # dense-packed psi for the dense kernel path; col is decoded
+                # against nlon_in for the forward direction. The CSR buffers
+                # are dead weight in this mode.
+                psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(
+                    self.kernel_size, self.nlat_out_local, self.nlon_in, 0,
+                    ker_idx, row_idx, col_idx, vals, roff_idx,
+                )
+                self.register_buffer("psi_packed_idx",   psi_packed_idx.contiguous(),   persistent=False)
+                self.register_buffer("psi_packed_vals",  psi_packed_vals.contiguous(),  persistent=False)
+                self.register_buffer("psi_packed_count", psi_packed_count.contiguous(), persistent=False)
+            else:
+                self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+
+        # CSR buffers — only needed when not using the dense kernel
+        if not self.use_dense_kernel:
+            self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
+            self.register_buffer("psi_row_idx", row_idx, persistent=False)
+            self.register_buffer("psi_col_idx", col_idx, persistent=False)
+            self.register_buffer("psi_vals", vals, persistent=False)
 
         # store psi jic:
         if not self.optimized_kernel:
@@ -253,8 +273,14 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth(x, (1, -1), self.lon_in_shapes)
 
-        if self.optimized_kernel:
-            x = _disco_s2_contraction_optimized(
+        if self.use_dense_kernel:
+            x = _disco_s2_contraction_optimized_dense(
+                x,
+                self.psi_packed_idx, self.psi_packed_vals, self.psi_packed_count,
+                self.kernel_size, self.nlat_out_local, self.nlon_out,
+            )
+        elif self.optimized_kernel:
+            x = _disco_s2_contraction_optimized_csr(
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out_local, self.nlon_out
             )
         else:
@@ -341,8 +367,9 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         optimized_kernel: Optional[bool] = True,
+        use_dense_kernel: Optional[bool] = False,
     ):
-        super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
+        super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel, use_dense_kernel)
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
@@ -404,13 +431,27 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         if self.optimized_kernel:
             # preprocessed data-structure for GPU kernel
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_in_local, ker_idx, row_idx, col_idx, vals).contiguous()
-            self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
-        # save all datastructures
-        self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
-        self.register_buffer("psi_row_idx", row_idx, persistent=False)
-        self.register_buffer("psi_col_idx", col_idx, persistent=False)
-        self.register_buffer("psi_vals", vals, persistent=False)
+            if self.use_dense_kernel:
+                # dense-packed psi for the dense kernel path; for transpose, col
+                # indexes into the (out lat, out lon) plane so we decode against
+                # nlon_out. The CSR buffers are dead weight in this mode.
+                psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(
+                    self.kernel_size, self.nlat_in_local, self.nlon_out, 0,
+                    ker_idx, row_idx, col_idx, vals, roff_idx,
+                )
+                self.register_buffer("psi_packed_idx",   psi_packed_idx.contiguous(),   persistent=False)
+                self.register_buffer("psi_packed_vals",  psi_packed_vals.contiguous(),  persistent=False)
+                self.register_buffer("psi_packed_count", psi_packed_count.contiguous(), persistent=False)
+            else:
+                self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+
+        # CSR buffers — only needed when not using the dense kernel
+        if not self.use_dense_kernel:
+            self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
+            self.register_buffer("psi_row_idx", row_idx, persistent=False)
+            self.register_buffer("psi_col_idx", col_idx, persistent=False)
+            self.register_buffer("psi_vals", vals, persistent=False)
 
         # store psi as COO
         if not self.optimized_kernel:
@@ -442,8 +483,14 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = gather_from_polar_region(x, -2, self.lat_in_shapes)
         x = copy_to_polar_region(x)
 
-        if self.optimized_kernel:
-            out = _disco_s2_transpose_contraction_optimized(
+        if self.use_dense_kernel:
+            out = _disco_s2_transpose_contraction_optimized_dense(
+                x,
+                self.psi_packed_idx, self.psi_packed_vals, self.psi_packed_count,
+                self.kernel_size, self.nlat_out_local, self.nlon_out,
+            )
+        elif self.optimized_kernel:
+            out = _disco_s2_transpose_contraction_optimized_csr(
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out_local, self.nlon_out
             )
         else:

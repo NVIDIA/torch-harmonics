@@ -59,4 +59,8 @@ namespace disco_kernels {
     torch::Tensor disco_cuda_fwd_dense(torch::Tensor inp, torch::Tensor pack_idx, torch::Tensor pack_val,
                                        torch::Tensor pack_count, int64_t K, int64_t Ho, int64_t Wo);
 
+    // dense-packed-psi backward kernel
+    torch::Tensor disco_cuda_bwd_dense(torch::Tensor inp, torch::Tensor pack_idx, torch::Tensor pack_val,
+                                       torch::Tensor pack_count, int64_t K, int64_t Ho, int64_t Wo);
+
 }

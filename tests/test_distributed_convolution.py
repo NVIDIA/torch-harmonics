@@ -57,6 +57,38 @@ def setUpModule():
 def tearDownModule():
     teardown_module(_DIST_CTX)
 
+
+# Base parameter list for the distributed disco conv test. The decorator below
+# cross-products this with [False, True] for use_dense_kernel so each config is
+# exercised against both the CSR and the dense kernels.
+_DISTRIBUTED_DISCO_CONV_BASE_CONFIGS = [
+    # nlat_in, nlon_in, nlat_out, nlon_out, B, C, kernel_shape, basis, norm, groups, grid_in, grid_out, dtype, transpose, atol, rtol
+    # fp32 tests
+    [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+    [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+    [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+    [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+    [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+    [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+    [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+    [65, 128, 65, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+    [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+    [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+    [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+    [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+    [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+    [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+    [33, 64, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+    [65, 128, 33, 64, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+    # fp64 tests
+    [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, 1e-6, 1e-6],
+    [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, 1e-6, 1e-6],
+    [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, 1e-6, 1e-6],
+    [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, 1e-6, 1e-6],
+    [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float64, False, 1e-6, 1e-6],
+    [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float64, True, 1e-6, 1e-6],
+]
+
 class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
     """Test the distributed discrete-continuous convolution module."""
 
@@ -114,37 +146,24 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # fp32 tests
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
-            [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
-            [33, 64, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
-            [65, 128, 33, 64, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
-            # fp64 tests
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, 1e-6, 1e-6],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, 1e-6, 1e-6],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, 1e-6, 1e-6],
-            [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, 1e-6, 1e-6],
-            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float64, False, 1e-6, 1e-6],
-            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float64, True, 1e-6, 1e-6],
-        ], skip_on_empty=True
+            base + [use_dense_kernel]
+            for base in _DISTRIBUTED_DISCO_CONV_BASE_CONFIGS
+            for use_dense_kernel in (False, True)
+        ],
+        skip_on_empty=True,
     )
     def test_distributed_disco_conv(
-        self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, kernel_shape, basis_type, basis_norm_mode, groups, grid_in, grid_out, dtype, transpose, atol, rtol, verbose=True
+        self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, kernel_shape, basis_type, basis_norm_mode, groups, grid_in, grid_out, dtype, transpose, atol, rtol, use_dense_kernel, verbose=True
     ):
 
         set_seed(333)
+
+        # The dense kernel uses a different (atomicAdd-based) accumulation order
+        # than the CSR kernel; combined with the cross-rank reduce on the
+        # distributed path this can produce ~6-ulp fp32 differences for value-
+        # dense bases (e.g. morlet (3,4)). Loosen atol for the dense path.
+        if use_dense_kernel:
+            atol = max(atol, 5e-6)
 
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
 
@@ -160,6 +179,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             grid_in=grid_in,
             grid_out=grid_out,
             bias=True,
+            use_dense_kernel=use_dense_kernel,
         )
 
         # set up handles

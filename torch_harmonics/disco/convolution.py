@@ -42,9 +42,10 @@ from torch_harmonics.cache import lru_cache
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
 from ._disco_utils import _get_psi
 from .optimized.disco_optimized import (
-    _disco_s2_contraction_optimized,
-    _disco_s2_contraction_dense_optimized,
-    _disco_s2_transpose_contraction_optimized,
+    _disco_s2_contraction_optimized_csr,
+    _disco_s2_contraction_optimized_dense,
+    _disco_s2_transpose_contraction_optimized_csr,
+    _disco_s2_transpose_contraction_optimized_dense,
 )
 from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
@@ -551,11 +552,12 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         if self.optimized_kernel:
             # preprocessed data-structure for GPU kernel
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_out, ker_idx, row_idx, col_idx, vals).contiguous()
-            self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
             if self.use_dense_kernel:
                 # dense-packed psi for the dense kernel path; col is decoded
-                # against nlon_in for the forward direction.
+                # against nlon_in for the forward direction. The CSR buffers
+                # (roff_idx, ker_idx, row_idx, col_idx, vals) are not needed at
+                # runtime in this mode, so they are not registered.
                 psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(
                     self.kernel_size, self.nlat_out, self.nlon_in, 0,
                     ker_idx, row_idx, col_idx, vals, roff_idx,
@@ -563,12 +565,17 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                 self.register_buffer("psi_packed_idx",   psi_packed_idx.contiguous(),   persistent=False)
                 self.register_buffer("psi_packed_vals",  psi_packed_vals.contiguous(),  persistent=False)
                 self.register_buffer("psi_packed_count", psi_packed_count.contiguous(), persistent=False)
+            else:
+                self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
-        # save all datastructures
-        self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
-        self.register_buffer("psi_row_idx", row_idx, persistent=False)
-        self.register_buffer("psi_col_idx", col_idx, persistent=False)
-        self.register_buffer("psi_vals", vals, persistent=False)
+        # CSR buffers are needed by the optimized CSR kernel and the torch
+        # fallback (via _get_psi below). They are not used when use_dense_kernel
+        # is on, so skip registration in that case.
+        if not self.use_dense_kernel:
+            self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
+            self.register_buffer("psi_row_idx", row_idx, persistent=False)
+            self.register_buffer("psi_col_idx", col_idx, persistent=False)
+            self.register_buffer("psi_vals", vals, persistent=False)
 
         # also store psi as COO matrix just in case for torch input
         if not self.optimized_kernel:
@@ -584,14 +591,13 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         if self.use_dense_kernel:
-            x = _disco_s2_contraction_dense_optimized(
+            x = _disco_s2_contraction_optimized_dense(
                 x,
                 self.psi_packed_idx, self.psi_packed_vals, self.psi_packed_count,
-                self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
                 self.kernel_size, self.nlat_out, self.nlon_out,
             )
         elif self.optimized_kernel:
-            x = _disco_s2_contraction_optimized(
+            x = _disco_s2_contraction_optimized_csr(
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
             )
         else:
@@ -711,12 +717,13 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         if self.optimized_kernel:
             # preprocessed data-structure for GPU kernel
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_in, ker_idx, row_idx, col_idx, vals).contiguous()
-            self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
             if self.use_dense_kernel:
                 # dense-packed psi for the dense kernel path; for transpose, col
                 # indexes into the (out lat, out lon) plane so we decode against
-                # nlon_out.
+                # nlon_out. The CSR buffers (roff_idx, ker_idx, row_idx, col_idx,
+                # vals) are not needed at runtime in this mode, so they are not
+                # registered.
                 psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(
                     self.kernel_size, self.nlat_in, self.nlon_out, 0,
                     ker_idx, row_idx, col_idx, vals, roff_idx,
@@ -724,12 +731,17 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
                 self.register_buffer("psi_packed_idx",   psi_packed_idx.contiguous(),   persistent=False)
                 self.register_buffer("psi_packed_vals",  psi_packed_vals.contiguous(),  persistent=False)
                 self.register_buffer("psi_packed_count", psi_packed_count.contiguous(), persistent=False)
+            else:
+                self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
-        # save all datastructures
-        self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
-        self.register_buffer("psi_row_idx", row_idx, persistent=False)
-        self.register_buffer("psi_col_idx", col_idx, persistent=False)
-        self.register_buffer("psi_vals", vals, persistent=False)
+        # CSR buffers are needed by the optimized CSR kernel and the torch
+        # fallback (via _get_psi below). They are not used when use_dense_kernel
+        # is on, so skip registration in that case.
+        if not self.use_dense_kernel:
+            self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
+            self.register_buffer("psi_row_idx", row_idx, persistent=False)
+            self.register_buffer("psi_col_idx", col_idx, persistent=False)
+            self.register_buffer("psi_vals", vals, persistent=False)
 
         # also store psi just in case
         if not self.optimized_kernel:
@@ -753,10 +765,13 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = x.reshape(B, -1, x.shape[-3], H, W)
 
         if self.use_dense_kernel:
-            # TODO(step 3): route through the dense-packed kernel op once it exists.
-            raise NotImplementedError("dense disco transpose forward kernel is not yet implemented")
+            out = _disco_s2_transpose_contraction_optimized_dense(
+                x,
+                self.psi_packed_idx, self.psi_packed_vals, self.psi_packed_count,
+                self.kernel_size, self.nlat_out, self.nlon_out,
+            )
         elif self.optimized_kernel:
-            out = _disco_s2_transpose_contraction_optimized(
+            out = _disco_s2_transpose_contraction_optimized_csr(
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
             )
         else:

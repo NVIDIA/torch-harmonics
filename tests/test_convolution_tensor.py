@@ -366,7 +366,9 @@ class TestDenseKernelWiring(unittest.TestCase):
         self, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, transpose,
     ):
         """When use_dense_kernel=True, psi_packed_{idx,vals,count} must be registered
-        and equal to the python_pack_psi reference applied to the CSR buffers."""
+        and equal to the python_pack_psi reference. We get the CSR form by also
+        instantiating a parallel use_dense_kernel=False module — those two share
+        the same psi up to the packing step."""
         from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
@@ -376,39 +378,42 @@ class TestDenseKernelWiring(unittest.TestCase):
         else:
             theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(in_shape[0] - 1)
 
-        conv = Conv(
+        common_kwargs = dict(
             in_channels=2, out_channels=2,
             in_shape=in_shape, out_shape=out_shape,
             kernel_shape=kernel_shape,
             basis_type=basis_type, basis_norm_mode=basis_norm_mode,
             bias=False, theta_cutoff=theta_cutoff,
-            optimized_kernel=True, use_dense_kernel=True,
+            optimized_kernel=True,
         )
 
-        # buffers exist
+        conv_dense = Conv(**common_kwargs, use_dense_kernel=True)
+        conv_csr   = Conv(**common_kwargs, use_dense_kernel=False)
+
+        # dense path registers only the packed buffers
         for name in ("psi_packed_idx", "psi_packed_vals", "psi_packed_count"):
-            self.assertTrue(hasattr(conv, name), f"missing buffer {name}")
+            self.assertTrue(hasattr(conv_dense, name), f"missing buffer {name} on dense module")
 
         # for transpose, col is decoded against nlon_out; for forward, against nlon_in.
         # Ho is nlat_in for transpose, nlat_out for forward.
-        Ho_pack = conv.nlat_in if transpose else conv.nlat_out
-        Wi_pack = conv.nlon_out if transpose else conv.nlon_in
+        Ho_pack = conv_dense.nlat_in if transpose else conv_dense.nlat_out
+        Wi_pack = conv_dense.nlon_out if transpose else conv_dense.nlon_in
 
         idx_ref, val_ref, count_ref = python_pack_psi(
-            conv.kernel_size, Ho_pack, Wi_pack, 0,
-            conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx,
-            conv.psi_vals, conv.psi_roff_idx,
+            conv_dense.kernel_size, Ho_pack, Wi_pack, 0,
+            conv_csr.psi_ker_idx, conv_csr.psi_row_idx, conv_csr.psi_col_idx,
+            conv_csr.psi_vals, conv_csr.psi_roff_idx,
         )
 
         # shapes
-        self.assertEqual(tuple(conv.psi_packed_idx.shape),   tuple(idx_ref.shape))
-        self.assertEqual(tuple(conv.psi_packed_vals.shape),  tuple(val_ref.shape))
-        self.assertEqual(tuple(conv.psi_packed_count.shape), tuple(count_ref.shape))
+        self.assertEqual(tuple(conv_dense.psi_packed_idx.shape),   tuple(idx_ref.shape))
+        self.assertEqual(tuple(conv_dense.psi_packed_vals.shape),  tuple(val_ref.shape))
+        self.assertEqual(tuple(conv_dense.psi_packed_count.shape), tuple(count_ref.shape))
 
         # contents (compare on cpu)
-        self.assertTrue(torch.equal(conv.psi_packed_idx.cpu(),   idx_ref))
-        self.assertTrue(compare_tensors("psi_packed_vals (planner vs python ref)", conv.psi_packed_vals.cpu(), val_ref))
-        self.assertTrue(torch.equal(conv.psi_packed_count.cpu(), count_ref))
+        self.assertTrue(torch.equal(conv_dense.psi_packed_idx.cpu(),   idx_ref))
+        self.assertTrue(compare_tensors("psi_packed_vals (planner vs python ref)", conv_dense.psi_packed_vals.cpu(), val_ref))
+        self.assertTrue(torch.equal(conv_dense.psi_packed_count.cpu(), count_ref))
 
     @parameterized.expand(
         [
@@ -417,25 +422,40 @@ class TestDenseKernelWiring(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
-    def test_packed_buffers_absent_when_flag_off(self, transpose):
-        """Without use_dense_kernel, the packed buffers must not be registered."""
+    def test_buffer_set_matches_kernel_mode(self, transpose):
+        """Buffer hygiene: CSR-only mode registers only CSR buffers, dense-only
+        mode registers only packed buffers. The two sets should never coexist."""
         from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
         in_shape  = (8, 16) if transpose else (16, 32)
         out_shape = (16, 32) if transpose else (16, 32)
 
-        conv = Conv(
+        common_kwargs = dict(
             in_channels=2, out_channels=2,
             in_shape=in_shape, out_shape=out_shape,
             kernel_shape=(3,), basis_type="piecewise linear",
             basis_norm_mode="mean", bias=False,
             theta_cutoff=4 * torch.pi / float(in_shape[0] - 1),
-            optimized_kernel=True, use_dense_kernel=False,
+            optimized_kernel=True,
         )
 
-        for name in ("psi_packed_idx", "psi_packed_vals", "psi_packed_count"):
-            self.assertFalse(hasattr(conv, name), f"buffer {name} should not be registered when use_dense_kernel=False")
+        csr_buffers    = ("psi_roff_idx", "psi_ker_idx", "psi_row_idx", "psi_col_idx", "psi_vals")
+        packed_buffers = ("psi_packed_idx", "psi_packed_vals", "psi_packed_count")
+
+        # CSR mode: CSR buffers present, packed absent
+        conv_csr = Conv(**common_kwargs, use_dense_kernel=False)
+        for name in csr_buffers:
+            self.assertTrue(hasattr(conv_csr, name), f"buffer {name} should be registered when use_dense_kernel=False")
+        for name in packed_buffers:
+            self.assertFalse(hasattr(conv_csr, name), f"buffer {name} should not be registered when use_dense_kernel=False")
+
+        # dense mode: packed buffers present, CSR absent
+        conv_dense = Conv(**common_kwargs, use_dense_kernel=True)
+        for name in packed_buffers:
+            self.assertTrue(hasattr(conv_dense, name), f"buffer {name} should be registered when use_dense_kernel=True")
+        for name in csr_buffers:
+            self.assertFalse(hasattr(conv_dense, name), f"buffer {name} should not be registered when use_dense_kernel=True")
 
 
 if __name__ == "__main__":
