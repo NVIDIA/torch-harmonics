@@ -80,21 +80,19 @@ if optimized_kernels_is_available():
         out = out.to(itype)
         return out
 
-    # dense forward — consumes packed psi for both fwd and bwd
+    # dense forward — consumes packed psi for both fwd and bwd. Dtype handling
+    # (bf16/fp16 → fp32 for the FMA, cast back to storage at write) lives inside
+    # the dense backend (CUDA: STORAGE_T/COMPUTE_T templated kernel; CPU: host
+    # wrapper upcasts before the OMP loop). The wrapper just makes inp contiguous.
     @torch.library.custom_op("disco_kernels::_disco_s2_contraction_optimized_dense", mutates_args=())
     def _disco_s2_contraction_optimized_dense(
         inp: torch.Tensor,
         psi_packed_idx: torch.Tensor, psi_packed_vals: torch.Tensor, psi_packed_count: torch.Tensor,
         kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-        itype = inp.dtype
-        cdtype = _compute_dtype(itype)
-        inp = inp.to(cdtype).contiguous()
-        psi_packed_vals = psi_packed_vals.to(cdtype)
-        out = disco_kernels.forward_dense.default(
+        inp = inp.contiguous()
+        return disco_kernels.forward_dense.default(
             inp, psi_packed_idx, psi_packed_vals, psi_packed_count,
             kernel_size, nlat_out, nlon_out)
-        out = out.to(itype)
-        return out
 
     # transpose
     @torch.library.custom_op("disco_kernels::_disco_s2_transpose_contraction_optimized_csr", mutates_args=())
@@ -110,21 +108,17 @@ if optimized_kernels_is_available():
         out = out.to(itype)
         return out
 
-    # transpose, dense — fwd uses backward_dense, bwd uses forward_dense
+    # transpose, dense — fwd uses backward_dense, bwd uses forward_dense. Dtype
+    # handling lives in the backend (see _disco_s2_contraction_optimized_dense).
     @torch.library.custom_op("disco_kernels::_disco_s2_transpose_contraction_optimized_dense", mutates_args=())
     def _disco_s2_transpose_contraction_optimized_dense(
         inp: torch.Tensor,
         psi_packed_idx: torch.Tensor, psi_packed_vals: torch.Tensor, psi_packed_count: torch.Tensor,
         kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
-        itype = inp.dtype
-        cdtype = _compute_dtype(itype)
-        inp = inp.to(cdtype).contiguous()
-        psi_packed_vals = psi_packed_vals.to(cdtype)
-        out = disco_kernels.backward_dense.default(
+        inp = inp.contiguous()
+        return disco_kernels.backward_dense.default(
             inp, psi_packed_idx, psi_packed_vals, psi_packed_count,
             kernel_size, nlat_out, nlon_out)
-        out = out.to(itype)
-        return out
 
     # forward fake
     @torch.library.register_fake("disco_kernels::_disco_s2_contraction_optimized_csr")
@@ -200,13 +194,11 @@ def _disco_s2_contraction_dense_bwd_optimized(ctx, grad_output):
     pack_idx, pack_val, pack_count = ctx.saved_tensors
 
     if ctx.needs_input_grad[0]:
-        gtype = grad_output.dtype
-        cdtype = _compute_dtype(gtype)
-        grad_output = grad_output.to(cdtype).contiguous()
-        pack_val = pack_val.to(cdtype)
-        grad_input = disco_kernels.backward_dense.default(grad_output, pack_idx, pack_val, pack_count,
+        # Dtype handling (bf16/fp16 → fp32 compute, cast back) lives in the
+        # backend.
+        grad_input = disco_kernels.backward_dense.default(grad_output.contiguous(),
+                                                         pack_idx, pack_val, pack_count,
                                                          ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
-        grad_input = grad_input.to(gtype)
     else:
         grad_input = None
 
@@ -246,13 +238,11 @@ def _disco_s2_transpose_contraction_dense_bwd_optimized(ctx, grad_output):
     pack_idx, pack_val, pack_count = ctx.saved_tensors
 
     if ctx.needs_input_grad[0]:
-        gtype = grad_output.dtype
-        cdtype = _compute_dtype(gtype)
-        grad_output = grad_output.to(cdtype).contiguous()
-        pack_val = pack_val.to(cdtype)
-        grad_input = disco_kernels.forward_dense.default(grad_output, pack_idx, pack_val, pack_count,
+        # Dtype handling (bf16/fp16 → fp32 compute, cast back) lives in the
+        # backend.
+        grad_input = disco_kernels.forward_dense.default(grad_output.contiguous(),
+                                                        pack_idx, pack_val, pack_count,
                                                         ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
-        grad_input = grad_input.to(gtype)
     else:
         grad_input = None
 
@@ -265,3 +255,42 @@ if optimized_kernels_is_available():
         "disco_kernels::_disco_s2_transpose_contraction_optimized_dense",
         _disco_s2_transpose_contraction_dense_bwd_optimized,
         setup_context=_setup_context_conv_dense_backward)
+
+
+# ---------------------------------------------------------------------------
+# Autocast support — dense ops only.
+# ---------------------------------------------------------------------------
+#
+# The dense backend's STORAGE_T/COMPUTE_T split lets the kernel run with bf16/
+# fp16 storage and fp32 accumulators, so casting a fp32 input down to the
+# autocast dtype is a real bandwidth win. We register Autocast{CUDA,CPU}
+# kernels that cast only the data tensor (`inp`/`grad_output`) — pack_val stays
+# fp32 so the host wrapper's "is pack_val already in compute_t" check skips
+# the redundant upcast.
+#
+# CSR ops are deliberately not registered for autocast: their wrapper
+# unconditionally upcasts to fp32, so an autocast hop would just add a
+# fp32→bf16→fp32 round-trip with no compute benefit.
+#
+# Inside the autocast impl we redispatch with `autocast(enabled=False)` to
+# drop the Autocast key — the call then goes straight to the CPU/CUDA impl.
+def _make_autocast_first_arg(custom_op, device_type: str):
+    def _impl(inp, *rest):
+        cast_dtype = torch.get_autocast_dtype(device_type)
+        with torch.amp.autocast(device_type=device_type, enabled=False):
+            return custom_op(inp.to(cast_dtype), *rest)
+    return _impl
+
+
+if optimized_kernels_is_available():
+    _DISCO_DENSE_AUTOCAST_OPS = (
+        ("disco_kernels::_disco_s2_contraction_optimized_dense",
+         _disco_s2_contraction_optimized_dense),
+        ("disco_kernels::_disco_s2_transpose_contraction_optimized_dense",
+         _disco_s2_transpose_contraction_optimized_dense),
+    )
+    for _qualname, _custom_op in _DISCO_DENSE_AUTOCAST_OPS:
+        for _device_type, _key in (("cuda", "AutocastCUDA"), ("cpu", "AutocastCPU")):
+            torch.library.impl(_qualname, _key)(
+                _make_autocast_first_arg(_custom_op, _device_type)
+            )

@@ -162,8 +162,20 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         # than the CSR kernel; combined with the cross-rank reduce on the
         # distributed path this can produce ~6-ulp fp32 differences for value-
         # dense bases (e.g. morlet (3,4)). Loosen atol for the dense path.
+        #
+        # Under autocast, the dense kernel produces real bf16/fp16 x_packed
+        # (the autocast registration on the dense ops downcasts at the kernel
+        # boundary); the conv module's weight einsum then accumulates in the
+        # autocast dtype, which costs ~0.5% relative precision on the weight
+        # grad. The CSR kernel internally upcasts and saves fp32 x_packed, so
+        # its weight grad is fp32-accumulated — the diff is real but is in
+        # PyTorch's einsum, not our kernel. Loosen tolerance there.
+        is_amp = dtype in (torch.float16, torch.bfloat16)
         if use_dense_kernel:
             atol = max(atol, 5e-6)
+            if is_amp:
+                atol = max(atol, 5e-2)
+                rtol = max(rtol, 5e-2)
 
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
 

@@ -29,23 +29,25 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // =====================================================================================
-// Disco forward — dense-packed psi (CUDA, shmem-staged)
+// Disco forward — dense-packed psi (CUDA, shmem-staged, channel-tiled)
 // =====================================================================================
 //
-// Consumes the (K, Ho, NBR_PAD)-packed psi produced by pack_psi_dense and computes
+// Same kernel as before but each CTA now owns a tile of BC_TILE channels for fixed
+// (k, ho). The shmem holds BC_TILE input lat rows side-by-side so each nz iteration
+// fans out BC_TILE accumulator updates from a single val read. Reuse goes from
+// 1 FMA per (val, inp) load to BC_TILE FMAs.
 //
-//   out[b, c, k, ho, wo] = sum_{nz=0..count[k,ho]} val[k,ho,nz]
-//                                     * inp[b, c, hi[nz], (wi_base[nz] + pscale*wo) mod Wi]
+// Grid layout: (K * Ho, BC / BC_TILE).
+// Per-thread state: BC_TILE * ELXTH register accumulators (in COMPUTE_T).
+// Shmem: BC_TILE rows of (2*Wi + slack) entries, in STORAGE_T — see launcher comment.
 //
-// with pscale = Wi / Wo. Padded slots (nz >= count[k,ho]) are skipped via the cnt
-// bound and also have val == 0 by construction.
+// STORAGE_T is the on-disk type of inp/out (fp32/fp16/bf16/fp64). COMPUTE_T is the
+// promoted op-math type (fp32 for fp16/bf16, otherwise same as STORAGE_T) — used
+// for the accumulators and the val reads. The kernel reads inp from shmem in
+// STORAGE_T and casts to COMPUTE_T at the FMA, and casts back to STORAGE_T on
+// the final write.
 //
-// Parallelization: one CTA per (BC, k*Ho); each thread owns ELXTH wo positions held
-// in registers, with BDIM_X * ELXTH >= Wo. The input lat row is staged in shmem
-// (duplicated 2x for wrap-free indexing, mirroring the CSR fwd kernel) so each nz
-// reads from shmem rather than gmem. The shmem is reloaded only when the nz's hi
-// changes — same-hi entries are contiguous in the packed psi (it inherits the
-// col-sorted ordering from preprocess_psi).
+// BC_TILE=1 reduces to the previous shmem-staged kernel.
 // =====================================================================================
 
 #include "../disco.h"
@@ -56,73 +58,80 @@
 
 namespace disco_kernels {
 
-template <int BDIM_X, int ELXTH, typename T>
+template <int BDIM_X, int ELXTH, int BC_TILE, typename STORAGE_T, typename COMPUTE_T>
 __device__ void disco_fwd_dense_d(int Hi, int Wi, int K, int Ho, int Wo, int NBR_PAD, int pscale,
-                                  const int64_t *__restrict__ pack_idx,
-                                  const T       *__restrict__ pack_val,
-                                  const int64_t *__restrict__ pack_count,
-                                  const T       *__restrict__ inp,
-                                  T             *__restrict__ out)
+                                  int sh_stride,
+                                  const int64_t   *__restrict__ pack_idx,
+                                  const COMPUTE_T *__restrict__ pack_val,
+                                  const int64_t   *__restrict__ pack_count,
+                                  const STORAGE_T *__restrict__ inp,
+                                  STORAGE_T       *__restrict__ out)
 {
     const int tid = threadIdx.x;
-    const int bc  = blockIdx.y;          // b * C + c
-    const int kh  = blockIdx.x;          // k * Ho + ho
+    const int bc_tile_idx = blockIdx.y;        // 0 .. (BC / BC_TILE) - 1
+    const int bc_start    = bc_tile_idx * BC_TILE;
+    const int kh  = blockIdx.x;                // k * Ho + ho
     const int k   = kh / Ho;
     const int ho  = kh - k * Ho;
 
     const int64_t kh_off = (int64_t)k * Ho + ho;
-    const int64_t *idx_kh = pack_idx + kh_off * NBR_PAD * 2;
-    const T       *val_kh = pack_val + kh_off * NBR_PAD;
-    const int      cnt    = (int)pack_count[kh_off];
+    const int64_t   *idx_kh = pack_idx + kh_off * NBR_PAD * 2;
+    const COMPUTE_T *val_kh = pack_val + kh_off * NBR_PAD;
+    const int        cnt    = (int)pack_count[kh_off];
 
-    // out[b, c, k, ho, :]
-    T *out_kh = out + ((int64_t)bc * K + k) * Ho * Wo + (int64_t)ho * Wo;
-
-    // Empty (k, ho) row (can occur in the distributed case after the lat split).
-    // The output is allocated with torch::zeros, so leaving these cells untouched
-    // is correct. Early return saves the shmem prelude.
+    // Empty (k, ho) row — output is zero-initialized so leave untouched.
     if (cnt == 0) return;
 
-    const T *inp_bc = inp + (int64_t)bc * Hi * Wi;
-
-    // Shmem holds one input lat row, duplicated 2x:
-    //   inp_sh[0..Wi-1]      = inp_bc[hi, 0..Wi-1]
-    //   inp_sh[Wi..2*Wi-1]   = inp_bc[hi, 0..Wi-1]
-    // Then wi_full = wi_base + pscale*pp ∈ [0, 2*Wi) is a direct shmem index without
-    // any modulo (same trick as the CSR fwd kernel).
+    // Shmem layout: BC_TILE rows of length sh_stride = 2*Wi + slack. The slack
+    // covers the over-shoot when (BDIM_X*ELXTH) > Wo (the inner loop reads
+    // wi_full = wi_base + pscale*pp where pp can run past Wo, the result is
+    // discarded at write-time but the shmem read still happens).
     extern __shared__ __align__(sizeof(double)) unsigned char inp_sh_raw[];
-    T *inp_sh = reinterpret_cast<T *>(inp_sh_raw);
+    STORAGE_T *inp_sh = reinterpret_cast<STORAGE_T *>(inp_sh_raw);
 
-    // Per-thread accumulators (registers); pp = i * BDIM_X + tid covers wo positions.
-    T acc[ELXTH];
+    // Per-thread accumulators in COMPUTE_T: BC_TILE × ELXTH.
+    COMPUTE_T acc[BC_TILE][ELXTH];
     #pragma unroll
-    for (int i = 0; i < ELXTH; i++) { acc[i] = static_cast<T>(0); }
+    for (int bc_off = 0; bc_off < BC_TILE; bc_off++) {
+        #pragma unroll
+        for (int i = 0; i < ELXTH; i++) {
+            acc[bc_off][i] = static_cast<COMPUTE_T>(0);
+        }
+    }
 
-    // Initial load: row of the first nz.
+    // Initial load: BC_TILE rows of inp into shmem (duplicated 2x for wrap).
     int hi_prev = (int)idx_kh[0];
-    for (int i = tid; i < Wi; i += BDIM_X) {
-        const T v = inp_bc[(int64_t)hi_prev * Wi + i];
-        inp_sh[i]      = v;
-        inp_sh[Wi + i] = v;
+    #pragma unroll
+    for (int bc_off = 0; bc_off < BC_TILE; bc_off++) {
+        const STORAGE_T *inp_row = inp + (int64_t)(bc_start + bc_off) * Hi * Wi
+                                       + (int64_t)hi_prev * Wi;
+        STORAGE_T *sh_row = inp_sh + bc_off * sh_stride;
+        for (int i = tid; i < Wi; i += BDIM_X) {
+            const STORAGE_T v = inp_row[i];
+            sh_row[i]      = v;
+            sh_row[Wi + i] = v;
+        }
     }
     __syncthreads();
 
     for (int nz = 0; nz < cnt; nz++) {
-        const int hi      = (int)idx_kh[nz * 2 + 0];
-        const int wi_base = (int)idx_kh[nz * 2 + 1];
-        const T   v       = val_kh[nz];
+        const int       hi      = (int)idx_kh[nz * 2 + 0];
+        const int       wi_base = (int)idx_kh[nz * 2 + 1];
+        const COMPUTE_T v       = val_kh[nz];
 
-        // Reload shmem on hi transition. Packed psi inherits col-sorted ordering
-        // from preprocess_psi (cols are non-decreasing within a (k, ho) row), so
-        // same-hi entries are contiguous and a transition fires at most once per
-        // distinct hi.
         if (hi != hi_prev) {
             __syncthreads();
             hi_prev = hi;
-            for (int i = tid; i < Wi; i += BDIM_X) {
-                const T vv = inp_bc[(int64_t)hi * Wi + i];
-                inp_sh[i]      = vv;
-                inp_sh[Wi + i] = vv;
+            #pragma unroll
+            for (int bc_off = 0; bc_off < BC_TILE; bc_off++) {
+                const STORAGE_T *inp_row = inp + (int64_t)(bc_start + bc_off) * Hi * Wi
+                                               + (int64_t)hi * Wi;
+                STORAGE_T *sh_row = inp_sh + bc_off * sh_stride;
+                for (int i = tid; i < Wi; i += BDIM_X) {
+                    const STORAGE_T vv = inp_row[i];
+                    sh_row[i]      = vv;
+                    sh_row[Wi + i] = vv;
+                }
             }
             __syncthreads();
         }
@@ -130,67 +139,114 @@ __device__ void disco_fwd_dense_d(int Hi, int Wi, int K, int Ho, int Wo, int NBR
         #pragma unroll
         for (int i = 0; i < ELXTH; i++) {
             const int pp = i * BDIM_X + tid;
-            // Bound: wi_base < Wi and pscale*pp = (Wi/Wo)*pp.
-            // For pp < Wo we have pscale*pp < Wi, so wi_full < 2*Wi → safe shmem index.
-            // For pp >= Wo the index is out of range, but we'll discard these accs
-            // at write-time. We still need to keep the read in-bounds: NTH*ELXTH may
-            // exceed Wo so pp can be > Wo, hence pscale*pp can be >= Wi. The
-            // duplicated 2*Wi window covers up to pp = 2*Wo - 1 = 2*Wi/pscale - 1,
-            // i.e. pscale*pp < 2*Wi. NTH*ELXTH is constrained by the launch dispatch
-            // so this holds.
             const int wi_full = wi_base + pscale * pp;
-            acc[i] += v * inp_sh[wi_full];
+            #pragma unroll
+            for (int bc_off = 0; bc_off < BC_TILE; bc_off++) {
+                const STORAGE_T *sh_row = inp_sh + bc_off * sh_stride;
+                const COMPUTE_T sh_val = static_cast<COMPUTE_T>(sh_row[wi_full]);
+                acc[bc_off][i] += v * sh_val;
+            }
         }
     }
 
-    // Write results. Drop the wo positions outside [0, Wo).
+    // Write results: BC_TILE channels × ELXTH wo positions per thread.
     #pragma unroll
-    for (int i = 0; i < ELXTH; i++) {
-        const int pp = i * BDIM_X + tid;
-        if (pp < Wo) { out_kh[pp] = acc[i]; }
+    for (int bc_off = 0; bc_off < BC_TILE; bc_off++) {
+        STORAGE_T *out_kh = out + ((int64_t)(bc_start + bc_off) * K + k) * Ho * Wo
+                                + (int64_t)ho * Wo;
+        #pragma unroll
+        for (int i = 0; i < ELXTH; i++) {
+            const int pp = i * BDIM_X + tid;
+            if (pp < Wo) { out_kh[pp] = static_cast<STORAGE_T>(acc[bc_off][i]); }
+        }
     }
 }
 
-template <int BDIM_X, int ELXTH, typename T>
+template <int BDIM_X, int ELXTH, int BC_TILE, typename STORAGE_T, typename COMPUTE_T>
 __global__ __launch_bounds__(BDIM_X)
 void disco_fwd_dense_blk_k(int Hi, int Wi, int K, int Ho, int Wo, int NBR_PAD, int pscale,
-                           const int64_t *__restrict__ pack_idx,
-                           const T       *__restrict__ pack_val,
-                           const int64_t *__restrict__ pack_count,
-                           const T       *__restrict__ inp,
-                           T             *__restrict__ out)
+                           int sh_stride,
+                           const int64_t   *__restrict__ pack_idx,
+                           const COMPUTE_T *__restrict__ pack_val,
+                           const int64_t   *__restrict__ pack_count,
+                           const STORAGE_T *__restrict__ inp,
+                           STORAGE_T       *__restrict__ out)
 {
-    disco_fwd_dense_d<BDIM_X, ELXTH, T>(Hi, Wi, K, Ho, Wo, NBR_PAD, pscale,
-                                        pack_idx, pack_val, pack_count, inp, out);
+    disco_fwd_dense_d<BDIM_X, ELXTH, BC_TILE, STORAGE_T, COMPUTE_T>(
+        Hi, Wi, K, Ho, Wo, NBR_PAD, pscale, sh_stride,
+        pack_idx, pack_val, pack_count, inp, out);
 }
 
-template <int NTH, int ELXTH, typename T>
+template <int NTH, int ELXTH, int BC_TILE, typename STORAGE_T, typename COMPUTE_T>
 static void launch_dense_fwd(int B, int C, int K, int Hi, int Wi, int Ho, int Wo,
                              int NBR_PAD, int pscale,
-                             const int64_t *pack_idx, const T *pack_val,
-                             const int64_t *pack_count, const T *inp, T *out,
+                             const int64_t *pack_idx, const COMPUTE_T *pack_val,
+                             const int64_t *pack_count, const STORAGE_T *inp, STORAGE_T *out,
                              cudaStream_t stream)
 {
     if constexpr (ELXTH <= ELXTH_MAX) {
         if (NTH * ELXTH >= Wo) {
-            dim3 grid((unsigned)(K * Ho), (unsigned)(B * C));
-            // The kernel reads inp_sh[wi_full] for all pp in [0, NTH*ELXTH) without
-            // gating on pp < Wo (we discard the corresponding acc[i] at write-time
-            // instead). Max wi_full = (Wi-1) + pscale*(NTH*ELXTH-1), so the shmem
-            // window must extend past 2*Wi by pscale*(NTH*ELXTH-Wo) bytes of slack.
-            // The slack stays uninitialized — its contents feed acc[i] for pp>=Wo
-            // and are discarded. Same trick the CSR fwd kernel uses.
-            const size_t shmem = sizeof(T) * (size_t)(2 * Wi + pscale * (NTH * ELXTH - Wo));
-            disco_fwd_dense_blk_k<NTH, ELXTH, T><<<grid, NTH, shmem, stream>>>(
-                Hi, Wi, K, Ho, Wo, NBR_PAD, pscale,
+            const int BC = B * C;
+            // sh_stride per channel row: 2*Wi covers the duplicated row, plus
+            // pscale * (NTH*ELXTH - Wo) of slack for the out-of-range pp values.
+            const int sh_stride = 2 * Wi + pscale * (NTH * ELXTH - Wo);
+            const size_t shmem  = sizeof(STORAGE_T) * (size_t)(BC_TILE * sh_stride);
+
+            // For BC_TILE > 1 (or large Wi) the shmem exceeds V100's default
+            // 48KB carveout; opt in to the device max once.
+            using Kernel = void(*)(int, int, int, int, int, int, int, int,
+                                   const int64_t *, const COMPUTE_T *, const int64_t *,
+                                   const STORAGE_T *, STORAGE_T *);
+            Kernel fn = &disco_fwd_dense_blk_k<NTH, ELXTH, BC_TILE, STORAGE_T, COMPUTE_T>;
+            cudaFuncSetAttribute(reinterpret_cast<const void *>(fn),
+                                 cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                 (int)shmem);
+
+            dim3 grid((unsigned)(K * Ho), (unsigned)(BC / BC_TILE));
+            disco_fwd_dense_blk_k<NTH, ELXTH, BC_TILE, STORAGE_T, COMPUTE_T><<<grid, NTH, shmem, stream>>>(
+                Hi, Wi, K, Ho, Wo, NBR_PAD, pscale, sh_stride,
                 pack_idx, pack_val, pack_count, inp, out);
         } else {
-            launch_dense_fwd<NTH, ELXTH + 1, T>(
+            launch_dense_fwd<NTH, ELXTH + 1, BC_TILE, STORAGE_T, COMPUTE_T>(
                 B, C, K, Hi, Wi, Ho, Wo, NBR_PAD, pscale,
                 pack_idx, pack_val, pack_count, inp, out, stream);
         }
     }
     return;
+}
+
+template <int BC_TILE, typename STORAGE_T, typename COMPUTE_T>
+static void dispatch_dense_fwd_by_wo(int B, int C, int K, int Hi, int Wi, int Ho, int Wo,
+                                     int NBR_PAD, int pscale,
+                                     const int64_t *pack_idx, const COMPUTE_T *pack_val,
+                                     const int64_t *pack_count, const STORAGE_T *inp, STORAGE_T *out,
+                                     cudaStream_t stream)
+{
+    if (Wo <= 64 * ELXTH_MAX) {
+        launch_dense_fwd<64, 1, BC_TILE, STORAGE_T, COMPUTE_T>(
+            B, C, K, Hi, Wi, Ho, Wo, NBR_PAD, pscale,
+            pack_idx, pack_val, pack_count, inp, out, stream);
+    } else if (Wo <= 128 * ELXTH_MAX) {
+        launch_dense_fwd<128, (ELXTH_MAX / 2) + 1, BC_TILE, STORAGE_T, COMPUTE_T>(
+            B, C, K, Hi, Wi, Ho, Wo, NBR_PAD, pscale,
+            pack_idx, pack_val, pack_count, inp, out, stream);
+    } else if (Wo <= 256 * ELXTH_MAX) {
+        launch_dense_fwd<256, (ELXTH_MAX / 2) + 1, BC_TILE, STORAGE_T, COMPUTE_T>(
+            B, C, K, Hi, Wi, Ho, Wo, NBR_PAD, pscale,
+            pack_idx, pack_val, pack_count, inp, out, stream);
+    } else if (Wo <= 512 * ELXTH_MAX) {
+        launch_dense_fwd<512, (ELXTH_MAX / 2) + 1, BC_TILE, STORAGE_T, COMPUTE_T>(
+            B, C, K, Hi, Wi, Ho, Wo, NBR_PAD, pscale,
+            pack_idx, pack_val, pack_count, inp, out, stream);
+    } else if (Wo <= 1024 * ELXTH_MAX) {
+        launch_dense_fwd<1024, (ELXTH_MAX / 2) + 1, BC_TILE, STORAGE_T, COMPUTE_T>(
+            B, C, K, Hi, Wi, Ho, Wo, NBR_PAD, pscale,
+            pack_idx, pack_val, pack_count, inp, out, stream);
+    } else {
+        fprintf(stderr, "%s:%d: error, unsupported Wo value (%d), max supported is %d\n",
+                __FILE__, __LINE__, Wo, 1024 * ELXTH_MAX);
+        exit(EXIT_FAILURE);
+    }
 }
 
 torch::Tensor disco_cuda_fwd_dense(torch::Tensor inp,
@@ -222,8 +278,6 @@ torch::Tensor disco_cuda_fwd_dense(torch::Tensor inp,
     const int64_t NBR_PAD = pack_idx.size(2);
     const int     pscale  = (int)(Wi / Wo);
 
-    // Output is zero-initialized: empty (k, ho) rows from the distributed lat split
-    // are then represented correctly without the kernel having to touch them.
     auto options = torch::TensorOptions().device(inp.device()).dtype(inp.dtype());
     auto out = torch::zeros({B, C, K, Ho, Wo}, options);
 
@@ -231,66 +285,41 @@ torch::Tensor disco_cuda_fwd_dense(torch::Tensor inp,
 
     static_assert(0 == (ELXTH_MAX % 2));
 
-    if (Wo <= 64 * ELXTH_MAX) {
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_fwd_dense_cuda", ([&] {
-            launch_dense_fwd<64, 1, scalar_t>(
+    // Channel-tile dispatch: BC_TILE = 4 when (B*C) is divisible by 4, else 1.
+    // BC_TILE > 1 amortizes each val read across BC_TILE channels.
+    const int64_t BC = B * C;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+        at::ScalarType::Half, at::ScalarType::BFloat16,
+        inp.scalar_type(), "disco_fwd_dense_cuda", ([&] {
+        using storage_t = scalar_t;
+        using compute_t = at::opmath_type<storage_t>;
+        const auto compute_dtype = c10::CppTypeToScalarType<compute_t>::value;
+        // pack_val lives in compute_t — upcast on the fly if the buffer was
+        // registered in a different dtype (e.g. fp32 buffer with fp16 storage_t).
+        auto pack_val_c = (pack_val.scalar_type() == compute_dtype)
+                              ? pack_val
+                              : pack_val.to(compute_dtype);
+        if (BC % 4 == 0) {
+            dispatch_dense_fwd_by_wo<4, storage_t, compute_t>(
                 (int)B, (int)C, (int)K, (int)Hi, (int)Wi, (int)Ho, (int)Wo,
                 (int)NBR_PAD, pscale,
                 pack_idx.data_ptr<int64_t>(),
-                pack_val.data_ptr<scalar_t>(),
+                pack_val_c.data_ptr<compute_t>(),
                 pack_count.data_ptr<int64_t>(),
-                inp.data_ptr<scalar_t>(),
-                out.data_ptr<scalar_t>(), stream);
-        }));
-    } else if (Wo <= 128 * ELXTH_MAX) {
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_fwd_dense_cuda", ([&] {
-            launch_dense_fwd<128, (ELXTH_MAX / 2) + 1, scalar_t>(
+                inp.data_ptr<storage_t>(),
+                out.data_ptr<storage_t>(), stream);
+        } else {
+            dispatch_dense_fwd_by_wo<1, storage_t, compute_t>(
                 (int)B, (int)C, (int)K, (int)Hi, (int)Wi, (int)Ho, (int)Wo,
                 (int)NBR_PAD, pscale,
                 pack_idx.data_ptr<int64_t>(),
-                pack_val.data_ptr<scalar_t>(),
+                pack_val_c.data_ptr<compute_t>(),
                 pack_count.data_ptr<int64_t>(),
-                inp.data_ptr<scalar_t>(),
-                out.data_ptr<scalar_t>(), stream);
-        }));
-    } else if (Wo <= 256 * ELXTH_MAX) {
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_fwd_dense_cuda", ([&] {
-            launch_dense_fwd<256, (ELXTH_MAX / 2) + 1, scalar_t>(
-                (int)B, (int)C, (int)K, (int)Hi, (int)Wi, (int)Ho, (int)Wo,
-                (int)NBR_PAD, pscale,
-                pack_idx.data_ptr<int64_t>(),
-                pack_val.data_ptr<scalar_t>(),
-                pack_count.data_ptr<int64_t>(),
-                inp.data_ptr<scalar_t>(),
-                out.data_ptr<scalar_t>(), stream);
-        }));
-    } else if (Wo <= 512 * ELXTH_MAX) {
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_fwd_dense_cuda", ([&] {
-            launch_dense_fwd<512, (ELXTH_MAX / 2) + 1, scalar_t>(
-                (int)B, (int)C, (int)K, (int)Hi, (int)Wi, (int)Ho, (int)Wo,
-                (int)NBR_PAD, pscale,
-                pack_idx.data_ptr<int64_t>(),
-                pack_val.data_ptr<scalar_t>(),
-                pack_count.data_ptr<int64_t>(),
-                inp.data_ptr<scalar_t>(),
-                out.data_ptr<scalar_t>(), stream);
-        }));
-    } else if (Wo <= 1024 * ELXTH_MAX) {
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_fwd_dense_cuda", ([&] {
-            launch_dense_fwd<1024, (ELXTH_MAX / 2) + 1, scalar_t>(
-                (int)B, (int)C, (int)K, (int)Hi, (int)Wi, (int)Ho, (int)Wo,
-                (int)NBR_PAD, pscale,
-                pack_idx.data_ptr<int64_t>(),
-                pack_val.data_ptr<scalar_t>(),
-                pack_count.data_ptr<int64_t>(),
-                inp.data_ptr<scalar_t>(),
-                out.data_ptr<scalar_t>(), stream);
-        }));
-    } else {
-        fprintf(stderr, "%s:%d: error, unsupported Wo value (%ld), max supported is %d\n",
-                __FILE__, __LINE__, Wo, 1024 * ELXTH_MAX);
-        exit(EXIT_FAILURE);
-    }
+                inp.data_ptr<storage_t>(),
+                out.data_ptr<storage_t>(), stream);
+        }
+    }));
 
     return out;
 }

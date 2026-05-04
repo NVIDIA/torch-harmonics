@@ -32,6 +32,15 @@
 
 namespace disco_kernels {
 
+    // Compute dtype for the CPU dense kernels: fp16/bf16 → fp32, otherwise the
+    // input dtype. Mirrors the policy in _disco_utils._compute_dtype.
+    static inline at::ScalarType _cpu_compute_dtype(at::ScalarType st) {
+        if (st == at::ScalarType::Half || st == at::ScalarType::BFloat16) {
+            return at::ScalarType::Float;
+        }
+        return st;
+    }
+
     torch::Tensor disco_cpu_fwd_dense(torch::Tensor inp, torch::Tensor pack_idx, torch::Tensor pack_val,
         torch::Tensor pack_count, int64_t K, int64_t Ho, int64_t Wo) {
 
@@ -55,21 +64,27 @@ namespace disco_kernels {
 
         const int64_t NBR_PAD = pack_idx.size(2);
 
-        // initialize output tensor
-        auto out = torch::zeros({inp.size(0), inp.size(1), K, Ho, Wo}, inp.options());
+        // CPU has no efficient bf16/fp16 path — upcast on host before the inner
+        // dispatch and cast back at the end.
+        const at::ScalarType in_dtype = inp.scalar_type();
+        const at::ScalarType cdtype   = _cpu_compute_dtype(in_dtype);
+        auto inp_c      = (in_dtype == cdtype) ? inp      : inp.to(cdtype);
+        auto pack_val_c = (pack_val.scalar_type() == cdtype) ? pack_val : pack_val.to(cdtype);
 
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_dense_cpu", ([&] {
+        auto out_c = torch::zeros({inp_c.size(0), inp_c.size(1), K, Ho, Wo}, inp_c.options());
+
+        AT_DISPATCH_FLOATING_TYPES(inp_c.scalar_type(), "disco_forward_dense_cpu", ([&] {
             disco_fwd_dense<scalar_t>(
-                inp.size(0), inp.size(1), K, inp.size(2), inp.size(3),
+                inp_c.size(0), inp_c.size(1), K, inp_c.size(2), inp_c.size(3),
                 Ho, Wo, NBR_PAD,
-                inp.packed_accessor64<scalar_t, 4>(),
+                inp_c.packed_accessor64<scalar_t, 4>(),
                 pack_idx.packed_accessor64<int64_t, 4>(),
-                pack_val.packed_accessor64<scalar_t, 3>(),
+                pack_val_c.packed_accessor64<scalar_t, 3>(),
                 pack_count.packed_accessor64<int64_t, 2>(),
-                out.packed_accessor64<scalar_t, 5>());
+                out_c.packed_accessor64<scalar_t, 5>());
         }));
 
-        return out;
+        return (in_dtype == cdtype) ? out_c : out_c.to(in_dtype);
     }
 
     torch::Tensor disco_cpu_bwd_dense(torch::Tensor inp, torch::Tensor pack_idx, torch::Tensor pack_val,
@@ -96,21 +111,27 @@ namespace disco_kernels {
 
         const int64_t NBR_PAD = pack_idx.size(2);
 
-        // initialize output tensor
-        auto out = torch::zeros({inp.size(0), inp.size(1), Ho, Wo}, inp.options());
+        // CPU has no efficient bf16/fp16 path — upcast on host before the inner
+        // dispatch and cast back at the end.
+        const at::ScalarType in_dtype = inp.scalar_type();
+        const at::ScalarType cdtype   = _cpu_compute_dtype(in_dtype);
+        auto inp_c      = (in_dtype == cdtype) ? inp      : inp.to(cdtype);
+        auto pack_val_c = (pack_val.scalar_type() == cdtype) ? pack_val : pack_val.to(cdtype);
 
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_dense_cpu", ([&] {
+        auto out_c = torch::zeros({inp_c.size(0), inp_c.size(1), Ho, Wo}, inp_c.options());
+
+        AT_DISPATCH_FLOATING_TYPES(inp_c.scalar_type(), "disco_backward_dense_cpu", ([&] {
             disco_bwd_dense<scalar_t>(
-                inp.size(0), inp.size(1), K, inp.size(3), inp.size(4),
+                inp_c.size(0), inp_c.size(1), K, inp_c.size(3), inp_c.size(4),
                 Ho, Wo, NBR_PAD,
-                inp.packed_accessor64<scalar_t, 5>(),
+                inp_c.packed_accessor64<scalar_t, 5>(),
                 pack_idx.packed_accessor64<int64_t, 4>(),
-                pack_val.packed_accessor64<scalar_t, 3>(),
+                pack_val_c.packed_accessor64<scalar_t, 3>(),
                 pack_count.packed_accessor64<int64_t, 2>(),
-                out.packed_accessor64<scalar_t, 4>());
+                out_c.packed_accessor64<scalar_t, 4>());
         }));
 
-        return out;
+        return (in_dtype == cdtype) ? out_c : out_c.to(in_dtype);
     }
 
     TORCH_LIBRARY_IMPL(disco_kernels, CPU, m)
