@@ -32,22 +32,17 @@
 // Disco forward — dense-packed psi (CUDA, shmem-staged, channel-tiled)
 // =====================================================================================
 //
-// Same kernel as before but each CTA now owns a tile of BC_TILE channels for fixed
-// (k, ho). The shmem holds BC_TILE input lat rows side-by-side so each nz iteration
-// fans out BC_TILE accumulator updates from a single val read. Reuse goes from
-// 1 FMA per (val, inp) load to BC_TILE FMAs.
+// Each CTA owns a tile of BC_TILE channels for fixed (k, ho). The shmem holds
+// BC_TILE input lat rows so each nz iteration fans out BC_TILE accumulator
+// updates from a single val read.
 //
-// Grid layout: (K * Ho, BC / BC_TILE).
-// Per-thread state: BC_TILE * ELXTH register accumulators (in COMPUTE_T).
-// Shmem: BC_TILE rows of (2*Wi + slack) entries, in STORAGE_T — see launcher comment.
+// STORAGE_T is the on-disk type of inp/out (fp32/fp16/bf16/fp64). COMPUTE_T is
+// the promoted op-math type (fp32 for fp16/bf16, otherwise same as STORAGE_T)
+// — used for the accumulators and the val reads. The kernel reads inp from
+// shmem in STORAGE_T and casts to COMPUTE_T at the FMA, and casts back to
+// STORAGE_T on the final write.
 //
-// STORAGE_T is the on-disk type of inp/out (fp32/fp16/bf16/fp64). COMPUTE_T is the
-// promoted op-math type (fp32 for fp16/bf16, otherwise same as STORAGE_T) — used
-// for the accumulators and the val reads. The kernel reads inp from shmem in
-// STORAGE_T and casts to COMPUTE_T at the FMA, and casts back to STORAGE_T on
-// the final write.
-//
-// BC_TILE=1 reduces to the previous shmem-staged kernel.
+// BC_TILE=1 is the current default. BC_TILE>1 is still compiled.
 // =====================================================================================
 
 #include "../disco.h"
@@ -222,24 +217,33 @@ static void dispatch_dense_fwd_by_wo(int B, int C, int K, int Hi, int Wi, int Ho
                                      const int64_t *pack_count, const STORAGE_T *inp, STORAGE_T *out,
                                      cudaStream_t stream)
 {
-    if (Wo <= 64 * ELXTH_MAX) {
+    // Dispatch by Wo. Threshold at NTH * (ELXTH_MAX/2) instead of NTH * ELXTH_MAX
+    // routes moderate Wo (e.g. 1440) to the next-larger BDIM_X with a smaller
+    // per-thread ELXTH — that lowers per-thread accumulator register pressure
+    // (acc[BC_TILE][ELXTH] fp32) and avoids the local-memory spill that ncu
+    // flagged at ELXTH=23 (49% est. speedup). All branches start ELXTH=1 so
+    // the recursion picks the smallest valid ELXTH.
+    constexpr int ELXTH_TARGET = ELXTH_MAX / 2;   // target max ELXTH per branch
+    if (Wo <= 64 * ELXTH_TARGET) {
         launch_dense_fwd<64, 1, BC_TILE, STORAGE_T, COMPUTE_T>(
             B, C, K, Hi, Wi, Ho, Wo, NBR_PAD, pscale,
             pack_idx, pack_val, pack_count, inp, out, stream);
-    } else if (Wo <= 128 * ELXTH_MAX) {
-        launch_dense_fwd<128, (ELXTH_MAX / 2) + 1, BC_TILE, STORAGE_T, COMPUTE_T>(
+    } else if (Wo <= 128 * ELXTH_TARGET) {
+        launch_dense_fwd<128, 1, BC_TILE, STORAGE_T, COMPUTE_T>(
             B, C, K, Hi, Wi, Ho, Wo, NBR_PAD, pscale,
             pack_idx, pack_val, pack_count, inp, out, stream);
-    } else if (Wo <= 256 * ELXTH_MAX) {
-        launch_dense_fwd<256, (ELXTH_MAX / 2) + 1, BC_TILE, STORAGE_T, COMPUTE_T>(
+    } else if (Wo <= 256 * ELXTH_TARGET) {
+        launch_dense_fwd<256, 1, BC_TILE, STORAGE_T, COMPUTE_T>(
             B, C, K, Hi, Wi, Ho, Wo, NBR_PAD, pscale,
             pack_idx, pack_val, pack_count, inp, out, stream);
-    } else if (Wo <= 512 * ELXTH_MAX) {
-        launch_dense_fwd<512, (ELXTH_MAX / 2) + 1, BC_TILE, STORAGE_T, COMPUTE_T>(
+    } else if (Wo <= 512 * ELXTH_TARGET) {
+        launch_dense_fwd<512, 1, BC_TILE, STORAGE_T, COMPUTE_T>(
             B, C, K, Hi, Wi, Ho, Wo, NBR_PAD, pscale,
             pack_idx, pack_val, pack_count, inp, out, stream);
     } else if (Wo <= 1024 * ELXTH_MAX) {
-        launch_dense_fwd<1024, (ELXTH_MAX / 2) + 1, BC_TILE, STORAGE_T, COMPUTE_T>(
+        // High end: keep the wider ELXTH range (start=1, max=ELXTH_MAX) to
+        // preserve the previous max Wo ceiling of 1024 * ELXTH_MAX.
+        launch_dense_fwd<1024, 1, BC_TILE, STORAGE_T, COMPUTE_T>(
             B, C, K, Hi, Wi, Ho, Wo, NBR_PAD, pscale,
             pack_idx, pack_val, pack_count, inp, out, stream);
     } else {
@@ -285,10 +289,11 @@ torch::Tensor disco_cuda_fwd_dense(torch::Tensor inp,
 
     static_assert(0 == (ELXTH_MAX % 2));
 
-    // Channel-tile dispatch: BC_TILE = 4 when (B*C) is divisible by 4, else 1.
-    // BC_TILE > 1 amortizes each val read across BC_TILE channels.
-    const int64_t BC = B * C;
-
+    // Channel-tile dispatch: hard-coded to BC_TILE=1 for now. BC_TILE=4 amortizes
+    // each val read across 4 channels in principle, but on V100/H100 it dropped
+    // CTAs/SM via shmem pressure (V100 96KB cap → 1 CTA/SM with BC_TILE=4 vs 6
+    // with BC_TILE=1). The BC_TILE=4 instantiations are kept compiled so flipping
+    // back is a one-liner.
     AT_DISPATCH_FLOATING_TYPES_AND2(
         at::ScalarType::Half, at::ScalarType::BFloat16,
         inp.scalar_type(), "disco_fwd_dense_cuda", ([&] {
@@ -300,25 +305,14 @@ torch::Tensor disco_cuda_fwd_dense(torch::Tensor inp,
         auto pack_val_c = (pack_val.scalar_type() == compute_dtype)
                               ? pack_val
                               : pack_val.to(compute_dtype);
-        if (BC % 4 == 0) {
-            dispatch_dense_fwd_by_wo<4, storage_t, compute_t>(
-                (int)B, (int)C, (int)K, (int)Hi, (int)Wi, (int)Ho, (int)Wo,
-                (int)NBR_PAD, pscale,
-                pack_idx.data_ptr<int64_t>(),
-                pack_val_c.data_ptr<compute_t>(),
-                pack_count.data_ptr<int64_t>(),
-                inp.data_ptr<storage_t>(),
-                out.data_ptr<storage_t>(), stream);
-        } else {
-            dispatch_dense_fwd_by_wo<1, storage_t, compute_t>(
-                (int)B, (int)C, (int)K, (int)Hi, (int)Wi, (int)Ho, (int)Wo,
-                (int)NBR_PAD, pscale,
-                pack_idx.data_ptr<int64_t>(),
-                pack_val_c.data_ptr<compute_t>(),
-                pack_count.data_ptr<int64_t>(),
-                inp.data_ptr<storage_t>(),
-                out.data_ptr<storage_t>(), stream);
-        }
+        dispatch_dense_fwd_by_wo<1, storage_t, compute_t>(
+            (int)B, (int)C, (int)K, (int)Hi, (int)Wi, (int)Ho, (int)Wo,
+            (int)NBR_PAD, pscale,
+            pack_idx.data_ptr<int64_t>(),
+            pack_val_c.data_ptr<compute_t>(),
+            pack_count.data_ptr<int64_t>(),
+            inp.data_ptr<storage_t>(),
+            out.data_ptr<storage_t>(), stream);
     }));
 
     return out;

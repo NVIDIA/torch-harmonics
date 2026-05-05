@@ -327,13 +327,10 @@ torch::Tensor disco_cuda_bwd_dense(torch::Tensor inp,
 
     static_assert(0 == (ELXTH_MAX % 2));
 
-    // Channel tiling: BC_TILE=4 when (B*C) divisible by 4 AND pscale=1 (the
-    // shmem footprint scales with pscale, so BC_TILE=4 with pscale>=2 can
-    // overshoot V100's 96KB max for high BDIM_X*ELXTH cases — fall back to
-    // BC_TILE=1 there).
-    const int64_t BC = B * C;
-    const int     pscale = (int)(Wo / Wi);
-    const bool    use_bc4 = (BC % 4 == 0) && (pscale == 1);
+    // Channel tiling: hard-coded to BC_TILE=1 (matches the fwd kernel default).
+    // BC_TILE=4 was a regression on V100/H100 due to shmem pressure dropping
+    // CTAs/SM. The BC_TILE=4 instantiations remain compiled so flipping back
+    // is a one-liner.
 
     torch::Tensor out_storage; // returned dinp in storage dtype
     AT_DISPATCH_FLOATING_TYPES_AND2(
@@ -354,23 +351,13 @@ torch::Tensor disco_cuda_bwd_dense(torch::Tensor inp,
                               ? pack_val
                               : pack_val.to(compute_dtype);
 
-        if (use_bc4) {
-            dispatch_dense_bwd_by_wo<4, storage_t, compute_t>(
-                (int)B, (int)C, (int)K, (int)Hi, (int)Wi, (int)Ho, (int)Wo, (int)NBR_PAD,
-                pack_idx.data_ptr<int64_t>(),
-                pack_val_c.data_ptr<compute_t>(),
-                pack_count.data_ptr<int64_t>(),
-                inp.data_ptr<storage_t>(),
-                out_compute.data_ptr<compute_t>(), stream);
-        } else {
-            dispatch_dense_bwd_by_wo<1, storage_t, compute_t>(
-                (int)B, (int)C, (int)K, (int)Hi, (int)Wi, (int)Ho, (int)Wo, (int)NBR_PAD,
-                pack_idx.data_ptr<int64_t>(),
-                pack_val_c.data_ptr<compute_t>(),
-                pack_count.data_ptr<int64_t>(),
-                inp.data_ptr<storage_t>(),
-                out_compute.data_ptr<compute_t>(), stream);
-        }
+        dispatch_dense_bwd_by_wo<1, storage_t, compute_t>(
+            (int)B, (int)C, (int)K, (int)Hi, (int)Wi, (int)Ho, (int)Wo, (int)NBR_PAD,
+            pack_idx.data_ptr<int64_t>(),
+            pack_val_c.data_ptr<compute_t>(),
+            pack_count.data_ptr<int64_t>(),
+            inp.data_ptr<storage_t>(),
+            out_compute.data_ptr<compute_t>(), stream);
 
         // Cast dinp back to storage dtype (no-op when storage_t == compute_t).
         if (compute_dtype == inp.scalar_type()) {
