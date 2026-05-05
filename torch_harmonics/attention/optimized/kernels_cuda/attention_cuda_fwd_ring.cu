@@ -223,13 +223,14 @@ void s2_attn_fwd_ring_step_special_vec_k(int nchan_in,         // no. of FLOATV_
     const int wo = ctaid - (h*nlon_out);   // LOCAL wo
     const int ho = row_idx[h];
 
-    kx += int64_t(batch)*nlat_halo*nlon_kx*nchan_in;
-    qy += int64_t(batch)*nlat_out*nlon_out*nchan_in + int64_t(ho)*nlon_out*nchan_in + int64_t(wo)*nchan_in;
+    kx += int64_t(batch)*nlat_halo*nlon_kx*nchan_in + tidx;
+    qy += int64_t(batch)*nlat_out*nlon_out*nchan_in + int64_t(ho)*nlon_out*nchan_in + int64_t(wo)*nchan_in + tidx;
+    /*
     if constexpr(CHIN_AS_OUT) {
         kx += tidx;
         qy += tidx;
     }
-
+    */
     vx += int64_t(batch)*nlat_halo*nlon_kx*nchan_out + tidx;
 
     const int64_t out_flat = int64_t(batch)*nlat_out*nlon_out + int64_t(ho)*nlon_out + wo;
@@ -243,7 +244,10 @@ void s2_attn_fwd_ring_step_special_vec_k(int nchan_in,         // no. of FLOATV_
     // Load current state from buffers
     float alpha_sum = alpha_sum_buf[0];
     float qdotk_max = qdotk_max_buf[0];
-
+#if 1
+    strided_op<BDIM_X,               NLOC    >(nchan_out, [&](int i) {       locy[i] = y_acc[i*BDIM_X]; });
+    strided_op<BDIM_X, CHIN_AS_OUT ? NLOC : 0>(nchan_in,  [&](int i) { shq[i*BDIM_X] =    qy[i*BDIM_X]; });
+#else
     #pragma unroll
     for(int i = 0; i < NLOC_M1; i++) {
         locy[i] = y_acc[i*BDIM_X];
@@ -267,7 +271,7 @@ void s2_attn_fwd_ring_step_special_vec_k(int nchan_in,         // no. of FLOATV_
             shq[chan] = qy[chan];
         }
     }
-
+#endif
     // `pscale` is the GLOBAL ratio nlon_in / nlon_out_global, passed by the caller.
     // Computing it here as `nlon_in / nlon_out` would be wrong because the kernel's
     // `nlon_out` is the LOCAL output width (nlon_out_local), not the global one.
@@ -304,7 +308,9 @@ void s2_attn_fwd_ring_step_special_vec_k(int nchan_in,         // no. of FLOATV_
         const FLOATV_T *_vx = vx + int64_t(hi_local)*nlon_kx*nchan_out + int64_t(wip_local)*nchan_out;
 
         FLOATV_T qdotkv = __vset<FLOATV_T>(0.f);
-
+#if 1
+        strided_op<BDIM_X, CHIN_AS_OUT ? NLOC : 0>(nchan_in,  [&](int i) { qdotkv = __vadd(qdotkv, __vmul(shq[i*BDIM_X], _kx[i*BDIM_X])); });
+#else
         if constexpr(CHIN_AS_OUT) {
             #pragma unroll
             for(int i = 0; i < NLOC_M1; i++) {
@@ -322,7 +328,7 @@ void s2_attn_fwd_ring_step_special_vec_k(int nchan_in,         // no. of FLOATV_
                 qdotkv = __vadd(qdotkv, __vmul(shq[chan], _kx[chan]));
             }
         }
-
+#endif
         float qdotk = __vred(qdotkv);
         if constexpr(BDIM_X == 32) { qdotk =          __warp_sum(qdotk); }
         else                       { qdotk = __block_sum<BDIM_X>(qdotk); }
@@ -332,7 +338,10 @@ void s2_attn_fwd_ring_step_special_vec_k(int nchan_in,         // no. of FLOATV_
         const float exp_save      = expf(qdotk_max - qdotk_max_tmp);
 
         alpha_sum = alpha + alpha_sum * exp_save;
-
+#if 1
+        strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) { locy[i] = __vadd(__vscale(exp_save, locy[i]),
+                                                                          __vscale(   alpha, _vx[i*BDIM_X])); });
+#else
         #pragma unroll
         for(int i = 0; i < NLOC_M1; i++) {
             locy[i] = __vadd(__vscale(exp_save, locy[i]),
@@ -342,7 +351,7 @@ void s2_attn_fwd_ring_step_special_vec_k(int nchan_in,         // no. of FLOATV_
             locy[NLOC_M1] = __vadd(__vscale(exp_save, locy[NLOC_M1]),
                                    __vscale(alpha, _vx[NLOC_M1*BDIM_X]));
         }
-
+#endif
         qdotk_max = qdotk_max_tmp;
     }
 
@@ -351,7 +360,9 @@ void s2_attn_fwd_ring_step_special_vec_k(int nchan_in,         // no. of FLOATV_
         alpha_sum_buf[0] = alpha_sum;
         qdotk_max_buf[0] = qdotk_max;
     }
-
+#if 1
+    strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) { y_acc[i*BDIM_X] = locy[i]; });
+#else
     #pragma unroll
     for(int i = 0; i < NLOC_M1; i++) {
         y_acc[i*BDIM_X] = locy[i];
@@ -359,7 +370,7 @@ void s2_attn_fwd_ring_step_special_vec_k(int nchan_in,         // no. of FLOATV_
     if (NLOC_M1*BDIM_X+tidx < nchan_out) {
         y_acc[NLOC_M1*BDIM_X] = locy[NLOC_M1];
     }
-
+#endif
     return;
 }
 

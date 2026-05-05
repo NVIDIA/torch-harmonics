@@ -46,6 +46,9 @@
 
 #define MAX_LOCAL_ARR_LEN (16)
 
+#define PASS2_MIN_WORK_PER_BLOCK (32)
+#define PASS2_ROW_LENGTH_THRES   (0.1f)
+
 // Ring-step backward variant for DistributedNeighborhoodAttentionS2. Two
 // passes per ring step:
 //   pass1: accumulate softmax statistics (alpha_sum, qdotk_max, integral)
@@ -57,6 +60,8 @@
 // _build_local_psi in distributed_attention.py).
 
 namespace attention_kernels {
+
+    void dump_csr_linear(const char *fname, int64_t pscale, int64_t nlon_in, int64_t lon_lo_kx, int nlon_kx, int64_t lat_halo_start, int nlat_halo, int64_t nrows, at::Tensor row_idx, at::Tensor row_off, at::Tensor col_idx);
 
 // Pass 1: accumulate softmax statistics across ring steps.
 // After all ring steps, finalize dqy in Python using the accumulated state.
@@ -200,34 +205,6 @@ void s2_attn_bwd_ring_step_pass1_generic_vec_k(
     }
 }
 
-template<int BDIM_X,
-         int NUM_IT,
-         typename FUNC_T>
-__device__ __forceinline__ void strided_op(int n, FUNC_T op) {
-
-    constexpr int USE_STATIC_UNROLL = (NUM_IT > 0);
-
-    const int tidx = threadIdx.x;
-
-    if constexpr(USE_STATIC_UNROLL) {
-        constexpr int NUM_IT_M1 = NUM_IT-1;
-
-        #pragma unroll
-        for(int i = 0; i < NUM_IT_M1; i++) {
-            op(i);
-        }
-        if (NUM_IT_M1*BDIM_X+tidx < n) {
-            op(NUM_IT_M1);
-        }
-    } else {
-        // Fallback dynamic loop
-        for(int i = 0; i*BDIM_X+tidx < n; i++) {
-            op(i);
-        }
-    }
-    return;
-}
-
 // Pass 1: accumulate softmax statistics across ring steps.
 // After all ring steps, finalize dqy in Python using the accumulated state.
 //
@@ -281,20 +258,12 @@ void s2_attn_bwd_ring_step_pass1_special_vec_k(int nchan_in,
     extern __shared__ __align__(sizeof(float4)) float shext[];
 
     // sh_alpha_k[nchan_in], sh_alpha_kvw[nchan_in], sh_dy[nchan_out]
-#if 1
     FLOATV_T loc_k__[NLOC];
     FLOATV_T loc_kvw[NLOC];
 
-    FLOATV_T *sh_dy = reinterpret_cast<FLOATV_T *>(shext) + threadIdx.y*(nchan_in+nchan_out);
-    FLOATV_T *sh_qy = sh_dy + nchan_out + tidx; // [nchan_in], so always offest by tidx
-//    if constexpr(CHOUT_AS_IN) {
-        sh_dy += tidx;
-//    }
-#else
-    FLOATV_T *sh_alpha_k   = reinterpret_cast<FLOATV_T *>(shext) + threadIdx.y * (2*nchan_in + nchan_out);
-    FLOATV_T *sh_alpha_kvw = sh_alpha_k   + nchan_in;
-    FLOATV_T *sh_dy        = sh_alpha_kvw + nchan_in;
-#endif
+    FLOATV_T *sh_dy = reinterpret_cast<FLOATV_T *>(shext) + threadIdx.y*(nchan_in+nchan_out) + tidx;
+    FLOATV_T *sh_qy = sh_dy + nchan_out; // [nchan_in], so always offest by tidx
+
     const int h     = ctaid / nlon_out;
     const int wo    = ctaid - (h * nlon_out);
     const int ho    = row_idx[h];
@@ -302,12 +271,8 @@ void s2_attn_bwd_ring_step_pass1_special_vec_k(int nchan_in,
     kx += int64_t(batch)*nlat_halo*nlon_kx*nchan_in + tidx;
     qy += int64_t(batch)*nlat_out*nlon_out*nchan_in  + int64_t(ho)*nlon_out*nchan_in  + int64_t(wo)*nchan_in + tidx;
 
-    vx += int64_t(batch)*nlat_halo*nlon_kx*nchan_out;
-    dy += int64_t(batch)*nlat_out*nlon_out*nchan_out + int64_t(ho)*nlon_out*nchan_out + int64_t(wo)*nchan_out;
-//    if constexpr(CHOUT_AS_IN) {
-        vx += tidx;
-        dy += tidx;
-//    }
+    vx += int64_t(batch)*nlat_halo*nlon_kx*nchan_out + tidx;
+    dy += int64_t(batch)*nlat_out*nlon_out*nchan_out + int64_t(ho)*nlon_out*nchan_out + int64_t(wo)*nchan_out + tidx;
 
     const int64_t out_flat = int64_t(batch)*nlat_out*nlon_out + int64_t(ho)*nlon_out + wo;
 
@@ -322,64 +287,11 @@ void s2_attn_bwd_ring_step_pass1_special_vec_k(int nchan_in,
     float qdotk_max = qdotk_max_buf[0];
     float integral  = integral_buf[0];
 
-#if 1
-   
-#if 0
-    #pragma unroll
-    for(int i = 0; i < NLOC_M1; i++) {
-        loc_k__[i] =   alpha_k_buf[i*BDIM_X];
-        loc_kvw[i] = alpha_kvw_buf[i*BDIM_X];
-    }
-    if (NLOC_M1*BDIM_X+tidx < nchan_in) {
-        loc_k__[NLOC_M1] =   alpha_k_buf[NLOC_M1*BDIM_X];
-        loc_kvw[NLOC_M1] = alpha_kvw_buf[NLOC_M1*BDIM_X];
-    }
-    
-    #pragma unroll
-    for(int i = 0; i < NLOC_M1; i++) {
-        sh_qy[i*BDIM_X] = qy[i*BDIM_X];
-    }
-    if (NLOC_M1*BDIM_X+tidx < nchan_in) {
-        sh_qy[NLOC_M1*BDIM_X] = qy[NLOC_M1*BDIM_X];
-    }
-
-    if (CHOUT_AS_IN) {
-        #pragma unroll
-        for(int i = 0; i < NLOC_M1; i++) {
-            sh_dy[i*BDIM_X] = dy[i*BDIM_X];
-        }
-        if (NLOC_M1*BDIM_X+tidx < nchan_out) {
-            sh_dy[NLOC_M1*BDIM_X] = dy[NLOC_M1*BDIM_X];
-        }
-    } else {
-        for(int chan = tidx; chan < nchan_out; chan += BDIM_X) {
-            sh_dy[chan] = dy[chan];
-        }
-    }
-#else
     strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { loc_k__[i] =   alpha_k_buf[i*BDIM_X]; });
     strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { loc_kvw[i] = alpha_kvw_buf[i*BDIM_X]; });
 
     strided_op<BDIM_X,               NLOC    >(nchan_in,  [&](int i) { sh_qy[i*BDIM_X] = qy[i*BDIM_X]; });
     strided_op<BDIM_X, CHOUT_AS_IN ? NLOC : 0>(nchan_out, [&](int i) { sh_dy[i*BDIM_X] = dy[i*BDIM_X]; });
-#endif
-
-
-#else
-    for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
-        sh_alpha_k[chan]   = alpha_k_buf[chan];
-        sh_alpha_kvw[chan] = alpha_kvw_buf[chan];
-    }
-    for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
-        sh_dy[chan] = dy[chan];
-    }
-#endif
-
-#if 0
-#if __CUDA_ARCH__ < 900    /////////////////////////////////////////////////////////////// THIS SHOULD PROBABLY BE REMOVED, CHECK LATER
-    if constexpr(std::is_same<FLOATV_T, float4>::value) { __syncwarp(); }
-#endif
-#endif
 
     // `pscale` is the GLOBAL ratio nlon_in / nlon_out_global, passed by the caller.
     // The kernel's `nlon_out` is the LOCAL output width (nlon_out_local), not the global one.
@@ -409,43 +321,10 @@ void s2_attn_bwd_ring_step_pass1_special_vec_k(int nchan_in,
 
         FLOATV_T qdotk_v = __vset<FLOATV_T>(0.0f);
         FLOATV_T gdotv_v = __vset<FLOATV_T>(0.0f);
-#if 1
 
-#if 0
-        #pragma unroll
-        for(int i = 0; i < NLOC_M1; i++) {
-            qdotk_v = __vadd(qdotk_v, __vmul(sh_qy[i*BDIM_X], _kx[i*BDIM_X]));
-        }
-        if (NLOC_M1*BDIM_X+tidx < nchan_in) {
-            qdotk_v = __vadd(qdotk_v, __vmul(sh_qy[NLOC_M1*BDIM_X], _kx[NLOC_M1*BDIM_X]));
-        }
-        if constexpr(CHOUT_AS_IN) {
-            #pragma unroll
-            for(int i = 0; i < NLOC_M1; i++) {
-                gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[i*BDIM_X], _vx[i*BDIM_X]));
-            }
-            if (NLOC_M1*BDIM_X+tidx < nchan_out) {
-                gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[NLOC_M1*BDIM_X], _vx[NLOC_M1*BDIM_X]));
-            }
-        } else {
-            for(int chan = tidx; chan < nchan_out; chan += BDIM_X) {
-                gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[chan], _vx[chan]));
-            }
-        }
-#else
         strided_op<BDIM_X,               NLOC>    (nchan_in,  [&](int i) { qdotk_v = __vadd(qdotk_v, __vmul(sh_qy[i*BDIM_X], _kx[i*BDIM_X])); });
         strided_op<BDIM_X, CHOUT_AS_IN ? NLOC : 0>(nchan_out, [&](int i) { gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[i*BDIM_X], _vx[i*BDIM_X])); });
-#endif
 
-#else
-        for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
-            qdotk_v = __vadd(qdotk_v, __vmul(qy[chan], _kx[chan]));
-        }
-        for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
-            gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[chan], _vx[chan]));
-        }
-#endif
-#if 1
         float qdotk = __vred(qdotk_v);
         float gdotv = __vred(gdotv_v);
 
@@ -456,10 +335,7 @@ void s2_attn_bwd_ring_step_pass1_special_vec_k(int nchan_in,
             qdotk = __block_sum<BDIM_X>(qdotk);
             gdotv = __block_sum<BDIM_X>(gdotv);
         }
-#else
-        const float qdotk = __warp_sum(__vred(qdotk_v));
-        const float gdotv = __warp_sum(__vred(gdotv_v));
-#endif
+
         const float qdotk_max_tmp = max(qdotk_max, qdotk);
         const float alpha_inz     = expf(qdotk - qdotk_max_tmp) * quad_weights[hi_global];
         const float max_correction = expf(qdotk_max - qdotk_max_tmp);
@@ -468,35 +344,10 @@ void s2_attn_bwd_ring_step_pass1_special_vec_k(int nchan_in,
         integral  = integral  * max_correction + alpha_inz * gdotv;
 
         const float ainz_gdotv = alpha_inz * gdotv;
-#if 1
 
-
-#if 0
-        #pragma unroll
-        for(int i = 0; i < NLOC_M1; i++) {
-            const FLOATV_T kxval = _kx[i*BDIM_X];
-            loc_k__[i] = __vadd(__vscale(max_correction, loc_k__[i]), __vscale(alpha_inz, kxval));
-            loc_kvw[i] = __vadd(__vscale(max_correction, loc_kvw[i]), __vscale(ainz_gdotv, kxval));
-        }
-        if (NLOC_M1*BDIM_X+tidx < nchan_in) {
-            const FLOATV_T kxval = _kx[NLOC_M1*BDIM_X];
-            loc_k__[NLOC_M1] = __vadd(__vscale(max_correction, loc_k__[NLOC_M1]), __vscale(alpha_inz, kxval));
-            loc_kvw[NLOC_M1] = __vadd(__vscale(max_correction, loc_kvw[NLOC_M1]), __vscale(ainz_gdotv, kxval));
-        }
-#else
         strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { loc_k__[i] = __vadd(__vscale(max_correction, loc_k__[i]), __vscale(alpha_inz,  _kx[i*BDIM_X])); });
         strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { loc_kvw[i] = __vadd(__vscale(max_correction, loc_kvw[i]), __vscale(ainz_gdotv, _kx[i*BDIM_X])); });
-#endif
 
-#else
-        for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
-            const FLOATV_T kxval = _kx[chan];
-            sh_alpha_k[chan]   = __vadd(__vscale(max_correction, sh_alpha_k[chan]),
-                                        __vscale(alpha_inz,  kxval));
-            sh_alpha_kvw[chan] = __vadd(__vscale(max_correction, sh_alpha_kvw[chan]),
-                                        __vscale(ainz_gdotv, kxval));
-        }
-#endif
         qdotk_max = qdotk_max_tmp;
     }
 
@@ -506,29 +357,10 @@ void s2_attn_bwd_ring_step_pass1_special_vec_k(int nchan_in,
         qdotk_max_buf[0] = qdotk_max;
         integral_buf[0]  = integral;
     }
-#if 1
 
-#if 0
-    #pragma unroll
-    for(int i = 0; i < NLOC_M1; i++) {
-        alpha_k_buf[i*BDIM_X]   = loc_k__[i];
-        alpha_kvw_buf[i*BDIM_X] = loc_kvw[i];
-    }
-    if (NLOC_M1*BDIM_X+tidx < nchan_in) {
-        alpha_k_buf[NLOC_M1*BDIM_X]   = loc_k__[NLOC_M1];
-        alpha_kvw_buf[NLOC_M1*BDIM_X] = loc_kvw[NLOC_M1];
-    }
-#else
     strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) {   alpha_k_buf[i*BDIM_X] = loc_k__[i]; });
     strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { alpha_kvw_buf[i*BDIM_X] = loc_kvw[i]; });
-#endif
 
-#else
-    for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
-        alpha_k_buf[chan]   = sh_alpha_k[chan];
-        alpha_kvw_buf[chan] = sh_alpha_kvw[chan];
-    }
-#endif
     return;
 }
 
@@ -681,10 +513,6 @@ static void s2_attn_bwd_ring_step_pass1_dispatch(int64_t batch_size,
                                                  at::Tensor alpha_kvw_buf) {
 
     auto stream = at::cuda::getCurrentCUDAStream().stream();
-#if 0
-    dim3 block(WARP_SIZE, THREADS / WARP_SIZE);
-    dim3 grid(DIV_UP(nlat_out * nlon_out, block.y), batch_size);
-#endif
     
     // smallest power of two "bdimx" (>=32) s.t. bdimx*MAX_LOCAL_ARR_LEN >= nchans_in
     int bdimx;
@@ -714,7 +542,7 @@ static void s2_attn_bwd_ring_step_pass1_dispatch(int64_t batch_size,
         !is_aligned<sizeof(float4)>(_dyp) ||
         (nchans_in  % VEC_SIZE) != 0 ||
         (nchans_out % VEC_SIZE) != 0) {
-#if 1
+
         const int nloc = DIV_UP(nchans_in, bdimx);
 
         constexpr int MIN_LOC_ARR_LEN = MAX_LOCAL_ARR_LEN/2+1;
@@ -727,15 +555,7 @@ static void s2_attn_bwd_ring_step_pass1_dispatch(int64_t batch_size,
             case  512: launch_spc_attn_ring_pass1_bwd<512, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw, stream); break;
             default:   launch_gen_attn_ring_pass1_bwd                                            (      batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw, stream); break;
         }
-#else
-        size_t shsize = sizeof(float) * (2*nchans_in + nchans_out) * block.y;
 
-        s2_attn_bwd_ring_step_pass1_generic_vec_k<THREADS, float><<<grid, block, shsize, stream>>>( nchans_in, nchans_out, nlat_halo, nlon_kx,
-                nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
-                _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
-                _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw);
-        CHECK_ERROR("s2_attn_bwd_ring_step_pass1_generic_vec_k<float>");
-#endif
     } else {
 
         float4 *_kxp4    = reinterpret_cast<float4 *>(_kxp);
@@ -744,7 +564,7 @@ static void s2_attn_bwd_ring_step_pass1_dispatch(int64_t batch_size,
         float4 *_dyp4    = reinterpret_cast<float4 *>(_dyp);
         float4 *_alpha_k4   = reinterpret_cast<float4 *>(alpha_k_buf.data_ptr());
         float4 *_alpha_kvw4 = reinterpret_cast<float4 *>(alpha_kvw_buf.data_ptr());
-#if 1
+
         nchans_in  /= VEC_SIZE;
         nchans_out /= VEC_SIZE;
 
@@ -761,16 +581,6 @@ static void s2_attn_bwd_ring_step_pass1_dispatch(int64_t batch_size,
             case  512: launch_spc_attn_ring_pass1_bwd<512, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k4, _alpha_kvw4, stream); break;
             default:   launch_gen_attn_ring_pass1_bwd                                            (      batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k4, _alpha_kvw4, stream);
         }
-#else
-        size_t shsize = sizeof(float4) * (2*(nchans_in/VEC_SIZE) + nchans_out/VEC_SIZE) * block.y;
-        s2_attn_bwd_ring_step_pass1_generic_vec_k<THREADS, float4>
-            <<<grid, block, shsize, stream>>>(
-                nchans_in/VEC_SIZE, nchans_out/VEC_SIZE, nlat_halo, nlon_kx,
-                nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
-                _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights,
-                _alpha_sum, _qdotk_max, _integral, _alpha_k4, _alpha_kvw4);
-        CHECK_ERROR("s2_attn_bwd_ring_step_pass1_generic_vec_k<float4>");
-#endif
     }
 }
 
@@ -912,8 +722,6 @@ void s2_attn_bwd_ring_step_pass2_generic_vec_k(
     }
 }
 
-// Pass 2: scatter dkx/dvx contributions for the current KV chunk.
-// Requires FINALIZED state from pass 1: alpha_sum, qdotk_max, integral_norm (= integral/alpha_sum).
 template<int BDIM_X,
          int BDIM_Y,
          int CHOUT_AS_IN,   // 1 iif "BDIM_X*(NLOC-1) <= nchan_out <= BDIM_X*NLOC" else 0
@@ -953,25 +761,30 @@ void s2_attn_bwd_ring_step_pass2_special_vec_k(int nchan_in,
     constexpr int NLOC_M1 = NLOC-1;
     
     const int tidx = threadIdx.x;
-    const int batch = blockIdx.y;
+    
+    const int blk_per_row = gridDim.y; // blocks along Y process the same (ho,wo) 
+                                       // point by iteration over the (same) CSR 
+                                       // row in an interleaved fashion
+    const int blk_split_id = blockIdx.y;
+    
+    //const int batch = blockIdx.y;
+    const int batch = blockIdx.z;
+
     const uint64_t ctaid = uint64_t(blockIdx.x) * blockDim.y + threadIdx.y;
     
     if (ctaid >= uint64_t(nlat_out)*nlon_out) {
         return;
     }
-#if 1
+
     FLOATV_T loc_qy[NLOC];
 
     extern __shared__ __align__(sizeof(float4)) float shext[];
-    //FLOATV_T *sh_dy = reinterpret_cast<FLOATV_T *>(shext) + threadIdx.y*nchan_in + tidx; // [nchan_out]
 
     FLOATV_T *sh_dy = reinterpret_cast<FLOATV_T *>(shext) + threadIdx.y*(nchan_in + nchan_out) + tidx; // [nchan_out]
-    FLOATV_T *sh_qy = sh_dy + nchan_out; // used only with __CUDA_ARCH__ < 900
-#else
-    extern __shared__ __align__(sizeof(float4)) float shext[];
-    FLOATV_T *sh_qy = reinterpret_cast<FLOATV_T *>(shext) + threadIdx.y * (nchan_in + nchan_out);
-    FLOATV_T *sh_dy = sh_qy + nchan_in;
-#endif
+
+    // used only with __CUDA_ARCH__ < 900
+    FLOATV_T *sh_qy = sh_dy + nchan_out; // [nchan_in]
+
     const int h  = ctaid / nlon_out;
     const int wo = ctaid - (h * nlon_out);
     const int ho = row_idx[h];
@@ -991,22 +804,12 @@ void s2_attn_bwd_ring_step_pass2_special_vec_k(int nchan_in,
     const float integral_norm  = integral_norm_buf[out_flat];
     const float alpha_sum_inv  = 1.0f / alpha_sum;
 
-#if 1
     strided_op<BDIM_X,               NLOC    >(nchan_in,  [&](int i) {       loc_qy[i] = qy[i*BDIM_X]; });
     strided_op<BDIM_X, CHOUT_AS_IN ? NLOC : 0>(nchan_out, [&](int i) { sh_dy[i*BDIM_X] = dy[i*BDIM_X]; });
-#if __CUDA_ARCH__ < 900
-    strided_op<BDIM_X,               NLOC    >(nchan_in,  [&](int i) { sh_qy[i*BDIM_X] = loc_qy[i]; });
-#endif
-#else
-    for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
-        sh_qy[chan] = qy[chan];
-    }
-    for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
-        sh_dy[chan] = dy[chan];
-    }
-#endif
 
 #if __CUDA_ARCH__ < 900
+    strided_op<BDIM_X,               NLOC    >(nchan_in,  [&](int i) { sh_qy[i*BDIM_X] = loc_qy[i]; });
+
     if constexpr(std::is_same<FLOATV_T, float4>::value) {
         if constexpr(BDIM_X == 32) {    __syncwarp(); }
         else                       { __syncthreads(); }
@@ -1015,13 +818,28 @@ void s2_attn_bwd_ring_step_pass2_special_vec_k(int nchan_in,
 
     // `pscale` is the GLOBAL ratio nlon_in / nlon_out_global, passed by the caller.
     // The kernel's `nlon_out` is the LOCAL output width (nlon_out_local), not the global one.
+#if 0
+    int64_t rbeg = row_off[ho];
+    int64_t rend = row_off[ho + 1];
+    int rlen = rend - rbeg;
 
+    int ncol_div = rlen / blk_per_row;
+    int ncol_mod = rlen - ncol_div*blk_per_row;
+
+    rbeg += blk_split_id*ncol_div + min(blk_split_id, ncol_mod);
+    rlen  = ncol_div + (blk_split_id < ncol_mod);
+
+    col_idx += rbeg;
+
+    for (int off = 0; off < rlen; off++) {
+#else
     const int64_t rbeg = row_off[ho];
     const int64_t rend = row_off[ho + 1];
     col_idx += rbeg;
     const int rlen = rend - rbeg;
 
-    for (int off = 0; off < rlen; off++) {
+    for (int off = blk_split_id; off < rlen; off += blk_per_row) {
+#endif
         const int64_t col   = col_idx[off];
         const int hi_global = col / nlon_in;
         const int wi        = col - (hi_global * nlon_in);
@@ -1041,18 +859,10 @@ void s2_attn_bwd_ring_step_pass2_special_vec_k(int nchan_in,
 
         FLOATV_T qdotk_v = __vset<FLOATV_T>(0.0f);
         FLOATV_T gdotv_v = __vset<FLOATV_T>(0.0f);
-#if 1
+
         strided_op<BDIM_X,               NLOC>    (nchan_in,  [&](int i) { qdotk_v = __vadd(qdotk_v, __vmul(      loc_qy[i], _kx[i*BDIM_X])); });
         strided_op<BDIM_X, CHOUT_AS_IN ? NLOC : 0>(nchan_out, [&](int i) { gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[i*BDIM_X], _vx[i*BDIM_X])); });
-#else
-        for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
-            qdotk_v = __vadd(qdotk_v, __vmul(sh_qy[chan], _kx[chan]));
-        }
-        for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
-            gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[chan], _vx[chan]));
-        }
-#endif
-#if 1
+
         float qdotk = __vred(qdotk_v);
         float gdotv = __vred(gdotv_v);
 
@@ -1063,10 +873,7 @@ void s2_attn_bwd_ring_step_pass2_special_vec_k(int nchan_in,
             qdotk = __block_sum<BDIM_X>(qdotk);
             gdotv = __block_sum<BDIM_X>(gdotv);
         }
-#else
-        const float qdotk = __warp_sum(__vred(qdotk_v));
-        const float gdotv = __warp_sum(__vred(gdotv_v));
-#endif
+
         const float alpha_inz  = expf(qdotk - qdotk_max) * quad_weights[hi_global];
         const float alpha_mul  = alpha_inz * alpha_sum_inv;
         const float scale_dkx = (gdotv - integral_norm) * alpha_mul;
@@ -1077,7 +884,7 @@ void s2_attn_bwd_ring_step_pass2_special_vec_k(int nchan_in,
 
 #if __CUDA_ARCH__ < 900
         constexpr int VEC_SIZE = sizeof(FLOATV_T)/sizeof(float);
-#if 1
+
         float *sh_qy_scl = reinterpret_cast<float *>(sh_qy - tidx);
         float *sh_dy_scl = reinterpret_cast<float *>(sh_dy - tidx);
 
@@ -1091,37 +898,11 @@ void s2_attn_bwd_ring_step_pass2_special_vec_k(int nchan_in,
             atomicAdd(_dvx_scl + chan, scale_dvx*sh_dy_scl[chan]);
         }
 #else
-        float *sh_qy_scl = reinterpret_cast<float *>(sh_qy);
-        float *_dkx_scl  = reinterpret_cast<float *>(_dkx); 
-        
-        for (int chan = tidx; chan < nchan_in*VEC_SIZE; chan += WARP_SIZE) {
-            atomicAdd(_dkx_scl + chan, scale_dkx * sh_qy_scl[chan]);
-        }
-
-        float *sh_dy_scl = reinterpret_cast<float *>(sh_dy);
-        float *_dvx_scl  = reinterpret_cast<float *>(_dvx);
-
-        for (int chan = tidx; chan < nchan_out*VEC_SIZE; chan += WARP_SIZE) {
-            atomicAdd(_dvx_scl + chan, scale_dvx * sh_dy_scl[chan]);
-        }
-#endif
-
-#else
-
-#if 1
         strided_op<BDIM_X,               NLOC>    (nchan_in,  [&](int i) { atomicAdd(_dkx + i*BDIM_X, __vscale(scale_dkx,       loc_qy[i])); });
         strided_op<BDIM_X, CHOUT_AS_IN ? NLOC : 0>(nchan_out, [&](int i) { atomicAdd(_dvx + i*BDIM_X, __vscale(scale_dvx, sh_dy[i*BDIM_X])); });
-#else
-        for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
-            atomicAdd(_dkx + chan, __vscale(scale_dkx, sh_qy[chan]));
-        }
-        for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
-            atomicAdd(_dvx + chan, __vscale(scale_dvx, sh_dy[chan]));
-        }
-#endif
-
 #endif
     }
+    return;
 }
 
 template<typename FLOATV_T>
@@ -1167,6 +948,66 @@ void launch_gen_attn_ring_pass2_bwd(int64_t batch_size,
     return;
 }
 
+__global__ void get_rlen_boundary_k(const int64_t n,
+                                    const int32_t *idx,
+                                    const int64_t *off,
+                                    const float thres,
+                                          int64_t *num_lrow_ptr,
+                                          int64_t *max_rlen_ptr) {
+    const int tid = threadIdx.x;
+
+    int64_t max_rlen = off[idx[0]+1]-off[idx[0]];
+    if (!tid) {
+        *max_rlen_ptr = max_rlen;
+    }
+    
+    int64_t thres_len = max_rlen * thres;
+
+    for(int64_t i = 0; i < n; i += blockDim.x) {
+
+        int64_t rlen = thres_len;
+
+        if (i+tid < n) {
+            int32_t row = idx[i+tid];
+            rlen = off[row+1]-off[row];
+        }
+        
+        if (__syncthreads_or(rlen < thres_len)) {
+            if (rlen < thres_len) {
+                atomicMin((unsigned long long *)num_lrow_ptr, (unsigned long long )i+tid);
+            }
+            break;
+        }
+    }
+    return;
+}   
+
+static void get_crs_rlen_thresh(int64_t nrows,
+                                int32_t *row_idx,
+                                int64_t *row_off,
+                                int64_t *n_long_rows,
+                                int64_t *max_row_len) {
+
+    torch::Tensor num_lr = torch::tensor(nrows, torch::kCUDA);
+    torch::Tensor max_rl = torch::tensor(int64_t(0), torch::kCUDA);
+
+    int64_t *_num_lr = reinterpret_cast<int64_t *>(num_lr.data_ptr());
+    int64_t *_max_rl = reinterpret_cast<int64_t *>(max_rl.data_ptr());
+
+    float thres = PASS2_ROW_LENGTH_THRES;
+    
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+    get_rlen_boundary_k<<<1, 1024, 0, stream>>>(nrows, row_idx, row_off, thres, _num_lr, _max_rl);
+
+    *n_long_rows = num_lr.item<int64_t>();
+    *max_row_len = max_rl.item<int64_t>();
+
+    //printf("Found %ld rows with length less than %f*%ld\n", *n_long_rows, thres, *max_row_len);
+
+    return;
+}
+
 template<int BDIM_X,
          int BDIM_Y,
          int CUR_LOC_SIZE,
@@ -1201,11 +1042,36 @@ void launch_spc_attn_ring_pass2_bwd(int nloc,
 
     if (CUR_LOC_SIZE == nloc) {
 
-        dim3 block(BDIM_X, BDIM_Y);
-        dim3 grid(DIV_UP(nlat_out*nlon_out, block.y), batch_size);
+        int64_t n_long_rows;
+        int64_t max_row_len;
 
-        // TBD
+        // finds the (initial) number of rows with length >= than 0.1
+        // of the longest row, i.e. the first; if there are such rows,
+        // they are processed with a separate kernel invocation, using 
+        // multiple blocks per row, in order to mitigate the imbalance
+        // causing long temporal tails in kernel execution.
+        get_crs_rlen_thresh(nlat_out, _row_idx, _row_off, &n_long_rows, &max_row_len);
+
+        dim3 block(BDIM_X, BDIM_Y);
+
+        // if there are "long rows" use at most
+        // 32 blocks for each one (empirically determined) 
+        int cta_per_row = min(int64_t(32), DIV_UP(max_row_len, PASS2_MIN_WORK_PER_BLOCK));
+#if 0
+        const char *val = getenv("NUM_LONG_ROWS");
+        if (val) {
+            n_long_rows = strtol(val, NULL, 10);
+        }
+        val = getenv("CTA_PER_ROW");
+        if (val) {
+            cta_per_row = strtol(val, NULL, 10);
+        }
+#endif
+        dim3 grid_lr(DIV_UP(          n_long_rows *nlon_out, block.y), cta_per_row, batch_size);
+        dim3 grid   (DIV_UP((nlat_out-n_long_rows)*nlon_out, block.y),           1, batch_size);
+
         size_t shsize = sizeof(FLOATV_T)*(nchans_out + nchans_in)*block.y; // 2 arrays per cta, block.y > 1 iif block.x==32
+                                                                           // nchans_in arrays used only for __CUDA_ARCH__ < 900
 
         // nloc determines the size of local arrays used to store
         // temporary buffers loc_k__[], loc_vw_[] and loc_kvw[],
@@ -1219,22 +1085,39 @@ void launch_spc_attn_ring_pass2_bwd(int nloc,
         // is <= BDIM_X we can use the faster path
         if (nchans_out >= BDIM_X*(CUR_LOC_SIZE-1) &&
             nchans_out <= BDIM_X* CUR_LOC_SIZE  ) {
-
+            if (n_long_rows > 0) {
+                s2_attn_bwd_ring_step_pass2_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE>
+                                                      <<<grid_lr, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
+                                                                                        nlon_in, pscale, lon_lo_kx, lat_halo_start,
+                                                                                        nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp,
+                                                                                        _row_idx, _row_off, _col_idx, _quad_weights,
+                                                                                        _alpha_sum, _qdotk_max, _integral_n,
+                                                                                        _dkxp, _dvxp);
+            }
             s2_attn_bwd_ring_step_pass2_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE>
-                                                     <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
-                                                                                       nlon_in, pscale, lon_lo_kx, lat_halo_start,
-                                                                                       nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp,
-                                                                                       _row_idx, _row_off, _col_idx, _quad_weights,
-                                                                                       _alpha_sum, _qdotk_max, _integral_n,
-                                                                                       _dkxp, _dvxp);
+                                                  <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
+                                                                                    nlon_in, pscale, lon_lo_kx, lat_halo_start,
+                                                                                    nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp,
+                                                                                    _row_idx+n_long_rows/**/, _row_off, _col_idx, _quad_weights,
+                                                                                    _alpha_sum, _qdotk_max, _integral_n,
+                                                                                    _dkxp, _dvxp);
       } else {
+            if (n_long_rows > 0) {
+                s2_attn_bwd_ring_step_pass2_special_vec_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE>
+                                                      <<<grid_lr, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
+                                                                                        nlon_in, pscale, lon_lo_kx, lat_halo_start,
+                                                                                        nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp,
+                                                                                        _row_idx, _row_off, _col_idx, _quad_weights,
+                                                                                        _alpha_sum, _qdotk_max, _integral_n,
+                                                                                        _dkxp, _dvxp);
+            }
             s2_attn_bwd_ring_step_pass2_special_vec_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE>
-                                                     <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
-                                                                                       nlon_in, pscale, lon_lo_kx, lat_halo_start,
-                                                                                       nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp,
-                                                                                       _row_idx, _row_off, _col_idx, _quad_weights,
-                                                                                       _alpha_sum, _qdotk_max, _integral_n,
-                                                                                       _dkxp, _dvxp);
+                                                  <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
+                                                                                    nlon_in, pscale, lon_lo_kx, lat_halo_start,
+                                                                                    nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp,
+                                                                                    _row_idx+n_long_rows/**/, _row_off, _col_idx, _quad_weights,
+                                                                                    _alpha_sum, _qdotk_max, _integral_n,
+                                                                                    _dkxp, _dvxp);
         }
         CHECK_ERROR("s2_attn_bwd_special_vec_k");
 
@@ -1252,6 +1135,7 @@ void launch_spc_attn_ring_pass2_bwd(int nloc,
     }
     return;
 }
+
 static void s2_attn_bwd_ring_step_pass2_dispatch(int64_t batch_size,
                                                  int64_t nchans_in,
                                                  int64_t nchans_out,
@@ -1278,10 +1162,7 @@ static void s2_attn_bwd_ring_step_pass2_dispatch(int64_t batch_size,
                                                  at::Tensor dvxP) {
 
     auto stream = at::cuda::getCurrentCUDAStream().stream();
-#if 0
-    dim3 block(WARP_SIZE, THREADS / WARP_SIZE);
-    dim3 grid(DIV_UP(nlat_out * nlon_out, block.y), batch_size);
-#endif
+
     // smallest power of two "bdimx" (>=32) s.t. bdimx*MAX_LOCAL_ARR_LEN >= nchans_in
     int bdimx;
     bdimx = DIV_UP(nchans_in, MAX_LOCAL_ARR_LEN);
@@ -1310,7 +1191,7 @@ static void s2_attn_bwd_ring_step_pass2_dispatch(int64_t batch_size,
         !is_aligned<sizeof(float4)>(_dyp) ||
         (nchans_in  % VEC_SIZE) != 0 ||
         (nchans_out % VEC_SIZE) != 0) {
-#if 1
+
         const int nloc = DIV_UP(nchans_in, bdimx);
 
         constexpr int MIN_LOC_ARR_LEN = MAX_LOCAL_ARR_LEN/2+1;
@@ -1323,12 +1204,6 @@ static void s2_attn_bwd_ring_step_pass2_dispatch(int64_t batch_size,
             case  512: launch_spc_attn_ring_pass2_bwd<512, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp, _dvxp, stream); break;
             default:   launch_gen_attn_ring_pass2_bwd                                            (      batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp, _dvxp, stream); break;
         }
-#else
-        size_t shsize = sizeof(float) * (nchans_in + nchans_out) * block.y;
-        s2_attn_bwd_ring_step_pass2_generic_vec_k<THREADS, float><<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx, nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp, _dvxp);
-
-        CHECK_ERROR("s2_attn_bwd_ring_step_pass2_generic_vec_k<float>");
-#endif
 
     } else {
 
@@ -1338,7 +1213,7 @@ static void s2_attn_bwd_ring_step_pass2_dispatch(int64_t batch_size,
         float4 *_dyp4  = reinterpret_cast<float4 *>(_dyp);
         float4 *_dkxp4 = reinterpret_cast<float4 *>(dkxP.data_ptr());
         float4 *_dvxp4 = reinterpret_cast<float4 *>(dvxP.data_ptr());
-#if 1
+
         nchans_in  /= VEC_SIZE;
         nchans_out /= VEC_SIZE;
 
@@ -1355,12 +1230,6 @@ static void s2_attn_bwd_ring_step_pass2_dispatch(int64_t batch_size,
             case  512: launch_spc_attn_ring_pass2_bwd<512, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp4, _dvxp4, stream); break;
             default:   launch_gen_attn_ring_pass2_bwd                                            (      batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp4, _dvxp4, stream); break;
         }
-#else
-        size_t shsize  = sizeof(float4) * ((nchans_in + nchans_out)/VEC_SIZE) * block.y;
-        s2_attn_bwd_ring_step_pass2_generic_vec_k<THREADS, float4><<<grid, block, shsize, stream>>>(nchans_in/VEC_SIZE, nchans_out/VEC_SIZE, nlat_halo, nlon_kx, nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp4, _dvxp4);
-   
-        CHECK_ERROR("s2_attn_bwd_ring_step_pass2_generic_vec_k<float4>");
-#endif
     }
 }
 
@@ -1437,7 +1306,9 @@ void s2_attention_bwd_ring_step_pass2_cuda(
     if (vxP.strides()[1] != 1) { vxP = permute_4D_to0231(vxP); }
     if (qyP.strides()[1] != 1) { qyP = permute_4D_to0231(qyP); }
     if (dyP.strides()[1] != 1) { dyP = permute_4D_to0231(dyP); }
-
+#if 0
+    dump_csr_linear("csr_attn_distr", pscale, nlon_in, lon_lo_kx, nlon_kx, lat_halo_start, nlat_halo, nlat_out, psi_row_idx, psi_row_off, psi_col_idx);
+#endif
     // dkx/dvx are already in channels-last format (allocated that way in Python)
     s2_attn_bwd_ring_step_pass2_dispatch(
         batch_size, nchans_in, nchans_out,
@@ -1457,4 +1328,93 @@ TORCH_LIBRARY_IMPL(attention_kernels, CUDA, m)
     m.impl("backward_ring_step_pass2", &s2_attention_bwd_ring_step_pass2_cuda);
 }
 
+int is_in_lat_range(int64_t col,  
+                    //int64_t pscale,
+                    int64_t nlon_in,
+                    //int64_t lon_lo_kx,
+                    //int nlon_kx,
+                    int64_t lat_halo_start,
+                    int nlat_halo) {
+
+    const int hi_global = col / nlon_in;
+
+    const int hi_local  = hi_global - lat_halo_start;
+
+    if (hi_local < 0 || hi_local >= nlat_halo) return 0;
+
+    return 1;
+
+}
+
+void dump_csr_linear(const char *fname,
+                     int64_t pscale,
+                     int64_t nlon_in,
+                     int64_t lon_lo_kx,
+                     int nlon_kx,
+                     int64_t lat_halo_start,
+                     int nlat_halo,
+                     int64_t nrows,
+                     at::Tensor row_idx,
+                     at::Tensor row_off,
+                     at::Tensor col_idx) {
+
+        int64_t nnz = col_idx.size(0);
+
+        int32_t *row_idx_h = new int32_t[nrows];
+        int64_t *row_off_h = new int64_t[nrows+1];
+        int64_t *col_idx_h = new int64_t[nnz];
+
+        int32_t *row_idx_d = row_idx.data_ptr<int32_t>();
+        int64_t *row_off_d = row_off.data_ptr<int64_t>();
+        int64_t *col_idx_d = col_idx.data_ptr<int64_t>();
+
+        CHECK_CUDA(cudaMemcpy(row_idx_h, row_idx_d, sizeof(*row_idx_h)*nrows    , cudaMemcpyDeviceToHost));
+        CHECK_CUDA(cudaMemcpy(row_off_h, row_off_d, sizeof(*row_off_h)*(nrows+1), cudaMemcpyDeviceToHost));
+        CHECK_CUDA(cudaMemcpy(col_idx_h, col_idx_d, sizeof(*col_idx_h)*nnz      , cudaMemcpyDeviceToHost));
+
+        printf("Writing data to file...");
+
+        static int count = 0;
+
+        char file_name[256];
+        snprintf(file_name, sizeof(file_name), "%s_%d.txt", fname, count);
+        count++;
+
+        FILE *fp = fopen(file_name, "w");
+        if (!fp) {
+                fprintf(stderr, "Cannot open file %s for writing!\n", fname);
+                exit(EXIT_FAILURE);
+        }
+        
+        fprintf(fp, "nrows: %lld, row_idx.size(0): %lld, row_off.size(0): %lld, col_idx.size(0): %lld\n",
+                nrows, row_idx.size(0), row_off.size(0), col_idx.size(0));
+
+        fprintf(fp, "pscale: %ld, nlon_in: %ld, lon_lo_kx: %ld, nlon_kx: %d, lat_halo_start: %ld, nlat_halo: %d\n",
+                pscale, nlon_in, lon_lo_kx, nlon_kx, lat_halo_start, nlat_halo);
+
+        fprintf(fp, "CSR:\n");
+
+        for(int64_t i = 0; i < nrows; i++) {
+
+                int32_t r = row_idx_h[i];
+                
+                int n_internal = 0;
+                for(int64_t o = row_off_h[r]; o < row_off_h[r+1]; o++) {
+                        n_internal += is_in_lat_range(col_idx_h[o], nlon_in, lat_halo_start, nlat_halo);
+                }
+
+                fprintf(fp, "%6ld, row: %6ld, len: %6ld, in H rng: %d - ", i, r, row_off_h[r+1]-row_off_h[r], n_internal);
+
+                for(int64_t o = row_off_h[r]; o < row_off_h[r+1]; o++) {
+                        fprintf(fp, "%10ld", col_idx_h[o]);
+                }
+                fprintf(fp, "\n");
+        }
+        fclose(fp);
+        printf("done\n");
+
+        delete [] row_idx_h;
+        delete [] row_off_h;
+        delete [] col_idx_h;
+}
 }
