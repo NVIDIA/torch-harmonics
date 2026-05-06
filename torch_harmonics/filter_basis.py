@@ -446,7 +446,7 @@ class ZernikeFilterBasis(FilterBasis):
 
 
 class FourierBesselFilterBasis(FilterBasis):
-    """
+    r"""
     Fourier-Bessel (Disk Harmonic) filter basis on the unit disk.
 
     Basis functions are the Dirichlet Laplacian eigenfunctions on the disk:
