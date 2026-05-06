@@ -216,8 +216,11 @@ class ShallowWaterSolver(nn.Module):
 
         lats, lons = torch.meshgrid(self.lats, self.lons)
 
-        u1 = (umax/en)*torch.exp(1./((lats-phi0)*(lats-phi1)))
-        ugrid = torch.where(torch.logical_and(lats < phi1, lats > phi0), u1, torch.zeros(self.nlat, self.nlon, device=device))
+        mask = torch.logical_and(lats > phi0, lats < phi1)
+        # use safe values outside the band to prevent exp from overflowing
+        product = torch.where(mask, (lats - phi0) * (lats - phi1), -torch.ones_like(lats))
+        u1 = (umax / en) * torch.exp(1. / product)
+        ugrid = torch.where(mask, u1, torch.zeros(self.nlat, self.nlon, device=device))
         vgrid = torch.zeros((self.nlat, self.nlon), device=device)
         hbump = self.hamp * torch.cos(lats) * torch.exp(-((lons-torch.pi)/alpha)**2) * torch.exp(-(phi2-lats)**2/beta)
 
