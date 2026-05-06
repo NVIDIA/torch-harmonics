@@ -388,6 +388,12 @@ class SphericalFourierNeuralOperator(nn.Module):
         decoder_layers.append(fc)
         self.decoder = nn.Sequential(*decoder_layers)
 
+        # residual projection for when in_chans != out_chans
+        if self.residual_prediction and self.in_chans != self.out_chans:
+            self.residual_projection = nn.Conv2d(self.in_chans, self.out_chans, 1, bias=False)
+        else:
+            self.residual_projection = nn.Identity()
+
     @torch.jit.ignore
     def no_weight_decay(self):
         return {"pos_embed", "cls_token"}
@@ -416,6 +422,6 @@ class SphericalFourierNeuralOperator(nn.Module):
         x = self.decoder(x)
 
         if self.residual_prediction:
-            x = x + residual
+            x = x + self.residual_projection(residual)
 
         return x
