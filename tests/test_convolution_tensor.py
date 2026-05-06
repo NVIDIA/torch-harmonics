@@ -537,15 +537,20 @@ class TestKPackedKernel(unittest.TestCase):
             [(24, 48), (12, 24), (3,),   "zernike",  torch.float32, 1e-5, 1e-5],
             # bf16 — looser tolerance
             [(24, 48), (12, 24), (3, 3), "harmonic", torch.bfloat16, 5e-2, 5e-2],
-            # WGMMA-firing configs: bf16, K=8 (harmonic(4,2)), B*C=8, Wo divisible
-            # by 8. The four rows below sweep pscale ∈ {1, 2, 3, 4} via Wi/Wo.
-            # On Hopper this routes through the WGMMA fast path; on V100/A100 the
-            # host runtime check falls back to the scalar K-packed kernel — both
-            # must agree with the per-k_kern dense reference.
-            [(16, 32), (16, 32),  (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=1
-            [(32, 64), (16, 32),  (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=2
-            [(32, 96), (16, 32),  (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=3
-            [(32, 128), (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=4
+            # WGMMA-firing configs: bf16, B*C=8, Wo divisible by 8. The first
+            # four rows below sweep pscale ∈ {1, 2, 3, 4} via Wi/Wo with K=8
+            # (m64n8k16 wgmma shape). The fifth row uses K=16 (harmonic(4,4),
+            # m64n16k16 wgmma shape). On Hopper this routes through the WGMMA
+            # fast path; on V100/A100 the host runtime check falls back to the
+            # scalar K-packed kernel — both must agree with the per-k_kern
+            # dense reference.
+            [(16, 32),  (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=1, K=8
+            [(32, 64),  (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=2, K=8
+            [(32, 96),  (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=3, K=8
+            [(32, 128), (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=4, K=8
+            [(16, 32),  (16, 32), (4, 4), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=1, K=16
+            [(16, 32),  (16, 32), (3, 3), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=1, K=9 → K_PAD=16
+            [(32, 64),  (16, 32), (3, 3), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=2, K=9 → K_PAD=16
         ],
         skip_on_empty=True,
     )

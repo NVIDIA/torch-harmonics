@@ -32,12 +32,12 @@
 // Disco forward — K-packed dense psi (CUDA, WGMMA path, Hopper SM_90+)
 // =====================================================================================
 //
-// First-pass WGMMA implementation. Restricted to:
-//   - K_PAD = 8                  (one-core-matrix-along-N case; other K_PADs need
-//                                 a multi-core staging path)
-//   - pscale ≥ 1                  (any integer; gmem reads become strided when
-//                                 pscale > 1, but correctness is preserved)
-//   - bf16 inputs                 (matches our wgmma_m64n8k16_acc wrapper)
+// WGMMA implementation. Restricted to:
+//   - K_PAD ∈ {8, 16}              (n8 / n16 wgmma shapes; larger K_PADs need
+//                                  more accumulator regs / wider B staging)
+//   - pscale ≥ 1                   (any integer; gmem reads become strided when
+//                                  pscale > 1, but correctness is preserved)
+//   - bf16 inputs                  (matches our wgmma_m64nNk16_acc wrappers)
 //
 // The host wrapper checks these and falls back to the scalar K-packed kernel
 // otherwise.
@@ -45,23 +45,22 @@
 // CTA layout
 // ----------
 // Threads: 128 (1 warp-group, mandatory for WGMMA)
-// Output tile: BC_TILE=8 channels × WO_TILE=8 wo positions × N=8 k_kerns = 512 cells
-// Per-thread acc: 4 fp32 (m64n8k16 distributes 64×8 cells across 128 threads)
+// Output tile: BC_TILE=8 channels × WO_TILE=8 wo positions × N=K_PAD k_kerns
+// Per-thread acc: N_PAD/2 fp32 (m64nNk16 distributes 64×N cells across 128 threads)
 // Grid: (Ho × (Wo / WO_TILE), BC / BC_TILE)
 //
 // Shared memory layout (bf16, 16-byte aligned)
 // --------------------------------------------
-// A_tile [M=64, K=16] — M-major, 8 core matrices of 8×16 stacked along M:
+// A_tile [M=64, K=16] — M-major:
 //    byte(m, k) = (m / 8) * 256 + (m % 8 + 8 * k) * 2
-//    total 8 × 256 = 2048 bytes
-//    LBO = 256 bytes  (between core matrices along M)
-//    SBO = 0          (only one core along K=16)
+//    total 2048 bytes
 //
-// B_tile [K=16, N=8] — N-major, 1 core matrix of 16×8:
-//    byte(k, n) = (k * 8 + n) * 2
-//    total 16 × 16 = 256 bytes
-//    LBO = 0          (only one core along N=8)
-//    SBO = 0          (only one core along K=16)
+// B_tile [K=16, N=N_PAD] — N-group outer, then 8×8 cores with K-rows
+// contiguous (one u128 per row). This matches the WGMMA Major::MN core-matrix
+// layout, where each 8×8 core's K rows live in 8 consecutive 16-byte u128s:
+//    byte(k, n) = (n / 8) * (16 * NZ_CHUNK) + k * 16 + (n % 8) * 2
+//    total 32 * N_PAD bytes (256 for N=8, 512 for N=16)
+// For N=8 this collapses to byte(k,n) = (k*8 + n)*2 (single n-group).
 //
 // Per nz_chunk inner loop
 // -----------------------
@@ -125,8 +124,11 @@ void disco_fwd_dense_kpacked_wgmma_blk_k(
     __nv_bfloat16       *__restrict__ out)         // [B, C, K, Ho, Wo]
 {
 #if defined(__CUDA_ARCH_FEAT_SM90_ALL)
-    static_assert(N_PAD == 8, "WGMMA path: only K_PAD=8 supported in this first pass");
+    static_assert(N_PAD == 8 || N_PAD == 16,
+                  "WGMMA path: only K_PAD ∈ {8, 16} supported");
     static_assert(BC_TILE == 8 && WO_TILE == 8, "WGMMA path: tile must be 8×8 for M=64");
+
+    constexpr int N_ACC = N_PAD / 2;        // fp32 acc cells per thread (4 or 8)
 
     const int tid     = threadIdx.x;
     const int warp_id = tid / 32;
@@ -142,17 +144,19 @@ void disco_fwd_dense_kpacked_wgmma_blk_k(
     const __nv_bfloat16 *val_ho = pack_val + (int64_t)ho * NBR_PAD * N_PAD;
     const int            cnt    = (int)pack_count[ho];
 
-    // Per-thread accumulator: 4 fp32 cells for m64n8k16.
-    float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    // Per-thread accumulator: N_PAD/2 fp32 cells for m64nNk16.
+    float acc[N_ACC];
+    #pragma unroll
+    for (int i = 0; i < N_ACC; i++) acc[i] = 0.0f;
 
     if (cnt == 0) {
         // No-op fall through to writeback (which writes zeros).
     }
 
-    // Shared memory: A_tile (2048 B) + B_tile (256 B) = 2304 B per CTA.
+    // Shared memory: A_tile (2048 B) + B_tile (32 * N_PAD bytes) per CTA.
     extern __shared__ __align__(16) unsigned char shmem_raw[];
     __nv_bfloat16 *A_tile = reinterpret_cast<__nv_bfloat16*>(shmem_raw);
-    __nv_bfloat16 *B_tile = A_tile + (BC_TILE * 8) * NZ_CHUNK;   // 64 * 16 = 1024 elements
+    __nv_bfloat16 *B_tile = A_tile + (BC_TILE * 8) * NZ_CHUNK;   // 1024 bf16 of A
 
     // ----------------------- nz_chunk loop -----------------------
     for (int nz_chunk_off = 0; nz_chunk_off < cnt; nz_chunk_off += NZ_CHUNK) {
@@ -195,16 +199,31 @@ void disco_fwd_dense_kpacked_wgmma_blk_k(
             *reinterpret_cast<int4*>(dst) = make_int4(0, 0, 0, 0);
         }
 
-        // -- Stage B_tile (256 bytes = 16 cells of 16 B each) --
-        // First 16 threads copy 1 strip of 8 bf16 (one nz_local row of B).
-        if (tid < NZ_CHUNK) {
-            const int nz_local_b = tid;
-            const int nz_global_b = nz_chunk_off + nz_local_b;
-            const __nv_bfloat16 *src_b = (nz_global_b < cnt)
-                ? val_ho + (int64_t)nz_global_b * N_PAD
-                : nullptr;
-            __nv_bfloat16 *dst_b = B_tile + nz_local_b * N_PAD;
-            if (src_b != nullptr) {
+        // -- Stage B_tile (32 * N_PAD bytes total, in 16-byte chunks) --
+        // Each K-row holds N_PAD bf16 = N_PAD/8 chunks of 8 bf16 (16 B). We
+        // partition by N-group (chunk_idx = n / 8) as the OUTER stride so the
+        // shmem layout matches WGMMA's Major::MN core-matrix layout, where the
+        // K rows of one 8×8 core sit contiguously (one u128 per row):
+        //
+        //   byte(k, n) = (n / 8) * (16 * NZ_CHUNK)        // skip past prior n-groups
+        //              +  k       *  16                   // K-row stride within group
+        //              + (n % 8)  *   2;                  // N-fast within u128
+        //
+        // For N_PAD=8, n/8 == 0 always, so this collapses to k*16 + n*2 — same
+        // as the prior staging. Total chunks = NZ_CHUNK * (N_PAD/8): 16 for
+        // N=8, 32 for N=16. One chunk per active staging thread.
+        constexpr int CHUNKS_PER_ROW = N_PAD / 8;            // 1 for N=8, 2 for N=16
+        constexpr int B_TOTAL_CHUNKS = NZ_CHUNK * CHUNKS_PER_ROW;
+        if (tid < B_TOTAL_CHUNKS) {
+            const int chunk_idx    = tid / NZ_CHUNK;         // n-group ∈ [0, CHUNKS_PER_ROW)
+            const int nz_local_b   = tid - chunk_idx * NZ_CHUNK;
+            const int nz_global_b  = nz_chunk_off + nz_local_b;
+            __nv_bfloat16 *dst_b = B_tile
+                + chunk_idx * (NZ_CHUNK * 8)    // n-group → outer stride
+                + nz_local_b * 8;               // K-row stride within n-group
+            if (nz_global_b < cnt) {
+                const __nv_bfloat16 *src_b =
+                    val_ho + (int64_t)nz_global_b * N_PAD + chunk_idx * 8;
                 *reinterpret_cast<int4*>(dst_b) = *reinterpret_cast<const int4*>(src_b);
             } else {
                 *reinterpret_cast<int4*>(dst_b) = make_int4(0, 0, 0, 0);
@@ -215,78 +234,85 @@ void disco_fwd_dense_kpacked_wgmma_blk_k(
 
 #if DISCO_KPACKED_WGMMA_DEBUG_MANUAL
         // -- Manual scalar matmul (debug) --
-        // Compute the 4 acc fragments using scalar FMAs over the staged
-        // A_tile / B_tile. Same per-thread (m, n) layout as WGMMA m64n8k16.f32
-        // (PTX ISA §9.7.16.5.4.4). Same output writeback. Lets us verify that
-        // the staging + frag mapping are correct independently of the WGMMA
-        // descriptor encoding.
+        // Same per-thread (m, n) layout as WGMMA m64nNk16.f32 (PTX ISA
+        // §9.7.16.5.4): for n8 → 4 cells, for n16 → 8 cells = 4 cells per
+        // n-group of 8 N-cols, ng-groups indexed by ng = c / 4.
         //
-        // Shmem layout convention:
-        //   A_tile[(m/8)*128 + k*8 + (m%8)]    — bc-major outer, k-major mid, M-fast inner
-        //   B_tile[k*8 + n]                    — k-major outer, n-fast inner
+        // Shmem layout:
+        //   A_tile[(m/8)*128 + k*8 + (m%8)]                — M-fast inner
+        //   B_tile[(n/8)*128 + k*8 + (n%8)]                — N-fast within
+        //                                                    8-N group, K-row
+        //                                                    stride 8 elements
         {
-            const int m_top = warp_id * 16 + (lane >> 2);
-            const int m_bot = m_top + 8;
-            const int n0    = (lane & 3) * 2;
-            const int n1    = n0 + 1;
+            const int m_top  = warp_id * 16 + (lane >> 2);
+            const int m_bot  = m_top + 8;
+            const int n_a    = (lane & 3) * 2;
+            const int n_b    = n_a + 1;
 
-            float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
             #pragma unroll
-            for (int k = 0; k < NZ_CHUNK; k++) {
-                // PyTorch passes -D__CUDA_NO_BFLOAT16_CONVERSIONS__ which
-                // disables implicit bf16→float casts; use __bfloat162float
-                // explicitly.
-                const float a_top = __bfloat162float(A_tile[(m_top / 8) * 128 + k * 8 + (m_top % 8)]);
-                const float a_bot = __bfloat162float(A_tile[(m_bot / 8) * 128 + k * 8 + (m_bot % 8)]);
-                const float b_n0  = __bfloat162float(B_tile[k * N_PAD + n0]);
-                const float b_n1  = __bfloat162float(B_tile[k * N_PAD + n1]);
-                a0 += a_top * b_n0;
-                a1 += a_top * b_n1;
-                a2 += a_bot * b_n0;
-                a3 += a_bot * b_n1;
+            for (int ng = 0; ng < N_PAD / 8; ng++) {
+                const int n0 = n_a + 8 * ng;
+                const int n1 = n_b + 8 * ng;
+                float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+                #pragma unroll
+                for (int k = 0; k < NZ_CHUNK; k++) {
+                    // PyTorch passes -D__CUDA_NO_BFLOAT16_CONVERSIONS__ which
+                    // disables implicit bf16→float casts; use __bfloat162float
+                    // explicitly.
+                    const float a_top = __bfloat162float(A_tile[(m_top / 8) * 128 + k * 8 + (m_top % 8)]);
+                    const float a_bot = __bfloat162float(A_tile[(m_bot / 8) * 128 + k * 8 + (m_bot % 8)]);
+                    const float b_n0  = __bfloat162float(B_tile[(n0 / 8) * 128 + k * 8 + (n0 % 8)]);
+                    const float b_n1  = __bfloat162float(B_tile[(n1 / 8) * 128 + k * 8 + (n1 % 8)]);
+                    a0 += a_top * b_n0;
+                    a1 += a_top * b_n1;
+                    a2 += a_bot * b_n0;
+                    a3 += a_bot * b_n1;
+                }
+                acc[ng * 4 + 0] += a0;
+                acc[ng * 4 + 1] += a1;
+                acc[ng * 4 + 2] += a2;
+                acc[ng * 4 + 3] += a3;
             }
-            acc[0] += a0;
-            acc[1] += a1;
-            acc[2] += a2;
-            acc[3] += a3;
         }
 #else
-        // -- WGMMA m64n8k16, accumulating --
+        // -- WGMMA m64nNk16, accumulating --
         // Descriptor LBO/SBO are byte strides between 8×8 core matrices in
-        // shmem, stored in 16-byte (uint128_t) units. The bitfield mnemonics
-        // are misleading; the source of truth is `cute::make_gmma_desc` in
-        //   external/cutlass/include/cute/atom/mma_traits_sm90_gmma.hpp
-        // which for Major::MN INTERLEAVE assigns:
+        // shmem, stored in 16-byte (uint128_t) units. The CUTLASS reference
+        // (external/cutlass/include/cute/atom/mma_traits_sm90_gmma.hpp,
+        // make_gmma_desc<Major::MN> INTERLEAVE) assigns:
         //   leading_byte_offset_ = K-outer stride (8-K-block to next 8-K-block)
-        //   stride_byte_offset_  = M/N-outer stride (8-MN-block to next 8-MN-block)
+        //   stride_byte_offset_  = M/N-outer stride (8-MN-block to next)
         // `make_wgmma_desc(ptr, leading, stride)` lands `leading` in bits
-        // 16-29 (the leading_byte_offset_ field) and `stride` in bits 32-45
-        // (the stride_byte_offset_ field).
+        // 16-29 and `stride` in bits 32-45.
         //
-        // Both A and B sit in our shmem as Major::MN-style tiles (M-fast in
-        // core for A → trans-a=1; N-fast in core for B → trans-b=0 since
-        // PTX trans-b semantics differ from trans-a). For bf16 K=16 the
-        // core is 8×8 = 128 B, so:
+        // A is Major::MN (M-fast in core), B is Major::MN (N-fast in core).
         //
-        //   A [M=64, K=16], byte(m,k)=(m/8)*256 + (m%8 + 8*k)*2:
-        //     leading (K-outer block stride): 128 B → field  8
-        //     stride  (M-outer block stride): 256 B → field 16
+        //   A [M=64, K=16], byte(m,k) = (m/8)*256 + (m%8 + 8*k)*2:
+        //     leading (K-outer): 128 B  → field  8
+        //     stride  (M-outer): 256 B  → field 16
         //
-        //   B [K=16, N=8],  byte(k,n)=(k*8 + n)*2:
-        //     leading (K-outer block stride): 128 B → field  8
-        //     stride  (N-outer block stride): unused (only one N-block)
+        //   B [K=16, N=N_PAD], byte(k,n) = (n/8)*256 + k*16 + (n%8)*2:
+        //     N=8 :  1 N-block, 2 K-blocks (K-stride 128 B within n-group)
+        //              leading=8, stride=0 (N-outer unused)
+        //     N=16:  2 N-blocks, 2 K-blocks
+        //              K-stride 128 B within n-group, N-stride 256 B between
+        //              leading=8, stride=16
         wgmma_fence();
-        constexpr uint32_t A_LEADING_FIELD = 8;    // K-outer 8-block stride → 128 B
-        constexpr uint32_t A_STRIDE_FIELD  = 16;   // M-outer 8-block stride → 256 B
-        constexpr uint32_t B_LEADING_FIELD = 8;    // K-outer 8-block stride → 128 B
-        constexpr uint32_t B_STRIDE_FIELD  = 0;    // N-outer unused (one N-block)
+        constexpr uint32_t A_LEADING_FIELD = 8;
+        constexpr uint32_t A_STRIDE_FIELD  = 16;
+        constexpr uint32_t B_LEADING_FIELD = 8;                       // K-outer 128 B
+        constexpr uint32_t B_STRIDE_FIELD  = (N_PAD == 8) ? 0 : 16;   // N-outer 0 or 256 B
         uint64_t desc_a = make_wgmma_desc(A_tile,
                                           A_LEADING_FIELD * 16,
                                           A_STRIDE_FIELD  * 16);
         uint64_t desc_b = make_wgmma_desc(B_tile,
                                           B_LEADING_FIELD * 16,
                                           B_STRIDE_FIELD  * 16);
-        wgmma_m64n8k16_acc(acc, desc_a, desc_b);
+        if constexpr (N_PAD == 8) {
+            wgmma_m64n8k16_acc(acc, desc_a, desc_b);
+        } else { // N_PAD == 16
+            wgmma_m64n16k16_acc(acc, desc_a, desc_b);
+        }
         wgmma_commit_group();
         wgmma_wait_group<0>();
 #endif
@@ -295,16 +321,17 @@ void disco_fwd_dense_kpacked_wgmma_blk_k(
     }
 
     // ----------------------- writeback -----------------------
-    // Map the 4 fragment cells to (bc, wo_local, k_kern):
-    //   warp_id w in [0, 4), lane l in [0, 32).
-    //   cell 0: m = w*16 + l/4,     n = (l%4)*2
-    //   cell 1: m = w*16 + l/4,     n = (l%4)*2 + 1
-    //   cell 2: m = w*16 + l/4 + 8, n = (l%4)*2
-    //   cell 3: m = w*16 + l/4 + 8, n = (l%4)*2 + 1
+    // m64nNk16.f32 fragment-to-(m, n) mapping (PTX ISA §9.7.16.5.4): each
+    // thread holds N/2 fp32 cells, organised into n-groups of 4 cells per
+    // 8 N-cols. Within a group:
+    //   cell 4*ng+0: m = w*16 + l/4,     n = (l%4)*2     + 8*ng
+    //   cell 4*ng+1: m = w*16 + l/4,     n = (l%4)*2 + 1 + 8*ng
+    //   cell 4*ng+2: m = w*16 + l/4 + 8, n = (l%4)*2     + 8*ng
+    //   cell 4*ng+3: m = w*16 + l/4 + 8, n = (l%4)*2 + 1 + 8*ng
     const int m01 = warp_id * 16 + (lane >> 2);          // m for cells 0, 1
     const int m23 = m01 + 8;                              // m for cells 2, 3
-    const int n01 = (lane & 3) * 2;                       // n for cells 0, 2
-    const int n13 = n01 + 1;                              // n for cells 1, 3
+    const int n_a = (lane & 3) * 2;                       // base n for "even" cells
+    const int n_b = n_a + 1;                              // base n for "odd"  cells
 
     const int bc01 = bc_start + (m01 >> 3);              // m / 8
     const int wo01 = wo_base  + (m01 & 7);               // m % 8
@@ -316,10 +343,15 @@ void disco_fwd_dense_kpacked_wgmma_blk_k(
         out[((int64_t)bc_o * K + k_o) * Ho * Wo + (int64_t)ho * Wo + wo_o] =
             __float2bfloat16(v);
     };
-    write_cell(bc01, wo01, n01, acc[0]);
-    write_cell(bc01, wo01, n13, acc[1]);
-    write_cell(bc23, wo23, n01, acc[2]);
-    write_cell(bc23, wo23, n13, acc[3]);
+    #pragma unroll
+    for (int ng = 0; ng < N_PAD / 8; ng++) {
+        const int n0 = n_a + 8 * ng;
+        const int n1 = n_b + 8 * ng;
+        write_cell(bc01, wo01, n0, acc[ng * 4 + 0]);
+        write_cell(bc01, wo01, n1, acc[ng * 4 + 1]);
+        write_cell(bc23, wo23, n0, acc[ng * 4 + 2]);
+        write_cell(bc23, wo23, n1, acc[ng * 4 + 3]);
+    }
 #else
     // Non-sm_90a target: WGMMA opcodes aren't available here. This includes
     // pre-Hopper, plain sm_90 (without the `a` suffix), and Blackwell+.
@@ -359,17 +391,18 @@ bool disco_cuda_fwd_dense_kpacked_wgmma_try(
     if (Wi % Wo != 0)           return false;   // pscale must be integer
     if ((B * C) % 8 != 0)       return false;
     if (Wo % 8 != 0)            return false;
-    if (pack_val.size(2) != 8)  return false;   // K_PAD==8 only
+
+    const int64_t K_PAD = pack_val.size(2);
+    if (K_PAD != 8 && K_PAD != 16) return false;   // n8 / n16 wgmma shapes only
 
     constexpr int BC_TILE  = 8;
     constexpr int WO_TILE  = 8;
     constexpr int NZ_CHUNK = 16;
-    constexpr int N_PAD    = 8;
 
     const int NBR_PAD = (int)pack_idx.size(1);
 
-    // Shmem: 2048 B (A) + 256 B (B) = 2304 B per CTA.
-    const size_t shmem_bytes = 2304;
+    // Shmem: 2048 B (A) + 32*N_PAD B (B) per CTA.
+    const size_t shmem_bytes = 2048 + 32 * (size_t)K_PAD;
     auto stream = at::cuda::getCurrentCUDAStream().stream();
 
     // Cast pack_val to bf16 if needed (psi values are stored fp32 by default).
@@ -377,22 +410,28 @@ bool disco_cuda_fwd_dense_kpacked_wgmma_try(
         ? pack_val
         : pack_val.to(at::ScalarType::BFloat16);
 
-    auto fn = &disco_fwd_dense_kpacked_wgmma_blk_k<BC_TILE, WO_TILE, NZ_CHUNK, N_PAD>;
-    cudaFuncSetAttribute(reinterpret_cast<const void*>(fn),
-                         cudaFuncAttributeMaxDynamicSharedMemorySize,
-                         (int)shmem_bytes);
-
     const int pscale = (int)(Wi / Wo);
 
-    dim3 grid((unsigned)(Ho * (Wo / WO_TILE)), (unsigned)((B * C) / BC_TILE));
-    fn<<<grid, 128, shmem_bytes, stream>>>(
-        (int)Hi, (int)Wi, (int)K, (int)Ho, (int)Wo, NBR_PAD, pscale,
-        pack_idx.data_ptr<int64_t>(),
-        reinterpret_cast<const __nv_bfloat16*>(pack_val_bf16.data_ptr()),
-        pack_count.data_ptr<int64_t>(),
-        reinterpret_cast<const __nv_bfloat16*>(inp.data_ptr()),
-        reinterpret_cast<__nv_bfloat16*>(out.data_ptr())
-    );
+    auto launch = [&] (auto fn) {
+        cudaFuncSetAttribute(reinterpret_cast<const void*>(fn),
+                             cudaFuncAttributeMaxDynamicSharedMemorySize,
+                             (int)shmem_bytes);
+        dim3 grid((unsigned)(Ho * (Wo / WO_TILE)), (unsigned)((B * C) / BC_TILE));
+        fn<<<grid, 128, shmem_bytes, stream>>>(
+            (int)Hi, (int)Wi, (int)K, (int)Ho, (int)Wo, NBR_PAD, pscale,
+            pack_idx.data_ptr<int64_t>(),
+            reinterpret_cast<const __nv_bfloat16*>(pack_val_bf16.data_ptr()),
+            pack_count.data_ptr<int64_t>(),
+            reinterpret_cast<const __nv_bfloat16*>(inp.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(out.data_ptr())
+        );
+    };
+
+    if (K_PAD == 8) {
+        launch(&disco_fwd_dense_kpacked_wgmma_blk_k<BC_TILE, WO_TILE, NZ_CHUNK, 8>);
+    } else { // K_PAD == 16
+        launch(&disco_fwd_dense_kpacked_wgmma_blk_k<BC_TILE, WO_TILE, NZ_CHUNK, 16>);
+    }
     return true;
 }
 
