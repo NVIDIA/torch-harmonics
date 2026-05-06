@@ -472,7 +472,7 @@ void launch_spc_attn_ring_fwd(int nloc,
                                                                                  _quad_weights, _y_acc, _alpha_sum, _qdotk_max);
         } else {
 
-            s2_attn_fwd_ring_step_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE>
+            s2_attn_fwd_ring_step_special_vec_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE>
                                                <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx, nlon_in, pscale,
                                                                                  lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
                                                                                  _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, 
