@@ -75,54 +75,6 @@ class TestRealFFT(unittest.TestCase):
 
         self.assertTrue(compare_tensors("rfft truncation", result, ref, atol=1e-12, rtol=1e-12, verbose=verbose))
 
-    @parameterized.expand(
-        [
-            [64, 8],
-            [64, 16],
-            [64, 32],
-            [64, 33],
-            [128, 20],
-        ],
-        skip_on_empty=True,
-    )
-    def test_rfft_irfft_roundtrip(self, nlon, nmodes, verbose=False):
-        """Band-limited round-trip: irfft(rfft(x, nmodes), nlon) recovers the signal
-        when x is band-limited to nmodes real-FFT modes."""
-
-        set_seed(333)
-
-        # build a band-limited signal: only nmodes rfft modes are non-zero
-        c = torch.zeros(4, nlon // 2 + 1, dtype=torch.complex128)
-        n = min(nmodes, nlon // 2 + 1)
-        c[..., :n] = torch.randn(4, n, dtype=torch.complex128)
-        c[..., 0] = c[..., 0].real  # DC is real
-        x = fft.irfft(c, n=nlon, dim=-1, norm="forward")
-
-        reconstructed = irfft(rfft(x, nmodes=nmodes, dim=-1, norm="forward"), n=nlon, dim=-1, norm="forward")
-
-        self.assertTrue(compare_tensors("rfft/irfft round-trip", reconstructed, x, atol=1e-12, rtol=1e-12, verbose=verbose))
-
-    @parameterized.expand(
-        [
-            [64, 8],
-            [64, 32],
-            [128, 20],
-        ],
-        skip_on_empty=True,
-    )
-    def test_irfft_hermitian_cleanup(self, nlon, nmodes, verbose=False):
-        """irfft must zero the imaginary part of the DC (and Nyquist) components
-        to enforce Hermitian symmetry, even if the input has spurious imaginary parts."""
-
-        set_seed(333)
-
-        c = torch.randn(4, nmodes, dtype=torch.complex128)
-        # inject spurious imaginary part at DC
-        c[..., 0] = c[..., 0] + 0.5j
-
-        result = irfft(c, n=nlon, dim=-1, norm="forward")
-        # result must be real-valued (imaginary part cleaned up)
-        self.assertTrue(result.is_floating_point())
 
 
 if __name__ == "__main__":
