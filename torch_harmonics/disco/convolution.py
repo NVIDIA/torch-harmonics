@@ -379,6 +379,74 @@ def _precompute_convolution_tensor_s2(
     return out_idx, out_vals, out_roff
 
 
+def _maybe_kpack_psi(psi_packed_idx, psi_packed_vals, psi_packed_count, n_align: int = 8):
+    """Reshape per-k_kern packed psi into a K-packed format if all k_kern share
+    the same (hi, wi_base) support per output latitude.
+
+    Per-k_kern layout (input):
+        psi_packed_idx   : [K, Ho, NBR_PAD, 2]   int64
+        psi_packed_vals  : [K, Ho, NBR_PAD]      fp32
+        psi_packed_count : [K, Ho]               int64
+
+    K-packed layout (output, when shared support holds):
+        kpacked_idx      : [Ho, NBR_PAD, 2]      int64    (== psi_packed_idx[0])
+        kpacked_vals     : [Ho, NBR_PAD, K_pad]  fp32     (psi_packed_vals permuted (1,2,0), zero-padded along K)
+        kpacked_count    : [Ho]                  int64    (== psi_packed_count[0])
+        K_pad            : K rounded up to next multiple of n_align (matches WGMMA's N=multiples-of-8)
+
+    Returns (kpacked_idx, kpacked_vals, kpacked_count, K_pad) on success, or
+    None when the K bases have differing support (e.g. piecewise-linear basis)
+    — the caller should fall back to the per-k_kern path.
+
+    The shared-support assumption is already baked into the existing CSR layout
+    (see test_precompute_convolution_tensor.py:238 — `nkernel = (rend-rbeg) //
+    kernel_size` requires equal cnt across k_kern). For all current bases except
+    "piecewise linear" this is structurally guaranteed.
+    """
+    if psi_packed_count.shape[0] <= 1:
+        # Trivially "shared" with K=1; degenerate case.
+        K = int(psi_packed_count.shape[0])
+        kpacked_idx   = psi_packed_idx[0].contiguous()
+        kpacked_count = psi_packed_count[0].contiguous()
+        K_pad = ((K + n_align - 1) // n_align) * n_align
+        Ho      = psi_packed_vals.shape[1]
+        NBR_PAD = psi_packed_vals.shape[2]
+        kpacked_vals = torch.zeros(Ho, NBR_PAD, K_pad,
+                                   dtype=psi_packed_vals.dtype,
+                                   device=psi_packed_vals.device)
+        kpacked_vals[:, :, :K] = psi_packed_vals.permute(1, 2, 0)
+        return kpacked_idx, kpacked_vals.contiguous(), kpacked_count, K_pad
+
+    # Shared count?
+    if not torch.equal(psi_packed_count, psi_packed_count[0:1].expand_as(psi_packed_count)):
+        return None
+
+    # Shared idx? Padded entries are zero in both, so whole-tensor equality is
+    # sufficient — no need to mask by count.
+    if not torch.equal(psi_packed_idx, psi_packed_idx[0:1].expand_as(psi_packed_idx)):
+        return None
+
+    # Shared support — produce K-packed layout.
+    K = int(psi_packed_count.shape[0])
+    kpacked_idx   = psi_packed_idx[0].contiguous()
+    kpacked_count = psi_packed_count[0].contiguous()
+
+    K_pad = ((K + n_align - 1) // n_align) * n_align
+    vals_perm = psi_packed_vals.permute(1, 2, 0)         # [Ho, NBR_PAD, K]
+    if K_pad == K:
+        kpacked_vals = vals_perm.contiguous()
+    else:
+        Ho      = psi_packed_vals.shape[1]
+        NBR_PAD = psi_packed_vals.shape[2]
+        kpacked_vals = torch.zeros(Ho, NBR_PAD, K_pad,
+                                   dtype=psi_packed_vals.dtype,
+                                   device=psi_packed_vals.device)
+        kpacked_vals[:, :, :K] = vals_perm
+        kpacked_vals = kpacked_vals.contiguous()
+
+    return kpacked_idx, kpacked_vals, kpacked_count, K_pad
+
+
 class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
     """
     Abstract base class for discrete-continuous convolutions
@@ -565,6 +633,21 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                 self.register_buffer("psi_packed_idx",   psi_packed_idx.contiguous(),   persistent=False)
                 self.register_buffer("psi_packed_vals",  psi_packed_vals.contiguous(),  persistent=False)
                 self.register_buffer("psi_packed_count", psi_packed_count.contiguous(), persistent=False)
+
+                # K-packed layout for the WGMMA path (Hopper bf16/fp16). Built
+                # whenever k_kern share their (hi, wi_base) support per ho
+                # (true for every basis except piecewise linear). When unavail
+                # `psi_kpacked_*` are not registered and forward falls back to
+                # the per-k_kern dense kernel.
+                kpack = _maybe_kpack_psi(psi_packed_idx, psi_packed_vals, psi_packed_count)
+                if kpack is not None:
+                    kpacked_idx, kpacked_vals, kpacked_count, K_pad = kpack
+                    self.register_buffer("psi_kpacked_idx",   kpacked_idx,   persistent=False)
+                    self.register_buffer("psi_kpacked_vals",  kpacked_vals,  persistent=False)
+                    self.register_buffer("psi_kpacked_count", kpacked_count, persistent=False)
+                    self.psi_kpacked_K_pad = K_pad
+                else:
+                    self.psi_kpacked_K_pad = None
             else:
                 self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
@@ -731,6 +814,17 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
                 self.register_buffer("psi_packed_idx",   psi_packed_idx.contiguous(),   persistent=False)
                 self.register_buffer("psi_packed_vals",  psi_packed_vals.contiguous(),  persistent=False)
                 self.register_buffer("psi_packed_count", psi_packed_count.contiguous(), persistent=False)
+
+                # K-packed layout for the WGMMA path — see DiscreteContinuousConvS2.
+                kpack = _maybe_kpack_psi(psi_packed_idx, psi_packed_vals, psi_packed_count)
+                if kpack is not None:
+                    kpacked_idx, kpacked_vals, kpacked_count, K_pad = kpack
+                    self.register_buffer("psi_kpacked_idx",   kpacked_idx,   persistent=False)
+                    self.register_buffer("psi_kpacked_vals",  kpacked_vals,  persistent=False)
+                    self.register_buffer("psi_kpacked_count", kpacked_count, persistent=False)
+                    self.psi_kpacked_K_pad = K_pad
+                else:
+                    self.psi_kpacked_K_pad = None
             else:
                 self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 

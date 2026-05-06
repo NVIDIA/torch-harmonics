@@ -458,5 +458,159 @@ class TestDenseKernelWiring(unittest.TestCase):
             self.assertFalse(hasattr(conv_dense, name), f"buffer {name} should not be registered when use_dense_kernel=True")
 
 
+class TestKPackedKernel(unittest.TestCase):
+    """Tests for the K-packed buffers and the scalar K-packed CUDA kernel
+    (`forward_dense_kpacked`). The kernel reads psi laid out as
+    [Ho, NBR_PAD, K_PAD] and produces output identical to the per-k_kern dense
+    kernel for bases with shared support across k_kern (everything except
+    piecewise linear)."""
+
+    def setUp(self):
+        if not optimized_kernels_is_available():
+            self.skipTest("optimized disco kernels not available")
+        disable_tf32()
+        set_seed(333)
+
+    @parameterized.expand(
+        [
+            # (basis_type, expects_kpacked)
+            # Bases with shared support across k_kern → kpacked buffers should be built.
+            ("harmonic",        True),
+            ("morlet",          True),
+            ("zernike",         True),
+            ("fourier-bessel",  True),
+            # Piecewise linear has per-k_kern support → no kpacked buffers.
+            ("piecewise linear", False),
+        ],
+        skip_on_empty=True,
+    )
+    def test_kpacked_buffer_registration(self, basis_type, expects_kpacked):
+        """psi_kpacked_* must be registered for shared-support bases and absent
+        for piecewise linear."""
+        from torch_harmonics import DiscreteContinuousConvS2
+
+        in_shape, out_shape = (16, 32), (16, 32)
+        kernel_shape = (3, 3) if basis_type != "piecewise linear" else (3,)
+        theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(in_shape[0] - 1) \
+            if isinstance(kernel_shape, tuple) else \
+            (kernel_shape + 1) * torch.pi / float(in_shape[0] - 1)
+
+        conv = DiscreteContinuousConvS2(
+            in_channels=2, out_channels=2,
+            in_shape=in_shape, out_shape=out_shape,
+            kernel_shape=kernel_shape,
+            basis_type=basis_type, basis_norm_mode="mean",
+            bias=False, theta_cutoff=theta_cutoff,
+            optimized_kernel=True, use_dense_kernel=True,
+        )
+
+        kpacked_names = ("psi_kpacked_idx", "psi_kpacked_vals", "psi_kpacked_count")
+        if expects_kpacked:
+            for name in kpacked_names:
+                self.assertTrue(hasattr(conv, name),
+                                f"{name} should be registered for basis '{basis_type}'")
+            self.assertIsNotNone(conv.psi_kpacked_K_pad,
+                                 f"psi_kpacked_K_pad should be set for '{basis_type}'")
+            # K_pad should be a multiple of 8 and >= K
+            self.assertEqual(conv.psi_kpacked_K_pad % 8, 0)
+            self.assertGreaterEqual(conv.psi_kpacked_K_pad, conv.kernel_size)
+            # Shape sanity
+            Ho      = conv.nlat_out
+            NBR_PAD = conv.psi_packed_idx.shape[2]
+            K_pad   = conv.psi_kpacked_K_pad
+            self.assertEqual(tuple(conv.psi_kpacked_idx.shape),   (Ho, NBR_PAD, 2))
+            self.assertEqual(tuple(conv.psi_kpacked_vals.shape),  (Ho, NBR_PAD, K_pad))
+            self.assertEqual(tuple(conv.psi_kpacked_count.shape), (Ho,))
+        else:
+            for name in kpacked_names:
+                self.assertFalse(hasattr(conv, name),
+                                 f"{name} should NOT be registered for basis '{basis_type}'")
+            self.assertIsNone(conv.psi_kpacked_K_pad,
+                              f"psi_kpacked_K_pad should be None for '{basis_type}'")
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required for forward_dense_kpacked kernel")
+    @parameterized.expand(
+        [
+            # (in_shape, out_shape, kernel_shape, basis, dtype, atol, rtol)
+            [(24, 48), (12, 24), (3, 3), "harmonic", torch.float32, 1e-5, 1e-5],
+            [(24, 48), (12, 24), (3, 4), "morlet",   torch.float32, 1e-5, 1e-5],
+            [(24, 48), (12, 24), (3,),   "zernike",  torch.float32, 1e-5, 1e-5],
+            # bf16 — looser tolerance
+            [(24, 48), (12, 24), (3, 3), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            # WGMMA-firing configs: bf16, K=8 (harmonic(4,2)), B*C=8, Wo divisible
+            # by 8. The four rows below sweep pscale ∈ {1, 2, 3, 4} via Wi/Wo.
+            # On Hopper this routes through the WGMMA fast path; on V100/A100 the
+            # host runtime check falls back to the scalar K-packed kernel — both
+            # must agree with the per-k_kern dense reference.
+            [(16, 32), (16, 32),  (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=1
+            [(32, 64), (16, 32),  (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=2
+            [(32, 96), (16, 32),  (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=3
+            [(32, 128), (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=4
+        ],
+        skip_on_empty=True,
+    )
+    def test_kpacked_kernel_matches_per_k_kernel(
+        self, in_shape, out_shape, kernel_shape, basis_type, dtype, atol, rtol,
+    ):
+        """The K-packed CUDA kernel must produce identical output to the existing
+        per-k_kern dense kernel (within precision tolerance) when both are
+        invoked on the same input and matching psi data."""
+        if not cuda_kernels_is_available():
+            self.skipTest("CUDA disco kernels not available")
+        from torch_harmonics import DiscreteContinuousConvS2
+
+        device = torch.device("cuda")
+        nlat_in, nlon_in = in_shape
+
+        if isinstance(kernel_shape, int) or len(kernel_shape) == 1:
+            k0 = kernel_shape if isinstance(kernel_shape, int) else kernel_shape[0]
+            theta_cutoff = (k0 + 1) * torch.pi / float(nlat_in - 1)
+        else:
+            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
+
+        conv = DiscreteContinuousConvS2(
+            in_channels=8, out_channels=4,
+            in_shape=in_shape, out_shape=out_shape,
+            kernel_shape=kernel_shape,
+            basis_type=basis_type, basis_norm_mode="mean",
+            bias=False, theta_cutoff=theta_cutoff,
+            optimized_kernel=True, use_dense_kernel=True,
+        ).to(device)
+
+        if conv.psi_kpacked_K_pad is None:
+            self.skipTest(f"basis '{basis_type}' did not produce K-packed buffers")
+
+        # Need B*C divisible by BC_TILE=8 and Wo divisible by WO_TILE=8 for the
+        # kpacked kernel as currently written.
+        B, C = 1, 8
+        x = torch.randn(B, C, nlat_in, nlon_in, device=device, dtype=dtype)
+
+        # Per-k_kern dense kernel output (reference).
+        try:
+            from torch_harmonics.disco import disco_kernels
+        except Exception:
+            self.skipTest("disco_kernels op namespace not loadable")
+        if not hasattr(disco_kernels, "forward_dense_kpacked"):
+            self.skipTest("forward_dense_kpacked op not registered (rebuild needed?)")
+
+        kernel_size = conv.kernel_size
+        out_ref = disco_kernels.forward_dense.default(
+            x.contiguous(),
+            conv.psi_packed_idx, conv.psi_packed_vals, conv.psi_packed_count,
+            kernel_size, conv.nlat_out, conv.nlon_out,
+        )
+
+        out_kpacked = disco_kernels.forward_dense_kpacked.default(
+            x.contiguous(),
+            conv.psi_kpacked_idx, conv.psi_kpacked_vals, conv.psi_kpacked_count,
+            kernel_size, conv.nlat_out, conv.nlon_out,
+        )
+
+        self.assertEqual(tuple(out_ref.shape), tuple(out_kpacked.shape))
+        self.assertTrue(compare_tensors(
+            "kpacked vs per-k_kern forward_dense",
+            out_kpacked, out_ref, atol=atol, rtol=rtol, verbose=True))
+
+
 if __name__ == "__main__":
     unittest.main()

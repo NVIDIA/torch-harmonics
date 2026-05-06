@@ -63,4 +63,17 @@ namespace disco_kernels {
     torch::Tensor disco_cuda_bwd_dense(torch::Tensor inp, torch::Tensor pack_idx, torch::Tensor pack_val,
                                        torch::Tensor pack_count, int64_t K, int64_t Ho, int64_t Wo);
 
+    // K-packed dense-psi forward kernel (scalar checkpoint for the WGMMA path).
+    // pack_idx/pack_val have shape [Ho, NBR_PAD, 2] / [Ho, NBR_PAD, K_PAD], not
+    // [K, Ho, ...] — see _maybe_kpack_psi in convolution.py.
+    torch::Tensor disco_cuda_fwd_dense_kpacked(torch::Tensor inp, torch::Tensor pack_idx, torch::Tensor pack_val,
+                                               torch::Tensor pack_count, int64_t K, int64_t Ho, int64_t Wo);
+
+    // K-packed WGMMA fast path (Hopper SM_90+, bf16, K_PAD=8, pscale=1). Returns
+    // true iff the kernel was actually launched. On false the caller should fall
+    // back to disco_cuda_fwd_dense_kpacked (scalar).
+    bool disco_cuda_fwd_dense_kpacked_wgmma_try(torch::Tensor inp, torch::Tensor pack_idx, torch::Tensor pack_val,
+                                                torch::Tensor pack_count, torch::Tensor out,
+                                                int64_t K, int64_t Ho, int64_t Wo);
+
 }

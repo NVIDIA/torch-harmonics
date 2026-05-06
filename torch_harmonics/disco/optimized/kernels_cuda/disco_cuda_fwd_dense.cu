@@ -217,33 +217,24 @@ static void dispatch_dense_fwd_by_wo(int B, int C, int K, int Hi, int Wi, int Ho
                                      const int64_t *pack_count, const STORAGE_T *inp, STORAGE_T *out,
                                      cudaStream_t stream)
 {
-    // Dispatch by Wo. Threshold at NTH * (ELXTH_MAX/2) instead of NTH * ELXTH_MAX
-    // routes moderate Wo (e.g. 1440) to the next-larger BDIM_X with a smaller
-    // per-thread ELXTH — that lowers per-thread accumulator register pressure
-    // (acc[BC_TILE][ELXTH] fp32) and avoids the local-memory spill that ncu
-    // flagged at ELXTH=23 (49% est. speedup). All branches start ELXTH=1 so
-    // the recursion picks the smallest valid ELXTH.
-    constexpr int ELXTH_TARGET = ELXTH_MAX / 2;   // target max ELXTH per branch
-    if (Wo <= 64 * ELXTH_TARGET) {
+    if (Wo <= 64 * ELXTH_MAX) {
         launch_dense_fwd<64, 1, BC_TILE, STORAGE_T, COMPUTE_T>(
             B, C, K, Hi, Wi, Ho, Wo, NBR_PAD, pscale,
             pack_idx, pack_val, pack_count, inp, out, stream);
-    } else if (Wo <= 128 * ELXTH_TARGET) {
-        launch_dense_fwd<128, 1, BC_TILE, STORAGE_T, COMPUTE_T>(
+    } else if (Wo <= 128 * ELXTH_MAX) {
+        launch_dense_fwd<128, (ELXTH_MAX / 2) + 1, BC_TILE, STORAGE_T, COMPUTE_T>(
             B, C, K, Hi, Wi, Ho, Wo, NBR_PAD, pscale,
             pack_idx, pack_val, pack_count, inp, out, stream);
-    } else if (Wo <= 256 * ELXTH_TARGET) {
-        launch_dense_fwd<256, 1, BC_TILE, STORAGE_T, COMPUTE_T>(
+    } else if (Wo <= 256 * ELXTH_MAX) {
+        launch_dense_fwd<256, (ELXTH_MAX / 2) + 1, BC_TILE, STORAGE_T, COMPUTE_T>(
             B, C, K, Hi, Wi, Ho, Wo, NBR_PAD, pscale,
             pack_idx, pack_val, pack_count, inp, out, stream);
-    } else if (Wo <= 512 * ELXTH_TARGET) {
-        launch_dense_fwd<512, 1, BC_TILE, STORAGE_T, COMPUTE_T>(
+    } else if (Wo <= 512 * ELXTH_MAX) {
+        launch_dense_fwd<512, (ELXTH_MAX / 2) + 1, BC_TILE, STORAGE_T, COMPUTE_T>(
             B, C, K, Hi, Wi, Ho, Wo, NBR_PAD, pscale,
             pack_idx, pack_val, pack_count, inp, out, stream);
     } else if (Wo <= 1024 * ELXTH_MAX) {
-        // High end: keep the wider ELXTH range (start=1, max=ELXTH_MAX) to
-        // preserve the previous max Wo ceiling of 1024 * ELXTH_MAX.
-        launch_dense_fwd<1024, 1, BC_TILE, STORAGE_T, COMPUTE_T>(
+        launch_dense_fwd<1024, (ELXTH_MAX / 2) + 1, BC_TILE, STORAGE_T, COMPUTE_T>(
             B, C, K, Hi, Wi, Ho, Wo, NBR_PAD, pscale,
             pack_idx, pack_val, pack_count, inp, out, stream);
     } else {
