@@ -164,8 +164,8 @@ void disco_fwd_dense_kpacked_wgmma_blk_k(
     for (int nz_chunk_off = 0; nz_chunk_off < cnt; nz_chunk_off += NZ_CHUNK) {
 
         // -- Stage A_tile (128 cells = 1 per thread) --
-        // Each thread copies 8 bf16 values (one wo_local strip at fixed bc, nz)
-        // from gmem inp into A_tile shmem.
+        // Each thread copies 8 narrow values (one wo_local strip at fixed bc,
+        // nz) from gmem inp into A_tile shmem.
         const int bc_local = tid / NZ_CHUNK;     // [0, 8)
         const int nz_local = tid - bc_local * NZ_CHUNK;  // [0, 16)
         const int nz_global = nz_chunk_off + nz_local;
