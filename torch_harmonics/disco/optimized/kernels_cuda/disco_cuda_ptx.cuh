@@ -230,9 +230,11 @@ __device__ __forceinline__ void wgmma_wait_group() {
 
 // scale_a / scale_b / trans_a / trans_b must be PTX immediates; scale_d is a
 // PTX predicate operand (not a literal immediate). The wrappers below mirror
-// CUTLASS's MMA_64xNx16_F32BF16BF16_SS PTX patterns (see
-// external/cutlass/include/cute/arch/mma_sm90_gmma.hpp), instantiated for our
-// K-packed dense staging:
+// CUTLASS's MMA_64xNx16_F32{BF16BF16,F16F16}_SS PTX patterns from
+//   NVIDIA/cutlass v4.4.0 (cb37157d)
+//   include/cute/arch/mma_sm90_gmma.hpp
+//   https://github.com/NVIDIA/cutlass/blob/v4.4.0/include/cute/arch/mma_sm90_gmma.hpp
+// instantiated for our K-packed dense staging:
 //
 //   - A is M=64,K=16 with M fast in the 8x8 core matrix → tnspA = Major::MN = 1
 //   - B is K=16,N   with N fast in the 8x8 core matrix → tnspB = Major::MN = 1
@@ -242,9 +244,13 @@ __device__ __forceinline__ void wgmma_wait_group() {
 // Earlier hand-rolled versions of these wrappers passed scale_D as a literal
 // immediate `1` (instead of a predicate) and used `tnspB = 0`. ptxas accepted
 // the malformed input but silently produced wrong results.
+//
+// _bf16 variants use .f32.bf16.bf16; _fp16 variants use .f32.f16.f16. The PTX
+// is otherwise identical.
 
-// N = 8 → 4 fp32 accumulator regs per thread.
-__device__ __forceinline__ void wgmma_m64n8k16_acc(
+// ---- bf16 wrappers (.f32.bf16.bf16) ----
+
+__device__ __forceinline__ void wgmma_m64n8k16_acc_bf16(
     float (&d)[4], uint64_t desc_a, uint64_t desc_b)
 {
     int32_t scale_D = 1;
@@ -264,8 +270,7 @@ __device__ __forceinline__ void wgmma_m64n8k16_acc(
     );
 }
 
-// N = 16 → 8 fp32 accumulator regs per thread.
-__device__ __forceinline__ void wgmma_m64n16k16_acc(
+__device__ __forceinline__ void wgmma_m64n16k16_acc_bf16(
     float (&d)[8], uint64_t desc_a, uint64_t desc_b)
 {
     int32_t scale_D = 1;
@@ -286,8 +291,7 @@ __device__ __forceinline__ void wgmma_m64n16k16_acc(
     );
 }
 
-// N = 24 → 12 fp32 accumulator regs per thread.
-__device__ __forceinline__ void wgmma_m64n24k16_acc(
+__device__ __forceinline__ void wgmma_m64n24k16_acc_bf16(
     float (&d)[12], uint64_t desc_a, uint64_t desc_b)
 {
     int32_t scale_D = 1;
@@ -309,8 +313,7 @@ __device__ __forceinline__ void wgmma_m64n24k16_acc(
     );
 }
 
-// N = 32 → 16 fp32 accumulator regs per thread.
-__device__ __forceinline__ void wgmma_m64n32k16_acc(
+__device__ __forceinline__ void wgmma_m64n32k16_acc_bf16(
     float (&d)[16], uint64_t desc_a, uint64_t desc_b)
 {
     int32_t scale_D = 1;
@@ -319,6 +322,94 @@ __device__ __forceinline__ void wgmma_m64n32k16_acc(
         ".reg .pred p;\n"
         "setp.ne.b32 p, %18, 0;\n"
         "wgmma.mma_async.sync.aligned.m64n32k16.f32.bf16.bf16 "
+        "{%0, %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12, %13, %14, %15},"
+        " %16,"
+        " %17,"
+        " p,   %19, %20, %21, %22;\n"
+        "}\n"
+        : "+f"(d[0]),  "+f"(d[1]),  "+f"(d[2]),  "+f"(d[3]),
+          "+f"(d[4]),  "+f"(d[5]),  "+f"(d[6]),  "+f"(d[7]),
+          "+f"(d[8]),  "+f"(d[9]),  "+f"(d[10]), "+f"(d[11]),
+          "+f"(d[12]), "+f"(d[13]), "+f"(d[14]), "+f"(d[15])
+        : "l"(desc_a), "l"(desc_b),
+          "r"(scale_D), "n"(1), "n"(1), "n"(1), "n"(1)
+    );
+}
+
+// ---- fp16 wrappers (.f32.f16.f16) ----
+
+__device__ __forceinline__ void wgmma_m64n8k16_acc_fp16(
+    float (&d)[4], uint64_t desc_a, uint64_t desc_b)
+{
+    int32_t scale_D = 1;
+    asm volatile(
+        "{\n"
+        ".reg .pred p;\n"
+        "setp.ne.b32 p, %6, 0;\n"
+        "wgmma.mma_async.sync.aligned.m64n8k16.f32.f16.f16 "
+        "{%0, %1, %2, %3},"
+        " %4,"
+        " %5,"
+        " p,   %7,  %8,  %9,  %10;\n"
+        "}\n"
+        : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+        : "l"(desc_a), "l"(desc_b),
+          "r"(scale_D), "n"(1), "n"(1), "n"(1), "n"(1)
+    );
+}
+
+__device__ __forceinline__ void wgmma_m64n16k16_acc_fp16(
+    float (&d)[8], uint64_t desc_a, uint64_t desc_b)
+{
+    int32_t scale_D = 1;
+    asm volatile(
+        "{\n"
+        ".reg .pred p;\n"
+        "setp.ne.b32 p, %10, 0;\n"
+        "wgmma.mma_async.sync.aligned.m64n16k16.f32.f16.f16 "
+        "{%0, %1, %2, %3, %4, %5, %6, %7},"
+        " %8,"
+        " %9,"
+        " p,   %11, %12, %13, %14;\n"
+        "}\n"
+        : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]),
+          "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7])
+        : "l"(desc_a), "l"(desc_b),
+          "r"(scale_D), "n"(1), "n"(1), "n"(1), "n"(1)
+    );
+}
+
+__device__ __forceinline__ void wgmma_m64n24k16_acc_fp16(
+    float (&d)[12], uint64_t desc_a, uint64_t desc_b)
+{
+    int32_t scale_D = 1;
+    asm volatile(
+        "{\n"
+        ".reg .pred p;\n"
+        "setp.ne.b32 p, %14, 0;\n"
+        "wgmma.mma_async.sync.aligned.m64n24k16.f32.f16.f16 "
+        "{%0, %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11},"
+        " %12,"
+        " %13,"
+        " p,   %15, %16, %17, %18;\n"
+        "}\n"
+        : "+f"(d[0]),  "+f"(d[1]),  "+f"(d[2]),  "+f"(d[3]),
+          "+f"(d[4]),  "+f"(d[5]),  "+f"(d[6]),  "+f"(d[7]),
+          "+f"(d[8]),  "+f"(d[9]),  "+f"(d[10]), "+f"(d[11])
+        : "l"(desc_a), "l"(desc_b),
+          "r"(scale_D), "n"(1), "n"(1), "n"(1), "n"(1)
+    );
+}
+
+__device__ __forceinline__ void wgmma_m64n32k16_acc_fp16(
+    float (&d)[16], uint64_t desc_a, uint64_t desc_b)
+{
+    int32_t scale_D = 1;
+    asm volatile(
+        "{\n"
+        ".reg .pred p;\n"
+        "setp.ne.b32 p, %18, 0;\n"
+        "wgmma.mma_async.sync.aligned.m64n32k16.f32.f16.f16 "
         "{%0, %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12, %13, %14, %15},"
         " %16,"
         " %17,"

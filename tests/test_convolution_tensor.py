@@ -537,20 +537,43 @@ class TestKPackedKernel(unittest.TestCase):
             [(24, 48), (12, 24), (3,),   "zernike",  torch.float32, 1e-5, 1e-5],
             # bf16 — looser tolerance
             [(24, 48), (12, 24), (3, 3), "harmonic", torch.bfloat16, 5e-2, 5e-2],
-            # WGMMA-firing configs: bf16, B*C=8, Wo divisible by 8. The first
-            # four rows below sweep pscale ∈ {1, 2, 3, 4} via Wi/Wo with K=8
-            # (m64n8k16 wgmma shape). The fifth row uses K=16 (harmonic(4,4),
-            # m64n16k16 wgmma shape). On Hopper this routes through the WGMMA
-            # fast path; on V100/A100 the host runtime check falls back to the
-            # scalar K-packed kernel — both must agree with the per-k_kern
-            # dense reference.
-            [(16, 32),  (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=1, K=8
-            [(32, 64),  (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=2, K=8
-            [(32, 96),  (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=3, K=8
-            [(32, 128), (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=4, K=8
-            [(16, 32),  (16, 32), (4, 4), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=1, K=16
-            [(16, 32),  (16, 32), (3, 3), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=1, K=9 → K_PAD=16
-            [(32, 64),  (16, 32), (3, 3), "harmonic", torch.bfloat16, 5e-2, 5e-2],  # pscale=2, K=9 → K_PAD=16
+            # WGMMA-firing configs: B*C=8, Wo divisible by 8. Symmetric sweep
+            # over (dtype ∈ {bf16, fp16}) × (K-class) × (pscale ∈ {1,2,3,4}):
+            #   - K=8 (harmonic(4,2)) → m64n8k16 wgmma shape
+            #   - K=16 exact (harmonic(4,4)) → m64n16k16 wgmma shape, no padding
+            #   - K=9 (harmonic(3,3)) → K_PAD=16, exercises k_o ≥ K writeback skip
+            # On Hopper this routes through the WGMMA fast path; on V100/A100
+            # the host runtime check falls back to the scalar K-packed kernel.
+            # bf16 × K=8 × pscale 1..4
+            [(16, 32),  (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 64),  (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 96),  (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 128), (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            # bf16 × K=16 × pscale 1..4
+            [(16, 32),  (16, 32), (4, 4), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 64),  (16, 32), (4, 4), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 96),  (16, 32), (4, 4), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 128), (16, 32), (4, 4), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            # bf16 × K=9 (K_PAD=16) × pscale 1..4
+            [(16, 32),  (16, 32), (3, 3), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 64),  (16, 32), (3, 3), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 96),  (16, 32), (3, 3), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 128), (16, 32), (3, 3), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            # fp16 × K=8 × pscale 1..4
+            [(16, 32),  (16, 32), (4, 2), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 64),  (16, 32), (4, 2), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 96),  (16, 32), (4, 2), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 128), (16, 32), (4, 2), "harmonic", torch.float16,  5e-2, 5e-2],
+            # fp16 × K=16 × pscale 1..4
+            [(16, 32),  (16, 32), (4, 4), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 64),  (16, 32), (4, 4), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 96),  (16, 32), (4, 4), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 128), (16, 32), (4, 4), "harmonic", torch.float16,  5e-2, 5e-2],
+            # fp16 × K=9 (K_PAD=16) × pscale 1..4
+            [(16, 32),  (16, 32), (3, 3), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 64),  (16, 32), (3, 3), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 96),  (16, 32), (3, 3), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 128), (16, 32), (3, 3), "harmonic", torch.float16,  5e-2, 5e-2],
         ],
         skip_on_empty=True,
     )
@@ -585,8 +608,9 @@ class TestKPackedKernel(unittest.TestCase):
         if conv.psi_kpacked_K_pad is None:
             self.skipTest(f"basis '{basis_type}' did not produce K-packed buffers")
 
-        # Need B*C divisible by BC_TILE=8 and Wo divisible by WO_TILE=8 for the
-        # kpacked kernel as currently written.
+        # Wo divisible by WO_TILE=8 is enforced by the kernel; B*C alignment is
+        # not required (out-of-range bc threads early-return in the scalar path
+        # and are zero-padded / writeback-skipped in the WGMMA path).
         B, C = 1, 8
         x = torch.randn(B, C, nlat_in, nlon_in, device=device, dtype=dtype)
 
@@ -614,6 +638,86 @@ class TestKPackedKernel(unittest.TestCase):
         self.assertEqual(tuple(out_ref.shape), tuple(out_kpacked.shape))
         self.assertTrue(compare_tensors(
             "kpacked vs per-k_kern forward_dense",
+            out_kpacked, out_ref, atol=atol, rtol=rtol, verbose=True))
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required for forward_dense_kpacked kernel")
+    @parameterized.expand(
+        [
+            # (B, C, in_shape, out_shape, kernel_shape, dtype) — exercise B*C
+            # values not divisible by BC_TILE=8. The kernel_shape sets K_PAD
+            # (4,2)→K=8, (4,4)→K=16. Wi/Wo > 1 sets pscale.
+            #
+            # Sweep C ∈ {9..15} at B=1 to hit all 7 nonzero remainders mod 8.
+            [1,  9, (16, 32), (16, 32), (4, 2), torch.bfloat16],   # B*C=9   rem 1
+            [1, 10, (16, 32), (16, 32), (4, 2), torch.bfloat16],   # B*C=10  rem 2
+            [1, 11, (16, 32), (16, 32), (4, 2), torch.bfloat16],   # B*C=11  rem 3
+            [1, 12, (16, 32), (16, 32), (4, 2), torch.bfloat16],   # B*C=12  rem 4
+            [1, 13, (16, 32), (16, 32), (4, 2), torch.bfloat16],   # B*C=13  rem 5
+            [1, 14, (16, 32), (16, 32), (4, 2), torch.bfloat16],   # B*C=14  rem 6
+            [1, 15, (16, 32), (16, 32), (4, 2), torch.bfloat16],   # B*C=15  rem 7
+            # fp16 spot-check (same dispatch logic as bf16, different opcode)
+            [1,  9, (16, 32), (16, 32), (4, 2), torch.float16],
+            [1, 13, (16, 32), (16, 32), (4, 2), torch.float16],
+            # K_PAD=16 (m64n16k16 path) for both dtypes
+            [1,  9, (16, 32), (16, 32), (4, 4), torch.bfloat16],
+            [1,  9, (16, 32), (16, 32), (4, 4), torch.float16],
+            # pscale=2 with unaligned BC
+            [1,  9, (32, 64), (16, 32), (4, 2), torch.bfloat16],
+            # Multi-batch unaligned: B*C=10 via B=2,C=5
+            [2,  5, (16, 32), (16, 32), (4, 2), torch.bfloat16],
+            # fp32 → scalar K-packed path (no WGMMA)
+            [1,  9, (16, 32), (16, 32), (4, 2), torch.float32],
+            [1, 12, (16, 32), (16, 32), (4, 2), torch.float32],
+        ],
+        skip_on_empty=True,
+    )
+    def test_kpacked_kernel_handles_unaligned_bc(self, B, C, in_shape, out_shape, kernel_shape, dtype):
+        """B*C not divisible by BC_TILE=8 must still produce correct output —
+        last grid.y CTA straddles the BC boundary and is masked off."""
+        if not cuda_kernels_is_available():
+            self.skipTest("CUDA disco kernels not available")
+        from torch_harmonics import DiscreteContinuousConvS2
+
+        device = torch.device("cuda")
+        nlat_in, _ = in_shape
+        theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
+
+        conv = DiscreteContinuousConvS2(
+            in_channels=C, out_channels=C,
+            in_shape=in_shape, out_shape=out_shape,
+            kernel_shape=kernel_shape,
+            basis_type="harmonic", basis_norm_mode="mean",
+            bias=False, theta_cutoff=theta_cutoff,
+            optimized_kernel=True, use_dense_kernel=True,
+        ).to(device)
+
+        if conv.psi_kpacked_K_pad is None:
+            self.skipTest("kpacked buffers not built for harmonic basis (unexpected)")
+
+        x = torch.randn(B, C, *in_shape, device=device, dtype=dtype)
+        try:
+            from torch_harmonics.disco import disco_kernels
+        except Exception:
+            self.skipTest("disco_kernels op namespace not loadable")
+        if not hasattr(disco_kernels, "forward_dense_kpacked"):
+            self.skipTest("forward_dense_kpacked op not registered")
+
+        kernel_size = conv.kernel_size
+        out_ref = disco_kernels.forward_dense.default(
+            x.contiguous(),
+            conv.psi_packed_idx, conv.psi_packed_vals, conv.psi_packed_count,
+            kernel_size, conv.nlat_out, conv.nlon_out,
+        )
+        out_kpacked = disco_kernels.forward_dense_kpacked.default(
+            x.contiguous(),
+            conv.psi_kpacked_idx, conv.psi_kpacked_vals, conv.psi_kpacked_count,
+            kernel_size, conv.nlat_out, conv.nlon_out,
+        )
+
+        atol = rtol = (1e-5 if dtype == torch.float32 else 5e-2)
+        self.assertEqual(tuple(out_ref.shape), tuple(out_kpacked.shape))
+        self.assertTrue(compare_tensors(
+            f"kpacked vs ref @ B={B},C={C},dtype={dtype}",
             out_kpacked, out_ref, atol=atol, rtol=rtol, verbose=True))
 
 

@@ -71,7 +71,7 @@ namespace disco_kernels {
 template <int BC_TILE, int WO_TILE, int K_PAD, typename STORAGE_T, typename COMPUTE_T>
 __global__ __launch_bounds__(BC_TILE * WO_TILE)
 void disco_fwd_dense_kpacked_blk_k(
-    int Hi, int Wi, int K, int Ho, int Wo, int NBR_PAD, int pscale,
+    int Hi, int Wi, int K, int Ho, int Wo, int NBR_PAD, int pscale, int BC_total,
     const int64_t   *__restrict__ pack_idx,    // [Ho, NBR_PAD, 2]
     const COMPUTE_T *__restrict__ pack_val,    // [Ho, NBR_PAD, K_PAD]
     const int64_t   *__restrict__ pack_count,  // [Ho]
@@ -89,6 +89,9 @@ void disco_fwd_dense_kpacked_blk_k(
     const int wo        = wo_base + wo_local;
 
     const int bc        = blockIdx.y * BC_TILE + bc_local;
+    // Last grid.y CTA may straddle the (B*C) boundary; out-of-range threads
+    // do nothing. Each thread is independent so an early return is sufficient.
+    if (bc >= BC_total) return;
 
     const int64_t   *idx_ho = pack_idx + (int64_t)ho * NBR_PAD * 2;
     const COMPUTE_T *val_ho = pack_val + (int64_t)ho * NBR_PAD * K_PAD;
@@ -149,11 +152,12 @@ static void launch_dense_fwd_kpacked(
 
     const int BC         = B * C;
     const int wo_per_ho  = Wo / WO_TILE;
+    const int bc_blocks  = (BC + BC_TILE - 1) / BC_TILE;
 
-    dim3 grid((unsigned)(Ho * wo_per_ho), (unsigned)(BC / BC_TILE));
+    dim3 grid((unsigned)(Ho * wo_per_ho), (unsigned)bc_blocks);
     disco_fwd_dense_kpacked_blk_k<BC_TILE, WO_TILE, K_PAD, STORAGE_T, COMPUTE_T>
         <<<grid, NUM_THREADS, 0, stream>>>(
-            Hi, Wi, K, Ho, Wo, NBR_PAD, pscale,
+            Hi, Wi, K, Ho, Wo, NBR_PAD, pscale, BC,
             pack_idx, pack_val, pack_count, inp, out);
 }
 
@@ -191,8 +195,8 @@ torch::Tensor disco_cuda_fwd_dense_kpacked(torch::Tensor inp,
     constexpr int WO_TILE = 8;
     TORCH_CHECK(Wo % WO_TILE == 0,
                 "Wo (", Wo, ") must be a multiple of WO_TILE (", WO_TILE, ")");
-    TORCH_CHECK((B * C) % BC_TILE == 0,
-                "B*C (", B * C, ") must be a multiple of BC_TILE (", BC_TILE, ")");
+    // (B*C) % BC_TILE != 0 is allowed: the last grid.y CTA's threads with
+    // bc ≥ B*C early-return inside the kernel.
     TORCH_CHECK(K_PAD == 8 || K_PAD == 16 || K_PAD == 24 || K_PAD == 32,
                 "K_PAD (", K_PAD, ") must be one of {8, 16, 24, 32} — got ", K_PAD);
     TORCH_CHECK(K <= K_PAD,

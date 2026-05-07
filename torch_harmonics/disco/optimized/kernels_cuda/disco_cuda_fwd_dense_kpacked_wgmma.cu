@@ -37,7 +37,8 @@
 //                                  more accumulator regs / wider B staging)
 //   - pscale ≥ 1                   (any integer; gmem reads become strided when
 //                                  pscale > 1, but correctness is preserved)
-//   - bf16 inputs                  (matches our wgmma_m64nNk16_acc wrappers)
+//   - bf16 OR fp16 inputs          (templated on T; selects the .f32.bf16.bf16
+//                                   vs .f32.f16.f16 wgmma opcode)
 //
 // The host wrapper checks these and falls back to the scalar K-packed kernel
 // otherwise.
@@ -47,10 +48,12 @@
 // Threads: 128 (1 warp-group, mandatory for WGMMA)
 // Output tile: BC_TILE=8 channels × WO_TILE=8 wo positions × N=K_PAD k_kerns
 // Per-thread acc: N_PAD/2 fp32 (m64nNk16 distributes 64×N cells across 128 threads)
-// Grid: (Ho × (Wo / WO_TILE), BC / BC_TILE)
+// Grid: (Ho × (Wo / WO_TILE), ceil(BC / BC_TILE))
+// The last grid.y CTA may straddle the (B*C) boundary; rows with bc ≥ B*C
+// are zero-padded in shmem and skipped at writeback.
 //
-// Shared memory layout (bf16, 16-byte aligned)
-// --------------------------------------------
+// Shared memory layout (T = bf16 or fp16, both 2-byte; 16-byte aligned)
+// ---------------------------------------------------------------------
 // A_tile [M=64, K=16] — M-major:
 //    byte(m, k) = (m / 8) * 256 + (m % 8 + 8 * k) * 2
 //    total 2048 bytes
@@ -65,22 +68,25 @@
 // Per nz_chunk inner loop
 // -----------------------
 // 1. Stage A_tile: for each (bc_local, nz_local) ∈ [0,8)×[0,16) — 128 cells —
-//    copy 16 bytes (8 bf16 wo_local positions) from gmem inp into shmem A_tile.
-//    Distributed 1:1 across the 128 threads.
-// 2. Stage B_tile: copy 256 bytes contiguously from pack_val[ho, nz_chunk_offset..+15, 0..7].
-//    Distributed across the first 16 threads (1 cp.async-16B each); rest idle.
+//    each thread reads 8 narrow values (one wo_local strip at fixed bc, nz)
+//    from gmem inp into shmem A_tile. Strided per-element gmem reads when
+//    pscale > 1; otherwise a vector-friendly contiguous range.
+// 2. Stage B_tile: 32 * N_PAD bytes total, in 16-byte chunks of 8 narrow values.
+//    Each chunk is one (k_row, n-group) pair. Total chunks = NZ_CHUNK * (N_PAD/8):
+//    16 for N=8, 32 for N=16. Distributed 1 chunk per active staging thread.
 // 3. __syncthreads.
-// 4. wgmma.fence; wgmma.mma_async m64n8k16; wgmma.commit_group; wgmma.wait_group<0>.
+// 4. wgmma.fence; wgmma.mma_async m64n{8,16}k16; wgmma.commit_group; wgmma.wait_group<0>.
 //
 // Output write
 // ------------
-// After all nz_chunks, each thread writes its 4 fp32 accumulator cells to gmem.
-// WGMMA m64n8k16.f32 fragment-to-(m, n) mapping (PTX ISA §9.7.16.5.4.4):
+// After all nz_chunks, each thread writes its N_PAD/2 fp32 accumulator cells.
+// WGMMA m64nNk16.f32 fragment-to-(m, n) mapping (PTX ISA §9.7.16.5.4): cells
+// are organised into n-groups of 4 cells per 8 N-cols. Within an n-group ng:
 //    warp w in [0,4), lane l in [0,32):
-//      cell 0: m = w*16 + l/4,     n = (l%4)*2
-//      cell 1: m = w*16 + l/4,     n = (l%4)*2 + 1
-//      cell 2: m = w*16 + l/4 + 8, n = (l%4)*2
-//      cell 3: m = w*16 + l/4 + 8, n = (l%4)*2 + 1
+//      cell 4*ng+0: m = w*16 + l/4,     n = (l%4)*2     + 8*ng
+//      cell 4*ng+1: m = w*16 + l/4,     n = (l%4)*2 + 1 + 8*ng
+//      cell 4*ng+2: m = w*16 + l/4 + 8, n = (l%4)*2     + 8*ng
+//      cell 4*ng+3: m = w*16 + l/4 + 8, n = (l%4)*2 + 1 + 8*ng
 //    Our M dim is m = bc * WO_TILE + wo_local = bc * 8 + wo_local, so:
 //      bc       = m / 8
 //      wo_local = m % 8
@@ -93,35 +99,30 @@
 
 #include <ATen/Dispatch.h>
 #include <cuda_bf16.h>
-
-// =====================================================================================
-// Debug toggle: replace the WGMMA call with a hand-written scalar matmul over
-// the same A_tile / B_tile shmem buffers and the same per-thread output frag
-// mapping. Used to bisect whether bugs live in the WGMMA descriptor / trans
-// flag (manual gives correct output) or in the surrounding staging / write-
-// back (manual gives the same wrong output as WGMMA).
-//
-// 0 = production WGMMA path
-// 1 = manual scalar matmul (debug; correct but obviously slow)
-// =====================================================================================
-#ifndef DISCO_KPACKED_WGMMA_DEBUG_MANUAL
-#define DISCO_KPACKED_WGMMA_DEBUG_MANUAL 0
-#endif
+#include <cuda_fp16.h>
+#include <type_traits>
 
 namespace disco_kernels {
 
 // Kernel symbol exists on all archs so the host launcher compiles cleanly;
 // the body is empty for non-Hopper builds (and that path is never launched —
 // see the runtime CC check in disco_cuda_fwd_dense_kpacked_wgmma_try).
-template <int BC_TILE, int WO_TILE, int NZ_CHUNK, int N_PAD>
+// T ∈ {__nv_bfloat16, __half} — selects the .f32.bf16.bf16 vs .f32.f16.f16
+// WGMMA opcode and the matching narrow→float / float→narrow conversions.
+//
+// BC_total = B*C is the actual number of (batch×channel) rows in the input.
+// Grid.y = ceil(BC_total / BC_TILE), so the last CTA may straddle the BC
+// boundary; rows with bc ≥ BC_total are zero-padded in shmem and skipped at
+// writeback.
+template <int BC_TILE, int WO_TILE, int NZ_CHUNK, int N_PAD, typename T>
 __global__ __launch_bounds__(128)
 void disco_fwd_dense_kpacked_wgmma_blk_k(
-    int Hi, int Wi, int K, int Ho, int Wo, int NBR_PAD, int pscale,
-    const int64_t       *__restrict__ pack_idx,    // [Ho, NBR_PAD, 2]
-    const __nv_bfloat16 *__restrict__ pack_val,    // [Ho, NBR_PAD, N_PAD]  (=K_PAD)
-    const int64_t       *__restrict__ pack_count,  // [Ho]
-    const __nv_bfloat16 *__restrict__ inp,         // [B, C, Hi, Wi]
-    __nv_bfloat16       *__restrict__ out)         // [B, C, K, Ho, Wo]
+    int Hi, int Wi, int K, int Ho, int Wo, int NBR_PAD, int pscale, int BC_total,
+    const int64_t *__restrict__ pack_idx,    // [Ho, NBR_PAD, 2]
+    const T       *__restrict__ pack_val,    // [Ho, NBR_PAD, N_PAD]  (=K_PAD)
+    const int64_t *__restrict__ pack_count,  // [Ho]
+    const T       *__restrict__ inp,         // [B, C, Hi, Wi]
+    T             *__restrict__ out)         // [B, C, K, Ho, Wo]
 {
 #if defined(__CUDA_ARCH_FEAT_SM90_ALL)
     static_assert(N_PAD == 8 || N_PAD == 16,
@@ -140,9 +141,9 @@ void disco_fwd_dense_kpacked_wgmma_blk_k(
     const int wo_base   = wo_strip * WO_TILE;
     const int bc_start  = blockIdx.y * BC_TILE;
 
-    const int64_t       *idx_ho = pack_idx + (int64_t)ho * NBR_PAD * 2;
-    const __nv_bfloat16 *val_ho = pack_val + (int64_t)ho * NBR_PAD * N_PAD;
-    const int            cnt    = (int)pack_count[ho];
+    const int64_t *idx_ho = pack_idx + (int64_t)ho * NBR_PAD * 2;
+    const T       *val_ho = pack_val + (int64_t)ho * NBR_PAD * N_PAD;
+    const int      cnt    = (int)pack_count[ho];
 
     // Per-thread accumulator: N_PAD/2 fp32 cells for m64nNk16.
     float acc[N_ACC];
@@ -154,9 +155,10 @@ void disco_fwd_dense_kpacked_wgmma_blk_k(
     }
 
     // Shared memory: A_tile (2048 B) + B_tile (32 * N_PAD bytes) per CTA.
+    // bf16 and fp16 are both 2-byte types; sizes don't depend on T.
     extern __shared__ __align__(16) unsigned char shmem_raw[];
-    __nv_bfloat16 *A_tile = reinterpret_cast<__nv_bfloat16*>(shmem_raw);
-    __nv_bfloat16 *B_tile = A_tile + (BC_TILE * 8) * NZ_CHUNK;   // 1024 bf16 of A
+    T *A_tile = reinterpret_cast<T*>(shmem_raw);
+    T *B_tile = A_tile + (BC_TILE * 8) * NZ_CHUNK;   // 1024 elements of A
 
     // ----------------------- nz_chunk loop -----------------------
     for (int nz_chunk_off = 0; nz_chunk_off < cnt; nz_chunk_off += NZ_CHUNK) {
@@ -170,11 +172,11 @@ void disco_fwd_dense_kpacked_wgmma_blk_k(
 
         const int bc = bc_start + bc_local;
 
-        if (nz_global < cnt) {
+        if (nz_global < cnt && bc < BC_total) {
             const int hi      = (int)idx_ho[nz_global * 2 + 0];
             const int wi_base = (int)idx_ho[nz_global * 2 + 1];
             const int64_t inp_row_base = (int64_t)bc * Hi * Wi + (int64_t)hi * Wi;
-            __nv_bfloat16 *dst = A_tile
+            T *dst = A_tile
                 + bc_local * (8 * NZ_CHUNK)        // bc_local * 128 elements
                 + nz_local * 8;                    // nz_local * 8 elements (= 16 bytes)
             // wi_full wraps at most once: with wi_base ≤ Wi-1 and (wo_base+i)
@@ -193,7 +195,7 @@ void disco_fwd_dense_kpacked_wgmma_blk_k(
         } else {
             // Zero pad for nz_global >= cnt — shmem dst is 16-byte aligned, so
             // a vector store is safe here.
-            __nv_bfloat16 *dst = A_tile
+            T *dst = A_tile
                 + bc_local * (8 * NZ_CHUNK)
                 + nz_local * 8;
             *reinterpret_cast<int4*>(dst) = make_int4(0, 0, 0, 0);
@@ -218,11 +220,11 @@ void disco_fwd_dense_kpacked_wgmma_blk_k(
             const int chunk_idx    = tid / NZ_CHUNK;         // n-group ∈ [0, CHUNKS_PER_ROW)
             const int nz_local_b   = tid - chunk_idx * NZ_CHUNK;
             const int nz_global_b  = nz_chunk_off + nz_local_b;
-            __nv_bfloat16 *dst_b = B_tile
+            T *dst_b = B_tile
                 + chunk_idx * (NZ_CHUNK * 8)    // n-group → outer stride
                 + nz_local_b * 8;               // K-row stride within n-group
             if (nz_global_b < cnt) {
-                const __nv_bfloat16 *src_b =
+                const T *src_b =
                     val_ho + (int64_t)nz_global_b * N_PAD + chunk_idx * 8;
                 *reinterpret_cast<int4*>(dst_b) = *reinterpret_cast<const int4*>(src_b);
             } else {
@@ -232,53 +234,10 @@ void disco_fwd_dense_kpacked_wgmma_blk_k(
 
         __syncthreads();
 
-#if DISCO_KPACKED_WGMMA_DEBUG_MANUAL
-        // -- Manual scalar matmul (debug) --
-        // Same per-thread (m, n) layout as WGMMA m64nNk16.f32 (PTX ISA
-        // §9.7.16.5.4): for n8 → 4 cells, for n16 → 8 cells = 4 cells per
-        // n-group of 8 N-cols, ng-groups indexed by ng = c / 4.
-        //
-        // Shmem layout:
-        //   A_tile[(m/8)*128 + k*8 + (m%8)]                — M-fast inner
-        //   B_tile[(n/8)*128 + k*8 + (n%8)]                — N-fast within
-        //                                                    8-N group, K-row
-        //                                                    stride 8 elements
-        {
-            const int m_top  = warp_id * 16 + (lane >> 2);
-            const int m_bot  = m_top + 8;
-            const int n_a    = (lane & 3) * 2;
-            const int n_b    = n_a + 1;
-
-            #pragma unroll
-            for (int ng = 0; ng < N_PAD / 8; ng++) {
-                const int n0 = n_a + 8 * ng;
-                const int n1 = n_b + 8 * ng;
-                float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
-                #pragma unroll
-                for (int k = 0; k < NZ_CHUNK; k++) {
-                    // PyTorch passes -D__CUDA_NO_BFLOAT16_CONVERSIONS__ which
-                    // disables implicit bf16→float casts; use __bfloat162float
-                    // explicitly.
-                    const float a_top = __bfloat162float(A_tile[(m_top / 8) * 128 + k * 8 + (m_top % 8)]);
-                    const float a_bot = __bfloat162float(A_tile[(m_bot / 8) * 128 + k * 8 + (m_bot % 8)]);
-                    const float b_n0  = __bfloat162float(B_tile[(n0 / 8) * 128 + k * 8 + (n0 % 8)]);
-                    const float b_n1  = __bfloat162float(B_tile[(n1 / 8) * 128 + k * 8 + (n1 % 8)]);
-                    a0 += a_top * b_n0;
-                    a1 += a_top * b_n1;
-                    a2 += a_bot * b_n0;
-                    a3 += a_bot * b_n1;
-                }
-                acc[ng * 4 + 0] += a0;
-                acc[ng * 4 + 1] += a1;
-                acc[ng * 4 + 2] += a2;
-                acc[ng * 4 + 3] += a3;
-            }
-        }
-#else
         // -- WGMMA m64nNk16, accumulating --
         // Descriptor LBO/SBO are byte strides between 8×8 core matrices in
         // shmem, stored in 16-byte (uint128_t) units. The CUTLASS reference
-        // (external/cutlass/include/cute/atom/mma_traits_sm90_gmma.hpp,
+        // (NVIDIA/cutlass v4.4.0, include/cute/atom/mma_traits_sm90_gmma.hpp,
         // make_gmma_desc<Major::MN> INTERLEAVE) assigns:
         //   leading_byte_offset_ = K-outer stride (8-K-block to next 8-K-block)
         //   stride_byte_offset_  = M/N-outer stride (8-MN-block to next)
@@ -308,14 +267,21 @@ void disco_fwd_dense_kpacked_wgmma_blk_k(
         uint64_t desc_b = make_wgmma_desc(B_tile,
                                           B_LEADING_FIELD * 16,
                                           B_STRIDE_FIELD  * 16);
-        if constexpr (N_PAD == 8) {
-            wgmma_m64n8k16_acc(acc, desc_a, desc_b);
-        } else { // N_PAD == 16
-            wgmma_m64n16k16_acc(acc, desc_a, desc_b);
+        if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+            if constexpr (N_PAD == 8) {
+                wgmma_m64n8k16_acc_bf16(acc, desc_a, desc_b);
+            } else { // N_PAD == 16
+                wgmma_m64n16k16_acc_bf16(acc, desc_a, desc_b);
+            }
+        } else { // T == __half
+            if constexpr (N_PAD == 8) {
+                wgmma_m64n8k16_acc_fp16(acc, desc_a, desc_b);
+            } else { // N_PAD == 16
+                wgmma_m64n16k16_acc_fp16(acc, desc_a, desc_b);
+            }
         }
         wgmma_commit_group();
         wgmma_wait_group<0>();
-#endif
 
         __syncthreads();
     }
@@ -339,9 +305,12 @@ void disco_fwd_dense_kpacked_wgmma_blk_k(
     const int wo23 = wo_base  + (m23 & 7);
 
     auto write_cell = [&] (int bc_o, int wo_o, int k_o, float v) {
-        if (k_o >= K) return;  // n in [K, K_PAD) is padding; skip.
-        out[((int64_t)bc_o * K + k_o) * Ho * Wo + (int64_t)ho * Wo + wo_o] =
-            __float2bfloat16(v);
+        if (k_o >= K) return;             // n in [K, K_PAD) is padding; skip.
+        if (bc_o >= BC_total) return;     // last CTA may straddle the BC boundary.
+        T narrow;
+        if constexpr (std::is_same_v<T, __nv_bfloat16>) narrow = __float2bfloat16(v);
+        else                                            narrow = __float2half(v);
+        out[((int64_t)bc_o * K + k_o) * Ho * Wo + (int64_t)ho * Wo + wo_o] = narrow;
     };
     #pragma unroll
     for (int ng = 0; ng < N_PAD / 8; ng++) {
@@ -357,7 +326,7 @@ void disco_fwd_dense_kpacked_wgmma_blk_k(
     // pre-Hopper, plain sm_90 (without the `a` suffix), and Blackwell+.
     // Empty body satisfies the linker; the host runtime check below ensures
     // the kernel is never launched on devices where its body is empty.
-    (void)Hi; (void)Wi; (void)K; (void)Ho; (void)Wo; (void)NBR_PAD; (void)pscale;
+    (void)Hi; (void)Wi; (void)K; (void)Ho; (void)Wo; (void)NBR_PAD; (void)pscale; (void)BC_total;
     (void)pack_idx; (void)pack_val; (void)pack_count; (void)inp; (void)out;
 #endif
 }
@@ -381,7 +350,9 @@ bool disco_cuda_fwd_dense_kpacked_wgmma_try(
     // WGMMA is Hopper-only (SM_90 / SM_90a). Skip pre-Hopper and Blackwell+.
     if (props.major != 9) return false;
 
-    if (inp.scalar_type() != at::ScalarType::BFloat16) return false;
+    const auto inp_dtype = inp.scalar_type();
+    if (inp_dtype != at::ScalarType::BFloat16 &&
+        inp_dtype != at::ScalarType::Half) return false;
 
     const int64_t B  = inp.size(0);
     const int64_t C  = inp.size(1);
@@ -389,8 +360,9 @@ bool disco_cuda_fwd_dense_kpacked_wgmma_try(
     const int64_t Wi = inp.size(3);
 
     if (Wi % Wo != 0)           return false;   // pscale must be integer
-    if ((B * C) % 8 != 0)       return false;
     if (Wo % 8 != 0)            return false;
+    // (B*C) % BC_TILE != 0 is allowed: the last grid.y CTA straddles the BC
+    // boundary and is handled via predicated load/store inside the kernel.
 
     const int64_t K_PAD = pack_val.size(2);
     if (K_PAD != 8 && K_PAD != 16) return false;   // n8 / n16 wgmma shapes only
@@ -401,36 +373,49 @@ bool disco_cuda_fwd_dense_kpacked_wgmma_try(
 
     const int NBR_PAD = (int)pack_idx.size(1);
 
-    // Shmem: 2048 B (A) + 32*N_PAD B (B) per CTA.
+    // Shmem: 2048 B (A) + 32*N_PAD B (B) per CTA. Same for bf16 / fp16.
     const size_t shmem_bytes = 2048 + 32 * (size_t)K_PAD;
     auto stream = at::cuda::getCurrentCUDAStream().stream();
 
-    // Cast pack_val to bf16 if needed (psi values are stored fp32 by default).
-    auto pack_val_bf16 = (pack_val.scalar_type() == at::ScalarType::BFloat16)
+    // Cast pack_val to match the input dtype (psi values are stored fp32 by default).
+    auto pack_val_cast = (pack_val.scalar_type() == inp_dtype)
         ? pack_val
-        : pack_val.to(at::ScalarType::BFloat16);
+        : pack_val.to(inp_dtype);
 
-    const int pscale = (int)(Wi / Wo);
+    const int pscale   = (int)(Wi / Wo);
+    const int BC_total = (int)(B * C);
+    const int bc_blocks = (BC_total + BC_TILE - 1) / BC_TILE;
+    const dim3 grid((unsigned)(Ho * (Wo / WO_TILE)), (unsigned)bc_blocks);
 
-    auto launch = [&] (auto fn) {
+    auto fire = [&] (auto fn, auto T_tag) {
+        using T = decltype(T_tag);
         cudaFuncSetAttribute(reinterpret_cast<const void*>(fn),
                              cudaFuncAttributeMaxDynamicSharedMemorySize,
                              (int)shmem_bytes);
-        dim3 grid((unsigned)(Ho * (Wo / WO_TILE)), (unsigned)((B * C) / BC_TILE));
         fn<<<grid, 128, shmem_bytes, stream>>>(
-            (int)Hi, (int)Wi, (int)K, (int)Ho, (int)Wo, NBR_PAD, pscale,
+            (int)Hi, (int)Wi, (int)K, (int)Ho, (int)Wo, NBR_PAD, pscale, BC_total,
             pack_idx.data_ptr<int64_t>(),
-            reinterpret_cast<const __nv_bfloat16*>(pack_val_bf16.data_ptr()),
+            reinterpret_cast<const T*>(pack_val_cast.data_ptr()),
             pack_count.data_ptr<int64_t>(),
-            reinterpret_cast<const __nv_bfloat16*>(inp.data_ptr()),
-            reinterpret_cast<__nv_bfloat16*>(out.data_ptr())
+            reinterpret_cast<const T*>(inp.data_ptr()),
+            reinterpret_cast<T*>(out.data_ptr())
         );
     };
 
-    if (K_PAD == 8) {
-        launch(&disco_fwd_dense_kpacked_wgmma_blk_k<BC_TILE, WO_TILE, NZ_CHUNK, 8>);
-    } else { // K_PAD == 16
-        launch(&disco_fwd_dense_kpacked_wgmma_blk_k<BC_TILE, WO_TILE, NZ_CHUNK, 16>);
+    if (inp_dtype == at::ScalarType::BFloat16) {
+        if (K_PAD == 8)
+            fire(&disco_fwd_dense_kpacked_wgmma_blk_k<BC_TILE, WO_TILE, NZ_CHUNK,  8, __nv_bfloat16>,
+                 __nv_bfloat16{});
+        else
+            fire(&disco_fwd_dense_kpacked_wgmma_blk_k<BC_TILE, WO_TILE, NZ_CHUNK, 16, __nv_bfloat16>,
+                 __nv_bfloat16{});
+    } else { // Half
+        if (K_PAD == 8)
+            fire(&disco_fwd_dense_kpacked_wgmma_blk_k<BC_TILE, WO_TILE, NZ_CHUNK,  8, __half>,
+                 __half{});
+        else
+            fire(&disco_fwd_dense_kpacked_wgmma_blk_k<BC_TILE, WO_TILE, NZ_CHUNK, 16, __half>,
+                 __half{});
     }
     return true;
 }
