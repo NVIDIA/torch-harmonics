@@ -58,9 +58,9 @@ namespace attention_kernels {
 
 // Pass 1: accumulate softmax statistics across ring steps.
 // After all ring steps, finalize dqy in Python using the accumulated state.
-template<int BDIM_X, typename FLOATV_T>
+template<int THREADS_PER_BLOCK, typename FLOATV_T>
 __global__
-__launch_bounds__(BDIM_X)
+__launch_bounds__(THREADS_PER_BLOCK)
 void s2_attn_bwd_ring_step_pass1_generic_vec_k(
     int nchan_in,
     int nchan_out,
@@ -200,9 +200,9 @@ void s2_attn_bwd_ring_step_pass1_generic_vec_k(
 
 // Pass 2: scatter dkx/dvx contributions for the current KV chunk.
 // Requires FINALIZED state from pass 1: alpha_sum, qdotk_max, integral_norm (= integral/alpha_sum).
-template<int BDIM_X, typename FLOATV_T>
+template<int THREADS_PER_BLOCK, typename FLOATV_T>
 __global__
-__launch_bounds__(BDIM_X)
+__launch_bounds__(THREADS_PER_BLOCK)
 void s2_attn_bwd_ring_step_pass2_generic_vec_k(
     int nchan_in,
     int nchan_out,

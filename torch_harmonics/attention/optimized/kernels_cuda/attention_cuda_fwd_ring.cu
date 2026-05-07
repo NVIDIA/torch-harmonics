@@ -53,10 +53,10 @@
 
 namespace attention_kernels {
 
-template<int BDIM_X,
+template<int THREADS_PER_BLOCK,
          typename FLOATV_T>
 __global__
-__launch_bounds__(BDIM_X)
+__launch_bounds__(THREADS_PER_BLOCK)
 void s2_attn_fwd_ring_step_generic_vec_k(
     int nchan_in,         // no. of FLOATV_T elements along channel dim
     int nchan_out,        // no. of FLOATV_T elements along channel dim

@@ -66,11 +66,11 @@
 namespace attention_kernels {
 
 // Output-centric online-softmax kernel for the scatter direction.
-// Called with (blockDim.x = WARP_SIZE, blockDim.y = BDIM_X / WARP_SIZE).
-template<int BDIM_X,
+// Called with (blockDim.x = WARP_SIZE, blockDim.y = THREADS_PER_BLOCK / WARP_SIZE).
+template<int THREADS_PER_BLOCK,
          typename FLOATV_T>  // float or float4
 __global__
-__launch_bounds__(BDIM_X)
+__launch_bounds__(THREADS_PER_BLOCK)
 void s2_attn_fwd_upsample_generic_vec_k(int nchan_in,
                                          int nchan_out,
                                          int nlat_in,
