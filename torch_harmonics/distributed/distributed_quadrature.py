@@ -33,17 +33,10 @@ from typing import Optional, Tuple
 
 import torch
 
-from torch_harmonics.distributed import (
-    azimuth_group_rank,
-    azimuth_group_size,
-    compute_split_shapes,
-    polar_group_rank,
-    polar_group_size,
-    reduce_from_azimuth_region,
-    reduce_from_polar_region,
-    split_tensor_along_dim,
-)
 from torch_harmonics.quadrature import clenshaw_curtiss_weights, legendre_gauss_weights, lobatto_weights
+
+from .primitives import compute_split_shapes, reduce_from_azimuth_region, reduce_from_polar_region, split_tensor_along_dim
+from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 
 class DistributedQuadratureS2(torch.nn.Module):

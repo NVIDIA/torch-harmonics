@@ -35,18 +35,12 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 
-from torch_harmonics.distributed import (
-    DistributedInverseRealSHT,
-    DistributedQuadratureS2,
-    DistributedRealSHT,
-    azimuth_group_rank,
-    azimuth_group_size,
-    copy_to_azimuth_region,
-    copy_to_polar_region,
-    polar_group_rank,
-    polar_group_size,
-)
 from torch_harmonics.truncation import truncate_sht
+
+from .distributed_quadrature import DistributedQuadratureS2
+from .distributed_sht import DistributedInverseRealSHT, DistributedRealSHT
+from .primitives import copy_to_azimuth_region, copy_to_polar_region
+from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 
 class DistributedSpectralConvS2(nn.Module):

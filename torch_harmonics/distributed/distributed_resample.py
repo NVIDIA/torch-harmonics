@@ -35,18 +35,10 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from torch_harmonics.distributed import (
-    azimuth_group_rank,
-    azimuth_group_size,
-    compute_split_shapes,
-    copy_to_azimuth_region,
-    distributed_transpose_azimuth,
-    distributed_transpose_polar,
-    polar_group_rank,
-    polar_group_size,
-    reduce_from_azimuth_region,
-)
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
+
+from .primitives import compute_split_shapes, copy_to_azimuth_region, distributed_transpose_azimuth, distributed_transpose_polar, reduce_from_azimuth_region
+from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 
 class DistributedResampleS2(nn.Module):

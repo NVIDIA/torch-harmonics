@@ -32,20 +32,13 @@
 import torch
 import torch.nn as nn
 
-from torch_harmonics.distributed import (
-    azimuth_group_rank,
-    azimuth_group_size,
-    compute_split_shapes,
-    distributed_transpose_azimuth,
-    distributed_transpose_polar,
-    polar_group_rank,
-    polar_group_size,
-    split_tensor_along_dim,
-)
 from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.quadrature import clenshaw_curtiss_weights, legendre_gauss_weights, lobatto_weights
 from torch_harmonics.truncation import truncate_sht
+
+from .primitives import compute_split_shapes, distributed_transpose_azimuth, distributed_transpose_polar, split_tensor_along_dim
+from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 
 class DistributedRealSHT(nn.Module):

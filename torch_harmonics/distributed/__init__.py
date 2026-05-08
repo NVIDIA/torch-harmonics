@@ -29,11 +29,12 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-# isort: skip_file
-# we need this in order to enable distributed
-# NOTE: utils and primitives MUST be imported before the distributed modules
-# that depend on them, to avoid circular imports.
-from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, config, finalize, init, is_initialized, polar_group, polar_group_rank, polar_group_size
+from .distributed_attention import DistributedNeighborhoodAttentionS2
+from .distributed_convolution import DistributedDiscreteContinuousConvS2, DistributedDiscreteContinuousConvTransposeS2
+from .distributed_quadrature import DistributedQuadratureS2
+from .distributed_resample import DistributedResampleS2
+from .distributed_sht import DistributedInverseRealSHT, DistributedInverseRealVectorSHT, DistributedRealSHT, DistributedRealVectorSHT
+from .distributed_spectral_convolution import DistributedSpectralConvS2
 from .primitives import (
     compute_split_shapes,
     copy_to_azimuth_region,
@@ -48,21 +49,4 @@ from .primitives import (
     scatter_to_polar_region,
     split_tensor_along_dim,
 )
-
-# import distributed neighborhood attention
-from .distributed_attention import DistributedNeighborhoodAttentionS2
-
-# import DISCO
-from .distributed_convolution import DistributedDiscreteContinuousConvS2, DistributedDiscreteContinuousConvTransposeS2
-
-# import quadrature
-from .distributed_quadrature import DistributedQuadratureS2
-
-# import resampling
-from .distributed_resample import DistributedResampleS2
-
-# import the sht
-from .distributed_sht import DistributedInverseRealSHT, DistributedInverseRealVectorSHT, DistributedRealSHT, DistributedRealVectorSHT
-
-# import spectral convolution
-from .distributed_spectral_convolution import DistributedSpectralConvS2
+from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, config, finalize, init, is_initialized, polar_group, polar_group_rank, polar_group_size
