@@ -29,7 +29,26 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+# isort: skip_file
 # we need this in order to enable distributed
+# NOTE: utils and primitives MUST be imported before the distributed modules
+# that depend on them, to avoid circular imports.
+from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, config, finalize, init, is_initialized, polar_group, polar_group_rank, polar_group_size
+from .primitives import (
+    compute_split_shapes,
+    copy_to_azimuth_region,
+    copy_to_polar_region,
+    distributed_transpose_azimuth,
+    distributed_transpose_polar,
+    gather_from_copy_to_polar_region,
+    gather_from_polar_region,
+    reduce_from_azimuth_region,
+    reduce_from_polar_region,
+    reduce_from_scatter_to_polar_region,
+    scatter_to_polar_region,
+    split_tensor_along_dim,
+)
+
 # import distributed neighborhood attention
 from .distributed_attention import DistributedNeighborhoodAttentionS2
 
@@ -47,18 +66,3 @@ from .distributed_sht import DistributedInverseRealSHT, DistributedInverseRealVe
 
 # import spectral convolution
 from .distributed_spectral_convolution import DistributedSpectralConvS2
-from .primitives import (
-    compute_split_shapes,
-    copy_to_azimuth_region,
-    copy_to_polar_region,
-    distributed_transpose_azimuth,
-    distributed_transpose_polar,
-    gather_from_copy_to_polar_region,
-    gather_from_polar_region,
-    reduce_from_azimuth_region,
-    reduce_from_polar_region,
-    reduce_from_scatter_to_polar_region,
-    scatter_to_polar_region,
-    split_tensor_along_dim,
-)
-from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, config, finalize, init, is_initialized, polar_group, polar_group_rank, polar_group_size

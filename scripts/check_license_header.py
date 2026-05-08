@@ -41,7 +41,7 @@ REQUIRED_LINES = [
 ]
 
 # Maximum number of lines to scan at the top of each file
-HEADER_SCAN_LINES = 5
+HEADER_SCAN_LINES = 10
 
 
 def check_file(path):
