@@ -143,6 +143,8 @@ def get_ext_modules():
             "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd_dense.cu",
             "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_dense_kpacked.cu",
             "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_dense_kpacked_wgmma.cu",
+            "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd_dense_kpacked.cu",
+            "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd_dense_kpacked_wgmma.cu",
         ])
         ext_modules.append(
             CUDAExtension(

@@ -77,6 +77,14 @@ if optimized_kernels_is_available():
         out_shape = (inp.shape[0], inp.shape[1], kernel_size, nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
+    # raw K-packed dense backward fake. grad_out has the per-k_kern dense forward
+    # output shape [B, C, K, Ho, Wo]; we return grad_inp with shape [B, C, Hi, Wi].
+    @torch.library.register_fake("disco_kernels::backward_dense_kpacked")
+    def _(grad_out: torch.Tensor, pack_idx: torch.Tensor, pack_val: torch.Tensor,
+          pack_count: torch.Tensor, kernel_size: int, nlat_in: int, nlon_in: int) -> torch.Tensor:
+        out_shape = (grad_out.shape[0], grad_out.shape[1], nlat_in, nlon_in)
+        return torch.empty(out_shape, dtype=grad_out.dtype, device=grad_out.device)
+
     # forward
     @torch.library.custom_op("disco_kernels::_disco_s2_contraction_optimized_csr", mutates_args=())
     def _disco_s2_contraction_optimized_csr(

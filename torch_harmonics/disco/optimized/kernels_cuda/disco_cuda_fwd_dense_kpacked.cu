@@ -191,7 +191,6 @@ torch::Tensor disco_cuda_fwd_dense_kpacked(torch::Tensor inp,
     const int64_t NBR_PAD = pack_idx.size(1);
     const int64_t K_PAD   = pack_val.size(2);
 
-    constexpr int BC_TILE = 8;
     constexpr int WO_TILE = 8;
     TORCH_CHECK(Wo % WO_TILE == 0,
                 "Wo (", Wo, ") must be a multiple of WO_TILE (", WO_TILE, ")");

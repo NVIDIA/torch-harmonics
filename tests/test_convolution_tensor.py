@@ -720,6 +720,181 @@ class TestKPackedKernel(unittest.TestCase):
             f"kpacked vs ref @ B={B},C={C},dtype={dtype}",
             out_kpacked, out_ref, atol=atol, rtol=rtol, verbose=True))
 
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required for backward_dense_kpacked kernel")
+    @parameterized.expand(
+        [
+            # WGMMA-firing configs (Hopper only): bf16/fp16 + K_PAD ∈ {8, 16}
+            # + Wi%Wo==0 + Wo%8==0 + B*C % 8 == 0. Mirrors the forward kpacked
+            # matrix, restricted to bf16/fp16 since the backward WGMMA path has
+            # no scalar fallback (the host wrapper TORCH_CHECKs out for fp32).
+            # bf16 × K=8 × pscale 1..4
+            [(16, 32),  (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 64),  (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 96),  (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 128), (16, 32), (4, 2), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            # bf16 × K=16 × pscale 1..4
+            [(16, 32),  (16, 32), (4, 4), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 64),  (16, 32), (4, 4), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 96),  (16, 32), (4, 4), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 128), (16, 32), (4, 4), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            # bf16 × K=9 (K_PAD=16) × pscale 1..4 — exercises k_local ≥ K zero-pad
+            [(16, 32),  (16, 32), (3, 3), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 64),  (16, 32), (3, 3), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 96),  (16, 32), (3, 3), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            [(32, 128), (16, 32), (3, 3), "harmonic", torch.bfloat16, 5e-2, 5e-2],
+            # fp16 × K=8 × pscale 1..4
+            [(16, 32),  (16, 32), (4, 2), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 64),  (16, 32), (4, 2), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 96),  (16, 32), (4, 2), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 128), (16, 32), (4, 2), "harmonic", torch.float16,  5e-2, 5e-2],
+            # fp16 × K=16 × pscale 1..4
+            [(16, 32),  (16, 32), (4, 4), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 64),  (16, 32), (4, 4), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 96),  (16, 32), (4, 4), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 128), (16, 32), (4, 4), "harmonic", torch.float16,  5e-2, 5e-2],
+            # fp16 × K=9 (K_PAD=16) × pscale 1..4
+            [(16, 32),  (16, 32), (3, 3), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 64),  (16, 32), (3, 3), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 96),  (16, 32), (3, 3), "harmonic", torch.float16,  5e-2, 5e-2],
+            [(32, 128), (16, 32), (3, 3), "harmonic", torch.float16,  5e-2, 5e-2],
+        ],
+        skip_on_empty=True,
+    )
+    def test_kpacked_backward_matches_per_k_kernel(
+        self, in_shape, out_shape, kernel_shape, basis_type, dtype, atol, rtol,
+    ):
+        """The K-packed CUDA backward kernel must produce the same grad_inp as
+        the existing per-k_kern dense backward kernel for synthetic grad_out."""
+        if not cuda_kernels_is_available():
+            self.skipTest("CUDA disco kernels not available")
+        from torch_harmonics import DiscreteContinuousConvS2
+
+        device = torch.device("cuda")
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        if isinstance(kernel_shape, int) or len(kernel_shape) == 1:
+            k0 = kernel_shape if isinstance(kernel_shape, int) else kernel_shape[0]
+            theta_cutoff = (k0 + 1) * torch.pi / float(nlat_in - 1)
+        else:
+            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
+
+        conv = DiscreteContinuousConvS2(
+            in_channels=8, out_channels=4,
+            in_shape=in_shape, out_shape=out_shape,
+            kernel_shape=kernel_shape,
+            basis_type=basis_type, basis_norm_mode="mean",
+            bias=False, theta_cutoff=theta_cutoff,
+            optimized_kernel=True, use_dense_kernel=True,
+        ).to(device)
+
+        if conv.psi_kpacked_K_pad is None:
+            self.skipTest(f"basis '{basis_type}' did not produce K-packed buffers")
+
+        try:
+            from torch_harmonics.disco import disco_kernels
+        except Exception:
+            self.skipTest("disco_kernels op namespace not loadable")
+        if not hasattr(disco_kernels, "backward_dense_kpacked"):
+            self.skipTest("backward_dense_kpacked op not registered (rebuild needed?)")
+
+        K = conv.kernel_size
+        B, C = 1, 8
+        grad_out = torch.randn(B, C, K, nlat_out, nlon_out, device=device, dtype=dtype)
+
+        grad_inp_ref = disco_kernels.backward_dense.default(
+            grad_out.contiguous(),
+            conv.psi_packed_idx, conv.psi_packed_vals, conv.psi_packed_count,
+            K, nlat_in, nlon_in,
+        )
+
+        grad_inp_kpacked = disco_kernels.backward_dense_kpacked.default(
+            grad_out.contiguous(),
+            conv.psi_kpacked_idx, conv.psi_kpacked_vals, conv.psi_kpacked_count,
+            K, nlat_in, nlon_in,
+        )
+
+        self.assertEqual(tuple(grad_inp_ref.shape), tuple(grad_inp_kpacked.shape))
+        self.assertTrue(compare_tensors(
+            "kpacked backward vs per-k_kern backward_dense",
+            grad_inp_kpacked, grad_inp_ref, atol=atol, rtol=rtol, verbose=True))
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required for backward_dense_kpacked kernel")
+    @parameterized.expand(
+        [
+            # B*C not divisible by BC_TILE=8 — last grid.y CTA straddles the BC
+            # boundary and must be masked off in both A staging and the
+            # atomicAdd writeback. bf16/fp16 only (no fp32 fallback).
+            [1,  9, (16, 32), (16, 32), (4, 2), torch.bfloat16],   # B*C=9   rem 1
+            [1, 10, (16, 32), (16, 32), (4, 2), torch.bfloat16],   # B*C=10  rem 2
+            [1, 11, (16, 32), (16, 32), (4, 2), torch.bfloat16],   # B*C=11  rem 3
+            [1, 12, (16, 32), (16, 32), (4, 2), torch.bfloat16],   # B*C=12  rem 4
+            [1, 13, (16, 32), (16, 32), (4, 2), torch.bfloat16],   # B*C=13  rem 5
+            [1, 14, (16, 32), (16, 32), (4, 2), torch.bfloat16],   # B*C=14  rem 6
+            [1, 15, (16, 32), (16, 32), (4, 2), torch.bfloat16],   # B*C=15  rem 7
+            # fp16 spot-check
+            [1,  9, (16, 32), (16, 32), (4, 2), torch.float16],
+            [1, 13, (16, 32), (16, 32), (4, 2), torch.float16],
+            # K_PAD=16 (m64n16k16 path) for both dtypes
+            [1,  9, (16, 32), (16, 32), (4, 4), torch.bfloat16],
+            [1,  9, (16, 32), (16, 32), (4, 4), torch.float16],
+            # pscale=2 with unaligned BC
+            [1,  9, (32, 64), (16, 32), (4, 2), torch.bfloat16],
+            # Multi-batch unaligned: B*C=10 via B=2,C=5
+            [2,  5, (16, 32), (16, 32), (4, 2), torch.bfloat16],
+        ],
+        skip_on_empty=True,
+    )
+    def test_kpacked_backward_handles_unaligned_bc(self, B, C, in_shape, out_shape, kernel_shape, dtype):
+        """B*C not divisible by BC_TILE=8 must still produce correct grad_inp."""
+        if not cuda_kernels_is_available():
+            self.skipTest("CUDA disco kernels not available")
+        from torch_harmonics import DiscreteContinuousConvS2
+
+        device = torch.device("cuda")
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+        theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
+
+        conv = DiscreteContinuousConvS2(
+            in_channels=C, out_channels=C,
+            in_shape=in_shape, out_shape=out_shape,
+            kernel_shape=kernel_shape,
+            basis_type="harmonic", basis_norm_mode="mean",
+            bias=False, theta_cutoff=theta_cutoff,
+            optimized_kernel=True, use_dense_kernel=True,
+        ).to(device)
+
+        if conv.psi_kpacked_K_pad is None:
+            self.skipTest("kpacked buffers not built for harmonic basis (unexpected)")
+
+        try:
+            from torch_harmonics.disco import disco_kernels
+        except Exception:
+            self.skipTest("disco_kernels op namespace not loadable")
+        if not hasattr(disco_kernels, "backward_dense_kpacked"):
+            self.skipTest("backward_dense_kpacked op not registered")
+
+        K = conv.kernel_size
+        grad_out = torch.randn(B, C, K, nlat_out, nlon_out, device=device, dtype=dtype)
+
+        grad_inp_ref = disco_kernels.backward_dense.default(
+            grad_out.contiguous(),
+            conv.psi_packed_idx, conv.psi_packed_vals, conv.psi_packed_count,
+            K, nlat_in, nlon_in,
+        )
+        grad_inp_kpacked = disco_kernels.backward_dense_kpacked.default(
+            grad_out.contiguous(),
+            conv.psi_kpacked_idx, conv.psi_kpacked_vals, conv.psi_kpacked_count,
+            K, nlat_in, nlon_in,
+        )
+
+        atol = rtol = 5e-2
+        self.assertEqual(tuple(grad_inp_ref.shape), tuple(grad_inp_kpacked.shape))
+        self.assertTrue(compare_tensors(
+            f"kpacked backward vs ref @ B={B},C={C},dtype={dtype}",
+            grad_inp_kpacked, grad_inp_ref, atol=atol, rtol=rtol, verbose=True))
+
 
 if __name__ == "__main__":
     unittest.main()
