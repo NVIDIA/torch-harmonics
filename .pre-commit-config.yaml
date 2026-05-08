@@ -21,6 +21,12 @@ repos:
       - id: ruff
         args: ['--fix']
 
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v19.1.7
+    hooks:
+      - id: clang-format
+        types_or: [c, c++, cuda]
+
   - repo: local
     hooks:
       - id: license-header-check

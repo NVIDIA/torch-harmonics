@@ -32,11 +32,13 @@
 
 using namespace torch::indexing;
 
-namespace attention_kernels {
+namespace attention_kernels
+{
 
     torch::Tensor s2_attention_fwd_cpu(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor quad_weights,
-                                       at::Tensor col_idx, at::Tensor row_off,
-                                       int64_t nlon_in, int64_t nlat_out, int64_t nlon_out) {
+                                       at::Tensor col_idx, at::Tensor row_off, int64_t nlon_in, int64_t nlat_out,
+                                       int64_t nlon_out)
+    {
         // sanity checks
         CHECK_CPU_INPUT_TENSOR(kx);
         CHECK_CPU_INPUT_TENSOR(vx);
@@ -45,8 +47,8 @@ namespace attention_kernels {
         CHECK_CPU_INPUT_TENSOR(col_idx);
         CHECK_CPU_INPUT_TENSOR(row_off);
 
-        TORCH_CHECK(nlon_in % nlon_out == 0,
-                    "nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (", nlon_out, ")");
+        TORCH_CHECK(nlon_in % nlon_out == 0, "nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (",
+                    nlon_out, ")");
 
         // change to channels first:
         bool kx_is_channels_last = kx.strides()[1] == 1;
@@ -74,8 +76,8 @@ namespace attention_kernels {
         auto kx_arr = kx.packed_accessor64<float, 4>();
         auto y_arr = y.packed_accessor64<float, 4>();
 
-        s2_attn_fwd_kernel<float>(kx_arr, vx_arr, qy_arr, quad_weights_arr, col_idx_arr, roff_arr, y_arr,
-            nlon_in, nlat_out, nlon_out, batch_size, nchannels_in, nchannels_out);
+        s2_attn_fwd_kernel<float>(kx_arr, vx_arr, qy_arr, quad_weights_arr, col_idx_arr, roff_arr, y_arr, nlon_in,
+                                  nlat_out, nlon_out, batch_size, nchannels_in, nchannels_out);
 
         // permute back
         if (!qy_is_channels_last) { y = y.contiguous(at::MemoryFormat::Contiguous); }
@@ -84,9 +86,6 @@ namespace attention_kernels {
     }
 
     // Implement the operators: CPU
-    TORCH_LIBRARY_IMPL(attention_kernels, CPU, m)
-    {
-        m.impl("forward",  &s2_attention_fwd_cpu);
-    }
+    TORCH_LIBRARY_IMPL(attention_kernels, CPU, m) { m.impl("forward", &s2_attention_fwd_cpu); }
 
-}
+} // namespace attention_kernels

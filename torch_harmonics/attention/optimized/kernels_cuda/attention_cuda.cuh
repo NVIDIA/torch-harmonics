@@ -35,43 +35,42 @@
 #include <torch/torch.h>
 
 #define CHECK_CUDA_TENSOR(x) TORCH_INTERNAL_ASSERT(x.device().type() == torch::kCUDA)
-#define CHECK_CONTIGUOUS_TENSOR(x) TORCH_INTERNAL_ASSERT(x.is_contiguous() || x.is_contiguous(at::MemoryFormat::ChannelsLast))
+#define CHECK_CONTIGUOUS_TENSOR(x)                                                                                     \
+    TORCH_INTERNAL_ASSERT(x.is_contiguous() || x.is_contiguous(at::MemoryFormat::ChannelsLast))
 #define CHECK_CUDA_INPUT_TENSOR(x)                                                                                     \
     CHECK_CUDA_TENSOR(x);                                                                                              \
     CHECK_CONTIGUOUS_TENSOR(x)
 
-namespace attention_kernels {
+namespace attention_kernels
+{
 
-torch::Tensor s2_attention_fwd_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor quad_weights,
-                                    at::Tensor psi_col_idx, at::Tensor psi_row_off,
-                                    int64_t nlon_in, int64_t nlat_out, int64_t nlon_out);
+    torch::Tensor s2_attention_fwd_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor quad_weights,
+                                        at::Tensor psi_col_idx, at::Tensor psi_row_off, int64_t nlon_in,
+                                        int64_t nlat_out, int64_t nlon_out);
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor> s2_attention_bwd_dkvq_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy,
-                                                                          at::Tensor dy, at::Tensor quad_weights,
-                                                                          at::Tensor psi_col_idx, at::Tensor psi_row_off,
-                                                                          int64_t nlon_in, int64_t nlat_out, int64_t nlon_out);
+    std::tuple<at::Tensor, at::Tensor, at::Tensor>
+    s2_attention_bwd_dkvq_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy, at::Tensor quad_weights,
+                               at::Tensor psi_col_idx, at::Tensor psi_row_off, int64_t nlon_in, int64_t nlat_out,
+                               int64_t nlon_out);
 
-void s2_attention_fwd_ring_step_cuda(
-    at::Tensor kx, at::Tensor vx, at::Tensor qy,
-    at::Tensor y_acc, at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
-    at::Tensor quad_weights, at::Tensor psi_col_idx, at::Tensor psi_row_off, at::Tensor psi_row_idx,
-    int64_t nlon_in, int64_t pscale, int64_t lon_lo_kx, int64_t lat_halo_start,
-    int64_t nlat_out, int64_t nlon_out);
+    void s2_attention_fwd_ring_step_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor y_acc,
+                                         at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf, at::Tensor quad_weights,
+                                         at::Tensor psi_col_idx, at::Tensor psi_row_off, at::Tensor psi_row_idx,
+                                         int64_t nlon_in, int64_t pscale, int64_t lon_lo_kx, int64_t lat_halo_start,
+                                         int64_t nlat_out, int64_t nlon_out);
 
-void s2_attention_bwd_ring_step_pass1_cuda(
-    at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
-    at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf, at::Tensor integral_buf,
-    at::Tensor alpha_k_buf, at::Tensor alpha_kvw_buf,
-    at::Tensor quad_weights, at::Tensor psi_col_idx, at::Tensor psi_row_off, at::Tensor psi_row_idx,
-    int64_t nlon_in, int64_t pscale, int64_t lon_lo_kx, int64_t lat_halo_start,
-    int64_t nlat_out, int64_t nlon_out);
+    void s2_attention_bwd_ring_step_pass1_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
+                                               at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
+                                               at::Tensor integral_buf, at::Tensor alpha_k_buf, at::Tensor alpha_kvw_buf,
+                                               at::Tensor quad_weights, at::Tensor psi_col_idx, at::Tensor psi_row_off,
+                                               at::Tensor psi_row_idx, int64_t nlon_in, int64_t pscale, int64_t lon_lo_kx,
+                                               int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out);
 
-void s2_attention_bwd_ring_step_pass2_cuda(
-    at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
-    at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf, at::Tensor integral_norm_buf,
-    at::Tensor dkx, at::Tensor dvx,
-    at::Tensor quad_weights, at::Tensor psi_col_idx, at::Tensor psi_row_off, at::Tensor psi_row_idx,
-    int64_t nlon_in, int64_t pscale, int64_t lon_lo_kx, int64_t lat_halo_start,
-    int64_t nlat_out, int64_t nlon_out);
+    void s2_attention_bwd_ring_step_pass2_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
+                                               at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
+                                               at::Tensor integral_norm_buf, at::Tensor dkx, at::Tensor dvx,
+                                               at::Tensor quad_weights, at::Tensor psi_col_idx, at::Tensor psi_row_off,
+                                               at::Tensor psi_row_idx, int64_t nlon_in, int64_t pscale, int64_t lon_lo_kx,
+                                               int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out);
 
-}
+} // namespace attention_kernels
