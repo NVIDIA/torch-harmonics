@@ -45,7 +45,6 @@ optimized paths.
 
 import torch
 
-from .. import attention_kernels
 from .._attention_utils import _setup_context_attention_backward
 
 
@@ -53,9 +52,9 @@ from .._attention_utils import _setup_context_attention_backward
 # uses qdotk_max update trick to avoid two loops when computing the softmax
 # see e.g., https://arxiv.org/abs/1805.02867
 # and https://alexdremov.me/understanding-flash-attention-writing-the-algorithm-from-scratch-in-triton/
-def _neighborhood_s2_attention_fwd_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor,
-                                         quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-                                         nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+def _neighborhood_s2_attention_fwd_torch(
+    kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor, nlon_in: int, nlat_out: int, nlon_out: int
+) -> torch.Tensor:
 
     # one output lon step corresponds to pscale input lon steps; require an integer ratio
     assert nlon_in % nlon_out == 0, f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})"
@@ -67,9 +66,9 @@ def _neighborhood_s2_attention_fwd_torch(kx: torch.Tensor, vx: torch.Tensor, qy:
 
     for ho in range(nlat_out):
 
-	    # get number of nonzeros
+        # get number of nonzeros
         zstart = row_off[ho]
-        zend = row_off[ho+1]
+        zend = row_off[ho + 1]
 
         for wo in range(nlon_out):
 
@@ -97,20 +96,30 @@ def _neighborhood_s2_attention_fwd_torch(kx: torch.Tensor, vx: torch.Tensor, qy:
                 alpha = torch.exp(qdotk - qdotk_max_tmp) * quad_weights[hi]
                 alpha_sum = alpha + alpha_sum * torch.exp(qdotk_max - qdotk_max_tmp)
                 # update output
-                y[:,:,ho,wo] = y[:,:,ho,wo] * torch.exp(qdotk_max - qdotk_max_tmp).unsqueeze(1) + alpha[:, None] * vx[:,:,hi,wip]
+                y[:, :, ho, wo] = y[:, :, ho, wo] * torch.exp(qdotk_max - qdotk_max_tmp).unsqueeze(1) + alpha[:, None] * vx[:, :, hi, wip]
 
                 # define new max
                 qdotk_max = qdotk_max_tmp
 
-            y[:,:,ho,wo] = y[:,:,ho,wo] / alpha_sum[:, None]
+            y[:, :, ho, wo] = y[:, :, ho, wo] / alpha_sum[:, None]
 
     return y
 
+
 # Explicit gradient w.r.t. vx: dM/dv
 # provided as a reference for CUDA & other hand-written gradients
-def _neighborhood_s2_attention_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
-                                            quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-                                            nlon_in: int, nlat_out: int, nlon_out: int):
+def _neighborhood_s2_attention_bwd_dv_torch(
+    kx: torch.Tensor,
+    vx: torch.Tensor,
+    qy: torch.Tensor,
+    dy: torch.Tensor,
+    quad_weights: torch.Tensor,
+    col_idx: torch.Tensor,
+    row_off: torch.Tensor,
+    nlon_in: int,
+    nlat_out: int,
+    nlon_out: int,
+):
 
     # shapes:
     # input
@@ -131,12 +140,12 @@ def _neighborhood_s2_attention_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, 
 
         # get number of nonzeros
         zstart = row_off[ho]
-        zend = row_off[ho+1]
+        zend = row_off[ho + 1]
 
         for wo in range(nlon_out):
 
-            alpha_nz = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
-            qdotk_nz = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
+            alpha_nz = torch.zeros((batch_size, zend - zstart), dtype=dy.dtype, device=dy.device)
+            qdotk_nz = torch.zeros((batch_size, zend - zstart), dtype=dy.dtype, device=dy.device)
             alpha_sum = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
             for idz in range(zstart, zend):
                 nz_col_idx = col_idx[idz]
@@ -150,7 +159,7 @@ def _neighborhood_s2_attention_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 # compute correlation & softmax numerator
                 q_ho_wo = qy[:, :, ho, wo]
                 k_hi_wi = kx[:, :, hi, wip]
-                qdotk_nz[:,idz-zstart] = torch.sum(q_ho_wo * k_hi_wi, dim=1)
+                qdotk_nz[:, idz - zstart] = torch.sum(q_ho_wo * k_hi_wi, dim=1)
 
             qdotk_max, _ = torch.max(qdotk_nz, dim=1)
 
@@ -162,8 +171,8 @@ def _neighborhood_s2_attention_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 # account for output shift and ensure positive index due to circular condition
                 wi = nz_col_idx % nlon_in
                 wip = (wi + pscale * wo) % nlon_in
-                alpha_nz[:,idz-zstart] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max) * quad_weights[hi]
-                alpha_sum[:] += alpha_nz[:,idz-zstart]
+                alpha_nz[:, idz - zstart] = torch.exp(qdotk_nz[:, idz - zstart] - qdotk_max) * quad_weights[hi]
+                alpha_sum[:] += alpha_nz[:, idz - zstart]
 
             for idz in range(zstart, zend):
                 nz_col_idx = col_idx[idz]
@@ -173,16 +182,25 @@ def _neighborhood_s2_attention_bwd_dv_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 # account for output shift and ensure positive index due to circular condition
                 wi = nz_col_idx % nlon_in
                 wip = (wi + pscale * wo) % nlon_in
-                dvx[:,:,hi, wip] += (alpha_nz[:, None, idz-zstart] / alpha_sum[:, None]) * dy[:,:,ho,wo]
+                dvx[:, :, hi, wip] += (alpha_nz[:, None, idz - zstart] / alpha_sum[:, None]) * dy[:, :, ho, wo]
 
     return dvx
 
 
 # Explicit gradient w.r.t. kx: dM/dk
 # provided as a reference for CUDA & other hand-written gradients
-def _neighborhood_s2_attention_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
-                                            quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-                                            nlon_in: int, nlat_out: int, nlon_out: int):
+def _neighborhood_s2_attention_bwd_dk_torch(
+    kx: torch.Tensor,
+    vx: torch.Tensor,
+    qy: torch.Tensor,
+    dy: torch.Tensor,
+    quad_weights: torch.Tensor,
+    col_idx: torch.Tensor,
+    row_off: torch.Tensor,
+    nlon_in: int,
+    nlat_out: int,
+    nlon_out: int,
+):
 
     # shapes:
     # input
@@ -203,13 +221,13 @@ def _neighborhood_s2_attention_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, 
 
         # get number of nonzeros
         zstart = row_off[ho]
-        zend = row_off[ho+1]
+        zend = row_off[ho + 1]
 
         for wo in range(nlon_out):
 
-            qdotk_nz = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
+            qdotk_nz = torch.zeros((batch_size, zend - zstart), dtype=dy.dtype, device=dy.device)
             integral = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
-            alpha = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
+            alpha = torch.zeros((batch_size, zend - zstart), dtype=dy.dtype, device=dy.device)
             alpha_sum = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
             for idz in range(zstart, zend):
                 nz_col_idx = col_idx[idz]
@@ -223,7 +241,7 @@ def _neighborhood_s2_attention_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 # compute correlation & softmax numerator
                 q_ho_wo = qy[:, :, ho, wo]
                 k_hj_wjp = kx[:, :, hj, wjp]
-                qdotk_nz[:,idz-zstart] = torch.sum(q_ho_wo * k_hj_wjp, dim=1)
+                qdotk_nz[:, idz - zstart] = torch.sum(q_ho_wo * k_hj_wjp, dim=1)
 
             qdotk_max, _ = torch.max(qdotk_nz, dim=1)
 
@@ -236,14 +254,14 @@ def _neighborhood_s2_attention_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 wj = nz_col_idx % nlon_in
                 wjp = (wj + pscale * wo) % nlon_in
 
-                alpha[:, idz-zstart] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max) * quad_weights[hj]
-                alpha_sum[:] += alpha[:, idz-zstart]
+                alpha[:, idz - zstart] = torch.exp(qdotk_nz[:, idz - zstart] - qdotk_max) * quad_weights[hj]
+                alpha_sum[:] += alpha[:, idz - zstart]
 
                 # input dot
-                gdotv = torch.sum(dy[:,:,ho, wo] * vx[:,:,hj, wjp], dim=1)
+                gdotv = torch.sum(dy[:, :, ho, wo] * vx[:, :, hj, wjp], dim=1)
 
                 # integral term
-                integral[:] += alpha[:, idz-zstart] * gdotv[:]
+                integral[:] += alpha[:, idz - zstart] * gdotv[:]
 
             integral[:] = integral[:] / alpha_sum[:]
 
@@ -257,17 +275,27 @@ def _neighborhood_s2_attention_bwd_dk_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 wip = (wi + pscale * wo) % nlon_in
 
                 # compute correlation & softmax numerator
-                gdotv = torch.sum(dy[:,:,ho, wo] * vx[:,:,hi, wip], dim=1)
+                gdotv = torch.sum(dy[:, :, ho, wo] * vx[:, :, hi, wip], dim=1)
 
-                dkx[:,:,hi,wip] += qy[:, :, ho, wo] * (alpha[:, None, idz-zstart] / alpha_sum[:, None]) * (gdotv[:, None] - integral[:, None])
+                dkx[:, :, hi, wip] += qy[:, :, ho, wo] * (alpha[:, None, idz - zstart] / alpha_sum[:, None]) * (gdotv[:, None] - integral[:, None])
 
     return dkx
 
+
 # Explicit gradient w.r.t. qy: dM/dq
 # provided as a reference for CUDA & other hand-written gradients
-def _neighborhood_s2_attention_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
-                                            quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-                                            nlon_in: int, nlat_out: int, nlon_out: int):
+def _neighborhood_s2_attention_bwd_dq_torch(
+    kx: torch.Tensor,
+    vx: torch.Tensor,
+    qy: torch.Tensor,
+    dy: torch.Tensor,
+    quad_weights: torch.Tensor,
+    col_idx: torch.Tensor,
+    row_off: torch.Tensor,
+    nlon_in: int,
+    nlat_out: int,
+    nlon_out: int,
+):
 
     # shapes:
     # input
@@ -283,7 +311,7 @@ def _neighborhood_s2_attention_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, 
 
     batch_size = dy.shape[0]
     channels_in = kx.shape[1]
-    channels_out = vx.shape[1]
+    vx.shape[1]
 
     dqy = torch.zeros_like(qy)
 
@@ -291,17 +319,17 @@ def _neighborhood_s2_attention_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, 
 
         # get number of nonzeros
         zstart = row_off[ho]
-        zend = row_off[ho+1]
+        zend = row_off[ho + 1]
 
         for wo in range(nlon_out):
 
-            alpha = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
-            qdotk_nz = torch.zeros((batch_size, zend-zstart), dtype=dy.dtype, device=dy.device)
+            alpha = torch.zeros((batch_size, zend - zstart), dtype=dy.dtype, device=dy.device)
+            qdotk_nz = torch.zeros((batch_size, zend - zstart), dtype=dy.dtype, device=dy.device)
             alpha_k = torch.zeros((batch_size, channels_in), dtype=dy.dtype, device=dy.device)
             alpha_vw = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
             alpha_kvw = torch.zeros((batch_size, channels_in), dtype=dy.dtype, device=dy.device)
             alpha_sum = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
-            alpha_sum2 = torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
+            torch.zeros((batch_size,), dtype=dy.dtype, device=dy.device)
             for idz in range(zstart, zend):
                 nz_col_idx = col_idx[idz]
 
@@ -311,14 +339,14 @@ def _neighborhood_s2_attention_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, 
                 wi = nz_col_idx % nlon_in
                 wip = (wi + pscale * wo) % nlon_in
 
-                idz_i = idz-zstart
+                idz_i = idz - zstart
 
                 # compute correlation & softmax numerator
                 q_ho_wo = qy[:, :, ho, wo]
                 k_hi_wi = kx[:, :, hi, wip]
-                qdotk_nz[:,idz-zstart] = torch.sum(q_ho_wo * k_hi_wi, dim=1)
+                qdotk_nz[:, idz - zstart] = torch.sum(q_ho_wo * k_hi_wi, dim=1)
 
-            qdotk_max,_ = qdotk_nz.max(dim=1)
+            qdotk_max, _ = qdotk_nz.max(dim=1)
 
             for idz in range(zstart, zend):
                 nz_col_idx = col_idx[idz]
@@ -331,51 +359,72 @@ def _neighborhood_s2_attention_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, 
 
                 q_ho_wo = qy[:, :, ho, wo]
                 k_hi_wi = kx[:, :, hi, wip]
-                idz_i = idz-zstart
-                alpha[:, idz_i] = torch.exp(qdotk_nz[:,idz-zstart] - qdotk_max) * quad_weights[hi]
+                idz_i = idz - zstart
+                alpha[:, idz_i] = torch.exp(qdotk_nz[:, idz - zstart] - qdotk_max) * quad_weights[hi]
                 alpha_sum[:] += alpha[:, idz_i]
 
-                gdotv = torch.sum(dy[:,:,ho, wo] * vx[:,:,hi, wip], dim=1)
-                alpha_k[:,:] += alpha[:, None, idz_i] * k_hi_wi
+                gdotv = torch.sum(dy[:, :, ho, wo] * vx[:, :, hi, wip], dim=1)
+                alpha_k[:, :] += alpha[:, None, idz_i] * k_hi_wi
                 alpha_vw[:] += alpha[:, idz_i] * gdotv[:]
-                alpha_kvw[:,:] += alpha[:, None, idz_i] * k_hi_wi * gdotv[:,None]
+                alpha_kvw[:, :] += alpha[:, None, idz_i] * k_hi_wi * gdotv[:, None]
 
-            dqy[:,:,ho,wo] = (alpha_kvw * alpha_sum[:,None] - alpha_vw[:, None] * alpha_k) / (alpha_sum[:,None] * alpha_sum[:,None])
+            dqy[:, :, ho, wo] = (alpha_kvw * alpha_sum[:, None] - alpha_vw[:, None] * alpha_k) / (alpha_sum[:, None] * alpha_sum[:, None])
 
     return dqy
 
+
 @torch.library.custom_op("attention_kernels::_neighborhood_s2_attention_torch", mutates_args=())
-def _neighborhood_s2_attention_torch(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor,
-                                     quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-                                     max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+def _neighborhood_s2_attention_torch(
+    kw: torch.Tensor,
+    vw: torch.Tensor,
+    qw: torch.Tensor,
+    quad_weights: torch.Tensor,
+    col_idx: torch.Tensor,
+    row_off: torch.Tensor,
+    max_psi_nnz: int,
+    nh: int,
+    nlon_in: int,
+    nlat_out: int,
+    nlon_out: int,
+) -> torch.Tensor:
 
     # reshape, folding num heads into batch dim
     B, _, H, W = kw.shape
-    kw = kw.reshape(B*nh, -1, H, W)
+    kw = kw.reshape(B * nh, -1, H, W)
     B, _, H, W = vw.shape
-    vw = vw.reshape(B*nh, -1, H, W)
+    vw = vw.reshape(B * nh, -1, H, W)
     B, _, H, W = qw.shape
-    qw = qw.reshape(B*nh, -1, H, W)
+    qw = qw.reshape(B * nh, -1, H, W)
 
     kw = kw.to(torch.float32)
     vw = vw.to(torch.float32)
     qw = qw.to(torch.float32)
 
-    output = _neighborhood_s2_attention_fwd_torch(kw, vw, qw, quad_weights,
-                                                  col_idx, row_off,
-                                                  nlon_in, nlat_out, nlon_out)
+    output = _neighborhood_s2_attention_fwd_torch(kw, vw, qw, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
 
     _, _, H, W = output.shape
     output = output.reshape(B, -1, H, W)
 
     return output
 
+
 @torch.library.register_fake("attention_kernels::_neighborhood_s2_attention_torch")
-def _(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor,
-      quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-      max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+def _(
+    kw: torch.Tensor,
+    vw: torch.Tensor,
+    qw: torch.Tensor,
+    quad_weights: torch.Tensor,
+    col_idx: torch.Tensor,
+    row_off: torch.Tensor,
+    max_psi_nnz: int,
+    nh: int,
+    nlon_in: int,
+    nlat_out: int,
+    nlon_out: int,
+) -> torch.Tensor:
     out_shape = (kw.shape[0], vw.shape[1], nlat_out, nlon_out)
     return torch.empty(out_shape, dtype=kw.dtype, device=kw.device)
+
 
 def _neighborhood_s2_attention_bwd_torch(ctx, grad_output):
     col_idx, row_off, quad_weights, kw, vw, qw = ctx.saved_tensors
@@ -391,46 +440,37 @@ def _neighborhood_s2_attention_bwd_torch(ctx, grad_output):
 
     # reshape, folding num heads into batch dim
     B, _, H, W = kw.shape
-    kw = kw.reshape(B*nh, -1, H, W)
+    kw = kw.reshape(B * nh, -1, H, W)
     B, _, H, W = vw.shape
-    vw = vw.reshape(B*nh, -1, H, W)
+    vw = vw.reshape(B * nh, -1, H, W)
     B, _, H, W = qw.shape
-    qw = qw.reshape(B*nh, -1, H, W)
-    B, _, H, W  = grad_output.shape
-    grad_output = grad_output.reshape(B*nh, -1, H, W)
+    qw = qw.reshape(B * nh, -1, H, W)
+    B, _, H, W = grad_output.shape
+    grad_output = grad_output.reshape(B * nh, -1, H, W)
 
     if vw_needs_grad:
-        dvw = _neighborhood_s2_attention_bwd_dv_torch(kw, vw, qw, grad_output,
-                                                      quad_weights,
-                                                      col_idx, row_off,
-                                                      nlon_in, nlat_out, nlon_out)
+        dvw = _neighborhood_s2_attention_bwd_dv_torch(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
         _, _, H, W = dvw.shape
         dvw = dvw.reshape(B, -1, H, W)
     else:
         dvw = None
 
     if kw_needs_grad:
-        dkw = _neighborhood_s2_attention_bwd_dk_torch(kw, vw, qw, grad_output,
-                                                      quad_weights,
-                                                      col_idx, row_off,
-                                                      nlon_in, nlat_out, nlon_out)
+        dkw = _neighborhood_s2_attention_bwd_dk_torch(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
         _, _, H, W = dkw.shape
         dkw = dkw.reshape(B, -1, H, W)
     else:
         dkw = None
 
     if qw_needs_grad:
-        dqw = _neighborhood_s2_attention_bwd_dq_torch(kw, vw, qw, grad_output,
-                                                      quad_weights,
-                                                      col_idx, row_off,
-                                                      nlon_in, nlat_out, nlon_out)
+        dqw = _neighborhood_s2_attention_bwd_dq_torch(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
         _, _, H, W = dqw.shape
         dqw = dqw.reshape(B, -1, H, W)
     else:
         dqw = None
 
-    return dkw, dvw, dqw, \
-            None, None, None, None, None, None, None, None
+    return dkw, dvw, dqw, None, None, None, None, None, None, None, None
+
 
 # register backward
 torch.library.register_autograd("attention_kernels::_neighborhood_s2_attention_torch", _neighborhood_s2_attention_bwd_torch, setup_context=_setup_context_attention_backward)

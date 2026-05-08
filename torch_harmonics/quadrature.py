@@ -29,14 +29,18 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import Tuple, Optional
-from torch_harmonics.cache import lru_cache
 import math
+from typing import Optional, Tuple
+
 import numpy as np
 import torch
 
-def _precompute_quadrature_weights(n: int, grid: Optional[str]="equidistant", a: Optional[float]=0.0, b: Optional[float]=1.0,
-                     periodic: Optional[bool]=False) -> Tuple[torch.Tensor, torch.Tensor]:
+from torch_harmonics.cache import lru_cache
+
+
+def _precompute_quadrature_weights(
+    n: int, grid: Optional[str] = "equidistant", a: Optional[float] = 0.0, b: Optional[float] = 1.0, periodic: Optional[bool] = False
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Precompute grid points and quadrature weights for various quadrature rules.
 
@@ -65,7 +69,7 @@ def _precompute_quadrature_weights(n: int, grid: Optional[str]="equidistant", a:
     """
 
     if (grid != "equidistant") and periodic:
-        raise ValueError(f"Periodic grid is only supported on equidistant grids.")
+        raise ValueError("Periodic grid is only supported on equidistant grids.")
 
     # compute coordinates
     if grid == "equidistant":
@@ -81,15 +85,16 @@ def _precompute_quadrature_weights(n: int, grid: Optional[str]="equidistant", a:
 
     return xlg, wlg
 
+
 @lru_cache(typed=True, copy=True)
 def precompute_longitudes(nlon: int):
 
-    lons = torch.linspace(0, 2 * math.pi, nlon+1, dtype=torch.float64, requires_grad=False)[:-1]
+    lons = torch.linspace(0, 2 * math.pi, nlon + 1, dtype=torch.float64, requires_grad=False)[:-1]
     return lons
 
 
 @lru_cache(typed=True, copy=True)
-def precompute_latitudes(nlat: int, grid: Optional[str]="equiangular") -> Tuple[torch.Tensor, torch.Tensor]:
+def precompute_latitudes(nlat: int, grid: Optional[str] = "equiangular") -> Tuple[torch.Tensor, torch.Tensor]:
 
     # compute coordinates in the cosine theta domain
     xlg, wlg = _precompute_quadrature_weights(nlat, grid=grid, a=-1.0, b=1.0, periodic=False)
@@ -102,7 +107,7 @@ def precompute_latitudes(nlat: int, grid: Optional[str]="equiangular") -> Tuple[
     return lats, wlg
 
 
-def trapezoidal_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0, periodic: Optional[bool]=False) -> Tuple[torch.Tensor, torch.Tensor]:
+def trapezoidal_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 1.0, periodic: Optional[bool] = False) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Helper routine which returns equidistant nodes with trapezoidal weights
     on the interval [a, b]
@@ -136,7 +141,7 @@ def trapezoidal_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0,
     return xlg, wlg
 
 
-def legendre_gauss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0) -> Tuple[torch.Tensor, torch.Tensor]:
+def legendre_gauss_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 1.0) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Helper routine which returns the Legendre-Gauss nodes and weights
     on the interval [a, b]
@@ -167,8 +172,7 @@ def legendre_gauss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1
     return xlg, wlg
 
 
-def lobatto_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0,
-                    tol: Optional[float]=1e-16, maxiter: Optional[int]=100) -> Tuple[torch.Tensor, torch.Tensor]:
+def lobatto_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 1.0, tol: Optional[float] = 1e-16, maxiter: Optional[int] = 100) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Helper routine which returns the Legendre-Gauss-Lobatto nodes and weights
     on the interval [a, b]
@@ -231,7 +235,7 @@ def lobatto_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0,
     return tlg, wlg
 
 
-def clenshaw_curtiss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0) -> Tuple[torch.Tensor, torch.Tensor]:
+def clenshaw_curtiss_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 1.0) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Computation of the Clenshaw-Curtis quadrature nodes and weights.
     This implementation follows
@@ -271,7 +275,7 @@ def clenshaw_curtiss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]
         m = n1 - l
 
         v = torch.cat([2 / N / (N - 2), 1 / N[-1:], torch.zeros(m, dtype=torch.float64, requires_grad=False)])
-        #v = 0 - v[:-1] - v[-1:0:-1]
+        # v = 0 - v[:-1] - v[-1:0:-1]
         v = 0 - v[:-1] - torch.flip(v[1:], dims=(0,))
 
         g0 = -torch.ones(n1, dtype=torch.float64, requires_grad=False)
@@ -288,7 +292,7 @@ def clenshaw_curtiss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]
     return tcc, wcc
 
 
-def fejer2_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0) -> Tuple[torch.Tensor, torch.Tensor]:
+def fejer2_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 1.0) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Computation of the Fejer quadrature nodes and weights.
 
@@ -323,7 +327,7 @@ def fejer2_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0) -> T
     m = n1 - l
 
     v = torch.cat([2 / N / (N - 2), 1 / N[-1:], torch.zeros(m, dtype=torch.float64, requires_grad=False)])
-    #v = 0 - v[:-1] - v[-1:0:-1]
+    # v = 0 - v[:-1] - v[-1:0:-1]
     v = 0 - v[:-1] - torch.flip(v[1:], dims=(0,))
 
     wcc = torch.fft.ifft(v).real
@@ -363,12 +367,8 @@ class QuadratureS2(torch.nn.Module):
     ValueError
         If an unknown ``grid`` type is provided.
     """
-    def __init__(
-        self, 
-        img_shape: Tuple[int], 
-        grid: Optional[str]="equiangular", 
-        normalize: Optional[bool]=False
-    ):
+
+    def __init__(self, img_shape: Tuple[int], grid: Optional[str] = "equiangular", normalize: Optional[bool] = False):
         super().__init__()
 
         self.grid = grid

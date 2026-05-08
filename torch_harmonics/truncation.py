@@ -29,10 +29,11 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import Optional, Tuple
 import warnings
+from typing import Optional, Tuple
 
-def _truncate_lmax(nlat: int, grid: Optional[str]="equiangular") -> int:
+
+def _truncate_lmax(nlat: int, grid: Optional[str] = "equiangular") -> int:
     """
     Truncate the maximum spherical harmonic degree based on the latitude grid. The maximum degree
     corresponds to the maximum degree of associated Legendre polynomials that can be square-integrated
@@ -62,14 +63,14 @@ def _truncate_lmax(nlat: int, grid: Optional[str]="equiangular") -> int:
         return nlat - 1
     elif grid in ["equiangular", "equidistant"]:
         warnings.warn(
-            "Default SHT truncation changed in v0.9.0: equiangular/equidistant grids now truncate to (nlat+1)//2. "
-            "Specify lmax explicitly to override.",
+            "Default SHT truncation changed in v0.9.0: equiangular/equidistant grids now truncate to (nlat+1)//2. " "Specify lmax explicitly to override.",
             UserWarning,
             stacklevel=2,
         )
         return (nlat + 1) // 2
     else:
         raise ValueError(f"Unknown grid type {grid}")
+
 
 def _truncate_mmax(nlon: int) -> int:
     """
@@ -88,7 +89,8 @@ def _truncate_mmax(nlon: int) -> int:
     """
     return nlon // 2 + 1
 
-def truncate_sht(nlat: int, nlon: int, lmax: Optional[int]=None, mmax: Optional[int]=None, grid: Optional[str]="equiangular") -> Tuple[int, int]:
+
+def truncate_sht(nlat: int, nlon: int, lmax: Optional[int] = None, mmax: Optional[int] = None, grid: Optional[str] = "equiangular") -> Tuple[int, int]:
     """
     Truncate the maximum spherical harmonic degree and azimuthal harmonic degree based on the latitude and longitude grids.
 

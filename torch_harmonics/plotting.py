@@ -29,19 +29,19 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+
 import numpy as np
-import os
 
 # guarded imports
 try:
     import matplotlib.pyplot as plt
-except ImportError as err:
+except ImportError:
     plt = None
 
 try:
     import cartopy
     import cartopy.crs as ccrs
-except ImportError as err:
+except ImportError:
     cartopy = None
     ccrs = None
 
@@ -60,7 +60,7 @@ def get_projection(
 ):
     """
     Get a cartopy projection object for map plotting.
-    
+
     Parameters
     -----------
     projection : str
@@ -69,12 +69,12 @@ def get_projection(
         Central latitude for the projection, by default 0
     central_longitude : float, optional
         Central longitude for the projection, by default 0
-        
+
     Returns
     -------
     cartopy.crs.Projection
         Cartopy projection object
-        
+
     Raises
     ------
     ValueError
@@ -95,11 +95,23 @@ def get_projection(
 
 
 def plot_sphere(
-    data, fig=None, projection="robinson", cmap="RdBu", title=None, colorbar=False, coastlines=False, gridlines=False,  central_latitude=0, central_longitude=0, lon=None, lat=None, **kwargs
+    data,
+    fig=None,
+    projection="robinson",
+    cmap="RdBu",
+    title=None,
+    colorbar=False,
+    coastlines=False,
+    gridlines=False,
+    central_latitude=0,
+    central_longitude=0,
+    lon=None,
+    lat=None,
+    **kwargs,
 ):
     """
     Plots a function defined on the sphere using pcolormesh
-    
+
     Parameters
     -----------
     data : numpy.ndarray or torch.Tensor
@@ -128,7 +140,7 @@ def plot_sphere(
         Latitude coordinates, by default None (auto-generated)
     **kwargs
         Additional arguments passed to pcolormesh
-        
+
     Returns
     -------
     matplotlib.collections.QuadMesh
@@ -138,7 +150,7 @@ def plot_sphere(
     # make sure cartopy exist
     check_plotting_dependencies()
 
-    if fig == None:
+    if fig is None:
         fig = plt.figure()
 
     nlat = data.shape[-2]
@@ -171,7 +183,7 @@ def plot_sphere(
 
     # add gridlines
     if gridlines:
-        gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False, linewidth=1, color="gray", alpha=0.6, linestyle="--")
+        ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=False, linewidth=1, color="gray", alpha=0.6, linestyle="--")
 
     # add title with smaller font
     plt.title(title, y=1.05, fontsize=8)
@@ -182,7 +194,7 @@ def plot_sphere(
 def imshow_sphere(data, fig=None, projection="robinson", title=None, central_latitude=0, central_longitude=0, **kwargs):
     """
     Displays an image on the sphere
-    
+
     Parameters
     -----------
     data : numpy.ndarray or torch.Tensor
@@ -199,7 +211,7 @@ def imshow_sphere(data, fig=None, projection="robinson", title=None, central_lat
         Central longitude for projection, by default 0
     **kwargs
         Additional arguments passed to imshow
-        
+
     Returns
     -------
     matplotlib.image.AxesImage
@@ -209,7 +221,7 @@ def imshow_sphere(data, fig=None, projection="robinson", title=None, central_lat
     # make sure cartopy exist
     check_plotting_dependencies()
 
-    if fig == None:
+    if fig is None:
         fig = plt.figure()
 
     # get the projection. Latitude is shifted to match plot_sphere

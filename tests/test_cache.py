@@ -29,12 +29,12 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import unittest
-from parameterized import parameterized
 import math
+import unittest
+
 import torch
 
-from torch_harmonics.quadrature import legendre_gauss_weights, clenshaw_curtiss_weights
+from torch_harmonics.quadrature import clenshaw_curtiss_weights, legendre_gauss_weights
 
 
 class TestCacheConsistency(unittest.TestCase):

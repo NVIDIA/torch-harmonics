@@ -32,10 +32,10 @@
 import torch
 import torch.nn as nn
 
+from torch_harmonics.fft import irfft, rfft
+from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
+from torch_harmonics.quadrature import clenshaw_curtiss_weights, legendre_gauss_weights, lobatto_weights
 from torch_harmonics.truncation import truncate_sht
-from torch_harmonics.quadrature import legendre_gauss_weights, lobatto_weights, clenshaw_curtiss_weights
-from torch_harmonics.legendre import _precompute_legpoly, _precompute_dlegpoly
-from torch_harmonics.fft import rfft, irfft
 
 
 class RealSHT(nn.Module):
@@ -73,7 +73,6 @@ class RealSHT(nn.Module):
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
-
 
         super().__init__()
 
@@ -271,7 +270,6 @@ class RealVectorSHT(nn.Module):
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
 
-
         super().__init__()
 
         self.nlat = nlat
@@ -334,16 +332,12 @@ class RealVectorSHT(nn.Module):
         w1 = self.weights[1].to(x_re.dtype)
 
         # contraction - spheroidal component
-        s_re = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w0) \
-             - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w1)
-        s_im = torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w0) \
-             + torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w1)
+        s_re = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w0) - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w1)
+        s_im = torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w0) + torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w1)
 
         # contraction - toroidal component
-        t_re = -torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w1) \
-              - torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w0)
-        t_im = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w1) \
-             - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w0)
+        t_re = -torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w0)
+        t_im = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w0)
 
         return torch.stack((torch.complex(s_re, s_im), torch.complex(t_re, t_im)), dim=-3)
 
@@ -437,16 +431,12 @@ class InverseRealVectorSHT(nn.Module):
         d1 = self.dpct[1].to(x_re.dtype)
 
         # contraction - spheroidal component
-        srl = torch.einsum("...ml,mkl->...km", x_re[..., 0, :, :], d0) \
-            - torch.einsum("...ml,mkl->...km", x_im[..., 1, :, :], d1)
-        sim = torch.einsum("...ml,mkl->...km", x_im[..., 0, :, :], d0) \
-            + torch.einsum("...ml,mkl->...km", x_re[..., 1, :, :], d1)
+        srl = torch.einsum("...ml,mkl->...km", x_re[..., 0, :, :], d0) - torch.einsum("...ml,mkl->...km", x_im[..., 1, :, :], d1)
+        sim = torch.einsum("...ml,mkl->...km", x_im[..., 0, :, :], d0) + torch.einsum("...ml,mkl->...km", x_re[..., 1, :, :], d1)
 
         # contraction - toroidal component
-        trl = -torch.einsum("...ml,mkl->...km", x_im[..., 0, :, :], d1) \
-             - torch.einsum("...ml,mkl->...km", x_re[..., 1, :, :], d0)
-        tim = torch.einsum("...ml,mkl->...km", x_re[..., 0, :, :], d1) \
-            - torch.einsum("...ml,mkl->...km", x_im[..., 1, :, :], d0)
+        trl = -torch.einsum("...ml,mkl->...km", x_im[..., 0, :, :], d1) - torch.einsum("...ml,mkl->...km", x_re[..., 1, :, :], d0)
+        tim = torch.einsum("...ml,mkl->...km", x_re[..., 0, :, :], d1) - torch.einsum("...ml,mkl->...km", x_im[..., 1, :, :], d0)
 
         # reassemble and apply inverse FFT
         xs = torch.stack((torch.complex(srl, sim), torch.complex(trl, tim)), dim=-3)

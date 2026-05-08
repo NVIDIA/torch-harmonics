@@ -2,7 +2,7 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -33,10 +33,8 @@ from typing import List
 import torch
 import torch.distributed as dist
 
+from .utils import azimuth_group, azimuth_group_size, is_distributed_azimuth, is_distributed_polar, polar_group, polar_group_rank, polar_group_size
 from .utils import config as thd_config
-from .utils import polar_group, polar_group_size, polar_group_rank
-from .utils import azimuth_group, azimuth_group_size
-from .utils import is_distributed_polar, is_distributed_azimuth
 
 
 def get_group_neighbors(group):
@@ -60,10 +58,7 @@ def _check_shapes(msg, shapes_gather, shapes_expected):
 def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
     """Compute the split shapes for a given size and number of chunks."""
 
-    assert size >= num_chunks, (
-        f"Cannot split {size} elements into {num_chunks} chunks; "
-        f"every chunk must be non-empty."
-    )
+    assert size >= num_chunks, f"Cannot split {size} elements into {num_chunks} chunks; " f"every chunk must be non-empty."
 
     base, remainder = divmod(size, num_chunks)
     return [base + 1] * remainder + [base] * (num_chunks - remainder)
@@ -71,15 +66,17 @@ def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
 
 def split_tensor_along_dim(tensor, dim, num_chunks):
     """Split a tensor along a given dimension into a given number of chunks."""
-    
+
     assert dim < tensor.dim(), f"Error, tensor dimension is {tensor.dim()} which cannot be split along {dim}"
-    assert (tensor.shape[dim] >= num_chunks), f"Error, cannot split dim {dim} of size {tensor.shape[dim]} into \
+    assert (
+        tensor.shape[dim] >= num_chunks
+    ), f"Error, cannot split dim {dim} of size {tensor.shape[dim]} into \
                                               {num_chunks} chunks. Empty slices are currently not supported."
-    
+
     # get split
     sections = compute_split_shapes(tensor.shape[dim], num_chunks)
     tensor_list = torch.split(tensor, sections, dim=dim)
-    
+
     return tensor_list
 
 
@@ -114,7 +111,7 @@ def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False,
     for dim1_len in dim1_split_sizes:
         x_shape[dim1] = dim1_len
         x_recv.append(torch.empty(x_shape, dtype=tensor.dtype, device=tensor.device))
-        
+
     # global transposition
     req = dist.all_to_all(x_recv, x_send, group=group, async_op=async_op)
 
@@ -130,7 +127,7 @@ def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False,
         _check_shapes("_transpose: error, dim0_split_sizes", sizes_gather, dim0_split_sizes)
         if sum(sizes_gather) != dim0_size:
             raise ValueError(f"_transpose: error, dim0_split_sizes do not sum to the correct size. Expected {dim0_size}, got {torch.sum(sizes_gather)}")
-    
+
     return x_recv, dim0_split_sizes, req
 
 
@@ -139,7 +136,7 @@ class _DistributeTransposeAzimuth(torch.autograd.Function):
     @staticmethod
     def forward(x, dims, dim1_split_sizes):
         x = x.contiguous()
-        
+
         if not is_distributed_azimuth():
             return x
 
@@ -156,7 +153,7 @@ class _DistributeTransposeAzimuth(torch.autograd.Function):
     @staticmethod
     def backward(ctx, go):
         go = go.contiguous()
-        
+
         if not is_distributed_azimuth():
             return go, None, None
 
@@ -172,10 +169,10 @@ class _DistributeTransposePolar(torch.autograd.Function):
     @staticmethod
     def forward(x, dims, dim1_split_sizes):
         x = x.contiguous()
-        
+
         if not is_distributed_polar():
             return x
-        
+
         xlist, _, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=polar_group())
         return torch.cat(xlist, dim=dims[1]).contiguous()
 
@@ -192,21 +189,21 @@ class _DistributeTransposePolar(torch.autograd.Function):
 
         if not is_distributed_polar():
             return go, None, None
-        
+
         dims = ctx.dims
         dim0_split_sizes = ctx.dim0_split_sizes
         gilist, _, _ = _transpose(go, dims[1], dims[0], dim0_split_sizes, group=polar_group())
         gi = torch.cat(gilist, dim=dims[0]).contiguous()
         return gi, None, None
 
-    
+
 # we need those additional primitives for distributed matrix multiplications
 def _reduce(input_, use_fp32=True, group=None):
 
     # Bypass the function if we are using only 1 GPU.
     if dist.get_world_size(group=group) == 1:
         return input_
-    
+
     # All-reduce.
     if use_fp32:
         dtype = input_.dtype
@@ -217,28 +214,28 @@ def _reduce(input_, use_fp32=True, group=None):
     else:
         input_ = input_.contiguous()
         dist.all_reduce(input_, group=group)
-        
+
     return input_
-    
+
 
 def _split(input_, dim_, group=None):
     # Bypass the function if we are using only 1 GPU.
     comm_size = dist.get_world_size(group=group)
     if comm_size == 1:
         return input_
-    
+
     # Split along last dimension.
     input_list = split_tensor_along_dim(input_, dim_, comm_size)
-    
+
     # Note: torch.split does not create contiguous tensors by default.
     rank = dist.get_rank(group=group)
     output = input_list[rank]
-    
+
     return output
 
 
 def _gather(input_, dim_, shapes_, group=None, verify_shapes=None):
-    
+
     if verify_shapes is None:
         verify_shapes = thd_config.debug
 
@@ -302,7 +299,7 @@ def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
     input_list = split_tensor_along_dim(input_, dim_, comm_size)
 
     dtype = input_.dtype
-    if (use_fp32 and (dtype != torch.float32)):
+    if use_fp32 and (dtype != torch.float32):
         input_list = [x.to(torch.float32) for x in input_list]
 
     input_list = [x.contiguous() for x in input_list]
@@ -415,7 +412,7 @@ class _GatherFromPolarRegion(torch.autograd.Function):
         else:
             return grad_output, None, None
 
-    
+
 class _ReduceFromPolarRegion(torch.autograd.Function):
 
     @staticmethod
@@ -525,41 +522,51 @@ class _GatherFromCopyToPolarRegion(torch.autograd.Function):
         else:
             return grad_output, None, None
 
+
 @torch.compiler.disable()
 def distributed_transpose_azimuth(input_, dims_, shapes_):
     return _DistributeTransposeAzimuth.apply(input_, dims_, shapes_)
+
 
 @torch.compiler.disable()
 def distributed_transpose_polar(input_, dims_, shapes_):
     return _DistributeTransposePolar.apply(input_, dims_, shapes_)
 
+
 @torch.compiler.disable()
 def copy_to_polar_region(input_):
     return _CopyToPolarRegion.apply(input_)
 
+
 @torch.compiler.disable()
 def copy_to_azimuth_region(input_):
     return _CopyToAzimuthRegion.apply(input_)
-        
+
+
 @torch.compiler.disable()
 def reduce_from_polar_region(input_):
     return _ReduceFromPolarRegion.apply(input_)
+
 
 @torch.compiler.disable()
 def reduce_from_azimuth_region(input_):
     return _ReduceFromAzimuthRegion.apply(input_)
 
+
 @torch.compiler.disable()
 def scatter_to_polar_region(input_, dim_):
     return _ScatterToPolarRegion.apply(input_, dim_)
+
 
 @torch.compiler.disable()
 def gather_from_polar_region(input_, dim_, shapes_):
     return _GatherFromPolarRegion.apply(input_, dim_, shapes_)
 
+
 @torch.compiler.disable()
 def reduce_from_scatter_to_polar_region(input_, dim_):
     return _ReduceFromScatterToPolarRegion.apply(input_, dim_)
+
 
 @torch.compiler.disable()
 def gather_from_copy_to_polar_region(input_, dim_, shapes_):
@@ -597,7 +604,7 @@ class _PolarHaloExchangeFn(torch.autograd.Function):
         device, dtype = x.device, x.dtype
 
         # setup send buffers
-        send_top = x[:, :, :r_lat, :].contiguous()   # top r_lat rows → rank-1
+        send_top = x[:, :, :r_lat, :].contiguous()  # top r_lat rows → rank-1
         send_bot = x[:, :, -r_lat:, :].contiguous()  # bottom r_lat rows → rank+1
 
         # setup recv buffers
@@ -623,13 +630,13 @@ class _PolarHaloExchangeFn(torch.autograd.Function):
     def setup_context(ctx, inputs, output):
         x, r_lat = inputs
         ctx.r_lat = r_lat
-        ctx.H     = x.shape[2]
+        ctx.H = x.shape[2]
         if is_distributed_polar():
             ctx.group_size = polar_group_size()
             ctx.group_rank = polar_group_rank()
             prev_rank, next_rank = get_group_neighbors(polar_group())
-            ctx.prev_rank  = prev_rank
-            ctx.next_rank  = next_rank
+            ctx.prev_rank = prev_rank
+            ctx.next_rank = next_rank
 
     @staticmethod
     def backward(ctx, dout):
@@ -637,10 +644,10 @@ class _PolarHaloExchangeFn(torch.autograd.Function):
         if not is_distributed_polar():
             return dout, None
 
-        r_lat       = ctx.r_lat
-        group_size   = ctx.group_size
-        group_rank  = ctx.group_rank
-        H           = ctx.H
+        r_lat = ctx.r_lat
+        group_size = ctx.group_size
+        group_rank = ctx.group_rank
+        H = ctx.H
         prev_rank = ctx.prev_rank
         next_rank = ctx.next_rank
 
@@ -648,7 +655,7 @@ class _PolarHaloExchangeFn(torch.autograd.Function):
         device, dtype = dout.device, dout.dtype
 
         # Direct gradient for the local (non-halo) rows.
-        dx = dout[:, :, r_lat:r_lat + H, :].contiguous().clone()
+        dx = dout[:, :, r_lat : r_lat + H, :].contiguous().clone()
 
         # The halo slices carry gradients that belong to neighbouring ranks:
         #   dout[:, :, :r_lat, :]       → came FROM rank-1; send gradient back to rank-1
@@ -656,7 +663,7 @@ class _PolarHaloExchangeFn(torch.autograd.Function):
         # Simultaneously receive from each neighbour the gradient they owe us
         # for the rows we sent them in the forward pass.
         send_to_prev = dout[:, :, :r_lat, :].contiguous()
-        send_to_next = dout[:, :, r_lat + H:, :].contiguous()
+        send_to_next = dout[:, :, r_lat + H :, :].contiguous()
 
         recv_from_prev = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
         recv_from_next = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
@@ -680,10 +687,11 @@ class _PolarHaloExchangeFn(torch.autograd.Function):
         if group_rank > 0:
             dx[:, :, :r_lat, :] = dx[:, :, :r_lat, :] + recv_from_prev
         if group_rank < group_size - 1:
-            dx[:, :, H - r_lat:, :] = dx[:, :, H - r_lat:, :] + recv_from_next
+            dx[:, :, H - r_lat :, :] = dx[:, :, H - r_lat :, :] + recv_from_next
 
         # Gradients for r_lat is None (not tensors / non-differentiable)
         return dx, None
+
 
 @torch.compiler.disable()
 def polar_halo_exchange(x, r_lat):

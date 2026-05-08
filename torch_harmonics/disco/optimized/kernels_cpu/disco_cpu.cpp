@@ -30,11 +30,13 @@
 
 #include "disco_cpu.h"
 
-namespace disco_kernels {
+namespace disco_kernels
+{
 
     // cpu ops
     torch::Tensor disco_cpu_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-        torch::Tensor col_idx, torch::Tensor vals, int64_t K, int64_t Ho, int64_t Wo) {
+                                torch::Tensor col_idx, torch::Tensor vals, int64_t K, int64_t Ho, int64_t Wo)
+    {
 
         // sanity checks
         CHECK_CPU_INPUT_TENSOR(inp);
@@ -45,30 +47,26 @@ namespace disco_kernels {
         CHECK_CPU_INPUT_TENSOR(vals);
 
         // the kernel uses pscale = Wi / Wo; require an integer ratio so the p-shift is exact
-        TORCH_CHECK(inp.size(3) % Wo == 0,
-                    "Wi (", inp.size(3), ") must be an integer multiple of Wo (", Wo, ")");
+        TORCH_CHECK(inp.size(3) % Wo == 0, "Wi (", inp.size(3), ") must be an integer multiple of Wo (", Wo, ")");
 
         // initialize output tensor
         auto out = torch::zeros({inp.size(0), inp.size(1), K, Ho, Wo}, inp.options());
 
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cpu", ([&] {
-            disco_fwd_cpu<scalar_t>(
-                inp.size(0), inp.size(1), K, inp.size(2), inp.size(3), 
-                Ho, Wo, vals.size(0), roff_idx.size(0) - 1,
-                inp.packed_accessor64<scalar_t, 4>(), 
-                roff_idx.packed_accessor64<int64_t, 1>(), 
-                ker_idx.packed_accessor64<int64_t, 1>(), 
-                row_idx.packed_accessor64<int64_t, 1>(), 
-                col_idx.packed_accessor64<int64_t, 1>(), 
-                vals.packed_accessor64<scalar_t, 1>(), 
-                out.packed_accessor64<scalar_t, 5>());
-        }));
+        AT_DISPATCH_FLOATING_TYPES(
+            inp.scalar_type(), "disco_forward_cpu", ([&] {
+                disco_fwd_cpu<scalar_t>(inp.size(0), inp.size(1), K, inp.size(2), inp.size(3), Ho, Wo, vals.size(0),
+                                        roff_idx.size(0) - 1, inp.packed_accessor64<scalar_t, 4>(),
+                                        roff_idx.packed_accessor64<int64_t, 1>(), ker_idx.packed_accessor64<int64_t, 1>(),
+                                        row_idx.packed_accessor64<int64_t, 1>(), col_idx.packed_accessor64<int64_t, 1>(),
+                                        vals.packed_accessor64<scalar_t, 1>(), out.packed_accessor64<scalar_t, 5>());
+            }));
 
         return out;
     }
 
     torch::Tensor disco_cpu_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-        torch::Tensor col_idx, torch::Tensor vals, int64_t K, int64_t Ho, int64_t Wo) {
+                                torch::Tensor col_idx, torch::Tensor vals, int64_t K, int64_t Ho, int64_t Wo)
+    {
 
         // sanity checks
         CHECK_CPU_INPUT_TENSOR(inp);
@@ -79,24 +77,19 @@ namespace disco_kernels {
         CHECK_CPU_INPUT_TENSOR(vals);
 
         // the kernel uses pscale = Wo / Wi; require an integer ratio so the p-shift is exact
-        TORCH_CHECK(Wo % inp.size(4) == 0,
-                    "Wo (", Wo, ") must be an integer multiple of Wi (", inp.size(4), ")");
+        TORCH_CHECK(Wo % inp.size(4) == 0, "Wo (", Wo, ") must be an integer multiple of Wi (", inp.size(4), ")");
 
         // initialize output tensor
         auto out = torch::zeros({inp.size(0), inp.size(1), Ho, Wo}, inp.options());
 
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_cpu", ([&] {
-            disco_bwd_cpu<scalar_t>(
-                inp.size(0), inp.size(1), K, inp.size(3), 
-                inp.size(4), Ho, Wo, vals.size(0), roff_idx.size(0) - 1,
-                inp.packed_accessor64<scalar_t, 5>(), 
-                roff_idx.packed_accessor64<int64_t, 1>(), 
-                ker_idx.packed_accessor64<int64_t, 1>(), 
-                row_idx.packed_accessor64<int64_t, 1>(), 
-                col_idx.packed_accessor64<int64_t, 1>(), 
-                vals.packed_accessor64<scalar_t, 1>(), 
-                out.packed_accessor64<scalar_t, 4>());
-        }));
+        AT_DISPATCH_FLOATING_TYPES(
+            inp.scalar_type(), "disco_backward_cpu", ([&] {
+                disco_bwd_cpu<scalar_t>(inp.size(0), inp.size(1), K, inp.size(3), inp.size(4), Ho, Wo, vals.size(0),
+                                        roff_idx.size(0) - 1, inp.packed_accessor64<scalar_t, 5>(),
+                                        roff_idx.packed_accessor64<int64_t, 1>(), ker_idx.packed_accessor64<int64_t, 1>(),
+                                        row_idx.packed_accessor64<int64_t, 1>(), col_idx.packed_accessor64<int64_t, 1>(),
+                                        vals.packed_accessor64<scalar_t, 1>(), out.packed_accessor64<scalar_t, 4>());
+            }));
 
         return out;
     }
@@ -104,8 +97,8 @@ namespace disco_kernels {
     // Implement the operators: CPU
     TORCH_LIBRARY_IMPL(disco_kernels, CPU, m)
     {
-        m.impl("forward",  &disco_cpu_fwd);
-        m.impl("backward",  &disco_cpu_bwd);
+        m.impl("forward", &disco_cpu_fwd);
+        m.impl("backward", &disco_cpu_bwd);
     }
 
-}
+} // namespace disco_kernels

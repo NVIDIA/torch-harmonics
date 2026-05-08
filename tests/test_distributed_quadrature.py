@@ -29,32 +29,26 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os
 import unittest
-from parameterized import parameterized
 
 import torch
+from parameterized import parameterized
+from testutils import compare_tensors, gather_tensor_hw, set_seed, setup_class_from_context, setup_module, split_tensor_hw, teardown_module
+
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
-
-from testutils import (
-    set_seed,
-    setup_module, 
-    teardown_module,
-    setup_class_from_context,
-    split_tensor_hw,
-    gather_tensor_hw,
-    compare_tensors
-)
 
 # shared state
 _DIST_CTX = {}
 
+
 def setUpModule():
     setup_module(_DIST_CTX)
 
+
 def tearDownModule():
     teardown_module(_DIST_CTX)
+
 
 class TestDistributedQuadrature(unittest.TestCase):
     """Compare QuadratureS2 with DistributedQuadratureS2 (CPU/CUDA if available)."""
@@ -64,30 +58,22 @@ class TestDistributedQuadrature(unittest.TestCase):
         setup_class_from_context(cls, _DIST_CTX)
 
     def _split_helper(self, tensor):
-        return split_tensor_hw(
-            tensor, 
-            hdim=-2, 
-            wdim=-1, 
-            hsize=self.grid_size_h, 
-            wsize=self.grid_size_w, 
-            hrank=self.hrank, 
-            wrank=self.wrank
-        )
+        return split_tensor_hw(tensor, hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
 
     def _gather_helper(self, tensor, quadrature_dist):
 
         tensor_gather = gather_tensor_hw(
-            tensor, 
-            hdim=-2, 
-            wdim=-1, 
-            hshapes=quadrature_dist.lat_shapes, 
-            wshapes=quadrature_dist.lon_shapes, 
-            hsize=self.grid_size_h, 
-            wsize=self.grid_size_w, 
-            hrank=self.hrank, 
-            wrank=self.wrank, 
-            hgroup=self.h_group, 
-            wgroup=self.w_group
+            tensor,
+            hdim=-2,
+            wdim=-1,
+            hshapes=quadrature_dist.lat_shapes,
+            wshapes=quadrature_dist.lon_shapes,
+            hsize=self.grid_size_h,
+            wsize=self.grid_size_w,
+            hrank=self.hrank,
+            wrank=self.wrank,
+            hgroup=self.h_group,
+            wgroup=self.w_group,
         )
 
         return tensor_gather
@@ -138,6 +124,6 @@ class TestDistributedQuadrature(unittest.TestCase):
         igrad_gather_full = self._gather_helper(igrad_local, quad_dist)
         self.assertTrue(compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose))
 
+
 if __name__ == "__main__":
     unittest.main()
-

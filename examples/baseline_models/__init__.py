@@ -29,6 +29,6 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from .transformer import Transformer
 from .segformer import Segformer
+from .transformer import Transformer
 from .unet import UNet

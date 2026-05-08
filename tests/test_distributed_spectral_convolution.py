@@ -8,15 +8,15 @@
 #
 # 1. Redistributions of source code must retain the above copyright notice, this
 # list of conditions and the following disclaimer.
-# 
+#
 # 2. Redistributions in binary form must reproduce the above copyright notice,
 # this list of conditions and the following disclaimer in the documentation
 # and/or other materials provided with the distribution.
-# 
+#
 # 3. Neither the name of the copyright holder nor the names of its
 # contributors may be used to endorse or promote products derived from
 # this software without specific prior written permission.
-# 
+#
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 # AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 # IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -29,34 +29,36 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os
 import unittest
-from parameterized import parameterized
 
 import torch
+from parameterized import parameterized
+from testutils import (
+    compare_tensors,
+    disable_tf32,
+    gather_tensor_hw,
+    set_seed,
+    setup_class_from_context,
+    setup_module,
+    split_tensor_dim,
+    split_tensor_hw,
+    teardown_module,
+)
+
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
-
-from testutils import (
-    disable_tf32,
-    set_seed,
-    setup_module,
-    teardown_module,
-    setup_class_from_context,
-    split_tensor_hw,
-    split_tensor_dim,
-    gather_tensor_hw,
-    compare_tensors,
-)
 
 # shared state
 _DIST_CTX = {}
 
+
 def setUpModule():
     setup_module(_DIST_CTX)
 
+
 def tearDownModule():
     teardown_module(_DIST_CTX)
+
 
 class TestDistributedSpectralConvolution(unittest.TestCase):
     """Compare SpectralConvS2 with DistributedSpectralConvS2 (CPU/CUDA if available)."""
@@ -67,29 +69,21 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
         disable_tf32()
 
     def _split_helper(self, tensor):
-        return split_tensor_hw(
-            tensor, 
-            hdim=-2,
-            wdim=-1, 
-            hsize=self.grid_size_h, 
-            wsize=self.grid_size_w, 
-            hrank=self.hrank, 
-            wrank=self.wrank
-        )
+        return split_tensor_hw(tensor, hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
 
     def _gather_helper(self, tensor, lat_shapes, lon_shapes):
         tensor_gather = gather_tensor_hw(
-            tensor, 
-            hdim=-2, 
-            wdim=-1, 
-            hshapes=lat_shapes, 
-            wshapes=lon_shapes, 
-            hsize=self.grid_size_h, 
-            wsize=self.grid_size_w, 
-            hrank=self.hrank, 
-            wrank=self.wrank, 
-            hgroup=self.h_group, 
-            wgroup=self.w_group
+            tensor,
+            hdim=-2,
+            wdim=-1,
+            hshapes=lat_shapes,
+            wshapes=lon_shapes,
+            hsize=self.grid_size_h,
+            wsize=self.grid_size_w,
+            hrank=self.hrank,
+            wrank=self.wrank,
+            hgroup=self.h_group,
+            wgroup=self.w_group,
         )
 
         return tensor_gather
@@ -99,20 +93,21 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
             # no bias
             [(64, 128), (64, 128), 4, 8, 1, "equiangular", "equiangular", False, 1e-6, 1e-6],
             [(65, 128), (65, 128), 4, 8, 1, "equiangular", "equiangular", False, 1e-6, 1e-6],
-            [(64, 128), (32,  64), 4, 8, 1, "equiangular", "equiangular", False, 1e-6, 1e-6],
-            [(65, 128), (33,  64), 4, 8, 1, "equiangular", "equiangular", False, 1e-6, 1e-6],
-            [(33,  64), (65, 128), 4, 8, 1, "equiangular", "equiangular", False, 1e-6, 1e-6],
+            [(64, 128), (32, 64), 4, 8, 1, "equiangular", "equiangular", False, 1e-6, 1e-6],
+            [(65, 128), (33, 64), 4, 8, 1, "equiangular", "equiangular", False, 1e-6, 1e-6],
+            [(33, 64), (65, 128), 4, 8, 1, "equiangular", "equiangular", False, 1e-6, 1e-6],
             [(64, 128), (64, 128), 4, 8, 1, "equiangular", "legendre-gauss", False, 1e-6, 1e-6],
             [(65, 128), (65, 128), 4, 8, 1, "equiangular", "legendre-gauss", False, 1e-6, 1e-6],
             # with bias
             [(64, 128), (64, 128), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
             [(65, 128), (65, 128), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
-            [(64, 128), (32,  64), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
-            [(65, 128), (33,  64), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
-            [(33,  64), (65, 128), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
+            [(64, 128), (32, 64), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
+            [(65, 128), (33, 64), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
+            [(33, 64), (65, 128), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
             [(64, 128), (64, 128), 4, 8, 1, "equiangular", "legendre-gauss", True, 1e-6, 1e-6],
             [(65, 128), (65, 128), 4, 8, 1, "equiangular", "legendre-gauss", True, 1e-6, 1e-6],
-        ], skip_on_empty=True
+        ],
+        skip_on_empty=True,
     )
     def test_distributed_spectral_conv(self, in_shape, out_shape, batch_size, num_chan, num_groups, grid_in, grid_out, bias, atol, rtol, verbose=True):
 
@@ -182,6 +177,6 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
         )
         self.assertTrue(compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose))
 
+
 if __name__ == "__main__":
     unittest.main()
-

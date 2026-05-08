@@ -32,16 +32,11 @@
 import math
 
 import torch
-import torch.nn as nn
 import torch.amp as amp
+import torch.nn as nn
 
-from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
-from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
-from torch_harmonics import ResampleS2
-
+from torch_harmonics import AttentionS2, DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2, NeighborhoodAttentionS2, ResampleS2
 from torch_harmonics.examples.models._layers import MLP, DropPath
-
-from functools import partial
 
 
 # heuristic for finding theta_cutoff
@@ -54,10 +49,10 @@ def _compute_cutoff_radius(nlat, kernel_shape, basis_type):
 class OverlapPatchMerging(nn.Module):
     """
     Overlap patch merging module for spherical segformer.
-    
+
     This module performs patch merging with overlapping patches using discrete-continuous
     convolutions on the sphere, followed by layer normalization.
-    
+
     Parameters
     -----------
     in_shape : tuple, optional
@@ -79,7 +74,7 @@ class OverlapPatchMerging(nn.Module):
     bias : bool, optional
         Whether to use bias, by default False
     """
-    
+
     def __init__(
         self,
         in_shape=(721, 1440),
@@ -139,10 +134,10 @@ class OverlapPatchMerging(nn.Module):
 class MixFFN(nn.Module):
     """
     Mix FFN module for spherical segformer.
-    
+
     This module implements a feed-forward network that combines MLP operations
     with discrete-continuous convolutions on the sphere.
-    
+
     Parameters
     -----------
     shape : tuple
@@ -168,7 +163,7 @@ class MixFFN(nn.Module):
     drop_path : float, optional
         Drop path rate, by default 0.0
     """
-    
+
     def __init__(
         self,
         shape,
@@ -256,10 +251,10 @@ class MixFFN(nn.Module):
 class AttentionWrapper(nn.Module):
     """
     Attention wrapper for spherical segformer.
-    
+
     This module wraps attention mechanisms (neighborhood or global) with optional
     normalization and drop path regularization.
-    
+
     Parameters
     -----------
     channels : int
@@ -283,19 +278,8 @@ class AttentionWrapper(nn.Module):
     bias : bool, optional
         Whether to use bias, by default True
     """
-    def __init__(
-        self,
-        channels,
-        shape,
-        grid,
-        heads,
-        pre_norm=False,
-        attention_drop_rate=0.0,
-        drop_path=0.0,
-        attention_mode="neighborhood",
-        theta_cutoff=None,
-        bias=True
-    ):
+
+    def __init__(self, channels, shape, grid, heads, pre_norm=False, attention_drop_rate=0.0, drop_path=0.0, attention_mode="neighborhood", theta_cutoff=None, bias=True):
         super().__init__()
 
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
@@ -313,20 +297,12 @@ class AttentionWrapper(nn.Module):
                 theta_cutoff=theta_cutoff,
                 out_channels=channels,
                 num_heads=heads,
-                bias=bias
+                bias=bias,
                 # drop_rate=attention_drop_rate,
             )
         else:
             self.att = AttentionS2(
-                in_channels=channels,
-                num_heads=heads,
-                in_shape=shape,
-                out_shape=shape,
-                grid_in=grid,
-                grid_out=grid,
-                out_channels=channels,
-                drop_rate=attention_drop_rate,
-                bias=bias
+                in_channels=channels, num_heads=heads, in_shape=shape, out_shape=shape, grid_in=grid, grid_out=grid, out_channels=channels, drop_rate=attention_drop_rate, bias=bias
             )
 
         self.norm = None
@@ -362,10 +338,10 @@ class AttentionWrapper(nn.Module):
 class TransformerBlock(nn.Module):
     """
     Transformer block for spherical segformer.
-    
+
     This block combines patch merging, attention, and Mix FFN operations
     in a hierarchical structure for processing spherical data.
-    
+
     Parameters
     -----------
     in_shape : tuple
@@ -403,6 +379,7 @@ class TransformerBlock(nn.Module):
     bias : bool, optional
         Whether to use bias, by default True
     """
+
     def __init__(
         self,
         in_shape,
@@ -421,7 +398,7 @@ class TransformerBlock(nn.Module):
         drop_path_rates=0.0,
         attention_mode="neighborhood",
         theta_cutoff=None,
-        bias=True
+        bias=True,
     ):
         super().__init__()
 
@@ -461,7 +438,7 @@ class TransformerBlock(nn.Module):
                     drop_path=drop_path_rates[i],
                     attention_mode=attention_mode,
                     theta_cutoff=theta_cutoff,
-                    bias=bias
+                    bias=bias,
                 )
             )
 
@@ -508,10 +485,10 @@ class TransformerBlock(nn.Module):
 class Upsampling(nn.Module):
     """
     Upsampling module for spherical segformer.
-    
+
     This module performs upsampling using either discrete-continuous transposed convolutions
     or bilinear resampling on spherical data.
-    
+
     Parameters
     -----------
     in_shape : tuple
@@ -543,6 +520,7 @@ class Upsampling(nn.Module):
     upsampling_method : str, optional
         Upsampling method ("conv" or "bilinear"), by default "conv"
     """
+
     def __init__(
         self,
         in_shape,
@@ -558,7 +536,7 @@ class Upsampling(nn.Module):
         conv_bias=False,
         activation=nn.GELU,
         use_mlp=False,
-        upsampling_method="conv"
+        upsampling_method="conv",
     ):
         super().__init__()
 
@@ -684,7 +662,7 @@ class SphericalSegformer(nn.Module):
         attention_mode="neighborhood",
         theta_cutoff=None,
         upsampling_method="bilinear",
-        bias=True
+        bias=True,
     ):
         super().__init__()
 
@@ -743,7 +721,7 @@ class SphericalSegformer(nn.Module):
                     drop_path_rates=dpr[cur : cur + self.depths[i]],
                     attention_mode=attention_mode,
                     theta_cutoff=theta_cutoff,
-                    bias=bias
+                    bias=bias,
                 )
             )
             cur += self.depths[i]
@@ -770,7 +748,7 @@ class SphericalSegformer(nn.Module):
                     basis_type=filter_basis_type,
                     conv_bias=False,
                     activation=nn.GELU,
-                    upsampling_method=upsampling_method
+                    upsampling_method=upsampling_method,
                 )
             )
 

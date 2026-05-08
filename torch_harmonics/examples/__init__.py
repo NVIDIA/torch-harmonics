@@ -29,8 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+from .pde_dataset import PdeDataset
 from .pde_sphere import SphereSolver
 from .shallow_water_equations import ShallowWaterSolver
-
-from .pde_dataset import PdeDataset
-from .stanford_2d3ds_dataset import StanfordSegmentationDataset, StanfordDepthDataset, Stanford2D3DSDownloader, compute_stats_s2, StanfordDatasetSubset
+from .stanford_2d3ds_dataset import Stanford2D3DSDownloader, StanfordDatasetSubset, StanfordDepthDataset, StanfordSegmentationDataset, compute_stats_s2

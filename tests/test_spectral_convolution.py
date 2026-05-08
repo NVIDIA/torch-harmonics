@@ -30,13 +30,12 @@
 #
 
 import unittest
-from parameterized import parameterized, parameterized_class
 
 import torch
+from parameterized import parameterized, parameterized_class
+from testutils import compare_tensors, disable_tf32, set_seed
 
 from torch_harmonics.spectral_convolution import SpectralConvS2
-
-from testutils import disable_tf32, set_seed, compare_tensors
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -101,8 +100,10 @@ class TestSpectralConvS2(unittest.TestCase):
         self.assertTrue(
             compare_tensors(
                 "zonal rotation equivariance",
-                y_of_shifted, shift_of_y,
-                atol=1e-5, rtol=1e-4,
+                y_of_shifted,
+                shift_of_y,
+                atol=1e-5,
+                rtol=1e-4,
                 verbose=verbose,
             )
         )
@@ -172,8 +173,10 @@ class TestSpectralConvS2(unittest.TestCase):
         self.assertTrue(
             compare_tensors(
                 "grouped convolution consistency",
-                y_grouped, y_manual,
-                atol=1e-5, rtol=1e-4,
+                y_grouped,
+                y_manual,
+                atol=1e-5,
+                rtol=1e-4,
                 verbose=verbose,
             )
         )
@@ -215,7 +218,8 @@ class TestSpectralConvS2(unittest.TestCase):
             y = conv(x)
 
         self.assertEqual(
-            y.dtype, dtype,
+            y.dtype,
+            dtype,
             msg=f"Expected output dtype {dtype}, got {y.dtype}",
         )
 
@@ -264,13 +268,9 @@ class TestSpectralConvS2(unittest.TestCase):
             y_batch = conv(x_batch)
 
         # the two batched outputs must be identical to each other …
-        self.assertTrue(
-            compare_tensors("batch independence [0 vs 1]", y_batch[0], y_batch[1], atol=atol, rtol=rtol, verbose=verbose)
-        )
+        self.assertTrue(compare_tensors("batch independence [0 vs 1]", y_batch[0], y_batch[1], atol=atol, rtol=rtol, verbose=verbose))
         # … and identical to running the single sample alone
-        self.assertTrue(
-            compare_tensors("batch independence [single vs batched]", y_single[0], y_batch[0], atol=atol, rtol=rtol, verbose=verbose)
-        )
+        self.assertTrue(compare_tensors("batch independence [single vs batched]", y_single[0], y_batch[0], atol=atol, rtol=rtol, verbose=verbose))
 
     # -----------------------------------------------------------------------
     # Test 8: Zero weights → zero output
@@ -313,12 +313,13 @@ class TestSpectralConvS2(unittest.TestCase):
         self.assertTrue(
             compare_tensors(
                 "zero weights zero output",
-                y, torch.zeros_like(y),
-                atol=0.0, rtol=0.0,
+                y,
+                torch.zeros_like(y),
+                atol=0.0,
+                rtol=0.0,
                 verbose=verbose,
             )
         )
-
 
     # -----------------------------------------------------------------------
     # Test 9: Spectral bias
@@ -378,9 +379,7 @@ class TestSpectralConvS2(unittest.TestCase):
             y_no_bias = conv_no_bias(x)
             y_bias = conv_bias(x)
 
-        self.assertTrue(
-            compare_tensors("zero bias equals no bias", y_bias, y_no_bias, atol=1e-6, rtol=1e-5, verbose=verbose)
-        )
+        self.assertTrue(compare_tensors("zero bias equals no bias", y_bias, y_no_bias, atol=1e-6, rtol=1e-5, verbose=verbose))
 
     @parameterized.expand(
         [
@@ -422,8 +421,8 @@ class TestSpectralConvS2(unittest.TestCase):
         [
             # disabling tests for now because MKL DNN has problems with those:
             # nlat, nlon, channels, num_groups
-            #[32, 64, 4, 1],
-            #[32, 64, 4, 2],
+            # [32, 64, 4, 1],
+            # [32, 64, 4, 2],
         ],
         skip_on_empty=True,
     )

@@ -41,4 +41,3 @@ ENV TORCH_HARMONICS_ENABLE_OPENMP=1
 ENV TORCH_CUDA_ARCH_LIST="8.0 8.6 8.7 9.0 10.0+PTX"
 COPY . /workspace/torch_harmonics
 RUN cd /workspace/torch_harmonics && pip install --no-build-isolation .
-

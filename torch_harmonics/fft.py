@@ -65,6 +65,7 @@ def rfft(x: torch.Tensor, nmodes: Optional[int] = None, dim: int = -1, **kwargs)
 
     return x
 
+
 def irfft(x: torch.Tensor, n: Optional[int] = None, dim: int = -1, **kwargs) -> torch.Tensor:
     """
     Torch version of IRFFT handles paddign and truncation correctly.

@@ -29,20 +29,19 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import Tuple, Union, Optional
-
 import math
+from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from torch_harmonics.quadrature import precompute_latitudes
-from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
-from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_optimized
-from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhood_s2_attention_torch
-from torch_harmonics.filter_basis import get_filter_basis
 from attention_helpers import optimized_kernels_is_available
+
+from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhood_s2_attention_torch
+from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_optimized
+from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
+from torch_harmonics.filter_basis import get_filter_basis
+from torch_harmonics.quadrature import precompute_latitudes
 
 
 class AttentionS2(nn.Module):
@@ -79,27 +78,26 @@ class AttentionS2(nn.Module):
     """
 
     def __init__(
-            self,
-            in_channels: int,
-            num_heads: int,
-            in_shape: Tuple[int],
-            out_shape: Tuple[int],
-            grid_in: Optional[str] = "equiangular",
-            grid_out: Optional[str] = "equiangular",
-            scale: Optional[Union[torch.Tensor, float]] = None,
-            use_qknorm: Optional[bool] = False,
-            bias: Optional[bool] = True,
-            k_channels: Optional[int] = None,
-            out_channels: Optional[int] = None,
-            drop_rate: Optional[float]=0.0,
+        self,
+        in_channels: int,
+        num_heads: int,
+        in_shape: Tuple[int],
+        out_shape: Tuple[int],
+        grid_in: Optional[str] = "equiangular",
+        grid_out: Optional[str] = "equiangular",
+        scale: Optional[Union[torch.Tensor, float]] = None,
+        use_qknorm: Optional[bool] = False,
+        bias: Optional[bool] = True,
+        k_channels: Optional[int] = None,
+        out_channels: Optional[int] = None,
+        drop_rate: Optional[float] = 0.0,
     ):
         super().__init__()
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
 
-        assert self.nlon_in % self.nlon_out == 0, \
-            f"nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}) for the attention p-shift to be exact"
+        assert self.nlon_in % self.nlon_out == 0, f"nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}) for the attention p-shift to be exact"
 
         self.in_channels = in_channels
         self.num_heads = num_heads
@@ -117,7 +115,7 @@ class AttentionS2(nn.Module):
         # compute log because they are applied as an addition prior to the softmax ('attn_mask'), which includes an exponential.
         # see https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
         # for info on how 'attn_mask' is applied to the attention weights
-        log_quad_weights = torch.log(quad_weights).reshape(1,1,-1)
+        log_quad_weights = torch.log(quad_weights).reshape(1, 1, -1)
         self.register_buffer("log_quad_weights", log_quad_weights, persistent=False)
 
         # learnable parameters — Xavier uniform init matching PyTorch MHA convention:
@@ -126,12 +124,12 @@ class AttentionS2(nn.Module):
             raise ValueError(f"Please make sure that number of heads {self.num_heads} divides k_channels {self.k_channels} evenly.")
         if self.out_channels % self.num_heads != 0:
             raise ValueError(f"Please make sure that number of heads {self.num_heads} divides out_channels {self.out_channels} evenly.")
-        scale_qk   = math.sqrt(6.0 / (self.in_channels + self.k_channels))
-        scale_v    = math.sqrt(6.0 / (self.in_channels + self.out_channels))
+        scale_qk = math.sqrt(6.0 / (self.in_channels + self.k_channels))
+        scale_v = math.sqrt(6.0 / (self.in_channels + self.out_channels))
         scale_proj = math.sqrt(3.0 / self.out_channels)
-        self.q_weights = nn.Parameter(scale_qk   * (2 * torch.rand(self.k_channels,   self.in_channels,  1, 1) - 1))
-        self.k_weights = nn.Parameter(scale_qk   * (2 * torch.rand(self.k_channels,   self.in_channels,  1, 1) - 1))
-        self.v_weights = nn.Parameter(scale_v    * (2 * torch.rand(self.out_channels,  self.in_channels,  1, 1) - 1))
+        self.q_weights = nn.Parameter(scale_qk * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
+        self.k_weights = nn.Parameter(scale_qk * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
+        self.v_weights = nn.Parameter(scale_v * (2 * torch.rand(self.out_channels, self.in_channels, 1, 1) - 1))
         self.proj_weights = nn.Parameter(scale_proj * (2 * torch.rand(self.out_channels, self.out_channels, 1, 1) - 1))
 
         if bias:
@@ -151,7 +149,6 @@ class AttentionS2(nn.Module):
         else:
             self.q_norm_weights = None
             self.k_norm_weights = None
-
 
     def extra_repr(self):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}"
@@ -183,11 +180,11 @@ class AttentionS2(nn.Module):
 
         # reshape to the right dimensions
         B, _, C, H, W = query.shape
-        query = query.permute(0,1,3,4,2).reshape(B, self.num_heads, H*W, C)
+        query = query.permute(0, 1, 3, 4, 2).reshape(B, self.num_heads, H * W, C)
         B, _, C, H, W = key.shape
-        key = key.permute(0,1,3,4,2).reshape(B, self.num_heads, H*W, C)
+        key = key.permute(0, 1, 3, 4, 2).reshape(B, self.num_heads, H * W, C)
         B, _, C, H, W = value.shape
-        value = value.permute(0,1,3,4,2).reshape(B, self.num_heads, H*W, C)
+        value = value.permute(0, 1, 3, 4, 2).reshape(B, self.num_heads, H * W, C)
 
         if self.q_norm_weights is not None:
             query = F.rms_norm(query, normalized_shape=self.q_norm_weights.shape, weight=1 + self.q_norm_weights)
@@ -205,9 +202,9 @@ class AttentionS2(nn.Module):
         # reshape
         B, _, _, C = out.shape
         # (B, heads, H*W, C)
-        out = out.permute(0,1,3,2)
+        out = out.permute(0, 1, 3, 2)
         # (B, heads, C, H*W)
-        out = out.reshape(B, self.num_heads*C, self.nlat_out, self.nlon_out)
+        out = out.reshape(B, self.num_heads * C, self.nlat_out, self.nlon_out)
         # (B, heads*C, H, W)
         out = nn.functional.conv2d(out, self.proj_weights, bias=self.proj_bias)
 
@@ -270,8 +267,7 @@ class NeighborhoodAttentionS2(nn.Module):
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
 
-        assert self.nlon_in % self.nlon_out == 0, \
-            f"nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}) for the attention p-shift to be exact"
+        assert self.nlon_in % self.nlon_out == 0, f"nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}) for the attention p-shift to be exact"
 
         self.in_channels = in_channels
         self.num_heads = num_heads
@@ -328,12 +324,12 @@ class NeighborhoodAttentionS2(nn.Module):
             raise ValueError(f"Please make sure that number of heads {self.num_heads} divides k_channels {self.k_channels} evenly.")
         if self.out_channels % self.num_heads != 0:
             raise ValueError(f"Please make sure that number of heads {self.num_heads} divides out_channels {self.out_channels} evenly.")
-        scale_qk   = math.sqrt(6.0 / (self.in_channels + self.k_channels))
-        scale_v    = math.sqrt(6.0 / (self.in_channels + self.out_channels))
+        scale_qk = math.sqrt(6.0 / (self.in_channels + self.k_channels))
+        scale_v = math.sqrt(6.0 / (self.in_channels + self.out_channels))
         scale_proj = math.sqrt(3.0 / self.out_channels)
-        self.q_weights = nn.Parameter(scale_qk   * (2 * torch.rand(self.k_channels,   self.in_channels,  1, 1) - 1))
-        self.k_weights = nn.Parameter(scale_qk   * (2 * torch.rand(self.k_channels,   self.in_channels,  1, 1) - 1))
-        self.v_weights = nn.Parameter(scale_v    * (2 * torch.rand(self.out_channels,  self.in_channels,  1, 1) - 1))
+        self.q_weights = nn.Parameter(scale_qk * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
+        self.k_weights = nn.Parameter(scale_qk * (2 * torch.rand(self.k_channels, self.in_channels, 1, 1) - 1))
+        self.v_weights = nn.Parameter(scale_v * (2 * torch.rand(self.out_channels, self.in_channels, 1, 1) - 1))
         self.proj_weights = nn.Parameter(scale_proj * (2 * torch.rand(self.out_channels, self.out_channels, 1, 1) - 1))
 
         if scale is not None:
@@ -394,15 +390,15 @@ class NeighborhoodAttentionS2(nn.Module):
         # perform QK normalization (must come before scale)
         if self.q_norm_weights is not None:
             B, C, H, W = query.shape
-            query = query.reshape(B, self.num_heads, -1, H, W).permute(0,1,3,4,2)
+            query = query.reshape(B, self.num_heads, -1, H, W).permute(0, 1, 3, 4, 2)
             query = F.rms_norm(query, normalized_shape=self.q_norm_weights.shape, weight=1 + self.q_norm_weights)
-            query = query.permute(0,1,4,2,3).reshape(B, C, H, W).contiguous()
+            query = query.permute(0, 1, 4, 2, 3).reshape(B, C, H, W).contiguous()
 
         if self.k_norm_weights is not None:
             B, C, H, W = key.shape
-            key = key.reshape(B, self.num_heads, -1, H, W).permute(0,1,3,4,2)
+            key = key.reshape(B, self.num_heads, -1, H, W).permute(0, 1, 3, 4, 2)
             key = F.rms_norm(key, normalized_shape=self.k_norm_weights.shape, weight=1 + self.k_norm_weights)
-            key = key.permute(0,1,4,2,3).reshape(B, C, H, W).contiguous()
+            key = key.permute(0, 1, 4, 2, 3).reshape(B, C, H, W).contiguous()
 
         # scale after normalization
         query_scaled = query * self.scale

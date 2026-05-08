@@ -8,15 +8,15 @@
 #
 # 1. Redistributions of source code must retain the above copyright notice, this
 # list of conditions and the following disclaimer.
-# 
+#
 # 2. Redistributions in binary form must reproduce the above copyright notice,
 # this list of conditions and the following disclaimer in the documentation
 # and/or other materials provided with the distribution.
-# 
+#
 # 3. Neither the name of the copyright holder nor the names of its
 # contributors may be used to endorse or promote products derived from
 # this software without specific prior written permission.
-# 
+#
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 # AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 # IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -29,13 +29,15 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os
 import contextlib
-from packaging import version
+import os
 
 import torch
 import torch.distributed as dist
+from packaging import version
+
 import torch_harmonics.distributed as thd
+
 
 def set_seed(seed=333):
     torch.manual_seed(seed)
@@ -171,7 +173,9 @@ def setup_class_from_context(cls, ctx_dict):
 
 def setup_module(ctx_dict={}):
     # set up once per module
-    class _Dummy: pass
+    class _Dummy:
+        pass
+
     ctx = _Dummy()
     setup_distributed_context(ctx)
     ctx_dict["ctx"] = ctx
@@ -241,12 +245,13 @@ def compare_tensors(msg, tensor1, tensor2, atol=1e-8, rtol=1e-5, verbose=False):
     elif tensor1 is None and tensor2 is not None:
         allclose = False
         if verbose:
-            print(f"tensor1 is None and tensor2 is not None")
+            print("tensor1 is None and tensor2 is not None")
     elif tensor1 is not None and tensor2 is None:
         allclose = False
         if verbose:
-            print(f"tensor1 is not None and tensor2 is None")
+            print("tensor1 is not None and tensor2 is None")
     elif tensor1.dtype == torch.long and tensor2.dtype == torch.long:
+        diff = torch.abs(tensor1 - tensor2)
         allclose = torch.all(tensor1 == tensor2)
         if not allclose and verbose:
             print(f"Element values with max difference on {msg}: {tensor1.flatten()[diff.argmax()]} and {tensor2.flatten()[diff.argmax()]}")

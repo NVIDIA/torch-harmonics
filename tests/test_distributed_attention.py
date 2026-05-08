@@ -30,27 +30,29 @@
 #
 
 import unittest
-from parameterized import parameterized
 
 import torch
+from parameterized import parameterized
+from testutils import (
+    compare_tensors,
+    gather_tensor_hw,
+    set_seed,
+    setup_class_from_context,
+    setup_module,
+    split_tensor_hw,
+    teardown_module,
+)
+
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
-
-from testutils import (
-    set_seed,
-    setup_module,
-    teardown_module,
-    setup_class_from_context,
-    split_tensor_hw,
-    gather_tensor_hw,
-    compare_tensors,
-)
 
 # shared state
 _DIST_CTX = {}
 
+
 def setUpModule():
     setup_module(_DIST_CTX)
+
 
 def tearDownModule():
     teardown_module(_DIST_CTX)
@@ -118,59 +120,69 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             # same shape tests
             [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
-            [64, 128, 64, 128, 2, 16, 1,   8,    8, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 1, 8, 8, "equiangular", "equiangular", False, 1e-5, 1e-4],
             [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
             # downsampling tests, pscale=2 (lat+lon)
-            [64, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
-            [65, 128, 33,  64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [65, 128, 33, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
             # pscale=3 downsampling (exercises pscale*wo kernel arithmetic)
-            [64,  96, 32,  32, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 96, 32, 32, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
             # pscale=4 downsampling
-            [64, 128, 32,  32, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 128, 32, 32, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
             # lon-only downsampling (same nlat; isolates azimuth ring with pscale_lon=2, no lat halo)
-            [64, 128, 64,  64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 128, 64, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
             # lat-only downsampling (same nlon, pscale_lon=1; isolates polar halo exchange)
             [64, 128, 32, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
             # odd nlat_in -> even nlat_out, pscale_lon=2
-            [65, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [65, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
             # legendre-gauss grid (same-shape + downsampling)
             [64, 128, 64, 128, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", False, 1e-5, 1e-4],
-            [64, 128, 32,  64, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", False, 1e-5, 1e-4],
+            [64, 128, 32, 64, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", False, 1e-5, 1e-4],
             # mixed grid: equiangular input -> legendre-gauss output
-            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular",    "legendre-gauss", False, 1e-5, 1e-4],
-            [64, 128, 32,  64, 2, 16, 1, None, None, "equiangular",    "legendre-gauss", False, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, 1e-5, 1e-4],
+            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, 1e-5, 1e-4],
             # heads=4 with asymmetric channels (k=32, out=16; in=16)
-            [64, 128, 64, 128, 2, 16, 4,  32,   16, "equiangular", "equiangular", False, 1e-5, 1e-4],
-            [64, 128, 32,  64, 2, 16, 4,  32,   16, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 4, 32, 16, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 128, 32, 64, 2, 16, 4, 32, 16, "equiangular", "equiangular", False, 1e-5, 1e-4],
             # same cases with QK norm enabled
             [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
-            [64, 128, 64, 128, 2, 16, 1,   8,    8, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 1, 8, 8, "equiangular", "equiangular", True, 1e-5, 1e-4],
             [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
             # downsampling tests with QK norm enabled, pscale=2
-            [64, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
-            [65, 128, 33,  64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [65, 128, 33, 64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
             # pscale=3 / pscale=4 downsampling with QK norm
-            [64,  96, 32,  32, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
-            [64, 128, 32,  32, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [64, 96, 32, 32, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [64, 128, 32, 32, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
             # lon-only / lat-only downsampling with QK norm
-            [64, 128, 64,  64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [64, 128, 64, 64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
             [64, 128, 32, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
             # odd nlat_in -> even nlat_out with QK norm
-            [65, 128, 32,  64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [65, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
             # legendre-gauss grid with QK norm
             [64, 128, 64, 128, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", True, 1e-5, 1e-4],
-            [64, 128, 32,  64, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", True, 1e-5, 1e-4],
+            [64, 128, 32, 64, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", True, 1e-5, 1e-4],
             # upsampling is not supported by the kernel yet (serial layer asserts nlon_in % nlon_out == 0)
         ],
         skip_on_empty=True,
     )
     def test_distributed_neighborhood_attention(
         self,
-        nlat_in, nlon_in, nlat_out, nlon_out,
-        batch_size, in_channels, num_heads, k_channels, out_channels,
-        grid_in, grid_out, use_qknorm,
-        atol, rtol,
+        nlat_in,
+        nlon_in,
+        nlat_out,
+        nlon_out,
+        batch_size,
+        in_channels,
+        num_heads,
+        k_channels,
+        out_channels,
+        grid_in,
+        grid_out,
+        use_qknorm,
+        atol,
+        rtol,
         verbose=True,
     ):
         set_seed(333)
@@ -192,7 +204,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         # build serial and distributed modules with identical weights
         attn_serial = th.NeighborhoodAttentionS2(**attn_args).to(self.device)
-        attn_dist   = thd.DistributedNeighborhoodAttentionS2(**attn_args).to(self.device)
+        attn_dist = thd.DistributedNeighborhoodAttentionS2(**attn_args).to(self.device)
 
         with torch.no_grad():
             attn_dist.k_weights.copy_(attn_serial.k_weights)
@@ -256,16 +268,15 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         # ---- compare backward ----
         for inp in ["q", "k", "v"]:
-            use_out = (inp == "q")
+            use_out = inp == "q"
             igrad_gather = self._gather_helper_bwd(igrad_local[inp], attn_dist, use_out_shapes=use_out)
             self.assertTrue(compare_tensors(f"input gradient {inp}", igrad_full[inp], igrad_gather, atol=atol, rtol=rtol, verbose=verbose))
-
 
     def test_wrong_shape_assertions(self):
         """Verify that forward raises ValueError on spatial-shape mismatches."""
         B, C = 2, 16
-        in_shape  = (64, 128)
-        out_shape = (32,  64)
+        in_shape = (64, 128)
+        out_shape = (32, 64)
 
         attn = thd.DistributedNeighborhoodAttentionS2(
             in_channels=C,
@@ -279,7 +290,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         # Build correctly-shaped local tensors using the module's own local extents.
         q_local = torch.randn(B, C, attn.nlat_out_local, attn.nlon_out_local, device=self.device)
-        k_local = torch.randn(B, C, attn.nlat_in_local,  attn.nlon_in_local,  device=self.device)
+        k_local = torch.randn(B, C, attn.nlat_in_local, attn.nlon_in_local, device=self.device)
 
         # 1. Self-attention on an up/downsampling module: a single tensor cannot
         #    simultaneously satisfy in_shape (for k/v) and out_shape (for q).

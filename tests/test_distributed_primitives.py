@@ -30,34 +30,36 @@
 #
 
 import unittest
-from parameterized import parameterized
 
 import torch
 import torch.distributed as dist
+from parameterized import parameterized
+from testutils import (
+    compare_tensors,
+    set_seed,
+    setup_class_from_context,
+    setup_module,
+    split_tensor_dim,
+    teardown_module,
+)
+
 import torch_harmonics.distributed as thd
 from torch_harmonics.distributed import (
     compute_split_shapes,
-    split_tensor_along_dim,
-    scatter_to_polar_region,
-    gather_from_polar_region,
     distributed_transpose_polar,
-    reduce_from_polar_region,
+    gather_from_polar_region,
     reduce_from_azimuth_region,
-)
-
-from testutils import (
-    set_seed,
-    setup_module,
-    teardown_module,
-    setup_class_from_context,
-    split_tensor_dim,
-    compare_tensors,
+    reduce_from_polar_region,
+    scatter_to_polar_region,
+    split_tensor_along_dim,
 )
 
 _DIST_CTX = {}
 
+
 def setUpModule():
     setup_module(_DIST_CTX)
+
 
 def tearDownModule():
     teardown_module(_DIST_CTX)
@@ -120,11 +122,11 @@ class TestDistributedScatterGather(unittest.TestCase):
     @parameterized.expand(
         [
             # B,  C,  H,  W, split_dim
-            [ 4,  8, 32, 64, -2],
-            [ 4,  8, 33, 64, -2],
-            [ 4,  8, 32, 64, -1],
-            [ 4,  8, 32, 65, -1],
-            [ 1,  1,  7, 13, -2],
+            [4, 8, 32, 64, -2],
+            [4, 8, 33, 64, -2],
+            [4, 8, 32, 64, -1],
+            [4, 8, 32, 65, -1],
+            [1, 1, 7, 13, -2],
         ],
         skip_on_empty=True,
     )
@@ -134,7 +136,10 @@ class TestDistributedScatterGather(unittest.TestCase):
 
         comm_size = thd.polar_group_size()
         x_expected = split_tensor_dim(
-            x_full, dim=split_dim, dimsize=comm_size, dimrank=self.hrank,
+            x_full,
+            dim=split_dim,
+            dimsize=comm_size,
+            dimrank=self.hrank,
         )
 
         x_local = scatter_to_polar_region(x_full, split_dim)
@@ -145,11 +150,11 @@ class TestDistributedScatterGather(unittest.TestCase):
     @parameterized.expand(
         [
             # B,  C,  H,  W, split_dim
-            [ 4,  8, 32, 64, -2],
-            [ 4,  8, 33, 64, -2],
-            [ 4,  8, 32, 64, -1],
-            [ 4,  8, 32, 65, -1],
-            [ 1,  1,  7, 13, -2],
+            [4, 8, 32, 64, -2],
+            [4, 8, 33, 64, -2],
+            [4, 8, 32, 64, -1],
+            [4, 8, 32, 65, -1],
+            [1, 1, 7, 13, -2],
         ],
         skip_on_empty=True,
     )
@@ -178,13 +183,13 @@ class TestDistributedTranspose(unittest.TestCase):
     @parameterized.expand(
         [
             # B,  C,  H,  W, dim0, dim1
-            [ 4,  8,  32,  64,   2,   3],
-            [ 4,  8,  33,  64,   2,   3],
-            [ 4,  8,  32,  65,   2,   3],
-            [ 4,  8,  33,  65,   2,   3],
-            [ 1,  1,   7,  13,   2,   3],
-            [ 4,  9,  33,  65,   2,   3],
-            [ 1,  4, 361, 361,   2,   3],
+            [4, 8, 32, 64, 2, 3],
+            [4, 8, 33, 64, 2, 3],
+            [4, 8, 32, 65, 2, 3],
+            [4, 8, 33, 65, 2, 3],
+            [1, 1, 7, 13, 2, 3],
+            [4, 9, 33, 65, 2, 3],
+            [1, 4, 361, 361, 2, 3],
         ],
         skip_on_empty=True,
     )
@@ -197,7 +202,10 @@ class TestDistributedTranspose(unittest.TestCase):
         dim1_shapes = compute_split_shapes(x_full.shape[dim1], comm_size)
 
         x_local = split_tensor_dim(
-            x_full, dim=dim1, dimsize=comm_size, dimrank=self.hrank,
+            x_full,
+            dim=dim1,
+            dimsize=comm_size,
+            dimrank=self.hrank,
         )
 
         x_transposed = distributed_transpose_polar(x_local, (dim0, dim1), dim1_shapes)
@@ -258,9 +266,9 @@ class TestDistributedReduce(unittest.TestCase):
     @parameterized.expand(
         [
             # B,  C,   H,  W
-            [2,   8,  16, 32],
-            [1,   4,   7, 13],
-            [3,  16,   8, 16],
+            [2, 8, 16, 32],
+            [1, 4, 7, 13],
+            [3, 16, 8, 16],
         ],
         skip_on_empty=True,
     )
@@ -279,8 +287,7 @@ class TestDistributedReduce(unittest.TestCase):
         out = reduce_from_polar_region(x)
 
         self.assertTrue(
-            compare_tensors("reduce_from_polar_region fwd", ref, out,
-                            atol=1e-5, rtol=1e-4, verbose=True),
+            compare_tensors("reduce_from_polar_region fwd", ref, out, atol=1e-5, rtol=1e-4, verbose=True),
             "forward output does not match the reference global sum",
         )
 
@@ -289,17 +296,16 @@ class TestDistributedReduce(unittest.TestCase):
         out.backward(dy)
 
         self.assertTrue(
-            compare_tensors("reduce_from_polar_region bwd", dy, x.grad,
-                            atol=1e-5, rtol=1e-4, verbose=True),
+            compare_tensors("reduce_from_polar_region bwd", dy, x.grad, atol=1e-5, rtol=1e-4, verbose=True),
             "input gradient does not match the upstream gradient (expected pass-through)",
         )
 
     @parameterized.expand(
         [
             # B,  C,   H,  W
-            [2,   8,  16, 32],
-            [1,   4,   7, 13],
-            [3,  16,   8, 16],
+            [2, 8, 16, 32],
+            [1, 4, 7, 13],
+            [3, 16, 8, 16],
         ],
         skip_on_empty=True,
     )
@@ -316,8 +322,7 @@ class TestDistributedReduce(unittest.TestCase):
         out = reduce_from_azimuth_region(x)
 
         self.assertTrue(
-            compare_tensors("reduce_from_azimuth_region fwd", ref, out,
-                            atol=1e-5, rtol=1e-4, verbose=True),
+            compare_tensors("reduce_from_azimuth_region fwd", ref, out, atol=1e-5, rtol=1e-4, verbose=True),
             "forward output does not match the reference global sum",
         )
 
@@ -326,8 +331,7 @@ class TestDistributedReduce(unittest.TestCase):
         out.backward(dy)
 
         self.assertTrue(
-            compare_tensors("reduce_from_azimuth_region bwd", dy, x.grad,
-                            atol=1e-5, rtol=1e-4, verbose=True),
+            compare_tensors("reduce_from_azimuth_region bwd", dy, x.grad, atol=1e-5, rtol=1e-4, verbose=True),
             "input gradient does not match the upstream gradient (expected pass-through)",
         )
 
@@ -353,18 +357,15 @@ class TestRingExchange(unittest.TestCase):
     def setUpClass(cls):
         setup_class_from_context(cls, _DIST_CTX)
         if not torch.cuda.is_available():
-            raise unittest.SkipTest(
-                "Ring exchange uses dist.batch_isend_irecv which currently "
-                "requires the NCCL backend (CUDA)"
-            )
+            raise unittest.SkipTest("Ring exchange uses dist.batch_isend_irecv which currently " "requires the NCCL backend (CUDA)")
 
     @parameterized.expand(
         [
             # B,  C,  H, nlon_global
-            [ 2, 16,  8,  64],
-            [ 2, 16,  8,  65],   # uneven split: shapes differ across ranks
-            [ 1,  4,  3,  16],
-            [ 4,  8, 16, 128],
+            [2, 16, 8, 64],
+            [2, 16, 8, 65],  # uneven split: shapes differ across ranks
+            [1, 4, 3, 16],
+            [4, 8, 16, 128],
         ],
         skip_on_empty=True,
     )
@@ -374,8 +375,8 @@ class TestRingExchange(unittest.TestCase):
         from torch_harmonics.distributed.distributed_attention import _ring_kv
 
         az_group = thd.azimuth_group()
-        az_size  = thd.azimuth_group_size()
-        az_rank  = thd.azimuth_group_rank()
+        az_size = thd.azimuth_group_size()
+        az_rank = thd.azimuth_group_rank()
 
         # az_size == 1 is intentionally not skipped: the ring is then a no-op
         # (the loop runs once, verifies the local chunk equals the reference,
@@ -386,7 +387,7 @@ class TestRingExchange(unittest.TestCase):
         set_seed(333)
         # Use different channel counts for kw and vw to catch any accidental
         # cross-tensor bleed (e.g. wrong send/recv ordering inside _ring_kv).
-        kw_full = torch.randn(B, C,     H, nlon_global, device=self.device, dtype=torch.float32)
+        kw_full = torch.randn(B, C, H, nlon_global, device=self.device, dtype=torch.float32)
         vw_full = torch.randn(B, C + 1, H, nlon_global, device=self.device, dtype=torch.float32)
 
         kw_ref = split_tensor_along_dim(kw_full, dim=-1, num_chunks=az_size)
@@ -401,13 +402,11 @@ class TestRingExchange(unittest.TestCase):
 
             self.assertTrue(
                 torch.equal(kw_chunk, kw_ref[src_rank]),
-                f"step {step} on rank {az_rank}: kw_chunk does not match "
-                f"reference chunk from source rank {src_rank}",
+                f"step {step} on rank {az_rank}: kw_chunk does not match " f"reference chunk from source rank {src_rank}",
             )
             self.assertTrue(
                 torch.equal(vw_chunk, vw_ref[src_rank]),
-                f"step {step} on rank {az_rank}: vw_chunk does not match "
-                f"reference chunk from source rank {src_rank}",
+                f"step {step} on rank {az_rank}: vw_chunk does not match " f"reference chunk from source rank {src_rank}",
             )
 
             # No exchange after the last verification.
@@ -416,10 +415,14 @@ class TestRingExchange(unittest.TestCase):
 
             # Next source rank determines the receive-buffer width because
             # the global split can be uneven.
-            next_src  = (az_rank + step + 1) % az_size
+            next_src = (az_rank + step + 1) % az_size
             next_nlon = kw_ref[next_src].shape[-1]
             recv_kw, recv_vw, reqs = _ring_kv(
-                kw_chunk, vw_chunk, az_group, next_nlon, next_nlon,
+                kw_chunk,
+                vw_chunk,
+                az_group,
+                next_nlon,
+                next_nlon,
             )
             for req in reqs:
                 req.wait()

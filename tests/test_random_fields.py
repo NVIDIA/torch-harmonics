@@ -30,13 +30,12 @@
 #
 
 import unittest
-from parameterized import parameterized, parameterized_class
 
 import torch
+from parameterized import parameterized, parameterized_class
+from testutils import compare_tensors, set_seed
 
 from torch_harmonics.random_fields import GaussianRandomFieldS2
-
-from testutils import set_seed, compare_tensors
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -52,7 +51,7 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
             [16, 2.0, 3.0, None, "equiangular"],
             [16, 3.0, 2.0, None, "legendre-gauss"],
             [16, 2.0, 3.0, None, "lobatto"],
-            [16, 2.0, 3.0, 1.0,  "equiangular"],
+            [16, 2.0, 3.0, 1.0, "equiangular"],
         ],
         skip_on_empty=True,
     )
@@ -72,7 +71,7 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
             [16, 2.0, 3.0, None, "equiangular"],
             [16, 3.0, 2.0, None, "legendre-gauss"],
             [16, 2.0, 3.0, None, "lobatto"],
-            [16, 2.0, 3.0, 1.0,  "equiangular"],
+            [16, 2.0, 3.0, 1.0, "equiangular"],
         ],
         skip_on_empty=True,
     )
@@ -83,9 +82,7 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
         lmax = field.isht.lmax
         mmax = field.isht.mmax
         set_seed(333)
-        xi = torch.view_as_complex(
-            torch.randn(4, lmax, mmax, 2, dtype=torch.float32, device=self.device)
-        )
+        xi = torch.view_as_complex(torch.randn(4, lmax, mmax, 2, dtype=torch.float32, device=self.device))
 
         u1 = field(4, xi=xi)
         u2 = field(4, xi=xi)
@@ -147,7 +144,7 @@ class TestGaussianRandomFieldS2Probabilistic(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [16, 2.0, 3.0, "equiangular",    500, 0.2],
+            [16, 2.0, 3.0, "equiangular", 500, 0.2],
             [16, 2.0, 3.0, "legendre-gauss", 500, 0.2],
         ]
     )
@@ -164,22 +161,23 @@ class TestGaussianRandomFieldS2Probabilistic(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [16, 2.0, 4.0, 3.0, "equiangular",    200],
+            [16, 2.0, 4.0, 3.0, "equiangular", 200],
             [16, 2.0, 4.0, 3.0, "legendre-gauss", 200],
         ]
     )
     def test_power_spectrum_ordering(self, nlat, alpha_rough, alpha_smooth, tau, grid, num_samples, verbose=False):
         """Larger alpha suppresses high-degree modes → lower total variance (smoother field)."""
-        field_rough  = GaussianRandomFieldS2(nlat, alpha=alpha_rough,  tau=tau, grid=grid).to(self.device)
+        field_rough = GaussianRandomFieldS2(nlat, alpha=alpha_rough, tau=tau, grid=grid).to(self.device)
         field_smooth = GaussianRandomFieldS2(nlat, alpha=alpha_smooth, tau=tau, grid=grid).to(self.device)
 
         set_seed(333)
-        u_rough  = field_rough(num_samples)
+        u_rough = field_rough(num_samples)
         set_seed(333)
         u_smooth = field_smooth(num_samples)
 
         self.assertLess(
-            u_smooth.var().item(), u_rough.var().item(),
+            u_smooth.var().item(),
+            u_rough.var().item(),
             "Larger alpha should produce a smoother (lower-variance) field",
         )
 

@@ -29,15 +29,16 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import unittest
-from parameterized import parameterized, parameterized_class
 import math
+import unittest
+
 import torch
+from parameterized import parameterized, parameterized_class
+from testutils import compare_tensors, disable_tf32, set_seed
 from torch.autograd import gradcheck
+
 import torch_harmonics as th
 from torch_harmonics.quadrature import precompute_latitudes
-
-from testutils import disable_tf32, set_seed, compare_tensors
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -52,7 +53,7 @@ def random_sht_coeffs(batch_size, lmax, mmax, device, zero_l0=False):
     c[:, :, 0] = c[:, :, 0].real
     for l in range(lmax):
         if l + 1 < mmax:
-            c[:, l, l + 1:] = 0.0
+            c[:, l, l + 1 :] = 0.0
     if zero_l0:
         c[:, 0, :] = 0.0
     return c
@@ -60,6 +61,7 @@ def random_sht_coeffs(batch_size, lmax, mmax, device, zero_l0=False):
 
 class TestLegendrePolynomials(unittest.TestCase):
     """Test the associated Legendre polynomials (CPU/CUDA if available)."""
+
     def setUp(self):
         disable_tf32()
         self.cml = lambda m, l: math.sqrt((2 * l + 1) / 4 / math.pi) * math.sqrt(math.factorial(l - m) / math.factorial(l + m))
@@ -226,9 +228,9 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [32, 64, 16, "equiangular",    1e-9, 1e-9],
+            [32, 64, 16, "equiangular", 1e-9, 1e-9],
             [32, 64, 16, "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 16, "lobatto",        1e-9, 1e-9],
+            [32, 64, 16, "lobatto", 1e-9, 1e-9],
         ],
         skip_on_empty=True,
     )
@@ -246,19 +248,19 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         # set seed
         set_seed(333)
 
-        sht_ortho   = th.RealSHT(nlat, nlon, grid=grid, norm="ortho").to(self.device)
+        sht_ortho = th.RealSHT(nlat, nlon, grid=grid, norm="ortho").to(self.device)
         sht_four_pi = th.RealSHT(nlat, nlon, grid=grid, norm="four-pi").to(self.device)
         sht_schmidt = th.RealSHT(nlat, nlon, grid=grid, norm="schmidt").to(self.device)
-        isht_ortho  = th.InverseRealSHT(nlat, nlon, grid=grid, norm="ortho").to(self.device)
+        isht_ortho = th.InverseRealSHT(nlat, nlon, grid=grid, norm="ortho").to(self.device)
 
         lmax = sht_ortho.lmax
         mmax = sht_ortho.mmax
 
         with torch.no_grad():
-            c      = random_sht_coeffs(batch_size, lmax, mmax, self.device)
+            c = random_sht_coeffs(batch_size, lmax, mmax, self.device)
             signal = isht_ortho(c)  # band-limited real spatial field
 
-            c_ortho   = sht_ortho(signal)
+            c_ortho = sht_ortho(signal)
             c_four_pi = sht_four_pi(signal)
             c_schmidt = sht_schmidt(signal)
 
@@ -274,15 +276,15 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [32, 64, "ortho",   "equiangular",    1e-9, 1e-9],
-            [32, 64, "ortho",   "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, "ortho",   "lobatto",        1e-9, 1e-9],
-            [32, 64, "four-pi", "equiangular",    1e-9, 1e-9],
+            [32, 64, "ortho", "equiangular", 1e-9, 1e-9],
+            [32, 64, "ortho", "legendre-gauss", 1e-9, 1e-9],
+            [32, 64, "ortho", "lobatto", 1e-9, 1e-9],
+            [32, 64, "four-pi", "equiangular", 1e-9, 1e-9],
             [32, 64, "four-pi", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, "four-pi", "lobatto",        1e-9, 1e-9],
-            [32, 64, "schmidt", "equiangular",    1e-9, 1e-9],
+            [32, 64, "four-pi", "lobatto", 1e-9, 1e-9],
+            [32, 64, "schmidt", "equiangular", 1e-9, 1e-9],
             [32, 64, "schmidt", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, "schmidt", "lobatto",        1e-9, 1e-9],
+            [32, 64, "schmidt", "lobatto", 1e-9, 1e-9],
         ],
         skip_on_empty=True,
     )
@@ -324,20 +326,28 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         else:  # four-pi and schmidt agree for l=0
             c00_ref = 4.0 * math.pi
 
-        self.assertTrue(compare_tensors(
-            "f=1: c[0,0]",
-            c_const[0:1, 0:1].real,
-            torch.tensor([[c00_ref]], dtype=torch.float64, device=self.device),
-            atol=atol, rtol=rtol, verbose=verbose,
-        ))
+        self.assertTrue(
+            compare_tensors(
+                "f=1: c[0,0]",
+                c_const[0:1, 0:1].real,
+                torch.tensor([[c00_ref]], dtype=torch.float64, device=self.device),
+                atol=atol,
+                rtol=rtol,
+                verbose=verbose,
+            )
+        )
         c_rest = c_const.clone()
         c_rest[0, 0] = 0.0
-        self.assertTrue(compare_tensors(
-            "f=1: all other coeffs vanish",
-            c_rest.abs(),
-            torch.zeros_like(c_rest.abs()),
-            atol=atol, rtol=rtol, verbose=verbose,
-        ))
+        self.assertTrue(
+            compare_tensors(
+                "f=1: all other coeffs vanish",
+                c_rest.abs(),
+                torch.zeros_like(c_rest.abs()),
+                atol=atol,
+                rtol=rtol,
+                verbose=verbose,
+            )
+        )
 
         # ---- f = cos θ ----
         f_costheta = cost.unsqueeze(-1).expand(nlat, nlon).contiguous()
@@ -351,20 +361,28 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         else:  # schmidt
             c10_ref = 4.0 * math.pi / 3.0
 
-        self.assertTrue(compare_tensors(
-            "f=cosθ: c[1,0]",
-            c_cos[1:2, 0:1].real,
-            torch.tensor([[c10_ref]], dtype=torch.float64, device=self.device),
-            atol=atol, rtol=rtol, verbose=verbose,
-        ))
+        self.assertTrue(
+            compare_tensors(
+                "f=cosθ: c[1,0]",
+                c_cos[1:2, 0:1].real,
+                torch.tensor([[c10_ref]], dtype=torch.float64, device=self.device),
+                atol=atol,
+                rtol=rtol,
+                verbose=verbose,
+            )
+        )
         c_rest = c_cos.clone()
         c_rest[1, 0] = 0.0
-        self.assertTrue(compare_tensors(
-            "f=cosθ: all other coeffs vanish",
-            c_rest.abs(),
-            torch.zeros_like(c_rest.abs()),
-            atol=atol, rtol=rtol, verbose=verbose,
-        ))
+        self.assertTrue(
+            compare_tensors(
+                "f=cosθ: all other coeffs vanish",
+                c_rest.abs(),
+                torch.zeros_like(c_rest.abs()),
+                atol=atol,
+                rtol=rtol,
+                verbose=verbose,
+            )
+        )
 
         # ---- batched: both signals together ----
         # Exercises the leading batch dimensions (..., nlat, nlon) that the
@@ -373,30 +391,38 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         with torch.no_grad():
             c_batch = sht(f_batch)  # (2, lmax, mmax)
 
-        self.assertTrue(compare_tensors(
-            "batch f=1 matches unbatched",
-            c_batch[0],
-            c_const,
-            atol=atol, rtol=rtol, verbose=verbose,
-        ))
-        self.assertTrue(compare_tensors(
-            "batch f=cosθ matches unbatched",
-            c_batch[1],
-            c_cos,
-            atol=atol, rtol=rtol, verbose=verbose,
-        ))
+        self.assertTrue(
+            compare_tensors(
+                "batch f=1 matches unbatched",
+                c_batch[0],
+                c_const,
+                atol=atol,
+                rtol=rtol,
+                verbose=verbose,
+            )
+        )
+        self.assertTrue(
+            compare_tensors(
+                "batch f=cosθ matches unbatched",
+                c_batch[1],
+                c_cos,
+                atol=atol,
+                rtol=rtol,
+                verbose=verbose,
+            )
+        )
 
     @parameterized.expand(
         [
-            [32, 64, 16, "ortho",   "equiangular",    1e-9, 1e-9],
-            [32, 64, 16, "ortho",   "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 16, "ortho",   "lobatto",        1e-9, 1e-9],
-            [32, 64, 16, "four-pi", "equiangular",    1e-9, 1e-9],
+            [32, 64, 16, "ortho", "equiangular", 1e-9, 1e-9],
+            [32, 64, 16, "ortho", "legendre-gauss", 1e-9, 1e-9],
+            [32, 64, 16, "ortho", "lobatto", 1e-9, 1e-9],
+            [32, 64, 16, "four-pi", "equiangular", 1e-9, 1e-9],
             [32, 64, 16, "four-pi", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 16, "four-pi", "lobatto",        1e-9, 1e-9],
-            [32, 64, 16, "schmidt", "equiangular",    1e-9, 1e-9],
+            [32, 64, 16, "four-pi", "lobatto", 1e-9, 1e-9],
+            [32, 64, 16, "schmidt", "equiangular", 1e-9, 1e-9],
             [32, 64, 16, "schmidt", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 16, "schmidt", "lobatto",        1e-9, 1e-9],
+            [32, 64, 16, "schmidt", "lobatto", 1e-9, 1e-9],
         ],
         skip_on_empty=True,
     )
@@ -418,40 +444,44 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         # set seed
         set_seed(333)
 
-        sht_cs    = th.RealSHT(nlat, nlon, grid=grid, norm=norm, csphase=True ).to(self.device)
+        sht_cs = th.RealSHT(nlat, nlon, grid=grid, norm=norm, csphase=True).to(self.device)
         sht_no_cs = th.RealSHT(nlat, nlon, grid=grid, norm=norm, csphase=False).to(self.device)
-        isht      = th.InverseRealSHT(nlat, nlon, grid=grid, norm=norm        ).to(self.device)
+        isht = th.InverseRealSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
         lmax, mmax = sht_cs.lmax, sht_cs.mmax
 
         with torch.no_grad():
-            c      = random_sht_coeffs(batch_size, lmax, mmax, self.device)
+            c = random_sht_coeffs(batch_size, lmax, mmax, self.device)
             signal = isht(c)  # band-limited spatial field
 
-            c_cs    = sht_cs(signal)
+            c_cs = sht_cs(signal)
             c_no_cs = sht_no_cs(signal)
 
         # build the expected sign pattern: +1 for even m, -1 for odd m
         sign = torch.ones(mmax, dtype=torch.float64, device=self.device)
         sign[1::2] = -1.0
 
-        self.assertTrue(compare_tensors(
-            "csphase sign flip",
-            c_cs,
-            c_no_cs * sign,
-            atol=atol, rtol=rtol, verbose=verbose,
-        ))
+        self.assertTrue(
+            compare_tensors(
+                "csphase sign flip",
+                c_cs,
+                c_no_cs * sign,
+                atol=atol,
+                rtol=rtol,
+                verbose=verbose,
+            )
+        )
 
     @parameterized.expand(
         [
-            [32, 64, 32, "ortho",   "equiangular",   1e-9, 1e-9],
-            [32, 64, 32, "ortho",   "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 32, "ortho",   "lobatto",        1e-9, 1e-9],
-            [32, 64, 32, "four-pi", "equiangular",   1e-9, 1e-9],
+            [32, 64, 32, "ortho", "equiangular", 1e-9, 1e-9],
+            [32, 64, 32, "ortho", "legendre-gauss", 1e-9, 1e-9],
+            [32, 64, 32, "ortho", "lobatto", 1e-9, 1e-9],
+            [32, 64, 32, "four-pi", "equiangular", 1e-9, 1e-9],
             [32, 64, 32, "four-pi", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 32, "four-pi", "lobatto",        1e-9, 1e-9],
-            [32, 64, 32, "schmidt", "equiangular",   1e-9, 1e-9],
+            [32, 64, 32, "four-pi", "lobatto", 1e-9, 1e-9],
+            [32, 64, 32, "schmidt", "equiangular", 1e-9, 1e-9],
             [32, 64, 32, "schmidt", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 32, "schmidt", "lobatto",        1e-9, 1e-9],
+            [32, 64, 32, "schmidt", "lobatto", 1e-9, 1e-9],
         ],
         skip_on_empty=True,
     )
@@ -483,7 +513,7 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         _, w_lat = precompute_latitudes(nlat, grid=grid)
         w_lat = w_lat.to(device=self.device, dtype=torch.float64)
         dlon = 2.0 * math.pi / nlon
-        spatial_norm_sq = torch.einsum("bnl,n->b", f ** 2, w_lat) * dlon  # (batch,)
+        spatial_norm_sq = torch.einsum("bnl,n->b", f**2, w_lat) * dlon  # (batch,)
 
         # Build the (lmax, mmax) spectral weight matrix W_{l,m}.
         # w_m accounts for the ±m folding in the real irfft (m=0: weight 1, m>0: weight 2).
@@ -531,8 +561,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             sht_device = th.RealSHT(nlat, nlon, grid=grid, norm=norm)
             isht_device = th.InverseRealSHT(nlat, nlon, grid=grid, norm=norm)
 
-        self.assertTrue(compare_tensors(f"sht weights", sht_host.weights.cpu(), sht_device.weights.cpu(), atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors(f"isht weights", isht_host.pct.cpu(), isht_device.pct.cpu(), atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("sht weights", sht_host.weights.cpu(), sht_device.weights.cpu(), atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("isht weights", isht_host.pct.cpu(), isht_device.pct.cpu(), atol=atol, rtol=rtol, verbose=verbose))
 
 
 @parameterized_class(("device"), _devices)
@@ -561,8 +591,8 @@ class TestSphericalHarmonicsFunctions(unittest.TestCase):
     @parameterized.expand(
         [
             [12, 24, "legendre-gauss", 1e-9, 1e-9],
-            [12, 24, "equiangular",    1e-9, 1e-9],
-            [12, 24, "lobatto",        1e-9, 1e-9],
+            [12, 24, "equiangular", 1e-9, 1e-9],
+            [12, 24, "lobatto", 1e-9, 1e-9],
         ],
         skip_on_empty=True,
     )
@@ -616,9 +646,7 @@ class TestSphericalHarmonicsFunctions(unittest.TestCase):
         weighted = funcs * (dlon * w_lat).unsqueeze(-1)  # (N, nlat, nlon)
         gram = torch.einsum("inl,jnl->ij", weighted, funcs)  # (N, N)
 
-        expected = torch.diag(
-            torch.tensor(expected_diag, dtype=torch.float64, device=self.device)
-        )
+        expected = torch.diag(torch.tensor(expected_diag, dtype=torch.float64, device=self.device))
         self.assertTrue(compare_tensors("Gram matrix", gram, expected, atol=atol, rtol=rtol, verbose=verbose))
 
 
@@ -645,15 +673,15 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [32, 64, 16, "ortho",   "legendre-gauss", 1e-7, 1e-7],
-            [32, 64, 16, "ortho",   "equiangular",    1e-7, 1e-7],
-            [32, 64, 16, "ortho",   "lobatto",        1e-7, 1e-7],
+            [32, 64, 16, "ortho", "legendre-gauss", 1e-7, 1e-7],
+            [32, 64, 16, "ortho", "equiangular", 1e-7, 1e-7],
+            [32, 64, 16, "ortho", "lobatto", 1e-7, 1e-7],
             [32, 64, 16, "four-pi", "legendre-gauss", 1e-7, 1e-7],
-            [32, 64, 16, "four-pi", "equiangular",    1e-7, 1e-7],
-            [32, 64, 16, "four-pi", "lobatto",        1e-7, 1e-7],
+            [32, 64, 16, "four-pi", "equiangular", 1e-7, 1e-7],
+            [32, 64, 16, "four-pi", "lobatto", 1e-7, 1e-7],
             [32, 64, 16, "schmidt", "legendre-gauss", 1e-7, 1e-7],
-            [32, 64, 16, "schmidt", "equiangular",    1e-7, 1e-7],
-            [32, 64, 16, "schmidt", "lobatto",        1e-7, 1e-7],
+            [32, 64, 16, "schmidt", "equiangular", 1e-7, 1e-7],
+            [32, 64, 16, "schmidt", "lobatto", 1e-7, 1e-7],
         ],
         skip_on_empty=True,
     )
@@ -669,36 +697,36 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         # set seed
         set_seed(333)
 
-        vsht  = th.RealVectorSHT        (nlat, nlon, grid=grid, norm=norm).to(self.device)
-        ivsht = th.InverseRealVectorSHT (nlat, nlon, grid=grid, norm=norm).to(self.device)
+        vsht = th.RealVectorSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
+        ivsht = th.InverseRealVectorSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
         lmax, mmax = vsht.lmax, vsht.mmax
 
         with torch.no_grad():
-            c     = random_sht_coeffs(batch_size, lmax, mmax, self.device, zero_l0=True)
+            c = random_sht_coeffs(batch_size, lmax, mmax, self.device, zero_l0=True)
             zeros = torch.zeros_like(c)
 
             # synthesize gradient field: ivsht([c, 0]) = ∇_S f
             grad_f = ivsht(torch.stack([c, zeros], dim=-3))  # (batch, 2, nlat, nlon)
 
             # analyse: vsht(∇_S f) must give [c, 0]
-            st = vsht(grad_f)   # (batch, 2, lmax, mmax)
-            s  = st[..., 0, :, :]  # spheroidal
-            t  = st[..., 1, :, :]  # toroidal
+            st = vsht(grad_f)  # (batch, 2, lmax, mmax)
+            s = st[..., 0, :, :]  # spheroidal
+            t = st[..., 1, :, :]  # toroidal
 
-        self.assertTrue(compare_tensors("spheroidal coefficients", s, c,     atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors("toroidal coefficients",   t, zeros, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("spheroidal coefficients", s, c, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("toroidal coefficients", t, zeros, atol=atol, rtol=rtol, verbose=verbose))
 
     @parameterized.expand(
         [
-            [32, 64, 16, "ortho",   "legendre-gauss", 1e-7, 1e-7],
-            [32, 64, 16, "ortho",   "equiangular",    1e-7, 1e-7],
-            [32, 64, 16, "ortho",   "lobatto",        1e-7, 1e-7],
+            [32, 64, 16, "ortho", "legendre-gauss", 1e-7, 1e-7],
+            [32, 64, 16, "ortho", "equiangular", 1e-7, 1e-7],
+            [32, 64, 16, "ortho", "lobatto", 1e-7, 1e-7],
             [32, 64, 16, "four-pi", "legendre-gauss", 1e-7, 1e-7],
-            [32, 64, 16, "four-pi", "equiangular",    1e-7, 1e-7],
-            [32, 64, 16, "four-pi", "lobatto",        1e-7, 1e-7],
+            [32, 64, 16, "four-pi", "equiangular", 1e-7, 1e-7],
+            [32, 64, 16, "four-pi", "lobatto", 1e-7, 1e-7],
             [32, 64, 16, "schmidt", "legendre-gauss", 1e-7, 1e-7],
-            [32, 64, 16, "schmidt", "equiangular",    1e-7, 1e-7],
-            [32, 64, 16, "schmidt", "lobatto",        1e-7, 1e-7],
+            [32, 64, 16, "schmidt", "equiangular", 1e-7, 1e-7],
+            [32, 64, 16, "schmidt", "lobatto", 1e-7, 1e-7],
         ],
         skip_on_empty=True,
     )
@@ -714,39 +742,39 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         # set seed
         set_seed(333)
 
-        vsht  = th.RealVectorSHT        (nlat, nlon, grid=grid, norm=norm).to(self.device)
-        ivsht = th.InverseRealVectorSHT (nlat, nlon, grid=grid, norm=norm).to(self.device)
+        vsht = th.RealVectorSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
+        ivsht = th.InverseRealVectorSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
         lmax, mmax = vsht.lmax, vsht.mmax
 
         with torch.no_grad():
-            c     = random_sht_coeffs(batch_size, lmax, mmax, self.device, zero_l0=True)
+            c = random_sht_coeffs(batch_size, lmax, mmax, self.device, zero_l0=True)
             zeros = torch.zeros_like(c)
 
             # synthesize curl field: ivsht([0, c]) = ê_r × ∇_S f
             curl_f = ivsht(torch.stack([zeros, c], dim=-3))  # (batch, 2, nlat, nlon)
 
             # analyse: vsht(ê_r × ∇_S f) must give [0, c]
-            st = vsht(curl_f)   # (batch, 2, lmax, mmax)
-            s  = st[..., 0, :, :]  # spheroidal
-            t  = st[..., 1, :, :]  # toroidal
+            st = vsht(curl_f)  # (batch, 2, lmax, mmax)
+            s = st[..., 0, :, :]  # spheroidal
+            t = st[..., 1, :, :]  # toroidal
 
         self.assertTrue(compare_tensors("spheroidal coefficients", s, zeros, atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors("toroidal coefficients",   t, c,     atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("toroidal coefficients", t, c, atol=atol, rtol=rtol, verbose=verbose))
 
     @parameterized.expand(
         [
             # The spatial round-trip ivsht(vsht(v)) ≈ v is limited to ~1e-5 accuracy
             # because dP/dθ and P/sinθ are not polynomials in cos θ, so Gauss quadrature
             # cannot integrate their products exactly (unlike the scalar SHT).
-            [32, 64, 16, "ortho",   "legendre-gauss", 5e-4, 1e-4],
-            [32, 64, 16, "ortho",   "equiangular",    5e-4, 1e-4],
-            [32, 64, 16, "ortho",   "lobatto",        5e-4, 1e-4],
+            [32, 64, 16, "ortho", "legendre-gauss", 5e-4, 1e-4],
+            [32, 64, 16, "ortho", "equiangular", 5e-4, 1e-4],
+            [32, 64, 16, "ortho", "lobatto", 5e-4, 1e-4],
             [32, 64, 16, "four-pi", "legendre-gauss", 5e-4, 1e-4],
-            [32, 64, 16, "four-pi", "equiangular",    5e-4, 1e-4],
-            [32, 64, 16, "four-pi", "lobatto",        5e-4, 1e-4],
+            [32, 64, 16, "four-pi", "equiangular", 5e-4, 1e-4],
+            [32, 64, 16, "four-pi", "lobatto", 5e-4, 1e-4],
             [32, 64, 16, "schmidt", "legendre-gauss", 5e-4, 5e-4],
-            [32, 64, 16, "schmidt", "equiangular",    5e-4, 5e-4],
-            [32, 64, 16, "schmidt", "lobatto",        5e-4, 5e-4],
+            [32, 64, 16, "schmidt", "equiangular", 5e-4, 5e-4],
+            [32, 64, 16, "schmidt", "lobatto", 5e-4, 5e-4],
         ],
         skip_on_empty=True,
     )
@@ -764,8 +792,8 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         # set seed
         set_seed(333)
 
-        vsht  = th.RealVectorSHT        (nlat, nlon, grid=grid, norm=norm).to(self.device)
-        ivsht = th.InverseRealVectorSHT (nlat, nlon, grid=grid, norm=norm).to(self.device)
+        vsht = th.RealVectorSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
+        ivsht = th.InverseRealVectorSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
         lmax, mmax = vsht.lmax, vsht.mmax
 
         testiters = [1, 2, 4, 8, 16]
@@ -784,15 +812,15 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [32, 64, 16, "ortho",   "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 16, "ortho",   "equiangular",    1e-9, 1e-9],
-            [32, 64, 16, "ortho",   "lobatto",        1e-9, 1e-9],
+            [32, 64, 16, "ortho", "legendre-gauss", 1e-9, 1e-9],
+            [32, 64, 16, "ortho", "equiangular", 1e-9, 1e-9],
+            [32, 64, 16, "ortho", "lobatto", 1e-9, 1e-9],
             [32, 64, 16, "four-pi", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 16, "four-pi", "equiangular",    1e-9, 1e-9],
-            [32, 64, 16, "four-pi", "lobatto",        1e-9, 1e-9],
+            [32, 64, 16, "four-pi", "equiangular", 1e-9, 1e-9],
+            [32, 64, 16, "four-pi", "lobatto", 1e-9, 1e-9],
             [32, 64, 16, "schmidt", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 16, "schmidt", "equiangular",    1e-9, 1e-9],
-            [32, 64, 16, "schmidt", "lobatto",        1e-9, 1e-9],
+            [32, 64, 16, "schmidt", "equiangular", 1e-9, 1e-9],
+            [32, 64, 16, "schmidt", "lobatto", 1e-9, 1e-9],
         ],
         skip_on_empty=True,
     )
@@ -822,19 +850,19 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         # set seed
         set_seed(333)
 
-        ivsht = th.InverseRealVectorSHT (nlat, nlon, grid=grid, norm=norm).to(self.device)
+        ivsht = th.InverseRealVectorSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
         lmax, mmax = ivsht.lmax, ivsht.mmax
 
         with torch.no_grad():
             c_s = random_sht_coeffs(batch_size, lmax, mmax, self.device, zero_l0=True)
             c_t = random_sht_coeffs(batch_size, lmax, mmax, self.device, zero_l0=True)
-            v   = ivsht(torch.stack([c_s, c_t], dim=-3))  # (batch, 2, nlat, nlon)
+            v = ivsht(torch.stack([c_s, c_t], dim=-3))  # (batch, 2, nlat, nlon)
 
         # Spatial L2 energy via spherical quadrature over both vector components
         _, w_lat = precompute_latitudes(nlat, grid=grid)
         w_lat = w_lat.to(device=self.device, dtype=torch.float64)
         dlon = 2.0 * math.pi / nlon
-        spatial_energy = torch.einsum("bvnl,n->b", v ** 2, w_lat) * dlon  # (batch,)
+        spatial_energy = torch.einsum("bvnl,n->b", v**2, w_lat) * dlon  # (batch,)
 
         # Build spectral weight matrix W[l,m]
         w_m = torch.ones(mmax, dtype=torch.float64, device=self.device)

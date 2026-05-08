@@ -29,10 +29,10 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import Optional
 import math
-#import numpy as np
+from typing import Optional
 
+# import numpy as np
 import torch
 import torch.nn as nn
 
@@ -42,10 +42,10 @@ from torch_harmonics.quadrature import precompute_latitudes, precompute_longitud
 class ResampleS2(nn.Module):
     """
     Resampling module for signals on the 2-sphere.
-    
+
     This module provides functionality to resample spherical signals between different
     grid resolutions and grid types using bilinear interpolation.
-    
+
     Parameters
     -----------
     nlat_in : int
@@ -63,7 +63,7 @@ class ResampleS2(nn.Module):
     mode : str, optional
         Interpolation mode ("bilinear", "bilinear-spherical"), by default "bilinear"
     """
-    
+
     def __init__(
         self,
         nlat_in: int,
@@ -99,9 +99,9 @@ class ResampleS2(nn.Module):
         # we need to expand the solution to the poles before interpolating
         self.expand_poles = (self.lats_out > self.lats_in[-1]).any() or (self.lats_out < self.lats_in[0]).any()
         if self.expand_poles:
-            self.lats_in = torch.cat([torch.as_tensor([0.], dtype=torch.float64, device=self.lats_in.device),
-                                      self.lats_in,
-                                      torch.as_tensor([math.pi], dtype=torch.float64, device=self.lats_in.device)]).contiguous()
+            self.lats_in = torch.cat(
+                [torch.as_tensor([0.0], dtype=torch.float64, device=self.lats_in.device), self.lats_in, torch.as_tensor([math.pi], dtype=torch.float64, device=self.lats_in.device)]
+            ).contiguous()
 
         # prepare the interpolation by computing indices to the left and right of each output latitude
         lat_idx = torch.searchsorted(self.lats_in, self.lats_out, side="right") - 1
@@ -134,7 +134,6 @@ class ResampleS2(nn.Module):
         self.register_buffer("lon_weights", lon_weights, persistent=False)
 
         self.skip_resampling = (nlon_in == nlon_out) and (nlat_in == nlat_out) and (grid_in == grid_out)
-        
 
     def extra_repr(self):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}"
@@ -154,10 +153,10 @@ class ResampleS2(nn.Module):
         return x
 
     def _expand_poles(self, x: torch.Tensor):
-        x_north = x[...,  0, :].mean(dim=-1, keepdims=True)
+        x_north = x[..., 0, :].mean(dim=-1, keepdims=True)
         x_south = x[..., -1, :].mean(dim=-1, keepdims=True)
-        x = nn.functional.pad(x, pad=[0, 0, 1, 1], mode='constant')
-        x[...,  0, :] = x_north[...]
+        x = nn.functional.pad(x, pad=[0, 0, 1, 1], mode="constant")
+        x[..., 0, :] = x_north[...]
         x[..., -1, :] = x_south[...]
 
         return x
@@ -179,7 +178,7 @@ class ResampleS2(nn.Module):
     def forward(self, x: torch.Tensor):
         if self.skip_resampling:
             return x
-        
+
         if self.expand_poles:
             x = self._expand_poles(x)
 

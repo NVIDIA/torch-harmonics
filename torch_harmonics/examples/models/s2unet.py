@@ -33,14 +33,9 @@ import math
 
 import torch
 import torch.nn as nn
-import torch.amp as amp
 
-from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
-from torch_harmonics import ResampleS2
-
+from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2, ResampleS2
 from torch_harmonics.examples.models._layers import DropPath
-
-from functools import partial
 
 
 # heuristic for finding theta_cutoff
@@ -53,10 +48,10 @@ def _compute_cutoff_radius(nlat, kernel_shape, basis_type):
 class DownsamplingBlock(nn.Module):
     """
     Downsampling block for spherical U-Net architecture.
-    
+
     This block performs convolution operations followed by downsampling on spherical data,
     using discrete-continuous convolutions to maintain spectral properties.
-    
+
     Parameters
     -----------
     in_shape : tuple
@@ -90,7 +85,7 @@ class DownsamplingBlock(nn.Module):
     downsampling_mode : str, optional
         Downsampling mode ("bilinear", "conv"), by default "bilinear"
     """
-    
+
     def __init__(
         self,
         in_shape,
@@ -219,10 +214,10 @@ class DownsamplingBlock(nn.Module):
 class UpsamplingBlock(nn.Module):
     """
     Upsampling block for spherical U-Net architecture.
-    
+
     This block performs upsampling followed by convolution operations on spherical data,
     using discrete-continuous convolutions to maintain spectral properties.
-    
+
     Parameters
     -----------
     in_shape : tuple

@@ -29,36 +29,33 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os, sys
-import time
 import argparse
+import os
+import sys
+import time
 
-from functools import partial
-
+import matplotlib.pyplot as plt
+import pandas as pd
 import torch
-from torch.utils.data import DataLoader
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torchvision.transforms import v2
 
-import pandas as pd
-import matplotlib.pyplot as plt
-
 from torch_harmonics.examples import (
-    StanfordDepthDataset,
     Stanford2D3DSDownloader,
+    StanfordDepthDataset,
     compute_stats_s2,
 )
-from torch_harmonics.examples.losses import W11LossS2, L1LossS2, L2LossS2, NormalLossS2
-from torch_harmonics.plotting import plot_sphere, imshow_sphere
+from torch_harmonics.examples.losses import L1LossS2, L2LossS2, NormalLossS2, W11LossS2
+from torch_harmonics.plotting import imshow_sphere, plot_sphere
 
 # import baseline models
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from model_registry import get_baseline_models
-
 # wandb logging
 import wandb
+from model_registry import get_baseline_models
 
 
 # helper routine for counting number of paramerters in model
@@ -292,7 +289,7 @@ def train_model(
                     dist.all_reduce(valid_metrics[metric])
 
         valid_loss = (valid_loss[0] / valid_loss[1]).item()
-        
+
         for metric in valid_metrics:
             valid_metrics[metric] = (valid_metrics[metric][0] / valid_metrics[metric][1]).item()
 
@@ -302,7 +299,7 @@ def train_model(
         epoch_time = time.time() - epoch_start
 
         if logging:
-            print(f"--------------------------------------------------------------------------------")
+            print("--------------------------------------------------------------------------------")
             print(f"Epoch {epoch} summary:")
             print(f"time taken: {epoch_time:.2f}")
             print(f"accumulated training loss: {accumulated_loss}")
@@ -321,7 +318,7 @@ def train_model(
     train_time = time.time() - train_start
 
     if logging:
-        print(f"--------------------------------------------------------------------------------")
+        print("--------------------------------------------------------------------------------")
         print(f"done. Training took {train_time:.2f}.")
 
     return valid_loss
@@ -377,7 +374,7 @@ def main(
 
     # create the dataset and split it
     if logging:
-        print(f"Initializing dataset...")
+        print("Initializing dataset...")
 
     # make sure splitting is consistent across ranks
     rng = torch.Generator().manual_seed(333)
@@ -390,7 +387,7 @@ def main(
 
     train_dataset.dataset.reset()
     if logging:
-        print(f"Computed stats:")
+        print("Computed stats:")
         print(f"means_in={means_in}")
         print(f"stds_in={stds_in}")
         print(f"means_out={means_out}")
@@ -606,7 +603,7 @@ if __name__ == "__main__":
         type=str,
         help="Directory to where the dataset is stored. If the dataset is not found in that location, it will be downloaded automatically.",
     )
-    parser.add_argument("--models", default=None, type=str, nargs='+', help="Provide a list of models to run")
+    parser.add_argument("--models", default=None, type=str, nargs="+", help="Provide a list of models to run")
     parser.add_argument("--num_epochs", default=100, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--batch_size", default=8, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--data_downsampling_factor", default=16, type=int, help="Switch for overriding the downsampling factor of the data.")

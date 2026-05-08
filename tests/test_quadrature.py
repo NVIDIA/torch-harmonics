@@ -29,15 +29,15 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import unittest
-from parameterized import parameterized, parameterized_class
 import math
+import unittest
 
 import torch
+from parameterized import parameterized, parameterized_class
+from testutils import compare_tensors, set_seed
+
 import torch_harmonics as th
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
-
-from testutils import set_seed, compare_tensors
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -70,7 +70,7 @@ class TestQuadrature(unittest.TestCase):
         expected_value = 1.0 if normalize else 4.0 * torch.pi
         expected = torch.full((batch_size, num_chan), expected_value, dtype=torch.float32, device=self.device)
 
-        self.assertTrue(compare_tensors(f"output", out, expected, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("output", out, expected, atol=atol, rtol=rtol, verbose=verbose))
 
     @parameterized.expand(
         [
@@ -129,8 +129,11 @@ class TestQuadrature(unittest.TestCase):
             expected = torch.full((1, 1), expected_val, device=self.device)
             self.assertTrue(
                 compare_tensors(
-                    f"cos^2 integral (normalize={normalize})", out, expected,
-                    atol=1e-5, rtol=1e-5,
+                    f"cos^2 integral (normalize={normalize})",
+                    out,
+                    expected,
+                    atol=1e-5,
+                    rtol=1e-5,
                     verbose=verbose,
                 )
             )
@@ -177,19 +180,21 @@ class TestQuadrature(unittest.TestCase):
         """
         set_seed(333)
 
-        quad_raw  = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=False).to(self.device)
+        quad_raw = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=False).to(self.device)
         quad_norm = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=True).to(self.device)
 
         data = torch.randn(batch_size, num_chan, nlat, nlon, device=self.device)
 
-        out_raw  = quad_raw(data)
+        out_raw = quad_raw(data)
         out_norm = quad_norm(data)
 
         self.assertTrue(
             compare_tensors(
                 "normalization consistency",
-                out_norm, out_raw / (4.0 * math.pi),
-                atol=1e-6, rtol=1e-5,
+                out_norm,
+                out_raw / (4.0 * math.pi),
+                atol=1e-6,
+                rtol=1e-5,
                 verbose=verbose,
             )
         )
@@ -197,4 +202,3 @@ class TestQuadrature(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

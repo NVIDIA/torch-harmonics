@@ -33,9 +33,9 @@ import math
 
 import torch
 import torch.nn as nn
-from torch_harmonics.examples.models._layers import MLP, LayerNorm, DropPath, SequencePositionEmbedding, SpectralPositionEmbedding, LearnablePositionEmbedding
 from natten import NeighborhoodAttention2D as NeighborhoodAttention
-from functools import partial
+
+from torch_harmonics.examples.models._layers import MLP, DropPath, LayerNorm, LearnablePositionEmbedding, SequencePositionEmbedding, SpectralPositionEmbedding
 
 
 class Encoder(nn.Module):
@@ -65,7 +65,7 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     """
     Decoder module for upsampling and feature processing.
-    
+
     Parameters
     -----------
     in_shape : tuple, optional
@@ -85,6 +85,7 @@ class Decoder(nn.Module):
     upsampling_method : str, optional
         Upsampling method ("conv", "pixel_shuffle"), by default "conv"
     """
+
     def __init__(self, in_shape=(480, 960), out_shape=(721, 1440), in_chans=2, out_chans=2, kernel_shape=(3, 3), groups=1, bias=False, upsampling_method="conv"):
         super().__init__()
         self.out_shape = out_shape
@@ -121,7 +122,7 @@ class GlobalAttention(nn.Module):
 
     Input shape: (B, C, H, W)
     Output shape: (B, C, H, W) with residual skip.
-    
+
     Parameters
     -----------
     chans : int
@@ -154,7 +155,7 @@ class GlobalAttention(nn.Module):
 class AttentionBlock(nn.Module):
     """
     Neighborhood attention block based on Natten.
-    
+
     Parameters
     -----------
     in_shape : tuple, optional
@@ -184,6 +185,7 @@ class AttentionBlock(nn.Module):
     attn_kernel_shape : tuple, optional
         Kernel shape for neighborhood attention, by default (7, 7)
     """
+
     def __init__(
         self,
         in_shape=(480, 960),

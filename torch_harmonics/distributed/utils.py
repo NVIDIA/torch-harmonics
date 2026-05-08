@@ -2,7 +2,7 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -65,14 +65,18 @@ class _DistributedConfig:
     def __repr__(self):
         return f"_DistributedConfig(debug={self.debug})"
 
+
 # set up debug configuration
 config = _DistributedConfig()
+
 
 def polar_group():
     return _POLAR_PARALLEL_GROUP
 
+
 def azimuth_group():
     return _AZIMUTH_PARALLEL_GROUP
+
 
 def init(polar_process_group, azimuth_process_group):
     global _POLAR_PARALLEL_GROUP
@@ -81,6 +85,7 @@ def init(polar_process_group, azimuth_process_group):
     _POLAR_PARALLEL_GROUP = polar_process_group
     _AZIMUTH_PARALLEL_GROUP = azimuth_process_group
     _IS_INITIALIZED = True
+
 
 def finalize():
     global _POLAR_PARALLEL_GROUP
@@ -95,35 +100,42 @@ def finalize():
             _AZIMUTH_PARALLEL_GROUP = None
     _IS_INITIALIZED = False
 
+
 def is_initialized() -> bool:
     return _IS_INITIALIZED
 
+
 def is_distributed_polar() -> bool:
-    return (_POLAR_PARALLEL_GROUP is not None)
+    return _POLAR_PARALLEL_GROUP is not None
+
 
 def is_distributed_azimuth() -> bool:
-    return (_AZIMUTH_PARALLEL_GROUP is not None)
+    return _AZIMUTH_PARALLEL_GROUP is not None
+
 
 def polar_group_size() -> int:
     if not is_distributed_polar():
         return 1
     else:
-        return dist.get_world_size(group = _POLAR_PARALLEL_GROUP)
+        return dist.get_world_size(group=_POLAR_PARALLEL_GROUP)
+
 
 def azimuth_group_size() -> int:
     if not is_distributed_azimuth():
         return 1
     else:
-        return dist.get_world_size(group = _AZIMUTH_PARALLEL_GROUP)
+        return dist.get_world_size(group=_AZIMUTH_PARALLEL_GROUP)
+
 
 def polar_group_rank() -> int:
     if not is_distributed_polar():
         return 0
     else:
-        return dist.get_rank(group = _POLAR_PARALLEL_GROUP)
+        return dist.get_rank(group=_POLAR_PARALLEL_GROUP)
+
 
 def azimuth_group_rank() -> int:
     if not is_distributed_azimuth():
         return 0
     else:
-        return dist.get_rank(group = _AZIMUTH_PARALLEL_GROUP)
+        return dist.get_rank(group=_AZIMUTH_PARALLEL_GROUP)
