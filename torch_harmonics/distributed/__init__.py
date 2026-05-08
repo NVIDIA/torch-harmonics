@@ -46,23 +46,11 @@ from .primitives import (
     reduce_from_scatter_to_polar_region,
     gather_from_copy_to_polar_region
 )
-
-# import quadrature
 from .distributed_quadrature import DistributedQuadratureS2
-
-# import the sht
 from .distributed_sht import DistributedRealSHT, DistributedInverseRealSHT
 from .distributed_sht import DistributedRealVectorSHT, DistributedInverseRealVectorSHT
-
-# import spectral convolution
 from .distributed_spectral_convolution import DistributedSpectralConvS2
-
-# import DISCO
 from .distributed_convolution import DistributedDiscreteContinuousConvS2
 from .distributed_convolution import DistributedDiscreteContinuousConvTransposeS2
-
-# import resampling
 from .distributed_resample import DistributedResampleS2
-
-# import distributed neighborhood attention
 from .distributed_attention import DistributedNeighborhoodAttentionS2
