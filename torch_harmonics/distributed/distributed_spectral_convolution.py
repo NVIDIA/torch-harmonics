@@ -37,11 +37,10 @@ import math
 
 from torch_harmonics.truncation import truncate_sht
 
-from torch_harmonics.distributed import DistributedRealSHT, DistributedInverseRealSHT, DistributedQuadratureS2
-
-from torch_harmonics.distributed import polar_group_size, azimuth_group_size
-from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
-from torch_harmonics.distributed import copy_to_polar_region, copy_to_azimuth_region
+from .distributed_quadrature import DistributedQuadratureS2
+from .distributed_sht import DistributedInverseRealSHT, DistributedRealSHT
+from .primitives import copy_to_azimuth_region, copy_to_polar_region
+from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 
 class DistributedSpectralConvS2(nn.Module):

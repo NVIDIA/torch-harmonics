@@ -37,9 +37,9 @@ from torch_harmonics.truncation import truncate_sht
 from torch_harmonics.quadrature import legendre_gauss_weights, lobatto_weights, clenshaw_curtiss_weights
 from torch_harmonics.legendre import _precompute_legpoly, _precompute_dlegpoly
 from torch_harmonics.fft import rfft, irfft
-from torch_harmonics.distributed import polar_group_size, azimuth_group_size, distributed_transpose_azimuth, distributed_transpose_polar
-from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
-from torch_harmonics.distributed import compute_split_shapes, split_tensor_along_dim
+
+from .primitives import compute_split_shapes, distributed_transpose_azimuth, distributed_transpose_polar, split_tensor_along_dim
+from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 
 class DistributedRealSHT(nn.Module):

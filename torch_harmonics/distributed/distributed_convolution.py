@@ -43,12 +43,9 @@ from torch_harmonics.disco.convolution import (
     DiscreteContinuousConv,
 )
 
-# distirbuted stuff
-from torch_harmonics.distributed import polar_group_size, azimuth_group_size
-from torch_harmonics.distributed import distributed_transpose_azimuth
-from torch_harmonics.distributed import reduce_from_polar_region, scatter_to_polar_region, gather_from_polar_region, copy_to_polar_region
-from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
-from torch_harmonics.distributed import compute_split_shapes
+# distributed stuff
+from .primitives import compute_split_shapes, copy_to_polar_region, distributed_transpose_azimuth, gather_from_polar_region, reduce_from_polar_region, scatter_to_polar_region
+from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 
 def _split_distributed_convolution_tensor_s2(

@@ -41,6 +41,9 @@ from torch_harmonics.distributed import reduce_from_azimuth_region, copy_to_azim
 from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
 from torch_harmonics.distributed import compute_split_shapes
 
+from .primitives import compute_split_shapes, copy_to_azimuth_region, distributed_transpose_azimuth, distributed_transpose_polar, reduce_from_azimuth_region
+from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
+
 
 class DistributedResampleS2(nn.Module):
     """
