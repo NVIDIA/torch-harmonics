@@ -29,28 +29,35 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import List, Tuple, Union, Optional
 import math
+from typing import Optional
 
 import torch
 import torch.nn as nn
 
+from torch_harmonics.distributed import (
+    azimuth_group_rank,
+    azimuth_group_size,
+    compute_split_shapes,
+    copy_to_azimuth_region,
+    distributed_transpose_azimuth,
+    distributed_transpose_polar,
+    polar_group_rank,
+    polar_group_size,
+    reduce_from_azimuth_region,
+)
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
-from torch_harmonics.distributed import polar_group_size, azimuth_group_size, distributed_transpose_azimuth, distributed_transpose_polar
-from torch_harmonics.distributed import reduce_from_azimuth_region, copy_to_azimuth_region
-from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
-from torch_harmonics.distributed import compute_split_shapes
 
 
 class DistributedResampleS2(nn.Module):
     """
     Distributed resampling module for spherical data on the 2-sphere.
-    
+
     This module performs distributed resampling of spherical data across multiple processes,
     supporting both upscaling and downscaling operations. The data is distributed across
     polar and azimuthal directions, and the module handles the necessary communication
     and interpolation operations.
-    
+
     Parameters
     -----------
     nlat_in : int
@@ -116,9 +123,7 @@ class DistributedResampleS2(nn.Module):
         # we need to expand the solution to the poles before interpolating
         self.expand_poles = (self.lats_out > self.lats_in[-1]).any() or (self.lats_out < self.lats_in[0]).any()
         if self.expand_poles:
-            self.lats_in = torch.cat([torch.tensor([0.], dtype=torch.float64),
-                                      self.lats_in,
-                                      torch.tensor([math.pi], dtype=torch.float64)]).contiguous()
+            self.lats_in = torch.cat([torch.tensor([0.0], dtype=torch.float64), self.lats_in, torch.tensor([math.pi], dtype=torch.float64)]).contiguous()
 
         # prepare the interpolation by computing indices to the left and right of each output latitude
         lat_idx = torch.searchsorted(self.lats_in, self.lats_out, side="right") - 1
@@ -172,10 +177,10 @@ class DistributedResampleS2(nn.Module):
 
     def _expand_poles(self, x: torch.Tensor):
         """Expand the data to include pole values for interpolation."""
-        x_north = x[...,  0, :].sum(dim=-1, keepdims=True)
+        x_north = x[..., 0, :].sum(dim=-1, keepdims=True)
         x_south = x[..., -1, :].sum(dim=-1, keepdims=True)
         x_count = torch.tensor([x.shape[-1]], dtype=torch.long, device=x.device, requires_grad=False)
-        
+
         if self.comm_size_azimuth > 1:
             x_north = reduce_from_azimuth_region(x_north.contiguous())
             x_south = reduce_from_azimuth_region(x_south.contiguous())
@@ -186,8 +191,8 @@ class DistributedResampleS2(nn.Module):
         if self.comm_size_azimuth > 1:
             x_north = copy_to_azimuth_region(x_north)
             x_south = copy_to_azimuth_region(x_south)
-            
-        x = nn.functional.pad(x, pad=[0, 0, 1, 1], mode='constant')
+
+        x = nn.functional.pad(x, pad=[0, 0, 1, 1], mode="constant")
         x[..., 0, :] = x_north[...]
         x[..., -1, :] = x_south[...]
 
@@ -215,7 +220,7 @@ class DistributedResampleS2(nn.Module):
 
         # transpose data so that h is local, and channels are split
         num_chans = x.shape[-3]
-        
+
         # h and w is split. First we make w local by transposing into channel dim
         if self.comm_size_polar > 1:
             channels_shapes = compute_split_shapes(num_chans, self.comm_size_polar)

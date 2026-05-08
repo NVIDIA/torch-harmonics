@@ -2,7 +2,7 @@
 //
 // SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
-// 
+//
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
@@ -387,12 +387,12 @@ void launch_spc_attn_fwd(int nloc,      // "BDIM_X*nloc" >= nchans_out
         // y vectors, of length nchans_out;
         // if nchans_in is >= BDIM_X*(nloc-1) and <= BDIM_X*nloc
         // then we can use the same compile-time known loops used
-        // for output channels, with the execpetion of testing 
+        // for output channels, with the execpetion of testing
         // whether to execute the last iteration based on "nchans_in"
         // rather than on "nchans_out"; in this way as long as the
         // difference between the number of input and output channels
-        // is <= BDIM_X we can use the faster path 
-        if (nchans_in >= BDIM_X*(CUR_LOC_SIZE-1) && 
+        // is <= BDIM_X we can use the faster path
+        if (nchans_in >= BDIM_X*(CUR_LOC_SIZE-1) &&
             nchans_in <= BDIM_X* CUR_LOC_SIZE  ) {
 
             s2_attn_fwd_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE>
@@ -470,7 +470,7 @@ static void s2_attn_fwd_dispatch(int64_t batch_size,
         (nchans_out % VEC_SIZE) != 0) {
 
         const int nloc = DIV_UP(nchans_out, bdimx);
-        
+
         // to avoid the compilation of unused template instances;
         // we use a block size BDIM_X that is the smallest power of 2
         // such that BDIM_X*MAX_LOCAL_ARR_LEN >= nchans_out, so
@@ -502,7 +502,7 @@ static void s2_attn_fwd_dispatch(int64_t batch_size,
         const int nloc = DIV_UP(nchans_out, bdimx);
 
         constexpr int MAX_LOCAL_VEC_LEN = MAX_LOCAL_ARR_LEN / VEC_SIZE;
-        
+
         constexpr int MIN_LOC_VEC_LEN = MAX_LOCAL_VEC_LEN/2+1;
 
         // use 2D blocks only if 32 threads are enough

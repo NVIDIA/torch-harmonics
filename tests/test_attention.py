@@ -30,23 +30,21 @@
 #
 
 import os
-from time import perf_counter_ns
 import unittest
-from parameterized import parameterized, parameterized_class
+from time import perf_counter_ns
 
 import torch
 import torch.nn.functional as F
+from parameterized import parameterized, parameterized_class
+from testutils import compare_tensors, disable_tf32, set_seed
 from torch.library import opcheck
 
 # from torch.autograd import gradcheck
 from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
-from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhood_s2_attention_torch
 from torch_harmonics.attention import cuda_kernels_is_available, optimized_kernels_is_available
 
-from testutils import disable_tf32, set_seed, compare_tensors
-
 if not optimized_kernels_is_available():
-    print(f"Warning: Couldn't import optimized disco convolution kernels")
+    print("Warning: Couldn't import optimized disco convolution kernels")
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -56,15 +54,14 @@ if torch.cuda.is_available():
 # CPU results normalized to 16 OpenMP threads,
 # GPU results normalized to V100 16 GB GPU
 # this is just to detect performance regressions, not for absolute performance
-_perf_test_thresholds = {"cpu": {"fwd_ms": 1000, "bwd_ms": 8000}, 
-                         "cuda": {"fwd_ms": 50, "bwd_ms": 150}}
-_run_perf_tests = (os.getenv("TORCH_HARMONICS_RUN_PERF_TESTS", "0") == "1")
+_perf_test_thresholds = {"cpu": {"fwd_ms": 1000, "bwd_ms": 8000}, "cuda": {"fwd_ms": 50, "bwd_ms": 150}}
+_run_perf_tests = os.getenv("TORCH_HARMONICS_RUN_PERF_TESTS", "0") == "1"
 
 
 @parameterized_class(("device"), _devices)
 class TestNeighborhoodAttentionS2(unittest.TestCase):
     """Test the neighborhood attention module (CPU/CUDA if available)."""
-    
+
     def setUp(self):
         disable_tf32()
         torch.manual_seed(333)
@@ -84,17 +81,17 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             [4, 4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", False, 1e-5, 1e-3],
             [4, 4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", False, 1e-5, 1e-3],
             # downsampling: nlon_in must be an integer multiple of nlon_out (pscale = nlon_in / nlon_out)
-            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # lat 2x, lon 2x (pscale=2)
-            [4, 4, 4, 1, (6, 12),  (6, 6),  "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # lon-only, pscale=2
-            [4, 4, 4, 1, (12, 24), (6, 8),  "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # pscale=3
-            [4, 4, 4, 1, (12, 24), (3, 6),  "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # pscale=4
-            [4, 4, 4, 1, (12, 12), (6, 12), "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # lat-only, pscale=1
+            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],  # lat 2x, lon 2x (pscale=2)
+            [4, 4, 4, 1, (6, 12), (6, 6), "equiangular", "equiangular", False, 1e-5, 1e-3],  # lon-only, pscale=2
+            [4, 4, 4, 1, (12, 24), (6, 8), "equiangular", "equiangular", False, 1e-5, 1e-3],  # pscale=3
+            [4, 4, 4, 1, (12, 24), (3, 6), "equiangular", "equiangular", False, 1e-5, 1e-3],  # pscale=4
+            [4, 4, 4, 1, (12, 12), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],  # lat-only, pscale=1
             [4, 4, 4, 1, (12, 24), (6, 12), "legendre-gauss", "legendre-gauss", False, 1e-5, 1e-3],  # LG grid, pscale=2
             # odd latitude sizes
-            [4, 4, 4, 1, (7, 12),  (5, 6),  "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd-odd lat, pscale=2
-            [4, 4, 4, 1, (9, 12),  (5, 4),  "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd-odd lat, pscale=3
-            [4, 4, 4, 1, (11, 24), (7, 12), "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd-odd lat, pscale=2
-            [4, 4, 4, 1, (12, 24), (11, 24),"equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd nlat_out only, pscale=1  
+            [4, 4, 4, 1, (7, 12), (5, 6), "equiangular", "equiangular", False, 1e-5, 1e-3],  # odd-odd lat, pscale=2
+            [4, 4, 4, 1, (9, 12), (5, 4), "equiangular", "equiangular", False, 1e-5, 1e-3],  # odd-odd lat, pscale=3
+            [4, 4, 4, 1, (11, 24), (7, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],  # odd-odd lat, pscale=2
+            [4, 4, 4, 1, (12, 24), (11, 24), "equiangular", "equiangular", False, 1e-5, 1e-3],  # odd nlat_out only, pscale=1
             # same cases with QK norm enabled
             [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
             [4, 4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
@@ -107,17 +104,17 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             [4, 4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", True, 1e-5, 1e-3],
             [4, 4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", True, 1e-5, 1e-3],
             # downsampling: nlon_in must be an integer multiple of nlon_out (pscale = nlon_in / nlon_out)
-            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # lat 2x, lon 2x (pscale=2)
-            [4, 4, 4, 1, (6, 12),  (6, 6),  "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # lon-only, pscale=2
-            [4, 4, 4, 1, (12, 24), (6, 8),  "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # pscale=3
-            [4, 4, 4, 1, (12, 24), (3, 6),  "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # pscale=4
-            [4, 4, 4, 1, (12, 12), (6, 12), "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # lat-only, pscale=1
+            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],  # lat 2x, lon 2x (pscale=2)
+            [4, 4, 4, 1, (6, 12), (6, 6), "equiangular", "equiangular", True, 1e-5, 1e-3],  # lon-only, pscale=2
+            [4, 4, 4, 1, (12, 24), (6, 8), "equiangular", "equiangular", True, 1e-5, 1e-3],  # pscale=3
+            [4, 4, 4, 1, (12, 24), (3, 6), "equiangular", "equiangular", True, 1e-5, 1e-3],  # pscale=4
+            [4, 4, 4, 1, (12, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],  # lat-only, pscale=1
             [4, 4, 4, 1, (12, 24), (6, 12), "legendre-gauss", "legendre-gauss", True, 1e-5, 1e-3],  # LG grid, pscale=2
             # odd latitude sizes
-            [4, 4, 4, 1, (7, 12),  (5, 6),  "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd-odd lat, pscale=2
-            [4, 4, 4, 1, (9, 12),  (5, 4),  "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd-odd lat, pscale=3
-            [4, 4, 4, 1, (11, 24), (7, 12), "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd-odd lat, pscale=2
-            [4, 4, 4, 1, (12, 24), (11, 24),"equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd nlat_out only, pscale=1    
+            [4, 4, 4, 1, (7, 12), (5, 6), "equiangular", "equiangular", True, 1e-5, 1e-3],  # odd-odd lat, pscale=2
+            [4, 4, 4, 1, (9, 12), (5, 4), "equiangular", "equiangular", True, 1e-5, 1e-3],  # odd-odd lat, pscale=3
+            [4, 4, 4, 1, (11, 24), (7, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],  # odd-odd lat, pscale=2
+            [4, 4, 4, 1, (12, 24), (11, 24), "equiangular", "equiangular", True, 1e-5, 1e-3],  # odd nlat_out only, pscale=1
         ],
         skip_on_empty=True,
     )
@@ -143,10 +140,32 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         inputs_opt = {k: v.detach().clone().to(self.device).requires_grad_() for k, v in inputs_ref.items()}
 
         # reference input and model
-        model_ref = NeighborhoodAttentionS2(in_channels=channels, out_channels=channels_out, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, use_qknorm=use_qknorm, optimized_kernel=False).to(self.device)
+        model_ref = NeighborhoodAttentionS2(
+            in_channels=channels,
+            out_channels=channels_out,
+            num_heads=heads,
+            in_shape=in_shape,
+            out_shape=out_shape,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            bias=True,
+            use_qknorm=use_qknorm,
+            optimized_kernel=False,
+        ).to(self.device)
 
         # Device model and inputs
-        model_opt = NeighborhoodAttentionS2(in_channels=channels, out_channels=channels_out, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, use_qknorm=use_qknorm, optimized_kernel=True).to(self.device)
+        model_opt = NeighborhoodAttentionS2(
+            in_channels=channels,
+            out_channels=channels_out,
+            num_heads=heads,
+            in_shape=in_shape,
+            out_shape=out_shape,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            bias=True,
+            use_qknorm=use_qknorm,
+            optimized_kernel=True,
+        ).to(self.device)
 
         # Synchronize parameters of model
         model_opt.load_state_dict(model_ref.state_dict())
@@ -184,16 +203,16 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         [
             # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
             # same shape
-            [2, 64, 1, (25, 48), (25, 48),    "equiangular",    "equiangular",    5e-2, 1e-4],
+            [2, 64, 1, (25, 48), (25, 48), "equiangular", "equiangular", 5e-2, 1e-4],
             # downsampling: nlon_in must be an integer multiple of nlon_out (pscale = nlon_in / nlon_out)
-            [2, 16, 1, (24, 48), (12, 24),    "equiangular",    "equiangular",    5e-2, 1e-4],  # lat 2x, lon 2x (pscale=2)
-            [2, 16, 1, (12, 24), (12, 12),    "equiangular",    "equiangular",    5e-2, 1e-4],  # lon-only, pscale=2
-            [2, 16, 1, (12, 24), (6, 8),      "equiangular",    "equiangular",    5e-2, 1e-4],  # pscale=3
-            [2, 16, 1, (24, 48), (6, 12),     "equiangular",    "equiangular",    5e-2, 1e-4],  # pscale=4
-            [2, 16, 1, (24, 48), (12, 24),    "legendre-gauss", "legendre-gauss", 5e-2, 1e-4],  # LG grid, pscale=2
+            [2, 16, 1, (24, 48), (12, 24), "equiangular", "equiangular", 5e-2, 1e-4],  # lat 2x, lon 2x (pscale=2)
+            [2, 16, 1, (12, 24), (12, 12), "equiangular", "equiangular", 5e-2, 1e-4],  # lon-only, pscale=2
+            [2, 16, 1, (12, 24), (6, 8), "equiangular", "equiangular", 5e-2, 1e-4],  # pscale=3
+            [2, 16, 1, (24, 48), (6, 12), "equiangular", "equiangular", 5e-2, 1e-4],  # pscale=4
+            [2, 16, 1, (24, 48), (12, 24), "legendre-gauss", "legendre-gauss", 5e-2, 1e-4],  # LG grid, pscale=2
             # odd latitude sizes
-            [2, 16, 1, (11, 24), (7, 12),     "equiangular",    "equiangular",    5e-2, 1e-4],  # odd-odd lat, pscale=2
-            [2, 16, 1, (13, 24), (9, 8),      "equiangular",    "equiangular",    5e-2, 1e-4],  # odd-odd lat, pscale=3
+            [2, 16, 1, (11, 24), (7, 12), "equiangular", "equiangular", 5e-2, 1e-4],  # odd-odd lat, pscale=2
+            [2, 16, 1, (13, 24), (9, 8), "equiangular", "equiangular", 5e-2, 1e-4],  # odd-odd lat, pscale=3
         ],
         skip_on_empty=True,
     )
@@ -201,7 +220,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     def test_device_vs_cpu(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
         """Tests numerical equivalence between optimized CUDA and CPU implementations"""
 
-        if (self.device.type == "cpu"):
+        if self.device.type == "cpu":
             # comparing CPU with itself does not make sense
             return
 
@@ -222,14 +241,12 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         # reference input and model (use default local theta_cutoff so the test is sensitive
         # to the (wi + pscale*wo) % nlon_in shift; a global cutoff makes every input a neighbor
         # of every output and collapses the shift to a permutation the result is invariant to)
-        att_host = NeighborhoodAttentionS2(
-            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True
-        )
+        att_host = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True)
 
         # Device model and inputs
-        att_device = NeighborhoodAttentionS2(
-            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True
-        ).to(self.device)
+        att_device = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True).to(
+            self.device
+        )
 
         # Synchronize parameters of model
         att_device.load_state_dict(att_host.state_dict())
@@ -241,7 +258,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         # reference forward passes
         out_host = att_host(inputs_host["q"], inputs_host["k"], inputs_host["v"])
         out_device = att_device(inputs_device["q"], inputs_device["k"], inputs_device["v"])
-        self.assertTrue(compare_tensors(f"output", out_device.cpu(), out_host.cpu(), atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("output", out_device.cpu(), out_host.cpu(), atol=atol, rtol=rtol, verbose=verbose))
 
         # Backward passes
         grad = torch.randn_like(out_host)
@@ -258,7 +275,6 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             grad_host = p_host.grad.cpu()
             grad_device = p_device.grad.cpu()
             self.assertTrue(compare_tensors(f"parameter grad {name_host}", grad_device, grad_host, atol=atol, rtol=rtol, verbose=verbose))
-
 
     @parameterized.expand(
         [
@@ -302,11 +318,21 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         inputs = {k: v.detach().clone().to(self.device).requires_grad_() for k, v in inputs_ref.items()}
 
         # reference input and model
-        model_ref = AttentionS2(in_channels=channels, out_channels=channels_out, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=False).to(self.device)
+        model_ref = AttentionS2(
+            in_channels=channels, out_channels=channels_out, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=False
+        ).to(self.device)
 
         # Device model and inputs
         model = NeighborhoodAttentionS2(
-            in_channels=channels, num_heads=heads, out_channels=channels_out, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=False, theta_cutoff=2 * torch.pi
+            in_channels=channels,
+            num_heads=heads,
+            out_channels=channels_out,
+            in_shape=in_shape,
+            out_shape=out_shape,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            bias=False,
+            theta_cutoff=2 * torch.pi,
         )
 
         # Synchronize parameters of model
@@ -320,7 +346,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         out = model(inputs["q"], inputs["k"], inputs["v"])
 
         # Check forward equivalence
-        self.assertTrue(compare_tensors(f"output", out, out_ref, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("output", out, out_ref, atol=atol, rtol=rtol, verbose=verbose))
 
         # Backward passes
         grad = torch.randn_like(out_ref)
@@ -338,7 +364,6 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             grad_ref = getattr(model_ref, key).grad
             grad = getattr(model, key).grad
             self.assertTrue(compare_tensors(f"parameter grad {key}", grad, grad_ref, atol=atol, rtol=rtol, verbose=verbose))
-
 
     @parameterized.expand(
         [
@@ -359,7 +384,15 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         nlat_out, nlon_out = out_shape
 
         att = NeighborhoodAttentionS2(
-            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=False, theta_cutoff=2 * torch.pi, optimized_kernel=True
+            in_channels=channels,
+            num_heads=heads,
+            in_shape=in_shape,
+            out_shape=out_shape,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            bias=False,
+            theta_cutoff=2 * torch.pi,
+            optimized_kernel=True,
         ).to(self.device)
 
         inputs = {
@@ -372,22 +405,19 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         vw = F.conv2d(inputs["v"], att.v_weights, att.v_bias)
         qw = F.conv2d(inputs["q"], att.q_weights, att.q_bias) * att.scale
 
-        test_inputs = (kw, vw, qw,
-                       att.quad_weights, att.psi_col_idx, att.psi_roff_idx,
-                       att.psi_max_nnz, att.num_heads, nlon_in, nlat_out, nlon_out)
+        test_inputs = (kw, vw, qw, att.quad_weights, att.psi_col_idx, att.psi_roff_idx, att.psi_max_nnz, att.num_heads, nlon_in, nlat_out, nlon_out)
 
         opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs)
         # opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs, test_utils="test_schema")
         # opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs, test_utils="test_faketensor")
-        #opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs, test_utils="test_aot_dispatch_dynamic")
-
+        # opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs, test_utils="test_aot_dispatch_dynamic")
 
     @parameterized.expand(
         [
             # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out]
             # same-shape (pscale=1) and downsampling (pscale=2) cases
-            [4, 4, 1, (6, 12),  (6, 12), "equiangular", "equiangular"],
-            [4, 8, 4, (6, 12),  (6, 12), "equiangular", "equiangular"],
+            [4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular"],
+            [4, 8, 4, (6, 12), (6, 12), "equiangular", "equiangular"],
             [4, 4, 1, (12, 24), (6, 12), "equiangular", "equiangular"],
         ],
         skip_on_empty=True,
@@ -411,15 +441,21 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         set_seed(333)
 
-        nlat_in,  nlon_in  = in_shape
+        nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
-        pscale             = nlon_in // nlon_out
+        pscale = nlon_in // nlon_out
 
         # Build the module just to get a consistent (quad_weights, psi_col_idx, psi_roff_idx)
         # for the chosen grid; we do not exercise its forward.
         att = NeighborhoodAttentionS2(
-            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape,
-            grid_in=grid_in, grid_out=grid_out, bias=False, optimized_kernel=True,
+            in_channels=channels,
+            num_heads=heads,
+            in_shape=in_shape,
+            out_shape=out_shape,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            bias=False,
+            optimized_kernel=True,
         ).to(self.device)
 
         # Channel counts after the (head-folded) projections in DistributedNeighborhoodAttentionS2.
@@ -428,8 +464,8 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         C_v = channels // heads
 
         # Synthetic projected k/v/q with the correct kernel-side shapes.
-        kw = torch.randn(Bnh, C_k, nlat_in,  nlon_in,  device=self.device, dtype=torch.float32)
-        vw = torch.randn(Bnh, C_v, nlat_in,  nlon_in,  device=self.device, dtype=torch.float32)
+        kw = torch.randn(Bnh, C_k, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
+        vw = torch.randn(Bnh, C_v, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
         qw = torch.randn(Bnh, C_k, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
 
         # The kernel expects row_idx to be the sorted permutation of output rows (by nnz),
@@ -440,30 +476,44 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         # ---- forward ring step ----
         # State buffers in channels-last layout, as expected by the CUDA kernels.
-        y_acc     = torch.zeros(Bnh, nlat_out, nlon_out, C_v, device=self.device, dtype=torch.float32)
-        alpha_sum = torch.zeros(Bnh, nlat_out, nlon_out,      device=self.device, dtype=torch.float32)
-        qdotk_max = torch.full ((Bnh, nlat_out, nlon_out), float('-inf'), device=self.device, dtype=torch.float32)
+        y_acc = torch.zeros(Bnh, nlat_out, nlon_out, C_v, device=self.device, dtype=torch.float32)
+        alpha_sum = torch.zeros(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+        qdotk_max = torch.full((Bnh, nlat_out, nlon_out), float("-inf"), device=self.device, dtype=torch.float32)
 
-        fwd_inputs = (kw, vw, qw,
-                      y_acc, alpha_sum, qdotk_max,
-                      att.quad_weights, att.psi_col_idx, att.psi_roff_idx, row_idx_kernel,
-                      nlon_in, pscale, 0, 0, nlat_out, nlon_out)
+        fwd_inputs = (kw, vw, qw, y_acc, alpha_sum, qdotk_max, att.quad_weights, att.psi_col_idx, att.psi_roff_idx, row_idx_kernel, nlon_in, pscale, 0, 0, nlat_out, nlon_out)
 
         opcheck(torch.ops.attention_kernels.forward_ring_step, fwd_inputs)
 
         # ---- backward pass 1: re-accumulate softmax stats + alpha_k / alpha_kvw ----
         dy = torch.randn(Bnh, C_v, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
 
-        bwd_alpha_sum = torch.zeros(Bnh, nlat_out, nlon_out,      device=self.device, dtype=torch.float32)
-        bwd_qdotk_max = torch.full ((Bnh, nlat_out, nlon_out), float('-inf'), device=self.device, dtype=torch.float32)
-        integral_buf  = torch.zeros(Bnh, nlat_out, nlon_out,      device=self.device, dtype=torch.float32)
-        alpha_k_buf   = torch.zeros(Bnh, nlat_out, nlon_out, C_k, device=self.device, dtype=torch.float32)
+        bwd_alpha_sum = torch.zeros(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+        bwd_qdotk_max = torch.full((Bnh, nlat_out, nlon_out), float("-inf"), device=self.device, dtype=torch.float32)
+        integral_buf = torch.zeros(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+        alpha_k_buf = torch.zeros(Bnh, nlat_out, nlon_out, C_k, device=self.device, dtype=torch.float32)
         alpha_kvw_buf = torch.zeros(Bnh, nlat_out, nlon_out, C_k, device=self.device, dtype=torch.float32)
 
-        bwd1_inputs = (kw, vw, qw, dy,
-                       bwd_alpha_sum, bwd_qdotk_max, integral_buf, alpha_k_buf, alpha_kvw_buf,
-                       att.quad_weights, att.psi_col_idx, att.psi_roff_idx, row_idx_kernel,
-                       nlon_in, pscale, 0, 0, nlat_out, nlon_out)
+        bwd1_inputs = (
+            kw,
+            vw,
+            qw,
+            dy,
+            bwd_alpha_sum,
+            bwd_qdotk_max,
+            integral_buf,
+            alpha_k_buf,
+            alpha_kvw_buf,
+            att.quad_weights,
+            att.psi_col_idx,
+            att.psi_roff_idx,
+            row_idx_kernel,
+            nlon_in,
+            pscale,
+            0,
+            0,
+            nlat_out,
+            nlon_out,
+        )
 
         opcheck(torch.ops.attention_kernels.backward_ring_step_pass1, bwd1_inputs)
 
@@ -471,21 +521,36 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         # Synthetic but well-formed stats from a previous pass1: avoid -inf in qdotk_max and 0 in
         # alpha_sum so the kernel doesn't produce NaNs (opcheck doesn't check numerics, but NaNs
         # can interact badly with AOT dispatch comparisons).
-        fwd_alpha_sum = torch.ones (Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+        fwd_alpha_sum = torch.ones(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
         fwd_qdotk_max = torch.zeros(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
         integral_norm = torch.zeros(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
 
         dkw = torch.zeros(Bnh, nlat_in, nlon_in, C_k, device=self.device, dtype=torch.float32)
         dvw = torch.zeros(Bnh, nlat_in, nlon_in, C_v, device=self.device, dtype=torch.float32)
 
-        bwd2_inputs = (kw, vw, qw, dy,
-                       fwd_alpha_sum, fwd_qdotk_max, integral_norm,
-                       dkw, dvw,
-                       att.quad_weights, att.psi_col_idx, att.psi_roff_idx, row_idx_kernel,
-                       nlon_in, pscale, 0, 0, nlat_out, nlon_out)
+        bwd2_inputs = (
+            kw,
+            vw,
+            qw,
+            dy,
+            fwd_alpha_sum,
+            fwd_qdotk_max,
+            integral_norm,
+            dkw,
+            dvw,
+            att.quad_weights,
+            att.psi_col_idx,
+            att.psi_roff_idx,
+            row_idx_kernel,
+            nlon_in,
+            pscale,
+            0,
+            0,
+            nlat_out,
+            nlon_out,
+        )
 
         opcheck(torch.ops.attention_kernels.backward_ring_step_pass2, bwd2_inputs)
-
 
     @parameterized.expand(
         [
@@ -496,7 +561,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     )
     @unittest.skipUnless(optimized_kernels_is_available() and _run_perf_tests, "skipping performance test because optimized kernels are not available or perf tests are disabled")
     def test_perf(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
-        
+
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
 
@@ -515,10 +580,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         q_inp = torch.randn(batch_size, channels, nlat_out, nlon_out, dtype=torch.float32, device=self.device)
         q_inp.requires_grad = False
 
-        att_optimized = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads,
-                                                in_shape=in_shape, out_shape=out_shape,
-                                                grid_in=grid_in, grid_out=grid_out, bias=True,
-                                                optimized_kernel=True).to(self.device)
+        att_optimized = NeighborhoodAttentionS2(
+            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, optimized_kernel=True
+        ).to(self.device)
 
         # random weights
         with torch.no_grad():
@@ -551,7 +615,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         # # backward test
         out_optimized = att_optimized(q_inp, k_inp, v_inp)
         out_grad = torch.randn(out_optimized.shape, dtype=torch.float32, device=self.device)
-        
+
         # # warmup
         for i in range(2):
             out_optimized.backward(out_grad, retain_graph=True)
@@ -573,9 +637,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     def test_wrong_shape_assertions(self):
         """Verify that forward raises ValueError on spatial-shape mismatches."""
         B, C = 2, 16
-        in_shape  = (12, 24)
-        out_shape = (6,  12)
-        nlat_in, nlon_in   = in_shape
+        in_shape = (12, 24)
+        out_shape = (6, 12)
+        nlat_in, nlon_in = in_shape
         nlat_out, nlon_out = out_shape
 
         model = NeighborhoodAttentionS2(
@@ -588,8 +652,8 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             bias=False,
         ).to(self.device)
 
-        q  = torch.randn(B, C, nlat_out, nlon_out, device=self.device)
-        kv = torch.randn(B, C, nlat_in,  nlon_in,  device=self.device)
+        q = torch.randn(B, C, nlat_out, nlon_out, device=self.device)
+        kv = torch.randn(B, C, nlat_in, nlon_in, device=self.device)
 
         # 1. Self-attention on an up/downsampling module: a single tensor cannot
         #    simultaneously satisfy in_shape (for k/v) and out_shape (for q).
@@ -603,6 +667,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         # 3. q_shape == v_shape != k_shape: value carries out_shape instead of in_shape.
         with self.assertRaises(ValueError):
             model(q, kv, q)
+
 
 if __name__ == "__main__":
     unittest.main()

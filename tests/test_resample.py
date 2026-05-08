@@ -30,14 +30,13 @@
 #
 
 import unittest
-from parameterized import parameterized, parameterized_class
 
 import torch
+from parameterized import parameterized, parameterized_class
+from testutils import compare_tensors, set_seed
 
 from torch_harmonics import ResampleS2
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
-
-from testutils import set_seed, compare_tensors
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -71,24 +70,23 @@ class TestResampleS2(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [32, 64, 16, 32, "equiangular",    "equiangular",    "bilinear",          1e-5, 1e-5],
-            [32, 64, 16, 32, "equiangular",    "legendre-gauss", "bilinear",          1e-5, 1e-5],
-            [32, 64, 16, 32, "equiangular",    "lobatto",        "bilinear",          1e-5, 1e-5],
-            [32, 64, 16, 32, "legendre-gauss", "equiangular",    "bilinear",          1e-5, 1e-5],
-            [32, 64, 16, 32, "legendre-gauss", "legendre-gauss", "bilinear",          1e-5, 1e-5],
-            [32, 64, 16, 32, "legendre-gauss", "lobatto",        "bilinear",          1e-5, 1e-5],
-            [32, 64, 16, 32, "lobatto",        "equiangular",    "bilinear",          1e-5, 1e-5],
-            [32, 64, 16, 32, "lobatto",        "legendre-gauss", "bilinear",          1e-5, 1e-5],
-            [32, 64, 16, 32, "lobatto",        "lobatto",        "bilinear",          1e-5, 1e-5],
-            [32, 64, 16, 32, "equiangular",    "equiangular",    "bilinear-spherical", 1e-5, 1e-5],
+            [32, 64, 16, 32, "equiangular", "equiangular", "bilinear", 1e-5, 1e-5],
+            [32, 64, 16, 32, "equiangular", "legendre-gauss", "bilinear", 1e-5, 1e-5],
+            [32, 64, 16, 32, "equiangular", "lobatto", "bilinear", 1e-5, 1e-5],
+            [32, 64, 16, 32, "legendre-gauss", "equiangular", "bilinear", 1e-5, 1e-5],
+            [32, 64, 16, 32, "legendre-gauss", "legendre-gauss", "bilinear", 1e-5, 1e-5],
+            [32, 64, 16, 32, "legendre-gauss", "lobatto", "bilinear", 1e-5, 1e-5],
+            [32, 64, 16, 32, "lobatto", "equiangular", "bilinear", 1e-5, 1e-5],
+            [32, 64, 16, 32, "lobatto", "legendre-gauss", "bilinear", 1e-5, 1e-5],
+            [32, 64, 16, 32, "lobatto", "lobatto", "bilinear", 1e-5, 1e-5],
+            [32, 64, 16, 32, "equiangular", "equiangular", "bilinear-spherical", 1e-5, 1e-5],
         ]
     )
     def test_constant_field(self, nlat_in, nlon_in, nlat_out, nlon_out, grid_in, grid_out, mode, atol, rtol, verbose=False):
         """A constant field f=1 must be reproduced exactly under any resampling."""
         set_seed(333)
 
-        resample = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out,
-                              grid_in=grid_in, grid_out=grid_out, mode=mode).to(self.device)
+        resample = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out, grid_in=grid_in, grid_out=grid_out, mode=mode).to(self.device)
 
         data = torch.ones(2, 3, nlat_in, nlon_in, dtype=torch.float32, device=self.device)
         out = resample(data)
@@ -101,22 +99,21 @@ class TestResampleS2(unittest.TestCase):
         [
             # Only grid pairs where output latitudes lie strictly within the input latitude range
             # (expand_poles=False), so that bilinear interpolation is exact for linear-in-θ functions.
-            [32, 64, 16, 32, "equiangular",    "equiangular",    1e-5, 1e-5],
-            [32, 64, 16, 32, "equiangular",    "legendre-gauss", 1e-5, 1e-5],
-            [32, 64, 16, 32, "legendre-gauss", "equiangular",    1e-5, 1e-5],
+            [32, 64, 16, 32, "equiangular", "equiangular", 1e-5, 1e-5],
+            [32, 64, 16, 32, "equiangular", "legendre-gauss", 1e-5, 1e-5],
+            [32, 64, 16, 32, "legendre-gauss", "equiangular", 1e-5, 1e-5],
             [32, 64, 16, 32, "legendre-gauss", "legendre-gauss", 1e-5, 1e-5],
-            [32, 64, 16, 32, "lobatto",        "equiangular",    1e-5, 1e-5],
-            [32, 64, 16, 32, "lobatto",        "legendre-gauss", 1e-5, 1e-5],
+            [32, 64, 16, 32, "lobatto", "equiangular", 1e-5, 1e-5],
+            [32, 64, 16, 32, "lobatto", "legendre-gauss", 1e-5, 1e-5],
         ]
     )
     def test_linear_latitude_exactness(self, nlat_in, nlon_in, nlat_out, nlon_out, grid_in, grid_out, atol, rtol, verbose=False):
         """Bilinear interpolation is exact for f(θ,φ)=θ (linear in latitude)."""
         set_seed(333)
 
-        resample = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out,
-                              grid_in=grid_in, grid_out=grid_out).to(self.device)
+        resample = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out, grid_in=grid_in, grid_out=grid_out).to(self.device)
 
-        #self.assertFalse(resample.expand_poles,
+        # self.assertFalse(resample.expand_poles,
         #                 f"expand_poles must be False for this test ({grid_in}→{grid_out}), "
         #                  f"otherwise pole extrapolation breaks linear exactness")
 
@@ -144,7 +141,7 @@ class TestResampleS2(unittest.TestCase):
             # Upsample in longitude (nlon_out > nlon_in) so that output nodes near φ=2π
             # require the wrap-around lon_idx_right=0 branch in _upscale_longitudes.
             # Tolerance reflects the O((Δφ)²) bilinear error for sin(φ) with Δφ=2π/32.
-            [16, 32, 16, 64, "equiangular",    "equiangular",    1e-2, 1e-2],
+            [16, 32, 16, 64, "equiangular", "equiangular", 1e-2, 1e-2],
             [16, 32, 16, 64, "legendre-gauss", "legendre-gauss", 1e-2, 1e-2],
         ]
     )
@@ -152,8 +149,7 @@ class TestResampleS2(unittest.TestCase):
         """Upsampling in longitude handles the 2π→0 periodic wrap-around correctly."""
         set_seed(333)
 
-        resample = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out,
-                              grid_in=grid_in, grid_out=grid_out).to(self.device)
+        resample = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out, grid_in=grid_in, grid_out=grid_out).to(self.device)
 
         lons_in = precompute_longitudes(nlon_in)
         lons_out = precompute_longitudes(nlon_out)

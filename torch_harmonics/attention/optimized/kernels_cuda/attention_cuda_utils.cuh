@@ -69,7 +69,7 @@ void verify_part_new(const int nlon_out,
                 const int npart,      // partitioning data
                 const int *part_off,
                 const int *part_val,
-                const at::Tensor roff, 
+                const at::Tensor roff,
                 const at::Tensor cols);
 
 unsigned int next_pow2(unsigned int x);

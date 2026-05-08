@@ -31,13 +31,11 @@
 
 __version__ = "0.9.1a0"
 
-from .truncation import truncate_sht
-from .quadrature import QuadratureS2
-from .sht import RealSHT, InverseRealSHT, RealVectorSHT, InverseRealVectorSHT
-from .spectral_convolution import SpectralConvS2
-from .disco import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
-from .resample import ResampleS2
+from . import examples, quadrature, random_fields
 from .attention import AttentionS2, NeighborhoodAttentionS2
-from . import quadrature
-from . import random_fields
-from . import examples
+from .disco import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
+from .quadrature import QuadratureS2
+from .resample import ResampleS2
+from .sht import InverseRealSHT, InverseRealVectorSHT, RealSHT, RealVectorSHT
+from .spectral_convolution import SpectralConvS2
+from .truncation import truncate_sht

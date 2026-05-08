@@ -38,7 +38,7 @@ namespace disco_kernels {
 
     template <typename scalar_t>
     static void disco_fwd_cpu(
-        int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi, 
+        int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi,
         int64_t Ho, int64_t Wo, int64_t nnz, int64_t nnr,
         const torch::PackedTensorAccessor64<scalar_t, 4> inp,
         const torch::PackedTensorAccessor64<int64_t, 1> roff_idx,
@@ -49,7 +49,7 @@ namespace disco_kernels {
         torch::PackedTensorAccessor64<scalar_t, 5> out) {
 
         const int64_t pscale = static_cast<int64_t>(Wi / Wo);
-        
+
         // some parameters
         const int64_t block_wo = CACHE_BLOCK_SIZE;
         const int64_t nblock_wo = static_cast<int64_t>((Wo + block_wo - 1) / block_wo);
@@ -74,10 +74,10 @@ namespace disco_kernels {
                         for (int64_t wob = 0; wob < block_wo; wob++) {
                             out_tmp[wob] = scalar_t(0);
                         }
-                        
+
                         // loop over input rows
                         for (int64_t z = roff_idx[row]; z < roff_idx[row + 1]; z++) {
-                    
+
                             // COO format, we can optimize later
                             int64_t col = col_idx[z];
                             scalar_t val = vals[z];
@@ -104,7 +104,7 @@ namespace disco_kernels {
 
     template <typename scalar_t>
     static void disco_bwd_cpu(
-        int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi, 
+        int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi,
         int64_t Ho, int64_t Wo, int64_t nnz, int64_t nnr,
         const torch::PackedTensorAccessor64<scalar_t, 5> inp,
         const torch::PackedTensorAccessor64<int64_t, 1> roff_idx,
@@ -128,7 +128,7 @@ namespace disco_kernels {
                     // since the rows are ordered accordingly, we can compute ho and ker in here
                     int64_t hi = row_idx[roff_idx[row]];
                     int64_t ker = ker_idx[roff_idx[row]];
-                        
+
                     // loop over input rows
                     for (int64_t z = roff_idx[row]; z < roff_idx[row + 1]; z++) {
 

@@ -2,7 +2,7 @@
 //
 // SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
-// 
+//
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
@@ -64,7 +64,7 @@ __global__ void set_rlen_rids_k(const int n,
     }
 
     return;
-}   
+}
 
 at::Tensor sortRows(int nlat_out, at::Tensor row_off, cudaStream_t stream) {
 
@@ -94,7 +94,7 @@ at::Tensor sortRows(int nlat_out, at::Tensor row_off, cudaStream_t stream) {
 
     size_t temp_storage_bytes = 0;
     CHECK_CUDA(cub::DeviceRadixSort::SortPairsDescending(NULL, temp_storage_bytes,
-                                                         _rlen_d, _rlen_sort_d, 
+                                                         _rlen_d, _rlen_sort_d,
                                                          _rids_d, _rids_sort_d,
                                                          nlat_out, 0, sizeof(*_rlen_d)*8, stream));
 
@@ -104,7 +104,7 @@ at::Tensor sortRows(int nlat_out, at::Tensor row_off, cudaStream_t stream) {
     void *_temp_storage_d = reinterpret_cast<void *>(temp_storage_d.data_ptr());
 
     CHECK_CUDA(cub::DeviceRadixSort::SortPairsDescending(_temp_storage_d, temp_storage_bytes,
-                                                         _rlen_d, _rlen_sort_d, 
+                                                         _rlen_d, _rlen_sort_d,
                                                          _rids_d, _rids_sort_d,
                                                          nlat_out, 0, sizeof(*_rlen_d)*8, stream));
     return rids_sort_d;
@@ -169,13 +169,13 @@ at::Tensor permute_4D_to0312(at::Tensor src) {
 // END - tensor permutation kernels and functions
 
 // BEGIN - general host-side functions
-unsigned int next_pow2(unsigned int x) { 
+unsigned int next_pow2(unsigned int x) {
 
     x -= 1;
 
     #pragma unroll
     for(int i = 1; i <= sizeof(x)*8 / 2; i *= 2) {
-        x |= x >> i;    
+        x |= x >> i;
     }
     return x+1;
 }

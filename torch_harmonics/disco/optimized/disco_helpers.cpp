@@ -106,4 +106,3 @@ PYBIND11_MODULE(disco_helpers, m)
     m.def("cuda_kernels_is_available", &cuda_kernels_is_available, "Check if CUDA kernels are available.");
     m.def("optimized_kernels_is_available", &optimized_kernels_is_available, "Check if optimized kernels (CUDA or C++) are available.");
 }
-

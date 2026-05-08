@@ -29,16 +29,21 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import Tuple, Optional
+from typing import Optional, Tuple
 
 import torch
 
-from torch_harmonics.quadrature import legendre_gauss_weights, lobatto_weights, clenshaw_curtiss_weights
-
-from torch_harmonics.distributed import polar_group_size, azimuth_group_size
-from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
-from torch_harmonics.distributed import compute_split_shapes, split_tensor_along_dim
-from torch_harmonics.distributed import reduce_from_polar_region, reduce_from_azimuth_region
+from torch_harmonics.distributed import (
+    azimuth_group_rank,
+    azimuth_group_size,
+    compute_split_shapes,
+    polar_group_rank,
+    polar_group_size,
+    reduce_from_azimuth_region,
+    reduce_from_polar_region,
+    split_tensor_along_dim,
+)
+from torch_harmonics.quadrature import clenshaw_curtiss_weights, legendre_gauss_weights, lobatto_weights
 
 
 class DistributedQuadratureS2(torch.nn.Module):
@@ -69,12 +74,8 @@ class DistributedQuadratureS2(torch.nn.Module):
     ValueError
         If an unknown ``grid`` type is provided.
     """
-    def __init__(
-        self, 
-        img_shape: Tuple[int], 
-        grid: Optional[str]="equiangular", 
-        normalize: Optional[bool]=False
-    ):
+
+    def __init__(self, img_shape: Tuple[int], grid: Optional[str] = "equiangular", normalize: Optional[bool] = False):
         super().__init__()
 
         # copy input

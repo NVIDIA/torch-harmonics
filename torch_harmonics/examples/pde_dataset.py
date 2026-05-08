@@ -29,9 +29,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import torch
-
 from math import ceil
+
+import torch
 
 from .shallow_water_equations import ShallowWaterSolver
 

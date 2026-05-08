@@ -50,11 +50,11 @@ def _get_stats_multiclass(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Compute multiclass statistics (TP, FP, FN, TN) on the sphere using quadrature weights.
-    
+
     This function computes true positives, false positives, false negatives, and true negatives
     for multiclass classification on spherical data, properly weighted by quadrature weights
     to account for the spherical geometry.
-    
+
     Parameters
     -----------
     output : torch.LongTensor
@@ -67,7 +67,7 @@ def _get_stats_multiclass(
         Quadrature weights for spherical integration
     ignore_index : Optional[int]
         Index to ignore in the computation (e.g., for padding or invalid regions)
-        
+
     Returns
     -------
     Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
@@ -114,12 +114,12 @@ def _get_stats_multiclass(
 def _predict_classes(logits: torch.Tensor) -> torch.Tensor:
     """
     Convert logits to class predictions using softmax and argmax.
-    
+
     Parameters
     -----------
     logits : torch.Tensor
         Input logits tensor
-        
+
     Returns
     -------
     torch.Tensor
@@ -131,11 +131,11 @@ def _predict_classes(logits: torch.Tensor) -> torch.Tensor:
 class BaseMetricS2(nn.Module):
     """
     Base class for spherical metrics that properly handle spherical geometry.
-    
+
     This class provides the foundation for computing metrics on spherical data
     by using quadrature weights to account for the non-uniform area distribution
     on the sphere.
-    
+
     Parameters
     -----------
     nlat : int
@@ -151,7 +151,7 @@ class BaseMetricS2(nn.Module):
     mode : str, optional
         Averaging mode ("micro" or "macro"), by default "micro"
     """
-    
+
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
         super().__init__()
 
@@ -201,10 +201,10 @@ class BaseMetricS2(nn.Module):
 class IntersectionOverUnionS2(BaseMetricS2):
     """
     Intersection over Union (IoU) metric for spherical data.
-    
+
     Computes the IoU score for multiclass classification on the sphere,
     properly weighted by quadrature weights to account for spherical geometry.
-    
+
     Parameters
     -----------
     nlat : int
@@ -220,7 +220,7 @@ class IntersectionOverUnionS2(BaseMetricS2):
     mode : str, optional
         Averaging mode ("micro" or "macro"), by default "micro"
     """
-    
+
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
         super().__init__(nlat, nlon, grid, weight, ignore_index, mode)
 
@@ -247,10 +247,10 @@ class IntersectionOverUnionS2(BaseMetricS2):
 class AccuracyS2(BaseMetricS2):
     """
     Accuracy metric for spherical data.
-    
+
     Computes the accuracy score for multiclass classification on the sphere,
     properly weighted by quadrature weights to account for spherical geometry.
-    
+
     Parameters
     -----------
     nlat : int
@@ -266,7 +266,7 @@ class AccuracyS2(BaseMetricS2):
     mode : str, optional
         Averaging mode ("micro" or "macro"), by default "micro"
     """
-    
+
     def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
         super().__init__(nlat, nlon, grid, weight, ignore_index, mode)
 

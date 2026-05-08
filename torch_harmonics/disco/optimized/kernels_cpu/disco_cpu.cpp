@@ -53,14 +53,14 @@ namespace disco_kernels {
 
         AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cpu", ([&] {
             disco_fwd_cpu<scalar_t>(
-                inp.size(0), inp.size(1), K, inp.size(2), inp.size(3), 
+                inp.size(0), inp.size(1), K, inp.size(2), inp.size(3),
                 Ho, Wo, vals.size(0), roff_idx.size(0) - 1,
-                inp.packed_accessor64<scalar_t, 4>(), 
-                roff_idx.packed_accessor64<int64_t, 1>(), 
-                ker_idx.packed_accessor64<int64_t, 1>(), 
-                row_idx.packed_accessor64<int64_t, 1>(), 
-                col_idx.packed_accessor64<int64_t, 1>(), 
-                vals.packed_accessor64<scalar_t, 1>(), 
+                inp.packed_accessor64<scalar_t, 4>(),
+                roff_idx.packed_accessor64<int64_t, 1>(),
+                ker_idx.packed_accessor64<int64_t, 1>(),
+                row_idx.packed_accessor64<int64_t, 1>(),
+                col_idx.packed_accessor64<int64_t, 1>(),
+                vals.packed_accessor64<scalar_t, 1>(),
                 out.packed_accessor64<scalar_t, 5>());
         }));
 
@@ -87,14 +87,14 @@ namespace disco_kernels {
 
         AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_cpu", ([&] {
             disco_bwd_cpu<scalar_t>(
-                inp.size(0), inp.size(1), K, inp.size(3), 
+                inp.size(0), inp.size(1), K, inp.size(3),
                 inp.size(4), Ho, Wo, vals.size(0), roff_idx.size(0) - 1,
-                inp.packed_accessor64<scalar_t, 5>(), 
-                roff_idx.packed_accessor64<int64_t, 1>(), 
-                ker_idx.packed_accessor64<int64_t, 1>(), 
-                row_idx.packed_accessor64<int64_t, 1>(), 
-                col_idx.packed_accessor64<int64_t, 1>(), 
-                vals.packed_accessor64<scalar_t, 1>(), 
+                inp.packed_accessor64<scalar_t, 5>(),
+                roff_idx.packed_accessor64<int64_t, 1>(),
+                ker_idx.packed_accessor64<int64_t, 1>(),
+                row_idx.packed_accessor64<int64_t, 1>(),
+                col_idx.packed_accessor64<int64_t, 1>(),
+                vals.packed_accessor64<scalar_t, 1>(),
                 out.packed_accessor64<scalar_t, 4>());
         }));
 

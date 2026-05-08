@@ -29,71 +29,72 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import Tuple, Optional
+import math
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-import math
 
+from torch_harmonics import InverseRealSHT, RealSHT
 from torch_harmonics.quadrature import QuadratureS2
 from torch_harmonics.truncation import truncate_sht
-from torch_harmonics import RealSHT, InverseRealSHT
 
 
 class SpectralConvS2(nn.Module):
     """
-    Spectral convolution layer on :math:`S^2` implemented via real SHT
-    (Driscoll-Healy formulation, see https://api.semanticscholar.org/CorpusID:122817218).
-}).
+        Spectral convolution layer on :math:`S^2` implemented via real SHT
+        (Driscoll-Healy formulation, see https://api.semanticscholar.org/CorpusID:122817218).
+    }).
 
-    Parameters
-    -----------
-    in_shape: Tuple[int]
-        Spatial input grid shape ``(nlat, nlon)``.
-    out_shape: Tuple[int]
-        Spatial output grid shape ``(nlat, nlon)``.
-    in_channels: int
-        Number of input channels.
-    out_channels: int
-        Number of output channels.
-    num_groups: int, optional
-        Number of channel groups for grouped spectral weights, by default 1.
-    grid_in: str, optional
-        Grid used for the forward SHT (``"equiangular"``, ``"legendre-gauss"``,
-        ``"lobatto"``, ``"equidistant"``), by default ``"equiangular"``.
-    grid_out: str, optional
-        Grid used for the inverse SHT, same options as ``grid_in``.
-    bias: bool, optional
-        If ``True``, adds a learnable spectral bias computed from the spatial
-        integral, by default ``False``.
+        Parameters
+        -----------
+        in_shape: Tuple[int]
+            Spatial input grid shape ``(nlat, nlon)``.
+        out_shape: Tuple[int]
+            Spatial output grid shape ``(nlat, nlon)``.
+        in_channels: int
+            Number of input channels.
+        out_channels: int
+            Number of output channels.
+        num_groups: int, optional
+            Number of channel groups for grouped spectral weights, by default 1.
+        grid_in: str, optional
+            Grid used for the forward SHT (``"equiangular"``, ``"legendre-gauss"``,
+            ``"lobatto"``, ``"equidistant"``), by default ``"equiangular"``.
+        grid_out: str, optional
+            Grid used for the inverse SHT, same options as ``grid_in``.
+        bias: bool, optional
+            If ``True``, adds a learnable spectral bias computed from the spatial
+            integral, by default ``False``.
 
-    Raises
-    ------
-    AssertionError
-        If ``in_channels`` or ``out_channels`` is not divisible by
-        ``num_groups``.
+        Raises
+        ------
+        AssertionError
+            If ``in_channels`` or ``out_channels`` is not divisible by
+            ``num_groups``.
 
-    Returns
-    -------
-    x: torch.Tensor
-        Tensor of shape ``(..., out_channels, out_shape[0], out_shape[1])``.
+        Returns
+        -------
+        x: torch.Tensor
+            Tensor of shape ``(..., out_channels, out_shape[0], out_shape[1])``.
 
-    Notes
-    -----
-    The SHT truncation ``lmax``/``mmax`` is the minimum of the input and output
-    truncations, and the grouped contraction is performed with
-    ``_contract_lwise``.
+        Notes
+        -----
+        The SHT truncation ``lmax``/``mmax`` is the minimum of the input and output
+        truncations, and the grouped contraction is performed with
+        ``_contract_lwise``.
     """
 
-    def __init__(self, 
+    def __init__(
+        self,
         in_shape: Tuple[int],
         out_shape: Tuple[int],
         in_channels: int,
         out_channels: int,
-        num_groups: Optional[int]=1,
-        grid_in: Optional[str]="equiangular",
-        grid_out: Optional[str]="equiangular",
-        bias: Optional[bool]=False,
+        num_groups: Optional[int] = 1,
+        grid_in: Optional[str] = "equiangular",
+        grid_out: Optional[str] = "equiangular",
+        bias: Optional[bool] = False,
     ):
         super().__init__()
 
@@ -114,12 +115,12 @@ class SpectralConvS2(nn.Module):
         mmax = min(mmax_in, mmax_out)
         self.lmax = min(lmax, mmax)
         self.mmax = self.lmax
-        
+
         # set up sht layers
         self.sht = RealSHT(*in_shape, grid=grid_in, lmax=self.lmax, mmax=self.mmax)
         self.isht = InverseRealSHT(*out_shape, grid=grid_out, lmax=self.lmax, mmax=self.mmax)
 
-        # weight shape 
+        # weight shape
         weight_shape = [num_groups, in_channels // num_groups, out_channels // num_groups, self.lmax]
 
         # Compute scaling factor for correct initialization
@@ -128,15 +129,9 @@ class SpectralConvS2(nn.Module):
         scale[0] *= math.sqrt(2.0)
         self.weight = nn.Parameter(scale * torch.randn(*weight_shape, dtype=torch.complex64))
 
-        if bias == True:
-            self.spectral_bias = nn.Parameter(
-                torch.zeros(1, self.out_channels, self.lmax, self.mmax, dtype=torch.complex64)
-            )
-            self.quadrature = QuadratureS2(
-                img_shape=in_shape, 
-                grid=grid_in, 
-                normalize=False
-            )
+        if bias:
+            self.spectral_bias = nn.Parameter(torch.zeros(1, self.out_channels, self.lmax, self.mmax, dtype=torch.complex64))
+            self.quadrature = QuadratureS2(img_shape=in_shape, grid=grid_in, normalize=False)
 
     @torch.compile
     def _contract_lwise(self, ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:

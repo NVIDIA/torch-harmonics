@@ -33,6 +33,7 @@ from typing import Tuple
 
 import torch
 from attention_helpers import optimized_kernels_is_available
+
 from .. import attention_kernels
 from .._attention_utils import _setup_context_attention_backward
 
@@ -40,17 +41,26 @@ from .._attention_utils import _setup_context_attention_backward
 if optimized_kernels_is_available():
     # raw forward fake
     @torch.library.register_fake("attention_kernels::forward")
-    def _(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor,
-          quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-          nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+    def _(
+        kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor, quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor, nlon_in: int, nlat_out: int, nlon_out: int
+    ) -> torch.Tensor:
         out_shape = (kw.shape[0], vw.shape[1], nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=kw.dtype, device=kw.device)
 
     # raw backward fake
     @torch.library.register_fake("attention_kernels::backward")
-    def _(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor, grad_output: torch.Tensor,
-          quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-          nlon_in: int, nlat_out: int, nlon_out: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _(
+        kw: torch.Tensor,
+        vw: torch.Tensor,
+        qw: torch.Tensor,
+        grad_output: torch.Tensor,
+        quad_weights: torch.Tensor,
+        col_idx: torch.Tensor,
+        row_off: torch.Tensor,
+        nlon_in: int,
+        nlat_out: int,
+        nlon_out: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         dk = torch.empty_like(kw)
         dv = torch.empty_like(vw)
         dq = torch.empty_like(qw)
@@ -58,41 +68,97 @@ if optimized_kernels_is_available():
 
     # fake implementations for ring step ops
     @torch.library.register_fake("attention_kernels::forward_ring_step")
-    def _(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor,
-          y_acc: torch.Tensor, alpha_sum_buf: torch.Tensor, qdotk_max_buf: torch.Tensor,
-          quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor, row_idx: torch.Tensor,
-          nlon_in: int, pscale: int, lon_lo_kx: int, lat_halo_start: int, nlat_out: int, nlon_out: int) -> None:
+    def _(
+        kx: torch.Tensor,
+        vx: torch.Tensor,
+        qy: torch.Tensor,
+        y_acc: torch.Tensor,
+        alpha_sum_buf: torch.Tensor,
+        qdotk_max_buf: torch.Tensor,
+        quad_weights: torch.Tensor,
+        col_idx: torch.Tensor,
+        row_off: torch.Tensor,
+        row_idx: torch.Tensor,
+        nlon_in: int,
+        pscale: int,
+        lon_lo_kx: int,
+        lat_halo_start: int,
+        nlat_out: int,
+        nlon_out: int,
+    ) -> None:
         pass
 
     @torch.library.register_fake("attention_kernels::backward_ring_step_pass1")
-    def _(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
-          alpha_sum_buf: torch.Tensor, qdotk_max_buf: torch.Tensor, integral_buf: torch.Tensor,
-          alpha_k_buf: torch.Tensor, alpha_kvw_buf: torch.Tensor,
-          quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor, row_idx: torch.Tensor,
-          nlon_in: int, pscale: int, lon_lo_kx: int, lat_halo_start: int, nlat_out: int, nlon_out: int) -> None:
+    def _(
+        kx: torch.Tensor,
+        vx: torch.Tensor,
+        qy: torch.Tensor,
+        dy: torch.Tensor,
+        alpha_sum_buf: torch.Tensor,
+        qdotk_max_buf: torch.Tensor,
+        integral_buf: torch.Tensor,
+        alpha_k_buf: torch.Tensor,
+        alpha_kvw_buf: torch.Tensor,
+        quad_weights: torch.Tensor,
+        col_idx: torch.Tensor,
+        row_off: torch.Tensor,
+        row_idx: torch.Tensor,
+        nlon_in: int,
+        pscale: int,
+        lon_lo_kx: int,
+        lat_halo_start: int,
+        nlat_out: int,
+        nlon_out: int,
+    ) -> None:
         pass
 
     @torch.library.register_fake("attention_kernels::backward_ring_step_pass2")
-    def _(kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, dy: torch.Tensor,
-          alpha_sum_buf: torch.Tensor, qdotk_max_buf: torch.Tensor, integral_norm_buf: torch.Tensor,
-          dkx: torch.Tensor, dvx: torch.Tensor,
-          quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor, row_idx: torch.Tensor,
-          nlon_in: int, pscale: int, lon_lo_kx: int, lat_halo_start: int, nlat_out: int, nlon_out: int) -> None:
+    def _(
+        kx: torch.Tensor,
+        vx: torch.Tensor,
+        qy: torch.Tensor,
+        dy: torch.Tensor,
+        alpha_sum_buf: torch.Tensor,
+        qdotk_max_buf: torch.Tensor,
+        integral_norm_buf: torch.Tensor,
+        dkx: torch.Tensor,
+        dvx: torch.Tensor,
+        quad_weights: torch.Tensor,
+        col_idx: torch.Tensor,
+        row_off: torch.Tensor,
+        row_idx: torch.Tensor,
+        nlon_in: int,
+        pscale: int,
+        lon_lo_kx: int,
+        lat_halo_start: int,
+        nlat_out: int,
+        nlon_out: int,
+    ) -> None:
         pass
 
     # forward
     @torch.library.custom_op("attention_kernels::_neighborhood_s2_attention_optimized", mutates_args=())
-    def _neighborhood_s2_attention_optimized(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor,
-                                             quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-                                             max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+    def _neighborhood_s2_attention_optimized(
+        kw: torch.Tensor,
+        vw: torch.Tensor,
+        qw: torch.Tensor,
+        quad_weights: torch.Tensor,
+        col_idx: torch.Tensor,
+        row_off: torch.Tensor,
+        max_psi_nnz: int,
+        nh: int,
+        nlon_in: int,
+        nlat_out: int,
+        nlon_out: int,
+    ) -> torch.Tensor:
 
         # reshape, folding num heads into batch dim
         B, _, H, W = kw.shape
-        kw = kw.reshape(B*nh, -1, H, W)
+        kw = kw.reshape(B * nh, -1, H, W)
         B, _, H, W = vw.shape
-        vw = vw.reshape(B*nh, -1, H, W)
+        vw = vw.reshape(B * nh, -1, H, W)
         B, _, H, W = qw.shape
-        qw = qw.reshape(B*nh, -1, H, W)
+        qw = qw.reshape(B * nh, -1, H, W)
 
         # convert to float32
         inp_dtype = kw.dtype
@@ -100,9 +166,7 @@ if optimized_kernels_is_available():
         vw = vw.to(torch.float32).contiguous()
         qw = qw.to(torch.float32).contiguous()
 
-        output = attention_kernels.forward.default(kw, vw, qw, quad_weights,
-                                                   col_idx, row_off,
-                                                   nlon_in, nlat_out, nlon_out)
+        output = attention_kernels.forward.default(kw, vw, qw, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
 
         _, C, H, W = output.shape
         output = output.reshape(B, -1, H, W)
@@ -113,29 +177,39 @@ if optimized_kernels_is_available():
         return output
 
     @torch.library.register_fake("attention_kernels::_neighborhood_s2_attention_optimized")
-    def _(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor,
-        quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-        max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+    def _(
+        kw: torch.Tensor,
+        vw: torch.Tensor,
+        qw: torch.Tensor,
+        quad_weights: torch.Tensor,
+        col_idx: torch.Tensor,
+        row_off: torch.Tensor,
+        max_psi_nnz: int,
+        nh: int,
+        nlon_in: int,
+        nlat_out: int,
+        nlon_out: int,
+    ) -> torch.Tensor:
         out_shape = (kw.shape[0], vw.shape[1], nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=kw.dtype, device=kw.device)
+
 
 def _neighborhood_s2_attention_bwd_optimized(ctx, grad_output):
     col_idx, row_off, quad_weights, kw, vw, qw = ctx.saved_tensors
     nh = ctx.nh
-    max_psi_nnz = ctx.max_psi_nnz
     nlon_in = ctx.nlon_in
     nlat_out = ctx.nlat_out
     nlon_out = ctx.nlon_out
 
     # reshape, folding num heads into batch dim
     B, _, H, W = kw.shape
-    kw = kw.reshape(B*nh, -1, H, W)
+    kw = kw.reshape(B * nh, -1, H, W)
     B, _, H, W = vw.shape
-    vw = vw.reshape(B*nh, -1, H, W)
+    vw = vw.reshape(B * nh, -1, H, W)
     B, _, H, W = qw.shape
-    qw = qw.reshape(B*nh, -1, H, W)
-    B, _, H, W  = grad_output.shape
-    grad_output = grad_output.reshape(B*nh, -1, H, W)
+    qw = qw.reshape(B * nh, -1, H, W)
+    B, _, H, W = grad_output.shape
+    grad_output = grad_output.reshape(B * nh, -1, H, W)
 
     # save type and convert to float32
     kw_dtype = kw.dtype
@@ -147,10 +221,7 @@ def _neighborhood_s2_attention_bwd_optimized(ctx, grad_output):
     qw = qw.to(torch.float32).contiguous()
     grad_output = grad_output.to(torch.float32).contiguous()
 
-    dkw, dvw, dqw = attention_kernels.backward.default(kw, vw, qw, grad_output,
-                                                       quad_weights,
-                                                       col_idx, row_off,
-                                                       nlon_in, nlat_out, nlon_out)
+    dkw, dvw, dqw = attention_kernels.backward.default(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
 
     # reshape back to original batch dim and convert back precision
     _, _, Hk, Wk = dkw.shape
@@ -160,9 +231,11 @@ def _neighborhood_s2_attention_bwd_optimized(ctx, grad_output):
     _, _, Hq, Wq = dqw.shape
     dqw = dqw.reshape(B, -1, Hq, Wq).to(dtype=qw_dtype)
 
-    return dkw, dvw, dqw, \
-            None, None, None, None, None, None, None, None
+    return dkw, dvw, dqw, None, None, None, None, None, None, None, None
+
 
 # register backward
 if optimized_kernels_is_available():
-    torch.library.register_autograd("attention_kernels::_neighborhood_s2_attention_optimized", _neighborhood_s2_attention_bwd_optimized, setup_context=_setup_context_attention_backward)
+    torch.library.register_autograd(
+        "attention_kernels::_neighborhood_s2_attention_optimized", _neighborhood_s2_attention_bwd_optimized, setup_context=_setup_context_attention_backward
+    )

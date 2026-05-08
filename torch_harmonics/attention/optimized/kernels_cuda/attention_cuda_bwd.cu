@@ -71,9 +71,9 @@ void s2_attn_bwd_generic_vec_k(int nchans_in,  // no. of FLOATV_T elements along
                                const FLOATV_T *__restrict__ vx,    // [batch][nlat_in][nlon_in][nchan_out]
                                const FLOATV_T *__restrict__ qy,    // [batch][nlat_out][nlon_out][nchan_in]
                                const FLOATV_T *__restrict__ dy,    // [batch][nlat_out][nlon_out][nchan_out]
-                               const int32_t *__restrict__ row_idx,     
-                               const int64_t *__restrict__ row_off,     
-                               const int64_t *__restrict__ col_idx,     
+                               const int32_t *__restrict__ row_idx,
+                               const int64_t *__restrict__ row_off,
+                               const int64_t *__restrict__ col_idx,
                                const   float *__restrict__ quad_weights,
                                      FLOATV_T *__restrict__ dkx,   // [batch][nlat_in][nlon_in][nchan_in]
                                      FLOATV_T *__restrict__ dvx,   // [batch][nlat_in][nlon_in][nchan_out]
@@ -136,7 +136,7 @@ void s2_attn_bwd_generic_vec_k(int nchans_in,  // no. of FLOATV_T elements along
     // for architectures < 9.0, sh_dy and sh_qy will be read
     // as individual floats at the end of the kernel, which
     // breaks the assumption that each FLOATV_T location is
-    // written to and read by the same thread throughout the 
+    // written to and read by the same thread throughout the
     // kernel, in the case FLOATV_T==float4
     if constexpr(std::is_same<FLOATV_T, float4>::value) { __syncwarp(); }
 #endif
@@ -144,7 +144,7 @@ void s2_attn_bwd_generic_vec_k(int nchans_in,  // no. of FLOATV_T elements along
     // for dkx, dvx, dqy
     float alpha_sum = 0.0f;
     float qdotk_max = -FLT_MAX;
-    
+
     // for dkx
     float integral = 0.0f;
 
@@ -155,10 +155,10 @@ void s2_attn_bwd_generic_vec_k(int nchans_in,  // no. of FLOATV_T elements along
 
     const int rlen = rend - rbeg;
 
-    // accumulate alpha_sum, integral, and shared stats, 
+    // accumulate alpha_sum, integral, and shared stats,
     // along with a progressively computed qdotk_max.
     for (int off = 0; off < rlen; off++) {
-        
+
         const int64_t col = col_idx[off];
 
         const int hi = col / nlon_in;
@@ -249,7 +249,7 @@ void s2_attn_bwd_generic_vec_k(int nchans_in,  // no. of FLOATV_T elements along
         const float scale_fact_qy = (gdotv - integral)*alpha_mul;
         const float scale_fact_dy =                    alpha_mul;
 
-        // float4, 128-bit atomics are only supported by devices of compute 
+        // float4, 128-bit atomics are only supported by devices of compute
         // capability 9.x+, so on older devices we resort to 32-bit atomics
 
 #if __CUDA_ARCH__ < 900
@@ -320,7 +320,7 @@ void s2_attn_bwd_special_vec_k(int nchan_in,  // no. of FLOATV_T elements along 
     const int tidx = threadIdx.x;
     const int batch = blockIdx.y;
     const uint64_t ctaid = uint64_t(blockIdx.x) * blockDim.y + threadIdx.y;
-    
+
     if (ctaid >= uint64_t(nlat_out)*nlon_out) {
         return;
     }
@@ -400,7 +400,7 @@ void s2_attn_bwd_special_vec_k(int nchan_in,  // no. of FLOATV_T elements along 
     // for architectures < 9.0, sh_dy and sh_qy will be read
     // as individual floats at the end of the kernel, which
     // breaks the assumption that each FLOATV_T location is
-    // written to and read by the same thread throughout the 
+    // written to and read by the same thread throughout the
     // kernel, in the case FLOATV_T==float4
     if constexpr(std::is_same<FLOATV_T, float4>::value) {
         if constexpr(BDIM_X == 32) {    __syncwarp(); }
@@ -411,7 +411,7 @@ void s2_attn_bwd_special_vec_k(int nchan_in,  // no. of FLOATV_T elements along 
     // for dkx, dvx, dqy
     float alpha_sum = 0.0f;
     float qdotk_max = -FLT_MAX;
-    
+
     // for dkx
     float integral = 0.0f;
 
@@ -463,9 +463,9 @@ void s2_attn_bwd_special_vec_k(int nchan_in,  // no. of FLOATV_T elements along 
         float qdotk = __vred(qdotk_v);
         float gdotv = __vred(gdotv_v);
 
-        if constexpr(BDIM_X == 32) { 
-            qdotk = __warp_sum(qdotk); 
-            gdotv = __warp_sum(gdotv); 
+        if constexpr(BDIM_X == 32) {
+            qdotk = __warp_sum(qdotk);
+            gdotv = __warp_sum(gdotv);
         } else {
             qdotk = __block_sum<BDIM_X>(qdotk);
             gdotv = __block_sum<BDIM_X>(gdotv);
@@ -556,9 +556,9 @@ void s2_attn_bwd_special_vec_k(int nchan_in,  // no. of FLOATV_T elements along 
         float qdotk = __vred(qdotk_v);
         float gdotv = __vred(gdotv_v);
 
-        if constexpr(BDIM_X == 32) { 
-            qdotk = __warp_sum(qdotk); 
-            gdotv = __warp_sum(gdotv); 
+        if constexpr(BDIM_X == 32) {
+            qdotk = __warp_sum(qdotk);
+            gdotv = __warp_sum(gdotv);
         } else {
             qdotk = __block_sum<BDIM_X>(qdotk);
             gdotv = __block_sum<BDIM_X>(gdotv);
@@ -574,14 +574,14 @@ void s2_attn_bwd_special_vec_k(int nchan_in,  // no. of FLOATV_T elements along 
         const float scale_fact_qy = (gdotv - integral)*alpha_mul;
         const float scale_fact_dy =                    alpha_mul;
 
-        // float4, 128-bit atomics are only supported by devices of compute 
+        // float4, 128-bit atomics are only supported by devices of compute
         // capability 9.x+, so on older devices we resort to 32-bit atomics
 
 #if __CUDA_ARCH__ < 900
         constexpr int VEC_SIZE = sizeof(FLOATV_T)/sizeof(float);
 
         // making the loop count known at compile time doesn't seem
-        // to make any difference here so let's keep this (much) 
+        // to make any difference here so let's keep this (much)
         // simpler version
         float *sh_qy_scl = reinterpret_cast<float *>(sh_qy);
         float *sh_dy_scl = reinterpret_cast<float *>(sh_dy);
@@ -595,7 +595,7 @@ void s2_attn_bwd_special_vec_k(int nchan_in,  // no. of FLOATV_T elements along 
             sh_dy_scl -= tidx*VEC_SIZE;
             _dvx_scl  -= tidx*VEC_SIZE;
         }
-        
+
         // 32-bit, consecutive atomics to glmem
         // strided atomics results in a severe slowdown
         for (int chan = tidx; chan < nchan_in*VEC_SIZE; chan += BDIM_X) {
@@ -704,7 +704,7 @@ void launch_spc_attn_bwd(int nloc,      // "BDIM_X*nloc" >= nchans_out
         // of size nchans_in each;
         // if nchans_out is >= BDIM_X*(nloc-1) and <= BDIM_X*nloc
         // then we can use the same compile-time known loops used
-        // for input channels, with the exception of testing 
+        // for input channels, with the exception of testing
         // whether to execute the last iteration based on "nchans_out"
         // instead of "nchans_in"; in this way as long as the
         // difference between the number of input and output channels
@@ -836,7 +836,7 @@ static void s2_attn_bwd_dispatch(int64_t batch_size,
         const int nloc = DIV_UP(nchans_in, bdimx);
 
         constexpr int MAX_LOCAL_VEC_LEN = MAX_LOCAL_ARR_LEN / VEC_SIZE;
-        
+
         constexpr int MIN_LOC_VEC_LEN = MAX_LOCAL_VEC_LEN/2+1;
 
         // use 2D blocks only if 32 threads are enough

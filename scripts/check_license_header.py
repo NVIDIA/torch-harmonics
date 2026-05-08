@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 # coding=utf-8
 
 # SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
@@ -29,36 +31,56 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-# we need this in order to enable distributed
-# import distributed neighborhood attention
-from .distributed_attention import DistributedNeighborhoodAttentionS2
+"""Check that Python files contain the required SPDX license header."""
 
-# import DISCO
-from .distributed_convolution import DistributedDiscreteContinuousConvS2, DistributedDiscreteContinuousConvTransposeS2
+import sys
 
-# import quadrature
-from .distributed_quadrature import DistributedQuadratureS2
+REQUIRED_LINES = [
+    "SPDX-FileCopyrightText:",
+    "SPDX-License-Identifier: BSD-3-Clause",
+]
 
-# import resampling
-from .distributed_resample import DistributedResampleS2
+# Maximum number of lines to scan at the top of each file
+HEADER_SCAN_LINES = 5
 
-# import the sht
-from .distributed_sht import DistributedInverseRealSHT, DistributedInverseRealVectorSHT, DistributedRealSHT, DistributedRealVectorSHT
 
-# import spectral convolution
-from .distributed_spectral_convolution import DistributedSpectralConvS2
-from .primitives import (
-    compute_split_shapes,
-    copy_to_azimuth_region,
-    copy_to_polar_region,
-    distributed_transpose_azimuth,
-    distributed_transpose_polar,
-    gather_from_copy_to_polar_region,
-    gather_from_polar_region,
-    reduce_from_azimuth_region,
-    reduce_from_polar_region,
-    reduce_from_scatter_to_polar_region,
-    scatter_to_polar_region,
-    split_tensor_along_dim,
-)
-from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, config, finalize, init, is_initialized, polar_group, polar_group_rank, polar_group_size
+def check_file(path):
+    """Return True if the file contains the required header lines."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            head = "".join(f.readline() for _ in range(HEADER_SCAN_LINES))
+    except (OSError, UnicodeDecodeError):
+        return True  # skip files we cannot read
+
+    if not head.strip():
+        return True  # skip empty files
+
+    for marker in REQUIRED_LINES:
+        if marker not in head:
+            return False
+    return True
+
+
+def main():
+    failed = []
+    for path in sys.argv[1:]:
+        if not path.endswith(".py"):
+            continue
+        if not check_file(path):
+            failed.append(path)
+
+    if failed:
+        print("Missing SPDX license header in:")
+        for path in failed:
+            print(f"  {path}")
+        print()
+        print("Every .py file must contain these lines near the top:")
+        for marker in REQUIRED_LINES:
+            print(f"  # {marker}")
+        print()
+        print("See CONTRIBUTING.md for the full header template.")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

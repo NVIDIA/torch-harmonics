@@ -31,15 +31,21 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
+from torch_harmonics.distributed import (
+    azimuth_group_rank,
+    azimuth_group_size,
+    compute_split_shapes,
+    distributed_transpose_azimuth,
+    distributed_transpose_polar,
+    polar_group_rank,
+    polar_group_size,
+    split_tensor_along_dim,
+)
+from torch_harmonics.fft import irfft, rfft
+from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
+from torch_harmonics.quadrature import clenshaw_curtiss_weights, legendre_gauss_weights, lobatto_weights
 from torch_harmonics.truncation import truncate_sht
-from torch_harmonics.quadrature import legendre_gauss_weights, lobatto_weights, clenshaw_curtiss_weights
-from torch_harmonics.legendre import _precompute_legpoly, _precompute_dlegpoly
-from torch_harmonics.fft import rfft, irfft
-from torch_harmonics.distributed import polar_group_size, azimuth_group_size, distributed_transpose_azimuth, distributed_transpose_polar
-from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
-from torch_harmonics.distributed import compute_split_shapes, split_tensor_along_dim
 
 
 class DistributedRealSHT(nn.Module):
@@ -96,7 +102,7 @@ class DistributedRealSHT(nn.Module):
         elif self.grid == "equiangular":
             cost, weights = clenshaw_curtiss_weights(nlat, -1, 1)
         else:
-            raise(ValueError("Unknown quadrature mode"))
+            raise (ValueError("Unknown quadrature mode"))
 
         # get the comms grid:
         self.comm_size_polar = polar_group_size()
@@ -121,16 +127,16 @@ class DistributedRealSHT(nn.Module):
 
         # combine quadrature weights with the legendre weights
         pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
-        weights = torch.einsum('mlk,k->mlk', pct, weights)
+        weights = torch.einsum("mlk,k->mlk", pct, weights)
 
         # split weights
         weights = split_tensor_along_dim(weights, dim=0, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth].contiguous()
 
         # remember quadrature weights
-        self.register_buffer('weights', weights, persistent=False)
+        self.register_buffer("weights", weights, persistent=False)
 
     def extra_repr(self):
-        return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
+        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
 
@@ -171,7 +177,7 @@ class DistributedRealSHT(nn.Module):
         x = torch.complex(out_re, out_im)
 
         # transpose: after this, l is split and c is local
-        if self.comm_size_polar	> 1:
+        if self.comm_size_polar > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
             x = distributed_transpose_polar(x, (-2, -3), chan_shapes)
 
@@ -229,7 +235,7 @@ class DistributedInverseRealSHT(nn.Module):
         elif self.grid == "equiangular":
             cost, _ = clenshaw_curtiss_weights(nlat, -1, 1)
         else:
-            raise(ValueError("Unknown quadrature mode"))
+            raise (ValueError("Unknown quadrature mode"))
 
         # get the comms grid:
         self.comm_size_polar = polar_group_size()
@@ -260,10 +266,10 @@ class DistributedInverseRealSHT(nn.Module):
         pct = split_tensor_along_dim(pct, dim=0, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth].contiguous()
 
         # register
-        self.register_buffer('pct', pct, persistent=False)
+        self.register_buffer("pct", pct, persistent=False)
 
     def extra_repr(self):
-        return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
+        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
 
@@ -363,7 +369,7 @@ class DistributedRealVectorSHT(nn.Module):
         elif self.grid == "equiangular":
             cost, weights = clenshaw_curtiss_weights(nlat, -1, 1)
         else:
-            raise(ValueError("Unknown quadrature mode"))
+            raise (ValueError("Unknown quadrature mode"))
 
         # get the comms grid:
         self.comm_size_polar = polar_group_size()
@@ -391,9 +397,9 @@ class DistributedRealVectorSHT(nn.Module):
 
         # combine integration weights, normalization factor in to one:
         l = torch.arange(0, self.lmax)
-        norm_factor = 1. / l / (l+1)
-        norm_factor[0] = 1.
-        weights = torch.einsum('dmlk,k,l->dmlk', dpct, weights, norm_factor)
+        norm_factor = 1.0 / l / (l + 1)
+        norm_factor[0] = 1.0
+        weights = torch.einsum("dmlk,k,l->dmlk", dpct, weights, norm_factor)
         # since the second component is imaginary, we need to take complex conjugation into account
         weights[1] = -1 * weights[1]
 
@@ -401,11 +407,10 @@ class DistributedRealVectorSHT(nn.Module):
         weights = split_tensor_along_dim(weights, dim=1, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth].contiguous()
 
         # remember quadrature weights
-        self.register_buffer('weights', weights, persistent=False)
-
+        self.register_buffer("weights", weights, persistent=False)
 
     def extra_repr(self):
-        return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
+        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
 
@@ -444,16 +449,12 @@ class DistributedRealVectorSHT(nn.Module):
         w1 = self.weights[1].to(x_re.dtype)
 
         # contraction - spheroidal component
-        s_re = torch.einsum('...mk,mlk->...lm', x_re[..., 0, :, :], w0) \
-             - torch.einsum('...mk,mlk->...lm', x_im[..., 1, :, :], w1)
-        s_im = torch.einsum('...mk,mlk->...lm', x_im[..., 0, :, :], w0) \
-             + torch.einsum('...mk,mlk->...lm', x_re[..., 1, :, :], w1)
+        s_re = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w0) - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w1)
+        s_im = torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w0) + torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w1)
 
         # contraction - toroidal component
-        t_re = -torch.einsum('...mk,mlk->...lm', x_im[..., 0, :, :], w1) \
-              - torch.einsum('...mk,mlk->...lm', x_re[..., 1, :, :], w0)
-        t_im = torch.einsum('...mk,mlk->...lm', x_re[..., 0, :, :], w1) \
-             - torch.einsum('...mk,mlk->...lm', x_im[..., 1, :, :], w0)
+        t_re = -torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w0)
+        t_im = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w0)
 
         x = torch.stack((torch.complex(s_re, s_im), torch.complex(t_re, t_im)), dim=-3).contiguous()
 
@@ -497,6 +498,7 @@ class DistributedInverseRealVectorSHT(nn.Module):
     [1] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
     [2] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
     """
+
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
 
         super().__init__()
@@ -515,7 +517,7 @@ class DistributedInverseRealVectorSHT(nn.Module):
         elif self.grid == "equiangular":
             cost, _ = clenshaw_curtiss_weights(nlat, -1, 1)
         else:
-            raise(ValueError("Unknown quadrature mode"))
+            raise (ValueError("Unknown quadrature mode"))
 
         self.comm_size_polar = polar_group_size()
         self.comm_rank_polar = polar_group_rank()
@@ -545,10 +547,10 @@ class DistributedInverseRealVectorSHT(nn.Module):
         dpct = split_tensor_along_dim(dpct, dim=1, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth].contiguous()
 
         # register buffer
-        self.register_buffer('dpct', dpct, persistent=False)
+        self.register_buffer("dpct", dpct, persistent=False)
 
     def extra_repr(self):
-        return f'nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}'
+        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
 
@@ -576,16 +578,12 @@ class DistributedInverseRealVectorSHT(nn.Module):
         d1 = self.dpct[1].to(x_re.dtype)
 
         # contraction - spheroidal component
-        srl = torch.einsum('...ml,mkl->...km', x_re[..., 0, :, :], d0) \
-            - torch.einsum('...ml,mkl->...km', x_im[..., 1, :, :], d1)
-        sim = torch.einsum('...ml,mkl->...km', x_im[..., 0, :, :], d0) \
-            + torch.einsum('...ml,mkl->...km', x_re[..., 1, :, :], d1)
+        srl = torch.einsum("...ml,mkl->...km", x_re[..., 0, :, :], d0) - torch.einsum("...ml,mkl->...km", x_im[..., 1, :, :], d1)
+        sim = torch.einsum("...ml,mkl->...km", x_im[..., 0, :, :], d0) + torch.einsum("...ml,mkl->...km", x_re[..., 1, :, :], d1)
 
         # contraction - toroidal component
-        trl = -torch.einsum('...ml,mkl->...km', x_im[..., 0, :, :], d1) \
-             - torch.einsum('...ml,mkl->...km', x_re[..., 1, :, :], d0)
-        tim = torch.einsum('...ml,mkl->...km', x_re[..., 0, :, :], d1) \
-            - torch.einsum('...ml,mkl->...km', x_im[..., 1, :, :], d0)
+        trl = -torch.einsum("...ml,mkl->...km", x_im[..., 0, :, :], d1) - torch.einsum("...ml,mkl->...km", x_re[..., 1, :, :], d0)
+        tim = torch.einsum("...ml,mkl->...km", x_re[..., 0, :, :], d1) - torch.einsum("...ml,mkl->...km", x_im[..., 1, :, :], d0)
 
         # reassemble
         x = torch.stack((torch.complex(srl, sim), torch.complex(trl, tim)), dim=-3).contiguous()

@@ -30,21 +30,21 @@
 #
 
 import abc
-import warnings
-from typing import Tuple, Union, Optional
-
 import math
+import warnings
+from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+from disco_helpers import optimized_kernels_is_available, preprocess_psi
 
 from torch_harmonics.cache import lru_cache
-from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
-from ._disco_utils import _get_psi
-from .optimized.disco_optimized import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
-from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
-from disco_helpers import optimized_kernels_is_available, preprocess_psi
+from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
+
+from ._disco_utils import _get_psi
+from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
+from .optimized.disco_optimized import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
 
 
 def _normalize_convolution_tensor_s2(
@@ -508,8 +508,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self.nlat_out, self.nlon_out = out_shape
 
         # make sure the p-shift works by checking that longitudes are divisible
-        assert self.nlon_in % self.nlon_out == 0, \
-            f"nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}) for the DISCO p-shift to be exact"
+        assert self.nlon_in % self.nlon_out == 0, f"nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}) for the DISCO p-shift to be exact"
 
         # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
         if theta_cutoff is None:
@@ -648,8 +647,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.nlat_out, self.nlon_out = out_shape
 
         # make sure the p-shift works by checking that longitudes are divisible
-        assert self.nlon_out % self.nlon_in == 0, \
-            f"nlon_out ({self.nlon_out}) must be an integer multiple of nlon_in ({self.nlon_in}) for the DISCO transpose p-shift to be exact"
+        assert self.nlon_out % self.nlon_in == 0, f"nlon_out ({self.nlon_out}) must be an integer multiple of nlon_in ({self.nlon_in}) for the DISCO transpose p-shift to be exact"
 
         # bandlimit
         if theta_cutoff is None:

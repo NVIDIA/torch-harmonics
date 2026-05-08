@@ -29,26 +29,25 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os
-from time import perf_counter_ns
-import unittest
-from parameterized import parameterized, parameterized_class
 import math
+import os
+import unittest
+from time import perf_counter_ns
 
 import torch
+from disco_helpers import preprocess_psi
+from parameterized import parameterized, parameterized_class
+from testutils import compare_tensors, disable_tf32, maybe_autocast, set_seed
 from torch.library import opcheck
-from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 
-from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
+from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.filter_basis import get_filter_basis
-from disco_helpers import preprocess_psi
-
-from testutils import disable_tf32, set_seed, compare_tensors, maybe_autocast
+from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
 
 if not optimized_kernels_is_available():
-    print(f"Warning: Couldn't import optimized disco convolution kernels")
+    print("Warning: Couldn't import optimized disco convolution kernels")
 
 
 _devices = [(torch.device("cpu"),)]
@@ -59,9 +58,8 @@ if torch.cuda.is_available():
 # CPU results normalized to 16 OpenMP threads,
 # GPU results normalized to V100 16 GB GPU
 # this is just to detect performance regressions, not for absolute performance
-_perf_test_thresholds = {"cpu": {"fwd_ms": 100, "bwd_ms": 90},
-                         "cuda": {"fwd_ms": 2, "bwd_ms": 3}}
-_run_perf_tests = (os.getenv("TORCH_HARMONICS_RUN_PERF_TESTS", "0") == "1")
+_perf_test_thresholds = {"cpu": {"fwd_ms": 100, "bwd_ms": 90}, "cuda": {"fwd_ms": 2, "bwd_ms": 3}}
+_run_perf_tests = os.getenv("TORCH_HARMONICS_RUN_PERF_TESTS", "0") == "1"
 
 
 def _normalize_convolution_tensor_dense(
@@ -354,13 +352,12 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         if verbose:
             print(f"\nintegrity OK: nnz={ker_idx.shape[0]}, per-kernel={counts[0].item()}, nrows={roff_idx.shape[0]-1}")
 
-
     @parameterized.expand(
         [
             # fp32 tests
             # regular convolution
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (16, 32), (8, 16), (3), "piecewise linear", "nodal", "equiangular", "equiangular",  torch.float32, False, 1e-4, 1e-4],
+            [8, 4, 2, (16, 32), (8, 16), (3), "piecewise linear", "nodal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
             [8, 4, 2, (24, 48), (12, 24), (3, 3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
             [8, 4, 2, (24, 48), (12, 24), (4, 3), "piecewise linear", "none", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
             [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
@@ -369,7 +366,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
             [8, 4, 2, (24, 48), (12, 24), (3, 3), "harmonic", "nodal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
             [8, 4, 2, (24, 48), (12, 24), (3, 3), "fourier-bessel", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
-            [8, 4, 2, (16, 24), (8, 8), (3), "piecewise linear", "mean", "equiangular", "equiangular",  torch.float32, False, 1e-4, 1e-4],
+            [8, 4, 2, (16, 24), (8, 8), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
             [8, 4, 2, (18, 36), (6, 12), (7), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
             [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "equiangular", "legendre-gauss", torch.float32, False, 1e-4, 1e-4],
             [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "legendre-gauss", "equiangular", torch.float32, False, 1e-4, 1e-4],
@@ -387,7 +384,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             # transpose convolution
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
             [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "nodal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
-            [8, 4, 2, (12, 24), (24, 48), (3, 3), "piecewise linear", "mean", "equiangular", "equiangular",  torch.float32, True, 1e-4, 1e-4],
+            [8, 4, 2, (12, 24), (24, 48), (3, 3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
             [8, 4, 2, (12, 24), (24, 48), (4, 3), "piecewise linear", "none", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
             [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
             [8, 4, 2, (12, 24), (24, 48), (2, 1), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
@@ -566,12 +563,11 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         x_ref_grad = x_ref.grad.clone()
 
         # compare results
-        self.assertTrue(compare_tensors(f"output", y.to(y_ref.dtype), y_ref, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("output", y.to(y_ref.dtype), y_ref, atol=atol, rtol=rtol, verbose=verbose))
 
         # compare
-        self.assertTrue(compare_tensors(f"input grad", x_grad.to(x_ref_grad.dtype), x_ref_grad, atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors(f"weight grad", conv.weight.grad.to(w_ref.grad.dtype), w_ref.grad, atol=atol, rtol=rtol, verbose=verbose))
-
+        self.assertTrue(compare_tensors("input grad", x_grad.to(x_ref_grad.dtype), x_ref_grad, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("weight grad", conv.weight.grad.to(w_ref.grad.dtype), w_ref.grad, atol=atol, rtol=rtol, verbose=verbose))
 
     @parameterized.expand(
         [
@@ -718,12 +714,11 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         inp_grad_opt = inp.grad.clone()
 
         # compare results
-        self.assertTrue(compare_tensors(f"output", out_naive, out_opt, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("output", out_naive, out_opt, atol=atol, rtol=rtol, verbose=verbose))
 
         # compare
-        self.assertTrue(compare_tensors(f"input grad", inp_grad_naive, inp_grad_opt, atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors(f"weight grad", conv_naive.weight.grad, conv_opt.weight.grad, atol=atol, rtol=rtol, verbose=verbose))
-
+        self.assertTrue(compare_tensors("input grad", inp_grad_naive, inp_grad_opt, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("weight grad", conv_naive.weight.grad, conv_opt.weight.grad, atol=atol, rtol=rtol, verbose=verbose))
 
     @parameterized.expand(
         [
@@ -735,7 +730,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         skip_on_empty=True,
     )
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA is not available")
-    def test_device_instantiation(self, batch_size, in_channels, out_channels, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, transpose, atol, rtol, verbose=False):
+    def test_device_instantiation(
+        self, batch_size, in_channels, out_channels, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, transpose, atol, rtol, verbose=False
+    ):
 
         set_seed(333)
 
@@ -766,7 +763,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             theta_cutoff=theta_cutoff,
         )
 
-        #torch.set_default_device(self.device)
+        # torch.set_default_device(self.device)
         with torch.device(self.device):
             conv_device = Conv(
                 in_channels,
@@ -785,20 +782,18 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # since we specified the device specifier everywhere, it should always
         # use the cpu and it should be the same everywhere
-        self.assertTrue(compare_tensors(f"psi col idx", conv_host.psi_col_idx.cpu(), conv_device.psi_col_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors(f"psi row idx", conv_host.psi_row_idx.cpu(), conv_device.psi_row_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors(f"psi roff idx", conv_host.psi_roff_idx.cpu(), conv_device.psi_roff_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors(f"psi vals", conv_host.psi_vals.cpu(), conv_device.psi_vals.cpu(), atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors(f"psi idx", conv_host.psi_idx.cpu(), conv_device.psi_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
-
+        self.assertTrue(compare_tensors("psi col idx", conv_host.psi_col_idx.cpu(), conv_device.psi_col_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("psi row idx", conv_host.psi_row_idx.cpu(), conv_device.psi_row_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("psi roff idx", conv_host.psi_roff_idx.cpu(), conv_device.psi_roff_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("psi vals", conv_host.psi_vals.cpu(), conv_device.psi_vals.cpu(), atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("psi idx", conv_host.psi_idx.cpu(), conv_device.psi_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
 
     @parameterized.expand(
         [
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False],
-            [8, 4, 2, (16, 32), (8,  16), (3), "piecewise linear", "mean", "equiangular", "equiangular", False],
+            [8, 4, 2, (16, 32), (8, 16), (3), "piecewise linear", "mean", "equiangular", "equiangular", False],
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True],
-            [8, 4, 2, (8,  16), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True],
-
+            [8, 4, 2, (8, 16), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True],
         ],
         skip_on_empty=True,
     )
@@ -858,8 +853,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         else:
             inp = torch.randn(batch_size, conv.kernel_size, in_channels, *in_shape, device=self.device)
 
-        test_inputs = (inp, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals,
-                       conv.kernel_size, conv.nlat_out, conv.nlon_out)
+        test_inputs = (inp, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals, conv.kernel_size, conv.nlat_out, conv.nlon_out)
 
         if not transpose:
             opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs)
@@ -868,15 +862,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # if a test fails, those help to disambiguate the error
         # schema
-        #opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_schema")
+        # opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_schema")
         # fake tensor
-        #opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_faketensor")
+        # opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_faketensor")
         # test AOT stuff
         # this is expected to fail if the output shapes are dependent on input shapes (which is the case for DISCO)
-        #opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_aot_dispatch_static")
+        # opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_aot_dispatch_static")
         # this one should pass
-        #opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_aot_dispatch_dynamic")
-
+        # opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_aot_dispatch_dynamic")
 
     @parameterized.expand(
         [
@@ -967,6 +960,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         if verbose:
             print(f"Backward execution time on device {self.device.type}: {duration:.2f} ms")
         self.assertTrue(duration <= _perf_test_thresholds[self.device.type]["bwd_ms"])
+
 
 if __name__ == "__main__":
     unittest.main()
