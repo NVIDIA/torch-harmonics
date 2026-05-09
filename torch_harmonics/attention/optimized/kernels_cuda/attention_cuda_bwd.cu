@@ -362,7 +362,7 @@ void s2_attn_bwd_special_vec_k(int nchan_in,  // no. of FLOATV_T elements along 
     // offset output tensors
     dkx += int64_t(batch)*nlat_in*nlon_in*nchan_in + tidx;
     dvx += int64_t(batch)*nlat_in*nlon_in*nchan_out;// + tidx;
-    if (CHOUT_AS_IN) {
+    if constexpr(CHOUT_AS_IN) {
         dvx += tidx;
     }
     dqy += int64_t(batch)*nlat_out*nlon_out*nchan_in + int64_t(ho)*nlon_out*nchan_in + int64_t(wo)*nchan_in + tidx;
@@ -382,7 +382,7 @@ void s2_attn_bwd_special_vec_k(int nchan_in,  // no. of FLOATV_T elements along 
         sh_qy[NLOC_M1*BDIM_X] = qy[NLOC_M1*BDIM_X];
     }
 
-    if (CHOUT_AS_IN) {
+    if constexpr(CHOUT_AS_IN) {
         #pragma unroll
         for(int i = 0; i < NLOC_M1; i++) {
             sh_dy[i*BDIM_X] = dy[i*BDIM_X];

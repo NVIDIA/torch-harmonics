@@ -115,16 +115,17 @@ at::Tensor sortRows(int nlat_out, at::Tensor row_off, cudaStream_t stream) {
 // BEGIN - 4D tensor permutation kernels and functions
 __global__ void empty_k() {}
 
-static int getPtxver() {
+int getPtxver() {
     cudaFuncAttributes attrs;
     CHECK_CUDA(cudaFuncGetAttributes(&attrs, empty_k));
-    return attrs.ptxVersion*10;
+    return attrs.ptxVersion;
 }
 
 at::Tensor permute_4D_to0231(at::Tensor src) {
 
     auto options = torch::TensorOptions().dtype(src.dtype()).device(src.device());
     torch::Tensor dst = torch::empty({src.size(0), src.size(2), src.size(3), src.size(1)}, options);
+
 
     const int ptxv = getPtxver();
 
@@ -178,6 +179,21 @@ unsigned int next_pow2(unsigned int x) {
         x |= x >> i;    
     }
     return x+1;
+}
+
+void ensure_dyn_shmem(const void* kern, size_t shsize) {
+
+    if (shsize <= 48u*1024u) {
+        return;
+    }
+
+    static std::unordered_set<const void*> done;
+
+    if (done.insert(kern).second) {
+        CHECK_CUDA(cudaFuncSetAttribute(
+                   kern, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                   static_cast<int>(shsize)));
+    }
 }
 // END - general host-side functions
 

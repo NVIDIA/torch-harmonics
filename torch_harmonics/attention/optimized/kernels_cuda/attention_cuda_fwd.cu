@@ -541,8 +541,8 @@ torch::Tensor s2_attention_fwd_cuda(at::Tensor kx,
     TORCH_CHECK(nlon_in % nlon_out == 0,
                 "nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (", nlon_out, ")");
 
-    size_t nchans_in  = qy.size(1); // or kx.size(1)
-    size_t nchans_out = vx.size(1);
+    int64_t nchans_in  = qy.size(1); // or kx.size(1)
+    int64_t nchans_out = vx.size(1);
 
     const int batch_size = kx.size(0);
 

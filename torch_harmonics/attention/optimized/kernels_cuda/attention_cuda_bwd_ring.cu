@@ -245,8 +245,6 @@ void s2_attn_bwd_ring_step_pass1_special_vec_k(int nchan_in,
     static_assert((BDIM_X == 32 && BDIM_Y  > 1) ||
                   (BDIM_X  > 32 && BDIM_Y == 1)) ;
 
-    constexpr int NLOC_M1 = NLOC-1;
-
     const int tidx = threadIdx.x;
     const int batch = blockIdx.y;
     const uint64_t ctaid = uint64_t(blockIdx.x) * blockDim.y + threadIdx.y;
@@ -408,7 +406,6 @@ void launch_gen_attn_ring_pass1_bwd(int64_t batch_size,
 }
 
 template<int BDIM_X,
-         int BDIM_Y,
          int CUR_LOC_SIZE,
          int MAX_LOC_SIZE, // max size of FLOATV_T[] local array
          typename FLOATV_T>
@@ -439,12 +436,12 @@ void launch_spc_attn_ring_pass1_bwd(int nloc,
                                     FLOATV_T *_alpha_kvw,
                                     cudaStream_t stream) {
 
+
+    static_assert(0 == (BDIM_X & (BDIM_X-1)));
+    static_assert(std::is_same<FLOATV_T, float>::value ||
+                  std::is_same<FLOATV_T, float4>::value);
+
     if (CUR_LOC_SIZE == nloc) {
-
-        dim3 block(BDIM_X, BDIM_Y);
-        dim3 grid(DIV_UP(nlat_out*nlon_out, block.y), batch_size);
-
-        size_t shsize = sizeof(FLOATV_T)*(nchans_in+nchans_out) * block.y;
 
         // nloc determines the size of local arrays used to store
         // temporary buffers loc_k__[], loc_vw_[] and loc_kvw[],
@@ -456,9 +453,17 @@ void launch_spc_attn_ring_pass1_bwd(int nloc,
         // instead of "nchans_in"; in this way as long as the
         // difference between the number of input and output channels
         // is <= BDIM_X we can use the faster path
-        if (nchans_out >= BDIM_X*(CUR_LOC_SIZE-1) &&
-            nchans_out <= BDIM_X* CUR_LOC_SIZE  ) {
+        const bool chout_as_in = (nchans_out >= BDIM_X*(CUR_LOC_SIZE-1) && 
+                                  nchans_out <= BDIM_X* CUR_LOC_SIZE  );
 
+        constexpr int BDIM_Y = (BDIM_X <= 32) ? THREADS/BDIM_X : 1;
+
+        dim3 block(BDIM_X, BDIM_Y);
+        dim3 grid(DIV_UP(nlat_out*nlon_out, block.y), batch_size);
+
+        size_t shsize = sizeof(FLOATV_T)*(nchans_in+nchans_out) * block.y;
+
+        if (chout_as_in) {
             s2_attn_bwd_ring_step_pass1_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE>
                                                      <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
                                                                                        nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
@@ -477,7 +482,6 @@ void launch_spc_attn_ring_pass1_bwd(int nloc,
     }
     if constexpr(CUR_LOC_SIZE < MAX_LOC_SIZE) {
         launch_spc_attn_ring_pass1_bwd<BDIM_X,
-                                       BDIM_Y,
                                        CUR_LOC_SIZE+1,
                                        MAX_LOC_SIZE>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo,
                                                      nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp,
@@ -548,12 +552,12 @@ static void s2_attn_bwd_ring_step_pass1_dispatch(int64_t batch_size,
         constexpr int MIN_LOC_ARR_LEN = MAX_LOCAL_ARR_LEN/2+1;
 
         switch(bdimx) {
-            case   32: launch_spc_attn_ring_pass1_bwd< 32, 2,               1, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw, stream); break;
-            case   64: launch_spc_attn_ring_pass1_bwd< 64, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw, stream); break;
-            case  128: launch_spc_attn_ring_pass1_bwd<128, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw, stream); break;
-            case  256: launch_spc_attn_ring_pass1_bwd<256, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw, stream); break;
-            case  512: launch_spc_attn_ring_pass1_bwd<512, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw, stream); break;
-            default:   launch_gen_attn_ring_pass1_bwd                                            (      batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw, stream); break;
+            case   32: launch_spc_attn_ring_pass1_bwd< 32,               1, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw, stream); break;
+            case   64: launch_spc_attn_ring_pass1_bwd< 64, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw, stream); break;
+            case  128: launch_spc_attn_ring_pass1_bwd<128, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw, stream); break;
+            case  256: launch_spc_attn_ring_pass1_bwd<256, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw, stream); break;
+            case  512: launch_spc_attn_ring_pass1_bwd<512, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw, stream); break;
+            default:   launch_gen_attn_ring_pass1_bwd                                         (      batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw, stream); break;
         }
 
     } else {
@@ -574,12 +578,12 @@ static void s2_attn_bwd_ring_step_pass1_dispatch(int64_t batch_size,
         constexpr int MIN_LOC_VEC_LEN = MAX_LOCAL_VEC_LEN/2+1;
 
         switch(bdimx) {
-            case   32: launch_spc_attn_ring_pass1_bwd< 32, 2,               1, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k4, _alpha_kvw4, stream); break;
-            case   64: launch_spc_attn_ring_pass1_bwd< 64, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k4, _alpha_kvw4, stream); break;
-            case  128: launch_spc_attn_ring_pass1_bwd<128, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k4, _alpha_kvw4, stream); break;
-            case  256: launch_spc_attn_ring_pass1_bwd<256, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k4, _alpha_kvw4, stream); break;
-            case  512: launch_spc_attn_ring_pass1_bwd<512, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k4, _alpha_kvw4, stream); break;
-            default:   launch_gen_attn_ring_pass1_bwd                                            (      batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k4, _alpha_kvw4, stream);
+            case   32: launch_spc_attn_ring_pass1_bwd< 32,               1, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k4, _alpha_kvw4, stream); break;
+            case   64: launch_spc_attn_ring_pass1_bwd< 64, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k4, _alpha_kvw4, stream); break;
+            case  128: launch_spc_attn_ring_pass1_bwd<128, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k4, _alpha_kvw4, stream); break;
+            case  256: launch_spc_attn_ring_pass1_bwd<256, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k4, _alpha_kvw4, stream); break;
+            case  512: launch_spc_attn_ring_pass1_bwd<512, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k4, _alpha_kvw4, stream); break;
+            default:   launch_gen_attn_ring_pass1_bwd                                         (      batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral, _alpha_k4, _alpha_kvw4, stream);
         }
     }
 }
@@ -758,8 +762,6 @@ void s2_attn_bwd_ring_step_pass2_special_vec_k(int nchan_in,
     static_assert((BDIM_X == 32 && BDIM_Y  > 1) ||
                   (BDIM_X  > 32 && BDIM_Y == 1)) ;
 
-    constexpr int NLOC_M1 = NLOC-1;
-    
     const int tidx = threadIdx.x;
     
     const int blk_per_row = gridDim.y; // blocks along Y process the same (ho,wo) 
@@ -1009,7 +1011,6 @@ static void get_crs_rlen_thresh(int64_t nrows,
 }
 
 template<int BDIM_X,
-         int BDIM_Y,
          int CUR_LOC_SIZE,
          int MAX_LOC_SIZE, // max size of FLOATV_T[] local array
          typename FLOATV_T>
@@ -1040,6 +1041,10 @@ void launch_spc_attn_ring_pass2_bwd(int nloc,
                                     FLOATV_T *_dvxp,
                                     cudaStream_t stream) {
 
+    static_assert(0 == (BDIM_X & (BDIM_X-1)));
+    static_assert(std::is_same<FLOATV_T, float>::value ||
+                  std::is_same<FLOATV_T, float4>::value);
+
     if (CUR_LOC_SIZE == nloc) {
 
         int64_t n_long_rows;
@@ -1052,6 +1057,20 @@ void launch_spc_attn_ring_pass2_bwd(int nloc,
         // causing long temporal tails in kernel execution.
         get_crs_rlen_thresh(nlat_out, _row_idx, _row_off, &n_long_rows, &max_row_len);
 
+        // nloc determines the size of local arrays used to store
+        // temporary buffers loc_k__[], loc_vw_[] and loc_kvw[],
+        // of size nchans_in each;
+        // if nchans_out is >= BDIM_X*(nloc-1) and <= BDIM_X*nloc
+        // then we can use the same compile-time known loops used
+        // for input channels, with the exception of testing 
+        // whether to execute the last iteration based on "nchans_out"
+        // instead of "nchans_in"; in this way as long as the
+        // difference between the number of input and output channels
+        // is <= BDIM_X we can use the faster path
+        const bool chout_as_in = (nchans_out >= BDIM_X*(CUR_LOC_SIZE-1) && 
+                                  nchans_out <= BDIM_X* CUR_LOC_SIZE  );
+
+        constexpr int BDIM_Y = (BDIM_X <= 32) ? THREADS/BDIM_X : 1;
         dim3 block(BDIM_X, BDIM_Y);
 
         // if there are "long rows" use at most
@@ -1073,18 +1092,7 @@ void launch_spc_attn_ring_pass2_bwd(int nloc,
         size_t shsize = sizeof(FLOATV_T)*(nchans_out + nchans_in)*block.y; // 2 arrays per cta, block.y > 1 iif block.x==32
                                                                            // nchans_in arrays used only for __CUDA_ARCH__ < 900
 
-        // nloc determines the size of local arrays used to store
-        // temporary buffers loc_k__[], loc_vw_[] and loc_kvw[],
-        // of size nchans_in each;
-        // if nchans_out is >= BDIM_X*(nloc-1) and <= BDIM_X*nloc
-        // then we can use the same compile-time known loops used
-        // for input channels, with the exception of testing 
-        // whether to execute the last iteration based on "nchans_out"
-        // instead of "nchans_in"; in this way as long as the
-        // difference between the number of input and output channels
-        // is <= BDIM_X we can use the faster path
-        if (nchans_out >= BDIM_X*(CUR_LOC_SIZE-1) &&
-            nchans_out <= BDIM_X* CUR_LOC_SIZE  ) {
+        if (chout_as_in) {
             if (n_long_rows > 0) {
                 s2_attn_bwd_ring_step_pass2_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE>
                                                       <<<grid_lr, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
@@ -1125,7 +1133,6 @@ void launch_spc_attn_ring_pass2_bwd(int nloc,
     }
     if constexpr(CUR_LOC_SIZE < MAX_LOC_SIZE) {
         launch_spc_attn_ring_pass2_bwd<BDIM_X,
-                                       BDIM_Y,
                                        CUR_LOC_SIZE+1,
                                        MAX_LOC_SIZE>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo,
                                                      nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
@@ -1197,12 +1204,12 @@ static void s2_attn_bwd_ring_step_pass2_dispatch(int64_t batch_size,
         constexpr int MIN_LOC_ARR_LEN = MAX_LOCAL_ARR_LEN/2+1;
 
         switch(bdimx) {
-            case   32: launch_spc_attn_ring_pass2_bwd< 32, 2,               1, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp, _dvxp, stream); break;
-            case   64: launch_spc_attn_ring_pass2_bwd< 64, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp, _dvxp, stream); break;
-            case  128: launch_spc_attn_ring_pass2_bwd<128, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp, _dvxp, stream); break;
-            case  256: launch_spc_attn_ring_pass2_bwd<256, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp, _dvxp, stream); break;
-            case  512: launch_spc_attn_ring_pass2_bwd<512, 1, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp, _dvxp, stream); break;
-            default:   launch_gen_attn_ring_pass2_bwd                                            (      batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp, _dvxp, stream); break;
+            case   32: launch_spc_attn_ring_pass2_bwd< 32,               1, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp, _dvxp, stream); break;
+            case   64: launch_spc_attn_ring_pass2_bwd< 64, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp, _dvxp, stream); break;
+            case  128: launch_spc_attn_ring_pass2_bwd<128, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp, _dvxp, stream); break;
+            case  256: launch_spc_attn_ring_pass2_bwd<256, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp, _dvxp, stream); break;
+            case  512: launch_spc_attn_ring_pass2_bwd<512, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp, _dvxp, stream); break;
+            default:   launch_gen_attn_ring_pass2_bwd                                         (      batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp, _dvxp, stream); break;
         }
 
     } else {
@@ -1223,12 +1230,12 @@ static void s2_attn_bwd_ring_step_pass2_dispatch(int64_t batch_size,
         constexpr int MIN_LOC_VEC_LEN = MAX_LOCAL_VEC_LEN/2+1;
 
         switch(bdimx) {
-            case   32: launch_spc_attn_ring_pass2_bwd< 32, 2,               1, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp4, _dvxp4, stream); break;
-            case   64: launch_spc_attn_ring_pass2_bwd< 64, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp4, _dvxp4, stream); break;
-            case  128: launch_spc_attn_ring_pass2_bwd<128, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp4, _dvxp4, stream); break;
-            case  256: launch_spc_attn_ring_pass2_bwd<256, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp4, _dvxp4, stream); break;
-            case  512: launch_spc_attn_ring_pass2_bwd<512, 1, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp4, _dvxp4, stream); break;
-            default:   launch_gen_attn_ring_pass2_bwd                                            (      batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp4, _dvxp4, stream); break;
+            case   32: launch_spc_attn_ring_pass2_bwd< 32,               1, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp4, _dvxp4, stream); break;
+            case   64: launch_spc_attn_ring_pass2_bwd< 64, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp4, _dvxp4, stream); break;
+            case  128: launch_spc_attn_ring_pass2_bwd<128, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp4, _dvxp4, stream); break;
+            case  256: launch_spc_attn_ring_pass2_bwd<256, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp4, _dvxp4, stream); break;
+            case  512: launch_spc_attn_ring_pass2_bwd<512, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(nloc, batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp4, _dvxp4, stream); break;
+            default:   launch_gen_attn_ring_pass2_bwd                                         (      batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _dyp4, _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max, _integral_n, _dkxp4, _dvxp4, stream); break;
         }
     }
 }
@@ -1386,7 +1393,7 @@ void dump_csr_linear(const char *fname,
                 exit(EXIT_FAILURE);
         }
         
-        fprintf(fp, "nrows: %lld, row_idx.size(0): %lld, row_off.size(0): %lld, col_idx.size(0): %lld\n",
+        fprintf(fp, "nrows: %ld, row_idx.size(0): %ld, row_off.size(0): %ld, col_idx.size(0): %ld\n",
                 nrows, row_idx.size(0), row_off.size(0), col_idx.size(0));
 
         fprintf(fp, "pscale: %ld, nlon_in: %ld, lon_lo_kx: %ld, nlon_kx: %d, lat_halo_start: %ld, nlat_halo: %d\n",
@@ -1403,7 +1410,7 @@ void dump_csr_linear(const char *fname,
                         n_internal += is_in_lat_range(col_idx_h[o], nlon_in, lat_halo_start, nlat_halo);
                 }
 
-                fprintf(fp, "%6ld, row: %6ld, len: %6ld, in H rng: %d - ", i, r, row_off_h[r+1]-row_off_h[r], n_internal);
+                fprintf(fp, "%6ld, row: %6d, len: %6ld, in H rng: %d - ", i, r, row_off_h[r+1]-row_off_h[r], n_internal);
 
                 for(int64_t o = row_off_h[r]; o < row_off_h[r+1]; o++) {
                         fprintf(fp, "%10ld", col_idx_h[o]);

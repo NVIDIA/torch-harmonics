@@ -74,6 +74,9 @@ void verify_part_new(const int nlon_out,
 
 unsigned int next_pow2(unsigned int x);
 
+void ensure_dyn_shmem(const void* kern, size_t shsize);
+
+int getPtxver();
 
 // utility host functions and templates
 
