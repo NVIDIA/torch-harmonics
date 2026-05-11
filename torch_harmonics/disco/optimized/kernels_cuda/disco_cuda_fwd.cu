@@ -149,7 +149,7 @@ __device__ void disco_fwd_d(const int Hi, const int Wi, const int K, const int H
     return;
 }
 
-template <int BDIM_X, int ELXTH, typename STORAGE_T, typename COMPUTE_T>
+template <int BDIM_X, int ELXTH, int PSCALE, typename STORAGE_T, typename COMPUTE_T>
 __global__
     __launch_bounds__(BDIM_X) void disco_fwd_blk_k(const int Hi, const int Wi, const int K, const int Ho, const int Wo,
                                                    const int pscale, const int64_t *__restrict__ roff,
@@ -158,7 +158,11 @@ __global__
                                                    const STORAGE_T *__restrict__ inp, STORAGE_T *__restrict__ out)
 {
 
-    disco_fwd_d<BDIM_X, ELXTH, STORAGE_T, COMPUTE_T>(Hi, Wi, K, Ho, Wo, pscale, roff, kers, rows, cols, vals, inp, out);
+    if constexpr (PSCALE != 0) {
+        disco_fwd_d<BDIM_X, ELXTH, STORAGE_T, COMPUTE_T>(Hi, Wi, K, Ho, Wo, PSCALE, roff, kers, rows, cols, vals, inp, out);
+    } else {
+        disco_fwd_d<BDIM_X, ELXTH, STORAGE_T, COMPUTE_T>(Hi, Wi, K, Ho, Wo, pscale, roff, kers, rows, cols, vals, inp, out);
+    }
 
     return;
 }
@@ -178,8 +182,24 @@ static void launch_kernel(int BC, int Hi, int Wi, int K, int Ho, int Wo, int64_t
             const int pscale = Wi / Wo;
             size_t shmem = sizeof(*out_d) * (Wi * 2 + pscale * (NTH * ELXTH - Wo));
 
-            disco_fwd_blk_k<NTH, ELXTH, STORAGE_T, COMPUTE_T><<<grid, NTH, shmem, stream>>>(Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d, row_d,
-                                                                      col_d, val_d, inp_d, out_d);
+            switch (pscale) {
+            case 1:
+                disco_fwd_blk_k<NTH, ELXTH, 1, STORAGE_T, COMPUTE_T><<<grid, NTH, shmem, stream>>>(Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d, row_d,
+                                                                             col_d, val_d, inp_d, out_d);
+                break;
+            case 2:
+                disco_fwd_blk_k<NTH, ELXTH, 2, STORAGE_T, COMPUTE_T><<<grid, NTH, shmem, stream>>>(Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d, row_d,
+                                                                             col_d, val_d, inp_d, out_d);
+                break;
+            case 3:
+                disco_fwd_blk_k<NTH, ELXTH, 3, STORAGE_T, COMPUTE_T><<<grid, NTH, shmem, stream>>>(Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d, row_d,
+                                                                             col_d, val_d, inp_d, out_d);
+                break;
+            default:
+                disco_fwd_blk_k<NTH, ELXTH, 0, STORAGE_T, COMPUTE_T><<<grid, NTH, shmem, stream>>>(Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d, row_d,
+                                                                             col_d, val_d, inp_d, out_d);
+                break;
+            }
         } else {
             launch_kernel<NTH, ELXTH + 1, STORAGE_T, COMPUTE_T>(
                 BC, Hi, Wi, K, Ho, Wo, nrows, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d, stream
