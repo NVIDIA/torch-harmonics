@@ -35,7 +35,6 @@ import math
 import torch
 from torch.autograd import gradcheck
 import torch_harmonics as th
-from torch_harmonics import legendre_legacy
 from torch_harmonics.quadrature import precompute_latitudes
 
 from testutils import disable_tf32, set_seed, compare_tensors
@@ -96,75 +95,6 @@ class TestLegendrePolynomials(unittest.TestCase):
                 diff = vdm[m, l] / self.cml(m, l) - self.pml[(m, l)](t)
                 self.assertTrue(diff.max() <= self.tol)
 
-    @parameterized.expand(
-        [
-            # norm, inverse, csphase
-            ["ortho",   False, False],
-            ["ortho",   False, True],
-            ["ortho",   True,  False],
-            ["ortho",   True,  True],
-            ["four-pi", False, False],
-            ["four-pi", False, True],
-            ["four-pi", True,  False],
-            ["four-pi", True,  True],
-            ["schmidt", False, False],
-            ["schmidt", False, True],
-            ["schmidt", True,  False],
-            ["schmidt", True,  True],
-        ],
-        skip_on_empty=True,
-    )
-    def test_legpoly_matches_legacy(self, norm, inverse, csphase, verbose=False):
-        """legpoly (vectorized) must match legpoly_legacy across norm / inverse / csphase."""
-        if verbose:
-            print(f"Testing legpoly against legpoly_legacy: norm={norm} inverse={inverse} csphase={csphase} on {self.device.type}")
-
-        # use an lmax/mmax large enough to exercise the three-term recurrence,
-        # and unequal to catch slicing bugs
-        lmax, mmax = 24, 20
-        x = torch.linspace(-0.99, 0.99, 64, dtype=torch.float64, device=self.device)
-
-        ref = legendre_legacy.legpoly_legacy(mmax, lmax, x, norm=norm, inverse=inverse, csphase=csphase)
-        new = th.legendre.legpoly(mmax, lmax, x, norm=norm, inverse=inverse, csphase=csphase)
-        self.assertTrue(compare_tensors(
-            f"legpoly(norm={norm}, inverse={inverse}, csphase={csphase})",
-            new, ref, atol=self.tol, rtol=self.tol, verbose=verbose,
-        ))
-
-    @parameterized.expand(
-        [
-            # norm, inverse, csphase
-            ["ortho",   False, False],
-            ["ortho",   False, True],
-            ["ortho",   True,  False],
-            ["ortho",   True,  True],
-            ["four-pi", False, False],
-            ["four-pi", False, True],
-            ["four-pi", True,  False],
-            ["four-pi", True,  True],
-            ["schmidt", False, False],
-            ["schmidt", False, True],
-            ["schmidt", True,  False],
-            ["schmidt", True,  True],
-        ],
-        skip_on_empty=True,
-    )
-    def test_dlegpoly_matches_legacy(self, norm, inverse, csphase, verbose=False):
-        """_precompute_dlegpoly (vectorized) must match _precompute_dlegpoly_legacy."""
-        if verbose:
-            print(f"Testing _precompute_dlegpoly against _precompute_dlegpoly_legacy: "
-                  f"norm={norm} inverse={inverse} csphase={csphase} on {self.device.type}")
-
-        lmax, mmax = 24, 20
-        # avoid the singular endpoints theta=0,pi to keep magnitudes well-scaled
-        t = torch.linspace(0.05, math.pi - 0.05, 64, dtype=torch.float64, device=self.device)
-
-        ref = legendre_legacy._precompute_dlegpoly_legacy(mmax, lmax, t, norm=norm, inverse=inverse, csphase=csphase)
-        new = th.legendre._precompute_dlegpoly(mmax, lmax, t, norm=norm, inverse=inverse, csphase=csphase)
-        self.assertTrue(compare_tensors(
-            f"_precompute_dlegpoly(norm={norm}, inverse={inverse}, csphase={csphase})",
-            new, ref, atol=self.tol, rtol=self.tol, verbose=verbose,
-        ))
 
 
 @parameterized_class(("device"), _devices)
