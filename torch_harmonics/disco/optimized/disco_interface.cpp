@@ -65,6 +65,18 @@ namespace disco_kernels {
     TORCH_LIBRARY(disco_kernels, m) {
         m.def("forward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor", {at::Tag::pt2_compliant_tag});
         m.def("backward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor", {at::Tag::pt2_compliant_tag});
+        // K-packed split-by-K gather backward (Hopper-friendly, K-shared bases only).
+        // Consumes:
+        //   inp      [B, C, K, Hi, Wi]                  storage_t
+        //   idx_T    [Ho*pscale, NBR_PAD_T, 2]          int64   (ho, wi_offset)
+        //   vals_T   [Ho*pscale, NBR_PAD_T, K_pad]      storage_t
+        //   count_T  [Ho*pscale]                         int64
+        //   kernel_size, nlat_out, nlon_out  (Ho, Wo of the bigger grid)
+        m.def("backward_kpacked(Tensor inp, Tensor idx_T, Tensor vals_T, Tensor count_T, int kernel_size, int nlat_out, int nlon_out) -> Tensor", {at::Tag::pt2_compliant_tag});
+        // Same K-packed layout, grid-split over pscale residue r as well as K.
+        // Eliminates the warp-divergence/mask-skip cost of `backward_kpacked`
+        // at pscale > 1 by giving each CTA exactly one (k, ho, r) tuple.
+        m.def("backward_kpacked_rsplit(Tensor inp, Tensor idx_T, Tensor vals_T, Tensor count_T, int kernel_size, int nlat_out, int nlon_out) -> Tensor", {at::Tag::pt2_compliant_tag});
         // Side op kept ONLY for A/B benchmarking against the new gather backward.
         // Same signature as the pre-refactor `backward` (with row_idx). Not wired
         // into the conv module.

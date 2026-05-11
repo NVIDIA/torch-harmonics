@@ -498,6 +498,12 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (41, 80), (21, 40), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
             # K=1 edge case (single basis function — exercises off-by-one in row indexing / nrows_T = Hi*pscale)
             [8, 4, 2, (41, 80), (21, 40), (1, 1), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+            # pscale={3, 4, 5} coverage — exercises the PSCALE=3, PSCALE=4, and
+            # PSCALE=0 (runtime-fallback) specializations of both forward and
+            # backward gather kernels.
+            [8, 4, 2, (24, 60), (12, 20), (3, 3), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],   # pscale=3
+            [8, 4, 2, (16, 32), (16,  8), (3, 3), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],   # pscale=4
+            [8, 4, 2, (16, 40), (16,  8), (3, 3), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],   # pscale=5 (runtime fallback)
             # transpose convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "modal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
@@ -511,6 +517,12 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (21, 40), (41, 80), (3), "zernike", "nodal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
             # K=1 edge case for transpose direction
             [8, 4, 2, (21, 40), (41, 80), (1, 1), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+            # pscale={3, 4, 5} transpose coverage — exercises the PSCALE=3/4/0
+            # specializations in the transpose direction (kernel-local pscale
+            # for the transpose conv equals nlon_out/nlon_in).
+            [8, 4, 2, (12, 20), (24, 60), (3, 3), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],   # pscale_t=3
+            [8, 4, 2, (16,  8), (16, 32), (3, 3), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],   # pscale_t=4
+            [8, 4, 2, (16,  8), (16, 40), (3, 3), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],   # pscale_t=5 (fallback)
             # fp64 tests
             # regular convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],

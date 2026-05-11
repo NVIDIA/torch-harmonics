@@ -43,6 +43,7 @@ import torch
 from torch_harmonics.convolution_tensor_s2 import (
     _precompute_convolution_tensor_s2,
     _transpose_convolution_tensor_s2,
+    _transpose_psi_kpacked,
 )
 from torch_harmonics.filter_basis import get_filter_basis
 from disco_helpers import preprocess_psi
@@ -254,6 +255,211 @@ class TestConvolutionTensor(unittest.TestCase):
             print(f"\npsi_T transpose check: nnz(A)={(A != 0).sum().item()}, nnz(B)={(B != 0).sum().item()}, "
                   f"max|B - A^T|={(B - A_T).abs().max().item():.3e}")
         self.assertTrue(torch.allclose(B, A_T, atol=1e-12, rtol=0))
+
+
+    @parameterized.expand(
+        [
+            # Only K-shared bases (harmonic, fourier-bessel, zernike, morlet).
+            # Piecewise-linear has per-k radial support → K-packing doesn't apply.
+            # in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out
+            [(8, 16),  (8, 16),  (3, 3), "harmonic",       "mean", "equiangular", "equiangular"],  # pscale=1
+            [(8, 16),  (4, 8),   (3, 3), "harmonic",       "mean", "equiangular", "equiangular"],  # pscale=2
+            [(12, 24), (4, 8),   (3, 3), "harmonic",       "mean", "equiangular", "equiangular"],  # pscale=3
+            [(16, 32), (8,  8),  (3, 3), "harmonic",       "mean", "equiangular", "equiangular"],  # pscale=4
+            [(8, 16),  (4, 8),   (3, 3), "fourier-bessel", "mean", "equiangular", "equiangular"],
+            [(8, 16),  (4, 8),   (3,),   "zernike",        "mean", "equiangular", "equiangular"],
+            # K=1 edge case
+            [(8, 16),  (4, 8),   (1, 1), "harmonic",       "mean", "equiangular", "equiangular"],
+            # legendre-gauss grid sweeps
+            [(8, 16),  (4, 8),   (3, 3), "harmonic",       "mean", "legendre-gauss", "equiangular"],
+            [(8, 16),  (4, 8),   (3, 3), "harmonic",       "mean", "equiangular",    "legendre-gauss"],
+        ],
+        skip_on_empty=True,
+    )
+    def test_psi_T_kpacked_matches_dense_transpose(
+        self, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, verbose=False,
+    ):
+        """K-packed psi_T must encode the operator-transpose of psi.
+
+        Mirrors `test_psi_T_matches_dense_transpose` but feeds K-packed forward
+        psi (one entry per (ho, nz), with K vals stacked) into
+        `_transpose_psi_kpacked` and materializes the resulting K-packed psi_T
+        operator. Restricted to bases where all K basis functions share the
+        same (hi, wi_offset) support per ho (the K-shared invariant), which
+        the forward K-packed layout requires.
+        """
+        Hi, Wi = in_shape
+        Ho, Wo = out_shape
+        assert Wi % Wo == 0
+        pscale = Wi // Wo
+
+        filter_basis = get_filter_basis(kernel_shape=kernel_shape, basis_type=basis_type)
+        K = filter_basis.kernel_size
+
+        if isinstance(kernel_shape, int):
+            theta_cutoff = (kernel_shape + 1) * torch.pi / float(Hi - 1)
+        else:
+            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(Hi - 1)
+
+        idx, vals, _ = _precompute_convolution_tensor_s2(
+            in_shape=in_shape, out_shape=out_shape, filter_basis=filter_basis,
+            grid_in=grid_in, grid_out=grid_out,
+            theta_cutoff=theta_cutoff,
+            transpose_normalization=False, basis_norm_mode=basis_norm_mode,
+            merge_quadrature=True,
+        )
+        ker_idx = idx[0].contiguous()
+        row_idx = idx[1].contiguous()
+        col_idx = idx[2].contiguous()
+        vals = vals.contiguous()
+
+        # ----- Forward operator A : [K, Ho, Wo, Hi, Wi] (reference, from CSR) -----
+        nnz = ker_idx.numel()
+        wo_axis = torch.arange(Wo, dtype=torch.int64)
+
+        ker_e       = ker_idx.repeat_interleave(Wo)
+        ho_e        = row_idx.repeat_interleave(Wo)
+        hi_e        = (col_idx // Wi).repeat_interleave(Wo)
+        wi_offset_e = (col_idx %  Wi).repeat_interleave(Wo)
+        wo_e        = wo_axis.repeat(nnz)
+        wi_e        = (wi_offset_e + pscale * wo_e) % Wi
+        vals_e      = vals.repeat_interleave(Wo)
+
+        A_idx = torch.stack([ker_e, ho_e, wo_e, hi_e, wi_e], dim=0)
+        A = torch.sparse_coo_tensor(A_idx, vals_e, size=(K, Ho, Wo, Hi, Wi)).coalesce().to_dense()
+
+        # ----- Build forward K-packed psi from CSR (inline; expects K-shared support) -----
+        psi_kp_idx, psi_kp_vals, psi_kp_count, K_pad = self._csr_to_kpacked(
+            ker_idx, row_idx, col_idx, vals, K=K, Ho=Ho, Wi=Wi,
+        )
+        # Sanity: kpacked must be K-shared. Skip rather than fail if the basis
+        # doesn't actually satisfy the invariant (defensive — shouldn't trip
+        # for the bases in this parameterization).
+        if psi_kp_idx is None:
+            self.skipTest(f"basis '{basis_type}' does not satisfy K-shared support; K-packing inapplicable")
+
+        # ----- Build K-packed psi_T from K-packed forward psi -----
+        idx_T_kp, vals_T_kp, count_T_kp = _transpose_psi_kpacked(
+            psi_kp_idx, psi_kp_vals, psi_kp_count, in_shape=in_shape, out_shape=out_shape,
+        )
+
+        # ----- Materialize operator B : [K_pad, Hi, Wi, Ho, Wo] from K-packed psi_T -----
+        # Per (row_T, nz_slot) valid slot: (ho_orig, wi_offset) + K_pad vals.
+        # Expand over (k, wo) to get the operator entries.
+        Nrows_T, NBR_PAD_T, _ = idx_T_kp.shape
+        nz_axis = torch.arange(NBR_PAD_T, dtype=torch.int64)
+        valid = nz_axis.view(1, NBR_PAD_T) < count_T_kp.view(Nrows_T, 1)  # [Nrows_T, NBR_PAD_T]
+
+        row_T_axis = torch.arange(Nrows_T, dtype=torch.int64).view(Nrows_T, 1).expand(Nrows_T, NBR_PAD_T)
+        hi_T = row_T_axis // pscale       # [Nrows_T, NBR_PAD_T]   (bigger grid lat from row bucket)
+        ho_T = idx_T_kp[:, :, 0]
+        wi_offset_T = idx_T_kp[:, :, 1]
+
+        valid_flat       = valid.reshape(-1)
+        hi_T_flat        = hi_T.reshape(-1)[valid_flat]
+        ho_T_flat        = ho_T.reshape(-1)[valid_flat]
+        wi_offset_T_flat = wi_offset_T.reshape(-1)[valid_flat]
+        vals_T_flat      = vals_T_kp.reshape(Nrows_T * NBR_PAD_T, K_pad)[valid_flat]  # [N_valid, K_pad]
+        N_valid          = hi_T_flat.numel()
+
+        # Expand each entry over (k, wo):
+        #   hi_T,wi_T  : [K_pad * N_valid * Wo]
+        #   ho_T,wo_T  : same
+        #   k_axis     : [K_pad * N_valid * Wo]
+        #   vals_kew   : [K_pad * N_valid * Wo]  flattened with K_pad as outer
+        k_axis     = torch.arange(K_pad, dtype=torch.int64)
+
+        hi_e_T     = hi_T_flat.repeat_interleave(Wo).unsqueeze(0).expand(K_pad, -1).reshape(-1)
+        ho_e_T     = ho_T_flat.repeat_interleave(Wo).unsqueeze(0).expand(K_pad, -1).reshape(-1)
+        wi_off_e_T = wi_offset_T_flat.repeat_interleave(Wo).unsqueeze(0).expand(K_pad, -1).reshape(-1)
+        wo_e_T     = wo_axis.repeat(N_valid).unsqueeze(0).expand(K_pad, -1).reshape(-1)
+        wi_e_T     = (wi_off_e_T + pscale * wo_e_T) % Wi
+        k_e_T      = k_axis.unsqueeze(1).expand(K_pad, N_valid * Wo).reshape(-1)
+        # vals stored as [N_valid, K_pad] → repeat_interleave by Wo → [N_valid*Wo, K_pad]
+        # → transpose → [K_pad, N_valid*Wo] → reshape to flat
+        vals_e_T   = vals_T_flat.repeat_interleave(Wo, dim=0).transpose(0, 1).reshape(-1)
+
+        B_idx = torch.stack([k_e_T, hi_e_T, wi_e_T, ho_e_T, wo_e_T], dim=0)
+        B_full = torch.sparse_coo_tensor(B_idx, vals_e_T,
+                                         size=(K_pad, Hi, Wi, Ho, Wo)).coalesce().to_dense()
+
+        # Drop padding along K to compare against operator A.
+        B = B_full[:K]
+
+        # Padded K slots must be exactly zero (vals_T_kp[:, :, K:] is zero by construction).
+        if K_pad > K:
+            self.assertEqual(B_full[K:].abs().max().item(), 0.0)
+
+        A_T = A.permute(0, 3, 4, 1, 2).contiguous()
+        if verbose:
+            print(f"\npsi_T kpacked transpose check: K={K}, K_pad={K_pad}, "
+                  f"max|B - A^T|={(B - A_T).abs().max().item():.3e}")
+        self.assertTrue(torch.allclose(B, A_T, atol=1e-12, rtol=0))
+
+
+    @staticmethod
+    def _csr_to_kpacked(ker_idx, row_idx, col_idx, vals, K, Ho, Wi, n_align=8):
+        """Build K-packed forward psi from CSR (inline test helper).
+
+        Verifies the K-shared invariant (same per-ho count + same (hi, wi_offset)
+        sequence across all k) and returns (idx, vals, count, K_pad) on success,
+        or (None, None, None, None) on failure. K_pad is K rounded up to
+        n_align — matches the production wiring's WGMMA alignment.
+        """
+        device = ker_idx.device
+        K_pad = ((K + n_align - 1) // n_align) * n_align
+
+        # Per-(k, ho) count check via bincount.
+        # Reference counts come from k=0.
+        mask_k0 = (ker_idx == 0)
+        counts_ref = torch.bincount(row_idx[mask_k0], minlength=Ho).to(torch.int64)
+        NBR_PAD = int(counts_ref.max().item()) if counts_ref.numel() else 0
+        if NBR_PAD == 0:
+            # Trivial degenerate case
+            return (
+                torch.zeros(Ho, 0, 2, dtype=torch.int64, device=device),
+                torch.zeros(Ho, 0, K_pad, dtype=vals.dtype, device=device),
+                counts_ref, K_pad,
+            )
+
+        idx_kp  = torch.zeros(Ho, NBR_PAD, 2, dtype=torch.int64, device=device)
+        vals_kp = torch.zeros(Ho, NBR_PAD, K_pad, dtype=vals.dtype, device=device)
+
+        # CSR after preprocess_psi is sorted by (ker, row=ho, col). Within each
+        # (k, ho) the entries are in col-sorted order. For K-shared support the
+        # col sequence matches across all k.
+        for k in range(K):
+            mask_k = (ker_idx == k)
+            rows_k = row_idx[mask_k]
+            cols_k = col_idx[mask_k]
+            vals_k = vals[mask_k]
+
+            counts_k = torch.bincount(rows_k, minlength=Ho).to(torch.int64)
+            if not torch.equal(counts_k, counts_ref):
+                return None, None, None, None  # Not K-shared
+
+            # nz_pos within (k, ho) = z - cumulative-prefix(counts_k)[ho].
+            offsets = torch.zeros(Ho + 1, dtype=torch.int64, device=device)
+            offsets[1:] = torch.cumsum(counts_k, dim=0)
+            z_axis = torch.arange(rows_k.numel(), device=device)
+            nz_pos = z_axis - offsets[rows_k]
+
+            if k == 0:
+                # Fill (hi, wi_offset).
+                hi_k0        = cols_k // Wi
+                wi_offset_k0 = cols_k %  Wi
+                idx_kp[rows_k, nz_pos, 0] = hi_k0
+                idx_kp[rows_k, nz_pos, 1] = wi_offset_k0
+            else:
+                # Verify col sequence matches k=0 (K-shared invariant beyond
+                # just count match).
+                expected_col = idx_kp[rows_k, nz_pos, 0] * Wi + idx_kp[rows_k, nz_pos, 1]
+                if not torch.equal(cols_k, expected_col):
+                    return None, None, None, None
+
+            vals_kp[rows_k, nz_pos, k] = vals_k
+
+        return idx_kp, vals_kp, counts_ref, K_pad
 
 
 if __name__ == "__main__":

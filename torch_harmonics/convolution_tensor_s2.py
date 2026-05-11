@@ -450,3 +450,101 @@ def _transpose_convolution_tensor_s2(
     roff_idx_T[1:] = torch.cumsum(counts, dim=0)
 
     return ker_idx_T, col_idx_T, vals_T, roff_idx_T
+
+
+def _transpose_psi_kpacked(
+    psi_kpacked_idx: torch.Tensor,    # [Ho, NBR_PAD, 2]   -> (hi, wi_offset)
+    psi_kpacked_vals: torch.Tensor,   # [Ho, NBR_PAD, K_pad]
+    psi_kpacked_count: torch.Tensor,  # [Ho]
+    in_shape: Tuple[int, int],        # (Hi, Wi)  — bigger grid
+    out_shape: Tuple[int, int],       # (Ho, Wo)  — smaller grid
+):
+    """
+    Build K-packed psi_T from K-packed forward psi.
+
+    For bases where all K basis functions share the same (hi, wi_offset)
+    support per ho (harmonic, morlet, zernike, fourier-bessel — NOT
+    piecewise-linear), the K-packed forward layout stores K values per
+    (ho, nz) neighbor slot. This routine produces the analogous structure
+    indexed by `hi*pscale + (wi_offset%pscale)` for the backward gather:
+
+      Output layout (K-packed psi_T):
+        psi_T_kpacked_idx   : [Hi*pscale, NBR_PAD_T, 2]      int64
+                              -> (ho, wi_offset)
+        psi_T_kpacked_vals  : [Hi*pscale, NBR_PAD_T, K_pad]  same dtype as forward
+        psi_T_kpacked_count : [Hi*pscale]                    int64
+
+    The split-by-K gather backward kernel issues one CTA per (bc, ho_kernel, k)
+    and reads `vals[row_T, nz, k]` (one column of the K-packed vector) per
+    entry — this keeps the parallelism count high (K× more CTAs than the
+    plain gather) while paying only mild K-way atomic contention on the
+    output. Returns None when the input isn't actually K-shared (e.g.
+    piecewise-linear bases), so the caller can fall back.
+    """
+    Hi, Wi = in_shape
+    Ho, Wo = out_shape
+    assert Wi % Wo == 0, f"Wi ({Wi}) must be a multiple of Wo ({Wo})"
+    pscale = Wi // Wo
+
+    Ho_in, NBR_PAD, two = psi_kpacked_idx.shape
+    assert two == 2 and Ho_in == Ho, "psi_kpacked_idx shape mismatch"
+    K_pad = psi_kpacked_vals.shape[2]
+    assert psi_kpacked_vals.shape[:2] == (Ho, NBR_PAD), "psi_kpacked_vals shape mismatch"
+    assert psi_kpacked_count.shape == (Ho,), "psi_kpacked_count shape mismatch"
+
+    device = psi_kpacked_idx.device
+
+    # Per-(ho, nz_slot) validity mask: nz_slot < count[ho].
+    nz_axis  = torch.arange(NBR_PAD, device=device)
+    valid    = nz_axis.view(1, NBR_PAD) < psi_kpacked_count.view(Ho, 1)   # [Ho, NBR_PAD]
+
+    # Decode (hi, wi_offset) per slot.
+    hi_all        = psi_kpacked_idx[:, :, 0]                              # [Ho, NBR_PAD]
+    wi_offset_all = psi_kpacked_idx[:, :, 1]                              # [Ho, NBR_PAD]
+    ho_axis       = torch.arange(Ho, device=device).view(Ho, 1).expand(Ho, NBR_PAD)
+
+    # Bucket: row_T = hi*pscale + r, where r = wi_offset % pscale.
+    r_all     = wi_offset_all % pscale
+    row_T_all = hi_all * pscale + r_all                                   # [Ho, NBR_PAD]
+
+    # Flatten valid entries.
+    valid_flat        = valid.reshape(-1)
+    row_T_flat        = row_T_all.reshape(-1)[valid_flat]
+    ho_flat           = ho_axis.reshape(-1)[valid_flat]
+    wi_offset_flat    = wi_offset_all.reshape(-1)[valid_flat]
+    vals_flat         = psi_kpacked_vals.reshape(Ho * NBR_PAD, K_pad)[valid_flat]    # [N_valid, K_pad]
+
+    # Sort by row_T to bucket entries.
+    perm              = torch.argsort(row_T_flat, stable=True)
+    row_T_sorted      = row_T_flat[perm]
+    ho_sorted         = ho_flat[perm]
+    wi_offset_sorted  = wi_offset_flat[perm]
+    vals_sorted       = vals_flat[perm]                                   # [N_valid, K_pad]
+
+    # Counts per row_T → NBR_PAD_T = max.
+    Nrows_T  = Hi * pscale
+    counts_T = torch.bincount(row_T_sorted, minlength=Nrows_T).to(torch.int64)
+    NBR_PAD_T = int(counts_T.max().item())
+    if NBR_PAD_T == 0:
+        # Degenerate: no entries at all (very small theta_cutoff).
+        return (
+            torch.zeros(Nrows_T, 0, 2, dtype=torch.int64, device=device),
+            torch.zeros(Nrows_T, 0, K_pad, dtype=psi_kpacked_vals.dtype, device=device),
+            counts_T,
+        )
+
+    # Position of each sorted entry within its row_T bucket = z - cumcount_prefix.
+    roff_T   = torch.zeros(Nrows_T + 1, dtype=torch.int64, device=device)
+    roff_T[1:] = torch.cumsum(counts_T, dim=0)
+    z_axis   = torch.arange(row_T_sorted.numel(), device=device)
+    pos_in_row = z_axis - roff_T[row_T_sorted]
+
+    # Scatter into dense [Nrows_T, NBR_PAD_T, ...] tensors.
+    idx_T = torch.zeros(Nrows_T, NBR_PAD_T, 2, dtype=torch.int64, device=device)
+    vals_T = torch.zeros(Nrows_T, NBR_PAD_T, K_pad,
+                         dtype=psi_kpacked_vals.dtype, device=device)
+    idx_T[row_T_sorted, pos_in_row, 0]   = ho_sorted
+    idx_T[row_T_sorted, pos_in_row, 1]   = wi_offset_sorted
+    vals_T[row_T_sorted, pos_in_row, :]  = vals_sorted
+
+    return idx_T, vals_T, counts_T

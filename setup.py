@@ -138,6 +138,11 @@ def get_ext_modules():
         disco_sources.extend([
             "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd.cu",
             "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd.cu",
+            # K-packed split-by-K gather backward (Hopper-friendly; K-shared bases only).
+            "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd_kpacked.cu",
+            # K-packed gather with grid-split over the pscale residue r — addresses
+            # the warp-divergence cost of `backward_kpacked` at pscale > 1.
+            "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd_kpacked_rsplit.cu",
             # Side op `backward_scatter`, kept for A/B benchmarking against
             # the new gather backward. Not wired into the conv module.
             "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd_scatter.cu",
