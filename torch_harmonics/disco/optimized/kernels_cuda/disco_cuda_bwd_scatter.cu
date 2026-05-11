@@ -58,9 +58,13 @@ __device__ void disco_bwd_d(const int Hi, const int Wi, const int K, const int H
     out += bidy * Ho * Wo;
 
     // align to larger supported fp type
-    extern __shared__ __align__(sizeof(double)) unsigned char __sh_ptr[]; // COMPUTE_T __sh[2*(BDIM_X*ELXTH)*pscale]
+    // Single Wi-wide accumulator per pscale residue; the inner FMA loop
+    // wraps the write index inline (was 2x buffer + flush-time merge).
+    // BDIM_X*ELXTH >= Wi by launcher invariant — cells in [Wi, BDIM_X*ELXTH)
+    // are scratch for pp >= Wi (where __reg[i] = 0, contributions are zero).
+    extern __shared__ __align__(sizeof(double)) unsigned char __sh_ptr[]; // COMPUTE_T __sh[(BDIM_X*ELXTH)*pscale]
 
-    COMPUTE_T(*__sh)[BDIM_X * ELXTH * 2] = reinterpret_cast<COMPUTE_T(*)[BDIM_X * ELXTH * 2]>(__sh_ptr);
+    COMPUTE_T(*__sh)[BDIM_X * ELXTH] = reinterpret_cast<COMPUTE_T(*)[BDIM_X * ELXTH]>(__sh_ptr);
 
     // copy current inp row in regs
     COMPUTE_T __reg[ELXTH];
@@ -68,13 +72,12 @@ __device__ void disco_bwd_d(const int Hi, const int Wi, const int K, const int H
 #pragma unroll
     for (int i = 0; i < ELXTH; i++) { __reg[i] = (i * BDIM_X + tid < Wi) ? static_cast<COMPUTE_T>(inp[i * BDIM_X + tid]) : static_cast<COMPUTE_T>(0); }
 
-    // reset shared row up to Wo+2, remaining
-    // ppscale*(BDIM_X*ELXTH - Wo) locations
-    // will be written to but never copied to
-    // global mem
+    // reset shared row. Cells in [Wi, BDIM_X*ELXTH) are scratch (only zero
+    // contributions land there from pp >= Wi); cells in [0, Wi) are the real
+    // accumulator and get flushed to global at row-change / kernel exit.
     for (int i = 0; i < pscale; i++) {
 #pragma unroll
-        for (int j = 0; j < 2 * BDIM_X * ELXTH; j += BDIM_X) { __sh[i][j + tid] = static_cast<COMPUTE_T>(0); }
+        for (int j = 0; j < BDIM_X * ELXTH; j += BDIM_X) { __sh[i][j + tid] = static_cast<COMPUTE_T>(0); }
     }
     __syncthreads();
 
@@ -99,12 +102,11 @@ __device__ void disco_bwd_d(const int Hi, const int Wi, const int K, const int H
             for (int i = 0; i < pscale; i++) {
                 for (int j = tid; j < Wi; j += BDIM_X) {
 
-                    const COMPUTE_T v = __sh[i][j] + __sh[i][Wi + j];
+                    const COMPUTE_T v = __sh[i][j];
 
                     atomicAdd(&out[h_prev * Wo + j * pscale + i], v);
 
                     __sh[i][j] = static_cast<COMPUTE_T>(0);
-                    __sh[i][Wi + j] = static_cast<COMPUTE_T>(0);
                 }
             }
             __syncthreads();
@@ -118,27 +120,24 @@ __device__ void disco_bwd_d(const int Hi, const int Wi, const int K, const int H
         const int w_mod_ps = w % pscale;
         const int w_div_ps = w / pscale;
 
-#if __CUDA_ARCH__ >= 900
-        // Hopper+: shmem atomicAdd; no per-entry barrier needed. The flush
-        // path's __syncthreads() (above) still fences prior atomic writes.
 #pragma unroll
         for (int i = 0; i < ELXTH; i++) {
 
             const int pp = i * BDIM_X + tid;
-            atomicAdd(&__sh[w_mod_ps][w_div_ps + pp], val * __reg[i]);
-        }
-#else
-#pragma unroll
-        for (int i = 0; i < ELXTH; i++) {
-
-            const int pp = i * BDIM_X + tid;
-            __sh[w_mod_ps][w_div_ps + pp] += val * __reg[i];
+            // Skip junk threads (pp >= Wi). Their __reg[i] is 0, but if we
+            // let them write, the wrap below routes them onto real cells —
+            // which races non-atomically with real writers. Old 2x-buffer
+            // layout avoided this by keeping junk writes in a separate half.
+            if (pp < Wi) {
+                int idx = w_div_ps + pp;
+                if (idx >= Wi) idx -= Wi;   // single wrap; w_div_ps < Wi, pp < Wi -> idx < 2*Wi
+                __sh[w_mod_ps][idx] += val * __reg[i];
+            }
         }
 
         // to avoid race conditions on __sh[]
         // among consecutive iterations along nz
         __syncthreads();
-#endif
     }
     __syncthreads();
 
@@ -147,7 +146,7 @@ __device__ void disco_bwd_d(const int Hi, const int Wi, const int K, const int H
 
         for (int j = tid; j < Wi; j += BDIM_X) {
 
-            const COMPUTE_T v = __sh[i][j] + __sh[i][Wi + j];
+            const COMPUTE_T v = __sh[i][j];
             atomicAdd(&out[h_prev * Wo + j * pscale + i], v);
         }
     }
@@ -185,7 +184,7 @@ static void launch_kernel(int BC, int Hi, int Wi, int K, int Ho, int Wo, int64_t
             dim3 grid(nrows, BC);
 
             const int pscale = Wo / Wi;
-            size_t shmem = sizeof(*out_d) * (2 * (NTH * ELXTH) * pscale);
+            size_t shmem = sizeof(*out_d) * ((NTH * ELXTH) * pscale);
 
             switch (pscale) {
             case 1:
