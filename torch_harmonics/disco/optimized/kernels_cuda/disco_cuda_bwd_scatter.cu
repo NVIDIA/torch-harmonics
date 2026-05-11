@@ -118,6 +118,16 @@ __device__ void disco_bwd_d(const int Hi, const int Wi, const int K, const int H
         const int w_mod_ps = w % pscale;
         const int w_div_ps = w / pscale;
 
+#if __CUDA_ARCH__ >= 900
+        // Hopper+: shmem atomicAdd; no per-entry barrier needed. The flush
+        // path's __syncthreads() (above) still fences prior atomic writes.
+#pragma unroll
+        for (int i = 0; i < ELXTH; i++) {
+
+            const int pp = i * BDIM_X + tid;
+            atomicAdd(&__sh[w_mod_ps][w_div_ps + pp], val * __reg[i]);
+        }
+#else
 #pragma unroll
         for (int i = 0; i < ELXTH; i++) {
 
@@ -128,6 +138,7 @@ __device__ void disco_bwd_d(const int Hi, const int Wi, const int K, const int H
         // to avoid race conditions on __sh[]
         // among consecutive iterations along nz
         __syncthreads();
+#endif
     }
     __syncthreads();
 
