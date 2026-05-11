@@ -158,9 +158,7 @@ def _normalize_convolution_tensor_s2(
         geometric_scale = (1.0 - math.cos(theta_cutoff)) / 2.0 / 2.0
         psi_vals = psi_vals / max(geometric_scale, eps)
     elif basis_norm_mode == "none":
-        # legacy does `(psi - 0) / max(1.0, eps)`; for any realistic eps < 1 this is the
-        # identity, but mirror the formula exactly so we match for pathological eps >= 1
-        psi_vals = psi_vals / max(1.0, eps)
+        pass
     else:
         raise ValueError(f"Unknown basis normalization mode {basis_norm_mode}.")
 
