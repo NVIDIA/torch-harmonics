@@ -38,7 +38,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from torch_harmonics.quadrature import precompute_latitudes
-from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
+from torch_harmonics.convolution_tensor_s2 import _precompute_convolution_tensor_s2
 from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_optimized
 from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhood_s2_attention_torch
 from torch_harmonics.filter_basis import get_filter_basis

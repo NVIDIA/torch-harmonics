@@ -38,10 +38,11 @@ from torch_harmonics.disco._disco_utils import _get_psi
 from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
 from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from disco_helpers import optimized_kernels_is_available, preprocess_psi
-from torch_harmonics.disco.convolution import (
+from torch_harmonics.convolution_tensor_s2 import (
     _precompute_convolution_tensor_s2,
-    DiscreteContinuousConv,
+    _transpose_convolution_tensor_s2,
 )
+from torch_harmonics.disco.convolution import DiscreteContinuousConv
 
 # distirbuted stuff
 from torch_harmonics.distributed import polar_group_size, azimuth_group_size
@@ -223,9 +224,22 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         vals = vals.contiguous()
 
         if self.optimized_kernel:
-            # preprocessed data-structure for GPU kernel
+            # preprocessed data-structure for forward GPU kernel
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_out_local, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+
+            # psi_T for the gather-based backward kernel.
+            # This rank's local psi covers entries with input lat in
+            # [0, nlat_in_local); psi_T's row index is over that local slice.
+            ker_idx_T, col_idx_T, vals_T, roff_idx_T = _transpose_convolution_tensor_s2(
+                ker_idx, row_idx, col_idx, vals,
+                in_shape=(self.nlat_in_local, self.nlon_in),
+                out_shape=(self.nlat_out_local, self.nlon_out),
+            )
+            self.register_buffer("psi_T_roff_idx", roff_idx_T, persistent=False)
+            self.register_buffer("psi_T_ker_idx", ker_idx_T, persistent=False)
+            self.register_buffer("psi_T_col_idx", col_idx_T, persistent=False)
+            self.register_buffer("psi_T_vals", vals_T, persistent=False)
 
         # save all datastructures
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
@@ -255,7 +269,14 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         if self.optimized_kernel:
             x = _disco_s2_contraction_optimized(
-                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out_local, self.nlon_out
+                x,
+                # forward psi
+                self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx,
+                self.psi_col_idx, self.psi_vals,
+                # backward psi_T (for autograd)
+                self.psi_T_roff_idx, self.psi_T_ker_idx,
+                self.psi_T_col_idx, self.psi_T_vals,
+                self.kernel_size, self.nlat_out_local, self.nlon_out,
             )
         else:
             x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
@@ -402,9 +423,24 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         vals = vals.contiguous()
 
         if self.optimized_kernel:
-            # preprocessed data-structure for GPU kernel
+            # preprocessed data-structure for forward GPU kernel
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_in_local, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+
+            # psi_T for the gather-based backward kernel. The local psi
+            # was built via _precompute(out_shape, in_shape) and split by
+            # output lat; function-locally Hi/Wi are the rank's local
+            # bigger-grid (nlat_out_local, nlon_out) and Ho/Wo are the
+            # smaller-grid (nlat_in_local, nlon_in).
+            ker_idx_T, col_idx_T, vals_T, roff_idx_T = _transpose_convolution_tensor_s2(
+                ker_idx, row_idx, col_idx, vals,
+                in_shape=(self.nlat_out_local, self.nlon_out),
+                out_shape=(self.nlat_in_local, self.nlon_in),
+            )
+            self.register_buffer("psi_T_roff_idx", roff_idx_T, persistent=False)
+            self.register_buffer("psi_T_ker_idx", ker_idx_T, persistent=False)
+            self.register_buffer("psi_T_col_idx", col_idx_T, persistent=False)
+            self.register_buffer("psi_T_vals", vals_T, persistent=False)
 
         # save all datastructures
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
@@ -444,7 +480,14 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         if self.optimized_kernel:
             out = _disco_s2_transpose_contraction_optimized(
-                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out_local, self.nlon_out
+                x,
+                # forward psi (used by autograd backward)
+                self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx,
+                self.psi_col_idx, self.psi_vals,
+                # backward psi_T (used by the transpose conv's spatial spread)
+                self.psi_T_roff_idx, self.psi_T_ker_idx,
+                self.psi_T_col_idx, self.psi_T_vals,
+                self.kernel_size, self.nlat_out_local, self.nlon_out,
             )
         else:
             out = _disco_s2_transpose_contraction_torch(x, self.psi_st.to(x.device), self.nlon_out)

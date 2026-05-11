@@ -138,6 +138,9 @@ def get_ext_modules():
         disco_sources.extend([
             "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd.cu",
             "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd.cu",
+            # Side op `backward_scatter`, kept for A/B benchmarking against
+            # the new gather backward. Not wired into the conv module.
+            "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd_scatter.cu",
         ])
         ext_modules.append(
             CUDAExtension(

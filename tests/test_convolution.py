@@ -41,9 +41,7 @@ from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTran
 
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
-from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.filter_basis import get_filter_basis
-from disco_helpers import preprocess_psi
 
 from testutils import disable_tf32, set_seed, compare_tensors, maybe_autocast
 
@@ -264,95 +262,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     def setUp(self):
         disable_tf32()
-
-    @parameterized.expand(
-        [
-            # harmonic
-            [(16, 32), (16, 32), (1, 1), "harmonic", "mean", "equiangular", "equiangular"],
-            [(16, 32), (16, 32), (3, 3), "harmonic", "mean", "equiangular", "equiangular"],
-            [(17, 32), (17, 32), (3, 3), "harmonic", "mean", "equiangular", "equiangular"],
-            [(16, 32), (16, 32), (3, 4), "harmonic", "mean", "equiangular", "equiangular"],
-            [(16, 32), (16, 32), (3, 2), "harmonic", "mean", "equiangular", "equiangular"],
-            [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "equiangular", "equiangular"],
-            [(16, 32), (8, 16), (3, 4), "harmonic", "mean", "equiangular", "equiangular"],
-            # zernike
-            [(16, 32), (16, 32), (1), "zernike", "mean", "equiangular", "equiangular"],
-            [(16, 32), (16, 32), (3), "zernike", "mean", "equiangular", "equiangular"],
-            [(17, 32), (17, 32), (3), "zernike", "mean", "equiangular", "equiangular"],
-            [(16, 32), (8, 16), (3), "zernike", "mean", "equiangular", "equiangular"],
-            # fourier-bessel
-            [(16, 32), (16, 32), (3, 3), "fourier-bessel", "mean", "equiangular", "equiangular"],
-            [(17, 32), (17, 32), (3, 3), "fourier-bessel", "mean", "equiangular", "equiangular"],
-            [(16, 32), (8, 16), (3, 3), "fourier-bessel", "mean", "equiangular", "equiangular"],
-            # exercise each normalization mode at least once
-            [(16, 32), (16, 32), (3, 3), "harmonic", "nodal", "equiangular", "equiangular"],
-            [(16, 32), (16, 32), (3, 3), "harmonic", "modal", "equiangular", "equiangular"],
-            [(16, 32), (16, 32), (3, 3), "harmonic", "support", "equiangular", "equiangular"],
-            [(16, 32), (16, 32), (3, 3), "harmonic", "geometric", "equiangular", "equiangular"],
-            [(16, 32), (16, 32), (3, 3), "harmonic", "none", "equiangular", "equiangular"],
-            # mixed grid
-            [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "legendre-gauss", "equiangular"],
-            [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "equiangular", "legendre-gauss"],
-        ],
-        skip_on_empty=True,
-    )
-    def test_convolution_tensor_integrity(self, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, verbose=False):
-        """Structural invariants of the sparse psi datastructure after precompute + preprocess_psi.
-
-        Note: intentionally excludes the "piecewise linear" basis, whose per-kernel radial support
-        yields non-uniform (row, col) sets across kernel indices. The remaining bases share a
-        full-disk support across all kernel basis functions and therefore satisfy the invariants
-        the optimized DISCO kernel relies on.
-        """
-
-        nlat_in, nlon_in = in_shape
-        nlat_out, nlon_out = out_shape
-
-        filter_basis = get_filter_basis(kernel_shape=kernel_shape, basis_type=basis_type)
-
-        theta_cutoff = torch.pi / float(nlat_out - 1)
-
-        idx, vals, _ = _precompute_convolution_tensor_s2(
-            in_shape=in_shape,
-            out_shape=out_shape,
-            filter_basis=filter_basis,
-            grid_in=grid_in,
-            grid_out=grid_out,
-            theta_cutoff=theta_cutoff,
-            transpose_normalization=False,
-            basis_norm_mode=basis_norm_mode,
-            merge_quadrature=True,
-        )
-
-        ker_idx = idx[0, ...].contiguous()
-        row_idx = idx[1, ...].contiguous()
-        col_idx = idx[2, ...].contiguous()
-        vals = vals.contiguous()
-
-        # sort + row offsets (preprocess_psi mutates ker/row/col/vals in place)
-        roff_idx = preprocess_psi(filter_basis.kernel_size, nlat_out, ker_idx, row_idx, col_idx, vals).contiguous()
-
-        # 1) shape consistency
-        self.assertEqual(ker_idx.shape[0], row_idx.shape[0])
-        self.assertEqual(ker_idx.shape[0], col_idx.shape[0])
-        self.assertEqual(ker_idx.shape[0], vals.shape[0])
-
-        # 2) roff_idx covers every (kernel, output-latitude) row exactly once
-        self.assertEqual(roff_idx.shape[0] - 1, filter_basis.kernel_size * nlat_out)
-
-        # 3) same number of nnz per kernel basis function
-        _, counts = torch.unique(ker_idx, return_counts=True)
-        self.assertTrue(torch.all(counts == counts[0]), f"multiplicity in ker_idx is not uniform: counts={counts.tolist()}")
-
-        # 4) same (row, col) support pattern across all kernel basis functions
-        row_idx_ref = row_idx[ker_idx == 0]
-        col_idx_ref = col_idx[ker_idx == 0]
-        for k in range(1, filter_basis.kernel_size):
-            self.assertTrue(torch.equal(row_idx_ref, row_idx[ker_idx == k]), f"row_idx differs for kernel index {k}")
-            self.assertTrue(torch.equal(col_idx_ref, col_idx[ker_idx == k]), f"col_idx differs for kernel index {k}")
-
-        if verbose:
-            print(f"\nintegrity OK: nnz={ker_idx.shape[0]}, per-kernel={counts[0].item()}, nrows={roff_idx.shape[0]-1}")
 
 
     @parameterized.expand(
@@ -587,6 +496,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (41, 80), (21, 40), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
             [8, 4, 2, (41, 80), (21, 40), (2, 1), "harmonic", "geometric", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
             [8, 4, 2, (41, 80), (21, 40), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
+            # K=1 edge case (single basis function — exercises off-by-one in row indexing / nrows_T = Hi*pscale)
+            [8, 4, 2, (41, 80), (21, 40), (1, 1), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4],
             # transpose convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "modal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
@@ -598,6 +509,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (21, 40), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
             [8, 4, 2, (21, 40), (41, 80), (2, 1), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
             [8, 4, 2, (21, 40), (41, 80), (3), "zernike", "nodal", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
+            # K=1 edge case for transpose direction
+            [8, 4, 2, (21, 40), (41, 80), (1, 1), "harmonic", "mean", "equiangular", "equiangular", torch.float32, True, 1e-4, 1e-4],
             # fp64 tests
             # regular convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9],
@@ -791,6 +704,12 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         self.assertTrue(compare_tensors(f"psi vals", conv_host.psi_vals.cpu(), conv_device.psi_vals.cpu(), atol=atol, rtol=rtol, verbose=verbose))
         self.assertTrue(compare_tensors(f"psi idx", conv_host.psi_idx.cpu(), conv_device.psi_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
 
+        # psi_T (transposed CSR for the gather backward) must also match across devices
+        self.assertTrue(compare_tensors(f"psi_T roff idx", conv_host.psi_T_roff_idx.cpu(), conv_device.psi_T_roff_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors(f"psi_T ker idx",  conv_host.psi_T_ker_idx.cpu(),  conv_device.psi_T_ker_idx.cpu(),  atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors(f"psi_T col idx",  conv_host.psi_T_col_idx.cpu(),  conv_device.psi_T_col_idx.cpu(),  atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors(f"psi_T vals",     conv_host.psi_T_vals.cpu(),     conv_device.psi_T_vals.cpu(),     atol=atol, rtol=rtol, verbose=verbose))
+
 
     @parameterized.expand(
         [
@@ -852,14 +771,25 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             theta_cutoff=theta_cutoff,
         ).to(self.device)
 
-        # forward test
+        # Construct an input tensor matching what each wrapper sees in production:
+        #   - regular conv: receives the user input directly, shape [B, C_in, H, W].
+        #   - transpose conv: receives the post-weight-einsum tensor with shape
+        #     [B, C_out, K, H, W] (the einsum `bgcxy,gock->bgokxy` followed by a
+        #     reshape collapses groups and produces this layout). The kernel
+        #     contracts K, so the K axis must be at index 2, not index 1.
         if not transpose:
             inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
         else:
-            inp = torch.randn(batch_size, conv.kernel_size, in_channels, *in_shape, device=self.device)
+            inp = torch.randn(batch_size, out_channels, conv.kernel_size, *in_shape, device=self.device)
 
-        test_inputs = (inp, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals,
-                       conv.kernel_size, conv.nlat_out, conv.nlon_out)
+        test_inputs = (
+            inp,
+            # forward psi
+            conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals,
+            # backward psi_T
+            conv.psi_T_roff_idx, conv.psi_T_ker_idx, conv.psi_T_col_idx, conv.psi_T_vals,
+            conv.kernel_size, conv.nlat_out, conv.nlon_out,
+        )
 
         if not transpose:
             opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs)

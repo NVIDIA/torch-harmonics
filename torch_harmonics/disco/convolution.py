@@ -30,7 +30,6 @@
 #
 
 import abc
-import warnings
 from typing import Tuple, Union, Optional
 
 import math
@@ -38,340 +37,15 @@ import math
 import torch
 import torch.nn as nn
 
-from torch_harmonics.cache import lru_cache
-from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
+from torch_harmonics.convolution_tensor_s2 import (
+    _precompute_convolution_tensor_s2,
+    _transpose_convolution_tensor_s2,
+)
 from ._disco_utils import _get_psi
 from .optimized.disco_optimized import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
 from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
-from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
+from torch_harmonics.filter_basis import get_filter_basis
 from disco_helpers import optimized_kernels_is_available, preprocess_psi
-
-
-def _normalize_convolution_tensor_s2(
-    psi_idx,
-    psi_vals,
-    in_shape,
-    out_shape,
-    kernel_size,
-    quad_weights,
-    theta_cutoff,
-    transpose_normalization=False,
-    basis_norm_mode="mean",
-    merge_quadrature=False,
-    isotropic_mask=None,
-    eps=1e-9,
-):
-    """Normalizes convolution tensor values based on specified normalization mode.
-
-    This function applies different normalization strategies to the convolution tensor
-    values based on the basis_norm_mode parameter. It can normalize individual basis
-    functions, compute mean normalization across all basis functions, or use support
-    weights. The function also optionally merges quadrature weights into the tensor.
-
-    Parameters
-    -----------
-    psi_idx: torch.Tensor
-        Index tensor for the sparse convolution tensor.
-    psi_vals: torch.Tensor
-        Value tensor for the sparse convolution tensor.
-    in_shape: Tuple[int]
-        Tuple of (nlat_in, nlon_in) representing input grid dimensions.
-    out_shape: Tuple[int]
-        Tuple of (nlat_out, nlon_out) representing output grid dimensions.
-    kernel_size: int
-        Number of kernel basis functions.
-    quad_weights: torch.Tensor
-        Quadrature weights for numerical integration.
-    theta_cutoff: float
-        Angular cutoff of the filter support (radians). Required by the "geometric" mode,
-        which normalizes by the theoretical area measure of the spherical cap of half-angle
-        theta_cutoff; unused by other modes.
-    transpose_normalization: bool
-        If True, applies normalization in transpose direction.
-    basis_norm_mode: str
-        Normalization mode, one of ["none", "nodal", "modal", "mean", "support", "geometric"].
-        The legacy names "individual" and "area ratio" are accepted as deprecated aliases
-        for "nodal" and "geometric" respectively; each emits a DeprecationWarning.
-    merge_quadrature: bool
-        If True, multiplies values by quadrature weights.
-    isotropic_mask: Optional[Sequence[bool]]
-        Per-kernel-index boolean mask; True marks an axisymmetric (m=0) basis function.
-        Used by the "modal" mode to decide which kernels get a weighted-mean bias
-        subtraction (anisotropic only). If None, only kernel index 0 is treated as isotropic.
-    eps: float
-        Small epsilon value to prevent division by zero.
-
-    Returns
-    -------
-    torch.Tensor
-        Normalized convolution tensor values.
-
-    Raises
-    ------
-    ValueError
-        If basis_norm_mode is not one of the supported modes.
-    """
-
-    if basis_norm_mode == "individual":
-        warnings.warn(
-            'basis_norm_mode="individual" is deprecated, use "nodal" instead.',
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        basis_norm_mode = "nodal"
-    elif basis_norm_mode == "area ratio":
-        warnings.warn(
-            'basis_norm_mode="area ratio" is deprecated, use "geometric" instead.',
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        basis_norm_mode = "geometric"
-
-    # reshape the indices implicitly to be ikernel, out_shape[0], in_shape[0], in_shape[1]
-    idx = torch.stack([psi_idx[0], psi_idx[1], psi_idx[2] // in_shape[1], psi_idx[2] % in_shape[1]], dim=0)
-
-    # getting indices for adressing kernels, input and output latitudes
-    ikernel = idx[0]
-
-    if transpose_normalization:
-        ilat_out = idx[2]
-        ilat_in = idx[1]
-        # here we are deliberately swapping input and output shapes to handle transpose normalization with the same code
-        nlat_out = in_shape[0]
-        correction_factor = out_shape[1] / in_shape[1]
-    else:
-        ilat_out = idx[1]
-        ilat_in = idx[2]
-        nlat_out = out_shape[0]
-
-    # get the quadrature weights
-    q = quad_weights[ilat_in].reshape(-1)
-
-    # buffer to store intermediate values
-    bias = torch.zeros(kernel_size, nlat_out, dtype=psi_vals.dtype, device=psi_vals.device)
-    scale = torch.zeros(kernel_size, nlat_out, dtype=psi_vals.dtype, device=psi_vals.device)
-    support = torch.zeros(kernel_size, nlat_out, dtype=psi_vals.dtype, device=psi_vals.device)
-
-    # loop through dimensions to compute the norms
-    for ik in range(kernel_size):
-        for ilat in range(nlat_out):
-
-            # find indices corresponding to the given output latitude and kernel basis function
-            iidx = torch.argwhere((ikernel == ik) & (ilat_out == ilat))
-
-            # compute the support
-            support[ik, ilat] = torch.sum(q[iidx])
-
-            # for modal normalization, subtract the weighted mean from anisotropic modes
-            # so that directional modes integrate to zero over their support
-            is_isotropic = isotropic_mask[ik] if isotropic_mask is not None else (ik == 0)
-            if basis_norm_mode == "modal" and not is_isotropic and support[ik, ilat].abs() > eps:
-                bias[ik, ilat] = torch.sum(psi_vals[iidx] * q[iidx]) / support[ik, ilat]
-
-            scale[ik, ilat] = torch.sum((psi_vals[iidx] - bias[ik, ilat]).abs() * q[iidx])
-
-    # precompute the per-ik mean for "mean" mode so we don't rely on Python function-scope
-    # reuse of b/s across ilat iterations inside the loop below
-    if basis_norm_mode == "mean":
-        bias_per_ik = bias.mean(dim=1)
-        scale_per_ik = scale.mean(dim=1)
-
-    # precompute the "geometric" scalar once; it's ik/ilat-independent
-    if basis_norm_mode == "geometric":
-        geometric_scale = (1.0 - math.cos(theta_cutoff)) / 2.0 / 2.0
-
-    # loop over values and renormalize
-    for ik in range(kernel_size):
-        for ilat in range(nlat_out):
-
-            iidx = torch.argwhere((ikernel == ik) & (ilat_out == ilat))
-
-            if basis_norm_mode in ["nodal", "modal"]:
-                b = bias[ik, ilat]
-                s = scale[ik, ilat]
-            elif basis_norm_mode == "mean":
-                b = bias_per_ik[ik]
-                s = scale_per_ik[ik]
-            elif basis_norm_mode == "support":
-                b = 0.0
-                s = support[ik, ilat]
-            elif basis_norm_mode == "geometric":
-                b = 0.0
-                s = geometric_scale
-            elif basis_norm_mode == "none":
-                b = 0.0
-                s = 1.0
-            else:
-                raise ValueError(f"Unknown basis normalization mode {basis_norm_mode}.")
-
-            psi_vals[iidx] = (psi_vals[iidx] - b) / max(s, eps)
-
-            if merge_quadrature:
-                psi_vals[iidx] = psi_vals[iidx] * q[iidx]
-
-    if transpose_normalization and merge_quadrature:
-        psi_vals = psi_vals / correction_factor
-
-    return psi_vals
-
-
-@lru_cache(typed=True, copy=True)
-def _precompute_convolution_tensor_s2(
-    in_shape: Tuple[int],
-    out_shape: Tuple[int],
-    filter_basis: FilterBasis,
-    grid_in: Optional[str] = "equiangular",
-    grid_out: Optional[str] = "equiangular",
-    theta_cutoff: Optional[float] = 0.01 * math.pi,
-    theta_eps: Optional[float] = 1e-3,
-    transpose_normalization: Optional[bool] = False,
-    basis_norm_mode: Optional[str] = "nodal",
-    merge_quadrature: Optional[bool] = False,
-):
-    r"""
-    Precomputes the rotated filters at positions $R^{-1}_j \omega_i = R^{-1}_j R_i \nu = Y(-\theta_j)Z(\phi_i - \phi_j)Y(\theta_j)\nu$.
-    Assumes a tensorized grid on the sphere with an equidistant sampling in longitude as described in Ocampo et al.
-    The output tensor has shape kernel_shape x nlat_out x (nlat_in * nlon_in).
-
-    The rotation of the Euler angles uses the YZY convention, which applied to the northpole $(0,0,1)^T$ yields
-    $$
-    Y(\alpha) Z(\beta) Y(\gamma) n =
-        {\begin{bmatrix}
-            \cos(\gamma)\sin(\alpha) + \cos(\alpha)\cos(\beta)\sin(\gamma) \\
-            \sin(\beta)\sin(\gamma) \\
-            \cos(\alpha)\cos(\gamma)-\cos(\beta)\sin(\alpha)\sin(\gamma)
-        \end{bmatrix}}
-    $$
-
-    Parameters
-    -----------
-    in_shape: Tuple[int]
-        Input shape of the convolution tensor
-    out_shape: Tuple[int]
-        Output shape of the convolution tensor
-    filter_basis: FilterBasis
-        Filter basis functions
-    grid_in: str
-        Input grid type
-    grid_out: str
-        Output grid type
-    theta_cutoff: float
-        Theta cutoff for the filter basis functions
-    theta_eps: float
-        Epsilon for the theta cutoff
-    transpose_normalization: bool
-        Whether to normalize the convolution tensor in the transpose direction
-    basis_norm_mode: str
-        Mode for basis normalization
-    merge_quadrature: bool
-        Whether to merge the quadrature weights into the convolution tensor
-
-    Returns
-    -------
-    out_idx: torch.Tensor
-        Index tensor of the convolution tensor
-    out_vals: torch.Tensor
-        Values tensor of the convolution tensor
-
-    """
-
-    assert len(in_shape) == 2
-    assert len(out_shape) == 2
-
-    kernel_size = filter_basis.kernel_size
-
-    nlat_in, nlon_in = in_shape
-    nlat_out, nlon_out = out_shape
-
-    # precompute input and output grids
-    lats_in, win = precompute_latitudes(nlat_in, grid=grid_in)
-    lats_out, wout = precompute_latitudes(nlat_out, grid=grid_out)
-
-    # compute the phi differences
-    # It's imporatant to not include the 2 pi point in the longitudes, as it is equivalent to lon=0
-    lons_in = precompute_longitudes(nlon_in)
-
-    # compute quadrature weights and merge them into the convolution tensor.
-    # These quadrature integrate to 1 over the sphere.
-    if transpose_normalization:
-        quad_weights = wout.reshape(-1, 1) / nlon_in / 2.0
-    else:
-        quad_weights = win.reshape(-1, 1) / nlon_in / 2.0
-
-    # effective theta cutoff if multiplied with a fudge factor to avoid aliasing with grid width (especially near poles)
-    theta_cutoff_eff = (1.0 + theta_eps) * theta_cutoff
-
-    out_idx = []
-    out_vals = []
-
-    beta = lons_in
-    gamma = lats_in.reshape(-1, 1)
-
-    # compute trigs
-    cbeta = torch.cos(beta)
-    sbeta = torch.sin(beta)
-    cgamma = torch.cos(gamma)
-    sgamma = torch.sin(gamma)
-
-    # compute row offsets
-    out_roff = torch.zeros(nlat_out + 1, dtype=torch.int64, device=lons_in.device)
-    out_roff[0] = 0
-    for t in range(nlat_out):
-        # the last angle has a negative sign as it is a passive rotation, which rotates the filter around the y-axis
-        alpha = -lats_out[t]
-
-        # compute cartesian coordinates of the rotated position
-        # This uses the YZY convention of Euler angles, where the last angle (alpha) is a passive rotation,
-        # and therefore applied with a negative sign
-        x = torch.cos(alpha) * cbeta * sgamma + cgamma * torch.sin(alpha)
-        y = sbeta * sgamma
-        z = -cbeta * torch.sin(alpha) * sgamma + torch.cos(alpha) * cgamma
-
-        # normalization is important to avoid NaNs when arccos and atan are applied
-        # this can otherwise lead to spurious artifacts in the solution
-        norm = torch.sqrt(x * x + y * y + z * z)
-        x = x / norm
-        y = y / norm
-        z = z / norm
-
-        # compute spherical coordinates, where phi needs to fall into the [0, 2pi) range
-        theta = torch.arccos(z)
-        phi = torch.arctan2(y, x)
-        phi = torch.where(phi < 0.0, phi + 2 * torch.pi, phi)
-
-        # find the indices where the rotated position falls into the support of the kernel
-        iidx, vals = filter_basis.compute_support_vals(theta, phi, r_cutoff=theta_cutoff_eff)
-
-        # add the output latitude and reshape such that psi has dimensions kernel_shape x nlat_out x (nlat_in*nlon_in)
-        idx = torch.stack([iidx[:, 0], t * torch.ones_like(iidx[:, 0]), iidx[:, 1] * nlon_in + iidx[:, 2]], dim=0)
-
-        # append indices and values to the COO datastructure, compute row offsets
-        out_idx.append(idx)
-        out_vals.append(vals)
-        out_roff[t + 1] = out_roff[t] + iidx.shape[0]
-
-    # concatenate the indices and values
-    out_idx = torch.cat(out_idx, dim=-1)
-    out_vals = torch.cat(out_vals, dim=-1)
-
-    out_vals = _normalize_convolution_tensor_s2(
-        out_idx,
-        out_vals,
-        in_shape,
-        out_shape,
-        kernel_size,
-        quad_weights,
-        theta_cutoff,
-        transpose_normalization=transpose_normalization,
-        basis_norm_mode=basis_norm_mode,
-        merge_quadrature=merge_quadrature,
-        isotropic_mask=filter_basis.isotropic_mask,
-    )
-
-    out_idx = out_idx.contiguous()
-    out_vals = out_vals.contiguous()
-
-    return out_idx, out_vals, out_roff
 
 
 class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
@@ -539,9 +213,24 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         vals = vals.contiguous()
 
         if self.optimized_kernel:
-            # preprocessed data-structure for GPU kernel
+            # preprocessed data-structure for forward GPU kernel
+            # NOTE: preprocess_psi mutates (ker_idx, row_idx, col_idx, vals) in place
+            # to be sorted by (ker, row); we build psi_T from the sorted arrays.
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_out, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+
+            # psi_T data structure for the gather-based backward kernel.
+            # Backward gathers per (b,c,hi,wi) cell from grad_out via psi_T,
+            # avoiding the atomicAdd contention of a scatter implementation.
+            ker_idx_T, col_idx_T, vals_T, roff_idx_T = _transpose_convolution_tensor_s2(
+                ker_idx, row_idx, col_idx, vals,
+                in_shape=(self.nlat_in, self.nlon_in),
+                out_shape=(self.nlat_out, self.nlon_out),
+            )
+            self.register_buffer("psi_T_roff_idx", roff_idx_T, persistent=False)
+            self.register_buffer("psi_T_ker_idx", ker_idx_T, persistent=False)
+            self.register_buffer("psi_T_col_idx", col_idx_T, persistent=False)
+            self.register_buffer("psi_T_vals", vals_T, persistent=False)
 
         # save all datastructures
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
@@ -564,7 +253,14 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         if self.optimized_kernel:
             x = _disco_s2_contraction_optimized(
-                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
+                x,
+                # forward psi
+                self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx,
+                self.psi_col_idx, self.psi_vals,
+                # backward psi_T (for autograd)
+                self.psi_T_roff_idx, self.psi_T_ker_idx,
+                self.psi_T_col_idx, self.psi_T_vals,
+                self.kernel_size, self.nlat_out, self.nlon_out,
             )
         else:
             x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
@@ -680,9 +376,28 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         vals = vals.contiguous()
 
         if self.optimized_kernel:
-            # preprocessed data-structure for GPU kernel
+            # preprocessed data-structure for forward GPU kernel.
+            # NOTE: preprocess_psi mutates (ker_idx, row_idx, col_idx, vals)
+            # in place to be sorted by (ker, row); psi_T is built from the
+            # sorted arrays (it re-sorts by row_T anyway).
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_in, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+
+            # psi_T for the gather-based backward kernel. The transpose
+            # conv's psi was built via _precompute_convolution_tensor_s2(
+            # out_shape, in_shape, ...) so its function-local Hi/Wi are the
+            # transpose conv's (nlat_out, nlon_out) and Ho/Wo are
+            # (nlat_in, nlon_in). _transpose_convolution_tensor_s2's in_shape param names the
+            # grid that psi_T's row index spans — i.e., the bigger grid.
+            ker_idx_T, col_idx_T, vals_T, roff_idx_T = _transpose_convolution_tensor_s2(
+                ker_idx, row_idx, col_idx, vals,
+                in_shape=(self.nlat_out, self.nlon_out),
+                out_shape=(self.nlat_in, self.nlon_in),
+            )
+            self.register_buffer("psi_T_roff_idx", roff_idx_T, persistent=False)
+            self.register_buffer("psi_T_ker_idx", ker_idx_T, persistent=False)
+            self.register_buffer("psi_T_col_idx", col_idx_T, persistent=False)
+            self.register_buffer("psi_T_vals", vals_T, persistent=False)
 
         # save all datastructures
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
@@ -713,7 +428,14 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         if self.optimized_kernel:
             out = _disco_s2_transpose_contraction_optimized(
-                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
+                x,
+                # forward psi (used by autograd backward)
+                self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx,
+                self.psi_col_idx, self.psi_vals,
+                # backward psi_T (used by the transpose conv's spatial spread)
+                self.psi_T_roff_idx, self.psi_T_ker_idx,
+                self.psi_T_col_idx, self.psi_T_vals,
+                self.kernel_size, self.nlat_out, self.nlon_out,
             )
         else:
             out = _disco_s2_transpose_contraction_torch(x, self.psi_st.to(x.device), self.nlon_out)

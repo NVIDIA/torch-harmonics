@@ -52,10 +52,23 @@ extern "C" {
 
 namespace disco_kernels {
 
-    // Declare the operators
+    // Declare the operators.
+    //
+    // `forward`  (gather): inp[B,C,Hi,Wi] + psi  -> out[B,C,K,Ho,Wo].   K is a free axis.
+    // `backward` (gather): inp[B,C,K,Hi,Wi] + psi_T -> out[B,C,Ho,Wo].  K is contracted.
+    //
+    // Both ops are gather-style and take CSR-like buffers. The backward op no
+    // longer carries a row_idx tensor: psi_T's row is derivable from the output
+    // cell coordinate via `row_T = ho * pscale + (wo % pscale)` where
+    // pscale = nlon_out / nlon_in. (Hi, Wi) is the smaller grid (input of this
+    // op); (Ho, Wo) is the bigger grid (output of this op).
     TORCH_LIBRARY(disco_kernels, m) {
         m.def("forward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor", {at::Tag::pt2_compliant_tag});
-        m.def("backward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor", {at::Tag::pt2_compliant_tag});
+        m.def("backward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor", {at::Tag::pt2_compliant_tag});
+        // Side op kept ONLY for A/B benchmarking against the new gather backward.
+        // Same signature as the pre-refactor `backward` (with row_idx). Not wired
+        // into the conv module.
+        m.def("backward_scatter(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor", {at::Tag::pt2_compliant_tag});
     }
 
 }
