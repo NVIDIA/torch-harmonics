@@ -185,20 +185,19 @@ def _normalize_convolution_tensor_s2(
 
     # per-mode (b, s) selection per nonzero, then renormalize in a single elementwise pass
     if basis_norm_mode in ("nodal", "modal"):
-        b_per_nz = bias.view(-1)[gid]
-        s_per_nz = scale.view(-1)[gid]
-        psi_vals = (psi_vals - b_per_nz) / s_per_nz.clamp(min=eps)
+        scale_per_nz = scale.view(-1)[gid]
+        psi_vals = (psi_vals - bias_per_nz) / scale_per_nz.clamp(min=eps)
     elif basis_norm_mode == "mean":
         # average over latitudes per kernel; bias is zero in this mode but we keep the
         # mean(dim=1) to mirror the legacy formulation exactly
         bias_per_ik = bias.mean(dim=1)
         scale_per_ik = scale.mean(dim=1)
-        b_per_nz = bias_per_ik[ikernel]
-        s_per_nz = scale_per_ik[ikernel]
-        psi_vals = (psi_vals - b_per_nz) / s_per_nz.clamp(min=eps)
+        bias_per_nz_per_ik = bias_per_ik[ikernel]
+        scale_per_nz_per_ik = scale_per_ik[ikernel]
+        psi_vals = (psi_vals - bias_per_nz_per_ik) / scale_per_nz_per_ik.clamp(min=eps)
     elif basis_norm_mode == "support":
-        s_per_nz = support.view(-1)[gid]
-        psi_vals = psi_vals / s_per_nz.clamp(min=eps)
+        support_scale_per_nz = support.view(-1)[gid]
+        psi_vals = psi_vals / support_scale_per_nz.clamp(min=eps)
     elif basis_norm_mode == "geometric":
         geometric_scale = (1.0 - math.cos(theta_cutoff)) / 2.0 / 2.0
         psi_vals = psi_vals / max(geometric_scale, eps)
