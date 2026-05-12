@@ -62,6 +62,11 @@ class TestFilterBasis(unittest.TestCase):
     # ------------------------------------------------------------------
     # L2 normalization: ||psi_i||_L2 ~ 1 for normalized bases
     # ------------------------------------------------------------------
+    # The piecewise-linear basis is intentionally excluded: it is a partition-of-unity
+    # interpolation basis (its defining property is that the hat functions sum to 1 in
+    # the interior support), not an L2-orthonormal expansion. Imposing unit L2 norm on
+    # its hats would break the partition-of-unity property that test_piecewise_linear_partition_of_unity
+    # checks.
     @parameterized.expand(
         [
             # basis_type, kernel_shape, r_cutoff
