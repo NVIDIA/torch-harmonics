@@ -880,6 +880,71 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
+            # (in_shape, out_shape, kernel_shape, transpose)
+            # one row per dispatcher direction; the op-input has no other differentiable
+            # input than `inp`, so freezing it covers the full contract surface.
+            [(16, 32), (8, 16), (3, 3), False],  # standard conv
+            [(8, 16), (16, 32), (3, 3), True ],  # transpose conv
+        ],
+        skip_on_empty=True,
+    )
+    @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
+    def test_no_input_grad(self, in_shape, out_shape, kernel_shape, transpose, verbose=False):
+        """Verifies the disco autograd contract when the module input does not require gradients.
+
+        The disco custom op only has one differentiable input (``inp``, slot 0); the rest of the
+        schema are int index buffers, float ``vals`` registered as a non-grad buffer, and Python
+        ints. So the contract reduces to: when ``inp.requires_grad=False``, the backward must not
+        crash and ``inp.grad`` must remain ``None`` — while the conv's learnable weight still gets
+        a gradient via the einsum that sits outside the custom op.
+
+        Baseline (``inp.requires_grad=True``) is also exercised as a sanity check.
+        """
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+
+        set_seed(333)
+
+        batch_size, in_channels, out_channels = 2, 4, 4
+        basis_type = "piecewise linear"
+        nlat_in = in_shape[0]
+        theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
+
+        Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
+        conv = Conv(
+            in_channels, out_channels, in_shape, out_shape,
+            kernel_shape, basis_type=basis_type, basis_norm_mode="mean",
+            groups=1, grid_in="equiangular", grid_out="equiangular",
+            bias=True, theta_cutoff=theta_cutoff,
+        ).to(self.device)
+
+        # --- baseline: inp requires grad ---
+        inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device, requires_grad=True)
+        out = conv(inp)
+        out.sum().backward()
+        self.assertIsNotNone(inp.grad, "baseline: inp.grad should be populated when requires_grad=True")
+        self.assertIsNotNone(conv.weight.grad, "baseline: weight.grad should be populated")
+
+        # --- contract: inp does NOT require grad ---
+        conv.zero_grad()
+        inp_nograd = torch.randn(batch_size, in_channels, *in_shape, device=self.device, requires_grad=False)
+        out = conv(inp_nograd)
+        out.sum().backward()
+        self.assertIsNone(inp_nograd.grad,
+                          "contract violation: inp.grad must be None when requires_grad=False")
+        self.assertIsNotNone(conv.weight.grad,
+                             "weight.grad should still be populated via the einsum outside the op")
+
+        # --- contract: psi_* buffers must never accumulate gradients ---
+        # (they are non-learnable index/value tensors registered via register_buffer)
+        for name in ("psi_roff_idx", "psi_ker_idx", "psi_row_idx", "psi_col_idx", "psi_vals"):
+            buf = getattr(conv, name)
+            self.assertIsNone(buf.grad,
+                              f"buffer {name} should not accumulate a gradient (requires_grad={buf.requires_grad})")
+
+
+    @parameterized.expand(
+        [
             [8, 4, 2, (91, 180), (91, 180), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4],
         ],
         skip_on_empty=True,
