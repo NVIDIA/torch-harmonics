@@ -84,7 +84,7 @@ if optimized_kernels_is_available():
     @torch.library.custom_op("attention_kernels::_neighborhood_s2_attention_optimized", mutates_args=())
     def _neighborhood_s2_attention_optimized(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor,
                                              quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-                                             max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+                                             nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
 
         # reshape, folding num heads into batch dim
         B, _, H, W = kw.shape
@@ -115,14 +115,13 @@ if optimized_kernels_is_available():
     @torch.library.register_fake("attention_kernels::_neighborhood_s2_attention_optimized")
     def _(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor,
         quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-        max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
         out_shape = (kw.shape[0], vw.shape[1], nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=kw.dtype, device=kw.device)
 
 def _neighborhood_s2_attention_bwd_optimized(ctx, grad_output):
     col_idx, row_off, quad_weights, kw, vw, qw = ctx.saved_tensors
     nh = ctx.nh
-    max_psi_nnz = ctx.max_psi_nnz
     nlon_in = ctx.nlon_in
     nlat_out = ctx.nlat_out
     nlon_out = ctx.nlon_out
@@ -161,7 +160,7 @@ def _neighborhood_s2_attention_bwd_optimized(ctx, grad_output):
     dqw = dqw.reshape(B, -1, Hq, Wq).to(dtype=qw_dtype)
 
     return dkw, dvw, dqw, \
-            None, None, None, None, None, None, None, None
+            None, None, None, None, None, None, None
 
 # register backward
 if optimized_kernels_is_available():

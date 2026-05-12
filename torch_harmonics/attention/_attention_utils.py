@@ -32,10 +32,9 @@
 # Shared backward-context helper used by both the torch reference kernels
 # (in kernels_torch/) and the optimized custom_op path (in optimized/).
 def _setup_context_attention_backward(ctx, inputs, output):
-    kw, vw, qw, quad_weights, col_idx, row_off, max_psi_nnz, nh, nlon_in, nlat_out, nlon_out = inputs
+    kw, vw, qw, quad_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out = inputs
     ctx.save_for_backward(col_idx, row_off, quad_weights, kw, vw, qw)
     ctx.nh = nh
-    ctx.max_psi_nnz = max_psi_nnz
     ctx.nlon_in = nlon_in
     ctx.nlat_out = nlat_out
     ctx.nlon_out = nlon_out

@@ -340,8 +340,6 @@ class NeighborhoodAttentionS2(nn.Module):
         col_idx = idx[2, ...].contiguous()
         roff_idx = roff.contiguous()
 
-        # store some metadata
-        self.psi_max_nnz = col_idx.max().item() + 1
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
@@ -439,7 +437,6 @@ class NeighborhoodAttentionS2(nn.Module):
             self.quad_weights,
             self.psi_col_idx,
             self.psi_roff_idx,
-            self.psi_max_nnz,
             self.num_heads,
             self.nlon_in,
             self.nlat_out,

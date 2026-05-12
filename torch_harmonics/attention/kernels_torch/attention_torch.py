@@ -366,7 +366,7 @@ def _neighborhood_s2_attention_bwd_dq_torch(kx: torch.Tensor, vx: torch.Tensor, 
 @torch.library.custom_op("attention_kernels::_neighborhood_s2_attention_torch", mutates_args=())
 def _neighborhood_s2_attention_torch(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor,
                                      quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-                                     max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+                                     nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
 
     # reshape, folding num heads into batch dim
     B, _, H, W = kw.shape
@@ -403,7 +403,7 @@ def _neighborhood_s2_attention_torch(kw: torch.Tensor, vw: torch.Tensor, qw: tor
 @torch.library.register_fake("attention_kernels::_neighborhood_s2_attention_torch")
 def _(kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor,
       quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor,
-      max_psi_nnz: int, nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+      nh: int, nlon_in: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
     out_shape = (kw.shape[0], vw.shape[1], nlat_out, nlon_out)
     return torch.empty(out_shape, dtype=kw.dtype, device=kw.device)
 
@@ -463,7 +463,7 @@ def _neighborhood_s2_attention_bwd_torch(ctx, grad_output):
         dqw = None
 
     return dkw, dvw, dqw, \
-            None, None, None, None, None, None, None, None
+            None, None, None, None, None, None, None
 
 # register backward
 torch.library.register_autograd("attention_kernels::_neighborhood_s2_attention_torch", _neighborhood_s2_attention_bwd_torch, setup_context=_setup_context_attention_backward)

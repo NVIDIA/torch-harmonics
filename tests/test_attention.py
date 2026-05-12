@@ -99,6 +99,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             [4, 4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", False, 1e-5, 1e-3],
             # downsampling: nlon_in must be an integer multiple of nlon_out (pscale = nlon_in / nlon_out)
             [4, 8, 4, 4, (12, 24), (6, 12), "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # lat 2x, lon 2x (pscale=2)
+            [4, 4, 8, 4, (12, 24), (6, 12), "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # C_in<C_out asym, pscale=2
             [4, 4, 4, 1, (6, 12),  (6, 6),  "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # lon-only, pscale=2
             [4, 4, 4, 1, (12, 24), (6, 8),  "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # pscale=3
             [4, 4, 4, 1, (12, 24), (3, 6),  "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # pscale=4
@@ -111,6 +112,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             [4, 4, 4, 1, (12, 24), (11, 24),"equiangular",    "equiangular",    False, 1e-5, 1e-3],  # odd nlat_out only, pscale=1
             # upsampling: mirror of the downsampling rows above (in_shape ↔ out_shape, grid_in ↔ grid_out)
             [4, 8, 4, 4, (6, 12),  (12, 24),"equiangular",    "equiangular",    False, 1e-5, 1e-3],  # pscale_out=2
+            [4, 4, 8, 4, (6, 12),  (12, 24),"equiangular",    "equiangular",    False, 1e-5, 1e-3],  # C_in<C_out asym, pscale_out=2
             [4, 4, 4, 1, (6, 6),   (6, 12), "equiangular",    "equiangular",    False, 1e-5, 1e-3],  # lon-only, pscale_out=2
             [4, 4, 4, 1, (6, 8),   (12, 24),"equiangular",    "equiangular",    False, 1e-5, 1e-3],  # pscale_out=3
             [4, 4, 4, 1, (3, 6),   (12, 24),"equiangular",    "equiangular",    False, 1e-5, 1e-3],  # pscale_out=4
@@ -133,6 +135,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             [4, 4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", True, 1e-5, 1e-3],
             # downsampling: nlon_in must be an integer multiple of nlon_out (pscale = nlon_in / nlon_out)
             [4, 8, 4, 4, (12, 24), (6, 12), "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # lat 2x, lon 2x (pscale=2)
+            [4, 4, 8, 4, (12, 24), (6, 12), "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # C_in<C_out asym, pscale=2
             [4, 4, 4, 1, (6, 12),  (6, 6),  "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # lon-only, pscale=2
             [4, 4, 4, 1, (12, 24), (6, 8),  "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # pscale=3
             [4, 4, 4, 1, (12, 24), (3, 6),  "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # pscale=4
@@ -145,6 +148,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             [4, 4, 4, 1, (12, 24), (11, 24),"equiangular",    "equiangular",    True, 1e-5, 1e-3],  # odd nlat_out only, pscale=1
             # upsampling: mirror of the downsampling rows above (in_shape ↔ out_shape, grid_in ↔ grid_out)
             [4, 8, 4, 4, (6, 12),  (12, 24),"equiangular",    "equiangular",    True, 1e-5, 1e-3],  # pscale_out=2
+            [4, 4, 8, 4, (6, 12),  (12, 24),"equiangular",    "equiangular",    True, 1e-5, 1e-3],  # C_in<C_out asym, pscale_out=2
             [4, 4, 4, 1, (6, 6),   (6, 12), "equiangular",    "equiangular",    True, 1e-5, 1e-3],  # lon-only, pscale_out=2
             [4, 4, 4, 1, (6, 8),   (12, 24),"equiangular",    "equiangular",    True, 1e-5, 1e-3],  # pscale_out=3
             [4, 4, 4, 1, (3, 6),   (12, 24),"equiangular",    "equiangular",    True, 1e-5, 1e-3],  # pscale_out=4
@@ -214,6 +218,110 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             pgrad_opt = p_opt.grad.cpu()
             pgrad_ref = p_ref.grad.cpu()
             self.assertTrue(compare_tensors(f"parameter grad {name_ref}", pgrad_opt, pgrad_ref, atol=atol, rtol=rtol, verbose=verbose))
+
+    @parameterized.expand(
+        [
+            # Format: [in_shape, out_shape, frozen]  -- which of {k, v, q} has no requires_grad
+            # one downsample (pscale=2) and one upsample (pscale_out=2) row, each
+            # exercised three times to freeze each input branch in turn.
+            [(12, 24), (6, 12), "k"],  # downsample, frozen k
+            [(12, 24), (6, 12), "v"],  # downsample, frozen v
+            [(12, 24), (6, 12), "q"],  # downsample, frozen q
+            [(6, 12), (12, 24), "k"],  # upsample,   frozen k
+            [(6, 12), (12, 24), "v"],  # upsample,   frozen v
+            [(6, 12), (12, 24), "q"],  # upsample,   frozen q
+        ],
+        skip_on_empty=True,
+    )
+    @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
+    def test_selective_requires_grad(self, in_shape, out_shape, frozen, verbose=False):
+        """Verifies the autograd contract when exactly one of {k, v, q} doesn't require gradients.
+
+        Freezing the raw input AND its projection weight+bias makes the op's input tensor a
+        non-requires_grad leaf, so ctx.needs_input_grad reflects the intended frozen branch.
+        We then confirm:
+          - forward outputs still match between torch ref and optimized,
+          - the frozen input + its projection params have .grad == None,
+          - the remaining input/parameter grads match between ref and optimized.
+        """
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+
+        set_seed(333)
+
+        batch_size, channels, heads = 4, 4, 1
+        atol, rtol = 1e-5, 1e-3
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        def make_inputs(device):
+            ins = {
+                "k": torch.randn(batch_size, channels, nlat_in,  nlon_in,  device=device, dtype=torch.float32),
+                "v": torch.randn(batch_size, channels, nlat_in,  nlon_in,  device=device, dtype=torch.float32),
+                "q": torch.randn(batch_size, channels, nlat_out, nlon_out, device=device, dtype=torch.float32),
+            }
+            for name in ("k", "v", "q"):
+                ins[name].requires_grad_(name != frozen)
+            return ins
+
+        inputs_ref = make_inputs(self.device)
+        inputs_opt = {n: t.detach().clone().requires_grad_(t.requires_grad) for n, t in inputs_ref.items()}
+
+        model_ref = NeighborhoodAttentionS2(
+            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape,
+            grid_in="equiangular", grid_out="equiangular", bias=True, optimized_kernel=False,
+        ).to(self.device)
+        model_opt = NeighborhoodAttentionS2(
+            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape,
+            grid_in="equiangular", grid_out="equiangular", bias=True, optimized_kernel=True,
+        ).to(self.device)
+        model_opt.load_state_dict(model_ref.state_dict())
+
+        # freeze the chosen branch's projection so kw/vw/qw (the op inputs) are non-requires_grad
+        for model in (model_ref, model_opt):
+            getattr(model, f"{frozen}_weights").requires_grad_(False)
+            bias = getattr(model, f"{frozen}_bias")
+            if bias is not None:
+                bias.requires_grad_(False)
+
+        # forward
+        out_ref = model_ref(inputs_ref["q"], inputs_ref["k"], inputs_ref["v"])
+        out_opt = model_opt(inputs_opt["q"], inputs_opt["k"], inputs_opt["v"])
+        self.assertTrue(torch.allclose(out_opt, out_ref, atol=atol, rtol=rtol),
+                        f"Forward outputs differ between torch ref and optimized (frozen={frozen})")
+
+        # backward
+        grad = torch.randn_like(out_ref)
+        out_ref.backward(grad)
+        out_opt.backward(grad)
+
+        # input grads: frozen one must be None, the other two must match
+        for name in ("k", "v", "q"):
+            g_ref = inputs_ref[name].grad
+            g_opt = inputs_opt[name].grad
+            if name == frozen:
+                self.assertIsNone(g_ref, f"ref: expected None grad for frozen input {name}")
+                self.assertIsNone(g_opt, f"opt: expected None grad for frozen input {name}")
+            else:
+                self.assertIsNotNone(g_ref, f"ref: missing grad for input {name}")
+                self.assertIsNotNone(g_opt, f"opt: missing grad for input {name}")
+                self.assertTrue(compare_tensors(
+                    f"input grad {name} (frozen={frozen})",
+                    g_opt.cpu(), g_ref.cpu(), atol=atol, rtol=rtol, verbose=verbose,
+                ))
+
+        # parameter grads: frozen-branch projection (weights + bias) must be None, others must match
+        for (n_ref, p_ref), (n_opt, p_opt) in zip(model_ref.named_parameters(), model_opt.named_parameters()):
+            if n_ref.startswith(f"{frozen}_"):
+                self.assertIsNone(p_ref.grad, f"ref: expected None grad for frozen param {n_ref}")
+                self.assertIsNone(p_opt.grad, f"opt: expected None grad for frozen param {n_opt}")
+            else:
+                self.assertIsNotNone(p_ref.grad, f"ref: missing grad for param {n_ref}")
+                self.assertIsNotNone(p_opt.grad, f"opt: missing grad for param {n_opt}")
+                self.assertTrue(compare_tensors(
+                    f"parameter grad {n_ref} (frozen={frozen})",
+                    p_opt.grad.cpu(), p_ref.grad.cpu(), atol=atol, rtol=rtol, verbose=verbose,
+                ))
 
     # caution: multihead-implementation between full and neighborhood attention still seem to differ. tests are only done for single head
     @parameterized.expand(
@@ -515,7 +623,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         test_inputs = (kw, vw, qw,
                        att.quad_weights, att.psi_col_idx, att.psi_roff_idx,
-                       att.psi_max_nnz, att.num_heads, nlon_in, nlat_out, nlon_out)
+                       att.num_heads, nlon_in, nlat_out, nlon_out)
 
         opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs)
         # opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs, test_utils="test_schema")
