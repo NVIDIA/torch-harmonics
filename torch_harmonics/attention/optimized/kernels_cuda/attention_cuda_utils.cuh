@@ -236,6 +236,16 @@ __device__ VAL_T __block_sum(VAL_T val) {
     return val;
 }
 
+template<typename VAL_T>
+__device__ void swap_d(VAL_T &a, VAL_T &b) {
+
+    auto tmp = a;
+    a = b;
+    b = tmp;
+
+    return;
+}
+
 // transpose utils
 template<int BDIM_X,
          int BDIM_Y,

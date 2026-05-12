@@ -437,16 +437,6 @@ __device__ void process_data(const float quad_w,
     return;
 }
 
-template<typename VAL_T>
-__device__ void swap_d(VAL_T &a, VAL_T &b) {
-
-    auto tmp = a;
-    a = b;
-    b = tmp;
-
-    return;
-}
-
 template<int BDIM_X,
          int BDIM_Y,
          int CHIN_AS_OUT, // 1 iif "BDIM_X*(NLOC-1) <= nchan_in <= BDIM_X*NLOC" else 0
@@ -475,6 +465,11 @@ void s2_attn_fwd_ring_step_special_vec_tma_k(int nchan_in,         // no. of FLO
                                                    float    *__restrict__ alpha_sum_buf,      // [batch][nlat_out][nlon_out] (in/out)
                                                    float    *__restrict__ qdotk_max_buf) {    // [batch][nlat_out][nlon_out] (in/out)
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+
+    if constexpr(!::cuda::std::is_same<FLOATV_T, float4>::value) {   
+        __trap();
+        return;
+    }
 
     static_assert(0 == (BDIM_X & (BDIM_X-1)));
     static_assert(0 == (BDIM_Y & (BDIM_Y-1)));
@@ -550,16 +545,14 @@ void s2_attn_fwd_ring_step_special_vec_tma_k(int nchan_in,         // no. of FLO
     col_idx += rbeg;
     const int rlen = rend - rbeg;
 
-    int hi_global;
-
     if (rlen == 0) {
         return;
     }
 
-    hi_global = prefetch_data(col_idx[0],
-                              wo, nchan_in, nchan_out, nlat_halo, nlon_in, 
-                              nlon_kx, pscale, lon_lo_kx, lat_halo_start, kx, vx,
-                              bar[0], shkx[0], shvx[0]);
+    int hi_global = prefetch_data(col_idx[0],
+                                  wo, nchan_in, nchan_out, nlat_halo, nlon_in, 
+                                  nlon_kx, pscale, lon_lo_kx, lat_halo_start, kx, vx,
+                                  bar[0], shkx[0], shvx[0]);
 
     #pragma unroll (2)
     for (int off = 0; off < rlen-1; off++) {
@@ -584,7 +577,6 @@ void s2_attn_fwd_ring_step_special_vec_tma_k(int nchan_in,         // no. of FLO
         swap_d(shkx[0], shkx[1]);
         swap_d(shvx[0], shvx[1]);
 
-        //do_iter = do_iter_next;
         hi_global = hi_global_next;
     }
     if (hi_global > -1) {
@@ -674,7 +666,7 @@ void launch_spc_attn_ring_fwd(int nloc,
 #if 0
             printf("getPtxver(): %d\n", getPtxver());
             printf("Launching s2_attn_fwd_ring_step_special_vec_tma_k<%d, %d, %d, %d><<<(%u, %u), (%u, %u), %zu, ...>>>\n",
-                    BDIM_X, BDIM_Y, nchans_in >= BDIM_X*(CUR_LOC_SIZE-1) && nchans_in <= BDIM_X* CUR_LOC_SIZE, CUR_LOC_SIZE,
+                    BDIM_X, BDIM_Y, chin_as_out, CUR_LOC_SIZE,
                     grid.x, grid.y, block.x, block.y, shsize);
 #endif
             if (chin_as_out) {
