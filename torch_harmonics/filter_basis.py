@@ -356,7 +356,7 @@ class HarmonicFilterBasis(FilterBasis):
         # computes the envelope
         vals = self.hann_window(r, width=width) * harmonic
 
-        # L2 normalization (skip during the initial norm computation in __init__, when _l2_norms is still None)
+        # L2 normalization on the unit disk (skip during initial norm computation when _l2_norms is None)
         if self._l2_norms is not None:
             norms = self._l2_norms.to(device=vals.device, dtype=vals.dtype)
             vals = vals / norms[iidx[:, 0]].clamp(min=1e-12)
@@ -435,9 +435,9 @@ class ZernikeFilterBasis(FilterBasis):
         n = nkernel[iidx[:, 0], 0, 0]
         l = lkernel[iidx[:, 0], 0, 0]
 
-        # L2 normalization on the unit disk (measure r dr dphi)
-        # radial: int_0^1 R_n^|m|(r)^2 r dr = 1/(2(n+1))
-        # angular: int_0^{2pi} cos^2(m phi) dphi = 2pi (m=0) or pi (m!=0)
+        # L2 normalization on the unit disk (measure u du dphi, u = r/r_cutoff).
+        # Radial: int_0^1 R_n^|m|(u)^2 u du = 1/(2(n+1));
+        # Angular: int_0^{2pi} cos^2(m phi) dphi = 2pi (m=0) or pi (m!=0).
         m = 2 * l - n
         epsilon_m = torch.where(m == 0, 2.0, 1.0).to(r.dtype)
         norm = torch.sqrt(math.pi * epsilon_m / (2.0 * (n.to(r.dtype) + 1))).clamp(min=1e-12)
@@ -529,11 +529,7 @@ class FourierBesselFilterBasis(FilterBasis):
     def compute_l2_norms(self, r_cutoff: float = 1.0, nr: int = 50, nphi: int = 200) -> torch.Tensor:
         """Analytic L2 norms of the Fourier-Bessel basis on a disk of radius r_cutoff.
 
-        The L2 norm scales linearly with r_cutoff (radial integral picks up an R factor,
-        the angular integral is R-independent).
-
-        nr and nphi are accepted for signature compatibility with the base class and are
-        unused here — the analytic formula doesn't need a discretization grid.
+        nr and nphi are accepted for signature compatibility with the base class.
 
         Radial: integral_0^R J_m(alpha r/R)^2 r dr = R^2 * J_{m+1}(alpha)^2 / 2.
         Angular: integral_0^{2pi} cos^2(m phi) dphi = 2pi (m=0) or pi (m>0).
@@ -604,8 +600,8 @@ class FourierBesselFilterBasis(FilterBasis):
             torch.sin(ms_b * phi_b),
         )
 
-        # L2 normalisation
-        norms = self.compute_l2_norms().to(device=r.device, dtype=r.dtype).reshape(K, 1, 1)
+        # L2 normalisation on the unit disk
+        norms = self.compute_l2_norms(r_cutoff=1.0).to(device=r.device, dtype=r.dtype).reshape(K, 1, 1)
         vals_full = radial * angular / norms
 
         # Apply support mask (broadcast)
