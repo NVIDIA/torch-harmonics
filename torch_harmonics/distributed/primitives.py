@@ -206,18 +206,19 @@ def _reduce(input_, use_fp32=True, group=None):
     # Bypass the function if we are using only 1 GPU.
     if dist.get_world_size(group=group) == 1:
         return input_
-    
-    # All-reduce.
+
+    # dist.all_reduce is in-place on its tensor argument; the .clone() forces a fresh
+    # buffer so we never mutate the caller's tensor (which would alias an autograd-
+    # tracked value when the input is fp32 + contiguous).
     if use_fp32:
         dtype = input_.dtype
-        inputf_ = input_.float()
-        inputf_ = inputf_.contiguous()
+        inputf_ = input_.float().contiguous().clone()
         dist.all_reduce(inputf_, group=group)
         input_ = inputf_.to(dtype)
     else:
-        input_ = input_.contiguous()
+        input_ = input_.contiguous().clone()
         dist.all_reduce(input_, group=group)
-        
+
     return input_
     
 
