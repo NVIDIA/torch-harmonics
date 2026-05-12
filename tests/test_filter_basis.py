@@ -80,7 +80,11 @@ class TestFilterBasis(unittest.TestCase):
         skip_on_empty=True,
     )
     def test_l2_normalization(self, basis_type, kernel_shape, r_cutoff, tol=1e-2):
-        """L2-normalized bases should have ||psi_i||_L2 ~ 1 for all i."""
+        """L2-normalized bases have unit norm on the unit disk.
+
+        On a physical disk of radius R the norm equals R (Jacobian factor),
+        so we check ||psi_i||_{L2(disk R)} ~ R.
+        """
         basis = get_filter_basis(kernel_shape=kernel_shape, basis_type=basis_type)
         r, phi, dr, dphi = _disk_quadrature(r_cutoff, nr=150, nphi=600)
         psi = _eval_dense(basis, r, phi, r_cutoff)
@@ -88,8 +92,8 @@ class TestFilterBasis(unittest.TestCase):
         for i in range(basis.kernel_size):
             norm_sq = (psi[i] ** 2 * r * dr * dphi).sum()
             norm = norm_sq.sqrt().item()
-            self.assertAlmostEqual(norm, 1.0, delta=tol,
-                                   msg=f"basis {basis_type} k={i}: ||psi||={norm:.6f}, expected ~1.0")
+            self.assertAlmostEqual(norm, r_cutoff, delta=tol,
+                                   msg=f"basis {basis_type} k={i}: ||psi||={norm:.6f}, expected ~{r_cutoff}")
 
     # ------------------------------------------------------------------
     # Orthogonality: <psi_i, psi_j> ~ 0 for i != j
