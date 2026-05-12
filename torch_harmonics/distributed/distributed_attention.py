@@ -191,6 +191,19 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         az_rank          = ctx.az_rank
         az_size          = ctx.az_size
 
+        # Autograd contract: skip per-branch work (kernel calls, allreduces) for any
+        # of {kw, vw, qw} that doesn't need a gradient, and return None in those slots.
+        # This is what lets torch.compile / AOTAutograd prune dead subgraphs (including
+        # the NCCL allreduces) from the compiled backward.
+        kw_needs = ctx.needs_input_grad[0]
+        vw_needs = ctx.needs_input_grad[1]
+        qw_needs = ctx.needs_input_grad[2]
+
+        # Defensive: if somehow none of (kw, vw, qw) need grad (e.g., user wired
+        # requires_grad onto one of the index buffers), there's nothing to compute.
+        if not (kw_needs or vw_needs or qw_needs):
+            return (None,) * 18
+
         B, C_k, H_halo, _ = kw.shape
         _, C_v, _,      _ = vw.shape
         device = kw.device
@@ -200,7 +213,10 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # ----------------------------------------------------------------
         # Backward pass 1: re-accumulate {alpha_sum, qdotk_max, integral,
         #                                  alpha_k, alpha_kvw} via ring.
-        # Start fresh (NOT from the saved forward values).
+        # Required whenever any of (kw, vw, qw) needs grad: integral feeds
+        # pass-2's integral_norm and dqy reads alpha_k/alpha_kvw. The kernel
+        # writes all three buffers in one call, so pass-1 cannot be pruned
+        # per-branch.
         # ----------------------------------------------------------------
         bwd_alpha_sum = torch.zeros(B, nlat_out_local, nlon_out_local,
                                     device=device, dtype=torch.float32)
@@ -239,81 +255,108 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                 kw_chunk = recv_kw.clone()
                 vw_chunk = recv_vw.clone()
 
-        # Finalize pass-1: normalize integral, compute dqy
-        # Use the SAVED forward alpha_sum/qdotk_max (same values, but authoritative)
-        alpha_sum_inv    = 1.0 / fwd_alpha_sum                           # [B, H, W]
-        integral_norm    = integral_buf * alpha_sum_inv                  # [B, H, W]
-        alpha_sum_inv_sq = alpha_sum_inv ** 2
+        # ----------------------------------------------------------------
+        # Finalize pass-1 outputs.
+        # Use the SAVED forward alpha_sum/qdotk_max (same values, but authoritative).
+        # ----------------------------------------------------------------
+        alpha_sum_inv = 1.0 / fwd_alpha_sum                              # [B, H, W]
+
+        # integral_norm only feeds pass-2; skip if neither kw nor vw needs grad.
+        if kw_needs or vw_needs:
+            integral_norm = integral_buf * alpha_sum_inv                  # [B, H, W]
 
         # dqy[b,h,w,c] = inv_sq*(alpha_sum*alpha_kvw - integral*alpha_k)
-        dqy_cl = alpha_sum_inv_sq.unsqueeze(-1) * (
-            fwd_alpha_sum.unsqueeze(-1) * alpha_kvw_buf
-            - integral_buf.unsqueeze(-1) * alpha_k_buf
-        )                                                                 # [B, H, W, C_k]
-        dqy = dqy_cl.permute(0, 3, 1, 2).contiguous()                  # [B, C_k, H, W]
+        if qw_needs:
+            alpha_sum_inv_sq = alpha_sum_inv ** 2
+            dqy_cl = alpha_sum_inv_sq.unsqueeze(-1) * (
+                fwd_alpha_sum.unsqueeze(-1) * alpha_kvw_buf
+                - integral_buf.unsqueeze(-1) * alpha_k_buf
+            )                                                              # [B, H, W, C_k]
+            dqy = dqy_cl.permute(0, 3, 1, 2).contiguous()                # [B, C_k, H, W]
+        else:
+            dqy = None
 
         # ----------------------------------------------------------------
         # Backward pass 2: scatter dkw/dvw contributions.
         # Each GPU computes its contribution to every lon chunk it visits;
         # then allreduce across azimuth ranks, extract local chunk.
+        # Skip entirely if neither kw nor vw needs grad. The fused kernel
+        # writes both dkw_chunk_cl and dvw_chunk_cl in one call, so the
+        # per-chunk allocations stay; we just gate the accumulation /
+        # allreduce / extract per branch.
         # TODO: replace allreduce with ring reduce-scatter for efficiency.
         # ----------------------------------------------------------------
-        kw_chunk      = kw.contiguous()
-        vw_chunk      = vw.contiguous()
-        nlon_in_total = sum(nlon_kx_list)
-        # Gradient buffers in channels-last as expected by CUDA kernel
-        dkw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_k,
-                                  device=device, dtype=torch.float32)
-        dvw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_v,
-                                  device=device, dtype=torch.float32)
+        if kw_needs or vw_needs:
+            kw_chunk      = kw.contiguous()
+            vw_chunk      = vw.contiguous()
+            nlon_in_total = sum(nlon_kx_list)
+            dkw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_k,
+                                      device=device, dtype=torch.float32) if kw_needs else None
+            dvw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_v,
+                                      device=device, dtype=torch.float32) if vw_needs else None
 
-        for step in range(az_size):
-            src_rank  = (az_rank + step) % az_size
-            lon_lo_kx = lon_chunk_starts[src_rank]
-            nlon_kx   = nlon_kx_list[src_rank]
+            for step in range(az_size):
+                src_rank  = (az_rank + step) % az_size
+                lon_lo_kx = lon_chunk_starts[src_rank]
+                nlon_kx   = nlon_kx_list[src_rank]
 
-            # Channels-last gradient buffers for this chunk
-            dkw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_k,
-                                       device=device, dtype=torch.float32)
-            dvw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_v,
-                                       device=device, dtype=torch.float32)
+                # Channels-last gradient buffers for this chunk (both required by the
+                # fused kernel signature; we discard the one we don't need).
+                dkw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_k,
+                                           device=device, dtype=torch.float32)
+                dvw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_v,
+                                           device=device, dtype=torch.float32)
 
-            attention_kernels.backward_ring_step_pass2.default(
-                kw_chunk, vw_chunk, qw, dy_cf,
-                fwd_alpha_sum, fwd_qdotk_max, integral_norm,
-                dkw_chunk_cl, dvw_chunk_cl,
-                quad_weights, psi_col_idx, psi_roff_idx, psi_row_idx,
-                nlon_in, pscale, lon_lo_kx, lat_halo_start,
-                nlat_out_local, nlon_out_local,
-            )
+                attention_kernels.backward_ring_step_pass2.default(
+                    kw_chunk, vw_chunk, qw, dy_cf,
+                    fwd_alpha_sum, fwd_qdotk_max, integral_norm,
+                    dkw_chunk_cl, dvw_chunk_cl,
+                    quad_weights, psi_col_idx, psi_roff_idx, psi_row_idx,
+                    nlon_in, pscale, lon_lo_kx, lat_halo_start,
+                    nlat_out_local, nlon_out_local,
+                )
 
-            dkw_full_cl[:, :, lon_lo_kx:lon_lo_kx + nlon_kx, :].add_(dkw_chunk_cl)
-            dvw_full_cl[:, :, lon_lo_kx:lon_lo_kx + nlon_kx, :].add_(dvw_chunk_cl)
+                if kw_needs:
+                    dkw_full_cl[:, :, lon_lo_kx:lon_lo_kx + nlon_kx, :].add_(dkw_chunk_cl)
+                if vw_needs:
+                    dvw_full_cl[:, :, lon_lo_kx:lon_lo_kx + nlon_kx, :].add_(dvw_chunk_cl)
 
-            if step < az_size - 1:
-                next_src = (az_rank + step + 1) % az_size
-                recv_kw, recv_vw, reqs = _ring_kv(
-                    kw_chunk, vw_chunk, az_group,
-                    nlon_kx_list[next_src], nlon_kx_list[next_src])
-                for req in reqs:
-                    req.wait()
-                kw_chunk = recv_kw.clone()
-                vw_chunk = recv_vw.clone()
+                if step < az_size - 1:
+                    next_src = (az_rank + step + 1) % az_size
+                    recv_kw, recv_vw, reqs = _ring_kv(
+                        kw_chunk, vw_chunk, az_group,
+                        nlon_kx_list[next_src], nlon_kx_list[next_src])
+                    for req in reqs:
+                        req.wait()
+                    kw_chunk = recv_kw.clone()
+                    vw_chunk = recv_vw.clone()
 
-        if az_size > 1 and az_group is not None:
-            dist.all_reduce(dkw_full_cl, group=az_group)
-            dist.all_reduce(dvw_full_cl, group=az_group)
+            # Per-branch allreduce — only the branches we'll return.
+            if az_size > 1 and az_group is not None:
+                if kw_needs:
+                    dist.all_reduce(dkw_full_cl, group=az_group)
+                if vw_needs:
+                    dist.all_reduce(dvw_full_cl, group=az_group)
 
-        my_lo    = lon_chunk_starts[az_rank]
-        my_nlon  = nlon_kx_list[az_rank]
-        # Extract local chunk and convert channels-last → channels-first
-        dkw_cl = dkw_full_cl[:, :, my_lo:my_lo + my_nlon, :].contiguous()
-        dvw_cl = dvw_full_cl[:, :, my_lo:my_lo + my_nlon, :].contiguous()
-        dkw = dkw_cl.permute(0, 3, 1, 2).contiguous()  # [B, C_k, H_halo, W_local]
-        dvw = dvw_cl.permute(0, 3, 1, 2).contiguous()  # [B, C_v, H_halo, W_local]
-        # No halo stripping: dkw/dvw must match kw/vw shape (= key_halo/value_halo).
-        # The autograd through torch.cat in _exchange_lat_halo extracts the
-        # middle H_in rows as the gradient for key_proj/value_proj.
+            my_lo   = lon_chunk_starts[az_rank]
+            my_nlon = nlon_kx_list[az_rank]
+            # Extract local chunk and convert channels-last → channels-first.
+            # No halo stripping: dkw/dvw must match kw/vw shape (= key_halo/value_halo).
+            # The autograd through torch.cat in _exchange_lat_halo extracts the
+            # middle H_in rows as the gradient for key_proj/value_proj.
+            if kw_needs:
+                dkw_cl = dkw_full_cl[:, :, my_lo:my_lo + my_nlon, :].contiguous()
+                dkw    = dkw_cl.permute(0, 3, 1, 2).contiguous()  # [B, C_k, H_halo, W_local]
+            else:
+                dkw = None
+            if vw_needs:
+                dvw_cl = dvw_full_cl[:, :, my_lo:my_lo + my_nlon, :].contiguous()
+                dvw    = dvw_cl.permute(0, 3, 1, 2).contiguous()  # [B, C_v, H_halo, W_local]
+            else:
+                dvw = None
+        else:
+            dkw = None
+            dvw = None
 
         # Return grads for (kw, vw, qw, psi_col, psi_roff, psi_row, quad_weights,
         #                   nlon_in, pscale, lon_chunk_starts, nlon_kx_list, lat_halo_start,
