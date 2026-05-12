@@ -61,16 +61,61 @@ def _normalize_convolution_tensor_s2(
     isotropic_mask=None,
     eps=1e-9,
 ):
-    """Normalize the sparse DISCO convolution tensor (vectorized).
 
-    Equivalent to :func:`_normalize_convolution_tensor_s2_legacy` but expressed via a
-    single ``scatter_add_`` per reduced quantity instead of a per-(ikernel, ilat_out)
-    Python double loop. Each nonzero is assigned a flat group id
+    """Normalizes convolution tensor values based on specified normalization mode.
+
+    This function applies different normalization strategies to the convolution tensor
+    values based on the basis_norm_mode parameter. It can normalize individual basis
+    functions, compute mean normalization across all basis functions, or use support
+    weights. The function also optionally merges quadrature weights into the tensor.
+
+    The implementation is fully vectorized: each nonzero is assigned a flat group id
     ``gid = ikernel * nlat_out + ilat_out`` and all per-group sums (support, bias
-    numerator, scale) are accumulated in one pass.
+    numerator, scale) are accumulated in a single ``scatter_add_`` per reduced
+    quantity, avoiding the per-(ikernel, ilat_out) Python double loop.
 
-    Parameters and return value match :func:`_normalize_convolution_tensor_s2_legacy`;
-    see that function's docstring for the full description.
+    Parameters
+    -----------
+    psi_idx: torch.Tensor
+        Index tensor for the sparse convolution tensor.
+    psi_vals: torch.Tensor
+        Value tensor for the sparse convolution tensor.
+    in_shape: Tuple[int]
+        Tuple of (nlat_in, nlon_in) representing input grid dimensions.
+    out_shape: Tuple[int]
+        Tuple of (nlat_out, nlon_out) representing output grid dimensions.
+    kernel_size: int
+        Number of kernel basis functions.
+    quad_weights: torch.Tensor
+        Quadrature weights for numerical integration.
+    theta_cutoff: float
+        Angular cutoff of the filter support (radians). Required by the "geometric" mode,
+        which normalizes by the theoretical area measure of the spherical cap of half-angle
+        theta_cutoff; unused by other modes.
+    transpose_normalization: bool
+        If True, applies normalization in transpose direction.
+    basis_norm_mode: str
+        Normalization mode, one of ["none", "nodal", "modal", "mean", "support", "geometric"].
+        The legacy names "individual" and "area ratio" are accepted as deprecated aliases
+        for "nodal" and "geometric" respectively; each emits a DeprecationWarning.
+    merge_quadrature: bool
+        If True, multiplies values by quadrature weights.
+    isotropic_mask: Optional[Sequence[bool]]
+        Per-kernel-index boolean mask; True marks an axisymmetric (m=0) basis function.
+        Used by the "modal" mode to decide which kernels get a weighted-mean bias
+        subtraction (anisotropic only). If None, only kernel index 0 is treated as isotropic.
+    eps: float
+        Small epsilon value to prevent division by zero.
+
+    Returns
+    -------
+    torch.Tensor
+        Normalized convolution tensor values.
+
+    Raises
+    ------
+    ValueError
+        If basis_norm_mode is not one of the supported modes.
     """
 
     if basis_norm_mode == "individual":
