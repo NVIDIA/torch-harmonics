@@ -142,6 +142,7 @@ def get_ext_modules():
         "torch_harmonics/disco/optimized/disco_interface.cpp",
         "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_fwd.cpp",
         "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_bwd.cpp",
+        "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_bwd_legacy.cpp",
     ]
 
     if BUILD_CUDA:

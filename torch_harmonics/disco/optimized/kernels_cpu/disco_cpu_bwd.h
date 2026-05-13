@@ -32,6 +32,9 @@
 
 #include "../disco.h"
 
+#include <algorithm>
+#include <vector>
+
 namespace disco_kernels {
 
     template <typename scalar_t>
@@ -48,33 +51,93 @@ namespace disco_kernels {
 
         const int64_t pscale = static_cast<int64_t>(Wo / Wi);
 
-        // loop over matrix entries
-        #pragma omp parallel for collapse(2)
-        for (int64_t b = 0; b < B; b++) {
-            for (int64_t c = 0; c < C; c++) {
+        // hoist base pointers + strides; raw pointer arithmetic in the hot path
+        const scalar_t* __restrict__ inp_base = inp.data();
+        scalar_t* __restrict__ out_base = out.data();
+        const int64_t inp_sB = inp.stride(0);
+        const int64_t inp_sC = inp.stride(1);
+        const int64_t inp_sK = inp.stride(2);
+        const int64_t inp_sH = inp.stride(3);
+        const int64_t out_sB = out.stride(0);
+        const int64_t out_sC = out.stride(1);
+        const int64_t out_sH = out.stride(2);
 
-                // we cannot simply collapse on this loop
-                // because we sum over ker, and row defines ker
-                for (int64_t row = 0; row < nnr; row++) {
+        const int64_t* __restrict__ roff_p = roff_idx.data();
+        const int64_t* __restrict__ ker_p  = ker_idx.data();
+        const int64_t* __restrict__ row_p  = row_idx.data();
+        const int64_t* __restrict__ col_p  = col_idx.data();
+        const scalar_t* __restrict__ val_p = vals.data();
 
-                    // since the rows are ordered accordingly, we can compute ho and ker in here
-                    int64_t hi = row_idx[roff_idx[row]];
-                    int64_t ker = ker_idx[roff_idx[row]];
+        // parallel over (b, c) only — rows cannot be collapsed because
+        // different rows write to the same (ho, wopp) positions (race).
+        #pragma omp parallel
+        {
+            // per-thread doubled output buffer; sh[wo + pscale*wi] accumulates
+            // without modulo. Bound: wo < Wo and pscale*wi < pscale*Wi = Wo, so
+            // the access index is always < 2*Wo. Flushed into out as
+            // out[ho][i] += sh[i] + sh[Wo + i] when ho changes.
+            std::vector<scalar_t> sh(2 * Wo, scalar_t(0));
+            scalar_t* __restrict__ sh_ptr = sh.data();
 
-                    // loop over input rows
-                    for (int64_t z = roff_idx[row]; z < roff_idx[row + 1]; z++) {
+            #pragma omp for collapse(2)
+            for (int64_t b = 0; b < B; b++) {
+                for (int64_t c = 0; c < C; c++) {
 
-                        // COO format, we can optimize later
-                        int64_t col = col_idx[z];
-                        scalar_t val = vals[z];
+                    // (b, c, :, :) output plane base
+                    scalar_t* __restrict__ out_bc = out_base + b * out_sB + c * out_sC;
 
-                        int64_t wo = static_cast<int64_t>(col % Wo);
-                        int64_t ho = static_cast<int64_t>(col / Wo);
+                    // ho_prev persists across rows within this (b, c): when a
+                    // new row starts with the same ho, we keep accumulating;
+                    // otherwise we flush the previous ho's buffer.
+                    int64_t ho_prev = -1;
 
-                        for (int64_t wi = 0; wi < Wi; wi++) {
-                            // compute shifted w
-                            int64_t wopp = static_cast<int64_t>((wo + pscale * wi) % Wo);
-                            out[b][c][ho][wopp] += val * inp[b][c][ker][hi][wi];
+                    for (int64_t row = 0; row < nnr; row++) {
+
+                        const int64_t soff = roff_p[row];
+                        const int64_t eoff = roff_p[row + 1];
+                        const int64_t hi   = row_p[soff];
+                        const int64_t ker  = ker_p[soff];
+
+                        // input row pointer (b, c, ker, hi, :) — fixed for this CSR row
+                        const scalar_t* __restrict__ inp_row =
+                            inp_base + b * inp_sB + c * inp_sC + ker * inp_sK + hi * inp_sH;
+
+                        for (int64_t z = soff; z < eoff; z++) {
+
+                            const int64_t col = col_p[z];
+                            const scalar_t val = val_p[z];
+
+                            const int64_t wo = col % Wo;
+                            const int64_t ho = col / Wo;
+
+                            if (ho != ho_prev) {
+                                if (ho_prev != -1) {
+                                    // flush sh into out[ho_prev] and zero sh
+                                    scalar_t* __restrict__ flush_row = out_bc + ho_prev * out_sH;
+                                    for (int64_t i = 0; i < Wo; i++) {
+                                        flush_row[i] += sh_ptr[i] + sh_ptr[Wo + i];
+                                        sh_ptr[i]      = scalar_t(0);
+                                        sh_ptr[Wo + i] = scalar_t(0);
+                                    }
+                                }
+                                ho_prev = ho;
+                            }
+
+                            // accumulate without modulo: position wo + pscale*wi
+                            // wraps into [Wo, 2*Wo) automatically; flush combines.
+                            for (int64_t wi = 0; wi < Wi; wi++) {
+                                sh_ptr[wo + pscale * wi] += val * inp_row[wi];
+                            }
+                        }
+                    }
+
+                    // final flush for this (b, c) — handles trailing ho_prev.
+                    if (ho_prev != -1) {
+                        scalar_t* __restrict__ flush_row = out_bc + ho_prev * out_sH;
+                        for (int64_t i = 0; i < Wo; i++) {
+                            flush_row[i] += sh_ptr[i] + sh_ptr[Wo + i];
+                            sh_ptr[i]      = scalar_t(0);
+                            sh_ptr[Wo + i] = scalar_t(0);
                         }
                     }
                 }
