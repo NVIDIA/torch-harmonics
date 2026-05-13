@@ -140,7 +140,8 @@ def get_ext_modules():
     # Create a single extension that includes both CPU and CUDA code
     disco_sources = [
         "torch_harmonics/disco/optimized/disco_interface.cpp",
-        "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu.cpp",
+        "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_fwd.cpp",
+        "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_bwd.cpp",
         "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_legacy.cpp",
     ]
 
