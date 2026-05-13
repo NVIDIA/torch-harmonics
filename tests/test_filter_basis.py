@@ -98,10 +98,11 @@ class TestFilterBasis(unittest.TestCase):
     # ------------------------------------------------------------------
     # Orthogonality: <psi_i, psi_j> ~ 0 for i != j
     # ------------------------------------------------------------------
+    # The harmonic basis is intentionally excluded: it is a Hann-windowed tensor product of
+    # sin/cos in Cartesian (x, y), which is orthogonal on a square but not on the disk
+    # (cross terms like int_disk cos(pi x) cos(pi y) hann^2(r) r dr dphi are not zero).
     @parameterized.expand(
         [
-            ["harmonic", (2, 2), 0.5],
-            ["harmonic", (3, 3), 0.3],
             ["zernike", (3,), 0.5],
             ["zernike", (4,), 0.3],
             ["fourier-bessel", (3, 3), 0.5],
@@ -243,7 +244,9 @@ class TestFilterBasis(unittest.TestCase):
         r = torch.full((1, nphi), r_cutoff, dtype=torch.float64)
         phi = (torch.arange(nphi, dtype=torch.float64) * dphi).unsqueeze(0)
 
-        psi = _eval_dense(basis, r, phi, r_cutoff * 1.01)  # slightly larger cutoff to include boundary
+        # the support filter r <= r_cutoff is inclusive, so points exactly at r_cutoff
+        # pass through; r/r_cutoff = 1 then makes J_m(alpha) = 0 by construction.
+        psi = _eval_dense(basis, r, phi, r_cutoff)
 
         for k in range(basis.kernel_size):
             max_val = psi[k].abs().max().item()
@@ -309,11 +312,11 @@ class TestFilterBasis(unittest.TestCase):
         skip_on_empty=True,
     )
     def test_piecewise_linear_partition_of_unity(self, kernel_shape, r_cutoff, tol=1e-10):
-        """Isotropic piecewise-linear basis should sum to ~1 in the interior of the support."""
+        """Isotropic piecewise-linear basis should sum to ~1 between the inner collocation points."""
         basis = get_filter_basis(kernel_shape=kernel_shape, basis_type="piecewise linear")
-        nr = 200
-        dr = r_cutoff / nr
-        r = (torch.arange(nr, dtype=torch.float64) + 0.5) * dr
+        nr_grid = 200
+        dr_grid = r_cutoff / nr_grid
+        r = (torch.arange(nr_grid, dtype=torch.float64) + 0.5) * dr_grid
         phi = torch.zeros_like(r)  # isotropic, phi doesn't matter
 
         r = r.unsqueeze(1)
@@ -322,9 +325,15 @@ class TestFilterBasis(unittest.TestCase):
         psi = _eval_dense(basis, r, phi, r_cutoff)
         total = psi.sum(dim=0).squeeze()
 
-        # in the interior (away from edges where partial support is expected),
-        # the sum should be close to 1
-        interior = r.squeeze() < r_cutoff * 0.9
+        # Partition of unity only holds up to the last collocation point. Collocation
+        # points sit at 0, dr, ..., (K-1)*dr where dr = 2*r_cutoff/(nr+1) and
+        # K = (nr+1)//2 is the number of distinct radii. Past (K-1)*dr only the outermost
+        # hat contributes and the sum decays linearly to 0 at r_cutoff.
+        nr = kernel_shape[0]
+        dr_basis = 2.0 * r_cutoff / (nr + 1)
+        K = (nr + 1) // 2
+        r_last = (K - 1) * dr_basis
+        interior = r.squeeze() <= r_last
         interior_sum = total[interior]
         max_err = (interior_sum - 1.0).abs().max().item()
         self.assertLess(max_err, tol,
