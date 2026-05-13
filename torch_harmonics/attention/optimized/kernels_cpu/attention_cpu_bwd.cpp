@@ -29,6 +29,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "attention_cpu_bwd.h"
+#include "attention_cpu_bwd_upsample.h"
 
 using namespace torch::indexing;
 
@@ -108,8 +109,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_cpu(tor
             nlon_in, nlat_out, nlon_out,
             batch_size, nchannels_in, nchannels_out);
     } else {
-        s2_attn_bwd_upsample_kernel<float>(kx_arr, vx_arr, qy_arr, dy_arr,
-            quad_weights_arr, col_idx_arr, roff_arr, dqy_arr, dvx_arr, dkx_arr,
+        s2_attn_bwd_upsample_dispatch(kx, vx, qy, dy, quad_weights, col_idx, row_off,
+            dqy, dvx, dkx,
             nlon_in, nlat_in, nlat_out, nlon_out,
             batch_size, nchannels_in, nchannels_out);
     }

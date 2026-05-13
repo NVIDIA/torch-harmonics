@@ -29,6 +29,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "attention_cpu_fwd.h"
+#include "attention_cpu_fwd_upsample.h"
 
 using namespace torch::indexing;
 
@@ -55,44 +56,75 @@ namespace attention_kernels {
                     "either nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (", nlon_out,
                     "), or vice versa");
 
-        // change to channels first:
+        // Remember the caller's input layout convention. stride(1) == 1 means
+        // the input is BCHW logical with BHWC physical layout (channels-last);
+        // we'll match it on the output side.
+        const bool qy_is_channels_last = qy.strides()[1] == 1;
+
+        if (downsample) {
+            // -------- Downsample / self-attention path --------
+            // Force the inputs to physical (B, H, W, C) by an explicit permute
+            // + contiguous. This mirrors CUDA's permute_4D_to0231 and avoids
+            // the fragile MemoryFormat::ChannelsLast hint that PyTorch silently
+            // ignores in some cases (notably C == 1, where channels-last and
+            // contiguous strides collapse to the same pattern).
+            //
+            // .permute(...).contiguous() is at most one physical copy: for
+            // already-channels-last inputs the permute reinterprets strides
+            // into a contiguous BHWC view and .contiguous() is a no-op.
+            kx = kx.permute({0, 2, 3, 1}).contiguous();
+            vx = vx.permute({0, 2, 3, 1}).contiguous();
+            qy = qy.permute({0, 2, 3, 1}).contiguous();
+
+            // BHWC sizes
+            const int64_t batch_size    = kx.size(0);
+            const int64_t nlat_in       = kx.size(1);
+            const int64_t nchannels_in  = qy.size(3);
+            const int64_t nchannels_out = vx.size(3);
+
+            // y allocated directly as BHWC physical (default contiguous of
+            // (B, H, W, C) shape — no memory_format hint needed).
+            auto y = torch::zeros({batch_size, nlat_out, nlon_out, nchannels_out}, qy.options());
+
+            auto kx_arr = kx.packed_accessor64<float, 4>();
+            auto vx_arr = vx.packed_accessor64<float, 4>();
+            auto qy_arr = qy.packed_accessor64<float, 4>();
+            auto y_arr  = y.packed_accessor64<float, 4>();
+            auto quad_weights_arr = quad_weights.packed_accessor64<float, 1>();
+            auto col_idx_arr      = col_idx.packed_accessor64<int64_t, 1>();
+            auto roff_arr         = row_off.packed_accessor64<int64_t, 1>();
+
+            s2_attn_fwd_kernel<float>(kx_arr, vx_arr, qy_arr, quad_weights_arr, col_idx_arr, roff_arr, y_arr,
+                nlon_in, nlat_out, nlon_out, batch_size, nchannels_in, nchannels_out);
+
+            // Return (B, C, H, W). When the caller's input was already
+            // channels-last, the permute view is the desired layout. Otherwise
+            // do a .contiguous() to get default BCHW contiguous.
+            y = y.permute({0, 3, 1, 2});
+            if (!qy_is_channels_last) { y = y.contiguous(); }
+            return y;
+        }
+
+        // -------- Upsample path (unchanged) --------
+        // TODO: migrate the upsample kernel to the same explicit-BHWC approach
+        //       once the downsample path is settled.
         bool kx_is_channels_last = kx.strides()[1] == 1;
         bool vx_is_channels_last = vx.strides()[1] == 1;
-        bool qy_is_channels_last = qy.strides()[1] == 1;
-
         if (!kx_is_channels_last) { kx = kx.contiguous(at::MemoryFormat::ChannelsLast); }
         if (!vx_is_channels_last) { vx = vx.contiguous(at::MemoryFormat::ChannelsLast); }
         if (!qy_is_channels_last) { qy = qy.contiguous(at::MemoryFormat::ChannelsLast); }
 
-        // some parameters
-        const int64_t batch_size = kx.size(0);
+        const int64_t batch_size    = kx.size(0);
         const int64_t nchannels_out = vx.size(1);
-        const int64_t nchannels_in = qy.size(1);
-        const int64_t nlat_in = kx.size(2);
+        const int64_t nchannels_in  = qy.size(1);
+        const int64_t nlat_in       = kx.size(2);
 
-        // prepare result tensor
         auto y = torch::zeros({batch_size, nchannels_out, nlat_out, nlon_out}, qy.options());
 
-        // extract accessors
-        auto roff_arr = row_off.packed_accessor64<int64_t, 1>();
-        auto col_idx_arr = col_idx.packed_accessor64<int64_t, 1>();
-        auto quad_weights_arr = quad_weights.packed_accessor64<float, 1>();
-        auto vx_arr = vx.packed_accessor64<float, 4>();
-        auto qy_arr = qy.packed_accessor64<float, 4>();
-        auto kx_arr = kx.packed_accessor64<float, 4>();
-        auto y_arr = y.packed_accessor64<float, 4>();
+        s2_attn_fwd_upsample_dispatch(kx, vx, qy, quad_weights, col_idx, row_off, y,
+            nlon_in, nlat_in, nlat_out, nlon_out, batch_size, nchannels_in, nchannels_out);
 
-        if (downsample) {
-            s2_attn_fwd_kernel<float>(kx_arr, vx_arr, qy_arr, quad_weights_arr, col_idx_arr, roff_arr, y_arr,
-                nlon_in, nlat_out, nlon_out, batch_size, nchannels_in, nchannels_out);
-        } else {
-            s2_attn_fwd_upsample_kernel<float>(kx_arr, vx_arr, qy_arr, quad_weights_arr, col_idx_arr, roff_arr, y_arr,
-                nlon_in, nlat_in, nlat_out, nlon_out, batch_size, nchannels_in, nchannels_out);
-        }
-
-        // permute back
         if (!qy_is_channels_last) { y = y.contiguous(at::MemoryFormat::Contiguous); }
-
         return y;
     }
 

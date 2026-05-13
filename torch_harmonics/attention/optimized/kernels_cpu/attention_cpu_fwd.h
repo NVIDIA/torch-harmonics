@@ -76,207 +76,135 @@ namespace attention_kernels {
         const int64_t block_wo = CACHE_BLOCK_SIZE;
         const int64_t nblock_wo = static_cast<int64_t>((nlon_out + block_wo - 1) / block_wo);
 
-        #pragma omp parallel for collapse(4)
-        for (int64_t b = 0; b < batch_size; b++) {
-            for (int64_t co = 0; co < nchannels_out; co++) {
+        // Hoist base pointers + strides. K, V, Q, and Y are all passed in with
+        // physical (B, H, W, C) layout — the wrapper has already converted
+        // inputs via an explicit `.permute({0,2,3,1}).contiguous()` and y is
+        // allocated directly as a (B, H, W, C) tensor. So
+        //   stride(0) = B-stride (H*W*C)
+        //   stride(1) = H-stride (W*C)
+        //   stride(2) = W-stride (C)
+        //   stride(3) = C-stride (1, innermost)
+        // and the ci/co inner loops below read/write contiguously via stride-1
+        // raw pointer arithmetic.
+        const scalar_t* __restrict__ kx_base = kx_arr.data();
+        const scalar_t* __restrict__ vx_base = vx_arr.data();
+        const scalar_t* __restrict__ qy_base = qy_arr.data();
+        scalar_t* __restrict__ y_base        = y_arr.data();
+        const scalar_t* __restrict__ quad_p  = quad_weights_arr.data();
+        const int64_t* __restrict__ col_p    = col_idx_arr.data();
+        const int64_t* __restrict__ roff_p   = roff_arr.data();
+
+        const int64_t kx_sB = kx_arr.stride(0);
+        const int64_t kx_sH = kx_arr.stride(1);
+        const int64_t kx_sW = kx_arr.stride(2);
+        const int64_t vx_sB = vx_arr.stride(0);
+        const int64_t vx_sH = vx_arr.stride(1);
+        const int64_t vx_sW = vx_arr.stride(2);
+        const int64_t qy_sB = qy_arr.stride(0);
+        const int64_t qy_sH = qy_arr.stride(1);
+        const int64_t qy_sW = qy_arr.stride(2);
+        const int64_t y_sB  = y_arr.stride(0);
+        const int64_t y_sH  = y_arr.stride(1);
+        const int64_t y_sW  = y_arr.stride(2);
+
+        // qdotk + softmax stats (alpha_sum, qdotk_max) only depend on (b, ho, wo, hi, wip)
+        // — NOT on co. We parallelize collapse(3) over (b, ho, bwo) and keep the
+        // co loop inside the per-nz body, where only the v-accumulation needs it.
+        // This saves the per-co duplication of qdotk + softmax work that the
+        // previous collapse(4) over (b, co, ho, bwo) did.
+        #pragma omp parallel
+        {
+            // per-thread y_tmp buffer: y_tmp[wob * nchannels_out + co]. Inner-co
+            // stride-1 matches the channels-last layout of vx, so reads and
+            // writes are both contiguous in the inner co loop.
+            std::vector<float> y_tmp(block_wo * nchannels_out);
+
+            #pragma omp for collapse(3)
+            for (int64_t b = 0; b < batch_size; b++) {
                 for (int64_t ho = 0; ho < nlat_out; ho++) {
                     for (int64_t bwo = 0; bwo < nblock_wo; bwo++) {
 
-                        // compute block start and end
-                        int64_t wo_start = bwo * block_wo;
-                        int64_t wo_end = std::min(nlon_out, wo_start + block_wo);
+                        const int64_t wo_start = bwo * block_wo;
+                        const int64_t wo_end   = std::min(nlon_out, wo_start + block_wo);
+                        const int64_t this_block = wo_end - wo_start;
 
-                        // get number of nonzeros
-                        int64_t zstart = roff_arr[ho];
-                        int64_t zend = roff_arr[ho+1];
+                        const int64_t zstart = roff_p[ho];
+                        const int64_t zend   = roff_p[ho + 1];
 
-                        // init temp arrays
+                        // zero this block's y_tmp slice
+                        std::fill(y_tmp.begin(), y_tmp.begin() + this_block * nchannels_out, 0.0f);
+
                         std::array<float, block_wo> alpha_sum{};
-                        std::array<float, block_wo> y_tmp{};
                         std::array<float, block_wo> qdotk_max;
                         qdotk_max.fill(-std::numeric_limits<float>::max());
 
-                        // loop over nonzeros
+                        // hoist (b, ho) pointer bases that survive the whole block
+                        const scalar_t* __restrict__ qy_b_ho = qy_base + b * qy_sB + ho * qy_sH;
+                        scalar_t* __restrict__       y_b_ho  = y_base  + b * y_sB  + ho * y_sH;
+                        const scalar_t* __restrict__ kx_b    = kx_base + b * kx_sB;
+                        const scalar_t* __restrict__ vx_b    = vx_base + b * vx_sB;
+
                         for (int64_t idz = zstart; idz < zend; idz++) {
-                            // get column index
-                            int64_t nz_col_idx = col_idx_arr[idz];
+                            const int64_t nz_col_idx = col_p[idz];
+                            const int64_t hi = nz_col_idx / nlon_in;
+                            const int64_t wi = nz_col_idx % nlon_in;
 
-                            // compute input indices from psi datastructure
-                            int64_t hi = static_cast<int64_t>(nz_col_idx / nlon_in);
-                            // account for output shift and ensure positive index due to circular condition
-                            int64_t wi = nz_col_idx % nlon_in;
+                            // hoist (b, hi) pointer bases + quad weight for this row
+                            const scalar_t* __restrict__ kx_b_hi = kx_b + hi * kx_sH;
+                            const scalar_t* __restrict__ vx_b_hi = vx_b + hi * vx_sH;
+                            const float qw_hi = static_cast<float>(quad_p[hi]);
 
-                            // loop over wo block
+                            // Incremental wip = (wi + pscale * wo) mod nlon_in.
+                            // One real modulo per (idz, bwo); then wip advances by
+                            // pscale per wo step and wraps with a single
+                            // conditional subtract (pscale <= nlon_in so the
+                            // post-increment value is always < 2*nlon_in).
+                            int64_t wip = (wi + pscale * wo_start) % nlon_in;
+
                             for (int64_t wo = wo_start; wo < wo_end; wo++) {
-                                int64_t wip = (wi + pscale * wo) % nlon_in;
-                                int64_t wob = wo - wo_start;
+                                const int64_t wob = wo - wo_start;
 
-                                float qdotk = 0.0;
-                                //#pragma omp simd reduction(+:qdotk)
+                                // per-wo channel-vector pointers (ci/co stride-1)
+                                const scalar_t* __restrict__ qy_bow   = qy_b_ho + wo  * qy_sW;
+                                const scalar_t* __restrict__ kx_biwip = kx_b_hi + wip * kx_sW;
+                                const scalar_t* __restrict__ vx_biwip = vx_b_hi + wip * vx_sW;
+
+                                // qdotk: pure ci reduction, stride-1 dot product
+                                float qdotk = 0.0f;
                                 for (int64_t ci = 0; ci < nchannels_in; ci++) {
-                                    qdotk += static_cast<float>(qy_arr[b][ci][ho][wo] * kx_arr[b][ci][hi][wip]);
+                                    qdotk += static_cast<float>(qy_bow[ci] * kx_biwip[ci]);
                                 }
 
-                                // update tmp max
-                                float qdotk_max_tmp = std::max(qdotk_max[wob], qdotk);
+                                // online softmax update
+                                const float qdotk_max_tmp = std::max(qdotk_max[wob], qdotk);
+                                const float discount      = std::exp(qdotk_max[wob] - qdotk_max_tmp);
+                                const float alpha         = std::exp(qdotk - qdotk_max_tmp) * qw_hi;
+                                alpha_sum[wob] = alpha + alpha_sum[wob] * discount;
 
-                                // alpha sum update
-                                float alpha = std::exp(qdotk - qdotk_max_tmp) * static_cast<float>(quad_weights_arr[hi]);
-                                alpha_sum[wob] = alpha + alpha_sum[wob] * std::exp(qdotk_max[wob] - qdotk_max_tmp);
+                                // v-accumulation: stride-1 SAXPY in co
+                                float* __restrict__ y_tmp_wob = y_tmp.data() + wob * nchannels_out;
+                                for (int64_t co = 0; co < nchannels_out; co++) {
+                                    y_tmp_wob[co] = y_tmp_wob[co] * discount +
+                                                    alpha * static_cast<float>(vx_biwip[co]);
+                                }
 
-                                // update output
-                                y_tmp[wob] = y_tmp[wob] * std::exp(qdotk_max[wob] - qdotk_max_tmp) + alpha * static_cast<float>(vx_arr[b][co][hi][wip]);
-
-                                // define new max
                                 qdotk_max[wob] = qdotk_max_tmp;
+
+                                // advance wip for the next wo; single branchless wrap
+                                wip += pscale;
+                                if (wip >= nlon_in) wip -= nlon_in;
                             }
                         }
 
-                        // update output
+                        // finalize: divide by alpha_sum and write to y (stride-1 in co)
                         for (int64_t wo = wo_start; wo < wo_end; wo++) {
-                            y_arr[b][co][ho][wo] = static_cast<scalar_t>(y_tmp[wo-wo_start] / alpha_sum[wo-wo_start]);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-
-    // -----------------------------------------------------------------------
-    // Upsample (scatter-style by intent, transposed psi).
-    //
-    // K, V live on the input (smaller) grid; Q lives on the output (larger)
-    // grid. psi is built with rows indexed by hi and cols encoding
-    // (ho, wo_canonical) on the output grid as ho * nlon_out + wo_canonical
-    // (canonical at input longitude wi=0):
-    //     row_off : indexed by hi,    length nlat_in + 1
-    //     col_idx : ho * nlon_out + wo_canonical
-    // For wi > 0 the actual output column is
-    //     wo = (wo_canonical + pscale_out * wi) mod nlon_out,
-    //     pscale_out = nlon_out / nlon_in.
-    // Requires nlon_out % nlon_in == 0.
-    //
-    // Algorithm: classical 2-pass softmax (matches the torch reference,
-    // _neighborhood_s2_attention_upsample_fwd_torch):
-    //   pass 1: for every (input, output-neighbor) pair, find qdotk_max[ho, wo]
-    //   pass 2: with max fixed, accumulate alpha_sum[ho, wo] and y_acc[ho, wo]
-    //   finalize: y = y_acc / alpha_sum
-    //
-    // To keep parallelization safe without atomics we invert the iteration so
-    // each thread owns a disjoint output block (collapse(4) over
-    // (b, co, ho, wo-block)). For each output cell we scan all psi[hi] rows
-    // and skip entries whose stored ho_neigh doesn't match — a stored
-    // (hi, wo_canonical) entry contributes to output wo iff
-    //   wo ≡ wo_canonical (mod pscale_out),
-    // and the contributing wi is wi = (wo - wo_canonical) / pscale_out within
-    // [0, nlon_in). The redundant scan over non-matching hi rows is the price
-    // we pay to avoid scatter atomics; this is the correctness reference path,
-    // not the perf path.
-    // -----------------------------------------------------------------------
-
-    template <typename scalar_t>
-    void s2_attn_fwd_upsample_kernel(
-        const torch::PackedTensorAccessor64<scalar_t, 4> kx_arr,
-        const torch::PackedTensorAccessor64<scalar_t, 4> vx_arr,
-        const torch::PackedTensorAccessor64<scalar_t, 4> qy_arr,
-        const torch::PackedTensorAccessor64<scalar_t, 1> quad_weights_arr,
-        const torch::PackedTensorAccessor64<int64_t, 1> col_idx_arr,
-        const torch::PackedTensorAccessor64<int64_t, 1> roff_arr,
-        torch::PackedTensorAccessor64<scalar_t, 4> y_arr,
-        const int64_t nlon_in, const int64_t nlat_in,
-        const int64_t nlat_out, const int64_t nlon_out,
-        const int64_t batch_size, const int64_t nchannels_in, const int64_t nchannels_out) {
-
-        // one input lon step corresponds to pscale_out output lon steps (requires nlon_out % nlon_in == 0)
-        const int64_t pscale_out = nlon_out / nlon_in;
-
-        const int64_t block_wo = CACHE_BLOCK_SIZE;
-        const int64_t nblock_wo = static_cast<int64_t>((nlon_out + block_wo - 1) / block_wo);
-
-        #pragma omp parallel for collapse(4)
-        for (int64_t b = 0; b < batch_size; b++) {
-            for (int64_t co = 0; co < nchannels_out; co++) {
-                for (int64_t ho = 0; ho < nlat_out; ho++) {
-                    for (int64_t bwo = 0; bwo < nblock_wo; bwo++) {
-
-                        int64_t wo_start = bwo * block_wo;
-                        int64_t wo_end = std::min(nlon_out, wo_start + block_wo);
-
-                        // per-block softmax state (classical, not online)
-                        std::array<float, block_wo> alpha_sum{};
-                        std::array<float, block_wo> y_tmp{};
-                        std::array<float, block_wo> qdotk_max;
-                        qdotk_max.fill(-std::numeric_limits<float>::max());
-
-                        // -------------------------------------------------------------
-                        // pass 1: find qdotk_max[wo] over all (input, neighbor) pairs
-                        // that contribute to this (ho, wo_block)
-                        // -------------------------------------------------------------
-                        for (int64_t hi = 0; hi < nlat_in; hi++) {
-                            int64_t zstart = roff_arr[hi];
-                            int64_t zend = roff_arr[hi + 1];
-
-                            for (int64_t idz = zstart; idz < zend; idz++) {
-                                int64_t col = col_idx_arr[idz];
-                                int64_t ho_neigh = col / nlon_out;
-                                if (ho_neigh != ho) continue;
-                                int64_t wo_canonical = col % nlon_out;
-
-                                for (int64_t wo = wo_start; wo < wo_end; wo++) {
-                                    // The map wi -> (wo_canonical + pscale_out * wi) mod nlon_out hits
-                                    // exactly the wo values congruent to wo_canonical mod pscale_out;
-                                    // for those, wi is uniquely determined within [0, nlon_in).
-                                    int64_t wo_diff = (wo - wo_canonical + nlon_out) % nlon_out;
-                                    if (wo_diff % pscale_out != 0) continue;
-                                    int64_t wi = wo_diff / pscale_out;
-
-                                    float qdotk = 0.0;
-                                    //#pragma omp simd reduction(+:qdotk)
-                                    for (int64_t ci = 0; ci < nchannels_in; ci++) {
-                                        qdotk += static_cast<float>(qy_arr[b][ci][ho][wo] * kx_arr[b][ci][hi][wi]);
-                                    }
-
-                                    qdotk_max[wo - wo_start] = std::max(qdotk_max[wo - wo_start], qdotk);
-                                }
+                            const int64_t wob = wo - wo_start;
+                            const float inv_sum = 1.0f / alpha_sum[wob];
+                            const float* __restrict__ y_tmp_wob = y_tmp.data() + wob * nchannels_out;
+                            scalar_t* __restrict__ y_bow = y_b_ho + wo * y_sW;
+                            for (int64_t co = 0; co < nchannels_out; co++) {
+                                y_bow[co] = static_cast<scalar_t>(y_tmp_wob[co] * inv_sum);
                             }
-                        }
-
-                        // -------------------------------------------------------------
-                        // pass 2: with max fixed, accumulate alpha_sum[wo] and y_tmp[wo]
-                        // -------------------------------------------------------------
-                        for (int64_t hi = 0; hi < nlat_in; hi++) {
-                            int64_t zstart = roff_arr[hi];
-                            int64_t zend = roff_arr[hi + 1];
-
-                            for (int64_t idz = zstart; idz < zend; idz++) {
-                                int64_t col = col_idx_arr[idz];
-                                int64_t ho_neigh = col / nlon_out;
-                                if (ho_neigh != ho) continue;
-                                int64_t wo_canonical = col % nlon_out;
-
-                                for (int64_t wo = wo_start; wo < wo_end; wo++) {
-                                    int64_t wo_diff = (wo - wo_canonical + nlon_out) % nlon_out;
-                                    if (wo_diff % pscale_out != 0) continue;
-                                    int64_t wi = wo_diff / pscale_out;
-
-                                    float qdotk = 0.0;
-                                    //#pragma omp simd reduction(+:qdotk)
-                                    for (int64_t ci = 0; ci < nchannels_in; ci++) {
-                                        qdotk += static_cast<float>(qy_arr[b][ci][ho][wo] * kx_arr[b][ci][hi][wi]);
-                                    }
-
-                                    int64_t wob = wo - wo_start;
-                                    float alpha = std::exp(qdotk - qdotk_max[wob]) * static_cast<float>(quad_weights_arr[hi]);
-                                    alpha_sum[wob] += alpha;
-                                    y_tmp[wob] += alpha * static_cast<float>(vx_arr[b][co][hi][wi]);
-                                }
-                            }
-                        }
-
-                        // finalize
-                        for (int64_t wo = wo_start; wo < wo_end; wo++) {
-                            y_arr[b][co][ho][wo] = static_cast<scalar_t>(y_tmp[wo - wo_start] / alpha_sum[wo - wo_start]);
                         }
                     }
                 }
