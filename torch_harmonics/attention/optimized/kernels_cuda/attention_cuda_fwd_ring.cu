@@ -61,7 +61,7 @@ template<int BDIM_X,
          typename FLOATV_T>
 __global__
 __launch_bounds__(BDIM_X)
-void s2_attn_fwd_ring_step_generic_vec_k(
+void s2_attn_fwd_ring_generic_k(
     int nchan_in,         // no. of FLOATV_T elements along channel dim
     int nchan_out,        // no. of FLOATV_T elements along channel dim
     int nlat_halo,        // number of lat rows in kx/vx chunk (with halo)
@@ -201,17 +201,17 @@ void launch_gen_attn_ring_fwd(int64_t batch_size,
 
     size_t shsize = sizeof(FLOATV_T)*nchans_out * block.y;
 
-    s2_attn_fwd_ring_step_generic_vec_k<THREADS>
-                                       <<<grid, block, shsize, stream>>>(nchans_in, nchans_out,
-                                                                         nlat_halo, nlon_kx,
-                                                                         nlon_in, pscale,
-                                                                         lon_lo_kx, lat_halo_start,
-                                                                         nlat_out, nlon_out,
-                                                                         _kxp, _vxp, _qyp,
-                                                                         _row_idx, _row_off, _col_idx, 
-                                                                         _quad_weights, _y_acc,
-                                                                         _alpha_sum, _qdotk_max);
-    CHECK_ERROR("s2_attn_fwd_ring_step_generic_vec_k");
+    s2_attn_fwd_ring_generic_k<THREADS>
+                              <<<grid, block, shsize, stream>>>(nchans_in, nchans_out,
+                                                                nlat_halo, nlon_kx,
+                                                                nlon_in, pscale,
+                                                                lon_lo_kx, lat_halo_start,
+                                                                nlat_out, nlon_out,
+                                                                _kxp, _vxp, _qyp,
+                                                                _row_idx, _row_off, _col_idx, 
+                                                                _quad_weights, _y_acc,
+                                                                _alpha_sum, _qdotk_max);
+    CHECK_ERROR("s2_attn_fwd_ring_generic_k");
 
     return;
 }
@@ -223,26 +223,26 @@ template<int BDIM_X,
          typename FLOATV_T>
 __global__
 __launch_bounds__(BDIM_X*BDIM_Y)
-void s2_attn_fwd_ring_step_special_vec_ldg_k(int nchan_in,         // no. of FLOATV_T elements along channel dim
-                                             int nchan_out,        // no. of FLOATV_T elements along channel dim
-                                             int nlat_halo,        // number of lat rows in kx/vx chunk (with halo)
-                                             int nlon_kx,          // number of lon columns in kx/vx chunk
-                                             int nlon_in,          // GLOBAL nlon_in (for modular arithmetic)
-                                             int pscale,           // GLOBAL pscale = nlon_in / nlon_out_global
-                                             int lon_lo_kx,        // global lon start of kx chunk
-                                             int lat_halo_start,   // global lat index of first row in kx chunk
-                                             int nlat_out,         // local output lat size
-                                             int nlon_out,         // local output lon size
-                                             const FLOATV_T *__restrict__ kx,           // [batch][nlat_halo][nlon_kx][nchan_in]
-                                             const FLOATV_T *__restrict__ vx,           // [batch][nlat_halo][nlon_kx][nchan_out]
-                                             const FLOATV_T *__restrict__ qy,           // [batch][nlat_out][nlon_out][nchan_in]
-                                             const int32_t  *__restrict__ row_idx,
-                                             const int64_t  *__restrict__ row_off,
-                                             const int64_t  *__restrict__ col_idx,      // wi already shifted by pscale * lon_lo_out
-                                             const float    *__restrict__ quad_weights, // [nlat_in_global]
-                                                   FLOATV_T *__restrict__ y_acc,              // [batch][nlat_out][nlon_out][nchan_out] (in/out)
-                                                   float    *__restrict__ alpha_sum_buf,      // [batch][nlat_out][nlon_out] (in/out)
-                                                   float    *__restrict__ qdotk_max_buf) {    // [batch][nlat_out][nlon_out] (in/out)
+void s2_attn_fwd_ring_special_ldg_k(int nchan_in,         // no. of FLOATV_T elements along channel dim
+                                    int nchan_out,        // no. of FLOATV_T elements along channel dim
+                                    int nlat_halo,        // number of lat rows in kx/vx chunk (with halo)
+                                    int nlon_kx,          // number of lon columns in kx/vx chunk
+                                    int nlon_in,          // GLOBAL nlon_in (for modular arithmetic)
+                                    int pscale,           // GLOBAL pscale = nlon_in / nlon_out_global
+                                    int lon_lo_kx,        // global lon start of kx chunk
+                                    int lat_halo_start,   // global lat index of first row in kx chunk
+                                    int nlat_out,         // local output lat size
+                                    int nlon_out,         // local output lon size
+                                    const FLOATV_T *__restrict__ kx,           // [batch][nlat_halo][nlon_kx][nchan_in]
+                                    const FLOATV_T *__restrict__ vx,           // [batch][nlat_halo][nlon_kx][nchan_out]
+                                    const FLOATV_T *__restrict__ qy,           // [batch][nlat_out][nlon_out][nchan_in]
+                                    const int32_t  *__restrict__ row_idx,
+                                    const int64_t  *__restrict__ row_off,
+                                    const int64_t  *__restrict__ col_idx,      // wi already shifted by pscale * lon_lo_out
+                                    const float    *__restrict__ quad_weights, // [nlat_in_global]
+                                          FLOATV_T *__restrict__ y_acc,              // [batch][nlat_out][nlon_out][nchan_out] (in/out)
+                                          float    *__restrict__ alpha_sum_buf,      // [batch][nlat_out][nlon_out] (in/out)
+                                          float    *__restrict__ qdotk_max_buf) {    // [batch][nlat_out][nlon_out] (in/out)
     static_assert(0 == (BDIM_X & (BDIM_X-1)));
     static_assert(0 == (BDIM_Y & (BDIM_Y-1)));
     static_assert((BDIM_X == 32 && BDIM_Y  > 1) ||
@@ -444,26 +444,26 @@ template<int BDIM_X,
          typename FLOATV_T>
 __global__
 __launch_bounds__(BDIM_X*BDIM_Y)
-void s2_attn_fwd_ring_step_special_vec_tma_k(int nchan_in,         // no. of FLOATV_T elements along channel dim
-                                             int nchan_out,        // no. of FLOATV_T elements along channel dim
-                                             int nlat_halo,        // number of lat rows in kx/vx chunk (with halo)
-                                             int nlon_kx,          // number of lon columns in kx/vx chunk
-                                             int nlon_in,          // GLOBAL nlon_in (for modular arithmetic)
-                                             int pscale,           // GLOBAL pscale = nlon_in / nlon_out_global
-                                             int lon_lo_kx,        // global lon start of kx chunk
-                                             int lat_halo_start,   // global lat index of first row in kx chunk
-                                             int nlat_out,         // local output lat size
-                                             int nlon_out,         // local output lon size
-                                             const FLOATV_T *__restrict__ kx,           // [batch][nlat_halo][nlon_kx][nchan_in]
-                                             const FLOATV_T *__restrict__ vx,           // [batch][nlat_halo][nlon_kx][nchan_out]
-                                             const FLOATV_T *__restrict__ qy,           // [batch][nlat_out][nlon_out][nchan_in]
-                                             const int32_t  *__restrict__ row_idx,
-                                             const int64_t  *__restrict__ row_off,
-                                             const int64_t  *__restrict__ col_idx,      // wi already shifted by pscale * lon_lo_out
-                                             const float    *__restrict__ quad_weights, // [nlat_in_global]
-                                                   FLOATV_T *__restrict__ y_acc,              // [batch][nlat_out][nlon_out][nchan_out] (in/out)
-                                                   float    *__restrict__ alpha_sum_buf,      // [batch][nlat_out][nlon_out] (in/out)
-                                                   float    *__restrict__ qdotk_max_buf) {    // [batch][nlat_out][nlon_out] (in/out)
+void s2_attn_fwd_ring_special_tma_k(int nchan_in,         // no. of FLOATV_T elements along channel dim
+                                    int nchan_out,        // no. of FLOATV_T elements along channel dim
+                                    int nlat_halo,        // number of lat rows in kx/vx chunk (with halo)
+                                    int nlon_kx,          // number of lon columns in kx/vx chunk
+                                    int nlon_in,          // GLOBAL nlon_in (for modular arithmetic)
+                                    int pscale,           // GLOBAL pscale = nlon_in / nlon_out_global
+                                    int lon_lo_kx,        // global lon start of kx chunk
+                                    int lat_halo_start,   // global lat index of first row in kx chunk
+                                    int nlat_out,         // local output lat size
+                                    int nlon_out,         // local output lon size
+                                    const FLOATV_T *__restrict__ kx,           // [batch][nlat_halo][nlon_kx][nchan_in]
+                                    const FLOATV_T *__restrict__ vx,           // [batch][nlat_halo][nlon_kx][nchan_out]
+                                    const FLOATV_T *__restrict__ qy,           // [batch][nlat_out][nlon_out][nchan_in]
+                                    const int32_t  *__restrict__ row_idx,
+                                    const int64_t  *__restrict__ row_off,
+                                    const int64_t  *__restrict__ col_idx,      // wi already shifted by pscale * lon_lo_out
+                                    const float    *__restrict__ quad_weights, // [nlat_in_global]
+                                          FLOATV_T *__restrict__ y_acc,              // [batch][nlat_out][nlon_out][nchan_out] (in/out)
+                                          float    *__restrict__ alpha_sum_buf,      // [batch][nlat_out][nlon_out] (in/out)
+                                          float    *__restrict__ qdotk_max_buf) {    // [batch][nlat_out][nlon_out] (in/out)
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
 
     if constexpr(!::cuda::std::is_same<FLOATV_T, float4>::value) {   
@@ -554,7 +554,7 @@ void s2_attn_fwd_ring_step_special_vec_tma_k(int nchan_in,         // no. of FLO
                                   nlon_kx, pscale, lon_lo_kx, lat_halo_start, kx, vx,
                                   bar[0], shkx[0], shvx[0]);
 
-    #pragma unroll (2)
+    //#pragma unroll (2)
     for (int off = 0; off < rlen-1; off++) {
 
         int hi_global_next = prefetch_data(col_idx[off+1],
@@ -665,12 +665,12 @@ void launch_spc_attn_ring_fwd(int nloc,
             size_t shsize = sizeof(FLOATV_T)*(nchans_in + nchans_in*2 + nchans_out*2) * block.y;
 #if 0
             printf("getPtxver(): %d\n", getPtxver());
-            printf("Launching s2_attn_fwd_ring_step_special_vec_tma_k<%d, %d, %d, %d><<<(%u, %u), (%u, %u), %zu, ...>>>\n",
+            printf("Launching s2_attn_fwd_ring_special_tma_k<%d, %d, %d, %d><<<(%u, %u), (%u, %u), %zu, ...>>>\n",
                     BDIM_X, BDIM_Y, chin_as_out, CUR_LOC_SIZE,
                     grid.x, grid.y, block.x, block.y, shsize);
 #endif
             if (chin_as_out) {
-                auto kern = &s2_attn_fwd_ring_step_special_vec_tma_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE, FLOATV_T>;
+                auto kern = &s2_attn_fwd_ring_special_tma_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE, FLOATV_T>;
 
                 ensure_dyn_shmem(reinterpret_cast<const void*>(kern), shsize);
                     
@@ -679,7 +679,7 @@ void launch_spc_attn_ring_fwd(int nloc,
                                                       _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, 
                                                       _quad_weights, _y_acc, _alpha_sum, _qdotk_max);
             } else {
-                auto kern = &s2_attn_fwd_ring_step_special_vec_tma_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE, FLOATV_T>;
+                auto kern = &s2_attn_fwd_ring_special_tma_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE, FLOATV_T>;
 
                 ensure_dyn_shmem(reinterpret_cast<const void*>(kern), shsize);
 
@@ -688,26 +688,26 @@ void launch_spc_attn_ring_fwd(int nloc,
                                                       _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, 
                                                       _quad_weights, _y_acc, _alpha_sum, _qdotk_max);
             }
-            CHECK_ERROR("s2_attn_fwd_ring_step_special_vec_tma_k");
+            CHECK_ERROR("s2_attn_fwd_ring_special_tma_k");
 
         } else {
-        
-            size_t shsize = sizeof(FLOATV_T)*nchans_in * block.y; // block.y > 1 iif block.x==32
+       
+            size_t shsize = sizeof(FLOATV_T)*nchans_in * block.y;
 
             if (chin_as_out) {
-                s2_attn_fwd_ring_step_special_vec_ldg_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE>
-                                                       <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx, nlon_in, pscale,
-                                                                                         lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
-                                                                                         _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, 
-                                                                                         _quad_weights, _y_acc, _alpha_sum, _qdotk_max);
+                s2_attn_fwd_ring_special_ldg_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE>
+                                              <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx, nlon_in, pscale,
+                                                                                lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
+                                                                                _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, 
+                                                                                _quad_weights, _y_acc, _alpha_sum, _qdotk_max);
             } else {
-                s2_attn_fwd_ring_step_special_vec_ldg_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE>
-                                                       <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx, nlon_in, pscale,
-                                                                                         lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
-                                                                                         _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, 
-                                                                                         _quad_weights, _y_acc, _alpha_sum, _qdotk_max);
+                s2_attn_fwd_ring_special_ldg_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE>
+                                              <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx, nlon_in, pscale,
+                                                                                lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
+                                                                                _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, 
+                                                                                _quad_weights, _y_acc, _alpha_sum, _qdotk_max);
             }
-            CHECK_ERROR("s2_attn_fwd_ring_step_special_vec_k");
+            CHECK_ERROR("s2_attn_fwd_ring_special_k");
         }
 
         return;

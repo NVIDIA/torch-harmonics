@@ -70,7 +70,7 @@ namespace attention_kernels {
 template<int BDIM_X, typename FLOATV_T>
 __global__
 __launch_bounds__(BDIM_X)
-void s2_attn_bwd_ring_step_pass1_generic_vec_k(
+void s2_attn_bwd_ring_pass1_generic_k(
     int nchan_in,
     int nchan_out,
     int nlat_halo,
@@ -240,12 +240,12 @@ void launch_gen_attn_ring_pass1_bwd(int64_t batch_size,
     //size_t shsize = sizeof(FLOATV_T)*(nchans_in*4+nchans_out) * block.y; // 5 arrays per warp
     size_t shsize = sizeof(FLOATV_T) * (2*nchans_in + nchans_out) * block.y;
 
-    s2_attn_bwd_ring_step_pass1_generic_vec_k<THREADS>
-                                             <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
-                                                                               nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
-                                                                               _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
-                                                                               _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw);
-    CHECK_ERROR("s2_attn_bwd_ring_step_pass1_generic_vec_k");
+    s2_attn_bwd_ring_pass1_generic_k<THREADS>
+                                    <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
+                                                                      nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
+                                                                      _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
+                                                                      _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw);
+    CHECK_ERROR("s2_attn_bwd_ring_pass1_generic_k");
 
     return;
 }
@@ -261,29 +261,29 @@ template<int BDIM_X,
          typename FLOATV_T> // either float or float4
 __global__
 __launch_bounds__(BDIM_X*BDIM_Y)
-void s2_attn_bwd_ring_step_pass1_special_vec_k(int nchan_in,
-                                               int nchan_out,
-                                               int nlat_halo,
-                                               int nlon_kx,
-                                               int nlon_in,
-                                               int pscale,           // GLOBAL pscale = nlon_in / nlon_out_global
-                                               int lon_lo_kx,
-                                               int lat_halo_start,
-                                               int nlat_out,
-                                               int nlon_out,
-                                               const FLOATV_T *__restrict__ kx,           // [batch][nlat_halo][nlon_kx][nchan_in]
-                                               const FLOATV_T *__restrict__ vx,           // [batch][nlat_halo][nlon_kx][nchan_out]
-                                               const FLOATV_T *__restrict__ qy,           // [batch][nlat_out][nlon_out][nchan_in]
-                                               const FLOATV_T *__restrict__ dy,           // [batch][nlat_out][nlon_out][nchan_out]
-                                               const int32_t  *__restrict__ row_idx,
-                                               const int64_t  *__restrict__ row_off,
-                                               const int64_t  *__restrict__ col_idx,
-                                               const float    *__restrict__ quad_weights,
-                                                     float    *__restrict__ alpha_sum_buf,      // [batch][nlat_out][nlon_out] (in/out)
-                                                     float    *__restrict__ qdotk_max_buf,      // [batch][nlat_out][nlon_out] (in/out)
-                                                     float    *__restrict__ integral_buf,       // [batch][nlat_out][nlon_out] unnormalized (in/out)
-                                                     FLOATV_T *__restrict__ alpha_k_buf,        // [batch][nlat_out][nlon_out][nchan_in] (in/out)
-                                                     FLOATV_T *__restrict__ alpha_kvw_buf) {    // [batch][nlat_out][nlon_out][nchan_in] (in/out)
+void s2_attn_bwd_ring_pass1_special_k(int nchan_in,
+                                      int nchan_out,
+                                      int nlat_halo,
+                                      int nlon_kx,
+                                      int nlon_in,
+                                      int pscale,           // GLOBAL pscale = nlon_in / nlon_out_global
+                                      int lon_lo_kx,
+                                      int lat_halo_start,
+                                      int nlat_out,
+                                      int nlon_out,
+                                      const FLOATV_T *__restrict__ kx,           // [batch][nlat_halo][nlon_kx][nchan_in]
+                                      const FLOATV_T *__restrict__ vx,           // [batch][nlat_halo][nlon_kx][nchan_out]
+                                      const FLOATV_T *__restrict__ qy,           // [batch][nlat_out][nlon_out][nchan_in]
+                                      const FLOATV_T *__restrict__ dy,           // [batch][nlat_out][nlon_out][nchan_out]
+                                      const int32_t  *__restrict__ row_idx,
+                                      const int64_t  *__restrict__ row_off,
+                                      const int64_t  *__restrict__ col_idx,
+                                      const float    *__restrict__ quad_weights,
+                                            float    *__restrict__ alpha_sum_buf,      // [batch][nlat_out][nlon_out] (in/out)
+                                            float    *__restrict__ qdotk_max_buf,      // [batch][nlat_out][nlon_out] (in/out)
+                                            float    *__restrict__ integral_buf,       // [batch][nlat_out][nlon_out] unnormalized (in/out)
+                                            FLOATV_T *__restrict__ alpha_k_buf,        // [batch][nlat_out][nlon_out][nchan_in] (in/out)
+                                            FLOATV_T *__restrict__ alpha_kvw_buf) {    // [batch][nlat_out][nlon_out][nchan_in] (in/out)
 
     static_assert(0 == (BDIM_X & (BDIM_X-1)));
     static_assert(0 == (BDIM_Y & (BDIM_Y-1)));
@@ -528,29 +528,29 @@ template<int BDIM_X,
          typename FLOATV_T> // either float or float4
 __global__
 __launch_bounds__(BDIM_X*BDIM_Y)
-void s2_attn_bwd_ring_step_pass1_special_vec_tma_k(int nchan_in,
-                                               int nchan_out,
-                                               int nlat_halo,
-                                               int nlon_kx,
-                                               int nlon_in,
-                                               int pscale,           // GLOBAL pscale = nlon_in / nlon_out_global
-                                               int lon_lo_kx,
-                                               int lat_halo_start,
-                                               int nlat_out,
-                                               int nlon_out,
-                                               const FLOATV_T *__restrict__ kx,           // [batch][nlat_halo][nlon_kx][nchan_in]
-                                               const FLOATV_T *__restrict__ vx,           // [batch][nlat_halo][nlon_kx][nchan_out]
-                                               const FLOATV_T *__restrict__ qy,           // [batch][nlat_out][nlon_out][nchan_in]
-                                               const FLOATV_T *__restrict__ dy,           // [batch][nlat_out][nlon_out][nchan_out]
-                                               const int32_t  *__restrict__ row_idx,
-                                               const int64_t  *__restrict__ row_off,
-                                               const int64_t  *__restrict__ col_idx,
-                                               const float    *__restrict__ quad_weights,
-                                                     float    *__restrict__ alpha_sum_buf,      // [batch][nlat_out][nlon_out] (in/out)
-                                                     float    *__restrict__ qdotk_max_buf,      // [batch][nlat_out][nlon_out] (in/out)
-                                                     float    *__restrict__ integral_buf,       // [batch][nlat_out][nlon_out] unnormalized (in/out)
-                                                     FLOATV_T *__restrict__ alpha_k_buf,        // [batch][nlat_out][nlon_out][nchan_in] (in/out)
-                                                     FLOATV_T *__restrict__ alpha_kvw_buf) {    // [batch][nlat_out][nlon_out][nchan_in] (in/out)
+void s2_attn_bwd_ring_pass1_special_tma_k(int nchan_in,
+                                      int nchan_out,
+                                      int nlat_halo,
+                                      int nlon_kx,
+                                      int nlon_in,
+                                      int pscale,           // GLOBAL pscale = nlon_in / nlon_out_global
+                                      int lon_lo_kx,
+                                      int lat_halo_start,
+                                      int nlat_out,
+                                      int nlon_out,
+                                      const FLOATV_T *__restrict__ kx,           // [batch][nlat_halo][nlon_kx][nchan_in]
+                                      const FLOATV_T *__restrict__ vx,           // [batch][nlat_halo][nlon_kx][nchan_out]
+                                      const FLOATV_T *__restrict__ qy,           // [batch][nlat_out][nlon_out][nchan_in]
+                                      const FLOATV_T *__restrict__ dy,           // [batch][nlat_out][nlon_out][nchan_out]
+                                      const int32_t  *__restrict__ row_idx,
+                                      const int64_t  *__restrict__ row_off,
+                                      const int64_t  *__restrict__ col_idx,
+                                      const float    *__restrict__ quad_weights,
+                                            float    *__restrict__ alpha_sum_buf,      // [batch][nlat_out][nlon_out] (in/out)
+                                            float    *__restrict__ qdotk_max_buf,      // [batch][nlat_out][nlon_out] (in/out)
+                                            float    *__restrict__ integral_buf,       // [batch][nlat_out][nlon_out] unnormalized (in/out)
+                                            FLOATV_T *__restrict__ alpha_k_buf,        // [batch][nlat_out][nlon_out][nchan_in] (in/out)
+                                            FLOATV_T *__restrict__ alpha_kvw_buf) {    // [batch][nlat_out][nlon_out][nchan_in] (in/out)
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
 
     if constexpr(!::cuda::std::is_same<FLOATV_T, float4>::value) {   
@@ -773,11 +773,11 @@ void launch_spc_attn_ring_pass1_bwd(int nloc,
             size_t shsize = sizeof(FLOATV_T)*(/*nchans_in +*/ nchans_out + nchans_in*2 + nchans_out*2) * block.y;
 #if 0
             printf("getPtxver(): %d\n", getPtxver());
-            printf("Launching s2_attn_bwd_ring_step_pass1_special_vec_tma_k<%d, %d, %d, %d><<<(%u, %u), (%u, %u), %zu, ...>>>\n",
+            printf("Launching s2_attn_bwd_ring_pass1_special_tma_k<%d, %d, %d, %d><<<(%u, %u), (%u, %u), %zu, ...>>>\n",
                     BDIM_X, BDIM_Y, chout_as_in, CUR_LOC_SIZE, grid.x, grid.y, block.x, block.y, shsize);
 #endif
             if (chout_as_in) {
-                auto kern = &s2_attn_bwd_ring_step_pass1_special_vec_tma_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE, FLOATV_T>;
+                auto kern = &s2_attn_bwd_ring_pass1_special_tma_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE, FLOATV_T>;
 
                 ensure_dyn_shmem(reinterpret_cast<const void*>(kern), shsize);
 
@@ -786,7 +786,7 @@ void launch_spc_attn_ring_pass1_bwd(int nloc,
                                                       _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
                                                       _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw);
             } else {
-                auto kern = &s2_attn_bwd_ring_step_pass1_special_vec_tma_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE, FLOATV_T>;
+                auto kern = &s2_attn_bwd_ring_pass1_special_tma_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE, FLOATV_T>;
 
                 ensure_dyn_shmem(reinterpret_cast<const void*>(kern), shsize);
 
@@ -795,29 +795,29 @@ void launch_spc_attn_ring_pass1_bwd(int nloc,
                                                       _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
                                                       _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw);
             }
-            CHECK_ERROR("s2_attn_bwd_ring_step_pass1_special_vec_tma_k");
+            CHECK_ERROR("s2_attn_bwd_ring_pass1_special_tma_k");
 
         } else {
             size_t shsize = sizeof(FLOATV_T)*(nchans_in+nchans_out) * block.y;
 #if 0
             printf("getPtxver(): %d\n", getPtxver());
-            printf("Launching s2_attn_bwd_ring_step_pass1_special_vec_k<%d, %d, %d, %d><<<(%u, %u), (%u, %u), %zu, ...>>>\n",
+            printf("Launching s2_attn_bwd_ring_pass1_special_k<%d, %d, %d, %d><<<(%u, %u), (%u, %u), %zu, ...>>>\n",
                     BDIM_X, BDIM_Y, chout_as_in, CUR_LOC_SIZE, grid.x, grid.y, block.x, block.y, shsize);
 #endif
             if (chout_as_in) {
-                s2_attn_bwd_ring_step_pass1_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE>
-                                                         <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
-                                                                                           nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
-                                                                                           _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
-                                                                                           _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw);
+                s2_attn_bwd_ring_pass1_special_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE>
+                                                 <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
+                                                                                   nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
+                                                                                   _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
+                                                                                   _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw);
             } else {
-                s2_attn_bwd_ring_step_pass1_special_vec_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE>
-                                                         <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
-                                                                                           nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
-                                                                                           _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
-                                                                                           _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw);
+                s2_attn_bwd_ring_pass1_special_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE>
+                                                 <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
+                                                                                   nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
+                                                                                   _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
+                                                                                   _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw);
             }
-            CHECK_ERROR("s2_attn_bwd_special_vec_k");
+            CHECK_ERROR("s2_attn_bwd_ring_pass1_special_k");
         }
 
         return;
@@ -936,7 +936,7 @@ static void s2_attn_bwd_ring_step_pass1_dispatch(int64_t batch_size,
 template<int BDIM_X, typename FLOATV_T>
 __global__
 __launch_bounds__(BDIM_X)
-void s2_attn_bwd_ring_step_pass2_generic_vec_k(
+void s2_attn_bwd_ring_pass2_generic_k(
     int nchan_in,
     int nchan_out,
     int nlat_halo,
@@ -1075,29 +1075,30 @@ template<int BDIM_X,
          typename FLOATV_T> // either float or float4
 __global__
 __launch_bounds__(BDIM_X*BDIM_Y)
-void s2_attn_bwd_ring_step_pass2_special_vec_k(int nchan_in,
-                                               int nchan_out,
-                                               int nlat_halo,
-                                               int nlon_kx,
-                                               int nlon_in,
-                                               int pscale,           // GLOBAL pscale = nlon_in / nlon_out_global
-                                               int lon_lo_kx,
-                                               int lat_halo_start,
-                                               int nlat_out,
-                                               int nlon_out,
-                                               const FLOATV_T *__restrict__ kx,
-                                               const FLOATV_T *__restrict__ vx,
-                                               const FLOATV_T *__restrict__ qy,
-                                               const FLOATV_T *__restrict__ dy,
-                                               const int32_t  *__restrict__ row_idx,
-                                               const int64_t  *__restrict__ row_off,
-                                               const int64_t  *__restrict__ col_idx,
-                                               const float    *__restrict__ quad_weights,
-                                               const float    *__restrict__ alpha_sum_buf,      // finalized [batch][nlat_out][nlon_out]
-                                               const float    *__restrict__ qdotk_max_buf,      // finalized [batch][nlat_out][nlon_out]
-                                               const float    *__restrict__ integral_norm_buf,  // finalized, normalized [batch][nlat_out][nlon_out]
-                                                     FLOATV_T *__restrict__ dkx,                // [batch][nlat_halo][nlon_kx][nchan_in] (atomically updated)
-                                                     FLOATV_T *__restrict__ dvx) {              // [batch][nlat_halo][nlon_kx][nchan_out] (atomically updated)
+void s2_attn_bwd_ring_pass2_special_k(int nlat_max, // we may process less than nlat_out rows, so use this for early exit
+                                      int nchan_in,
+                                      int nchan_out,
+                                      int nlat_halo,
+                                      int nlon_kx,
+                                      int nlon_in,
+                                      int pscale,           // GLOBAL pscale = nlon_in / nlon_out_global
+                                      int lon_lo_kx,
+                                      int lat_halo_start,
+                                      int nlat_out,
+                                      int nlon_out,
+                                      const FLOATV_T *__restrict__ kx,
+                                      const FLOATV_T *__restrict__ vx,
+                                      const FLOATV_T *__restrict__ qy,
+                                      const FLOATV_T *__restrict__ dy,
+                                      const int32_t  *__restrict__ row_idx,
+                                      const int64_t  *__restrict__ row_off,
+                                      const int64_t  *__restrict__ col_idx,
+                                      const float    *__restrict__ quad_weights,
+                                      const float    *__restrict__ alpha_sum_buf,      // finalized [batch][nlat_out][nlon_out]
+                                      const float    *__restrict__ qdotk_max_buf,      // finalized [batch][nlat_out][nlon_out]
+                                      const float    *__restrict__ integral_norm_buf,  // finalized, normalized [batch][nlat_out][nlon_out]
+                                            FLOATV_T *__restrict__ dkx,                // [batch][nlat_halo][nlon_kx][nchan_in] (atomically updated)
+                                            FLOATV_T *__restrict__ dvx) {              // [batch][nlat_halo][nlon_kx][nchan_out] (atomically updated)
 
     static_assert(0 == (BDIM_X & (BDIM_X-1)));
     static_assert(0 == (BDIM_Y & (BDIM_Y-1)));
@@ -1116,7 +1117,7 @@ void s2_attn_bwd_ring_step_pass2_special_vec_k(int nchan_in,
 
     const uint64_t ctaid = uint64_t(blockIdx.x) * blockDim.y + threadIdx.y;
     
-    if (ctaid >= uint64_t(nlat_out)*nlon_out) {
+    if (ctaid >= uint64_t(nlat_max)*nlon_out) {
         return;
     }
 
@@ -1150,7 +1151,6 @@ void s2_attn_bwd_ring_step_pass2_special_vec_k(int nchan_in,
 
     strided_op<BDIM_X,               NLOC    >(nchan_in,  [&](int i) {       loc_qy[i] = qy[i*BDIM_X]; });
     strided_op<BDIM_X, CHOUT_AS_IN ? NLOC : 0>(nchan_out, [&](int i) { sh_dy[i*BDIM_X] = dy[i*BDIM_X]; });
-
 #if __CUDA_ARCH__ < 900
     strided_op<BDIM_X,               NLOC    >(nchan_in,  [&](int i) { sh_qy[i*BDIM_X] = loc_qy[i]; });
 
@@ -1281,13 +1281,13 @@ void launch_gen_attn_ring_pass2_bwd(int64_t batch_size,
 
     size_t shsize = sizeof(FLOATV_T)*(nchans_in + nchans_out)*block.y;
 
-    s2_attn_bwd_ring_step_pass2_generic_vec_k<THREADS>
-                                             <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx, nlon_in, 
-                                                                               pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
-                                                                               _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, 
-                                                                               _col_idx, _quad_weights, _alpha_sum, 
-                                                                               _qdotk_max, _integral_n, _dkxp, _dvxp);
-    CHECK_ERROR("s2_attn_bwd_ring_step_pass2_generic_vec_k<float>");
+    s2_attn_bwd_ring_pass2_generic_k<THREADS>
+                                    <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx, nlon_in, 
+                                                                      pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
+                                                                      _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, 
+                                                                      _col_idx, _quad_weights, _alpha_sum, 
+                                                                      _qdotk_max, _integral_n, _dkxp, _dvxp);
+    CHECK_ERROR("s2_attn_bwd_ring_pass2_generic_k<float>");
 
     return;
 }
@@ -1436,40 +1436,44 @@ void launch_spc_attn_ring_pass2_bwd(int nloc,
 
         if (chout_as_in) {
             if (n_long_rows > 0) {
-                s2_attn_bwd_ring_step_pass2_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE>
-                                                      <<<grid_lr, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
-                                                                                        nlon_in, pscale, lon_lo_kx, lat_halo_start,
-                                                                                        nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp,
-                                                                                        _row_idx, _row_off, _col_idx, _quad_weights,
-                                                                                        _alpha_sum, _qdotk_max, _integral_n,
-                                                                                        _dkxp, _dvxp);
+                s2_attn_bwd_ring_pass2_special_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE>
+                                                <<<grid_lr, block, shsize, stream>>>(n_long_rows,
+                                                                                  nchans_in, nchans_out, nlat_halo, nlon_kx,
+                                                                                  nlon_in, pscale, lon_lo_kx, lat_halo_start,
+                                                                                  nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp,
+                                                                                  _row_idx, _row_off, _col_idx, _quad_weights,
+                                                                                  _alpha_sum, _qdotk_max, _integral_n,
+                                                                                  _dkxp, _dvxp);
             }
-            s2_attn_bwd_ring_step_pass2_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE>
-                                                  <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
-                                                                                    nlon_in, pscale, lon_lo_kx, lat_halo_start,
-                                                                                    nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp,
-                                                                                    _row_idx+n_long_rows/**/, _row_off, _col_idx, _quad_weights,
-                                                                                    _alpha_sum, _qdotk_max, _integral_n,
-                                                                                    _dkxp, _dvxp);
+            s2_attn_bwd_ring_pass2_special_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE>
+                                            <<<grid, block, shsize, stream>>>(nlat_out-n_long_rows,
+                                                                              nchans_in, nchans_out, nlat_halo, nlon_kx,
+                                                                              nlon_in, pscale, lon_lo_kx, lat_halo_start,
+                                                                              nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp,
+                                                                              _row_idx+n_long_rows/**/, _row_off, _col_idx, _quad_weights,
+                                                                              _alpha_sum, _qdotk_max, _integral_n,
+                                                                              _dkxp, _dvxp);
       } else {
             if (n_long_rows > 0) {
-                s2_attn_bwd_ring_step_pass2_special_vec_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE>
-                                                      <<<grid_lr, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
-                                                                                        nlon_in, pscale, lon_lo_kx, lat_halo_start,
-                                                                                        nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp,
-                                                                                        _row_idx, _row_off, _col_idx, _quad_weights,
-                                                                                        _alpha_sum, _qdotk_max, _integral_n,
-                                                                                        _dkxp, _dvxp);
+                s2_attn_bwd_ring_pass2_special_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE>
+                                                <<<grid_lr, block, shsize, stream>>>(n_long_rows,
+                                                                                  nchans_in, nchans_out, nlat_halo, nlon_kx,
+                                                                                  nlon_in, pscale, lon_lo_kx, lat_halo_start,
+                                                                                  nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp,
+                                                                                  _row_idx, _row_off, _col_idx, _quad_weights,
+                                                                                  _alpha_sum, _qdotk_max, _integral_n,
+                                                                                  _dkxp, _dvxp);
             }
-            s2_attn_bwd_ring_step_pass2_special_vec_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE>
-                                                  <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
-                                                                                    nlon_in, pscale, lon_lo_kx, lat_halo_start,
-                                                                                    nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp,
-                                                                                    _row_idx+n_long_rows/**/, _row_off, _col_idx, _quad_weights,
-                                                                                    _alpha_sum, _qdotk_max, _integral_n,
-                                                                                    _dkxp, _dvxp);
+            s2_attn_bwd_ring_pass2_special_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE>
+                                            <<<grid, block, shsize, stream>>>(nlat_out-n_long_rows,
+                                                                              nchans_in, nchans_out, nlat_halo, nlon_kx,
+                                                                              nlon_in, pscale, lon_lo_kx, lat_halo_start,
+                                                                              nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp,
+                                                                              _row_idx+n_long_rows/**/, _row_off, _col_idx, _quad_weights,
+                                                                              _alpha_sum, _qdotk_max, _integral_n,
+                                                                              _dkxp, _dvxp);
         }
-        CHECK_ERROR("s2_attn_bwd_special_vec_k");
+        CHECK_ERROR("s2_attn_bwd_special_k");
 
         return;
     }
