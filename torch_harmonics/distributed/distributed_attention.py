@@ -195,13 +195,13 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # of {kw, vw, qw} that doesn't need a gradient, and return None in those slots.
         # This is what lets torch.compile / AOTAutograd prune dead subgraphs (including
         # the NCCL allreduces) from the compiled backward.
-        kw_needs = ctx.needs_input_grad[0]
-        vw_needs = ctx.needs_input_grad[1]
-        qw_needs = ctx.needs_input_grad[2]
+        kw_needs_grad = ctx.needs_input_grad[0]
+        vw_needs_grad = ctx.needs_input_grad[1]
+        qw_needs_grad = ctx.needs_input_grad[2]
 
         # Defensive: if somehow none of (kw, vw, qw) need grad (e.g., user wired
         # requires_grad onto one of the index buffers), there's nothing to compute.
-        if not (kw_needs or vw_needs or qw_needs):
+        if not (kw_needs_grad or vw_needs_grad or qw_needs_grad):
             return (None,) * 18
 
         B, C_k, H_halo, _ = kw.shape
@@ -262,11 +262,11 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         alpha_sum_inv = 1.0 / fwd_alpha_sum                              # [B, H, W]
 
         # integral_norm only feeds pass-2; skip if neither kw nor vw needs grad.
-        if kw_needs or vw_needs:
+        if kw_needs_grad or vw_needs_grad:
             integral_norm = integral_buf * alpha_sum_inv                  # [B, H, W]
 
         # dqy[b,h,w,c] = inv_sq*(alpha_sum*alpha_kvw - integral*alpha_k)
-        if qw_needs:
+        if qw_needs_grad:
             alpha_sum_inv_sq = alpha_sum_inv ** 2
             dqy_cl = alpha_sum_inv_sq.unsqueeze(-1) * (
                 fwd_alpha_sum.unsqueeze(-1) * alpha_kvw_buf
@@ -286,14 +286,14 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # allreduce / extract per branch.
         # TODO: replace allreduce with ring reduce-scatter for efficiency.
         # ----------------------------------------------------------------
-        if kw_needs or vw_needs:
+        if kw_needs_grad or vw_needs_grad:
             kw_chunk      = kw.contiguous()
             vw_chunk      = vw.contiguous()
             nlon_in_total = sum(nlon_kx_list)
             dkw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_k,
-                                      device=device, dtype=torch.float32) if kw_needs else None
+                                      device=device, dtype=torch.float32) if kw_needs_grad else None
             dvw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_v,
-                                      device=device, dtype=torch.float32) if vw_needs else None
+                                      device=device, dtype=torch.float32) if vw_needs_grad else None
 
             for step in range(az_size):
                 src_rank  = (az_rank + step) % az_size
@@ -316,9 +316,9 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                     nlat_out_local, nlon_out_local,
                 )
 
-                if kw_needs:
+                if kw_needs_grad:
                     dkw_full_cl[:, :, lon_lo_kx:lon_lo_kx + nlon_kx, :].add_(dkw_chunk_cl)
-                if vw_needs:
+                if vw_needs_grad:
                     dvw_full_cl[:, :, lon_lo_kx:lon_lo_kx + nlon_kx, :].add_(dvw_chunk_cl)
 
                 if step < az_size - 1:
@@ -333,9 +333,9 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
 
             # Per-branch allreduce — only the branches we'll return.
             if az_size > 1 and az_group is not None:
-                if kw_needs:
+                if kw_needs_grad:
                     dist.all_reduce(dkw_full_cl, group=az_group)
-                if vw_needs:
+                if vw_needs_grad:
                     dist.all_reduce(dvw_full_cl, group=az_group)
 
             my_lo   = lon_chunk_starts[az_rank]
@@ -344,12 +344,12 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
             # No halo stripping: dkw/dvw must match kw/vw shape (= key_halo/value_halo).
             # The autograd through torch.cat in _exchange_lat_halo extracts the
             # middle H_in rows as the gradient for key_proj/value_proj.
-            if kw_needs:
+            if kw_needs_grad:
                 dkw_cl = dkw_full_cl[:, :, my_lo:my_lo + my_nlon, :].contiguous()
                 dkw    = dkw_cl.permute(0, 3, 1, 2).contiguous()  # [B, C_k, H_halo, W_local]
             else:
                 dkw = None
-            if vw_needs:
+            if vw_needs_grad:
                 dvw_cl = dvw_full_cl[:, :, my_lo:my_lo + my_nlon, :].contiguous()
                 dvw    = dvw_cl.permute(0, 3, 1, 2).contiguous()  # [B, C_v, H_halo, W_local]
             else:
