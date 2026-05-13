@@ -56,6 +56,8 @@ namespace disco_kernels {
     TORCH_LIBRARY(disco_kernels, m) {
         m.def("forward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor", {at::Tag::pt2_compliant_tag});
         m.def("backward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor", {at::Tag::pt2_compliant_tag});
+        // Frozen pre-optimization CPU backward kernel, for A/B benchmarking only.
+        m.def("backward_legacy(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor", {at::Tag::pt2_compliant_tag});
     }
 
 }
