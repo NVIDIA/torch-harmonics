@@ -51,12 +51,10 @@ namespace attention_kernels {
     //                where pscale = nlon_in / nlon_out).
     // Requires nlon_in % nlon_out == 0.
     //
-    // Parallelism: collapse(3) over (batch, ho, wo-block). The softmax state
-    // (qdotk_max, alpha_sum) is per-wo and shared across the co loop, so co
-    // stays *inside* the per-nz body — that avoids recomputing the softmax
-    // for every output channel. Per-thread y_tmp[block_wo × nchannels_out]
-    // buffers the running v-accumulation; the finalize loop divides by
-    // alpha_sum and writes out. No atomics needed (outputs strictly partitioned).
+    // Each output (b, co, ho, wo) is independent → the kernel parallelizes
+    // collapse(4) over (batch, out-channel, ho, wo-block). Within a block we
+    // use online softmax with a small stack-allocated state of size block_wo.
+    // No atomics needed since outputs are strictly partitioned across threads.
     // -----------------------------------------------------------------------
 
     template <typename scalar_t>
@@ -71,15 +69,23 @@ namespace attention_kernels {
         const int64_t nlon_in, const int64_t nlat_out, const int64_t nlon_out,
         const int64_t batch_size, const int64_t nchannels_in, const int64_t nchannels_out) {
 
-        // one output lon step corresponds to pscale input lon steps
+        // one output lon step corresponds to pscale input lon steps (requires nlon_in % nlon_out == 0)
         const int64_t pscale = nlon_in / nlon_out;
 
-        const int64_t block_wo  = CACHE_BLOCK_SIZE;
+        // some parameters
+        const int64_t block_wo = CACHE_BLOCK_SIZE;
         const int64_t nblock_wo = static_cast<int64_t>((nlon_out + block_wo - 1) / block_wo);
 
-        // K/V/Q/Y all enter as physical (B, H, W, C); strides:
-        //   stride(0) = H*W*C   stride(1) = W*C   stride(2) = C   stride(3) = 1
-        // The ci/co inner loops are stride-1 in the (innermost) C dim.
+        // Hoist base pointers + strides. K, V, Q, and Y are all passed in with
+        // physical (B, H, W, C) layout — the wrapper has already converted
+        // inputs via an explicit `.permute({0,2,3,1}).contiguous()` and y is
+        // allocated directly as a (B, H, W, C) tensor. So
+        //   stride(0) = B-stride (H*W*C)
+        //   stride(1) = H-stride (W*C)
+        //   stride(2) = W-stride (C)
+        //   stride(3) = C-stride (1, innermost)
+        // and the ci/co inner loops below read/write contiguously via stride-1
+        // raw pointer arithmetic.
         const scalar_t* __restrict__ kx_base = kx_arr.data();
         const scalar_t* __restrict__ vx_base = vx_arr.data();
         const scalar_t* __restrict__ qy_base = qy_arr.data();
@@ -101,10 +107,16 @@ namespace attention_kernels {
         const int64_t y_sH  = y_arr.stride(1);
         const int64_t y_sW  = y_arr.stride(2);
 
+        // qdotk + softmax stats (alpha_sum, qdotk_max) only depend on (b, ho, wo, hi, wip)
+        // — NOT on co. We parallelize collapse(3) over (b, ho, bwo) and keep the
+        // co loop inside the per-nz body, where only the v-accumulation needs it.
+        // This saves the per-co duplication of qdotk + softmax work that the
+        // previous collapse(4) over (b, co, ho, bwo) did.
         #pragma omp parallel
         {
-            // per-thread running v-accumulation for one wo-block:
-            //   y_tmp[wob * nchannels_out + co]. Inner-co is stride-1.
+            // per-thread y_tmp buffer: y_tmp[wob * nchannels_out + co]. Inner-co
+            // stride-1 matches the channels-last layout of vx, so reads and
+            // writes are both contiguous in the inner co loop.
             std::vector<float> y_tmp(block_wo * nchannels_out);
 
             #pragma omp for collapse(3)
@@ -159,7 +171,6 @@ namespace attention_kernels {
 
                                 // qdotk: pure ci reduction, stride-1 dot product
                                 float qdotk = 0.0f;
-                                #pragma omp simd reduction(+:qdotk)
                                 for (int64_t ci = 0; ci < nchannels_in; ci++) {
                                     qdotk += static_cast<float>(qy_bow[ci] * kx_biwip[ci]);
                                 }
@@ -172,7 +183,6 @@ namespace attention_kernels {
 
                                 // v-accumulation: stride-1 SAXPY in co
                                 float* __restrict__ y_tmp_wob = y_tmp.data() + wob * nchannels_out;
-                                #pragma omp simd
                                 for (int64_t co = 0; co < nchannels_out; co++) {
                                     y_tmp_wob[co] = y_tmp_wob[co] * discount +
                                                     alpha * static_cast<float>(vx_biwip[co]);
@@ -192,7 +202,6 @@ namespace attention_kernels {
                             const float inv_sum = 1.0f / alpha_sum[wob];
                             const float* __restrict__ y_tmp_wob = y_tmp.data() + wob * nchannels_out;
                             scalar_t* __restrict__ y_bow = y_b_ho + wo * y_sW;
-                            #pragma omp simd
                             for (int64_t co = 0; co < nchannels_out; co++) {
                                 y_bow[co] = static_cast<scalar_t>(y_tmp_wob[co] * inv_sum);
                             }
