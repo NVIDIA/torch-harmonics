@@ -41,10 +41,17 @@ def get_compile_args(module_name):
     debug_mode = os.environ.get('TORCH_HARMONICS_DEBUG', '0') == '1'
     profile_mode = os.environ.get('TORCH_HARMONICS_PROFILE', '0') == '1'
     openmp_mode = os.getenv('TORCH_HARMONICS_ENABLE_OPENMP', '0') == '1'
+    # TORCH_HARMONICS_NATIVE_CPU_ARCH=1: target the build host's CPU
+    # (-march=native, -mtune=native). Unlocks AVX2/AVX-512 etc. on the local
+    # machine. Do NOT enable for wheel builds — the resulting binary won't run
+    # on older CPUs.
+    native_cpu_arch_mode = os.getenv('TORCH_HARMONICS_NATIVE_CPU_ARCH', '0') == '1'
 
     cpp_extra_flags = []
     if openmp_mode:
         cpp_extra_flags.append("-fopenmp")
+    if native_cpu_arch_mode:
+        cpp_extra_flags.extend(["-march=native", "-mtune=native"])
 
     nvcc_extra_flags = []
     if profile_mode:
@@ -58,9 +65,12 @@ def get_compile_args(module_name):
             'nvcc': ['-g', '-G', '-O0'] + nvcc_extra_flags
         }
     else:
-        print(f"NOTE: Compiling {module_name} with release flags")
+        if native_cpu_arch_mode:
+            print(f"NOTE: Compiling {module_name} with release flags + -march=native (host-CPU optimized; not portable)")
+        else:
+            print(f"NOTE: Compiling {module_name} with release flags")
         return {
-            'cxx': ['-O3', "-ffast-math", "-DNDEBUG"] + cpp_extra_flags,
+            'cxx': ['-O3', "-ffast-math", "-funroll-loops", "-DNDEBUG"] + cpp_extra_flags,
             'nvcc': ['-O3', "-DNDEBUG"] + nvcc_extra_flags
         }
 
@@ -130,7 +140,8 @@ def get_ext_modules():
     # Create a single extension that includes both CPU and CUDA code
     disco_sources = [
         "torch_harmonics/disco/optimized/disco_interface.cpp",
-        "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu.cpp"
+        "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu.cpp",
+        "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_legacy.cpp",
     ]
 
     if BUILD_CUDA:

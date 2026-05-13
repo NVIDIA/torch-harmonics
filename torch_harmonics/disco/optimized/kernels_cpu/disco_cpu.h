@@ -32,13 +32,14 @@
 
 #include "../disco.h"
 
-#define CACHE_BLOCK_SIZE (64)
+#include <algorithm>
+#include <vector>
 
 namespace disco_kernels {
 
     template <typename scalar_t>
     static void disco_fwd_cpu(
-        int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi, 
+        int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi,
         int64_t Ho, int64_t Wo, int64_t nnz, int64_t nnr,
         const torch::PackedTensorAccessor64<scalar_t, 4> inp,
         const torch::PackedTensorAccessor64<int64_t, 1> roff_idx,
@@ -49,52 +50,79 @@ namespace disco_kernels {
         torch::PackedTensorAccessor64<scalar_t, 5> out) {
 
         const int64_t pscale = static_cast<int64_t>(Wi / Wo);
-        
-        // some parameters
-        const int64_t block_wo = CACHE_BLOCK_SIZE;
-        const int64_t nblock_wo = static_cast<int64_t>((Wo + block_wo - 1) / block_wo);
 
-        // loop over matrix entries
-        #pragma omp parallel for collapse(3)
-        for (int64_t b = 0; b < B; b++) {
-            for (int64_t c = 0; c < C; c++) {
-                for (int64_t row = 0; row < nnr; row++) {
+        // hoist base pointers + strides; raw pointer arithmetic in the hot path
+        const scalar_t* __restrict__ inp_base = inp.data();
+        scalar_t* __restrict__ out_base = out.data();
+        const int64_t inp_sB = inp.stride(0);
+        const int64_t inp_sC = inp.stride(1);
+        const int64_t inp_sH = inp.stride(2);
+        const int64_t out_sB = out.stride(0);
+        const int64_t out_sC = out.stride(1);
+        const int64_t out_sK = out.stride(2);
+        const int64_t out_sH = out.stride(3);
 
-                    // since the rows are ordered accordingly, we can compute ho and ker in here
-                    int64_t ho = row_idx[roff_idx[row]];
-                    int64_t ker = ker_idx[roff_idx[row]];
+        const int64_t* __restrict__ roff_p = roff_idx.data();
+        const int64_t* __restrict__ ker_p  = ker_idx.data();
+        const int64_t* __restrict__ row_p  = row_idx.data();
+        const int64_t* __restrict__ col_p  = col_idx.data();
+        const scalar_t* __restrict__ val_p = vals.data();
 
-                    for (int64_t bwo = 0; bwo < nblock_wo; bwo++) {
+        #pragma omp parallel
+        {
+            // per-thread accumulator for one full output row, allocated once
+            std::vector<scalar_t> out_tmp(Wo);
+            // per-thread doubled row buffer; on hi-change we copy the input
+            // row twice so reads at index (wi + pscale*wo) need no modulo.
+            // Bound: wi < Wi and pscale*wo < pscale*Wo = Wi, so the access
+            // index is always < 2*Wi.
+            std::vector<scalar_t> sh(2 * Wi);
+            scalar_t* __restrict__ sh_ptr = sh.data();
 
-                        // compute block start and end
-                        int64_t wo_start = bwo * block_wo;
-                        int64_t wo_end = std::min(Wo, wo_start + block_wo);
+            #pragma omp for collapse(3)
+            for (int64_t b = 0; b < B; b++) {
+                for (int64_t c = 0; c < C; c++) {
+                    for (int64_t row = 0; row < nnr; row++) {
 
-                        std::array<scalar_t, block_wo> out_tmp;
-                        for (int64_t wob = 0; wob < block_wo; wob++) {
-                            out_tmp[wob] = scalar_t(0);
-                        }
-                        
-                        // loop over input rows
-                        for (int64_t z = roff_idx[row]; z < roff_idx[row + 1]; z++) {
-                    
-                            // COO format, we can optimize later
-                            int64_t col = col_idx[z];
-                            scalar_t val = vals[z];
+                        const int64_t soff = roff_p[row];
+                        const int64_t eoff = roff_p[row + 1];
+                        const int64_t ho   = row_p[soff];
+                        const int64_t ker  = ker_p[soff];
 
-                            int64_t wi = static_cast<int64_t>(col % Wi);
-                            int64_t hi = static_cast<int64_t>(col / Wi);
+                        // per-(b,c) input plane base
+                        const scalar_t* __restrict__ inp_bc =
+                            inp_base + b * inp_sB + c * inp_sC;
 
-                            // sum wo
-                            for (int64_t wo = wo_start; wo < wo_end; wo++) {
-                                // compute shifted w
-                                int64_t wipp = static_cast<int64_t>((wi + pscale * wo) % Wi);
-                                out_tmp[wo-wo_start] += val * inp[b][c][hi][wipp];
+                        std::fill(out_tmp.begin(), out_tmp.end(), scalar_t(0));
+
+                        int64_t hi_prev = -1;
+
+                        for (int64_t z = soff; z < eoff; z++) {
+
+                            const int64_t col = col_p[z];
+                            const scalar_t val = val_p[z];
+
+                            const int64_t wi = col % Wi;
+                            const int64_t hi = col / Wi;
+
+                            // only refresh the doubled buffer when hi changes
+                            if (hi != hi_prev) {
+                                hi_prev = hi;
+                                const scalar_t* inp_row = inp_bc + hi * inp_sH;
+                                std::copy(inp_row, inp_row + Wi, sh_ptr);
+                                std::copy(inp_row, inp_row + Wi, sh_ptr + Wi);
+                            }
+
+                            for (int64_t wo = 0; wo < Wo; wo++) {
+                                out_tmp[wo] += val * sh_ptr[wi + pscale * wo];
                             }
                         }
-                        // write out
-                        for (int64_t wo = wo_start; wo < wo_end; wo++) {
-                            out[b][c][ker][ho][wo] = out_tmp[wo-wo_start];
+
+                        // write out via raw output row pointer
+                        scalar_t* __restrict__ out_row =
+                            out_base + b * out_sB + c * out_sC + ker * out_sK + ho * out_sH;
+                        for (int64_t wo = 0; wo < Wo; wo++) {
+                            out_row[wo] = out_tmp[wo];
                         }
                     }
                 }
