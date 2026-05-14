@@ -1235,7 +1235,7 @@ void s2_attn_bwd_ring_pass2_special_k(int nlat_max, // we may process less than 
         float *_dkx_scl  = reinterpret_cast<float *>(_dkx - tidx); 
         float *_dvx_scl  = reinterpret_cast<float *>(_dvx - tidx);
         
-        for (int chan = tidx; chan < nchan_in*VEC_SIZE; chan += WARP_SIZE) {
+        for (int chan = tidx; chan < nchan_in*VEC_SIZE; chan += BDIM_X) {
             atomicAdd(_dkx_scl + chan, scale_dkx*sh_qy_scl[chan]);
         }
         for (int chan = tidx; chan < nchan_out*VEC_SIZE; chan += BDIM_X) {
