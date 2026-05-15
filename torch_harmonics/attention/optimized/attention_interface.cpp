@@ -86,10 +86,6 @@ namespace attention_kernels
         m.def("backward(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor quad_weights, Tensor col_idx, Tensor "
               "row_off, int nlon_in, int nlat_out, int nlon_out) -> (Tensor, Tensor, Tensor)",
               {at::Tag::pt2_compliant_tag});
-        // Frozen pre-optimization CPU forward kernel for A/B benchmarking.
-        m.def("forward_legacy(Tensor kx, Tensor vx, Tensor qy, Tensor quad_weights, Tensor col_idx, Tensor "
-              "row_off, int nlon_in, int nlat_out, int nlon_out) -> Tensor",
-              {at::Tag::pt2_compliant_tag});
 
         // ---- Ring-step variants for DistributedNeighborhoodAttentionS2 ----
         // K/V are sharded along longitude across an azimuth process group; each
