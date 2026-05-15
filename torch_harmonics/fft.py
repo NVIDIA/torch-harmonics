@@ -58,7 +58,7 @@ def rfft(x: torch.Tensor, nmodes: Optional[int] = None, dim: int = -1, **kwargs)
     if "n" in kwargs:
         raise ValueError("The 'n' argument is not allowed. Use 'nmodes' instead.")
 
-    x = fft.rfft(ensure_contiguous(x), dim=dim, **kwargs)
+    x = ensure_contiguous(fft.rfft(x, dim=dim, **kwargs))
 
     if nmodes is not None and nmodes > x.shape[dim]:
         x = _pad_dim_right(x, dim, nmodes, value=0.0)
@@ -90,6 +90,6 @@ def irfft(x: torch.Tensor, n: Optional[int] = None, dim: int = -1, **kwargs) -> 
     imag_scale = imag_scale.reshape(*shape)
     x = torch.complex(x.real, x.imag * imag_scale)
 
-    x = fft.irfft(ensure_contiguous(x), n=n, dim=dim, **kwargs)
+    x = ensure_contiguous(fft.irfft(x, n=n, dim=dim, **kwargs))
 
     return x
