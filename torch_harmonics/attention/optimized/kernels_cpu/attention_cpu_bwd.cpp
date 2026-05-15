@@ -39,18 +39,15 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_cpu(tor
                                                       torch::Tensor quad_weights, torch::Tensor col_idx, torch::Tensor row_off,
                                                       int64_t nlon_in, int64_t nlat_out, int64_t nlon_out) {
 
-    // shapes:
-    // input
-    // kx: B, C, Hi, Wi
-    // vx: B, C, Hi, Wi
-    // qy: B, C, Ho, Wo
-    // quad_weights: Hi
-    // output
-    // dkx: B, C, Hi, Wi
-    // dvx: B, C, Hi, Wi
-    // dqy: B, C, Ho, Wo
+    // Caller-visible shapes (BCHW logical):
+    //   kx, vx          : (B, C, Hi, Wi)
+    //   qy, dy          : (B, C, Ho, Wo)
+    //   quad_weights    : (Hi,)
+    //   dkx, dvx (out)  : same as kx, vx
+    //   dqy (out)       : same as qy
+    // Internally the kernel operates on physical (B, H, W, C) layout; the
+    // wrapper does the BCHW↔BHWC permute (mirrors the forward path).
 
-    // sanity checks
     CHECK_CPU_INPUT_TENSOR(kx);
     CHECK_CPU_INPUT_TENSOR(vx);
     CHECK_CPU_INPUT_TENSOR(qy);
@@ -59,46 +56,46 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_cpu(tor
     CHECK_CPU_INPUT_TENSOR(col_idx);
     CHECK_CPU_INPUT_TENSOR(row_off);
 
-    // direction selection: same convention as the forward wrapper. Self-attention
-    // (nlon_in == nlon_out) satisfies both checks and routes through the gather
-    // kernel below (pscale == 1).
+    // direction selection: same as fwd. Self (nlon_in == nlon_out) hits both
+    // and routes through the gather kernel (pscale == 1).
     const bool downsample = (nlon_in % nlon_out == 0);
     const bool upsample   = (nlon_out % nlon_in == 0);
     TORCH_CHECK(downsample || upsample,
                 "either nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (", nlon_out,
                 "), or vice versa");
 
-    // change to channels first:
-    bool kx_is_channels_last = kx.strides()[1] == 1;
-    bool vx_is_channels_last = vx.strides()[1] == 1;
-    bool qy_is_channels_last = qy.strides()[1] == 1;
-    bool dy_is_channels_last = dy.strides()[1] == 1;
+    // stride(1) == 1 ⇒ caller is already in BCHW-logical / BHWC-physical
+    // (channels-last) layout; we match that on the output side.
+    const bool kx_is_channels_last = kx.strides()[1] == 1;
+    const bool vx_is_channels_last = vx.strides()[1] == 1;
+    const bool qy_is_channels_last = qy.strides()[1] == 1;
 
-    if (!kx_is_channels_last) { kx = kx.contiguous(at::MemoryFormat::ChannelsLast); }
-    if (!vx_is_channels_last) { vx = vx.contiguous(at::MemoryFormat::ChannelsLast); }
-    if (!qy_is_channels_last) { qy = qy.contiguous(at::MemoryFormat::ChannelsLast); }
-    if (!dy_is_channels_last) { dy = dy.contiguous(at::MemoryFormat::ChannelsLast); }
+    // Force inputs to physical (B, H, W, C) via explicit permute + contiguous.
+    // Mirrors CUDA permute_4D_to0231; avoids relying on
+    // MemoryFormat::ChannelsLast which is silently ignored on some PyTorch
+    // builds (notably the C == 1 degenerate case).
+    kx = kx.permute({0, 2, 3, 1}).contiguous();
+    vx = vx.permute({0, 2, 3, 1}).contiguous();
+    qy = qy.permute({0, 2, 3, 1}).contiguous();
+    dy = dy.permute({0, 2, 3, 1}).contiguous();
 
-    auto dkx = torch::zeros_like(kx);
-    auto dvx = torch::zeros_like(vx);
-    auto dqy = torch::zeros_like(qy);
+    const int64_t batch_size    = kx.size(0);
+    const int64_t nlat_in       = kx.size(1);
+    const int64_t nchannels_in  = qy.size(3);
+    const int64_t nchannels_out = vx.size(3);
 
-    // some parameters
-    const int64_t batch_size = kx.size(0);
-    const int64_t nchannels_out = vx.size(1);
-    const int64_t nchannels_in = qy.size(1);
-    const int64_t nlat_in = kx.size(2);
+    // grads allocated as physical (B, H, W, C) zeros — matches input layout.
+    auto dkx = torch::zeros({batch_size, nlat_in,  nlon_in,  nchannels_in},  kx.options());
+    auto dvx = torch::zeros({batch_size, nlat_in,  nlon_in,  nchannels_out}, vx.options());
+    auto dqy = torch::zeros({batch_size, nlat_out, nlon_out, nchannels_in},  qy.options());
 
-    // extract accessors
     auto kx_arr = kx.packed_accessor64<float, 4>();
     auto vx_arr = vx.packed_accessor64<float, 4>();
     auto qy_arr = qy.packed_accessor64<float, 4>();
     auto dy_arr = dy.packed_accessor64<float, 4>();
-
     auto quad_weights_arr = quad_weights.packed_accessor64<float, 1>();
-    auto col_idx_arr = col_idx.packed_accessor64<int64_t, 1>();
-    auto roff_arr = row_off.packed_accessor64<int64_t, 1>();
-
+    auto col_idx_arr      = col_idx.packed_accessor64<int64_t, 1>();
+    auto roff_arr         = row_off.packed_accessor64<int64_t, 1>();
     auto dqy_arr = dqy.packed_accessor64<float, 4>();
     auto dvx_arr = dvx.packed_accessor64<float, 4>();
     auto dkx_arr = dkx.packed_accessor64<float, 4>();
@@ -109,16 +106,22 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> s2_attention_bwd_cpu(tor
             nlon_in, nlat_out, nlon_out,
             batch_size, nchannels_in, nchannels_out);
     } else {
-        s2_attn_bwd_upsample_dispatch(kx, vx, qy, dy, quad_weights, col_idx, row_off,
-            dqy, dvx, dkx,
+        s2_attn_bwd_upsample_dispatch(kx_arr, vx_arr, qy_arr, dy_arr,
+            quad_weights_arr, col_idx_arr, roff_arr,
+            dqy_arr, dvx_arr, dkx_arr,
             nlon_in, nlat_in, nlat_out, nlon_out,
             batch_size, nchannels_in, nchannels_out);
     }
 
-    // permute back
-    if (!qy_is_channels_last) { dqy = dqy.contiguous(at::MemoryFormat::Contiguous); }
-    if (!vx_is_channels_last) { dvx = dvx.contiguous(at::MemoryFormat::Contiguous); }
-    if (!kx_is_channels_last) { dkx = dkx.contiguous(at::MemoryFormat::Contiguous); }
+    // Return logical (B, C, H, W). Permute view is the desired layout when the
+    // matching input was channels-last; otherwise .contiguous() materializes
+    // default BCHW.
+    dkx = dkx.permute({0, 3, 1, 2});
+    dvx = dvx.permute({0, 3, 1, 2});
+    dqy = dqy.permute({0, 3, 1, 2});
+    if (!kx_is_channels_last) { dkx = dkx.contiguous(); }
+    if (!vx_is_channels_last) { dvx = dvx.contiguous(); }
+    if (!qy_is_channels_last) { dqy = dqy.contiguous(); }
 
     return std::make_tuple(dkx, dvx, dqy);
 }
