@@ -172,7 +172,6 @@ def get_ext_modules():
         "torch_harmonics/attention/optimized/attention_interface.cpp",
         "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_fwd.cpp",
         "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_fwd_upsample.cpp",
-        "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_fwd_legacy.cpp",
         "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_bwd.cpp",
         "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_bwd_upsample.cpp",
     ]
