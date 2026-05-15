@@ -126,8 +126,8 @@ def trapezoidal_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0,
         Tensor of quadrature weights
     """
 
-    xlg = torch.as_tensor(np.linspace(a, b, n, endpoint=periodic))
-    wlg = (b - a) / (n - periodic * 1) * torch.ones(n, requires_grad=False)
+    xlg = torch.as_tensor(np.linspace(a, b, n, endpoint=not periodic))
+    wlg = (b - a) / (n - 1 + periodic * 1) * torch.ones(n, requires_grad=False)
 
     if not periodic:
         wlg[0] *= 0.5
