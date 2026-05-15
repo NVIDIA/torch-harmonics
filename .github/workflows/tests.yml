@@ -28,7 +28,7 @@ jobs:
 
     - name: Test with pytest
       run: |
-        python3 -m pytest --cov-report term --cov-report json --cov-config=.coveragerc --cov=torch_harmonics \
+        python3 -m pytest -ra --cov-report term --cov-report json --cov-config=.coveragerc --cov=torch_harmonics \
           --ignore-glob="**/test_distributed_*" ./tests/
 
     - name: Update coverage badge
