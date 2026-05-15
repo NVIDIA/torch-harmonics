@@ -194,8 +194,6 @@ class TestSpectralConvS2(unittest.TestCase):
     )
     def test_dtype_preservation(self, nlat, nlon, in_channels, out_channels, dtype, verbose=False):
         """Output dtype must match input dtype after the internal float32 cast."""
-        if dtype == torch.float16 and self.device.type == "cpu":
-            self.skipTest("float16 arithmetic is not supported on CPU")
 
         # set seed
         set_seed(333)
@@ -420,10 +418,9 @@ class TestSpectralConvS2(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # disabling tests for now because MKL DNN has problems with those:
             # nlat, nlon, channels, num_groups
-            #[32, 64, 4, 1],
-            #[32, 64, 4, 2],
+            [32, 64, 4, 1],
+            [32, 64, 4, 2],
         ],
         skip_on_empty=True,
     )

@@ -35,6 +35,8 @@ import torch
 import torch.fft as fft
 import torch.nn as nn
 
+from torch_harmonics.utils import ensure_contiguous
+
 
 def _pad_dim_right(x: torch.Tensor, dim: int, target_size: int, value: float = 0.0) -> torch.Tensor:
     """Pad tensor along a single dimension to target_size (right-side only)."""
@@ -56,7 +58,7 @@ def rfft(x: torch.Tensor, nmodes: Optional[int] = None, dim: int = -1, **kwargs)
     if "n" in kwargs:
         raise ValueError("The 'n' argument is not allowed. Use 'nmodes' instead.")
 
-    x = fft.rfft(x, dim=dim, **kwargs)
+    x = ensure_contiguous(fft.rfft(x, dim=dim, **kwargs))
 
     if nmodes is not None and nmodes > x.shape[dim]:
         x = _pad_dim_right(x, dim, nmodes, value=0.0)
@@ -74,16 +76,20 @@ def irfft(x: torch.Tensor, n: Optional[int] = None, dim: int = -1, **kwargs) -> 
     if n is None:
         n = 2 * (x.size(dim) - 1)
 
-    # ensure that imaginary part of 0 and nyquist components are zero
-    # this is important because not all backend algorithms provided through the
-    # irfft interface ensure that
-    if x.requires_grad:
-        # this ensures that we create a contiguous new tensor we can overwrite:
-        x = x.clone()
-    x[..., 0].imag = 0.0
+    # Zero the imaginary part of the DC bin (and Nyquist bin if present) to
+    # enforce Hermitian symmetry. We do this functionally via torch.complex()
+    # rather than in-place assignment (x[..., k].imag = 0.0) because the
+    # in-place write on a strided complex view breaks autograd's backward pass
+    # on CPU+MKL (DftiCommitDescriptor rejects the resulting stride pattern).
+    imag_scale = torch.ones(x.size(dim), dtype=x.real.dtype, device=x.device)
+    imag_scale[0] = 0.0
     if (n % 2 == 0) and (n // 2 < x.size(dim)):
-        x[..., n // 2].imag = 0.0
+        imag_scale[n // 2] = 0.0
+    shape = [1] * x.ndim
+    shape[dim] = -1
+    imag_scale = imag_scale.reshape(*shape)
+    x = torch.complex(x.real, x.imag * imag_scale)
 
-    x = fft.irfft(x, n=n, dim=dim, **kwargs)
+    x = ensure_contiguous(fft.irfft(x, n=n, dim=dim, **kwargs))
 
     return x
