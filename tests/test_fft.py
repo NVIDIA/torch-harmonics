@@ -45,12 +45,11 @@ class TestFFTWrappers(unittest.TestCase):
     """Tests for the rfft/irfft wrappers in torch_harmonics.fft."""
 
     @parameterized.expand([
-        # batch, nlon, nmodes
+        # batch, nlon, nmodes (nmodes >= nlon//2+1 or None to keep all modes)
         [1, 64, None],
         [4, 64, None],
-        [4, 64, 16],
         [4, 64, 48],
-        [4, 128, 33],
+        [4, 128, None],
     ])
     def test_rfft_irfft_roundtrip(self, batch, nlon, nmodes):
         """irfft(rfft(x)) should recover the original signal."""
