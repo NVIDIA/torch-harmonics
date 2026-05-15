@@ -56,6 +56,8 @@ class TestQuadrature(unittest.TestCase):
             [65, 128, 1, 1, "legendre-gauss", True, 1e-6, 1e-6],
             [65, 128, 2, 2, "lobatto", False, 1e-6, 1e-6],
             [65, 128, 2, 2, "lobatto", True, 1e-6, 1e-6],
+            [64, 128, 2, 3, "equidistant", False, 1e-4, 1e-4],
+            [64, 128, 2, 3, "equidistant", True, 1e-4, 1e-4],
         ]
     )
     def test_constant_integral(self, nlat, nlon, batch_size, num_chan, grid, normalize, atol, rtol, verbose=False):
@@ -78,6 +80,7 @@ class TestQuadrature(unittest.TestCase):
             [64, 128, "equiangular"],
             [65, 128, "legendre-gauss"],
             [65, 128, "lobatto"],
+            [64, 128, "equidistant"],
         ]
     )
     def test_odd_latitude_integral(self, nlat, nlon, grid, verbose=False):
@@ -108,6 +111,7 @@ class TestQuadrature(unittest.TestCase):
             [64, 128, "equiangular"],
             [65, 128, "legendre-gauss"],
             [65, 128, "lobatto"],
+            [64, 128, "equidistant"],
         ]
     )
     def test_polynomial_latitude_integral(self, nlat, nlon, grid, verbose=False):
@@ -141,6 +145,7 @@ class TestQuadrature(unittest.TestCase):
             [64, 128, "equiangular"],
             [65, 128, "legendre-gauss"],
             [65, 128, "lobatto"],
+            [64, 128, "equidistant"],
         ]
     )
     def test_zero_longitude_mean(self, nlat, nlon, grid, verbose=False):
