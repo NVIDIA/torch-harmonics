@@ -36,8 +36,12 @@ class _EnsureContiguous(torch.autograd.Function):
     """Ensures the tensor is contiguous in both the forward and backward pass."""
 
     @staticmethod
-    def forward(ctx, x):
+    def forward(x):
         return x.contiguous()
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        pass
 
     @staticmethod
     def backward(ctx, grad):
