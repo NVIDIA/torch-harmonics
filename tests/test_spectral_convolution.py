@@ -420,10 +420,9 @@ class TestSpectralConvS2(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # disabling tests for now because MKL DNN has problems with those:
             # nlat, nlon, channels, num_groups
-            #[32, 64, 4, 1],
-            #[32, 64, 4, 2],
+            [32, 64, 4, 1],
+            [32, 64, 4, 2],
         ],
         skip_on_empty=True,
     )
