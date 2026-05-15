@@ -35,6 +35,8 @@ import torch
 import torch.fft as fft
 import torch.nn as nn
 
+from torch_harmonics.utils import ensure_contiguous
+
 
 def _pad_dim_right(x: torch.Tensor, dim: int, target_size: int, value: float = 0.0) -> torch.Tensor:
     """Pad tensor along a single dimension to target_size (right-side only)."""
@@ -56,7 +58,7 @@ def rfft(x: torch.Tensor, nmodes: Optional[int] = None, dim: int = -1, **kwargs)
     if "n" in kwargs:
         raise ValueError("The 'n' argument is not allowed. Use 'nmodes' instead.")
 
-    x = fft.rfft(x.contiguous(), dim=dim, **kwargs)
+    x = fft.rfft(ensure_contiguous(x), dim=dim, **kwargs)
 
     if nmodes is not None and nmodes > x.shape[dim]:
         x = _pad_dim_right(x, dim, nmodes, value=0.0)
@@ -88,6 +90,6 @@ def irfft(x: torch.Tensor, n: Optional[int] = None, dim: int = -1, **kwargs) -> 
     imag_scale = imag_scale.reshape(*shape)
     x = torch.complex(x.real, x.imag * imag_scale)
 
-    x = fft.irfft(x.contiguous(), n=n, dim=dim, **kwargs)
+    x = fft.irfft(ensure_contiguous(x), n=n, dim=dim, **kwargs)
 
     return x
