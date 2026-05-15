@@ -389,6 +389,11 @@ class QuadratureS2(torch.nn.Module):
             dlambda = 2 * torch.pi / img_shape[1]
             quad_weight = dlambda * weights.unsqueeze(1)
             quad_weight = quad_weight.tile(1, img_shape[1])
+        elif self.grid == "equidistant":
+            _, weights = trapezoidal_weights(img_shape[0], -1, 1)
+            dlambda = 2 * torch.pi / img_shape[1]
+            quad_weight = dlambda * weights.unsqueeze(1)
+            quad_weight = quad_weight.tile(1, img_shape[1])
         else:
             raise (ValueError("Unknown quadrature mode"))
 
