@@ -514,12 +514,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         dispatcher always routes self-attention through the gather kernel, so this test
         exercises the upsample math that the dispatcher would otherwise hide.
 
-        Restricted to CPU: a CPU-vs-CUDA divergence on these pure-PyTorch math fns would
-        indicate a PyTorch bug, not a bug in our code.
+        Runs same-device-vs-same-device on each parameterized device (CPU or CUDA). No
+        cross-device comparison.
         """
-
-        if self.device.type != "cpu":
-            raise unittest.SkipTest("kernel-equivalence check runs only on CPU")
 
         set_seed(333)
 
