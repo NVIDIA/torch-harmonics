@@ -56,6 +56,8 @@ class TestQuadrature(unittest.TestCase):
             [65, 128, 1, 1, "legendre-gauss", True, 1e-6, 1e-6],
             [65, 128, 2, 2, "lobatto", False, 1e-6, 1e-6],
             [65, 128, 2, 2, "lobatto", True, 1e-6, 1e-6],
+            [64, 128, 2, 3, "equidistant", False, 1e-4, 1e-4],
+            [64, 128, 2, 3, "equidistant", True, 1e-4, 1e-4],
         ]
     )
     def test_constant_integral(self, nlat, nlon, batch_size, num_chan, grid, normalize, atol, rtol, verbose=False):
@@ -78,6 +80,7 @@ class TestQuadrature(unittest.TestCase):
             [64, 128, "equiangular"],
             [65, 128, "legendre-gauss"],
             [65, 128, "lobatto"],
+            [64, 128, "equidistant"],
         ]
     )
     def test_odd_latitude_integral(self, nlat, nlon, grid, verbose=False):
@@ -104,18 +107,19 @@ class TestQuadrature(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # nlat, nlon, grid
-            [64, 128, "equiangular"],
-            [65, 128, "legendre-gauss"],
-            [65, 128, "lobatto"],
+            # nlat, nlon, grid, atol, rtol
+            [64, 128, "equiangular", 1e-5, 1e-5],
+            [65, 128, "legendre-gauss", 1e-5, 1e-5],
+            [65, 128, "lobatto", 1e-5, 1e-5],
+            [64, 128, "equidistant", 1e-2, 1e-2],
         ]
     )
-    def test_polynomial_latitude_integral(self, nlat, nlon, grid, verbose=False):
+    def test_polynomial_latitude_integral(self, nlat, nlon, grid, atol, rtol, verbose=False):
         """cos^2(theta) integrates to 4*pi/3 (unnormalized) or 1/3 (normalized).
 
         Analytically: 2*pi * integral_{-1}^{1} t^2 dt = 2*pi * 2/3 = 4*pi/3.
-        All three quadrature rules integrate quadratic polynomials in cos-theta
-        exactly, so the error should be at floating-point precision.
+        Gauss-type quadrature rules integrate quadratic polynomials in cos-theta
+        exactly; the trapezoidal rule (equidistant) has O(h^2) error.
         """
         set_seed(333)
 
@@ -130,7 +134,7 @@ class TestQuadrature(unittest.TestCase):
             self.assertTrue(
                 compare_tensors(
                     f"cos^2 integral (normalize={normalize})", out, expected,
-                    atol=1e-5, rtol=1e-5,
+                    atol=atol, rtol=rtol,
                     verbose=verbose,
                 )
             )
@@ -141,6 +145,7 @@ class TestQuadrature(unittest.TestCase):
             [64, 128, "equiangular"],
             [65, 128, "legendre-gauss"],
             [65, 128, "lobatto"],
+            [64, 128, "equidistant"],
         ]
     )
     def test_zero_longitude_mean(self, nlat, nlon, grid, verbose=False):
