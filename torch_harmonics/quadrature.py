@@ -288,54 +288,6 @@ def clenshaw_curtiss_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]
     return tcc, wcc
 
 
-def fejer2_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Computation of the Fejer quadrature nodes and weights.
-
-    Parameters
-    -----------
-    n: int
-        Number of quadrature nodes
-    a: Optional[float]
-        Lower bound of the interval
-    b: Optional[float]
-        Upper bound of the interval
-
-    Returns
-    -------
-    tcc: torch.Tensor
-        Tensor of quadrature nodes
-    wcc: torch.Tensor
-        Tensor of quadrature weights
-
-    References
-    ----------
-    [1] Joerg Waldvogel, Fast Construction of the Fejer and Clenshaw-Curtis Quadrature Rules; BIT Numerical Mathematics, Vol. 43, No. 1, pp. 001–018.
-    """
-
-    assert n > 2
-
-    tcc = torch.cos(torch.linspace(math.pi, 0, n, dtype=torch.float64, requires_grad=False))
-
-    n1 = n - 1
-    N = torch.arange(1, n1, 2, dtype=torch.float64)
-    l = len(N)
-    m = n1 - l
-
-    v = torch.cat([2 / N / (N - 2), 1 / N[-1:], torch.zeros(m, dtype=torch.float64, requires_grad=False)])
-    #v = 0 - v[:-1] - v[-1:0:-1]
-    v = 0 - v[:-1] - torch.flip(v[1:], dims=(0,))
-
-    wcc = torch.fft.ifft(v).real
-    wcc = torch.cat((wcc, wcc[:1]))
-
-    # rescale
-    tcc = (b - a) * 0.5 * tcc + (b + a) * 0.5
-    wcc = wcc * (b - a) * 0.5
-
-    return tcc, wcc
-
-
 class QuadratureS2(torch.nn.Module):
     """
     Scalar quadrature on :math:`S^2` for integrating spherical fields defined on a
