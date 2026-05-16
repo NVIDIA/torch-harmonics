@@ -440,6 +440,15 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             # transpose convolution
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, 5e-2, 5e-2],
             [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, 5e-2, 5e-2],
+            # fused convolution (forward conv only — compares fused against dense reference)
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4, True],
+            [8, 4, 2, (16, 32), (8, 16), (3), "piecewise linear", "nodal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4, True],
+            [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4, True],
+            [8, 4, 2, (24, 48), (12, 24), (3), "zernike", "nodal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4, True],
+            [8, 4, 2, (24, 48), (12, 24), (3, 3), "fourier-bessel", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4, True],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9, True],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, 2e-2, 1e-2, True],
+            [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, 5e-2, 5e-2, True],
         ],
         skip_on_empty=True,
     )
@@ -459,6 +468,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         transpose,
         atol,
         rtol,
+        fused=False,
         verbose=True,
     ):
         # for AMP dtypes, the module and input stay in float32; autocast handles the rest
@@ -482,6 +492,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
 
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
+        # fused is only supported for forward (non-transpose) convolution
+        fused_kwarg = {"fused": fused} if (fused and not transpose) else {}
         conv = Conv(
             in_channels,
             out_channels,
@@ -496,6 +508,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             bias=False,
             theta_cutoff=theta_cutoff,
             optimized_kernel=use_optimized_kernels,
+            **fused_kwarg,
         ).to(self.device)
 
         filter_basis = conv.filter_basis
@@ -623,6 +636,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             # transpose convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, 1e-2, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, 1e-2, 1e-2],
+            # fused convolution (forward conv only — compares fused optimized against torch reference)
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4, True],
+            [8, 4, 2, (41, 80), (21, 40), (3), "piecewise linear", "nodal", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4, True],
+            [8, 4, 2, (41, 80), (21, 40), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4, True],
+            [8, 4, 2, (41, 80), (21, 40), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, False, 1e-4, 1e-4, True],
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, False, 1e-9, 1e-9, True],
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, 1e-2, 1e-2, True],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, 5e-2, 5e-2, True],
         ],
         skip_on_empty=True,
     )
@@ -643,6 +664,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         transpose,
         atol,
         rtol,
+        fused=False,
         verbose=False,
     ):
         # for AMP dtypes, the module and input stay in float32; autocast handles the rest
@@ -681,6 +703,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             optimized_kernel=False,
         ).to(dtype=module_dtype, device=self.device)
 
+        # fused is only supported for forward (non-transpose) convolution
+        fused_kwarg = {"fused": fused} if (fused and not transpose) else {}
         conv_opt = Conv(
             in_channels,
             out_channels,
@@ -695,6 +719,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             bias=False,
             theta_cutoff=theta_cutoff,
             optimized_kernel=True,
+            **fused_kwarg,
         ).to(dtype=module_dtype, device=self.device)
 
         # create a copy of the weight
@@ -800,6 +825,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (16, 32), (8, 16), (3), "piecewise linear", "mean", "equiangular", "equiangular", False],
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True],
             [8, 4, 2, (8, 16), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True],
+            # fused forward convolution
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, True],
+            [8, 4, 2, (16, 32), (8, 16), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, True],
         ],
         skip_on_empty=True,
     )
@@ -817,6 +845,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         grid_in,
         grid_out,
         transpose,
+        fused=False,
         verbose=False,
     ):
         """Tests whether the optimized kernels are PyTorch 2 compatible"""
@@ -838,6 +867,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
 
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
+        fused_kwarg = {"fused": fused} if (fused and not transpose) else {}
         conv = Conv(
             in_channels,
             out_channels,
@@ -851,31 +881,27 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             grid_out=grid_out,
             bias=False,
             theta_cutoff=theta_cutoff,
+            **fused_kwarg,
         ).to(self.device)
 
-        # forward test
-        if not transpose:
-            inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
+        inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
+
+        if fused and not transpose:
+            # opcheck for fused conv op
+            weight_r = conv.weight.reshape(conv.groups, -1, conv.weight.shape[1], conv.weight.shape[2])
+            test_inputs = (inp, weight_r,
+                           conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals,
+                           conv.kernel_size, conv.nlat_out, conv.nlon_out, conv.groups, conv.groupsize)
+            opcheck(torch.ops.disco_kernels._disco_s2_fused_conv_optimized, test_inputs)
         else:
-            inp = torch.randn(batch_size, conv.kernel_size, in_channels, *in_shape, device=self.device)
-
-        test_inputs = (inp, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals, conv.kernel_size, conv.nlat_out, conv.nlon_out)
-
-        if not transpose:
-            opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs)
-        else:
-            opcheck(torch.ops.disco_kernels._disco_s2_transpose_contraction_optimized, test_inputs)
-
-        # if a test fails, those help to disambiguate the error
-        # schema
-        # opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_schema")
-        # fake tensor
-        # opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_faketensor")
-        # test AOT stuff
-        # this is expected to fail if the output shapes are dependent on input shapes (which is the case for DISCO)
-        # opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_aot_dispatch_static")
-        # this one should pass
-        # opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs, test_utils="test_aot_dispatch_dynamic")
+            if transpose:
+                inp = torch.randn(batch_size, conv.kernel_size, in_channels, *in_shape, device=self.device)
+            test_inputs = (inp, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals,
+                           conv.kernel_size, conv.nlat_out, conv.nlon_out)
+            if not transpose:
+                opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs)
+            else:
+                opcheck(torch.ops.disco_kernels._disco_s2_transpose_contraction_optimized, test_inputs)
 
     @parameterized.expand(
         [
