@@ -41,7 +41,7 @@ import torch.nn as nn
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
 from ._disco_utils import _get_psi
-from .optimized.disco_optimized import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
+from .optimized.disco_optimized import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized, _disco_s2_fused_conv_optimized
 from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
 from disco_helpers import optimized_kernels_is_available, preprocess_psi
@@ -474,6 +474,11 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         Theta cutoff for the filter basis functions
     optimized_kernel: Optional[bool]
         Whether to use the optimized kernel (if available)
+    fused: Optional[bool]
+        When True, fuses the sparse contraction and weight multiplication into a single
+        autograd region to avoid storing the K-expanded intermediate in the graph.
+        Trades one extra contraction recompute in backward for K× memory savings.
+        Only effective when optimized_kernel is True.
 
     Returns
     -------
@@ -500,9 +505,11 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         optimized_kernel: Optional[bool] = True,
+        fused: Optional[bool] = False,
     ):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
+        self.fused = fused and self.optimized_kernel
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
 
@@ -561,20 +568,28 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
-        if self.optimized_kernel:
-            x = _disco_s2_contraction_optimized(
-                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
-            )
+        weight_r = self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])
+
+        if self.fused:
+            out = _disco_s2_fused_conv_optimized(
+                x, weight_r,
+                self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
+                self.kernel_size, self.nlat_out, self.nlon_out, self.groups, self.groupsize)
         else:
-            x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
+            if self.optimized_kernel:
+                x = _disco_s2_contraction_optimized(
+                    x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
+                )
+            else:
+                x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
 
-        # extract shape
-        B, C, K, H, W = x.shape
-        x = x.reshape(B, self.groups, self.groupsize, K, H, W)
+            # extract shape
+            B, C, K, H, W = x.shape
+            x = x.reshape(B, self.groups, self.groupsize, K, H, W)
 
-        # do weight multiplication
-        out = torch.einsum("bgckxy,gock->bgoxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
-        out = out.reshape(B, -1, H, W)
+            # do weight multiplication
+            out = torch.einsum("bgckxy,gock->bgoxy", x, weight_r).contiguous()
+            out = out.reshape(B, -1, H, W)
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, -1, 1, 1)
