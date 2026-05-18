@@ -35,7 +35,7 @@ import math
 import numpy as np
 import torch
 
-def _precompute_quadrature_weights(n: int, grid: Optional[str]="equiangular-trapezoidal", a: Optional[float]=0.0, b: Optional[float]=1.0,
+def _precompute_quadrature_weights(n: int, grid: Optional[str]="equiangular", a: Optional[float]=0.0, b: Optional[float]=1.0,
                      periodic: Optional[bool]=False) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Precompute grid points and quadrature weights for various quadrature rules.
@@ -45,7 +45,7 @@ def _precompute_quadrature_weights(n: int, grid: Optional[str]="equiangular-trap
     n : int
         Number of grid points
     grid : str, optional
-        Grid type ("equiangular-trapezoidal", "legendre-gauss", "lobatto", "equiangular"), by default "equiangular-trapezoidal"
+        Grid type ("equiangular-trapezoidal", "legendre-gauss", "lobatto", "equiangular"), by default "equiangular"
     a : float, optional
         Lower bound of interval, by default 0.0
     b : float, optional
