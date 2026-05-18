@@ -53,7 +53,7 @@ class DistributedQuadratureS2(torch.nn.Module):
         Spatial grid shape ``(nlat, nlon)``.
     grid: str, optional
         Quadrature grid type (``"equiangular"``, ``"legendre-gauss"``,
-        ``"lobatto"``, ``"equidistant"``), by default ``"equiangular"``.
+        ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``.
     normalize: bool, optional
         If ``True``, divides weights by ``4π`` to return an average instead of
         an integral, by default ``False``.

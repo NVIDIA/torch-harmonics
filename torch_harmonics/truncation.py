@@ -49,7 +49,7 @@ def _truncate_lmax(nlat: int, grid: Optional[str]="equiangular") -> int:
     nlat : int
         Number of latitude points
     grid : str, optional
-        Grid type ("legendre-gauss", "lobatto", "equiangular", "equidistant"), by default "equiangular"
+        Grid type ("legendre-gauss", "lobatto", "equiangular", "equiangular-trapezoidal"), by default "equiangular"
 
     Returns
     -------
@@ -60,9 +60,9 @@ def _truncate_lmax(nlat: int, grid: Optional[str]="equiangular") -> int:
         return nlat
     elif grid == "lobatto":
         return nlat - 1
-    elif grid in ["equiangular", "equidistant"]:
+    elif grid in ["equiangular", "equiangular-trapezoidal"]:
         warnings.warn(
-            "Default SHT truncation changed in v0.9.0: equiangular/equidistant grids now truncate to (nlat+1)//2. "
+            "Default SHT truncation changed in v0.9.0: equiangular/equiangular-trapezoidal grids now truncate to (nlat+1)//2. "
             "Specify lmax explicitly to override.",
             UserWarning,
             stacklevel=2,
@@ -105,7 +105,7 @@ def truncate_sht(nlat: int, nlon: int, lmax: Optional[int]=None, mmax: Optional[
         User-defined maximum azimuthal harmonic degree (non-inclusive)
         If not provided, the maximum degree is determined based on the longitude grid.
     grid : str, optional
-        Grid type ("legendre-gauss", "lobatto", "equiangular", "equidistant"), by default "equiangular"
+        Grid type ("legendre-gauss", "lobatto", "equiangular", "equiangular-trapezoidal"), by default "equiangular"
 
     Returns
     -------

@@ -55,7 +55,7 @@ class RealSHT(nn.Module):
     mmax: int
         Maximum spherical harmonic order
     grid: str
-        Grid type ("equiangular", "legendre-gauss", "lobatto", "equidistant"), by default "equiangular"
+        Grid type ("equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"), by default "equiangular"
     norm: str
         Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
     csphase: bool
@@ -151,7 +151,7 @@ class InverseRealSHT(nn.Module):
     mmax: int
         Maximum spherical harmonic order
     grid: str
-        Grid type ("equiangular", "legendre-gauss", "lobatto", "equidistant"), by default "equiangular"
+        Grid type ("equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"), by default "equiangular"
     norm: str
         Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
     csphase: bool
@@ -252,7 +252,7 @@ class RealVectorSHT(nn.Module):
     mmax: int
         Maximum spherical harmonic order
     grid: str
-        Grid type ("equiangular", "legendre-gauss", "lobatto", "equidistant"), by default "equiangular"
+        Grid type ("equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"), by default "equiangular"
     norm: str
         Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
     csphase: bool
@@ -364,7 +364,7 @@ class InverseRealVectorSHT(nn.Module):
     mmax: int
         Maximum spherical harmonic order
     grid: str
-        Grid type ("equiangular", "legendre-gauss", "lobatto", "equidistant"), by default "equiangular"
+        Grid type ("equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"), by default "equiangular"
     norm: str
         Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
     csphase: bool
