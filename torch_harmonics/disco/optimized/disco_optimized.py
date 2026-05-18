@@ -144,6 +144,72 @@ if optimized_kernels_is_available():
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
 
+    # ring-step forward fake — schema returns None (op mutates ``out``)
+    @torch.library.register_fake("disco_kernels::forward_ring_step")
+    def _(inp: torch.Tensor, out: torch.Tensor,
+          roff_idx: torch.Tensor, ker_idx: torch.Tensor,
+          row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
+          kernel_size: int, nlat_out: int, nlon_out_local_self: int,
+          nlon_in_global: int, pscale: int,
+          lon_lo_src: int, nlon_in_local_src: int) -> None:
+        return None
+
+    # ring-step backward fake — same shape contract; mutates ``out``
+    @torch.library.register_fake("disco_kernels::backward_ring_step")
+    def _(inp: torch.Tensor, out: torch.Tensor,
+          roff_idx: torch.Tensor, ker_idx: torch.Tensor,
+          row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
+          kernel_size: int, nlat_in: int, nlon_in_local_self: int,
+          nlon_in_global: int, pscale: int,
+          pscale_wo_offset: int, lon_lo_in_self: int,
+          nlon_out_local_src: int) -> None:
+        return None
+
+    # ring-step forward Python wrapper.
+    def _disco_s2_contraction_ring_step_optimized(
+        inp: torch.Tensor, out: torch.Tensor,
+        roff_idx: torch.Tensor, ker_idx: torch.Tensor,
+        row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
+        kernel_size: int, nlat_out: int, nlon_out_local_self: int,
+        nlon_in_global: int, pscale: int,
+        lon_lo_src: int, nlon_in_local_src: int,
+    ) -> None:
+        itype = inp.dtype
+        cdtype = _compute_dtype(itype)
+        inp_c = inp.to(cdtype).contiguous()
+        vals_c = vals.to(cdtype)
+        disco_kernels.forward_ring_step.default(
+            inp_c, out,
+            roff_idx, ker_idx, row_idx, col_idx, vals_c,
+            kernel_size, nlat_out, nlon_out_local_self,
+            nlon_in_global, pscale,
+            lon_lo_src, nlon_in_local_src,
+        )
+
+    # ring-step transpose Python wrapper.
+    def _disco_s2_transpose_contraction_ring_step_optimized(
+        inp: torch.Tensor, out: torch.Tensor,
+        roff_idx: torch.Tensor, ker_idx: torch.Tensor,
+        row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
+        kernel_size: int, nlat_in: int, nlon_in_local_self: int,
+        nlon_in_global: int, pscale: int,
+        pscale_wo_offset: int, lon_lo_in_self: int,
+        nlon_out_local_src: int,
+    ) -> None:
+        itype = inp.dtype
+        cdtype = _compute_dtype(itype)
+        inp_c = inp.to(cdtype).contiguous()
+        vals_c = vals.to(cdtype)
+        disco_kernels.backward_ring_step.default(
+            inp_c, out,
+            roff_idx, ker_idx, row_idx, col_idx, vals_c,
+            kernel_size, nlat_in, nlon_in_local_self,
+            nlon_in_global, pscale,
+            pscale_wo_offset, lon_lo_in_self,
+            nlon_out_local_src,
+        )
+
+
 # general routines: this is the same for forward and transpose
 def _setup_context_conv_backward(ctx, inputs, output):
     inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out = inputs
