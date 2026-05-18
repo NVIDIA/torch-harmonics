@@ -61,6 +61,7 @@ from .distributed_spectral_convolution import DistributedSpectralConvS2
 # import DISCO
 from .distributed_convolution import DistributedDiscreteContinuousConvS2
 from .distributed_convolution import DistributedDiscreteContinuousConvTransposeS2
+from .distributed_convolution_ring import DistributedDiscreteContinuousConvS2Ring
 
 # import resampling
 from .distributed_resample import DistributedResampleS2
