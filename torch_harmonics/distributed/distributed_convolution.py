@@ -47,6 +47,7 @@ from torch_harmonics.disco.convolution import (
 from torch_harmonics.distributed import polar_group_size, azimuth_group_size
 from torch_harmonics.distributed import distributed_transpose_azimuth
 from torch_harmonics.distributed import reduce_from_polar_region, scatter_to_polar_region, gather_from_polar_region, copy_to_polar_region
+from torch_harmonics.distributed import reduce_from_scatter_to_polar_region, gather_from_copy_to_polar_region
 from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
 from torch_harmonics.distributed import compute_split_shapes
 
@@ -261,8 +262,12 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
 
         # perform reduce scatter in polar region
-        x = reduce_from_polar_region(x)
-        x = scatter_to_polar_region(x, -2)
+        # Fused reduce-scatter on the polar group: same end state as
+        # reduce_from_polar_region + scatter_to_polar_region, but half the
+        # comm volume (one reduce_scatter instead of all_reduce + slice).
+        # The underlying _reduce_scatter pads short chunks to max_chunk
+        # to support uneven splits along nlat_out across the polar group.
+        x = reduce_from_scatter_to_polar_region(x, -2)
 
         # now we can transpose back the result, so that lon is split and channels are local
         if self.comm_size_azimuth > 1:
@@ -438,9 +443,11 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth(x, (1, -1), self.lon_in_shapes)
 
-        # gather input tensor and set up backward reduction hooks
-        x = gather_from_polar_region(x, -2, self.lat_in_shapes)
-        x = copy_to_polar_region(x)
+        # Fused gather + copy on the polar group. Forward is the same
+        # all_gather along nlat that gather_from_polar_region performed;
+        # backward replaces all_reduce + slice with a single reduce_scatter
+        # (half the backward comm volume on the K-expanded tensor).
+        x = gather_from_copy_to_polar_region(x, -2, self.lat_in_shapes)
 
         if self.optimized_kernel:
             out = _disco_s2_transpose_contraction_optimized(

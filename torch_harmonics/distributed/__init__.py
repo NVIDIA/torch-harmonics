@@ -44,6 +44,7 @@ from .primitives import (
     copy_to_polar_region,
     copy_to_azimuth_region,
     reduce_from_scatter_to_polar_region,
+    reduce_from_scatter_to_azimuth_region,
     gather_from_copy_to_polar_region
 )
 
