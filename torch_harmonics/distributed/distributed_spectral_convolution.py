@@ -64,7 +64,7 @@ class DistributedSpectralConvS2(nn.Module):
         Number of channel groups for grouped spectral weights, by default 1.
     grid_in: str, optional
         Grid used for the forward distributed SHT (``"equiangular"``,
-        ``"legendre-gauss"``, ``"lobatto"``, ``"equidistant"``), by default
+        ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default
         ``"equiangular"``.
     grid_out: str, optional
         Grid used for the inverse distributed SHT, same options as ``grid_in``.

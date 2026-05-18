@@ -35,7 +35,7 @@ import math
 import numpy as np
 import torch
 
-def _precompute_quadrature_weights(n: int, grid: Optional[str]="equidistant", a: Optional[float]=0.0, b: Optional[float]=1.0,
+def _precompute_quadrature_weights(n: int, grid: Optional[str]="equiangular-trapezoidal", a: Optional[float]=0.0, b: Optional[float]=1.0,
                      periodic: Optional[bool]=False) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Precompute grid points and quadrature weights for various quadrature rules.
@@ -45,13 +45,13 @@ def _precompute_quadrature_weights(n: int, grid: Optional[str]="equidistant", a:
     n : int
         Number of grid points
     grid : str, optional
-        Grid type ("equidistant", "legendre-gauss", "lobatto", "equiangular"), by default "equidistant"
+        Grid type ("equiangular-trapezoidal", "legendre-gauss", "lobatto", "equiangular"), by default "equiangular-trapezoidal"
     a : float, optional
         Lower bound of interval, by default 0.0
     b : float, optional
         Upper bound of interval, by default 1.0
     periodic : bool, optional
-        Whether the grid is periodic (only for equidistant), by default False
+        Whether the grid is periodic (only for equiangular-trapezoidal), by default False
 
     Returns
     -------
@@ -61,14 +61,14 @@ def _precompute_quadrature_weights(n: int, grid: Optional[str]="equidistant", a:
     Raises
     ------
     ValueError
-        If periodic is True for non-equidistant grids or unknown grid type
+        If periodic is True for non-equiangular-trapezoidal grids or unknown grid type
     """
 
-    if (grid != "equidistant") and periodic:
-        raise ValueError(f"Periodic grid is only supported on equidistant grids.")
+    if (grid != "equiangular-trapezoidal") and periodic:
+        raise ValueError(f"Periodic grid is only supported on equiangular-trapezoidal grids.")
 
     # compute coordinates
-    if grid == "equidistant":
+    if grid == "equiangular-trapezoidal":
         xlg, wlg = trapezoidal_weights(n, a=a, b=b, periodic=periodic)
     elif grid == "legendre-gauss":
         xlg, wlg = legendre_gauss_weights(n, a=a, b=b)
@@ -104,7 +104,7 @@ def precompute_latitudes(nlat: int, grid: Optional[str]="equiangular") -> Tuple[
 
 def trapezoidal_weights(n: int, a: Optional[float]=-1.0, b: Optional[float]=1.0, periodic: Optional[bool]=False) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Helper routine which returns equidistant nodes with trapezoidal weights
+    Helper routine which returns equiangular-trapezoidal nodes with trapezoidal weights
     on the interval [a, b]
 
     Parameters
@@ -299,7 +299,7 @@ class QuadratureS2(torch.nn.Module):
         Spatial grid shape ``(nlat, nlon)``.
     grid: str, optional
         Quadrature grid type (``"equiangular"``, ``"legendre-gauss"``,
-        ``"lobatto"``, ``"equidistant"``), by default ``"equiangular"``.
+        ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``.
     normalize: bool, optional
         If ``True``, divides weights by ``4π`` to return an average instead of
         an integral, by default ``False``.
@@ -341,7 +341,7 @@ class QuadratureS2(torch.nn.Module):
             dlambda = 2 * torch.pi / img_shape[1]
             quad_weight = dlambda * weights.unsqueeze(1)
             quad_weight = quad_weight.tile(1, img_shape[1])
-        elif self.grid == "equidistant":
+        elif self.grid == "equiangular-trapezoidal":
             _, weights = trapezoidal_weights(img_shape[0], -1, 1)
             dlambda = 2 * torch.pi / img_shape[1]
             quad_weight = dlambda * weights.unsqueeze(1)
