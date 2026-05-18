@@ -127,17 +127,17 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
             [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
-            [33, 64, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
-            [65, 128, 33, 64, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+            [33, 64, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, True, 1e-6, 1e-5],
+            [65, 128, 33, 64, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
             # fp64 tests
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, 1e-6, 1e-6],
             [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, 1e-6, 1e-6],
             [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, 1e-6, 1e-6],
             [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, 1e-6, 1e-6],
-            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float64, False, 1e-6, 1e-6],
-            [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float64, True, 1e-6, 1e-6],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float64, False, 1e-6, 1e-6],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float64, True, 1e-6, 1e-6],
         ], skip_on_empty=True
     )
     def test_distributed_disco_conv(

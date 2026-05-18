@@ -47,16 +47,20 @@ def _get_psi(kernel_size: int, psi_idx: torch.Tensor, psi_vals: torch.Tensor, nl
     nlat_in_local = nlat_in_local if nlat_in_local is not None else nlat_in
     nlat_out_local = nlat_out_local if nlat_out_local is not None else nlat_out
 
-    if semi_transposed:
-        # do partial transpose
-        # we do a semi-transposition to faciliate the computation
-        tout = psi_idx[2] // nlon_out
-        pout = psi_idx[2] % nlon_out
-        # flip the axis of longitudes
-        pout = nlon_out - 1 - pout
-        tin = psi_idx[1]
-        idx = torch.stack([psi_idx[0], tout, tin * nlon_out + pout], dim=0)
-        psi = torch.sparse_coo_tensor(idx, psi_vals, size=(kernel_size, nlat_out_local, nlat_in_local * nlon_out)).coalesce()
-    else:
-        psi = torch.sparse_coo_tensor(psi_idx, psi_vals, size=(kernel_size, nlat_out_local, nlat_in_local * nlon_in)).coalesce()
+    # Indices originate from _precompute_convolution_tensor_s2 and are valid
+    # by construction; skip the sparse-invariant pass (and silence the
+    # implicit-default UserWarning).
+    with torch.sparse.check_sparse_tensor_invariants(enable=False):
+        if semi_transposed:
+            # do partial transpose
+            # we do a semi-transposition to faciliate the computation
+            tout = psi_idx[2] // nlon_out
+            pout = psi_idx[2] % nlon_out
+            # flip the axis of longitudes
+            pout = nlon_out - 1 - pout
+            tin = psi_idx[1]
+            idx = torch.stack([psi_idx[0], tout, tin * nlon_out + pout], dim=0)
+            psi = torch.sparse_coo_tensor(idx, psi_vals, size=(kernel_size, nlat_out_local, nlat_in_local * nlon_out)).coalesce()
+        else:
+            psi = torch.sparse_coo_tensor(psi_idx, psi_vals, size=(kernel_size, nlat_out_local, nlat_in_local * nlon_in)).coalesce()
     return psi
