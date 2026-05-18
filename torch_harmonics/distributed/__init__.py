@@ -46,8 +46,10 @@ from .primitives import (
     gather_from_polar_region,
     reduce_from_azimuth_region,
     reduce_from_polar_region,
+    reduce_from_scatter_to_azimuth_region,
     reduce_from_scatter_to_polar_region,
     scatter_to_polar_region,
     split_tensor_along_dim,
+    gather_from_copy_to_polar_region,
 )
 from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, config, finalize, init, is_initialized, polar_group, polar_group_rank, polar_group_size
