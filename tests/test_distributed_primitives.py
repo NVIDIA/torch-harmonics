@@ -43,6 +43,7 @@ from torch_harmonics.distributed import (
     distributed_transpose_polar,
     reduce_from_polar_region,
     reduce_from_azimuth_region,
+    reduce_from_scatter_to_polar_region,
 )
 
 from testutils import (
@@ -329,6 +330,137 @@ class TestDistributedReduce(unittest.TestCase):
             compare_tensors("reduce_from_azimuth_region bwd", dy, x.grad,
                             atol=1e-5, rtol=1e-4, verbose=True),
             "input gradient does not match the upstream gradient (expected pass-through)",
+        )
+
+
+class TestReduceScatter(unittest.TestCase):
+    """
+    Test reduce_from_scatter_to_polar_region (fused all_reduce + scatter via
+    NCCL reduce_scatter) for both even and uneven splits along the scattered
+    dim.
+
+    Forward semantics: each rank holds a different x_local with the same
+    shape; the op sums them across the polar group and returns each rank's
+    slice along `dim_`.
+
+    Backward semantics: the adjoint of reduce-scatter is all-gather, so the
+    full input gradient on each rank must be the concatenation of all ranks'
+    upstream gradients along `dim_`.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        setup_class_from_context(cls, _DIST_CTX)
+
+    def _polar_all_gather(self, x_local, dim, shapes):
+        """All-gather x_local (per-rank tensor) along `dim` using
+        per-rank `shapes`. Used to build the forward reference and to
+        verify the backward gradient."""
+        polar_size = thd.polar_group_size()
+        if polar_size <= 1:
+            return x_local.detach().clone()
+
+        out_list = []
+        local_shape = list(x_local.shape)
+        for s in shapes:
+            local_shape[dim] = s
+            out_list.append(torch.empty(local_shape, dtype=x_local.dtype, device=x_local.device))
+        dist.all_gather(out_list, x_local.detach().contiguous(), group=thd.polar_group())
+        return torch.cat(out_list, dim=dim)
+
+    @parameterized.expand(
+        [
+            # B, C,  H,  W, split_dim   ── H and W chosen to cover both
+            #                              even and uneven splits depending
+            #                              on the polar group size used at
+            #                              launch (typically 2 or 4).
+            [2,  4, 16, 32, -2],   # H=16  → even for P∈{1,2,4,8}
+            [2,  4, 17, 32, -2],   # H=17  → uneven for P>1
+            [2,  4, 33, 32, -2],   # H=33  → uneven for P∈{2,4}
+            [2,  4, 16, 32, -1],   # W=32  → even
+            [2,  4, 16, 33, -1],   # W=33  → uneven
+            [1,  1,  7, 13, -2],   # tiny + uneven for P∈{2,3,4}
+            [1,  1,  7, 13, -1],
+            [2,  4, 11,  9, -2],   # both dims uneven across most P
+        ],
+        skip_on_empty=True,
+    )
+    def test_reduce_from_scatter_to_polar(self, B, C, H, W, split_dim):
+        set_seed(333)
+        polar_size = thd.polar_group_size()
+
+        # x_local shape is identical on all ranks; the +hrank offset makes the
+        # per-rank contribution distinguishable so a missing reduce can't hide.
+        x_local = torch.randn(B, C, H, W, device=self.device) + float(self.hrank)
+
+        # Resolve negative dim once.
+        ndim = x_local.dim()
+        dim = split_dim if split_dim >= 0 else ndim + split_dim
+
+        # Expected per-rank output shapes from the split scheme the primitive
+        # must follow. This is the contract.
+        expected_shapes = compute_split_shapes(x_local.shape[dim], polar_size)
+        my_expected = expected_shapes[self.hrank]
+
+        # ---- Forward reference: gather-and-sum, then slice my own chunk.
+        # Sum across ranks first (so x_full holds the same values on every
+        # rank), then take this rank's slice per compute_split_shapes.
+        if polar_size > 1:
+            x_all = [torch.empty_like(x_local) for _ in range(polar_size)]
+            dist.all_gather(x_all, x_local.detach().contiguous(), group=thd.polar_group())
+            x_full = torch.stack(x_all, dim=0).sum(dim=0)
+        else:
+            x_full = x_local.detach().clone()
+
+        offsets = [0]
+        for s in expected_shapes:
+            offsets.append(offsets[-1] + s)
+        slicer = [slice(None)] * ndim
+        slicer[dim] = slice(offsets[self.hrank], offsets[self.hrank + 1])
+        ref = x_full[tuple(slicer)].contiguous()
+
+        # ---- Forward under test.
+        x = x_local.clone().requires_grad_(True)
+        out = reduce_from_scatter_to_polar_region(x, split_dim)
+
+        # Shape contract: output has my_expected along the scattered dim,
+        # other dims unchanged.
+        self.assertEqual(
+            out.shape[dim], my_expected,
+            f"reduce_scatter output dim {dim} = {out.shape[dim]}, "
+            f"expected {my_expected} from compute_split_shapes",
+        )
+        ref_shape = list(x_local.shape)
+        ref_shape[dim] = my_expected
+        self.assertEqual(tuple(out.shape), tuple(ref_shape))
+
+        # Value contract.
+        self.assertTrue(
+            compare_tensors("reduce_from_scatter_to_polar fwd", ref, out,
+                            atol=1e-5, rtol=1e-4, verbose=True),
+            "forward output does not match the gather-then-slice reference",
+        )
+
+        # ---- Backward: adjoint of reduce_scatter is all_gather along `dim_`.
+        # Each rank holds its own dy of shape `expected_shapes[hrank]`; the
+        # input gradient on each rank must equal the concatenation of all
+        # ranks' dy along the scattered dim.
+        dy = torch.randn_like(out)
+        out.backward(dy)
+
+        if polar_size > 1:
+            grad_ref = self._polar_all_gather(dy, dim, expected_shapes)
+        else:
+            grad_ref = dy.clone()
+
+        self.assertEqual(
+            tuple(x.grad.shape), tuple(x_local.shape),
+            "backward gradient shape must equal the forward input shape",
+        )
+        self.assertTrue(
+            compare_tensors("reduce_from_scatter_to_polar bwd", grad_ref, x.grad,
+                            atol=1e-5, rtol=1e-4, verbose=True),
+            "input gradient does not match the all-gathered upstream gradient",
         )
 
 

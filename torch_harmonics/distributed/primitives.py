@@ -292,31 +292,67 @@ def _gather(input_, dim_, shapes_, group=None, verify_shapes=None):
 
 
 def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
+    """Reduce-scatter along `dim_` across the given group.
+
+    Handles uneven splits (compute_split_shapes can produce per-rank chunk
+    sizes that differ by one) by padding each chunk to max_chunk before the
+    collective and trimming the per-rank output after. NCCL's reduce_scatter
+    requires equal-sized chunks across ranks; without padding the call would
+    error or silently truncate.
+    """
 
     # Bypass the function if we are using only 1 GPU.
     if dist.get_world_size(group=group) == 1:
         return input_
 
-    # make input contiguous
     comm_size = dist.get_world_size(group=group)
     comm_rank = dist.get_rank(group=group)
-    input_list = split_tensor_along_dim(input_, dim_, comm_size)
+
+    # Per-rank chunk sizes from the natural (possibly uneven) split.
+    orig_shapes = compute_split_shapes(input_.shape[dim_], comm_size)
+    max_chunk = max(orig_shapes)
+    my_chunk = orig_shapes[comm_rank]
+    is_even = (min(orig_shapes) == max_chunk)
 
     dtype = input_.dtype
-    if (use_fp32 and (dtype != torch.float32)):
-        input_list = [x.to(torch.float32) for x in input_list]
+    work_dtype = torch.float32 if (use_fp32 and dtype != torch.float32) else dtype
 
-    input_list = [x.contiguous() for x in input_list]
+    if is_even:
+        # Fast path: all chunks are the same size; call reduce_scatter directly.
+        input_list = split_tensor_along_dim(input_, dim_, comm_size)
+        if work_dtype != dtype:
+            input_list = [x.to(work_dtype) for x in input_list]
+        input_list = [x.contiguous() for x in input_list]
+        output = torch.empty_like(input_list[comm_rank])
+        dist.reduce_scatter(output, input_list, group=group)
+        return output.to(dtype) if work_dtype != dtype else output
 
-    # perform reduce_scatter
-    output = torch.empty_like(input_list[comm_rank])
-    dist.reduce_scatter(output, input_list, group=group)
+    # Uneven split: zero-pad every short chunk to max_chunk along `dim_`, run
+    # reduce_scatter on the now-equal-sized chunks, then trim back to the
+    # local rank's true chunk size. Padding zeros are summed across ranks and
+    # produce zeros on the rank that owns the padded tail — they are simply
+    # discarded by the slice after the collective.
+    chunks = list(split_tensor_along_dim(input_, dim_, comm_size))
+    padded_chunks = []
+    for c in chunks:
+        if c.shape[dim_] < max_chunk:
+            pad_shape = list(c.shape)
+            pad_shape[dim_] = max_chunk - c.shape[dim_]
+            pad = torch.zeros(pad_shape, dtype=c.dtype, device=c.device)
+            c = torch.cat([c, pad], dim=dim_)
+        if work_dtype != dtype:
+            c = c.to(work_dtype)
+        padded_chunks.append(c.contiguous())
 
-    # convert dtype if necessary
-    if use_fp32:
-        output = output.to(dtype=dtype)
+    output = torch.empty_like(padded_chunks[comm_rank])
+    dist.reduce_scatter(output, padded_chunks, group=group)
 
-    return output
+    if my_chunk < max_chunk:
+        slicer = [slice(None)] * output.dim()
+        slicer[dim_] = slice(0, my_chunk)
+        output = output[tuple(slicer)].contiguous()
+
+    return output.to(dtype) if work_dtype != dtype else output
 
 
 class _CopyToPolarRegion(torch.autograd.Function):
