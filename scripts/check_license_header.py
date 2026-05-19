@@ -1,6 +1,8 @@
+#!/usr/bin/env python3
+
 # coding=utf-8
 
-# SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 #
 # Redistribution and use in source and binary forms, with or without
@@ -29,19 +31,56 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import warnings
+"""Check that Python files contain the required SPDX license header."""
 
-import torch
+import sys
 
-# we need those helpers
-from disco_helpers import cuda_kernels_is_available, optimized_kernels_is_available
+REQUIRED_LINES = [
+    "SPDX-FileCopyrightText:",
+    "SPDX-License-Identifier: BSD-3-Clause",
+]
 
-if optimized_kernels_is_available():
-    from torch.ops import disco_kernels
+# Maximum number of lines to scan at the top of each file
+HEADER_SCAN_LINES = 10
 
-    from . import _C
-else:
-    disco_kernels = None
-    warnings.warn("No optimized kernels are available. Please compile the extension first setting BUILD_CPP and BUILD_CUDA to 1.")
 
-from .convolution import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
+def check_file(path):
+    """Return True if the file contains the required header lines."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            head = "".join(f.readline() for _ in range(HEADER_SCAN_LINES))
+    except (OSError, UnicodeDecodeError):
+        return True  # skip files we cannot read
+
+    if not head.strip():
+        return True  # skip empty files
+
+    for marker in REQUIRED_LINES:
+        if marker not in head:
+            return False
+    return True
+
+
+def main():
+    failed = []
+    for path in sys.argv[1:]:
+        if not path.endswith(".py"):
+            continue
+        if not check_file(path):
+            failed.append(path)
+
+    if failed:
+        print("Missing SPDX license header in:")
+        for path in failed:
+            print(f"  {path}")
+        print()
+        print("Every .py file must contain these lines near the top:")
+        for marker in REQUIRED_LINES:
+            print(f"  # {marker}")
+        print()
+        print("See CONTRIBUTING.md for the full header template.")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

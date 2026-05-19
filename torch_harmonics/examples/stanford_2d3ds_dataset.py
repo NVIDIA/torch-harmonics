@@ -30,15 +30,13 @@
 #
 
 import os
-import math
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset, Subset
 
-import numpy as np
-
-from torch_harmonics.quadrature import precompute_latitudes
 from torch_harmonics.examples.losses import get_quadrature_weights
+from torch_harmonics.quadrature import precompute_latitudes
 
 # some specifiers where to find the dataset
 DEFAULT_BASE_URL = "https://cvg-data.inf.ethz.ch/2d3ds/no_xyz/"
@@ -80,13 +78,13 @@ class Stanford2D3DSDownloader:
     """
 
     def __init__(self, base_url: str = DEFAULT_BASE_URL, local_dir: str = "data"):
-       
+
         self.base_url = base_url
         self.local_dir = local_dir
         os.makedirs(self.local_dir, exist_ok=True)
 
     def _download_file(self, filename):
-        
+
         import requests
         from tqdm import tqdm
 
@@ -120,7 +118,7 @@ class Stanford2D3DSDownloader:
         return local_path
 
     def _extract_tar(self, tar_path):
-        
+
         import tarfile
 
         with tarfile.open(tar_path) as tar:
@@ -133,12 +131,12 @@ class Stanford2D3DSDownloader:
     def download_dataset(self, file_extracted_directory_pairs=DEFAULT_TAR_FILE_PAIRS):
         """
         Download and extract the complete dataset.
-        
+
         Parameters
         -----------
         file_extracted_directory_pairs : list, optional
             List of (filename, extracted_folder_name) pairs, by default DEFAULT_TAR_FILE_PAIRS
-            
+
         Returns
         -------
         tuple
@@ -161,7 +159,7 @@ class Stanford2D3DSDownloader:
         return data_folders, class_labels
 
     def _rgb_to_id(self, img, class_labels_map, class_labels_indices):
-        
+
         # Convert to int32 first to avoid overflow
         r = img[..., 0].astype(np.int32)
         g = img[..., 1].astype(np.int32)
@@ -198,7 +196,7 @@ class Stanford2D3DSDownloader:
     ):
         """
         Convert the downloaded dataset to HDF5 format for efficient loading.
-        
+
         Parameters
         -----------
         data_folders : list
@@ -219,7 +217,7 @@ class Stanford2D3DSDownloader:
             Factor by which to downsample images, by default 16
         remove_alpha_channel : bool, optional
             Whether to remove alpha channel from RGB images, by default True
-            
+
         Returns
         -------
         str
@@ -227,9 +225,9 @@ class Stanford2D3DSDownloader:
         """
         converted_dataset_path = os.path.join(self.local_dir, dataset_file)
 
+        import h5py as h5
         from PIL import Image
         from tqdm import tqdm
-        import h5py as h5
 
         file_paths = []
 
@@ -254,7 +252,7 @@ class Stanford2D3DSDownloader:
                     rgb_filepath = os.path.join(rgb_dir, file_input)
                     semantic_filepath = "_".join(os.path.splitext(os.path.basename(rgb_filepath))[0].split("_")[:-1]) + f"_{output_filename}.png"
                     semantic_filepath = os.path.join(semantic_dir, semantic_filepath)
-                    depth_filepath = "_".join(os.path.splitext(os.path.basename(rgb_filepath))[0].split("_")[:-1]) + f"_depth.png"
+                    depth_filepath = "_".join(os.path.splitext(os.path.basename(rgb_filepath))[0].split("_")[:-1]) + "_depth.png"
                     depth_filepath = os.path.join(depth_dir, depth_filepath)
                     if not os.path.exists(semantic_filepath):
                         print(f"Warning: Couldn't find output file in pair: ({rgb_filepath},{semantic_filepath})")
@@ -290,7 +288,7 @@ class Stanford2D3DSDownloader:
             if remove_alpha_channel:
                 rgb_channels = 3
         else:
-            raise ValueError(f"No samples found")
+            raise ValueError("No samples found")
 
         # create the dataset file
         with h5.File(converted_dataset_path, "w") as h5file:
@@ -704,7 +702,7 @@ class StanfordDepthDataset(Dataset):
 
 def compute_stats_s2(dataset: Dataset, normalize_target: bool = False):
     """
-    Compute stats using parallel welford reduction and quadrature on the sphere. 
+    Compute stats using parallel welford reduction and quadrature on the sphere.
     The parallel welford reduction follows this article (parallel algorithm): https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
     """
 

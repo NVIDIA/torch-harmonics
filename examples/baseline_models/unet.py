@@ -34,18 +34,14 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.amp as amp
 
-from torch_harmonics.examples.models._layers import MLP, DropPath
-
-from functools import partial
-
+from torch_harmonics.examples.models._layers import DropPath
 
 
 class DownsamplingBlock(nn.Module):
     """
     Downsampling block for the UNet model.
-    
+
     Parameters
     ----------
     in_shape : tuple
@@ -73,20 +69,20 @@ class DownsamplingBlock(nn.Module):
     downsampling_mode : str, optional
         Downsampling mode ("bilinear", "conv"), by default "bilinear"
     """
-    
+
     def __init__(
-	    self,
+        self,
         in_shape,
         out_shape,
         in_channels,
         out_channels,
         nrep=1,
-	    kernel_shape=(3, 3),
+        kernel_shape=(3, 3),
         activation=nn.ReLU,
         transform_skip=False,
-        drop_conv_rate=0.,
-        drop_path_rate=0.,
-        drop_dense_rate=0.,
+        drop_conv_rate=0.0,
+        drop_path_rate=0.0,
+        drop_dense_rate=0.0,
         downsampling_mode="bilinear",
     ):
         super().__init__()
@@ -96,59 +92,37 @@ class DownsamplingBlock(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.downsampling_mode = downsampling_mode
-        self.drop_path = DropPath(drop_path_rate) if drop_path_rate > 0. else nn.Identity()
+        self.drop_path = DropPath(drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
 
-        self.fwd =[]
+        self.fwd = []
         for i in range(nrep):
             # conv
-            self.fwd.append(
-                nn.Conv2d(
-                    in_channels=(in_channels if i==0 else out_channels),
-                    out_channels=out_channels,
-                    kernel_size=kernel_shape,
-                    bias=False,
-                    padding="same"
-                )
-            )
+            self.fwd.append(nn.Conv2d(in_channels=(in_channels if i == 0 else out_channels), out_channels=out_channels, kernel_size=kernel_shape, bias=False, padding="same"))
 
-            if drop_conv_rate > 0.:
-                self.fwd.append(
-                    nn.Dropout2d(
-                        p=drop_conv_rate
-                    )
-                )
+            if drop_conv_rate > 0.0:
+                self.fwd.append(nn.Dropout2d(p=drop_conv_rate))
 
             # batchnorm
-            self.fwd.append(
-                nn.BatchNorm2d(out_channels,
-                               eps=1e-05,
-                               momentum=0.1,
-                               affine=True,
-                               track_running_stats=True)
-            )
+            self.fwd.append(nn.BatchNorm2d(out_channels, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True))
 
-            # activation  
+            # activation
             self.fwd.append(
                 activation(),
             )
 
         if downsampling_mode == "conv":
-            stride_h = in_shape[0] // out_shape[0]   
+            stride_h = in_shape[0] // out_shape[0]
             stride_w = in_shape[1] // out_shape[1]
-            pad_h = math.ceil(((out_shape[0] - 1) * stride_h
-                            - in_shape[0]
-                            + kernel_shape[0]) / 2)
-            pad_w = math.ceil(((out_shape[1] - 1) * stride_w
-                            - in_shape[1]
-                            + kernel_shape[1]) / 2)
+            pad_h = math.ceil(((out_shape[0] - 1) * stride_h - in_shape[0] + kernel_shape[0]) / 2)
+            pad_w = math.ceil(((out_shape[1] - 1) * stride_w - in_shape[1] + kernel_shape[1]) / 2)
             self.downsample = nn.Conv2d(
-                    in_channels=(in_channels if i==0 else out_channels),
-                    out_channels=out_channels,
-                    kernel_size=kernel_shape,
-                    bias=False,
-                    stride=(stride_h, stride_w),
-                    padding=(pad_h, pad_w)
-                )
+                in_channels=(in_channels if i == 0 else out_channels),
+                out_channels=out_channels,
+                kernel_size=kernel_shape,
+                bias=False,
+                stride=(stride_h, stride_w),
+                padding=(pad_h, pad_w),
+            )
         else:
             self.downsample = nn.Identity()
 
@@ -157,12 +131,9 @@ class DownsamplingBlock(nn.Module):
 
         # final norm
         if transform_skip or (in_channels != out_channels):
-            self.transform_skip = nn.Conv2d(in_channels,
-                                            out_channels,
-                                            kernel_size=1,
-                                            bias=True)
+            self.transform_skip = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=True)
 
-            if drop_dense_rate >0.:
+            if drop_dense_rate > 0.0:
                 self.transform_skip = nn.Sequential(
                     self.transform_skip,
                     nn.Dropout2d(p=drop_dense_rate),
@@ -172,7 +143,7 @@ class DownsamplingBlock(nn.Module):
 
     def _init_weights(self, m):
         if isinstance(m, nn.Conv2d):
-            nn.init.trunc_normal_(m.weight, std=.02)
+            nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
@@ -193,14 +164,14 @@ class DownsamplingBlock(nn.Module):
         x = self.downsample(x)
         if self.downsampling_mode == "bilinear":
             x = F.interpolate(x, size=self.out_shape, mode="bilinear")
-            
+
         return x
 
-    
+
 class UpsamplingBlock(nn.Module):
     """
     Upsampling block for UNet architecture.
-    
+
     Parameters
     -----------
     in_shape : tuple
@@ -228,6 +199,7 @@ class UpsamplingBlock(nn.Module):
     upsampling_mode : str, optional
         Upsampling mode ("bilinear", "conv"), by default "bilinear"
     """
+
     def __init__(
         self,
         in_shape,
@@ -238,9 +210,9 @@ class UpsamplingBlock(nn.Module):
         kernel_shape=(3, 3),
         activation=nn.ReLU,
         transform_skip=False,
-        drop_conv_rate=0.,
-        drop_path_rate=0.,
-        drop_dense_rate=0.,
+        drop_conv_rate=0.0,
+        drop_path_rate=0.0,
+        drop_dense_rate=0.0,
         upsampling_mode="bilinear",
     ):
         super().__init__()
@@ -251,83 +223,44 @@ class UpsamplingBlock(nn.Module):
         self.out_channels = out_channels
         self.upsampling_mode = upsampling_mode
 
-        self.drop_path = DropPath(drop_path_rate) if drop_path_rate > 0. else nn.Identity()
+        self.drop_path = DropPath(drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
 
         if in_shape != out_shape:
             if upsampling_mode == "conv":
-                stride_h = out_shape[0] // in_shape[0]   
+                stride_h = out_shape[0] // in_shape[0]
                 stride_w = out_shape[1] // in_shape[1]
-                pad_h = math.ceil(((in_shape[0] - 1) * stride_h
-                                - in_shape[0]
-                                + kernel_shape[0]) / 2)
-                pad_w = math.ceil(((in_shape[1] - 1) * stride_w
-                                - in_shape[1]
-                                + kernel_shape[1]) / 2)
+                pad_h = math.ceil(((in_shape[0] - 1) * stride_h - in_shape[0] + kernel_shape[0]) / 2)
+                pad_w = math.ceil(((in_shape[1] - 1) * stride_w - in_shape[1] + kernel_shape[1]) / 2)
                 self.upsample = nn.Sequential(
-                    nn.ConvTranspose2d(
-                        in_channels=out_channels,
-                        out_channels=out_channels,
-                        kernel_size=kernel_shape,
-                        stride=(stride_h, stride_w),
-                        padding=(pad_h, pad_w)
-                    ),
-                    nn.BatchNorm2d(out_channels,
-                                   eps=1e-05,
-                                   momentum=0.1,
-                                   affine=True,
-                                   track_running_stats=True),
+                    nn.ConvTranspose2d(in_channels=out_channels, out_channels=out_channels, kernel_size=kernel_shape, stride=(stride_h, stride_w), padding=(pad_h, pad_w)),
+                    nn.BatchNorm2d(out_channels, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
                     activation(),
-                    nn.Conv2d(
-                        in_channels=out_channels,
-                        out_channels=out_channels,
-                        kernel_size=kernel_shape,
-                        bias=False,
-                        padding="same")
+                    nn.Conv2d(in_channels=out_channels, out_channels=out_channels, kernel_size=kernel_shape, bias=False, padding="same"),
                 )
 
-        self.fwd =[]
+        self.fwd = []
         for i in range(nrep):
             # conv
-            self.fwd.append(
-                nn.Conv2d(
-                        in_channels=(in_channels if i == 0 else out_channels),
-                        out_channels=out_channels,
-                        kernel_size=kernel_shape,
-                        bias=False,
-                        padding="same")
-            )
+            self.fwd.append(nn.Conv2d(in_channels=(in_channels if i == 0 else out_channels), out_channels=out_channels, kernel_size=kernel_shape, bias=False, padding="same"))
 
-            if drop_conv_rate > 0.:
-                self.fwd.append(
-                    nn.Dropout2d(
-                        p=drop_conv_rate
-                    )
-                )
-            
+            if drop_conv_rate > 0.0:
+                self.fwd.append(nn.Dropout2d(p=drop_conv_rate))
+
             # batchnorm
-            self.fwd.append(
-                nn.BatchNorm2d((out_channels if i==nrep-1 else in_channels),
-                                eps=1e-05,
-	                            momentum=0.1,
-                                affine=True,
-                                track_running_stats=True)
-            )
+            self.fwd.append(nn.BatchNorm2d((out_channels if i == nrep - 1 else in_channels), eps=1e-05, momentum=0.1, affine=True, track_running_stats=True))
 
             # activation
             self.fwd.append(
                 activation(),
             )
-            
+
         # make sequential
         self.fwd = nn.Sequential(*self.fwd)
 
         # final norm
         if transform_skip or (in_channels != out_channels):
-            self.transform_skip = nn.Conv2d(in_channels,
-                                            out_channels,
-                                            kernel_size=1,
-                                            bias=True)
-            if drop_dense_rate >0.:
+            self.transform_skip = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=True)
+            if drop_dense_rate > 0.0:
                 self.transform_skip = nn.Sequential(
                     self.transform_skip,
                     nn.Dropout2d(p=drop_dense_rate),
@@ -337,7 +270,7 @@ class UpsamplingBlock(nn.Module):
 
     def _init_weights(self, m):
         if isinstance(m, nn.Conv2d):
-            nn.init.trunc_normal_(m.weight, std=.02)
+            nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
@@ -351,7 +284,7 @@ class UpsamplingBlock(nn.Module):
         x = residual + self.drop_path(self.fwd(x))
 
         # upsampling
-        if self.upsampling_mode=="bilinear":
+        if self.upsampling_mode == "bilinear":
             x = F.interpolate(x, size=self.out_shape, mode="bilinear")
         else:
             x = self.upsample(x)
@@ -406,6 +339,7 @@ class UNet(nn.Module):
     >>> model(torch.randn(1, 2, 128, 256)).shape
     torch.Size([1, 2, 128, 256])
     """
+
     def __init__(
         self,
         img_shape=(128, 256),
@@ -433,8 +367,8 @@ class UNet(nn.Module):
         self.depths = depths
         self.kernel_shape = kernel_shape
 
-        assert(len(self.depths) == self.num_blocks)
-        
+        assert len(self.depths) == self.num_blocks
+
         # activation function
         if activation_function == "relu":
             self.activation_function = nn.ReLU
@@ -475,14 +409,14 @@ class UNet(nn.Module):
             in_channels = out_channels
 
         self.ublocks = nn.ModuleList([])
-        for i in range(self.num_blocks-1, -1, -1):
+        for i in range(self.num_blocks - 1, -1, -1):
             in_shape = self.dblocks[i].out_shape
             out_shape = self.dblocks[i].in_shape
             in_channels = self.dblocks[i].out_channels
-            if i != self.num_blocks-1:
+            if i != self.num_blocks - 1:
                 in_channels = 2 * in_channels
             out_channels = self.dblocks[i].in_channels
-            if i==0:
+            if i == 0:
                 out_channels = self.embed_dims[0]
             self.ublocks.append(
                 UpsamplingBlock(
@@ -493,7 +427,7 @@ class UNet(nn.Module):
                     kernel_shape=kernel_shape,
                     activation=self.activation_function,
                     drop_conv_rate=drop_conv_rate,
-                    drop_path_rate=0.,
+                    drop_path_rate=0.0,
                     drop_dense_rate=drop_dense_rate,
                     transform_skip=transform_skip,
                     upsampling_mode=upsampling_mode,
@@ -506,13 +440,12 @@ class UNet(nn.Module):
 
     def _init_weights(self, m):
         if isinstance(m, nn.Conv2d):
-            nn.init.trunc_normal_(m.weight, std=.02)
+            nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-
 
     def forward(self, x):
 
@@ -525,7 +458,7 @@ class UNet(nn.Module):
 
         # reverse list
         features = features[::-1]
-        
+
         # perform upsample
         ufeat = self.ublocks[0](features[0])
         for feat, ublock in zip(features[1:], self.ublocks[1:]):
@@ -536,12 +469,8 @@ class UNet(nn.Module):
 
         return out
 
+
 if __name__ == "__main__":
-    model = UNet(
-             img_shape=(128, 256),
-             scale_factor=2,
-             in_chans=2,
-             embed_dims=[64, 128, 256],
-             depths=[2, 2, 2])
+    model = UNet(img_shape=(128, 256), scale_factor=2, in_chans=2, embed_dims=[64, 128, 256], depths=[2, 2, 2])
     print(model)
     print(model(torch.randn(1, 2, 128, 256)).shape)

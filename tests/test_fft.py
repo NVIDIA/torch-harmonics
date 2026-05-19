@@ -30,10 +30,11 @@
 #
 
 import unittest
-from parameterized import parameterized, parameterized_class
-import torch
 
-from torch_harmonics.fft import rfft, irfft
+import torch
+from parameterized import parameterized, parameterized_class
+
+from torch_harmonics.fft import irfft, rfft
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -44,13 +45,15 @@ if torch.cuda.is_available():
 class TestFFTWrappers(unittest.TestCase):
     """Tests for the rfft/irfft wrappers in torch_harmonics.fft."""
 
-    @parameterized.expand([
-        # batch, nlon, nmodes (nmodes >= nlon//2+1 or None to keep all modes)
-        [1, 64, None],
-        [4, 64, None],
-        [4, 64, 48],
-        [4, 128, None],
-    ])
+    @parameterized.expand(
+        [
+            # batch, nlon, nmodes (nmodes >= nlon//2+1 or None to keep all modes)
+            [1, 64, None],
+            [4, 64, None],
+            [4, 64, 48],
+            [4, 128, None],
+        ]
+    )
     def test_rfft_irfft_roundtrip(self, batch, nlon, nmodes):
         """irfft(rfft(x)) should recover the original signal."""
         x = torch.randn(batch, nlon, device=self.device, dtype=torch.float64)
@@ -61,13 +64,15 @@ class TestFFTWrappers(unittest.TestCase):
             f"Roundtrip failed: max error {(x - x_rec).abs().max().item():.2e}",
         )
 
-    @parameterized.expand([
-        # batch, nlon, nmodes, nlon_out
-        [4, 64, 16, 64],
-        [4, 64, 16, 128],
-        [4, 128, 33, 128],
-        [4, 128, 33, 256],
-    ])
+    @parameterized.expand(
+        [
+            # batch, nlon, nmodes, nlon_out
+            [4, 64, 16, 64],
+            [4, 64, 16, 128],
+            [4, 128, 33, 128],
+            [4, 128, 33, 256],
+        ]
+    )
     def test_rfft_irfft_bandlimited_roundtrip(self, batch, nlon, nmodes, nlon_out):
         """A band-limited signal (only nmodes frequencies) must survive a
         roundtrip through rfft(truncate to nmodes) -> irfft(upsample to nlon_out)
@@ -87,13 +92,15 @@ class TestFFTWrappers(unittest.TestCase):
             f"Band-limited roundtrip failed: max error {(coeffs_rt - coeffs_rt2).abs().max().item():.2e}",
         )
 
-    @parameterized.expand([
-        # batch, nlon, nmodes
-        [1, 64, None],
-        [4, 64, None],
-        [4, 64, 16],
-        [4, 128, 33],
-    ])
+    @parameterized.expand(
+        [
+            # batch, nlon, nmodes
+            [1, 64, None],
+            [4, 64, None],
+            [4, 64, 16],
+            [4, 128, 33],
+        ]
+    )
     def test_rfft_backward(self, batch, nlon, nmodes):
         """Backward through rfft must not error (covers stride-0 grad from sum)."""
         x = torch.randn(batch, nlon, device=self.device, dtype=torch.float32, requires_grad=True)
@@ -103,13 +110,15 @@ class TestFFTWrappers(unittest.TestCase):
         self.assertIsNotNone(x.grad)
         self.assertFalse(torch.isnan(x.grad).any())
 
-    @parameterized.expand([
-        # batch, nmodes, nlon
-        [1, 33, 64],
-        [4, 33, 64],
-        [4, 17, 64],
-        [4, 65, 128],
-    ])
+    @parameterized.expand(
+        [
+            # batch, nmodes, nlon
+            [1, 33, 64],
+            [4, 33, 64],
+            [4, 17, 64],
+            [4, 65, 128],
+        ]
+    )
     def test_irfft_backward(self, batch, nmodes, nlon):
         """Backward through irfft must not error (covers stride-0 grad from sum)."""
         x = torch.randn(batch, nmodes, device=self.device, dtype=torch.complex64, requires_grad=True)
@@ -119,11 +128,13 @@ class TestFFTWrappers(unittest.TestCase):
         self.assertIsNotNone(x.grad)
         self.assertFalse(torch.isnan(x.grad).any())
 
-    @parameterized.expand([
-        # batch, nmodes, nlon
-        [4, 33, 64],
-        [4, 65, 128],
-    ])
+    @parameterized.expand(
+        [
+            # batch, nmodes, nlon
+            [4, 33, 64],
+            [4, 65, 128],
+        ]
+    )
     def test_irfft_hermitian_symmetry(self, batch, nmodes, nlon):
         """irfft must zero the imaginary part of DC and Nyquist bins,
         so injecting imaginary noise at those bins should not change the output."""
@@ -142,11 +153,13 @@ class TestFFTWrappers(unittest.TestCase):
             f"Hermitian fix failed: max diff {(out_clean - out_dirty).abs().max().item():.2e}",
         )
 
-    @parameterized.expand([
-        # batch, nmodes, nlon
-        [4, 33, 64],
-        [4, 65, 128],
-    ])
+    @parameterized.expand(
+        [
+            # batch, nmodes, nlon
+            [4, 33, 64],
+            [4, 65, 128],
+        ]
+    )
     def test_rfft_irfft_grad_chain(self, batch, nmodes, nlon):
         """Gradient must flow through rfft -> linear op -> irfft without error."""
         x = torch.randn(batch, nlon, device=self.device, dtype=torch.float32, requires_grad=True)

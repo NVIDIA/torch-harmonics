@@ -29,40 +29,32 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os, sys
+import argparse
+import os
 import random
-
+import sys
 import time
 
-import argparse
-
-from tqdm import tqdm
-
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data.distributed import DistributedSampler
-
-import numpy as np
-import pandas as pd
-
 import matplotlib.pyplot as plt
-
-from torch_harmonics.examples import StanfordSegmentationDataset, Stanford2D3DSDownloader, StanfordDatasetSubset, compute_stats_s2
-from torch_harmonics.examples.losses import CrossEntropyLossS2
-from torch_harmonics.examples.metrics import IntersectionOverUnionS2, AccuracyS2
-from torch_harmonics.plotting import plot_sphere, imshow_sphere
-
+import pandas as pd
+import torch
+import torch.distributed as dist
+import torch.nn as nn
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from torchvision.transforms import v2
+
+from torch_harmonics.examples import Stanford2D3DSDownloader, StanfordDatasetSubset, StanfordSegmentationDataset, compute_stats_s2
+from torch_harmonics.examples.losses import CrossEntropyLossS2
+from torch_harmonics.examples.metrics import AccuracyS2, IntersectionOverUnionS2
+from torch_harmonics.plotting import imshow_sphere, plot_sphere
 
 # import baseline models
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from model_registry import get_baseline_models
-
 # wandb logging
 import wandb
+from model_registry import get_baseline_models
 
 
 # helper routine for counting number of parameters in model
@@ -176,7 +168,7 @@ def train_model(
     logging=True,
     device=torch.device("cpu"),
 ):
-    
+
     train_start = time.time()
 
     # set AMP type
@@ -292,7 +284,7 @@ def train_model(
         epoch_time = time.time() - epoch_start
 
         if logging:
-            print(f"--------------------------------------------------------------------------------")
+            print("--------------------------------------------------------------------------------")
             print(f"Epoch {epoch} summary:")
             print(f"time taken: {epoch_time:.2f}")
             print(f"accumulated training loss: {accumulated_loss}")
@@ -311,7 +303,7 @@ def train_model(
     train_time = time.time() - train_start
 
     if logging:
-        print(f"--------------------------------------------------------------------------------")
+        print("--------------------------------------------------------------------------------")
         print(f"done. Training took {train_time:.2f}.")
 
     return valid_loss
@@ -368,7 +360,7 @@ def main(
 
     # create the dataset and split it
     if logging:
-        print(f"Initializing dataset...")
+        print("Initializing dataset...")
 
     # make sure splitting is consistent across ranks
     rng = torch.Generator().manual_seed(333)
@@ -450,28 +442,20 @@ def main(
         models = [
             "s2segformer_sc2_layers4_e128",
             "s2segformer_sc2_layers4_e256",
-
             "segformer_sc2_layers4_e128",
             "segformer_sc2_layers4_e256",
-        
             "s2nsegformer_sc2_layers4_e128",
             "s2nsegformer_sc2_layers4_e256",
-        
             "nsegformer_sc2_layers4_e128",
             "nsegformer_sc2_layers4_e256",
-        
             "s2transformer_sc2_layers4_e128",
             "s2transformer_sc2_layers4_e256",
-        
             "s2ntransformer_sc2_layers4_e128",
             "s2ntransformer_sc2_layers4_e256",
-        
             "transformer_sc2_layers4_e128",
             "transformer_sc2_layers4_e256",
-            
             "ntransformer_sc2_layers4_e128",
             "ntransformer_sc2_layers4_e256",
-            
             "vit_sc2_layers4_e128",
             "sfno_sc2_layers4_e32",
             "lsno_sc2_layers4_e32",
@@ -634,7 +618,7 @@ if __name__ == "__main__":
         type=str,
         help="Directory to where the dataset is stored. If the dataset is not found in that location, it will be downloaded automatically.",
     )
-    parser.add_argument("--models", default=None, type=str, nargs='+', help="Provide a list of models to run")
+    parser.add_argument("--models", default=None, type=str, nargs="+", help="Provide a list of models to run")
     parser.add_argument("--num_epochs", default=200, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--batch_size", default=8, type=int, help="Switch for overriding batch size in the configuration file.")
     parser.add_argument("--data_downsampling_factor", default=16, type=int, help="Switch for overriding the downsampling factor of the data.")

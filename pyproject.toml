@@ -55,6 +55,9 @@ dev = [
     "coverage>=6.5.0",
     "parameterized",
     "scipy>=1.9.0",
+    "pre-commit>=3.0.0",
+    "black>=24.0.0",
+    "ruff>=0.4.0",
 ]
 filter_basis = [
     "scipy>=1.9.0",
@@ -69,6 +72,31 @@ filter_basis = [
 
 [tool.black]
 line-length = 180
+
+[tool.ruff]
+line-length = 180
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+# E = pycodestyle errors, F = pyflakes, I = isort, W = pycodestyle warnings
+select = ["E", "F", "I", "W"]
+ignore = [
+    "E501",  # line length (handled by black)
+    "E741",  # ambiguous variable names (l, m, n are standard in math/physics)
+    "E731",  # lambda assignments (used in test closures for gradcheck)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# __init__.py files re-export symbols intentionally
+"__init__.py" = ["F401"]
+# test files may have unused variables for setup
+"tests/*" = ["F841"]
+# example files have looser style requirements
+"examples/*" = ["F841", "E712"]
+"torch_harmonics/examples/*" = ["F841", "E712"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["torch_harmonics"]
 
 [tool.cibuildwheel]
 # Build for Python 3.9, 3.10, 3.11, 3.12

@@ -29,33 +29,35 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os
 import unittest
-from parameterized import parameterized
 
 import torch
+from parameterized import parameterized
+from testutils import (
+    compare_tensors,
+    disable_tf32,
+    gather_tensor_hw,
+    set_seed,
+    setup_class_from_context,
+    setup_module,
+    split_tensor_hw,
+    teardown_module,
+)
+
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
-
-from testutils import (
-    disable_tf32,
-    set_seed,
-    setup_module,
-    teardown_module,
-    setup_class_from_context,
-    split_tensor_hw,
-    gather_tensor_hw,
-    compare_tensors,
-)
 
 # shared state
 _DIST_CTX = {}
 
+
 def setUpModule():
     setup_module(_DIST_CTX)
 
+
 def tearDownModule():
     teardown_module(_DIST_CTX)
+
 
 class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
     """Test the distributed spherical harmonic transform module (CPU/CUDA if available)."""
@@ -66,29 +68,21 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         disable_tf32()
 
     def _split_helper(self, tensor):
-        return split_tensor_hw(
-            tensor, 
-            hdim=-2,
-            wdim=-1, 
-            hsize=self.grid_size_h, 
-            wsize=self.grid_size_w, 
-            hrank=self.hrank, 
-            wrank=self.wrank
-        )
+        return split_tensor_hw(tensor, hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
 
     def _gather_helper_fwd(self, tensor, transform_dist):
         tensor_gather = gather_tensor_hw(
-            tensor, 
-            hdim=-2, 
-            wdim=-1, 
-            hshapes=transform_dist.l_shapes, 
-            wshapes=transform_dist.m_shapes, 
-            hsize=self.grid_size_h, 
-            wsize=self.grid_size_w, 
-            hrank=self.hrank, 
-            wrank=self.wrank, 
-            hgroup=self.h_group, 
-            wgroup=self.w_group
+            tensor,
+            hdim=-2,
+            wdim=-1,
+            hshapes=transform_dist.l_shapes,
+            wshapes=transform_dist.m_shapes,
+            hsize=self.grid_size_h,
+            wsize=self.grid_size_w,
+            hrank=self.hrank,
+            wrank=self.wrank,
+            hgroup=self.h_group,
+            wgroup=self.w_group,
         )
 
         return tensor_gather
@@ -96,17 +90,17 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
     def _gather_helper_bwd(self, tensor, transform_dist):
 
         tensor_gather = gather_tensor_hw(
-            tensor, 
-            hdim=-2, 
-            wdim=-1, 
-            hshapes=transform_dist.lat_shapes, 
-            wshapes=transform_dist.lon_shapes, 
-            hsize=self.grid_size_h, 
-            wsize=self.grid_size_w, 
-            hrank=self.hrank, 
-            wrank=self.wrank, 
-            hgroup=self.h_group, 
-            wgroup=self.w_group
+            tensor,
+            hdim=-2,
+            wdim=-1,
+            hshapes=transform_dist.lat_shapes,
+            wshapes=transform_dist.lon_shapes,
+            hsize=self.grid_size_h,
+            wsize=self.grid_size_w,
+            hrank=self.hrank,
+            wrank=self.wrank,
+            hgroup=self.h_group,
+            wgroup=self.w_group,
         )
 
         return tensor_gather
@@ -115,47 +109,48 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         [
             # lmax automatically determined
             # Scalar SHT
-            [32, 64, None, 32,  8, "equiangular", False, 1e-7,1e-9],
-            [32, 64, None, 32,  8, "legendre-gauss", False, 1e-7, 1e-9],
-            [32, 64, None, 32,  8, "equiangular", False, 1e-7, 1e-9],
-            [32, 64, None, 32,  8, "legendre-gauss", False, 1e-7, 1e-9],
-            [32, 64, None, 32,  8, "equiangular", False, 1e-7, 1e-9],
-            [32, 64, None, 32,  8, "legendre-gauss", False, 1e-7, 1e-9],
-            [33, 64, None,  1, 10, "equiangular", False, 1e-6, 1e-6],
-            [33, 64, None,  1, 10, "legendre-gauss", False, 1e-6, 1e-6],
-            [ 8, 16, None,  1, 10, "equiangular", False, 1e-6, 1e-6],
+            [32, 64, None, 32, 8, "equiangular", False, 1e-7, 1e-9],
+            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
+            [32, 64, None, 32, 8, "equiangular", False, 1e-7, 1e-9],
+            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
+            [32, 64, None, 32, 8, "equiangular", False, 1e-7, 1e-9],
+            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
+            [33, 64, None, 1, 10, "equiangular", False, 1e-6, 1e-6],
+            [33, 64, None, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
+            [8, 16, None, 1, 10, "equiangular", False, 1e-6, 1e-6],
             # Vector SHT
-            [32, 64, None, 32,  8, "equiangular", True, 1e-7, 1e-9],
-            [32, 64, None, 32,  8, "legendre-gauss", True, 1e-7, 1e-9],
-            [32, 64, None, 32,  8, "equiangular", True, 1e-7, 1e-9],
-            [32, 64, None, 32,  8, "legendre-gauss", True, 1e-7, 1e-9],
-            [32, 64, None, 32,  8, "equiangular", True, 1e-7, 1e-9],
-            [32, 64, None, 32,  8, "legendre-gauss", True, 1e-7, 1e-9],
-            [32, 64, None,  1, 10, "equiangular", True, 1e-6, 1e-6],
-            [33, 64, None,  1, 10, "legendre-gauss", True, 1e-6, 1e-6],
+            [32, 64, None, 32, 8, "equiangular", True, 1e-7, 1e-9],
+            [32, 64, None, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
+            [32, 64, None, 32, 8, "equiangular", True, 1e-7, 1e-9],
+            [32, 64, None, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
+            [32, 64, None, 32, 8, "equiangular", True, 1e-7, 1e-9],
+            [32, 64, None, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
+            [32, 64, None, 1, 10, "equiangular", True, 1e-6, 1e-6],
+            [33, 64, None, 1, 10, "legendre-gauss", True, 1e-6, 1e-6],
             # downsampling:
             # Scalar SHT
-            [32, 64, 8, 32,  8, "equiangular", False, 1e-7,1e-9],
-            [32, 64, 8, 32,  8, "legendre-gauss", False, 1e-7, 1e-9],
-            [33, 64, 9,  1, 10, "equiangular", False, 1e-6, 1e-6],
-            [33, 64, 8,  1, 10, "legendre-gauss", False, 1e-6, 1e-6],
+            [32, 64, 8, 32, 8, "equiangular", False, 1e-7, 1e-9],
+            [32, 64, 8, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
+            [33, 64, 9, 1, 10, "equiangular", False, 1e-6, 1e-6],
+            [33, 64, 8, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
             # Vector SHT
-            [32, 64, 8, 32,  8, "equiangular", True, 1e-7,1e-9],
-            [32, 64, 8, 32,  8, "legendre-gauss", True, 1e-7, 1e-9],
-            [33, 64, 9,  1, 10, "equiangular", True, 1e-6, 1e-6],
-            [33, 64, 8,  1, 10, "legendre-gauss", True, 1e-6, 1e-6],
+            [32, 64, 8, 32, 8, "equiangular", True, 1e-7, 1e-9],
+            [32, 64, 8, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
+            [33, 64, 9, 1, 10, "equiangular", True, 1e-6, 1e-6],
+            [33, 64, 8, 1, 10, "legendre-gauss", True, 1e-6, 1e-6],
             # upsampling
             # Scalar SHT
-            [32, 64, 64, 32,  8, "equiangular", False, 1e-7,1e-9],
-            [32, 64, 64, 32,  8, "legendre-gauss", False, 1e-7, 1e-9],
-            [33, 64, 65,  1, 10, "equiangular", False, 1e-6, 1e-6],
-            [33, 64, 64,  1, 10, "legendre-gauss", False, 1e-6, 1e-6],
+            [32, 64, 64, 32, 8, "equiangular", False, 1e-7, 1e-9],
+            [32, 64, 64, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
+            [33, 64, 65, 1, 10, "equiangular", False, 1e-6, 1e-6],
+            [33, 64, 64, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
             # Vector SHT
-            [32, 64, 64, 32,  8, "equiangular", True, 1e-7,1e-9],
-            [32, 64, 64, 32,  8, "legendre-gauss", True, 1e-7, 1e-9],
-            [33, 64, 65,  1, 10, "equiangular", True, 1e-6, 1e-6],
-            [33, 64, 64,  1, 10, "legendre-gauss", True, 1e-6, 1e-6],
-        ], skip_on_empty=True
+            [32, 64, 64, 32, 8, "equiangular", True, 1e-7, 1e-9],
+            [32, 64, 64, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
+            [33, 64, 65, 1, 10, "equiangular", True, 1e-6, 1e-6],
+            [33, 64, 64, 1, 10, "legendre-gauss", True, 1e-6, 1e-6],
+        ],
+        skip_on_empty=True,
     )
     def test_distributed_sht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, verbose=False):
 
@@ -211,19 +206,18 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         igrad_gather_full = self._gather_helper_bwd(igrad_local, forward_transform_dist)
         self.assertTrue(compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose))
 
-
     @parameterized.expand(
         [
             # lmax automatically determined
             # Scalar SHT
-            [32, 64, None, 32,  8, "equiangular", False, 1e-7, 1e-9],
-            [32, 64, None, 32,  8, "legendre-gauss", False, 1e-7, 1e-9],
-            [32, 64, None, 32,  8, "equiangular", False, 1e-7, 1e-9],
-            [32, 64, None, 32,  8, "legendre-gauss", False, 1e-7, 1e-9],
-            [32, 64, None, 32,  8, "equiangular", False, 1e-7, 1e-9],
-            [32, 64, None, 32,  8, "legendre-gauss", False, 1e-7, 1e-9],
-            [33, 64, None,  1, 10, "equiangular", False, 1e-6, 1e-6],
-            [33, 64, None,  1, 10, "legendre-gauss", False, 1e-6, 1e-6],
+            [32, 64, None, 32, 8, "equiangular", False, 1e-7, 1e-9],
+            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
+            [32, 64, None, 32, 8, "equiangular", False, 1e-7, 1e-9],
+            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
+            [32, 64, None, 32, 8, "equiangular", False, 1e-7, 1e-9],
+            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
+            [33, 64, None, 1, 10, "equiangular", False, 1e-6, 1e-6],
+            [33, 64, None, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
             # Vector SHT
             [32, 64, None, 32, 8, "equiangular", True, 1e-7, 1e-9],
             [32, 64, None, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
@@ -231,31 +225,32 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, None, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
             [32, 64, None, 32, 8, "equiangular", True, 1e-7, 1e-9],
             [32, 64, None, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
-            [33, 64, None,  1, 10, "equiangular", True, 1e-6, 1e-6],
-            [33, 64, None,  1, 10, "legendre-gauss", True, 1e-6, 1e-6],
+            [33, 64, None, 1, 10, "equiangular", True, 1e-6, 1e-6],
+            [33, 64, None, 1, 10, "legendre-gauss", True, 1e-6, 1e-6],
             # downsampling (SHT is upsampling)
             # Scalar SHT
-            [32, 64, 64, 32,  8, "equiangular", False, 1e-7, 1e-9],
-            [32, 64, 64, 32,  8, "legendre-gauss", False, 1e-7, 1e-9],
-            [33, 64, 65,  1, 10, "equiangular", False, 1e-6, 1e-6],
-            [33, 64, 64,  1, 10, "legendre-gauss", False, 1e-6, 1e-6],
+            [32, 64, 64, 32, 8, "equiangular", False, 1e-7, 1e-9],
+            [32, 64, 64, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
+            [33, 64, 65, 1, 10, "equiangular", False, 1e-6, 1e-6],
+            [33, 64, 64, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
             # Vector SHT
-            [32, 64, 64, 32,  8, "equiangular", True, 1e-7, 1e-9],
-            [32, 64, 64, 32,  8, "legendre-gauss", True, 1e-7, 1e-9],
-            [33, 64, 65,  1, 10, "equiangular", True, 1e-6, 1e-6],
-            [33, 64, 64,  1, 10, "legendre-gauss", True, 1e-6, 1e-6],
+            [32, 64, 64, 32, 8, "equiangular", True, 1e-7, 1e-9],
+            [32, 64, 64, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
+            [33, 64, 65, 1, 10, "equiangular", True, 1e-6, 1e-6],
+            [33, 64, 64, 1, 10, "legendre-gauss", True, 1e-6, 1e-6],
             # upsampling (SHT is downsampling)
             # Scalar SHT
-            [32, 64, 8, 32,  8, "equiangular", False, 1e-7, 1e-9],
-            [32, 64, 8, 32,  8, "legendre-gauss", False, 1e-7, 1e-9],
-            [33, 64, 9,  1, 10, "equiangular", False, 1e-6, 1e-6],
-            [33, 64, 8,  1, 10, "legendre-gauss", False, 1e-6, 1e-6],
+            [32, 64, 8, 32, 8, "equiangular", False, 1e-7, 1e-9],
+            [32, 64, 8, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
+            [33, 64, 9, 1, 10, "equiangular", False, 1e-6, 1e-6],
+            [33, 64, 8, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
             # Vector SHT
-            [32, 64, 8, 32,  8, "equiangular", True, 1e-7, 1e-9],
-            [32, 64, 8, 32,  8, "legendre-gauss", True, 1e-7, 1e-9],
-            [33, 64, 9,  1, 10, "equiangular", True, 1e-6, 1e-6],
-            [33, 64, 8,  1, 10, "legendre-gauss", True, 1e-6, 1e-6],
-        ], skip_on_empty=True
+            [32, 64, 8, 32, 8, "equiangular", True, 1e-7, 1e-9],
+            [32, 64, 8, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
+            [33, 64, 9, 1, 10, "equiangular", True, 1e-6, 1e-6],
+            [33, 64, 8, 1, 10, "legendre-gauss", True, 1e-6, 1e-6],
+        ],
+        skip_on_empty=True,
     )
     def test_distributed_isht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, verbose=True):
 
