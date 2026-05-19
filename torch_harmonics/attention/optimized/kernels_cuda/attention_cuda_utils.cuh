@@ -74,6 +74,9 @@ void verify_part_new(const int nlon_out,
 
 unsigned int next_pow2(unsigned int x);
 
+void ensure_dyn_shmem(const void* kern, size_t shsize);
+
+int getPtxver();
 
 // utility host functions and templates
 
@@ -151,6 +154,34 @@ __device__ float4 __forceinline__ __vdiv(float s, float4 v) {
     return make_float4(s/v.x, s/v.y, s/v.z, s/v.w);;
 }
 
+template<int BDIM_X,
+         int NUM_IT,
+         typename FUNC_T>
+__device__ __forceinline__ void strided_op(int n, FUNC_T op) {
+
+    constexpr int USE_STATIC_UNROLL = (NUM_IT > 0);
+
+    const int tidx = threadIdx.x;
+
+    if constexpr(USE_STATIC_UNROLL) {
+        constexpr int NUM_IT_M1 = NUM_IT-1;
+
+        #pragma unroll
+        for(int i = 0; i < NUM_IT_M1; i++) {
+            op(i);
+        }
+        if (NUM_IT_M1*BDIM_X+tidx < n) {
+            op(NUM_IT_M1);
+        }
+    } else {
+        // Fallback dynamic loop
+        for(int i = 0; i*BDIM_X+tidx < n; i++) {
+            op(i);
+        }
+    }
+    return;
+}
+
 template<typename VAL_T>
 __device__ VAL_T __warp_sum(VAL_T val) {
 
@@ -203,6 +234,16 @@ __device__ VAL_T __block_sum(VAL_T val) {
         __syncthreads();
     }
     return val;
+}
+
+template<typename VAL_T>
+__device__ void swap_d(VAL_T &a, VAL_T &b) {
+
+    auto tmp = a;
+    a = b;
+    b = tmp;
+
+    return;
 }
 
 // transpose utils

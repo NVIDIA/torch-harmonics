@@ -161,6 +161,15 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             # legendre-gauss grid with QK norm
             [64, 128, 64, 128, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", True, 1e-5, 1e-4],
             [64, 128, 32,  64, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", True, 1e-5, 1e-4],
+            # scalar (non-vectorized) path: per-head channels not divisible by 4
+            # same-shape, CHOUT_AS_IN=True (nchans_in=nchans_out=10)
+            [64, 128, 64, 128, 2, 10, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            # downsampling pscale=2, CHOUT_AS_IN=True
+            [64, 128, 32,  64, 2, 10, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            # CHOUT_AS_IN=False, scalar path (nchans_in=5, nchans_out=3 per head)
+            [64, 128, 64, 128, 2, 16, 4,  20,   12, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            # downsampling pscale=2, CHOUT_AS_IN=False, scalar path
+            [64, 128, 32,  64, 2, 16, 4,  20,   12, "equiangular", "equiangular", False, 1e-5, 1e-4],
             # upsampling is not supported by the kernel yet (serial layer asserts nlon_in % nlon_out == 0)
         ],
         skip_on_empty=True,
