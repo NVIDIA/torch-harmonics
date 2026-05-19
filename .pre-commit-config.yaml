@@ -23,6 +23,7 @@ repos:
     rev: v0.11.12
     hooks:
       - id: ruff
+        language_version: python3
         args: ['--fix']
 
   - repo: https://github.com/pre-commit/mirrors-clang-format
@@ -36,6 +37,6 @@ repos:
       - id: license-header-check
         name: Check SPDX license headers
         entry: python3 scripts/check_license_header.py
-        language: python
+        language: system
         types: [python]
         pass_filenames: true
