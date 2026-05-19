@@ -55,9 +55,11 @@ Optional extras:
 pip install -e ".[dev,filter_basis]"   # scipy for filter-basis tests
 ```
 
-Install [pre-commit](https://pre-commit.com/) hooks (see [Code style and pre-commit](#code-style-and-pre-commit)):
+Install [pre-commit](https://pre-commit.com/) and a recent [virtualenv](https://virtualenv.pypa.io/)
+from PyPI (the Debian/Ubuntu `python3-virtualenv` package is too old and breaks hook installs):
 
 ```bash
+pip install -e ".[dev]" --no-build-isolation
 pre-commit install
 ```
 
@@ -213,6 +215,16 @@ We use [pre-commit](https://pre-commit.com/) on pull requests (`.github/workflow
 Running it locally before you push avoids CI surprises:
 
 ```bash
+pre-commit run --all-files
+```
+
+If hook install fails with `Executable 'python' not found`, upgrade virtualenv and clear
+cached envs (Debian’s system `virtualenv` creates `local/bin/python`; pre-commit expects
+`bin/python`):
+
+```bash
+pip install -U 'pre-commit>=4.0.0' 'virtualenv>=20.23.0'
+pre-commit clean
 pre-commit run --all-files
 ```
 
