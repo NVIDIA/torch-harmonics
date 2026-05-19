@@ -2,7 +2,7 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -29,41 +29,17 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-# we need this in order to enable distributed
-from .utils import config
-from .utils import init, finalize, is_initialized, polar_group, azimuth_group
-from .utils import polar_group_size, azimuth_group_size, polar_group_rank, azimuth_group_rank
-from .primitives import compute_split_shapes, split_tensor_along_dim
-from .primitives import (
-    distributed_transpose_azimuth,
-    distributed_transpose_polar,
-    reduce_from_polar_region,
-    reduce_from_azimuth_region,
-    scatter_to_polar_region,
-    gather_from_polar_region,
-    copy_to_polar_region,
-    copy_to_azimuth_region,
-    reduce_from_scatter_to_polar_region,
-    reduce_from_scatter_to_azimuth_region,
-    gather_from_copy_to_polar_region
+"""
+Per-algorithm Python orchestration kernels for the distributed conv/SHT
+modules.  Each submodule exposes one or more ``_distributed_*_fwd_<method>``
+entry points that take an input tensor + module-precomputed state and
+return the output of one forward pass for that algorithm. The public
+classes in ``torch_harmonics.distributed`` dispatch into these based on
+their ``method=`` flag (mirroring Transformer Engine's context-parallelism
+API).
+"""
+
+from .distributed_convolution_kernels import (
+    _distributed_disco_fwd_a2a,
+    _distributed_disco_fwd_ring,
 )
-
-# import quadrature
-from .distributed_quadrature import DistributedQuadratureS2
-
-# import the sht
-from .distributed_sht import DistributedRealSHT, DistributedInverseRealSHT
-from .distributed_sht import DistributedRealVectorSHT, DistributedInverseRealVectorSHT
-
-# import spectral convolution
-from .distributed_spectral_convolution import DistributedSpectralConvS2
-
-# import DISCO
-from .distributed_convolution import DistributedDiscreteContinuousConvS2
-from .distributed_convolution import DistributedDiscreteContinuousConvTransposeS2
-
-# import resampling
-from .distributed_resample import DistributedResampleS2
-
-# import distributed neighborhood attention
-from .distributed_attention import DistributedNeighborhoodAttentionS2

@@ -376,7 +376,7 @@ void disco_cuda_bwd_ring_step(torch::Tensor inp,
     static_assert(0 == (ELXTH_MAX % 2));
 
     if (Wi_local_src_actual <= 64 * ELXTH_MAX) {
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_ring_cuda", ([&] {
+        AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, inp.scalar_type(), "disco_backward_ring_cuda", ([&] {
             using storage_t = scalar_t;
             using compute_t = typename at::opmath_type<storage_t>;
             launch_kernel_ring_bwd<64, 1, storage_t, compute_t>(
@@ -388,7 +388,7 @@ void disco_cuda_bwd_ring_step(torch::Tensor inp,
                 out.data_ptr<compute_t>(), stream);
         }));
     } else if (Wi_local_src_actual <= 128 * ELXTH_MAX) {
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_ring_cuda", ([&] {
+        AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, inp.scalar_type(), "disco_backward_ring_cuda", ([&] {
             using storage_t = scalar_t;
             using compute_t = typename at::opmath_type<storage_t>;
             launch_kernel_ring_bwd<128, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
@@ -400,7 +400,7 @@ void disco_cuda_bwd_ring_step(torch::Tensor inp,
                 out.data_ptr<compute_t>(), stream);
         }));
     } else if (Wi_local_src_actual <= 256 * ELXTH_MAX) {
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_ring_cuda", ([&] {
+        AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, inp.scalar_type(), "disco_backward_ring_cuda", ([&] {
             using storage_t = scalar_t;
             using compute_t = typename at::opmath_type<storage_t>;
             launch_kernel_ring_bwd<256, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
@@ -412,7 +412,7 @@ void disco_cuda_bwd_ring_step(torch::Tensor inp,
                 out.data_ptr<compute_t>(), stream);
         }));
     } else if (Wi_local_src_actual <= 512 * ELXTH_MAX) {
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_ring_cuda", ([&] {
+        AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, inp.scalar_type(), "disco_backward_ring_cuda", ([&] {
             using storage_t = scalar_t;
             using compute_t = typename at::opmath_type<storage_t>;
             launch_kernel_ring_bwd<512, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
@@ -424,7 +424,7 @@ void disco_cuda_bwd_ring_step(torch::Tensor inp,
                 out.data_ptr<compute_t>(), stream);
         }));
     } else if (Wi_local_src_actual <= 1024 * ELXTH_MAX) {
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_ring_cuda", ([&] {
+        AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, inp.scalar_type(), "disco_backward_ring_cuda", ([&] {
             using storage_t = scalar_t;
             using compute_t = typename at::opmath_type<storage_t>;
             launch_kernel_ring_bwd<1024, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
