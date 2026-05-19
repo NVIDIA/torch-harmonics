@@ -536,15 +536,17 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
         grad_x      = None
         grad_weight = None
 
-        weight_r   = weight.reshape(G, Og, Cg, K)
+        weight_r   = weight.reshape(G, Og, Cg, K).to(grad_out.dtype)
         grad_out_r = grad_out.reshape(B, G, Og, H, W)
 
         # ---- grad_x path ----
+        # Reordered comm: rotate grad_out (O-channel, small) through the
+        # ring and compute the K-expanded gradient chunk LOCALLY per step.
+        # Shrinks per-step P2P traffic from B*C*K*H*W_chunk down to
+        # B*O*H*W_chunk — factor of C·K/O (e.g. ~9× when C≈O, K=9).
+        # _ring_x_chunk's helper is shape-generic (B, *, *, W), so the
+        # same rotation primitive works for the O-channel grad_out tensor.
         if ctx.needs_input_grad[0]:
-            # einsum bwd: (B,G,Og,H,W) x (G,Og,Cg,K) -> (B,G,Cg,K,H,W) -> (B,C,K,H,W)
-            grad_y_ke = torch.einsum("bgoxy,gock->bgckxy", grad_out_r, weight_r)
-            grad_y_ke = grad_y_ke.reshape(B, -1, K, H, W).contiguous()
-
             grad_x_acc = torch.zeros(
                 B, C, H_in_local, nlon_in_local_self,
                 device=x.device, dtype=compute_dtype,
@@ -553,21 +555,33 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
             lon_lo_out_self = lon_out_chunk_starts[az_rank]
             lon_lo_in_self  = lon_in_chunk_starts[az_rank]
 
-            grad_y_chunk = grad_y_ke
+            grad_out_chunk = grad_out.contiguous()
             for step in range(az_size):
                 src_rank           = (az_rank + step) % az_size
                 lon_lo_src_out     = lon_out_chunk_starts[src_rank]
                 nlon_out_local_src = lon_out_local_sizes[src_rank]
                 pscale_wo_offset   = pscale * (lon_lo_src_out - lon_lo_out_self)
 
+                # Async P2P for the NEXT step's grad_out chunk. Note we use
+                # _ring_x_chunk (generic 4D rotator); the "x" in the name is
+                # historical — the helper doesn't care whether dim 1 means
+                # input channels or output channels.
                 if step < az_size - 1:
                     next_src = (az_rank + step + 1) % az_size
-                    recv_gy, reqs = _ring_y_chunk(
-                        grad_y_chunk, az_group, lon_out_local_sizes[next_src],
+                    recv_go, reqs = _ring_x_chunk(
+                        grad_out_chunk, az_group, lon_out_local_sizes[next_src],
                     )
 
+                # Local einsum bwd: (B,O,H,W_chunk) x (G,Og,Cg,K) -> K-expanded chunk.
+                B_, O_, H_, W_chunk = grad_out_chunk.shape
+                grad_out_chunk_r = grad_out_chunk.reshape(B_, G, Og, H_, W_chunk)
+                grad_y_ke_chunk = torch.einsum(
+                    "bgoxy,gock->bgckxy", grad_out_chunk_r, weight_r,
+                ).contiguous()
+                grad_y_ke_chunk = grad_y_ke_chunk.reshape(B_, C, K, H_, W_chunk)
+
                 _disco_s2_transpose_contraction_ring_step_optimized(
-                    grad_y_chunk, grad_x_acc,
+                    grad_y_ke_chunk, grad_x_acc,
                     psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals,
                     K, H_in_local, nlon_in_local_self,
                     nlon_in_global, pscale,
@@ -575,15 +589,17 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
                     nlon_out_local_src,
                 )
 
+                # Drop the K-expanded chunk before next iter allocates a new one.
+                del grad_y_ke_chunk, grad_out_chunk_r
+
                 if step < az_size - 1:
                     for req in reqs:
                         req.wait()
-                    grad_y_chunk = recv_gy.clone()
+                    grad_out_chunk = recv_go.clone()
 
             grad_x = grad_x_acc.to(x.dtype) if compute_dtype != x.dtype else grad_x_acc
 
-            # Free grad_y_ke before the recompute below allocates y_acc.
-            del grad_y_ke, grad_y_chunk
+            del grad_out_chunk
 
         # ---- grad_w path: recompute y_acc via a second ring fwd ----
         if ctx.needs_input_grad[1]:
