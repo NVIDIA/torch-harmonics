@@ -186,7 +186,9 @@ if optimized_kernels_is_available():
             lon_lo_src, nlon_in_local_src,
         )
 
-    # ring-step transpose Python wrapper.
+    # ring-step transpose Python wrapper. Unlike the forward wrapper, we
+    # DON'T upcast ``inp`` here: the kernel's storage_t/compute_t split
+    # casts on load and accumulates in fp32 regardless.
     def _disco_s2_transpose_contraction_ring_step_optimized(
         inp: torch.Tensor, out: torch.Tensor,
         roff_idx: torch.Tensor, ker_idx: torch.Tensor,
@@ -196,12 +198,10 @@ if optimized_kernels_is_available():
         pscale_wo_offset: int, lon_lo_in_self: int,
         nlon_out_local_src: int,
     ) -> None:
-        itype = inp.dtype
-        cdtype = _compute_dtype(itype)
-        inp_c = inp.to(cdtype).contiguous()
-        vals_c = vals.to(cdtype)
+        # vals must be in compute_t (fp32) — kernel reads them as such.
+        vals_c = vals.to(_compute_dtype(inp.dtype))
         disco_kernels.backward_ring_step.default(
-            inp_c, out,
+            inp.contiguous(), out,
             roff_idx, ker_idx, row_idx, col_idx, vals_c,
             kernel_size, nlat_in, nlon_in_local_self,
             nlon_in_global, pscale,
