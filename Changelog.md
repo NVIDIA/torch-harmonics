@@ -4,40 +4,23 @@
 
 ### v0.9.1
 
-* DISCO related improvements
-    * Added Fourier-Bessel basis functions
-    * New Hann filter basis; filter basis types can now specify their own initialization factors via `get_init_factors`
-    * Filter basis L2 normalization standardized on the unit disk for harmonic, Zernike, and Fourier-Bessel bases; on a disk of radius R the norm equals R via the Jacobian
-    * New `modal` filter basis normalization mode subtracts the mean to reduce spectral leakage
-    * New `geometric` mode uses the theoretical area measure of the spherical cap to normalize
-    * Deprecated `basis_norm_mode="individual"` (use `"nodal"`) and `basis_norm_mode="area ratio"` (use `"geometric"`); old names still work and emit `DeprecationWarning`
-    * Improved DISCO setup time
-    * Vastly improved OpenMP kernels for DISCO forward and backward, speedups of up to 55x observed in certain cases over the original kernels.
-
-* Updates to attention layers:
-    * Cross-attention (`key != value != query`) supported in `AttentionS2`, `NeighborhoodAttentionS2`, and `DistributedNeighborhoodAttentionS2`
-    * Attention upsampling (`nlon_out > nlon_in`) supported in serial `NeighborhoodAttentionS2`: new `s2_attn_fwd_upsample` / `s2_attn_bwd_upsample` kernels (CPU and CUDA) and matching torch reference
-    * Support for DistributedNeighborhoodAttentionS2 for self-attention and downsampling path. Upsampling distributed attention not implemented yet.
-    * Added proper shape checks in all attention layers
-    * Optional QK normalization (`use_qknorm=True`) for `AttentionS2` and `NeighborhoodAttentionS2`, applying per-head RMS normalization to Q and K projections
-    * Fixed weight initialization in `AttentionS2` and `NeighborhoodAttentionS2`: Q/K/V projections now use correct gain factors when input dim != embedding dim
-    * **Breaking**: default attention scale in `NeighborhoodAttentionS2` changed from `1/sqrt(k_channels)` to `1/sqrt(k_channels // num_heads)` to match standard MHA head-dim scaling; affects users relying on the default with `num_heads > 1`
-
-* General improvements:
-    * Improved Lengdre coefficient calculation time, reducing setup time for all spherical harmonics transforms layers
-
-* New distributed primitives: differentiable `polar_halo_exchange` and `get_group_neighbors` to support distributed attention
-* Improved robustness of distributed transpose and better `torch.compile` compatibility; `_reduce` now clones before `all_reduce` to avoid mutating its input in place
-
-* Minor fixes and cleanups:
-    * Fixed Galewsky initial condition NaN caused by overflowing values
-    * Added convolution adapter for residual paths when input and output channel counts differ
-    * Midpoint rule applied to the radial integral in basis L2-norm computation for O(h^2) convergence
-    * Improved docstring for `_precompute_convolution_tensor_s2`
-* New tests:
-    * expanded attention tests
-    * added `tests/test_filter_basis.py` suite for testing DISCO filter basis inegrity
-    * better integrity testing for many layers
+* Fourier-Bessel filter basis; Hann window basis with per-type init factors via `get_init_factors`
+* Standardized L2 normalization on the unit disk (harmonic, Zernike, Fourier-Bessel); on a disk of radius R the norm equals R via the Jacobian
+* New DISCO basis normalization modes `modal` (mean-subtracted, reduces spectral leakage) and `geometric` (spherical cap area measure)
+* Deprecated `basis_norm_mode="individual"` → `"nodal"` and `"area ratio"` → `"geometric"` (old names emit `DeprecationWarning`)
+* Faster DISCO sparsity-pattern setup; OpenMP forward/backward kernels with up to ~55x speedup in some configurations
+* Cross-attention (`key != value != query`) in `AttentionS2`, `NeighborhoodAttentionS2`, and `DistributedNeighborhoodAttentionS2`
+* Serial attention upsampling when `nlon_out % nlon_in == 0`: CPU/CUDA/torch upsample kernels and matching reference
+* `DistributedNeighborhoodAttentionS2` for self-attention and downsampling (distributed upsample not yet implemented)
+* Optional per-head QK RMS norm (`use_qknorm`) for `AttentionS2` and `NeighborhoodAttentionS2`; shape checks across attention layers
+* Fixed Q/K/V projection gain when input dim != embedding dim
+* **Breaking**: default `NeighborhoodAttentionS2` scale changed from `1/sqrt(k_channels)` to `1/sqrt(k_channels // num_heads)` to match standard MHA head-dim scaling (`num_heads > 1`)
+* Faster Legendre coefficient precomputation for SHT layers
+* Differentiable `polar_halo_exchange` and `get_group_neighbors` for distributed attention
+* More robust distributed transpose; `_reduce` clones before `all_reduce` for `torch.compile` compatibility
+* Fixed Galewsky initial condition NaN from overflow; convolution adapter for mismatched residual channel counts
+* Midpoint rule for filter-basis L2 norm integration (O(h^2)); improved `_precompute_convolution_tensor_s2` docstring
+* Expanded attention tests (including upsample); new `tests/test_filter_basis.py`; broader layer integrity coverage
 
 ### v0.9.0
 
