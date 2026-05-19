@@ -29,10 +29,11 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import unittest
-from parameterized import parameterized
 import math
+import unittest
+
 import torch
+from parameterized import parameterized
 
 from torch_harmonics.filter_basis import get_filter_basis
 
@@ -92,8 +93,7 @@ class TestFilterBasis(unittest.TestCase):
         for i in range(basis.kernel_size):
             norm_sq = (psi[i] ** 2 * r * dr * dphi).sum()
             norm = norm_sq.sqrt().item()
-            self.assertAlmostEqual(norm, r_cutoff, delta=tol,
-                                   msg=f"basis {basis_type} k={i}: ||psi||={norm:.6f}, expected ~{r_cutoff}")
+            self.assertAlmostEqual(norm, r_cutoff, delta=tol, msg=f"basis {basis_type} k={i}: ||psi||={norm:.6f}, expected ~{r_cutoff}")
 
     # ------------------------------------------------------------------
     # Orthogonality: <psi_i, psi_j> ~ 0 for i != j
@@ -124,8 +124,7 @@ class TestFilterBasis(unittest.TestCase):
         # off-diagonal should be near zero
         off_diag = gram - torch.diag(gram.diag())
         max_off = off_diag.abs().max().item()
-        self.assertLess(max_off, tol,
-                        msg=f"basis {basis_type}: max off-diagonal inner product = {max_off:.6f}")
+        self.assertLess(max_off, tol, msg=f"basis {basis_type}: max off-diagonal inner product = {max_off:.6f}")
 
     # ------------------------------------------------------------------
     # kernel_size consistency: number of returned basis functions matches kernel_size
@@ -152,8 +151,7 @@ class TestFilterBasis(unittest.TestCase):
 
         # kernel indices returned should span [0, kernel_size)
         kernel_ids = iidx[:, 0].unique()
-        self.assertEqual(len(kernel_ids), basis.kernel_size,
-                         msg=f"{basis_type}: expected {basis.kernel_size} basis functions, got {len(kernel_ids)}")
+        self.assertEqual(len(kernel_ids), basis.kernel_size, msg=f"{basis_type}: expected {basis.kernel_size} basis functions, got {len(kernel_ids)}")
         self.assertEqual(kernel_ids.min().item(), 0)
         self.assertEqual(kernel_ids.max().item(), basis.kernel_size - 1)
 
@@ -184,8 +182,7 @@ class TestFilterBasis(unittest.TestCase):
 
         iidx, vals = basis.compute_support_vals(r, phi, r_cutoff=r_cutoff)
         r_vals = r[iidx[:, 1], iidx[:, 2]]
-        self.assertTrue((r_vals <= r_cutoff).all(),
-                        msg=f"{basis_type}: found values at r > r_cutoff")
+        self.assertTrue((r_vals <= r_cutoff).all(), msg=f"{basis_type}: found values at r > r_cutoff")
 
     # ------------------------------------------------------------------
     # Isotropy: isotropic basis functions should be rotationally invariant
@@ -222,8 +219,7 @@ class TestFilterBasis(unittest.TestCase):
         for k, is_iso in enumerate(basis.isotropic_mask):
             if is_iso:
                 diff = (psi_a[k] - psi_b[k]).abs().max().item()
-                self.assertLess(diff, tol,
-                                msg=f"{basis_type} k={k}: isotropic basis varies with phi, max diff={diff:.2e}")
+                self.assertLess(diff, tol, msg=f"{basis_type} k={k}: isotropic basis varies with phi, max diff={diff:.2e}")
 
     # ------------------------------------------------------------------
     # Fourier-Bessel: boundary condition psi(r_cutoff, phi) = 0
@@ -250,8 +246,7 @@ class TestFilterBasis(unittest.TestCase):
 
         for k in range(basis.kernel_size):
             max_val = psi[k].abs().max().item()
-            self.assertLess(max_val, tol,
-                            msg=f"fourier-bessel k={k}: |psi(r_cutoff)|={max_val:.2e}, expected ~0")
+            self.assertLess(max_val, tol, msg=f"fourier-bessel k={k}: |psi(r_cutoff)|={max_val:.2e}, expected ~0")
 
     # ------------------------------------------------------------------
     # Zernike: R_n^m(1) = 1 for all (n, m)
@@ -292,12 +287,10 @@ class TestFilterBasis(unittest.TestCase):
                     if m >= 0:
                         # R_n^m(1) = 1, angular = cos(m*0) = 1, so val = 1/norm
                         expected = 1.0 / norm
-                        self.assertAlmostEqual(v, expected, delta=tol,
-                                               msg=f"zernike (n={n},m={m}): R(1)={v*norm:.6f}, expected 1.0")
+                        self.assertAlmostEqual(v, expected, delta=tol, msg=f"zernike (n={n},m={m}): R(1)={v*norm:.6f}, expected 1.0")
                     else:
                         # angular = sin(m*0) = 0
-                        self.assertAlmostEqual(v, 0.0, delta=tol,
-                                               msg=f"zernike (n={n},m={m}): expected 0 at phi=0")
+                        self.assertAlmostEqual(v, 0.0, delta=tol, msg=f"zernike (n={n},m={m}): expected 0 at phi=0")
                 idx += 1
 
     # ------------------------------------------------------------------
@@ -336,8 +329,7 @@ class TestFilterBasis(unittest.TestCase):
         interior = r.squeeze() <= r_last
         interior_sum = total[interior]
         max_err = (interior_sum - 1.0).abs().max().item()
-        self.assertLess(max_err, tol,
-                        msg=f"piecewise linear {kernel_shape}: partition-of-unity error = {max_err:.2e}")
+        self.assertLess(max_err, tol, msg=f"piecewise linear {kernel_shape}: partition-of-unity error = {max_err:.2e}")
 
     # ------------------------------------------------------------------
     # isotropic_mask length matches kernel_size

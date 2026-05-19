@@ -32,16 +32,12 @@
 import math
 
 import torch
-import torch.nn as nn
 import torch.amp as amp
+import torch.nn as nn
 
-from torch_harmonics import RealSHT, InverseRealSHT
-from torch_harmonics import DiscreteContinuousConvS2
-from torch_harmonics import ResampleS2
+from torch_harmonics import DiscreteContinuousConvS2, InverseRealSHT, RealSHT, ResampleS2
+from torch_harmonics.examples.models._layers import MLP, DropPath, LearnablePositionEmbedding, SequencePositionEmbedding, SpectralConvS2, SpectralPositionEmbedding
 
-from torch_harmonics.examples.models._layers import MLP, SpectralConvS2, SequencePositionEmbedding, SpectralPositionEmbedding, LearnablePositionEmbedding
-
-from functools import partial
 
 # heuristic for finding theta_cutoff
 def _compute_cutoff_radius(nlat, kernel_shape, basis_type):
@@ -49,13 +45,14 @@ def _compute_cutoff_radius(nlat, kernel_shape, basis_type):
 
     return (kernel_shape[0] + 1) * theta_cutoff_factor[basis_type] * math.pi / float(nlat - 1)
 
+
 class DiscreteContinuousEncoder(nn.Module):
     """
     Discrete-continuous encoder for spherical neural operators.
-    
+
     This module performs downsampling using discrete-continuous convolutions on the sphere,
     reducing the spatial resolution while maintaining the spectral properties of the data.
-    
+
     Parameters
     ----------
     in_shape : tuple, optional
@@ -79,6 +76,7 @@ class DiscreteContinuousEncoder(nn.Module):
     bias : bool, optional
         Whether to use bias, by default False
     """
+
     def __init__(
         self,
         in_shape=(721, 1440),
@@ -124,10 +122,10 @@ class DiscreteContinuousEncoder(nn.Module):
 class DiscreteContinuousDecoder(nn.Module):
     """
     Discrete-continuous decoder for spherical neural operators.
-    
+
     This module performs upsampling using either spherical harmonic transforms or resampling,
     followed by discrete-continuous convolutions to restore spatial resolution.
-    
+
     Parameters
     ----------
     in_shape : tuple, optional
@@ -153,6 +151,7 @@ class DiscreteContinuousDecoder(nn.Module):
     upsample_sht : bool, optional
         Whether to use SHT for upsampling, by default False
     """
+
     def __init__(
         self,
         in_shape=(480, 960),
@@ -381,7 +380,7 @@ class LocalSphericalNeuralOperator(nn.Module):
     operators to accureately model both types of solution operators [1]. The architecture is based on the Spherical
     Fourier Neural Operator [2] and improves upon it with local integral operators in both the Neural Operator blocks,
     as well as in the encoder and decoders.
-    
+
     Parameters
     ----------
     img_size : tuple, optional
@@ -562,7 +561,7 @@ class LocalSphericalNeuralOperator(nn.Module):
                 self.itrans,
                 self.embed_dim,
                 self.embed_dim,
-                conv_type="global" if i % sfno_block_frequency == (sfno_block_frequency-1) else "local",
+                conv_type="global" if i % sfno_block_frequency == (sfno_block_frequency - 1) else "local",
                 mlp_ratio=mlp_ratio,
                 drop_rate=drop_rate,
                 drop_path=dpr[i],

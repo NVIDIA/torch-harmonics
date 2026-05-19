@@ -31,6 +31,7 @@
 
 import torch
 from disco_helpers import optimized_kernels_is_available
+
 from .. import disco_kernels
 from .._disco_utils import _compute_dtype
 
@@ -38,26 +39,49 @@ from .._disco_utils import _compute_dtype
 if optimized_kernels_is_available():
     # raw forward fake
     @torch.library.register_fake("disco_kernels::forward")
-    def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
-          row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
-          kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+    def _(
+        inp: torch.Tensor,
+        roff_idx: torch.Tensor,
+        ker_idx: torch.Tensor,
+        row_idx: torch.Tensor,
+        col_idx: torch.Tensor,
+        vals: torch.Tensor,
+        kernel_size: int,
+        nlat_out: int,
+        nlon_out: int,
+    ) -> torch.Tensor:
         out_shape = (inp.shape[0], inp.shape[1], kernel_size, nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
     # raw backward fake
     @torch.library.register_fake("disco_kernels::backward")
-    def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
-          row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
-          kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+    def _(
+        inp: torch.Tensor,
+        roff_idx: torch.Tensor,
+        ker_idx: torch.Tensor,
+        row_idx: torch.Tensor,
+        col_idx: torch.Tensor,
+        vals: torch.Tensor,
+        kernel_size: int,
+        nlat_out: int,
+        nlon_out: int,
+    ) -> torch.Tensor:
         out_shape = (inp.shape[0], inp.shape[1], nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
     # forward
     @torch.library.custom_op("disco_kernels::_disco_s2_contraction_optimized", mutates_args=())
     def _disco_s2_contraction_optimized(
-        inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
-        row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
-        kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        inp: torch.Tensor,
+        roff_idx: torch.Tensor,
+        ker_idx: torch.Tensor,
+        row_idx: torch.Tensor,
+        col_idx: torch.Tensor,
+        vals: torch.Tensor,
+        kernel_size: int,
+        nlat_out: int,
+        nlon_out: int,
+    ) -> torch.Tensor:
         itype = inp.dtype
         cdtype = _compute_dtype(itype)
         inp = inp.to(cdtype).contiguous()
@@ -69,9 +93,16 @@ if optimized_kernels_is_available():
     # transpose
     @torch.library.custom_op("disco_kernels::_disco_s2_transpose_contraction_optimized", mutates_args=())
     def _disco_s2_transpose_contraction_optimized(
-        inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
-        row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
-        kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        inp: torch.Tensor,
+        roff_idx: torch.Tensor,
+        ker_idx: torch.Tensor,
+        row_idx: torch.Tensor,
+        col_idx: torch.Tensor,
+        vals: torch.Tensor,
+        kernel_size: int,
+        nlat_out: int,
+        nlon_out: int,
+    ) -> torch.Tensor:
         itype = inp.dtype
         cdtype = _compute_dtype(itype)
         inp = inp.to(cdtype).contiguous()
@@ -82,27 +113,45 @@ if optimized_kernels_is_available():
 
     # forward fake
     @torch.library.register_fake("disco_kernels::_disco_s2_contraction_optimized")
-    def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
-          row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
-          kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+    def _(
+        inp: torch.Tensor,
+        roff_idx: torch.Tensor,
+        ker_idx: torch.Tensor,
+        row_idx: torch.Tensor,
+        col_idx: torch.Tensor,
+        vals: torch.Tensor,
+        kernel_size: int,
+        nlat_out: int,
+        nlon_out: int,
+    ) -> torch.Tensor:
         out_shape = (inp.shape[0], inp.shape[1], kernel_size, nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
     # transpose fake
     @torch.library.register_fake("disco_kernels::_disco_s2_transpose_contraction_optimized")
-    def _(inp: torch.Tensor, roff_idx: torch.Tensor, ker_idx: torch.Tensor,
-          row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
-        kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+    def _(
+        inp: torch.Tensor,
+        roff_idx: torch.Tensor,
+        ker_idx: torch.Tensor,
+        row_idx: torch.Tensor,
+        col_idx: torch.Tensor,
+        vals: torch.Tensor,
+        kernel_size: int,
+        nlat_out: int,
+        nlon_out: int,
+    ) -> torch.Tensor:
         out_shape = (inp.shape[0], inp.shape[1], nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
-#general routines: this is the same for forward and transpose
+
+# general routines: this is the same for forward and transpose
 def _setup_context_conv_backward(ctx, inputs, output):
     inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out = inputs
     ctx.save_for_backward(roff_idx, ker_idx, row_idx, col_idx, vals)
     ctx.kernel_size = kernel_size
     ctx.nlat_in = inp.shape[-2]
     ctx.nlon_in = inp.shape[-1]
+
 
 # convolution related
 def _disco_s2_contraction_bwd_optimized(ctx, grad_output):
@@ -113,17 +162,17 @@ def _disco_s2_contraction_bwd_optimized(ctx, grad_output):
         cdtype = _compute_dtype(gtype)
         grad_output = grad_output.to(cdtype).contiguous()
         vals = vals.to(cdtype)
-        grad_input = disco_kernels.backward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
-                                                    ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
+        grad_input = disco_kernels.backward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals, ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
         grad_input = grad_input.to(gtype)
     else:
         grad_input = None
 
     return grad_input, None, None, None, None, None, None, None, None
 
+
 if optimized_kernels_is_available():
-    torch.library.register_autograd(
-        "disco_kernels::_disco_s2_contraction_optimized", _disco_s2_contraction_bwd_optimized, setup_context=_setup_context_conv_backward)
+    torch.library.register_autograd("disco_kernels::_disco_s2_contraction_optimized", _disco_s2_contraction_bwd_optimized, setup_context=_setup_context_conv_backward)
+
 
 # Transpose convolution related
 def _disco_s2_transpose_contraction_bwd_optimized(ctx, grad_output):
@@ -134,14 +183,15 @@ def _disco_s2_transpose_contraction_bwd_optimized(ctx, grad_output):
         cdtype = _compute_dtype(gtype)
         grad_output = grad_output.to(cdtype).contiguous()
         vals = vals.to(cdtype)
-        grad_input = disco_kernels.forward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals,
-                                                    ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
+        grad_input = disco_kernels.forward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals, ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
         grad_input = grad_input.to(gtype)
     else:
         grad_input = None
 
     return grad_input, None, None, None, None, None, None, None, None
 
+
 if optimized_kernels_is_available():
     torch.library.register_autograd(
-        "disco_kernels::_disco_s2_transpose_contraction_optimized", _disco_s2_transpose_contraction_bwd_optimized, setup_context=_setup_context_conv_backward)
+        "disco_kernels::_disco_s2_transpose_contraction_optimized", _disco_s2_transpose_contraction_bwd_optimized, setup_context=_setup_context_conv_backward
+    )

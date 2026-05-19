@@ -32,15 +32,16 @@
 import functools
 from copy import deepcopy
 
+
 # copying LRU cache decorator a la:
 # https://stackoverflow.com/questions/54909357/how-to-get-functools-lru-cache-to-return-new-instances
 def lru_cache(maxsize=20, typed=False, copy=False):
     """
     Least Recently Used (LRU) cache decorator with optional deep copying.
-    
+
     This is a wrapper around functools.lru_cache that adds the ability to return
     deep copies of cached results to prevent unintended modifications to cached objects.
-    
+
     Parameters
     -----------
     maxsize : int, optional
@@ -49,26 +50,29 @@ def lru_cache(maxsize=20, typed=False, copy=False):
         Whether to cache different types separately, by default False
     copy : bool, optional
         Whether to return deep copies of cached results, by default False
-        
+
     Returns
     -------
     function
         Decorated function with LRU caching
-        
+
     Example
     -------
     >>> @lru_cache(maxsize=10, copy=True)
     ... def expensive_function(x):
     ...     return [x, x*2, x*3]
     """
+
     def decorator(f):
         cached_func = functools.lru_cache(maxsize=maxsize, typed=typed)(f)
+
         def wrapper(*args, **kwargs):
             res = cached_func(*args, **kwargs)
             if copy:
                 return deepcopy(res)
             else:
                 return res
-                
+
         return wrapper
+
     return decorator

@@ -30,22 +30,22 @@
 #
 
 import abc
-from typing import Tuple, Union, Optional
 import math
 import warnings
-
-import torch
-
-from torch_harmonics.cache import lru_cache
+from typing import Optional, Tuple, Union
 
 # numpy is always available as a transitive dependency of torch
 import numpy as np
+import torch
+
+from torch_harmonics.cache import lru_cache
 
 # scipy is only required for FourierBesselFilterBasis, which needs Bessel functions.
 # Import lazily at module load so plain users who don't need that basis aren't forced
 # to install scipy; availability is checked in FourierBesselFilterBasis.__init__.
 try:
-    from scipy.special import jn as _scipy_jn, jn_zeros as _scipy_jn_zeros
+    from scipy.special import jn as _scipy_jn
+    from scipy.special import jn_zeros as _scipy_jn_zeros
 
     _SCIPY_AVAILABLE = True
 except ImportError:
@@ -472,10 +472,7 @@ class FourierBesselFilterBasis(FilterBasis):
     def __init__(self, kernel_shape: Union[int, Tuple[int], Tuple[int, int]]):
 
         if not _SCIPY_AVAILABLE:
-            raise ImportError(
-                "FourierBesselFilterBasis requires scipy. "
-                "Install with: pip install torch-harmonics[filter_basis]"
-            )
+            raise ImportError("FourierBesselFilterBasis requires scipy. " "Install with: pip install torch-harmonics[filter_basis]")
 
         if isinstance(kernel_shape, int):
             kernel_shape = (kernel_shape, kernel_shape)
@@ -572,7 +569,6 @@ class FourierBesselFilterBasis(FilterBasis):
 
         # Broadcast kernel dim: [K,1,1]
         ms_b = ms.reshape(K, 1, 1)
-        alphas_b = alphas.reshape(K, 1, 1)
         cosines_b = cosines.reshape(K, 1, 1)
 
         # r normalised to [0,1]

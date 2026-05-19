@@ -29,19 +29,19 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import Tuple, Union, Optional
 from itertools import accumulate
+from typing import Optional, Tuple, Union
 
 import torch
+from disco_helpers import preprocess_psi
 
 from torch_harmonics.disco._disco_utils import _get_psi
-from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
-from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
-from disco_helpers import optimized_kernels_is_available, preprocess_psi
 from torch_harmonics.disco.convolution import (
-    _precompute_convolution_tensor_s2,
     DiscreteContinuousConv,
+    _precompute_convolution_tensor_s2,
 )
+from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
+from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
 
 # distributed stuff
 from .primitives import compute_split_shapes, copy_to_polar_region, distributed_transpose_azimuth, gather_from_polar_region, reduce_from_polar_region, scatter_to_polar_region
@@ -411,7 +411,18 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # store psi as COO
         if not self.optimized_kernel:
-            self.psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local, semi_transposed=True)
+            self.psi_st = _get_psi(
+                self.kernel_size,
+                self.psi_idx,
+                self.psi_vals,
+                self.nlat_in,
+                self.nlon_in,
+                self.nlat_out,
+                self.nlon_out,
+                self.nlat_in_local,
+                self.nlat_out_local,
+                semi_transposed=True,
+            )
 
     def extra_repr(self):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"

@@ -29,20 +29,22 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os, sys
-
+import os
+import sys
 from functools import partial
 
 # import baseline models
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from baseline_models import Transformer, UNet, Segformer
-from torch_harmonics.examples.models import SphericalFourierNeuralOperator, LocalSphericalNeuralOperator, SphericalTransformer, SphericalUNet, SphericalSegformer
+from baseline_models import Segformer, Transformer
 
-def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_prediction=False, drop_path_rate=0., grid="equiangular"):
-    
+from torch_harmonics.examples.models import LocalSphericalNeuralOperator, SphericalFourierNeuralOperator, SphericalSegformer, SphericalTransformer, SphericalUNet
+
+
+def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_prediction=False, drop_path_rate=0.0, grid="equiangular"):
+
     # prepare dicts containing models and corresponding metrics
     model_registry = dict(
-        sfno_sc2_layers4_e32 = partial(
+        sfno_sc2_layers4_e32=partial(
             SphericalFourierNeuralOperator,
             img_size=img_size,
             grid=grid,
@@ -56,7 +58,7 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             use_mlp=True,
             normalization_layer="instance_norm",
         ),
-        lsno_sc2_layers4_e32 = partial(
+        lsno_sc2_layers4_e32=partial(
             LocalSphericalNeuralOperator,
             img_size=img_size,
             grid=grid,
@@ -74,7 +76,7 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             filter_basis_type="piecewise linear",
             upsample_sht=False,
         ),
-        s2unet_sc2_layers4_e128 = partial(
+        s2unet_sc2_layers4_e128=partial(
             SphericalUNet,
             img_size=img_size,
             grid=grid,
@@ -94,8 +96,7 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             upsampling_mode="conv",
             downsampling_mode="conv",
         ),
-        
-        s2transformer_sc2_layers4_e128 = partial(
+        s2transformer_sc2_layers4_e128=partial(
             SphericalTransformer,
             img_size=img_size,
             grid=grid,
@@ -114,9 +115,9 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             drop_path_rate=drop_path_rate,
             upsample_sht=False,
             attention_mode="global",
-            bias=False
+            bias=False,
         ),
-        s2transformer_sc2_layers4_e256 = partial(
+        s2transformer_sc2_layers4_e256=partial(
             SphericalTransformer,
             img_size=img_size,
             grid=grid,
@@ -135,10 +136,9 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             drop_path_rate=drop_path_rate,
             upsample_sht=False,
             attention_mode="global",
-            bias=False
+            bias=False,
         ),
-        
-        s2ntransformer_sc2_layers4_e128 = partial(
+        s2ntransformer_sc2_layers4_e128=partial(
             SphericalTransformer,
             img_size=img_size,
             grid=grid,
@@ -157,9 +157,9 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             drop_path_rate=drop_path_rate,
             upsample_sht=False,
             attention_mode="neighborhood",
-            bias=False
+            bias=False,
         ),
-        s2ntransformer_sc2_layers4_e256 = partial(
+        s2ntransformer_sc2_layers4_e256=partial(
             SphericalTransformer,
             img_size=img_size,
             grid=grid,
@@ -178,10 +178,9 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             drop_path_rate=drop_path_rate,
             upsample_sht=False,
             attention_mode="neighborhood",
-            bias=False
+            bias=False,
         ),
-        
-        transformer_sc2_layers4_e128 = partial(
+        transformer_sc2_layers4_e128=partial(
             Transformer,
             img_size=img_size,
             in_chans=in_chans,
@@ -198,9 +197,9 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             drop_path_rate=drop_path_rate,
             attention_mode="global",
             upsampling_method="conv",
-            bias=False
+            bias=False,
         ),
-        transformer_sc2_layers4_e256 = partial(
+        transformer_sc2_layers4_e256=partial(
             Transformer,
             img_size=img_size,
             in_chans=in_chans,
@@ -217,10 +216,9 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             drop_path_rate=drop_path_rate,
             attention_mode="global",
             upsampling_method="conv",
-            bias=False
+            bias=False,
         ),
-        
-        ntransformer_sc2_layers4_e128 = partial(
+        ntransformer_sc2_layers4_e128=partial(
             Transformer,
             img_size=img_size,
             in_chans=in_chans,
@@ -237,9 +235,9 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             drop_path_rate=drop_path_rate,
             attention_mode="neighborhood",
             attn_kernel_shape=(7, 7),
-            bias=False
+            bias=False,
         ),
-        ntransformer_sc2_layers4_e256 = partial(
+        ntransformer_sc2_layers4_e256=partial(
             Transformer,
             img_size=img_size,
             in_chans=in_chans,
@@ -256,10 +254,9 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             drop_path_rate=drop_path_rate,
             attention_mode="neighborhood",
             attn_kernel_shape=(7, 7),
-	    bias=False
-	),
-        
-        s2segformer_sc2_layers4_e128 = partial(
+            bias=False,
+        ),
+        s2segformer_sc2_layers4_e128=partial(
             SphericalSegformer,
             img_size=img_size,
             grid=grid,
@@ -277,9 +274,9 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             att_drop_rate=0.0,
             drop_path_rate=0.1,
             attention_mode="global",
-            bias=False
+            bias=False,
         ),
-        s2segformer_sc2_layers4_e256 = partial(
+        s2segformer_sc2_layers4_e256=partial(
             SphericalSegformer,
             img_size=img_size,
             grid=grid,
@@ -297,10 +294,9 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             att_drop_rate=0.0,
             drop_path_rate=0.1,
             attention_mode="global",
-            bias=False
+            bias=False,
         ),
-        
-        s2nsegformer_sc2_layers4_e128 = partial(
+        s2nsegformer_sc2_layers4_e128=partial(
             SphericalSegformer,
             img_size=img_size,
             grid=grid,
@@ -318,9 +314,9 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             att_drop_rate=0.0,
             drop_path_rate=0.1,
             attention_mode="neighborhood",
-            bias=False
+            bias=False,
         ),
-        s2nsegformer_sc2_layers4_e256 = partial(
+        s2nsegformer_sc2_layers4_e256=partial(
             SphericalSegformer,
             img_size=img_size,
             grid=grid,
@@ -338,10 +334,9 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             att_drop_rate=0.0,
             drop_path_rate=0.1,
             attention_mode="neighborhood",
-            bias=False
+            bias=False,
         ),
-        
-        segformer_sc2_layers4_e128 = partial(
+        segformer_sc2_layers4_e128=partial(
             Segformer,
             img_size=img_size,
             in_chans=in_chans,
@@ -356,9 +351,9 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             att_drop_rate=0.0,
             drop_path_rate=0.1,
             attention_mode="global",
-            bias=False
+            bias=False,
         ),
-        segformer_sc2_layers4_e256 = partial(
+        segformer_sc2_layers4_e256=partial(
             Segformer,
             img_size=img_size,
             in_chans=in_chans,
@@ -373,10 +368,9 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             att_drop_rate=0.0,
             drop_path_rate=0.1,
             attention_mode="global",
-            bias=False
+            bias=False,
         ),
-        
-        nsegformer_sc2_layers4_e128 = partial(
+        nsegformer_sc2_layers4_e128=partial(
             Segformer,
             img_size=img_size,
             in_chans=in_chans,
@@ -392,9 +386,9 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             drop_path_rate=0.1,
             attention_mode="neighborhood",
             attn_kernel_shape=(7, 7),
-            bias=False
+            bias=False,
         ),
-        nsegformer_sc2_layers4_e256 = partial(
+        nsegformer_sc2_layers4_e256=partial(
             Segformer,
             img_size=img_size,
             in_chans=in_chans,
@@ -410,10 +404,9 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             drop_path_rate=0.1,
             attention_mode="neighborhood",
             attn_kernel_shape=(7, 7),
-            bias=False
+            bias=False,
         ),
-        
-        vit_sc2_layers4_e128 = partial(
+        vit_sc2_layers4_e128=partial(
             Transformer,
             img_size=img_size,
             in_chans=in_chans,
@@ -429,7 +422,7 @@ def get_baseline_models(img_size=(128, 256), in_chans=3, out_chans=3, residual_p
             encoder_kernel_shape=(2, 2),
             attention_mode="global",
             upsampling_method="pixel_shuffle",
-            bias=False
+            bias=False,
         ),
     )
 

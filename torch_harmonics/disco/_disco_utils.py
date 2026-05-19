@@ -33,6 +33,7 @@ from typing import Optional
 
 import torch
 
+
 # compute dtype for the convolution operation
 def _compute_dtype(dtype: torch.dtype) -> torch.dtype:
     """Upcast half types to float32 for numerics; pass float32/float64 through."""
@@ -40,9 +41,21 @@ def _compute_dtype(dtype: torch.dtype) -> torch.dtype:
         return torch.float32
     return dtype
 
+
 # sparse-psi helper used by both the torch reference kernels (in kernels_torch/)
 # and the optimized custom_op path (in optimized/).
-def _get_psi(kernel_size: int, psi_idx: torch.Tensor, psi_vals: torch.Tensor, nlat_in: int, nlon_in: int, nlat_out: int, nlon_out: int, nlat_in_local: Optional[int] = None, nlat_out_local: Optional[int] = None, semi_transposed: Optional[bool] = False):
+def _get_psi(
+    kernel_size: int,
+    psi_idx: torch.Tensor,
+    psi_vals: torch.Tensor,
+    nlat_in: int,
+    nlon_in: int,
+    nlat_out: int,
+    nlon_out: int,
+    nlat_in_local: Optional[int] = None,
+    nlat_out_local: Optional[int] = None,
+    semi_transposed: Optional[bool] = False,
+):
     """Creates a sparse tensor for spherical harmonic convolution operations."""
     nlat_in_local = nlat_in_local if nlat_in_local is not None else nlat_in
     nlat_out_local = nlat_out_local if nlat_out_local is not None else nlat_out
