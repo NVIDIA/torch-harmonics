@@ -55,11 +55,9 @@ Optional extras:
 pip install -e ".[dev,filter_basis]"   # scipy for filter-basis tests
 ```
 
-Install [pre-commit](https://pre-commit.com/) and a recent [virtualenv](https://virtualenv.pypa.io/)
-from PyPI (the Debian/Ubuntu `python3-virtualenv` package is too old and breaks hook installs):
+Install [pre-commit](https://pre-commit.com/) hooks:
 
 ```bash
-pip install -e ".[dev]" --no-build-isolation
 pre-commit install
 ```
 
@@ -144,7 +142,7 @@ python3 -m build --wheel --no-isolation
 
 Wheels follow the PyTorch ecosystem pattern
 `torch_harmonics-{version}+{cuda}-{python}-{abi}-{platform}.whl`, e.g.
-`torch_harmonics-0.9.1+cu124-cp310-cp310-linux_x86_64.whl`.
+`torch_harmonics-0.9.1+cu126-cp310-cp310-linux_x86_64.whl`.
 
 Sanity-check an install:
 
@@ -218,16 +216,6 @@ Running it locally before you push avoids CI surprises:
 pre-commit run --all-files
 ```
 
-If hook install fails with `Executable 'python' not found`, upgrade virtualenv and clear
-cached envs (Debian’s system `virtualenv` creates `local/bin/python`; pre-commit expects
-`bin/python`):
-
-```bash
-pip install -U 'pre-commit>=4.0.0' 'virtualenv>=20.23.0'
-pre-commit clean
-pre-commit run --all-files
-```
-
 Hooks include:
 
 - **black** (line length 180, see `pyproject.toml`)
@@ -271,11 +259,15 @@ examples/           # Training and usage examples (not run in default CI)
 notebooks/          # Exploratory notebooks (not run in CI)
 ```
 
-**Dual implementation rule:** If optimized kernels are implemented, torch reference implementations must be
-provided to ensure readability and their ouputs must agree within test tolerances. If you change kernel semantics,
-update both paths (or the shared sparsity / indexing logic) and add or extend tests.
-
 ## Guidelines by area
+
+### Custom operators
+
+- If optimized kernels are implemented, torch reference implementations must be provided to ensure
+ readability and their outputs must agree within test tolerances.
+- Test tolerances can be adjusted, however this needs to be justified and clearly documented.
+- If you change kernel semantics, update both paths (or the shared sparsity / indexing logic) and add or extend tests.
+- All custom extensions require implementation of PyTorch 2+ compatibility tests via `torch.library.opcheck`.
 
 ### Spherical harmonic transforms
 
@@ -302,10 +294,9 @@ update both paths (or the shared sparsity / indexing logic) and add or extend te
 
 ### Distributed
 
+- Distributed modules are checked against their local counterparts.
 - Use `TORCH_HARMONICS_DISTRIBUTED_DEBUG` for extra shape checks (see distributed module
   docs).
-- Ring-attention and halo-exchange paths have dedicated op tests with
-  `torch.library.opcheck` where applicable.
 
 ## Pull requests
 
@@ -317,10 +308,11 @@ update both paths (or the shared sparsity / indexing logic) and add or extend te
    CPU/GPU), and any API or numerical behavior changes.
 6. **Ensure CI passes:** style (pre-commit) and tests workflows.
 
-Linking to an open issue when one exists is helpful but not always required.
+Linking to an open issue when one exists is helpful but not required.
 
 Reviewers may ask for reference-kernel parity checks, justification for tolerance changes,
-or benchmarks for performance-critical kernel changes.
+or benchmarks for performance-critical kernel changes. Standardized benchmark is in
+preparation.
 
 ## Release and packaging
 
