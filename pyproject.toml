@@ -43,7 +43,7 @@ dependencies = [
 
 
 [tool.setuptools_scm]
-fallback_version = "0.9.1a0"
+fallback_version = "0.9.1"
 
 [tool.setuptools.packages.find]
     include = ["torch_harmonics*"]
@@ -55,7 +55,7 @@ dev = [
     "coverage>=6.5.0",
     "parameterized",
     "scipy>=1.9.0",
-    "pre-commit>=3.0.0",
+    "pre-commit>=4.0.0",
     "black>=24.0.0",
     "ruff>=0.4.0",
 ]
