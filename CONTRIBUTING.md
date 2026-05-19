@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing. torch-harmonics implements differentiable
 signal processing on the sphere (SHT, DISCO convolutions, spherical attention, and
-distributed variants). We are gratefule for contributions that improve correctness, performance,
+distributed variants). We are grateful for contributions that improve correctness, performance,
 documentation, or test coverage.
 
 ## Table of contents
@@ -108,7 +108,7 @@ export TORCH_CUDA_ARCH_LIST="8.0 8.6 9.0"   # set to GPUs you target; reduces co
 pip install -e . --no-build-isolation
 ```
 
-Custom CUDA extensions require compute capability **≥ 7.0**.
+Custom CUDA extensions require compute capability **≥ 8.0**.
 
 ### Build environment variables
 
