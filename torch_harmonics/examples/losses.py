@@ -29,12 +29,13 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import torch
-import torch.nn as nn
-import torch.amp as amp
-import torch.nn.functional as F
-from typing import Optional
 from abc import ABC, abstractmethod
+from typing import Optional
+
+import torch
+import torch.amp as amp
+import torch.nn as nn
+import torch.nn.functional as F
 
 from torch_harmonics.quadrature import precompute_latitudes
 

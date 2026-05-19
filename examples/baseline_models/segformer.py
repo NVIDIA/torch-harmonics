@@ -33,17 +33,15 @@ import math
 
 import torch
 import torch.nn as nn
-
 from natten import NeighborhoodAttention2D as NeighborhoodAttention
-from torch_harmonics.examples.models._layers import MLP, LayerNorm, DropPath
 
-from functools import partial
+from torch_harmonics.examples.models._layers import MLP, DropPath
 
 
 class OverlapPatchMerging(nn.Module):
     """
     OverlapPatchMerging layer for merging patches.
-    
+
     Parameters
     -----------
     in_shape : tuple
@@ -59,6 +57,7 @@ class OverlapPatchMerging(nn.Module):
     bias : bool, optional
         Whether to use bias, by default False
     """
+
     def __init__(
         self,
         in_shape=(721, 1440),
@@ -108,7 +107,7 @@ class OverlapPatchMerging(nn.Module):
 class MixFFN(nn.Module):
     """
     MixFFN module combining MLP and depthwise convolution.
-    
+
     Parameters
     -----------
     shape : tuple
@@ -130,6 +129,7 @@ class MixFFN(nn.Module):
     drop_path : float, optional
         Drop path rate, by default 0.0
     """
+
     def __init__(
         self,
         shape,
@@ -204,7 +204,7 @@ class GlobalAttention(nn.Module):
 
     Input shape: (B, C, H, W)
     Output shape: (B, C, H, W) with residual skip.
-    
+
     Parameters
     -----------
     chans : int
@@ -237,7 +237,7 @@ class GlobalAttention(nn.Module):
 class AttentionWrapper(nn.Module):
     """
     Wrapper for different attention mechanisms.
-    
+
     Parameters
     -----------
     channels : int
@@ -259,6 +259,7 @@ class AttentionWrapper(nn.Module):
     bias : bool, optional
         Whether to use bias, by default True
     """
+
     def __init__(self, channels, shape, heads, pre_norm=False, attention_drop_rate=0.0, drop_path=0.0, attention_mode="neighborhood", kernel_shape=(7, 7), bias=True):
         super().__init__()
 
@@ -266,9 +267,7 @@ class AttentionWrapper(nn.Module):
         self.attention_mode = attention_mode
 
         if attention_mode == "neighborhood":
-            self.att = NeighborhoodAttention(
-                channels, kernel_size=kernel_shape, dilation=1, num_heads=heads, qk_scale=None, proj_drop=0.0, qkv_bias=bias
-            )
+            self.att = NeighborhoodAttention(channels, kernel_size=kernel_shape, dilation=1, num_heads=heads, qk_scale=None, proj_drop=0.0, qkv_bias=bias)
         elif attention_mode == "global":
             self.att = GlobalAttention(channels, num_heads=heads, dropout=attention_drop_rate, bias=bias)
         else:
@@ -301,7 +300,7 @@ class AttentionWrapper(nn.Module):
 class TransformerBlock(nn.Module):
     """
     Transformer block with attention and MLP.
-    
+
     Parameters
     ----------
     in_shape : tuple
@@ -333,7 +332,7 @@ class TransformerBlock(nn.Module):
     bias : bool, optional
         Whether to use bias, by default True
     """
-    
+
     def __init__(
         self,
         in_shape,
@@ -349,7 +348,7 @@ class TransformerBlock(nn.Module):
         drop_path_rates=0.0,
         attention_mode="neighborhood",
         attn_kernel_shape=(7, 7),
-        bias=True
+        bias=True,
     ):
         super().__init__()
 
@@ -413,7 +412,7 @@ class TransformerBlock(nn.Module):
                     drop_path=drop_path_rates[i],
                     attention_mode=attention_mode,
                     kernel_shape=attn_kernel_shape,
-                    bias=bias
+                    bias=bias,
                 )
             )
 
@@ -458,7 +457,7 @@ class TransformerBlock(nn.Module):
 class Upsampling(nn.Module):
     """
     Upsampling block for the Segformer model.
-    
+
     Parameters
     ----------
     in_shape : tuple
@@ -482,7 +481,7 @@ class Upsampling(nn.Module):
     use_mlp : bool, optional
         Whether to use MLP, by default False
     """
-    
+
     def __init__(
         self,
         in_shape,
@@ -592,7 +591,7 @@ class Segformer(nn.Module):
         drop_path_rate=0.1,
         attention_mode="neighborhood",
         attn_kernel_shape=(7, 7),
-        bias=True
+        bias=True,
     ):
         super().__init__()
 
@@ -644,7 +643,7 @@ class Segformer(nn.Module):
                     drop_path_rates=dpr[cur : cur + self.depths[i]],
                     attention_mode=attention_mode,
                     attn_kernel_shape=attn_kernel_shape,
-                    bias=bias
+                    bias=bias,
                 )
             )
             cur += self.depths[i]
