@@ -32,37 +32,48 @@
 #include "disco.h"
 
 extern "C" {
-    /* Creates a dummy empty _C module that can be imported from Python.
-       The import from Python will load the .so consisting of this file
-       in this extension, so that the TORCH_LIBRARY static initializers
-       below are run. */
-    PyMODINIT_FUNC PyInit__C(void)
-    {
-        static struct PyModuleDef module_def = {
-            PyModuleDef_HEAD_INIT,
-            "_C",   /* name of module */
-            NULL,   /* module documentation, may be NULL */
-            -1,     /* size of per-interpreter state of the module,
-                       or -1 if the module keeps state in global variables. */
-            NULL,   /* methods */
-        };
-        return PyModule_Create(&module_def);
-    }
+/* Creates a dummy empty _C module that can be imported from Python.
+   The import from Python will load the .so consisting of this file
+   in this extension, so that the TORCH_LIBRARY static initializers
+   below are run. */
+PyMODINIT_FUNC PyInit__C(void)
+{
+    static struct PyModuleDef module_def = {
+        PyModuleDef_HEAD_INIT,
+        "_C", /* name of module */
+        NULL, /* module documentation, may be NULL */
+        -1,   /* size of per-interpreter state of the module,
+                 or -1 if the module keeps state in global variables. */
+        NULL, /* methods */
+    };
+    return PyModule_Create(&module_def);
+}
 }
 
-namespace disco_kernels {
+namespace disco_kernels
+{
 
     // Declare the operators
-    TORCH_LIBRARY(disco_kernels, m) {
-        m.def("forward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor", {at::Tag::pt2_compliant_tag});
-        m.def("backward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor", {at::Tag::pt2_compliant_tag});
+    TORCH_LIBRARY(disco_kernels, m)
+    {
+        m.def("forward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int "
+              "kernel_size, int nlat_out, int nlon_out) -> Tensor",
+              {at::Tag::pt2_compliant_tag});
+        m.def("backward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int "
+              "kernel_size, int nlat_out, int nlon_out) -> Tensor",
+              {at::Tag::pt2_compliant_tag});
 
         // Ring-step forward (in-place accumulation into ``out``). The op
         // mutates the ``out`` tensor; declare it via mutates_args so PyTorch
         // and torch.compile handle the in-place contract correctly.
-        m.def("forward_ring_step(Tensor inp, Tensor(a!) out, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out_local_self, int nlon_in_global, int pscale, int lon_lo_src, int nlon_in_local_src) -> ()", {at::Tag::pt2_compliant_tag});
-        m.def("backward_ring_step(Tensor inp, Tensor(a!) out, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int kernel_size, int nlat_in, int nlon_in_local_self, int nlon_in_global, int pscale, int pscale_wo_offset, int lon_lo_in_self, int nlon_out_local_src) -> ()", {at::Tag::pt2_compliant_tag});
+        m.def("forward_ring_step(Tensor inp, Tensor(a!) out, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor "
+              "col_idx, Tensor vals, int kernel_size, int nlat_out, int nlon_out_local_self, int nlon_in_global, int "
+              "pscale, int lon_lo_src, int nlon_in_local_src) -> ()",
+              {at::Tag::pt2_compliant_tag});
+        m.def("backward_ring_step(Tensor inp, Tensor(a!) out, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor "
+              "col_idx, Tensor vals, int kernel_size, int nlat_in, int nlon_in_local_self, int nlon_in_global, int "
+              "pscale, int pscale_wo_offset, int lon_lo_in_self, int nlon_out_local_src) -> ()",
+              {at::Tag::pt2_compliant_tag});
     }
 
-}
-
+} // namespace disco_kernels

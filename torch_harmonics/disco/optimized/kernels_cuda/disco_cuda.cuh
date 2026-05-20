@@ -40,12 +40,13 @@
     CHECK_CUDA_TENSOR(x);                                                                                              \
     CHECK_CONTIGUOUS_TENSOR(x)
 
-#define DIV_UP(a, b) (((a) + ((b)-1)) / (b))
+#define DIV_UP(a, b) (((a) + ((b) - 1)) / (b))
 
 #define MIN_THREADS (64)
 #define ELXTH_MAX (32)
 
-namespace disco_kernels {
+namespace disco_kernels
+{
 
     // forward kernel
     torch::Tensor disco_cuda_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
@@ -53,30 +54,23 @@ namespace disco_kernels {
 
     // backward kernel
     torch::Tensor disco_cuda_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-                                torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo);
+                                 torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo);
 
     // ring-step forward kernel (used by the distributed ring-exchange conv).
     // Accumulates partial contributions into ``out`` in place; the caller is
     // responsible for zero-initializing ``out`` once before the first ring step.
-    void disco_cuda_fwd_ring_step(torch::Tensor inp, torch::Tensor out,
-                                  torch::Tensor roff_idx, torch::Tensor ker_idx,
-                                  torch::Tensor row_idx, torch::Tensor col_idx,
-                                  torch::Tensor val,
-                                  int64_t K, int64_t Ho, int64_t Wo_local_self,
-                                  int64_t Wi_global, int64_t pscale,
+    void disco_cuda_fwd_ring_step(torch::Tensor inp, torch::Tensor out, torch::Tensor roff_idx, torch::Tensor ker_idx,
+                                  torch::Tensor row_idx, torch::Tensor col_idx, torch::Tensor val, int64_t K,
+                                  int64_t Ho, int64_t Wo_local_self, int64_t Wi_global, int64_t pscale,
                                   int64_t lon_lo_src, int64_t nlon_in_local_src);
 
     // ring-step backward (transpose) kernel — same usage as the forward
     // ring-step but produces gradient-input contributions from gradient-output
     // chunks. Atomically accumulates into ``out`` (the grad_x buffer is
     // compute_t / fp32 on the host side for fp16/bf16 inputs).
-    void disco_cuda_bwd_ring_step(torch::Tensor inp, torch::Tensor out,
-                                  torch::Tensor roff_idx, torch::Tensor ker_idx,
-                                  torch::Tensor row_idx, torch::Tensor col_idx,
-                                  torch::Tensor val,
-                                  int64_t K, int64_t Ho, int64_t Wo_local_self,
-                                  int64_t Wo_global, int64_t pscale,
-                                  int64_t pscale_wo_offset, int64_t lon_lo_in_self,
-                                  int64_t nlon_out_local_src);
+    void disco_cuda_bwd_ring_step(torch::Tensor inp, torch::Tensor out, torch::Tensor roff_idx, torch::Tensor ker_idx,
+                                  torch::Tensor row_idx, torch::Tensor col_idx, torch::Tensor val, int64_t K,
+                                  int64_t Ho, int64_t Wo_local_self, int64_t Wo_global, int64_t pscale,
+                                  int64_t pscale_wo_offset, int64_t lon_lo_in_self, int64_t nlon_out_local_src);
 
-}
+} // namespace disco_kernels

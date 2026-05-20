@@ -29,25 +29,24 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import Tuple, Optional
+import math
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-import math
 
 from torch_harmonics.truncation import truncate_sht
 
-from torch_harmonics.distributed import DistributedRealSHT, DistributedInverseRealSHT, DistributedQuadratureS2
-
-from torch_harmonics.distributed import polar_group_size, azimuth_group_size
-from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
-from torch_harmonics.distributed import copy_to_polar_region, copy_to_azimuth_region
+from .distributed_quadrature import DistributedQuadratureS2
+from .distributed_sht import DistributedInverseRealSHT, DistributedRealSHT
+from .primitives import copy_to_azimuth_region, copy_to_polar_region
+from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 
 class DistributedSpectralConvS2(nn.Module):
     """
     Distributed spectral convolution layer on :math:`S^2` implemented with
-    distributed real SHT (Driscoll-Healy formulation, see https://api.semanticscholar.org/CorpusID:122817218). 
+    distributed real SHT (Driscoll-Healy formulation, see https://api.semanticscholar.org/CorpusID:122817218).
     Computation is split across polar and azimuth communicator groups.
 
     Parameters
@@ -91,15 +90,16 @@ class DistributedSpectralConvS2(nn.Module):
     grouped contraction is performed with ``_contract_lwise``.
     """
 
-    def __init__(self, 
+    def __init__(
+        self,
         in_shape: Tuple[int],
         out_shape: Tuple[int],
         in_channels: int,
         out_channels: int,
-        num_groups: Optional[int]=1,
-        grid_in: Optional[str]="equiangular",
-        grid_out: Optional[str]="equiangular",
-        bias: Optional[bool]=False,
+        num_groups: Optional[int] = 1,
+        grid_in: Optional[str] = "equiangular",
+        grid_out: Optional[str] = "equiangular",
+        bias: Optional[bool] = False,
     ):
         super().__init__()
 
@@ -137,7 +137,7 @@ class DistributedSpectralConvS2(nn.Module):
         self.lmax_local = self.l_shapes[self.comm_rank_polar]
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
 
-        # weight shape 
+        # weight shape
         weight_shape = [num_groups, in_channels // num_groups, out_channels // num_groups, self.lmax_local]
 
         # Compute scaling factor for correct initialization
@@ -146,15 +146,9 @@ class DistributedSpectralConvS2(nn.Module):
         scale[0] *= math.sqrt(2.0)
         self.weight = nn.Parameter(scale * torch.randn(*weight_shape, dtype=torch.complex64))
 
-        if bias == True:
-            self.spectral_bias = nn.Parameter(
-                torch.zeros(1, self.out_channels, self.lmax_local, self.mmax_local, dtype=torch.complex64)
-            )
-            self.quadrature = DistributedQuadratureS2(
-                img_shape=in_shape, 
-                grid=grid_in, 
-                normalize=False
-            )
+        if bias:
+            self.spectral_bias = nn.Parameter(torch.zeros(1, self.out_channels, self.lmax_local, self.mmax_local, dtype=torch.complex64))
+            self.quadrature = DistributedQuadratureS2(img_shape=in_shape, grid=grid_in, normalize=False)
 
     @torch.compile
     def _contract_lwise(self, ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:

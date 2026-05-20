@@ -32,25 +32,26 @@
 #include "attention.h"
 
 extern "C" {
-    /* Creates a dummy empty _C module that can be imported from Python.
-       The import from Python will load the .so consisting of this file
-       in this extension, so that the TORCH_LIBRARY static initializers
-       below are run. */
-    PyMODINIT_FUNC PyInit__C(void)
-    {
-        static struct PyModuleDef module_def = {
-            PyModuleDef_HEAD_INIT,
-            "_C",   /* name of module */
-            NULL,   /* module documentation, may be NULL */
-            -1,     /* size of per-interpreter state of the module,
-                       or -1 if the module keeps state in global variables. */
-            NULL,   /* methods */
-        };
-        return PyModule_Create(&module_def);
-    }
+/* Creates a dummy empty _C module that can be imported from Python.
+   The import from Python will load the .so consisting of this file
+   in this extension, so that the TORCH_LIBRARY static initializers
+   below are run. */
+PyMODINIT_FUNC PyInit__C(void)
+{
+    static struct PyModuleDef module_def = {
+        PyModuleDef_HEAD_INIT,
+        "_C", /* name of module */
+        NULL, /* module documentation, may be NULL */
+        -1,   /* size of per-interpreter state of the module,
+                 or -1 if the module keeps state in global variables. */
+        NULL, /* methods */
+    };
+    return PyModule_Create(&module_def);
+}
 }
 
-namespace attention_kernels {
+namespace attention_kernels
+{
 
     // Declare the operators
     //
@@ -64,7 +65,8 @@ namespace attention_kernels {
     //   psi (col_idx + row_off) encodes the spherical neighborhood pattern. The
     //   exact indexing convention depends on the op family — see each block below.
     //
-    TORCH_LIBRARY(attention_kernels, m) {
+    TORCH_LIBRARY(attention_kernels, m)
+    {
         // ---- Self-attention / downsample (output-centric gather) ----
         // Standard direction: each Q point at (ho, wo) gathers from a neighborhood
         // of K/V points. K/V are at the higher resolution (or equal).
@@ -78,8 +80,12 @@ namespace attention_kernels {
         //              applies the integer p-shift  wip = wi + pscale*wo  internally,
         //              where pscale = nlon_in / nlon_out).
         // Requires nlon_in % nlon_out == 0.
-        m.def("forward(Tensor kx, Tensor vx, Tensor qy, Tensor quad_weights, Tensor col_idx, Tensor row_off, int nlon_in, int nlat_out, int nlon_out) -> Tensor", {at::Tag::pt2_compliant_tag});
-        m.def("backward(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor quad_weights, Tensor col_idx, Tensor row_off, int nlon_in, int nlat_out, int nlon_out) -> (Tensor, Tensor, Tensor)", {at::Tag::pt2_compliant_tag});
+        m.def("forward(Tensor kx, Tensor vx, Tensor qy, Tensor quad_weights, Tensor col_idx, Tensor row_off, int "
+              "nlon_in, int nlat_out, int nlon_out) -> Tensor",
+              {at::Tag::pt2_compliant_tag});
+        m.def("backward(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor quad_weights, Tensor col_idx, Tensor "
+              "row_off, int nlon_in, int nlat_out, int nlon_out) -> (Tensor, Tensor, Tensor)",
+              {at::Tag::pt2_compliant_tag});
 
         // ---- Ring-step variants for DistributedNeighborhoodAttentionS2 ----
         // K/V are sharded along longitude across an azimuth process group; each
@@ -90,12 +96,23 @@ namespace attention_kernels {
         // LOCAL output width and would give the wrong ratio when az_size > 1).
         // col_idx must have wi pre-shifted by pscale * lon_lo_out — see
         // _build_local_psi in distributed_attention.py.
-        m.def("forward_ring_step(Tensor kx, Tensor vx, Tensor qy, Tensor(a!) y_acc, Tensor(b!) alpha_sum_buf, Tensor(c!) qdotk_max_buf, Tensor quad_weights, Tensor col_idx, Tensor row_off, Tensor row_idx, int nlon_in, int pscale, int lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out) -> ()", {at::Tag::pt2_compliant_tag});
+        m.def("forward_ring_step(Tensor kx, Tensor vx, Tensor qy, Tensor(a!) y_acc, Tensor(b!) alpha_sum_buf, "
+              "Tensor(c!) qdotk_max_buf, Tensor quad_weights, Tensor col_idx, Tensor row_off, Tensor row_idx, int "
+              "nlon_in, int pscale, int lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out) -> ()",
+              {at::Tag::pt2_compliant_tag});
         // Backward is split into two passes: pass1 finalizes per-output softmax
         // statistics (alpha_sum, qdotk_max, integral, alpha_k, alpha_kvw), pass2
         // scatters dkx/dvx into the current chunk using those finalized stats.
-        m.def("backward_ring_step_pass1(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor(a!) alpha_sum_buf, Tensor(b!) qdotk_max_buf, Tensor(c!) integral_buf, Tensor(d!) alpha_k_buf, Tensor(e!) alpha_kvw_buf, Tensor quad_weights, Tensor col_idx, Tensor row_off, Tensor row_idx, int nlon_in, int pscale, int lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out) -> ()", {at::Tag::pt2_compliant_tag});
-        m.def("backward_ring_step_pass2(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor alpha_sum_buf, Tensor qdotk_max_buf, Tensor integral_norm_buf, Tensor(a!) dkx, Tensor(b!) dvx, Tensor quad_weights, Tensor col_idx, Tensor row_off, Tensor row_idx, int nlon_in, int pscale, int lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out) -> ()", {at::Tag::pt2_compliant_tag});
+        m.def("backward_ring_step_pass1(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor(a!) alpha_sum_buf, "
+              "Tensor(b!) qdotk_max_buf, Tensor(c!) integral_buf, Tensor(d!) alpha_k_buf, Tensor(e!) alpha_kvw_buf, "
+              "Tensor quad_weights, Tensor col_idx, Tensor row_off, Tensor row_idx, int nlon_in, int pscale, int "
+              "lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out) -> ()",
+              {at::Tag::pt2_compliant_tag});
+        m.def("backward_ring_step_pass2(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor alpha_sum_buf, Tensor "
+              "qdotk_max_buf, Tensor integral_norm_buf, Tensor(a!) dkx, Tensor(b!) dvx, Tensor quad_weights, Tensor "
+              "col_idx, Tensor row_off, Tensor row_idx, int nlon_in, int pscale, int lon_lo_kx, int lat_halo_start, "
+              "int nlat_out, int nlon_out) -> ()",
+              {at::Tag::pt2_compliant_tag});
     }
 
-}
+} // namespace attention_kernels

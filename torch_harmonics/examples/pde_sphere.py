@@ -30,13 +30,14 @@
 #
 
 
+import math
+
+import numpy as np
 import torch
 import torch.nn as nn
+
 import torch_harmonics as th
 from torch_harmonics.quadrature import precompute_longitudes
-
-import math
-import numpy as np
 
 
 class SphereSolver(nn.Module):
@@ -44,7 +45,7 @@ class SphereSolver(nn.Module):
     Solver class on the sphere. Can solve the following PDEs:
     - Allen-Cahn equation
     - Ginzburg-Landau equation
-    
+
     Parameters
     -----------
     nlat : int
@@ -77,8 +78,8 @@ class SphereSolver(nn.Module):
         self.grid = grid
 
         # physical sonstants
-        self.register_buffer('radius', torch.as_tensor(radius, dtype=torch.float64))
-        self.register_buffer('coeff', torch.as_tensor(coeff, dtype=torch.float64))
+        self.register_buffer("radius", torch.as_tensor(radius, dtype=torch.float64))
+        self.register_buffer("coeff", torch.as_tensor(coeff, dtype=torch.float64))
 
         # SHT
         self.sht = th.RealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
@@ -105,16 +106,16 @@ class SphereSolver(nn.Module):
         l = torch.arange(0, self.lmax).reshape(self.lmax, 1).cdouble()
         l = l.expand(self.lmax, self.mmax)
         # the laplace operator acting on the coefficients is given by l (l + 1)
-        lap = - l * (l + 1) / self.radius**2
-        invlap = - self.radius**2 / l / (l + 1)
-        invlap[0] = 0.
+        lap = -l * (l + 1) / self.radius**2
+        invlap = -self.radius**2 / l / (l + 1)
+        invlap[0] = 0.0
 
         # register all
-        self.register_buffer('lats', lats)
-        self.register_buffer('lons', lons)
-        self.register_buffer('l', l)
-        self.register_buffer('lap', lap)
-        self.register_buffer('invlap', invlap)
+        self.register_buffer("lats", lats)
+        self.register_buffer("lons", lons)
+        self.register_buffer("l", l)
+        self.register_buffer("lap", lap)
+        self.register_buffer("invlap", invlap)
 
     def grid2spec(self, u):
         return self.sht(u)
@@ -123,17 +124,17 @@ class SphereSolver(nn.Module):
         """Convert spectral coefficients to spatial data."""
         return self.isht(uspec)
 
-    def dudtspec(self, uspec, pde='allen-cahn'):
+    def dudtspec(self, uspec, pde="allen-cahn"):
         """Compute the time derivative of spectral coefficients for different PDEs."""
-            
-        if pde == 'allen-cahn':
+
+        if pde == "allen-cahn":
             ugrid = self.spec2grid(uspec)
-            u3spec  = self.grid2spec(ugrid**3)
-            dudtspec = self.coeff*self.lap*uspec + uspec - u3spec
-        elif pde == 'ginzburg-landau':
+            u3spec = self.grid2spec(ugrid**3)
+            dudtspec = self.coeff * self.lap * uspec + uspec - u3spec
+        elif pde == "ginzburg-landau":
             ugrid = self.spec2grid(uspec)
-            u3spec  = self.grid2spec(ugrid**3)
-            dudtspec = uspec + (1. + 2.j)*self.coeff*self.lap*uspec - (1. + 2.j)*u3spec
+            u3spec = self.grid2spec(ugrid**3)
+            dudtspec = uspec + (1.0 + 2.0j) * self.coeff * self.lap * uspec - (1.0 + 2.0j) * u3spec
         else:
             raise NotImplementedError(f"PDE type {pde} not implemented")
 
@@ -144,11 +145,10 @@ class SphereSolver(nn.Module):
         rspec = torch.randn_like(self.lap) / 4 / torch.pi
         return rspec
 
-
-    def plot_griddata(self, data, fig, cmap='twilight_shifted', vmax=None, vmin=None, projection='3d', title=None, antialiased=False):
+    def plot_griddata(self, data, fig, cmap="twilight_shifted", vmax=None, vmin=None, projection="3d", title=None, antialiased=False):
         """
         Plot data on the sphere grid. Requires cartopy for 3d plots.
-        
+
         Parameters
         -----------
         data : torch.Tensor
@@ -167,12 +167,12 @@ class SphereSolver(nn.Module):
             Plot title, by default None
         antialiased : bool, optional
             Whether to use antialiasing, by default False
-            
+
         Returns
         -------
         matplotlib.collections.QuadMesh
             The plotted image object
-            
+
         Raises
         ------
         NotImplementedError
@@ -190,28 +190,28 @@ class SphereSolver(nn.Module):
 
         Lons, Lats = np.meshgrid(lons, lats)
 
-        if projection == 'mollweide':
+        if projection == "mollweide":
 
-            #ax = plt.gca(projection=projection)
+            # ax = plt.gca(projection=projection)
             ax = fig.add_subplot(projection=projection)
             im = ax.pcolormesh(Lons, Lats, data, cmap=cmap, vmax=vmax, vmin=vmin)
             # ax.set_title("Elevation map of mars")
             ax.grid(True)
             ax.set_xticklabels([])
             ax.set_yticklabels([])
-            plt.colorbar(im, orientation='horizontal')
+            plt.colorbar(im, orientation="horizontal")
             plt.title(title)
 
-        elif projection == '3d':
+        elif projection == "3d":
 
             import cartopy.crs as ccrs
 
             proj = ccrs.Orthographic(central_longitude=0.0, central_latitude=25.0)
 
-            #ax = plt.gca(projection=proj, frameon=True)
+            # ax = plt.gca(projection=proj, frameon=True)
             ax = fig.add_subplot(projection=proj)
-            Lons = Lons*180/math.pi
-            Lats = Lats*180/math.pi
+            Lons = Lons * 180 / math.pi
+            Lats = Lats * 180 / math.pi
 
             # contour data over the map.
             im = ax.pcolormesh(Lons, Lats, data, cmap=cmap, transform=ccrs.PlateCarree(), antialiased=antialiased, vmax=vmax, vmin=vmin)

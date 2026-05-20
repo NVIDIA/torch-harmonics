@@ -29,33 +29,39 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import Tuple, Union, Optional
 from itertools import accumulate
+from typing import Optional, Tuple, Union
 
 import torch
+from disco_helpers import optimized_kernels_is_available, preprocess_psi
 
 from torch_harmonics.disco._disco_utils import _get_psi
-from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_optimized, _disco_s2_transpose_contraction_optimized
-from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
-from disco_helpers import optimized_kernels_is_available, preprocess_psi
 from torch_harmonics.disco.convolution import (
-    _precompute_convolution_tensor_s2,
     DiscreteContinuousConv,
+    _precompute_convolution_tensor_s2,
 )
-
-# distributed stuff
-from torch_harmonics.distributed import polar_group_size, azimuth_group_size
-from torch_harmonics.distributed import distributed_transpose_azimuth
-from torch_harmonics.distributed import reduce_from_polar_region, scatter_to_polar_region, gather_from_polar_region, copy_to_polar_region
-from torch_harmonics.distributed import reduce_from_scatter_to_polar_region, gather_from_copy_to_polar_region
-from torch_harmonics.distributed import polar_group_rank, azimuth_group_rank
-from torch_harmonics.distributed import compute_split_shapes
-from torch_harmonics.distributed import azimuth_group
+from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_transpose_contraction_torch
+from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_transpose_contraction_optimized
 
 # per-method orchestration entry points
-from torch_harmonics.distributed.kernels import (
+from .kernels import (
     _distributed_disco_fwd_a2a,
     _distributed_disco_fwd_ring,
+)
+
+# distributed stuff — relative imports to avoid the circular dependency
+# through torch_harmonics.distributed.__init__.
+from .primitives import (
+    compute_split_shapes,
+    distributed_transpose_azimuth,
+    gather_from_copy_to_polar_region,
+)
+from .utils import (
+    azimuth_group,
+    azimuth_group_rank,
+    azimuth_group_size,
+    polar_group_rank,
+    polar_group_size,
 )
 
 
@@ -207,10 +213,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         method = method.lower()
         if method not in ("a2a", "ring"):
-            raise ValueError(
-                f"DistributedDiscreteContinuousConvS2: unknown method={method!r}; "
-                f"expected 'a2a' or 'ring'."
-            )
+            raise ValueError(f"DistributedDiscreteContinuousConvS2: unknown method={method!r}; " f"expected 'a2a' or 'ring'.")
         self.method = method
         self.fused = bool(fused)
 
@@ -230,10 +233,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 "variant), but they are not present in this build. Rebuild the "
                 "optimized DISCO library or use method='a2a'."
             )
-            assert optimized_kernel, (
-                "DistributedDiscreteContinuousConvS2(method='ring') requires "
-                "optimized_kernel=True (the ring step is CUDA-only)."
-            )
+            assert optimized_kernel, "DistributedDiscreteContinuousConvS2(method='ring') requires " "optimized_kernel=True (the ring step is CUDA-only)."
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
@@ -266,25 +266,21 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         # calls inside the actual kernel.
 
         # set local shapes according to distributed mode
-        self.nlat_in_local   = self.lat_in_shapes[self.comm_rank_polar]
-        self.nlat_out_local  = self.nlat_out
-        self.nlon_in_local   = self.lon_in_shapes[self.comm_rank_azimuth]
-        self.nlon_out_local  = self.lon_out_shapes[self.comm_rank_azimuth]
+        self.nlat_in_local = self.lat_in_shapes[self.comm_rank_polar]
+        self.nlat_out_local = self.nlat_out
+        self.nlon_in_local = self.lon_in_shapes[self.comm_rank_azimuth]
+        self.nlon_out_local = self.lon_out_shapes[self.comm_rank_azimuth]
 
         # ring-only state: pscale + per-rank lon chunk offsets, plus the wi
         # pre-shift baked into col_idx (see _build_local_psi_ring below).
         if self.method == "ring":
-            self.lon_in_chunk_starts  = [0] + list(accumulate(self.lon_in_shapes[:-1]))
+            self.lon_in_chunk_starts = [0] + list(accumulate(self.lon_in_shapes[:-1]))
             self.lon_out_chunk_starts = [0] + list(accumulate(self.lon_out_shapes[:-1]))
-            self.lon_lo_in_self       = self.lon_in_chunk_starts[self.comm_rank_azimuth]
-            self.lon_lo_out_self      = self.lon_out_chunk_starts[self.comm_rank_azimuth]
+            self.lon_lo_in_self = self.lon_in_chunk_starts[self.comm_rank_azimuth]
+            self.lon_lo_out_self = self.lon_out_chunk_starts[self.comm_rank_azimuth]
 
             if self.nlon_in % self.nlon_out != 0:
-                raise ValueError(
-                    f"method='ring' requires nlon_in ({self.nlon_in}) to be a "
-                    f"multiple of nlon_out ({self.nlon_out}) for the DISCO "
-                    f"pshift to be exact."
-                )
+                raise ValueError(f"method='ring' requires nlon_in ({self.nlon_in}) to be a " f"multiple of nlon_out ({self.nlon_out}) for the DISCO " f"pshift to be exact.")
             self.pscale = self.nlon_in // self.nlon_out
 
         # compute global convolution tensor (common to both methods)
@@ -314,25 +310,35 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         ker_idx = idx[0, ...].contiguous()
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()
-        vals    = vals.contiguous()
+        vals = vals.contiguous()
 
         if self.optimized_kernel:
             roff_idx = preprocess_psi(
-                self.kernel_size, self.nlat_out_local,
-                ker_idx, row_idx, col_idx, vals,
+                self.kernel_size,
+                self.nlat_out_local,
+                ker_idx,
+                row_idx,
+                col_idx,
+                vals,
             ).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
-        self.register_buffer("psi_vals",    vals,    persistent=False)
+        self.register_buffer("psi_vals", vals, persistent=False)
 
         if not self.optimized_kernel:
             self.psi = _get_psi(
-                self.kernel_size, self.psi_idx, self.psi_vals,
-                self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out,
-                self.nlat_in_local, self.nlat_out_local,
+                self.kernel_size,
+                self.psi_idx,
+                self.psi_vals,
+                self.nlat_in,
+                self.nlon_in,
+                self.nlat_out,
+                self.nlon_out,
+                self.nlat_in_local,
+                self.nlat_out_local,
             )
 
     def _build_local_psi_ring(self, idx: torch.Tensor, vals: torch.Tensor):
@@ -348,24 +354,28 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         ker_idx = idx[0, ...].contiguous()
         row_idx = idx[1, ...].contiguous()
         col_idx = idx[2, ...].contiguous()
-        vals    = vals.contiguous()
+        vals = vals.contiguous()
 
         nlon_in = self.nlon_in
         if self.comm_size_azimuth > 1 and self.lon_lo_out_self != 0:
-            hi_global  = col_idx // nlon_in
-            wi_canon   = col_idx - hi_global * nlon_in
+            hi_global = col_idx // nlon_in
+            wi_canon = col_idx - hi_global * nlon_in
             wi_shifted = (wi_canon + self.pscale * self.lon_lo_out_self) % nlon_in
-            col_idx    = (hi_global * nlon_in + wi_shifted).contiguous()
+            col_idx = (hi_global * nlon_in + wi_shifted).contiguous()
 
         roff_idx = preprocess_psi(
-            self.kernel_size, self.nlat_out_local,
-            ker_idx, row_idx, col_idx, vals,
+            self.kernel_size,
+            self.nlat_out_local,
+            ker_idx,
+            row_idx,
+            col_idx,
+            vals,
         ).contiguous()
 
-        self.register_buffer("psi_ker_idx",  ker_idx,  persistent=False)
-        self.register_buffer("psi_row_idx",  row_idx,  persistent=False)
-        self.register_buffer("psi_col_idx",  col_idx,  persistent=False)
-        self.register_buffer("psi_vals",     vals,     persistent=False)
+        self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
+        self.register_buffer("psi_row_idx", row_idx, persistent=False)
+        self.register_buffer("psi_col_idx", col_idx, persistent=False)
+        self.register_buffer("psi_vals", vals, persistent=False)
         self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
     def extra_repr(self):
@@ -390,7 +400,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.method == "a2a":
             out = _distributed_disco_fwd_a2a(
-                x, self.weight,
+                x,
+                self.weight,
                 psi_roff_idx=getattr(self, "psi_roff_idx", None),
                 psi_ker_idx=self.psi_ker_idx,
                 psi_row_idx=self.psi_row_idx,
@@ -408,7 +419,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             )
         else:  # method == "ring"
             out = _distributed_disco_fwd_ring(
-                x, self.weight,
+                x,
+                self.weight,
                 psi_roff_idx=self.psi_roff_idx,
                 psi_ker_idx=self.psi_ker_idx,
                 psi_row_idx=self.psi_row_idx,
@@ -568,7 +580,18 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # store psi as COO
         if not self.optimized_kernel:
-            self.psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local, semi_transposed=True)
+            self.psi_st = _get_psi(
+                self.kernel_size,
+                self.psi_idx,
+                self.psi_vals,
+                self.nlat_in,
+                self.nlon_in,
+                self.nlat_out,
+                self.nlon_out,
+                self.nlat_in_local,
+                self.nlat_out_local,
+                semi_transposed=True,
+            )
 
     def extra_repr(self):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"

@@ -33,9 +33,8 @@ import math
 import torch
 import torch.nn as nn
 
-from torch_harmonics import RealSHT, InverseRealSHT
-
-from torch_harmonics.examples.models._layers import MLP, SpectralConvS2, SequencePositionEmbedding, SpectralPositionEmbedding, LearnablePositionEmbedding, DropPath
+from torch_harmonics import InverseRealSHT, RealSHT
+from torch_harmonics.examples.models._layers import MLP, DropPath, LearnablePositionEmbedding, SequencePositionEmbedding, SpectralConvS2, SpectralPositionEmbedding
 
 
 class SphericalFourierNeuralOperatorBlock(nn.Module):

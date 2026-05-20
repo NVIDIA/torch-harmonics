@@ -29,25 +29,19 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os, sys
-import time
 import argparse
-from functools import partial
-
-from tqdm import tqdm
-
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-
-import numpy as np
-import pandas as pd
+import os
+import sys
+import time
 
 import matplotlib.pyplot as plt
+import pandas as pd
+import torch
+from torch.utils.data import DataLoader
 
-from torch_harmonics.examples import PdeDataset
-from torch_harmonics.examples.losses import L1LossS2, SquaredL2LossS2, L2LossS2, W11LossS2
 from torch_harmonics import RealSHT
+from torch_harmonics.examples import PdeDataset
+from torch_harmonics.examples.losses import L1LossS2, L2LossS2, SquaredL2LossS2, W11LossS2
 from torch_harmonics.plotting import plot_sphere
 
 # import baseline models
@@ -57,7 +51,7 @@ from model_registry import get_baseline_models
 # wandb logging
 try:
     import wandb
-except:
+except ImportError:
     wandb = None
 
 
@@ -127,7 +121,7 @@ def autoregressive_inference(
         ref_coeffs = [prd_coeffs[0].clone()]
 
         # plot the initial condition
-        if iic == nics - 1 and nskip > 0 and i % nskip == 0:
+        if iic == nics - 1 and nskip > 0:
 
             # do plotting
             fig = plt.figure(figsize=(6, 6))
@@ -235,7 +229,7 @@ def train_model(
     logging=True,
     device=torch.device("cpu"),
 ):
-   
+
     train_start = time.time()
 
     # set AMP type
@@ -329,7 +323,7 @@ def train_model(
         epoch_time = time.time() - epoch_start
 
         if logging:
-            print(f"--------------------------------------------------------------------------------")
+            print("--------------------------------------------------------------------------------")
             print(f"Epoch {epoch} summary:")
             print(f"time taken: {epoch_time:.2f}")
             print(f"accumulated training loss: {accumulated_loss}")
@@ -346,7 +340,7 @@ def train_model(
 
     train_time = time.time() - train_start
 
-    print(f"--------------------------------------------------------------------------------")
+    print("--------------------------------------------------------------------------------")
     print(f"done. Training took {train_time}.")
     return valid_loss
 

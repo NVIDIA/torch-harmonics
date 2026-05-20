@@ -30,14 +30,16 @@
 #
 
 import warnings
+
 import torch
 
 # we need those helpers
 from disco_helpers import cuda_kernels_is_available, optimized_kernels_is_available
 
 if optimized_kernels_is_available():
-    from . import _C
     from torch.ops import disco_kernels
+
+    from . import _C
 else:
     disco_kernels = None
     warnings.warn("No optimized kernels are available. Please compile the extension first setting BUILD_CPP and BUILD_CUDA to 1.")

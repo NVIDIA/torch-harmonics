@@ -35,7 +35,7 @@
     * Midpoint rule applied to the radial integral in basis L2-norm computation for O(h^2) convergence
     * Improved docstring for `_precompute_convolution_tensor_s2`
 * New tests:
-    * expanded attention tests 
+    * expanded attention tests
     * added `tests/test_filter_basis.py` suite for testing DISCO filter basis inegrity
     * better integrity testing for many layers
 

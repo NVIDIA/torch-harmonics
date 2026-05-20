@@ -33,19 +33,20 @@ import os
 import sys
 import warnings
 
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
+
 
 def get_compile_args(module_name):
     """If user runs build with TORCH_HARMONICS_DEBUG=1 set, it will use debugging flags to build"""
 
-    debug_mode = os.environ.get('TORCH_HARMONICS_DEBUG', '0') == '1'
-    profile_mode = os.environ.get('TORCH_HARMONICS_PROFILE', '0') == '1'
-    openmp_mode = os.getenv('TORCH_HARMONICS_ENABLE_OPENMP', '0') == '1'
+    debug_mode = os.environ.get("TORCH_HARMONICS_DEBUG", "0") == "1"
+    profile_mode = os.environ.get("TORCH_HARMONICS_PROFILE", "0") == "1"
+    openmp_mode = os.getenv("TORCH_HARMONICS_ENABLE_OPENMP", "0") == "1"
     # TORCH_HARMONICS_NATIVE_CPU_ARCH=1: target the build host's CPU
     # (-march=native, -mtune=native). Unlocks AVX2/AVX-512 etc. on the local
     # machine. Do NOT enable for wheel builds — the resulting binary won't run
     # on older CPUs.
-    native_cpu_arch_mode = os.getenv('TORCH_HARMONICS_NATIVE_CPU_ARCH', '0') == '1'
+    native_cpu_arch_mode = os.getenv("TORCH_HARMONICS_NATIVE_CPU_ARCH", "0") == "1"
 
     cpp_extra_flags = []
     if openmp_mode:
@@ -60,27 +61,20 @@ def get_compile_args(module_name):
 
     if debug_mode:
         print(f"WARNING: Compiling {module_name} with debugging flags")
-        return {
-            'cxx': ['-g', '-O0', '-Wall'],
-            'nvcc': ['-g', '-G', '-O0'] + nvcc_extra_flags
-        }
+        return {"cxx": ["-g", "-O0", "-Wall"], "nvcc": ["-g", "-G", "-O0"] + nvcc_extra_flags}
     else:
         if native_cpu_arch_mode:
             print(f"NOTE: Compiling {module_name} with release flags + -march=native (host-CPU optimized; not portable)")
         else:
             print(f"NOTE: Compiling {module_name} with release flags")
-        return {
-            'cxx': ['-O3', "-ffast-math", "-funroll-loops", "-DNDEBUG"] + cpp_extra_flags,
-            'nvcc': ['-O3', "-DNDEBUG"] + nvcc_extra_flags
-        }
+        return {"cxx": ["-O3", "-ffast-math", "-funroll-loops", "-DNDEBUG"] + cpp_extra_flags, "nvcc": ["-O3", "-DNDEBUG"] + nvcc_extra_flags}
+
 
 def get_helpers_compile_args(BUILD_CPP, BUILD_CUDA):
     return {
-        'cxx': [
-            f'-DBUILD_CPP={1 if BUILD_CPP else 0}',
-            f'-DBUILD_CUDA={1 if BUILD_CUDA else 0}'
-        ],
+        "cxx": [f"-DBUILD_CPP={1 if BUILD_CPP else 0}", f"-DBUILD_CUDA={1 if BUILD_CUDA else 0}"],
     }
+
 
 def get_ext_modules():
     """Get list of extension modules to compile."""
@@ -92,8 +86,9 @@ def get_ext_modules():
     # PyTorch is required for building this package
     try:
         import torch
+
         print(f"setup.py with torch {torch.__version__}")
-        from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDA_HOME, CUDAExtension
+        from torch.utils.cpp_extension import CUDA_HOME, BuildExtension, CppExtension, CUDAExtension
 
         print(f"Building with C++11 ABI = {torch._C._GLIBCXX_USE_CXX11_ABI}")
         print(f"Compile flag will be -D_GLIBCXX_USE_CXX11_ABI={int(torch._C._GLIBCXX_USE_CXX11_ABI)}")
@@ -114,7 +109,7 @@ def get_ext_modules():
     cmdclass = {}
 
     # Always build helper extensions (PyTorch is guaranteed to be available)
-    print(f"Compiling helper routines for torch-harmonics.")
+    print("Compiling helper routines for torch-harmonics.")
     ext_modules.append(
         CppExtension(
             "disco_helpers",
@@ -145,28 +140,18 @@ def get_ext_modules():
     ]
 
     if BUILD_CUDA:
-        print(f"Compiling custom CUDA kernels for torch-harmonics.")
-        disco_sources.extend([
-            "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd.cu",
-            "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd.cu",
-            "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_ring.cu",
-            "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd_ring.cu",
-        ])
-        ext_modules.append(
-            CUDAExtension(
-                "torch_harmonics.disco._C",
-                disco_sources,
-                extra_compile_args=get_compile_args("disco")
-            )
+        print("Compiling custom CUDA kernels for torch-harmonics.")
+        disco_sources.extend(
+            [
+                "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd.cu",
+                "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd.cu",
+                "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_ring.cu",
+                "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd_ring.cu",
+            ]
         )
+        ext_modules.append(CUDAExtension("torch_harmonics.disco._C", disco_sources, extra_compile_args=get_compile_args("disco")))
     else:
-        ext_modules.append(
-            CppExtension(
-                "torch_harmonics.disco._C",
-                disco_sources,
-                extra_compile_args=get_compile_args("disco")
-            )
-        )
+        ext_modules.append(CppExtension("torch_harmonics.disco._C", disco_sources, extra_compile_args=get_compile_args("disco")))
 
     # ATTENTION
     # Create a single extension that includes both CPU and CUDA code
@@ -177,34 +162,25 @@ def get_ext_modules():
     ]
 
     if BUILD_CUDA:
-        print(f"Compiling attention CUDA kernels for torch-harmonics.")
-        attention_sources.extend([
-            "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_utils.cu",
-            "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_fwd.cu",
-            "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_bwd.cu",
-            "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_fwd_upsample.cu",
-            "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_bwd_upsample.cu",
-            "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_fwd_ring.cu",
-            "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_bwd_ring.cu",
-        ])
-        ext_modules.append(
-            CUDAExtension(
-                "torch_harmonics.attention._C",
-                attention_sources,
-                extra_compile_args=get_compile_args("attention")
-            )
+        print("Compiling attention CUDA kernels for torch-harmonics.")
+        attention_sources.extend(
+            [
+                "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_utils.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_fwd.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_bwd.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_fwd_upsample.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_bwd_upsample.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_fwd_ring.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_bwd_ring.cu",
+            ]
         )
+        ext_modules.append(CUDAExtension("torch_harmonics.attention._C", attention_sources, extra_compile_args=get_compile_args("attention")))
     else:
-        ext_modules.append(
-            CppExtension(
-                "torch_harmonics.attention._C",
-                attention_sources,
-                extra_compile_args=get_compile_args("attention")
-            )
-        )
+        ext_modules.append(CppExtension("torch_harmonics.attention._C", attention_sources, extra_compile_args=get_compile_args("attention")))
     cmdclass["build_ext"] = BuildExtension
 
     return ext_modules, cmdclass
+
 
 if __name__ == "__main__":
 

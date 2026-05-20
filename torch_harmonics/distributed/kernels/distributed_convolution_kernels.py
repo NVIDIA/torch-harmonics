@@ -69,12 +69,11 @@ from typing import List, Optional
 
 import torch
 import torch.distributed as dist
-
 from disco_helpers import optimized_kernels_is_available
 
 from torch_harmonics.disco._disco_utils import _compute_dtype
-from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_optimized
 from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_contraction_torch
+from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_optimized
 
 # The optimized ring-step CUDA wrappers are defined inside
 # disco_optimized.py's ``if optimized_kernels_is_available():`` block, so
@@ -91,16 +90,16 @@ else:
     _disco_s2_transpose_contraction_ring_step_optimized = None
 
 from torch_harmonics.distributed.primitives import (
-    distributed_transpose_azimuth,
-    reduce_from_scatter_to_polar_region,
     compute_split_shapes,
+    distributed_transpose_azimuth,
     get_group_neighbors,
+    reduce_from_scatter_to_polar_region,
 )
-
 
 # ---------------------------------------------------------------------------
 # A2A entry point
 # ---------------------------------------------------------------------------
+
 
 def _distributed_disco_fwd_a2a(
     x: torch.Tensor,
@@ -140,8 +139,15 @@ def _distributed_disco_fwd_a2a(
 
     if optimized_kernel:
         x = _disco_s2_contraction_optimized(
-            x, psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals,
-            kernel_size, nlat_out_local, nlon_out,
+            x,
+            psi_roff_idx,
+            psi_ker_idx,
+            psi_row_idx,
+            psi_col_idx,
+            psi_vals,
+            kernel_size,
+            nlat_out_local,
+            nlon_out,
         )
     else:
         x = _disco_s2_contraction_torch(x, psi_torch.to(x.device), nlon_out)
@@ -172,6 +178,7 @@ def _distributed_disco_fwd_a2a(
 # Ring P2P helpers
 # ---------------------------------------------------------------------------
 
+
 @torch.compiler.disable()
 def _ring_x_chunk(x_chunk, az_group, next_nlon_in_local):
     """Async send current x_chunk to the next azimuth neighbor, receive the
@@ -181,12 +188,16 @@ def _ring_x_chunk(x_chunk, az_group, next_nlon_in_local):
     send_to, recv_from = get_group_neighbors(az_group)
     B, C, H_in_local, _ = x_chunk.shape
     recv_x = torch.empty(
-        B, C, H_in_local, next_nlon_in_local,
-        device=x_chunk.device, dtype=x_chunk.dtype,
+        B,
+        C,
+        H_in_local,
+        next_nlon_in_local,
+        device=x_chunk.device,
+        dtype=x_chunk.dtype,
     )
     ops = [
-        dist.P2POp(dist.isend, x_chunk, send_to,   az_group),
-        dist.P2POp(dist.irecv, recv_x,  recv_from, az_group),
+        dist.P2POp(dist.isend, x_chunk, send_to, az_group),
+        dist.P2POp(dist.irecv, recv_x, recv_from, az_group),
     ]
     reqs = dist.batch_isend_irecv(ops)
     return recv_x, reqs
@@ -199,12 +210,17 @@ def _ring_y_chunk(y_chunk, az_group, next_nlon_out_local):
     send_to, recv_from = get_group_neighbors(az_group)
     B, C, K, H_out_local, _ = y_chunk.shape
     recv_y = torch.empty(
-        B, C, K, H_out_local, next_nlon_out_local,
-        device=y_chunk.device, dtype=y_chunk.dtype,
+        B,
+        C,
+        K,
+        H_out_local,
+        next_nlon_out_local,
+        device=y_chunk.device,
+        dtype=y_chunk.dtype,
     )
     ops = [
-        dist.P2POp(dist.isend, y_chunk, send_to,   az_group),
-        dist.P2POp(dist.irecv, recv_y,  recv_from, az_group),
+        dist.P2POp(dist.isend, y_chunk, send_to, az_group),
+        dist.P2POp(dist.irecv, recv_y, recv_from, az_group),
     ]
     reqs = dist.batch_isend_irecv(ops)
     return recv_y, reqs
@@ -229,6 +245,7 @@ def _ring_y_chunk(y_chunk, az_group, next_nlon_out_local):
 #                              polar P factor we already pay), at the cost
 #                              of one extra ring fwd of compute.
 
+
 class _RingDiscoConvS2Fn(torch.autograd.Function):
     """Ring-exchange-based DISCO contraction over the azimuth communicator.
 
@@ -247,7 +264,11 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
     @staticmethod
     def forward(
         x,
-        psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals,
+        psi_roff_idx,
+        psi_ker_idx,
+        psi_row_idx,
+        psi_col_idx,
+        psi_vals,
         kernel_size: int,
         nlat_out: int,
         nlon_out_local_self: int,
@@ -263,16 +284,19 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
     ):
         if not optimized_kernels_is_available():
             raise NotImplementedError(
-                "ring DISCO step kernel is not built. Add "
-                "_disco_s2_contraction_ring_step_optimized + transpose variant "
-                "to torch_harmonics/disco/optimized/."
+                "ring DISCO step kernel is not built. Add " "_disco_s2_contraction_ring_step_optimized + transpose variant " "to torch_harmonics/disco/optimized/."
             )
 
         B, C, H_in_local, _ = x.shape
         # K-expanded output accumulator; partial in polar.
         y_acc = torch.zeros(
-            B, C, kernel_size, nlat_out, nlon_out_local_self,
-            device=x.device, dtype=x.dtype,
+            B,
+            C,
+            kernel_size,
+            nlat_out,
+            nlon_out_local_self,
+            device=x.device,
+            dtype=x.dtype,
         )
 
         # Hoist the psi_vals cast out of the per-step wrapper (kernel
@@ -283,7 +307,7 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
         x_chunk = x.contiguous()
 
         for step in range(az_size):
-            src_rank   = (az_rank + step) % az_size
+            src_rank = (az_rank + step) % az_size
             lon_lo_src = lon_in_chunk_starts[src_rank]
             nlon_in_local_src = lon_in_local_sizes[src_rank]
 
@@ -291,18 +315,29 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
             if step < az_size - 1:
                 next_src = (az_rank + step + 1) % az_size
                 recv_x, reqs = _ring_x_chunk(
-                    x_chunk, az_group, lon_in_local_sizes[next_src],
+                    x_chunk,
+                    az_group,
+                    lon_in_local_sizes[next_src],
                 )
 
             # Accumulate this step's contribution. Psi's col_idx is already
             # pre-shifted by pscale * lon_lo_out_self (see _build_local_psi
             # in the public class), so the kernel does not need lon_lo_self.
             _disco_s2_contraction_ring_step_optimized(
-                x_chunk, y_acc,
-                psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals_c,
-                kernel_size, nlat_out, nlon_out_local_self,
-                nlon_in_global, pscale,
-                lon_lo_src, nlon_in_local_src,
+                x_chunk,
+                y_acc,
+                psi_roff_idx,
+                psi_ker_idx,
+                psi_row_idx,
+                psi_col_idx,
+                psi_vals_c,
+                kernel_size,
+                nlat_out,
+                nlon_out_local_self,
+                nlon_in_global,
+                pscale,
+                lon_lo_src,
+                nlon_in_local_src,
             )
 
             if step < az_size - 1:
@@ -314,54 +349,72 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        (x,
-         psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals,
-         kernel_size, nlat_out, nlon_out_local_self,
-         nlon_in_global, pscale,
-         lon_in_chunk_starts, lon_in_local_sizes,
-         lon_out_chunk_starts, lon_out_local_sizes,
-         az_group, az_rank, az_size) = inputs
+        (
+            x,
+            psi_roff_idx,
+            psi_ker_idx,
+            psi_row_idx,
+            psi_col_idx,
+            psi_vals,
+            kernel_size,
+            nlat_out,
+            nlon_out_local_self,
+            nlon_in_global,
+            pscale,
+            lon_in_chunk_starts,
+            lon_in_local_sizes,
+            lon_out_chunk_starts,
+            lon_out_local_sizes,
+            az_group,
+            az_rank,
+            az_size,
+        ) = inputs
 
         ctx.save_for_backward(
-            psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals,
+            psi_roff_idx,
+            psi_ker_idx,
+            psi_row_idx,
+            psi_col_idx,
+            psi_vals,
         )
-        ctx.kernel_size            = kernel_size
-        ctx.nlat_out               = nlat_out
-        ctx.nlon_out_local_self    = nlon_out_local_self
-        ctx.nlon_in_global         = nlon_in_global
-        ctx.pscale                 = pscale
-        ctx.lon_in_chunk_starts    = lon_in_chunk_starts
-        ctx.lon_in_local_sizes     = lon_in_local_sizes
-        ctx.lon_out_chunk_starts   = lon_out_chunk_starts
-        ctx.lon_out_local_sizes    = lon_out_local_sizes
-        ctx.az_group               = az_group
-        ctx.az_rank                = az_rank
-        ctx.az_size                = az_size
-        ctx.x_shape                = tuple(x.shape)
-        ctx.x_dtype                = x.dtype
-        ctx.x_device               = x.device
+        ctx.kernel_size = kernel_size
+        ctx.nlat_out = nlat_out
+        ctx.nlon_out_local_self = nlon_out_local_self
+        ctx.nlon_in_global = nlon_in_global
+        ctx.pscale = pscale
+        ctx.lon_in_chunk_starts = lon_in_chunk_starts
+        ctx.lon_in_local_sizes = lon_in_local_sizes
+        ctx.lon_out_chunk_starts = lon_out_chunk_starts
+        ctx.lon_out_local_sizes = lon_out_local_sizes
+        ctx.az_group = az_group
+        ctx.az_rank = az_rank
+        ctx.az_size = az_size
+        ctx.x_shape = tuple(x.shape)
+        ctx.x_dtype = x.dtype
+        ctx.x_device = x.device
 
     @staticmethod
     def backward(ctx, grad_y_acc):
         if not optimized_kernels_is_available():
-            raise NotImplementedError(
-                "ring DISCO transpose step kernel is not built."
-            )
+            raise NotImplementedError("ring DISCO transpose step kernel is not built.")
 
-        (psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals,
-         ) = ctx.saved_tensors
+        (
+            psi_roff_idx,
+            psi_ker_idx,
+            psi_row_idx,
+            psi_col_idx,
+            psi_vals,
+        ) = ctx.saved_tensors
 
-        kernel_size           = ctx.kernel_size
-        nlat_out              = ctx.nlat_out
-        nlon_in_global        = ctx.nlon_in_global
-        pscale                = ctx.pscale
-        lon_in_chunk_starts   = ctx.lon_in_chunk_starts
-        lon_in_local_sizes    = ctx.lon_in_local_sizes
-        lon_out_chunk_starts  = ctx.lon_out_chunk_starts
-        lon_out_local_sizes   = ctx.lon_out_local_sizes
-        az_group              = ctx.az_group
-        az_rank               = ctx.az_rank
-        az_size               = ctx.az_size
+        kernel_size = ctx.kernel_size
+        nlon_in_global = ctx.nlon_in_global
+        pscale = ctx.pscale
+        lon_in_chunk_starts = ctx.lon_in_chunk_starts
+        lon_out_chunk_starts = ctx.lon_out_chunk_starts
+        lon_out_local_sizes = ctx.lon_out_local_sizes
+        az_group = ctx.az_group
+        az_rank = ctx.az_rank
+        az_size = ctx.az_size
 
         B, C, H_in_local, nlon_in_local_self = ctx.x_shape
 
@@ -371,8 +424,12 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
         # precision; cast back to the input dtype after the ring loop.
         compute_dtype = _compute_dtype(ctx.x_dtype)
         grad_x_acc = torch.zeros(
-            B, C, H_in_local, nlon_in_local_self,
-            device=ctx.x_device, dtype=compute_dtype,
+            B,
+            C,
+            H_in_local,
+            nlon_in_local_self,
+            device=ctx.x_device,
+            dtype=compute_dtype,
         )
 
         # psi_vals must be in compute_dtype for the kernel; cast once.
@@ -383,8 +440,8 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
         lon_lo_in_self = lon_in_chunk_starts[az_rank]
 
         for step in range(az_size):
-            src_rank          = (az_rank + step) % az_size
-            lon_lo_src_out    = lon_out_chunk_starts[src_rank]
+            src_rank = (az_rank + step) % az_size
+            lon_lo_src_out = lon_out_chunk_starts[src_rank]
             nlon_out_local_src = lon_out_local_sizes[src_rank]
 
             # pscale * (lon_lo_src_out - lon_lo_out_self): kernel input
@@ -395,15 +452,26 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
             if step < az_size - 1:
                 next_src = (az_rank + step + 1) % az_size
                 recv_gy, reqs = _ring_y_chunk(
-                    grad_y_chunk, az_group, lon_out_local_sizes[next_src],
+                    grad_y_chunk,
+                    az_group,
+                    lon_out_local_sizes[next_src],
                 )
 
             _disco_s2_transpose_contraction_ring_step_optimized(
-                grad_y_chunk, grad_x_acc,
-                psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals_c,
-                kernel_size, H_in_local, nlon_in_local_self,
-                nlon_in_global, pscale,
-                pscale_wo_offset, lon_lo_in_self,
+                grad_y_chunk,
+                grad_x_acc,
+                psi_roff_idx,
+                psi_ker_idx,
+                psi_row_idx,
+                psi_col_idx,
+                psi_vals_c,
+                kernel_size,
+                H_in_local,
+                nlon_in_local_self,
+                nlon_in_global,
+                pscale,
+                pscale_wo_offset,
+                lon_lo_in_self,
                 nlon_out_local_src,
             )
 
@@ -420,12 +488,23 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
         # 17 non-tensor positional inputs; gradients return None for them.
         return (
             grad_x,
-            None, None, None, None, None,   # psi tensors
-            None, None, None,               # kernel_size, nlat_out, nlon_out_local_self
-            None, None,                     # nlon_in_global, pscale
-            None, None,                     # lon_in_chunk_starts, lon_in_local_sizes
-            None, None,                     # lon_out_chunk_starts, lon_out_local_sizes
-            None, None, None,               # az_group, az_rank, az_size
+            None,
+            None,
+            None,
+            None,
+            None,  # psi tensors
+            None,
+            None,
+            None,  # kernel_size, nlat_out, nlon_out_local_self
+            None,
+            None,  # nlon_in_global, pscale
+            None,
+            None,  # lon_in_chunk_starts, lon_in_local_sizes
+            None,
+            None,  # lon_out_chunk_starts, lon_out_local_sizes
+            None,
+            None,
+            None,  # az_group, az_rank, az_size
         )
 
 
@@ -442,8 +521,13 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
 
     @staticmethod
     def forward(
-        x, weight,
-        psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals,
+        x,
+        weight,
+        psi_roff_idx,
+        psi_ker_idx,
+        psi_row_idx,
+        psi_col_idx,
+        psi_vals,
         kernel_size: int,
         nlat_out: int,
         nlon_out_local_self: int,
@@ -460,38 +544,52 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
         groupsize: int,
     ):
         if not optimized_kernels_is_available():
-            raise NotImplementedError(
-                "ring DISCO step kernel is not built (fused path)."
-            )
+            raise NotImplementedError("ring DISCO step kernel is not built (fused path).")
 
         B, C, H_in_local, _ = x.shape
 
         # K-expanded accumulator — transient, NOT saved.
         y_acc = torch.zeros(
-            B, C, kernel_size, nlat_out, nlon_out_local_self,
-            device=x.device, dtype=x.dtype,
+            B,
+            C,
+            kernel_size,
+            nlat_out,
+            nlon_out_local_self,
+            device=x.device,
+            dtype=x.dtype,
         )
 
         psi_vals_c = psi_vals.to(_compute_dtype(x.dtype))
 
         x_chunk = x.contiguous()
         for step in range(az_size):
-            src_rank          = (az_rank + step) % az_size
-            lon_lo_src        = lon_in_chunk_starts[src_rank]
+            src_rank = (az_rank + step) % az_size
+            lon_lo_src = lon_in_chunk_starts[src_rank]
             nlon_in_local_src = lon_in_local_sizes[src_rank]
 
             if step < az_size - 1:
                 next_src = (az_rank + step + 1) % az_size
                 recv_x, reqs = _ring_x_chunk(
-                    x_chunk, az_group, lon_in_local_sizes[next_src],
+                    x_chunk,
+                    az_group,
+                    lon_in_local_sizes[next_src],
                 )
 
             _disco_s2_contraction_ring_step_optimized(
-                x_chunk, y_acc,
-                psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals_c,
-                kernel_size, nlat_out, nlon_out_local_self,
-                nlon_in_global, pscale,
-                lon_lo_src, nlon_in_local_src,
+                x_chunk,
+                y_acc,
+                psi_roff_idx,
+                psi_ker_idx,
+                psi_row_idx,
+                psi_col_idx,
+                psi_vals_c,
+                kernel_size,
+                nlat_out,
+                nlon_out_local_self,
+                nlon_in_global,
+                pscale,
+                lon_lo_src,
+                nlon_in_local_src,
             )
 
             if step < az_size - 1:
@@ -501,7 +599,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
 
         # Weight contraction. y_acc dropped after this scope.
         H, W = nlat_out, nlon_out_local_self
-        y_acc_r  = y_acc.reshape(B, groups, groupsize, kernel_size, H, W)
+        y_acc_r = y_acc.reshape(B, groups, groupsize, kernel_size, H, W)
         weight_r = weight.reshape(groups, -1, weight.shape[1], weight.shape[2])
         out = torch.einsum("bgckxy,gock->bgoxy", y_acc_r, weight_r).contiguous()
         out = out.reshape(B, -1, H, W)
@@ -509,78 +607,102 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        (x, weight,
-         psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals,
-         kernel_size, nlat_out, nlon_out_local_self,
-         nlon_in_global, pscale,
-         lon_in_chunk_starts, lon_in_local_sizes,
-         lon_out_chunk_starts, lon_out_local_sizes,
-         az_group, az_rank, az_size,
-         groups, groupsize) = inputs
+        (
+            x,
+            weight,
+            psi_roff_idx,
+            psi_ker_idx,
+            psi_row_idx,
+            psi_col_idx,
+            psi_vals,
+            kernel_size,
+            nlat_out,
+            nlon_out_local_self,
+            nlon_in_global,
+            pscale,
+            lon_in_chunk_starts,
+            lon_in_local_sizes,
+            lon_out_chunk_starts,
+            lon_out_local_sizes,
+            az_group,
+            az_rank,
+            az_size,
+            groups,
+            groupsize,
+        ) = inputs
 
         # We save x — the whole point of the fused path. y_acc is NOT saved.
         ctx.save_for_backward(
-            x, weight,
-            psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals,
+            x,
+            weight,
+            psi_roff_idx,
+            psi_ker_idx,
+            psi_row_idx,
+            psi_col_idx,
+            psi_vals,
         )
-        ctx.kernel_size            = kernel_size
-        ctx.nlat_out               = nlat_out
-        ctx.nlon_out_local_self    = nlon_out_local_self
-        ctx.nlon_in_global         = nlon_in_global
-        ctx.pscale                 = pscale
-        ctx.lon_in_chunk_starts    = lon_in_chunk_starts
-        ctx.lon_in_local_sizes     = lon_in_local_sizes
-        ctx.lon_out_chunk_starts   = lon_out_chunk_starts
-        ctx.lon_out_local_sizes    = lon_out_local_sizes
-        ctx.az_group               = az_group
-        ctx.az_rank                = az_rank
-        ctx.az_size                = az_size
-        ctx.groups                 = groups
-        ctx.groupsize              = groupsize
+        ctx.kernel_size = kernel_size
+        ctx.nlat_out = nlat_out
+        ctx.nlon_out_local_self = nlon_out_local_self
+        ctx.nlon_in_global = nlon_in_global
+        ctx.pscale = pscale
+        ctx.lon_in_chunk_starts = lon_in_chunk_starts
+        ctx.lon_in_local_sizes = lon_in_local_sizes
+        ctx.lon_out_chunk_starts = lon_out_chunk_starts
+        ctx.lon_out_local_sizes = lon_out_local_sizes
+        ctx.az_group = az_group
+        ctx.az_rank = az_rank
+        ctx.az_size = az_size
+        ctx.groups = groups
+        ctx.groupsize = groupsize
 
     @staticmethod
     def backward(ctx, grad_out):
         if not optimized_kernels_is_available():
-            raise NotImplementedError(
-                "ring DISCO transpose step kernel is not built (fused path)."
-            )
+            raise NotImplementedError("ring DISCO transpose step kernel is not built (fused path).")
 
-        (x, weight,
-         psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals,
-         ) = ctx.saved_tensors
+        (
+            x,
+            weight,
+            psi_roff_idx,
+            psi_ker_idx,
+            psi_row_idx,
+            psi_col_idx,
+            psi_vals,
+        ) = ctx.saved_tensors
 
-        K  = ctx.kernel_size
-        H  = ctx.nlat_out
-        W  = ctx.nlon_out_local_self
-        G  = ctx.groups
+        K = ctx.kernel_size
+        H = ctx.nlat_out
+        W = ctx.nlon_out_local_self
+        G = ctx.groups
         Cg = ctx.groupsize
         # weight stored as (out_channels, groupsize, kernel_size); reshape
         # treats it as (G, Og, Cg, K) where Og = out_channels // G.
         Og = weight.shape[0] // G
-        B  = grad_out.shape[0]
-        C  = x.shape[1]
-        H_in_local         = x.shape[2]
+        B = grad_out.shape[0]
+        C = x.shape[1]
+        H_in_local = x.shape[2]
         nlon_in_local_self = x.shape[3]
-        nlon_in_global     = ctx.nlon_in_global
-        pscale             = ctx.pscale
-        lon_in_chunk_starts  = ctx.lon_in_chunk_starts
-        lon_in_local_sizes   = ctx.lon_in_local_sizes
+        nlon_in_global = ctx.nlon_in_global
+        pscale = ctx.pscale
+        lon_in_chunk_starts = ctx.lon_in_chunk_starts
+        lon_in_local_sizes = ctx.lon_in_local_sizes
         lon_out_chunk_starts = ctx.lon_out_chunk_starts
-        lon_out_local_sizes  = ctx.lon_out_local_sizes
+        lon_out_local_sizes = ctx.lon_out_local_sizes
         az_group = ctx.az_group
-        az_rank  = ctx.az_rank
-        az_size  = ctx.az_size
+        az_rank = ctx.az_rank
+        az_size = ctx.az_size
 
         compute_dtype = _compute_dtype(x.dtype)
 
-        grad_x      = None
+        grad_x = None
         grad_weight = None
 
         # Both bwd einsums run in grad_out's dtype: under autocast bf16,
         # weight (fp32) and y_acc (fp32) get downcast to bf16 here so the
         # einsum hits tensor cores. Output is cast back to weight.dtype on
         # return for DDP/parameter-dtype compatibility.
-        weight_r   = weight.reshape(G, Og, Cg, K).to(grad_out.dtype)
+        weight_r = weight.reshape(G, Og, Cg, K).to(grad_out.dtype)
         grad_out_r = grad_out.reshape(B, G, Og, H, W)
 
         # Hoist the psi_vals cast out of the per-step wrappers (both
@@ -596,39 +718,56 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
         # O-channel grad_out tensor.
         if ctx.needs_input_grad[0]:
             grad_x_acc = torch.zeros(
-                B, C, H_in_local, nlon_in_local_self,
-                device=x.device, dtype=compute_dtype,
+                B,
+                C,
+                H_in_local,
+                nlon_in_local_self,
+                device=x.device,
+                dtype=compute_dtype,
             )
 
             lon_lo_out_self = lon_out_chunk_starts[az_rank]
-            lon_lo_in_self  = lon_in_chunk_starts[az_rank]
+            lon_lo_in_self = lon_in_chunk_starts[az_rank]
 
             grad_out_chunk = grad_out.contiguous()
             for step in range(az_size):
-                src_rank           = (az_rank + step) % az_size
-                lon_lo_src_out     = lon_out_chunk_starts[src_rank]
+                src_rank = (az_rank + step) % az_size
+                lon_lo_src_out = lon_out_chunk_starts[src_rank]
                 nlon_out_local_src = lon_out_local_sizes[src_rank]
-                pscale_wo_offset   = pscale * (lon_lo_src_out - lon_lo_out_self)
+                pscale_wo_offset = pscale * (lon_lo_src_out - lon_lo_out_self)
 
                 if step < az_size - 1:
                     next_src = (az_rank + step + 1) % az_size
                     recv_go, reqs = _ring_x_chunk(
-                        grad_out_chunk, az_group, lon_out_local_sizes[next_src],
+                        grad_out_chunk,
+                        az_group,
+                        lon_out_local_sizes[next_src],
                     )
 
                 B_, O_, H_, W_chunk = grad_out_chunk.shape
                 grad_out_chunk_r = grad_out_chunk.reshape(B_, G, Og, H_, W_chunk)
                 grad_y_ke_chunk = torch.einsum(
-                    "bgoxy,gock->bgckxy", grad_out_chunk_r, weight_r,
+                    "bgoxy,gock->bgckxy",
+                    grad_out_chunk_r,
+                    weight_r,
                 ).contiguous()
                 grad_y_ke_chunk = grad_y_ke_chunk.reshape(B_, C, K, H_, W_chunk)
 
                 _disco_s2_transpose_contraction_ring_step_optimized(
-                    grad_y_ke_chunk, grad_x_acc,
-                    psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals_c,
-                    K, H_in_local, nlon_in_local_self,
-                    nlon_in_global, pscale,
-                    pscale_wo_offset, lon_lo_in_self,
+                    grad_y_ke_chunk,
+                    grad_x_acc,
+                    psi_roff_idx,
+                    psi_ker_idx,
+                    psi_row_idx,
+                    psi_col_idx,
+                    psi_vals_c,
+                    K,
+                    H_in_local,
+                    nlon_in_local_self,
+                    nlon_in_global,
+                    pscale,
+                    pscale_wo_offset,
+                    lon_lo_in_self,
                     nlon_out_local_src,
                 )
 
@@ -647,27 +786,43 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
         # ---- grad_w path: recompute y_acc via a second ring fwd ----
         if ctx.needs_input_grad[1]:
             y_acc = torch.zeros(
-                B, C, K, H, W,
-                device=x.device, dtype=x.dtype,
+                B,
+                C,
+                K,
+                H,
+                W,
+                device=x.device,
+                dtype=x.dtype,
             )
             x_chunk = x.contiguous()
             for step in range(az_size):
-                src_rank          = (az_rank + step) % az_size
-                lon_lo_src        = lon_in_chunk_starts[src_rank]
+                src_rank = (az_rank + step) % az_size
+                lon_lo_src = lon_in_chunk_starts[src_rank]
                 nlon_in_local_src = lon_in_local_sizes[src_rank]
 
                 if step < az_size - 1:
                     next_src = (az_rank + step + 1) % az_size
                     recv_x, reqs = _ring_x_chunk(
-                        x_chunk, az_group, lon_in_local_sizes[next_src],
+                        x_chunk,
+                        az_group,
+                        lon_in_local_sizes[next_src],
                     )
 
                 _disco_s2_contraction_ring_step_optimized(
-                    x_chunk, y_acc,
-                    psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals_c,
-                    K, H, W,
-                    nlon_in_global, pscale,
-                    lon_lo_src, nlon_in_local_src,
+                    x_chunk,
+                    y_acc,
+                    psi_roff_idx,
+                    psi_ker_idx,
+                    psi_row_idx,
+                    psi_col_idx,
+                    psi_vals_c,
+                    K,
+                    H,
+                    W,
+                    nlon_in_global,
+                    pscale,
+                    lon_lo_src,
+                    nlon_in_local_src,
                 )
 
                 if step < az_size - 1:
@@ -681,20 +836,34 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
 
         # 21 positional inputs total; gradients are None except for x, weight.
         return (
-            grad_x, grad_weight,
-            None, None, None, None, None,   # psi tensors (5)
-            None, None, None,               # kernel_size, nlat_out, nlon_out_local_self
-            None, None,                     # nlon_in_global, pscale
-            None, None,                     # lon_in_chunk_starts, lon_in_local_sizes
-            None, None,                     # lon_out_chunk_starts, lon_out_local_sizes
-            None, None, None,               # az_group, az_rank, az_size
-            None, None,                     # groups, groupsize
+            grad_x,
+            grad_weight,
+            None,
+            None,
+            None,
+            None,
+            None,  # psi tensors (5)
+            None,
+            None,
+            None,  # kernel_size, nlat_out, nlon_out_local_self
+            None,
+            None,  # nlon_in_global, pscale
+            None,
+            None,  # lon_in_chunk_starts, lon_in_local_sizes
+            None,
+            None,  # lon_out_chunk_starts, lon_out_local_sizes
+            None,
+            None,
+            None,  # az_group, az_rank, az_size
+            None,
+            None,  # groups, groupsize
         )
 
 
 # ---------------------------------------------------------------------------
 # Ring entry point
 # ---------------------------------------------------------------------------
+
 
 def _distributed_disco_fwd_ring(
     x: torch.Tensor,
@@ -736,41 +905,69 @@ def _distributed_disco_fwd_ring(
     Returns the polar-reduced output WITHOUT bias.
     """
     if not optimized_kernels_is_available():
-        raise NotImplementedError(
-            "Ring DISCO step kernels are not built. Use method=\"a2a\" until "
-            "the optimized ring kernels are added to torch_harmonics/disco/optimized/."
-        )
+        raise NotImplementedError('Ring DISCO step kernels are not built. Use method="a2a" until ' "the optimized ring kernels are added to torch_harmonics/disco/optimized/.")
 
     if fused:
         # Fused ring fwd + einsum, saving x (not the K-expanded
         # intermediate). bwd recomputes y_acc for the grad_w path.
         out = _RingDiscoConvFusedFn.apply(
-            x, weight,
-            psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals,
-            kernel_size, nlat_out_local, nlon_out_local,
-            nlon_in, pscale,
-            lon_in_chunk_starts, lon_in_shapes,
-            lon_out_chunk_starts, lon_out_shapes,
-            az_group, az_rank, az_size,
-            groups, groupsize,
+            x,
+            weight,
+            psi_roff_idx,
+            psi_ker_idx,
+            psi_row_idx,
+            psi_col_idx,
+            psi_vals,
+            kernel_size,
+            nlat_out_local,
+            nlon_out_local,
+            nlon_in,
+            pscale,
+            lon_in_chunk_starts,
+            lon_in_shapes,
+            lon_out_chunk_starts,
+            lon_out_shapes,
+            az_group,
+            az_rank,
+            az_size,
+            groups,
+            groupsize,
         )
     else:
         # If azimuth is not actually distributed, the ring degenerates to
         # one local kernel call — call the serial DISCO directly instead.
         if comm_size_azimuth == 1:
             x_ke = _disco_s2_contraction_optimized(
-                x, psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals,
-                kernel_size, nlat_out_local, nlon_out_local,
+                x,
+                psi_roff_idx,
+                psi_ker_idx,
+                psi_row_idx,
+                psi_col_idx,
+                psi_vals,
+                kernel_size,
+                nlat_out_local,
+                nlon_out_local,
             )
         else:
             x_ke = _RingDiscoConvS2Fn.apply(
                 x,
-                psi_roff_idx, psi_ker_idx, psi_row_idx, psi_col_idx, psi_vals,
-                kernel_size, nlat_out_local, nlon_out_local,
-                nlon_in, pscale,
-                lon_in_chunk_starts, lon_in_shapes,
-                lon_out_chunk_starts, lon_out_shapes,
-                az_group, az_rank, az_size,
+                psi_roff_idx,
+                psi_ker_idx,
+                psi_row_idx,
+                psi_col_idx,
+                psi_vals,
+                kernel_size,
+                nlat_out_local,
+                nlon_out_local,
+                nlon_in,
+                pscale,
+                lon_in_chunk_starts,
+                lon_in_shapes,
+                lon_out_chunk_starts,
+                lon_out_shapes,
+                az_group,
+                az_rank,
+                az_size,
             )
 
         # Local einsum with the replicated weight, run BEFORE the polar
