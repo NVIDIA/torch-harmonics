@@ -29,7 +29,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import os
 import unittest
+from unittest import mock
 
 import torch
 from parameterized import parameterized
@@ -109,42 +111,50 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
     @parameterized.expand(
         [
             # fp32 tests
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, False, "a2a", 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", 1e-6, 1e-5],
-            [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, True, "a2a", 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", 1e-6, 1e-5],
-            [33, 64, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", 1e-6, 1e-5],
-            [65, 128, 33, 64, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", False, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", False, 1e-6, 1e-5],
+            [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, True, "a2a", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", False, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", False, 1e-6, 1e-5],
+            [33, 64, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", False, 1e-6, 1e-5],
+            [65, 128, 33, 64, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
             # fp64 tests
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, "a2a", 1e-6, 1e-6],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, "a2a", 1e-6, 1e-6],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, "a2a", 1e-6, 1e-6],
-            [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, "a2a", 1e-6, 1e-6],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float64, False, "a2a", 1e-6, 1e-6],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float64, True, "a2a", 1e-6, 1e-6],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, "a2a", False, 1e-6, 1e-6],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, "a2a", False, 1e-6, 1e-6],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, "a2a", False, 1e-6, 1e-6],
+            [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, "a2a", False, 1e-6, 1e-6],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float64, False, "a2a", False, 1e-6, 1e-6],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float64, True, "a2a", False, 1e-6, 1e-6],
             # ring tests (non-transpose only; ring is CUDA-only and the
-            # transpose class doesn't accept method=). Both "ring" and
-            # "ring_fused" exercise the same per-step kernels, but the
-            # fused variant additionally validates the recompute path in
-            # backward (only x saved across fwd/bwd, y_acc rebuilt in bwd).
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", 1e-6, 1e-5],
+            # transpose class doesn't accept method=). Each ring scenario
+            # runs twice: once with the legacy per-step recv allocation
+            # (p2p_buffer=False), once with the pre-allocated recv pool
+            # opted in via TORCH_HARMONICS_P2P_BUFFER=1 (p2p_buffer=True).
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", True, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", True, 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", False, 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", True, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", False, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", True, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", True, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", True, 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", False, 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", True, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", False, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", True, 1e-6, 1e-5],
         ],
         skip_on_empty=True,
     )
@@ -165,6 +175,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         dtype,
         transpose,
         algorithm,
+        p2p_buffer,
         atol,
         rtol,
         verbose=True,
@@ -208,19 +219,29 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             bias=True,
         )
 
+        # The distributed conv reads TORCH_HARMONICS_P2P_BUFFER once in
+        # __init__ and stores the flag on the instance. Patch the env
+        # around construction so each parametrize row exercises the
+        # requested code path. mock.patch.dict restores the prior value
+        # automatically when the context exits.
+        env_override = {"TORCH_HARMONICS_P2P_BUFFER": "1" if p2p_buffer else "0"}
+
         # set up handles
         if transpose:
             # Transpose class does not yet accept method= / fused= — the
-            # ``algorithm`` test parameter is ignored on this branch.
+            # ``algorithm`` and ``p2p_buffer`` test parameters are ignored
+            # on this branch.
             conv_local = th.DiscreteContinuousConvTransposeS2(**disco_args).to(dtype=dtype, device=self.device)
-            conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args).to(dtype=dtype, device=self.device)
+            with mock.patch.dict(os.environ, env_override):
+                conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args).to(dtype=dtype, device=self.device)
         else:
             conv_local = th.DiscreteContinuousConvS2(**disco_args).to(dtype=dtype, device=self.device)
-            conv_dist = thd.DistributedDiscreteContinuousConvS2(
-                **disco_args,
-                method=method,
-                fused=fused,
-            ).to(dtype=dtype, device=self.device)
+            with mock.patch.dict(os.environ, env_override):
+                conv_dist = thd.DistributedDiscreteContinuousConvS2(
+                    **disco_args,
+                    method=method,
+                    fused=fused,
+                ).to(dtype=dtype, device=self.device)
 
         # copy the weights from the local conv into the dist conv
         with torch.no_grad():

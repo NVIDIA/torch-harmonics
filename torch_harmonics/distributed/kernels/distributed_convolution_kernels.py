@@ -180,50 +180,62 @@ def _distributed_disco_fwd_a2a(
 
 
 @torch.compiler.disable()
-def _ring_x_chunk(x_chunk, az_group, next_nlon_in_local):
+def _ring_x_chunk(x_chunk, az_group, next_nlon_in_local, recv_buf=None):
     """Async send current x_chunk to the next azimuth neighbor, receive the
     chunk from the previous neighbor with known target W size. Returns
     ``(recv_buffer, P2P request list)`` — caller must wait on the requests
-    before consuming recv_buffer."""
+    before consuming recv_buffer.
+
+    If ``recv_buf`` is provided, it is used as the receive destination
+    (no allocation). The caller is responsible for ensuring it has the
+    right shape/dtype/device. When ``recv_buf`` is None the function
+    allocates a fresh tensor per call (legacy behavior).
+    """
     send_to, recv_from = get_group_neighbors(az_group)
-    B, C, H_in_local, _ = x_chunk.shape
-    recv_x = torch.empty(
-        B,
-        C,
-        H_in_local,
-        next_nlon_in_local,
-        device=x_chunk.device,
-        dtype=x_chunk.dtype,
-    )
+    if recv_buf is None:
+        B, C, H_in_local, _ = x_chunk.shape
+        recv_buf = torch.empty(
+            B,
+            C,
+            H_in_local,
+            next_nlon_in_local,
+            device=x_chunk.device,
+            dtype=x_chunk.dtype,
+        )
     ops = [
         dist.P2POp(dist.isend, x_chunk, send_to, az_group),
-        dist.P2POp(dist.irecv, recv_x, recv_from, az_group),
+        dist.P2POp(dist.irecv, recv_buf, recv_from, az_group),
     ]
     reqs = dist.batch_isend_irecv(ops)
-    return recv_x, reqs
+    return recv_buf, reqs
 
 
 @torch.compiler.disable()
-def _ring_y_chunk(y_chunk, az_group, next_nlon_out_local):
+def _ring_y_chunk(y_chunk, az_group, next_nlon_out_local, recv_buf=None):
     """Same as ``_ring_x_chunk`` but for a K-expanded 5D tensor — used by
-    the non-fused ring backward to rotate ``grad_y`` chunks."""
+    the non-fused ring backward to rotate ``grad_y`` chunks.
+
+    If ``recv_buf`` is provided, it is used as the receive destination;
+    otherwise a fresh tensor is allocated per call (legacy behavior).
+    """
     send_to, recv_from = get_group_neighbors(az_group)
-    B, C, K, H_out_local, _ = y_chunk.shape
-    recv_y = torch.empty(
-        B,
-        C,
-        K,
-        H_out_local,
-        next_nlon_out_local,
-        device=y_chunk.device,
-        dtype=y_chunk.dtype,
-    )
+    if recv_buf is None:
+        B, C, K, H_out_local, _ = y_chunk.shape
+        recv_buf = torch.empty(
+            B,
+            C,
+            K,
+            H_out_local,
+            next_nlon_out_local,
+            device=y_chunk.device,
+            dtype=y_chunk.dtype,
+        )
     ops = [
         dist.P2POp(dist.isend, y_chunk, send_to, az_group),
-        dist.P2POp(dist.irecv, recv_y, recv_from, az_group),
+        dist.P2POp(dist.irecv, recv_buf, recv_from, az_group),
     ]
     reqs = dist.batch_isend_irecv(ops)
-    return recv_y, reqs
+    return recv_buf, reqs
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +293,7 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
         az_group,
         az_rank: int,
         az_size: int,
+        use_p2p_buffer: bool = False,
     ):
         if not optimized_kernels_is_available():
             raise NotImplementedError(
@@ -306,6 +319,25 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
 
         x_chunk = x.contiguous()
 
+        # If use_p2p_buffer is set, allocate one recv slot per recv step
+        # up front (az_size-1 slots, each sized exactly to that step's
+        # incoming chunk) and skip the per-step ``recv.clone()`` — each
+        # slot is written by exactly one P2P call and stays valid for
+        # consumption by the kernel in the following iteration.
+        recv_pool = None
+        if use_p2p_buffer and az_size > 1:
+            recv_pool = [
+                torch.empty(
+                    B,
+                    C,
+                    H_in_local,
+                    lon_in_local_sizes[(az_rank + s + 1) % az_size],
+                    device=x.device,
+                    dtype=x.dtype,
+                )
+                for s in range(az_size - 1)
+            ]
+
         for step in range(az_size):
             src_rank = (az_rank + step) % az_size
             lon_lo_src = lon_in_chunk_starts[src_rank]
@@ -318,6 +350,7 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
                     x_chunk,
                     az_group,
                     lon_in_local_sizes[next_src],
+                    recv_buf=recv_pool[step] if recv_pool is not None else None,
                 )
 
             # Accumulate this step's contribution. Psi's col_idx is already
@@ -343,7 +376,10 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
             if step < az_size - 1:
                 for req in reqs:
                     req.wait()
-                x_chunk = recv_x.clone()
+                # When the pool owns recv_x, it stays live for the whole
+                # ring loop — no clone needed. Otherwise (legacy path)
+                # clone defensively as before.
+                x_chunk = recv_x if recv_pool is not None else recv_x.clone()
 
         return y_acc
 
@@ -368,6 +404,7 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
             az_group,
             az_rank,
             az_size,
+            use_p2p_buffer,
         ) = inputs
 
         ctx.save_for_backward(
@@ -392,6 +429,7 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
         ctx.x_shape = tuple(x.shape)
         ctx.x_dtype = x.dtype
         ctx.x_device = x.device
+        ctx.use_p2p_buffer = use_p2p_buffer
 
     @staticmethod
     def backward(ctx, grad_y_acc):
@@ -439,6 +477,25 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
         grad_y_chunk = grad_y_acc.contiguous()
         lon_lo_in_self = lon_in_chunk_starts[az_rank]
 
+        # Pre-allocate the recv slots for grad_y rotation when opted in.
+        # grad_y is K-expanded so its slot shape carries the K dim.
+        K_dim = grad_y_acc.shape[2]
+        H_out_local = grad_y_acc.shape[3]
+        recv_pool = None
+        if ctx.use_p2p_buffer and az_size > 1:
+            recv_pool = [
+                torch.empty(
+                    B,
+                    C,
+                    K_dim,
+                    H_out_local,
+                    lon_out_local_sizes[(az_rank + s + 1) % az_size],
+                    device=ctx.x_device,
+                    dtype=grad_y_acc.dtype,
+                )
+                for s in range(az_size - 1)
+            ]
+
         for step in range(az_size):
             src_rank = (az_rank + step) % az_size
             lon_lo_src_out = lon_out_chunk_starts[src_rank]
@@ -455,6 +512,7 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
                     grad_y_chunk,
                     az_group,
                     lon_out_local_sizes[next_src],
+                    recv_buf=recv_pool[step] if recv_pool is not None else None,
                 )
 
             _disco_s2_transpose_contraction_ring_step_optimized(
@@ -478,14 +536,14 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
             if step < az_size - 1:
                 for req in reqs:
                     req.wait()
-                grad_y_chunk = recv_gy.clone()
+                grad_y_chunk = recv_gy if recv_pool is not None else recv_gy.clone()
 
         if compute_dtype != ctx.x_dtype:
             grad_x = grad_x_acc.to(ctx.x_dtype)
         else:
             grad_x = grad_x_acc
 
-        # 17 non-tensor positional inputs; gradients return None for them.
+        # 18 non-tensor positional inputs; gradients return None for them.
         return (
             grad_x,
             None,
@@ -505,6 +563,7 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
             None,
             None,
             None,  # az_group, az_rank, az_size
+            None,  # use_p2p_buffer
         )
 
 
@@ -542,6 +601,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
         az_size: int,
         groups: int,
         groupsize: int,
+        use_p2p_buffer: bool = False,
     ):
         if not optimized_kernels_is_available():
             raise NotImplementedError("ring DISCO step kernel is not built (fused path).")
@@ -562,6 +622,22 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
         psi_vals_c = psi_vals.to(_compute_dtype(x.dtype))
 
         x_chunk = x.contiguous()
+
+        # Pre-allocate recv slots for the x_chunk rotation when opted in.
+        recv_pool = None
+        if use_p2p_buffer and az_size > 1:
+            recv_pool = [
+                torch.empty(
+                    B,
+                    C,
+                    H_in_local,
+                    lon_in_local_sizes[(az_rank + s + 1) % az_size],
+                    device=x.device,
+                    dtype=x.dtype,
+                )
+                for s in range(az_size - 1)
+            ]
+
         for step in range(az_size):
             src_rank = (az_rank + step) % az_size
             lon_lo_src = lon_in_chunk_starts[src_rank]
@@ -573,6 +649,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
                     x_chunk,
                     az_group,
                     lon_in_local_sizes[next_src],
+                    recv_buf=recv_pool[step] if recv_pool is not None else None,
                 )
 
             _disco_s2_contraction_ring_step_optimized(
@@ -595,7 +672,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
             if step < az_size - 1:
                 for req in reqs:
                     req.wait()
-                x_chunk = recv_x.clone()
+                x_chunk = recv_x if recv_pool is not None else recv_x.clone()
 
         # Weight contraction. y_acc dropped after this scope.
         H, W = nlat_out, nlon_out_local_self
@@ -629,6 +706,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
             az_size,
             groups,
             groupsize,
+            use_p2p_buffer,
         ) = inputs
 
         # We save x — the whole point of the fused path. y_acc is NOT saved.
@@ -655,6 +733,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
         ctx.az_size = az_size
         ctx.groups = groups
         ctx.groupsize = groupsize
+        ctx.use_p2p_buffer = use_p2p_buffer
 
     @staticmethod
     def backward(ctx, grad_out):
@@ -730,6 +809,24 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
             lon_lo_in_self = lon_in_chunk_starts[az_rank]
 
             grad_out_chunk = grad_out.contiguous()
+            # grad_out has shape (B, O_total, H, W_chunk); O_total = G*Og.
+            O_total = grad_out_chunk.shape[1]
+
+            # Pre-allocate recv slots for the grad_out rotation when opted in.
+            recv_pool = None
+            if ctx.use_p2p_buffer and az_size > 1:
+                recv_pool = [
+                    torch.empty(
+                        B,
+                        O_total,
+                        H,
+                        lon_out_local_sizes[(az_rank + s + 1) % az_size],
+                        device=x.device,
+                        dtype=grad_out.dtype,
+                    )
+                    for s in range(az_size - 1)
+                ]
+
             for step in range(az_size):
                 src_rank = (az_rank + step) % az_size
                 lon_lo_src_out = lon_out_chunk_starts[src_rank]
@@ -742,6 +839,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
                         grad_out_chunk,
                         az_group,
                         lon_out_local_sizes[next_src],
+                        recv_buf=recv_pool[step] if recv_pool is not None else None,
                     )
 
                 B_, O_, H_, W_chunk = grad_out_chunk.shape
@@ -777,7 +875,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
                 if step < az_size - 1:
                     for req in reqs:
                         req.wait()
-                    grad_out_chunk = recv_go.clone()
+                    grad_out_chunk = recv_go if recv_pool is not None else recv_go.clone()
 
             grad_x = grad_x_acc.to(x.dtype) if compute_dtype != x.dtype else grad_x_acc
 
@@ -795,6 +893,22 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
                 dtype=x.dtype,
             )
             x_chunk = x.contiguous()
+
+            # Pre-allocate recv slots for the x_chunk rotation when opted in.
+            recv_pool = None
+            if ctx.use_p2p_buffer and az_size > 1:
+                recv_pool = [
+                    torch.empty(
+                        B,
+                        C,
+                        H_in_local,
+                        lon_in_local_sizes[(az_rank + s + 1) % az_size],
+                        device=x.device,
+                        dtype=x.dtype,
+                    )
+                    for s in range(az_size - 1)
+                ]
+
             for step in range(az_size):
                 src_rank = (az_rank + step) % az_size
                 lon_lo_src = lon_in_chunk_starts[src_rank]
@@ -806,6 +920,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
                         x_chunk,
                         az_group,
                         lon_in_local_sizes[next_src],
+                        recv_buf=recv_pool[step] if recv_pool is not None else None,
                     )
 
                 _disco_s2_contraction_ring_step_optimized(
@@ -828,13 +943,13 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
                 if step < az_size - 1:
                     for req in reqs:
                         req.wait()
-                    x_chunk = recv_x.clone()
+                    x_chunk = recv_x if recv_pool is not None else recv_x.clone()
 
             y_acc_r = y_acc.reshape(B, G, Cg, K, H, W).to(grad_out.dtype)
             grad_weight = torch.einsum("bgoxy,bgckxy->gock", grad_out_r, y_acc_r)
             grad_weight = grad_weight.reshape(weight.shape).to(weight.dtype).contiguous()
 
-        # 21 positional inputs total; gradients are None except for x, weight.
+        # 22 positional inputs total; gradients are None except for x, weight.
         return (
             grad_x,
             grad_weight,
@@ -857,6 +972,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
             None,  # az_group, az_rank, az_size
             None,
             None,  # groups, groupsize
+            None,  # use_p2p_buffer
         )
 
 
@@ -890,6 +1006,7 @@ def _distributed_disco_fwd_ring(
     groups: int,
     groupsize: int,
     fused: bool,
+    use_p2p_buffer: bool = False,
 ) -> torch.Tensor:
     """Ring-exchange distributed DISCO forward.
 
@@ -932,6 +1049,7 @@ def _distributed_disco_fwd_ring(
             az_size,
             groups,
             groupsize,
+            use_p2p_buffer,
         )
     else:
         # If azimuth is not actually distributed, the ring degenerates to
@@ -968,6 +1086,7 @@ def _distributed_disco_fwd_ring(
                 az_group,
                 az_rank,
                 az_size,
+                use_p2p_buffer,
             )
 
         # Local einsum with the replicated weight, run BEFORE the polar
