@@ -207,6 +207,16 @@ they are not part of the default CI job above.
 CI workflows: **style** (pre-commit on PRs) and **tests** (pytest on push to `main`). Both
 should pass before merge.
 
+### Running distributed tests
+Distributed tests need process groups and do not run in the CI due to the need for MPI. They compare distributed implementations
+to the sequential implementation, assuming its correctness. To run the distributed tests, use the helper script:
+```bash
+bash tests/run_tests.sh -d --grid_size_lat 2 --grid_size_lon 2   # 2x2 = 4 ranks
+```
+Tests pick up MASTER_ADDR, MASTER_PORT, WORLD_RANK, WORLD_SIZE from the environment (see tests/testutils.py). If you make any
+modifications to distributed routines, we kindly ask you to run these tests for various combinations of `grid_size_lat` and
+`grid_size_lon`.
+
 ## Code style and pre-commit
 
 We use [pre-commit](https://pre-commit.com/) on pull requests (`.github/workflows/style.yml`).
@@ -237,6 +247,17 @@ C/C++/CUDA sources use the same SPDX comment style at the top of the file.
 - Prefer extending existing helpers over duplicating logic.
 - Use `parameterized` for multi-configuration unit tests (see `tests/test_attention.py`).
 - Shared test utilities live in `tests/testutils.py`.
+
+### Naming conventions
+
+- Modules: lower_snake_case; prefix with _ for internal-only modules (e.g. _layers.py, _disco_utils.py).
+- Public classes: PascalCase. Sphere-valued classes carry the suffix S2 (e.g. DiscreteContinuousConvS2, NeighborhoodAttentionS2). Distributed counterparts prefix Distributed (e.g. DistributedDiscreteContinuousConvS2). Transpose counterparts append TransposeS2.
+- Public functions: lower_snake_case (e.g. compute_split_shapes).
+- Internal helpers: leading underscore (e.g. _compute_dtype, _get_psi).
+- Low-level ops follow _<op-family>_<direction>_<variant> (e.g. _disco_s2_contraction_optimized, _neighborhood_s2_attention_bwd_dq_torch).
+- Module-level constants: UPPER_SNAKE_CASE (public), _UPPER_SNAKE_CASE (internal — e.g. distributed-state globals like _POLAR_PARALLEL_GROUP).
+- Tests: file test_<area>.py mirroring the source module; class Test<PascalCase>; method test_<lower_snake_case>.
+- Prefer verbose names that read like English. Abbreviate only when the short form is mathematical convention (l, m, n for orders/degrees). When in doubt, write it out.
 
 ## Project structure
 
