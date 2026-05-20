@@ -172,6 +172,32 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             [64, 128, 64, 128, 2, 16, 4, 20, 12, "equiangular", "equiangular", False, 1e-5, 1e-4],
             # downsampling pscale=2, CHOUT_AS_IN=False, scalar path
             [64, 128, 32, 64, 2, 16, 4, 20, 12, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            # BDIM_X dispatch coverage. The kernel picks BDIM_X = next_pow2(max(32, ceil(nchans/16))),
+            # where FWD uses nchans_out and BWD pass1/pass2 use nchans_in. With heads=1 and default
+            # k_channels/out_channels, all three dispatches land in the same bucket. Spatial dims are
+            # kept small to bound memory; only one row per bucket since the same kernel template
+            # is exercised regardless of grid/pscale.
+            # BDIM_X=64   (per-head 513..1024)
+            [32, 64, 32, 64, 2, 576, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            # BDIM_X=128  (per-head 1025..2048)
+            [32, 64, 32, 64, 2, 1280, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            # BDIM_X=256  (per-head 2049..4096)
+            [16, 32, 16, 32, 2, 2560, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            # BDIM_X=512 and BDIM_X=1024 disabled until the LDG bwd pass1/pass2 launches
+            # call ``ensure_dyn_shmem``. The dynamic-shmem request for pass1/pass2 is
+            # ``sizeof(float4) * (nchans_in + nchans_out) * block.y``; at the BDIM_X=1024
+            # configuration (nchans=8704, float4 vec = 2176) that's ~69.6 KiB, exceeding the
+            # default 48 KiB per-CTA opt-in on every CUDA arch. Only the TMA branches
+            # currently call ensure_dyn_shmem; the LDG branches launch the kernel directly
+            # with the oversized shsize, which the driver rejects with cudaErrorInvalidValue.
+            # See attention_cuda_bwd_ring.cu (LDG pass1/pass2 dispatch) — fix is to mirror
+            # the ensure_dyn_shmem call already present in the TMA branches.
+            #
+            # # BDIM_X=512  (per-head 4097..8192)
+            # [16, 32, 16, 32, 2, 4608, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            # # BDIM_X=1024 (per-head 8193..16384). This also stresses the dynamic-shmem opt-in
+            # # (ensure_dyn_shmem) on the TMA path: ~5*nchans*4 B exceeds the default 48 KiB limit.
+            # [8, 16, 8, 16, 2, 8704, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
             # upsampling is not supported by the kernel yet (serial layer asserts nlon_in % nlon_out == 0)
         ],
         skip_on_empty=True,
