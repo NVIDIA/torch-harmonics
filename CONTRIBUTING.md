@@ -202,7 +202,7 @@ they are not part of the default CI job above.
 | DISCO convolution | `tests/test_convolution.py`, `tests/test_filter_basis.py` |
 | Attention | `tests/test_attention.py` |
 | Distributed | `tests/test_distributed_*.py` (manual multi-GPU setup) |
-| C++/CUDA kernels | Relevant test file **and** compare against torch reference paths where they exist |
+| C++/CUDA kernels | Relevant test file **and** compare against torch reference paths where they exist; add or extend `opcheck` PT2 tests |
 
 CI workflows: **style** (pre-commit on PRs) and **tests** (pytest on push to `main`). Both
 should pass before merge.
@@ -282,13 +282,6 @@ notebooks/          # Exploratory notebooks (not run in CI)
 
 ## Guidelines by area
 
-### Custom operators
-
-- If optimized kernels are implemented, torch reference implementations must be provided to ensure
- readability and their outputs must agree within test tolerances.
-- Test tolerances can be adjusted, however this needs to be justified and clearly documented.
-- If you change kernel semantics, update both paths (or the shared sparsity / indexing logic) and add or extend tests.
-- All custom extensions require implementation of PyTorch 2+ compatibility tests via `torch.library.opcheck`.
 
 ### Spherical harmonic transforms
 
@@ -312,6 +305,47 @@ notebooks/          # Exploratory notebooks (not run in CI)
     upsample not implemented yet)
 - After editing attention C++ or CUDA sources, rebuild and run `tests/test_attention.py`
   (including upsample cases).
+
+### Custom operators
+
+- If optimized kernels are implemented, torch reference implementations must be provided to ensure
+ readability and their outputs must agree within test tolerances.
+- Test tolerances can be adjusted, however this needs to be justified and clearly documented.
+- If you change kernel semantics, update both paths (or the shared sparsity / indexing logic) and add or extend tests.
+
+### PT2 / `torch.compile` compatibility
+
+torch-harmonics targets PyTorch 2.x and `torch.compile`. New or changed custom CUDA kernels and autograd
+paths must stay PT2-safe.
+
+**Custom ops.** Register kernels with `@torch.library.custom_op` and a matching
+`@torch.library.register_fake` (see `torch_harmonics/attention/optimized/attention_optimized.py` and
+`torch_harmonics/disco/optimized/disco_optimized.py`). Add an `opcheck`-based test for each registered op:
+
+```python
+from torch.library import opcheck
+
+opcheck(torch.ops.<namespace>.<op_name>, test_inputs)
+```
+
+Templates in the test suite:
+
+- `tests/test_attention.py::TestNeighborhoodAttentionS2::test_optimized_pt2_compatibility` — main attention op
+- `tests/test_attention.py::TestNeighborhoodAttentionS2::test_ring_kernels_pt2_compatibility` — ring-step kernels (one `opcheck` per op; single-rank mode avoids NCCL)
+- `tests/test_convolution.py` — DISCO ops
+
+`opcheck` verifies the op contract (schema, fake tensors, AOT dispatch); inputs need correct shapes but not
+numerically meaningful values.
+
+**Autograd backward contract.** In `torch.autograd.Function.backward` and `register_autograd` handlers,
+return `None` for every input position where `ctx.needs_input_grad[i]` is `False`. Do not return zero
+tensors or omit slots with the wrong arity. This is required for `torch.compile` / AOTAutograd to prune
+dead subgraphs correctly — not optional. Check `ctx.needs_input_grad` before expensive kernel or collective
+work (see `_neighborhood_s2_attention_bwd_torch` in `torch_harmonics/attention/kernels_torch/attention_torch.py`).
+
+**Untraceable boundaries.** Wrap Python entry points that call NCCL P2P (`dist.batch_isend_irecv`),
+process-group setup, or other code Dynamo cannot trace in `@torch.compiler.disable()`. That forces a clean
+graph break instead of an opaque compile failure. See `torch_harmonics/distributed/primitives.py`.
 
 ### Distributed
 
