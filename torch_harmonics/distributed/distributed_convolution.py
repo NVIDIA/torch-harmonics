@@ -29,6 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import os
 from itertools import accumulate
 from typing import Optional, Tuple, Union
 
@@ -207,6 +208,15 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             )
         self.method = method
         self.fused = bool(fused)
+
+        # Opt-in: pre-allocate ring P2P recv buffers once per ring loop
+        # (instead of one torch.empty per step) and drop the per-step
+        # recv.clone(). Parsed at construction time so different layer
+        # instances can use different settings — useful for tests that
+        # exercise both code paths in one process. Flip on with
+        # ``TORCH_HARMONICS_P2P_BUFFER=1`` in the environment.
+        # Only meaningful for ``method="ring"``; ignored otherwise.
+        self._use_p2p_buffer = os.environ.get("TORCH_HARMONICS_P2P_BUFFER", "0") == "1"
 
         # method='ring' requires the optimized CUDA ring-step kernels.
         # Assert their availability up front so misconfigured builds fail
@@ -424,6 +434,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 groups=self.groups,
                 groupsize=self.groupsize,
                 fused=self.fused,
+                use_p2p_buffer=self._use_p2p_buffer,
             )
 
         if self.bias is not None:
