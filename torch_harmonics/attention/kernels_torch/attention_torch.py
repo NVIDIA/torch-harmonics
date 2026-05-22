@@ -412,6 +412,10 @@ def _neighborhood_s2_attention_torch(
     B, _, H, W = qw.shape
     qw = qw.reshape(B * nh, -1, H, W)
 
+    # Promote to fp32 internally for softmax numerics; cast back to the input
+    # dtype on return so the op is faithful to its declared output dtype
+    # (see register_fake below, which commits to kw.dtype).
+    inp_dtype = kw.dtype
     kw = kw.to(torch.float32)
     vw = vw.to(torch.float32)
     qw = qw.to(torch.float32)
@@ -428,7 +432,7 @@ def _neighborhood_s2_attention_torch(
         raise ValueError(f"either nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out}), or vice versa")
 
     _, _, H, W = output.shape
-    output = output.reshape(B, -1, H, W)
+    output = output.reshape(B, -1, H, W).to(dtype=inp_dtype)
 
     return output
 
@@ -472,6 +476,17 @@ def _neighborhood_s2_attention_bwd_torch(ctx, grad_output):
     B, _, H, W = grad_output.shape
     grad_output = grad_output.reshape(B * nh, -1, H, W)
 
+    # Promote to fp32 internally for softmax numerics; cast each grad back to
+    # its corresponding input's dtype on return. Mirrors the optimized bwd
+    # pattern in attention_optimized.py.
+    kw_dtype = kw.dtype
+    vw_dtype = vw.dtype
+    qw_dtype = qw.dtype
+    kw = kw.to(torch.float32)
+    vw = vw.to(torch.float32)
+    qw = qw.to(torch.float32)
+    grad_output = grad_output.to(torch.float32)
+
     # direction selection — same convention as the forward op.
     if nlon_in % nlon_out == 0:
         dv_fn = _neighborhood_s2_attention_bwd_dv_torch
@@ -487,21 +502,21 @@ def _neighborhood_s2_attention_bwd_torch(ctx, grad_output):
     if vw_needs_grad:
         dvw = dv_fn(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
         _, _, H, W = dvw.shape
-        dvw = dvw.reshape(B, -1, H, W)
+        dvw = dvw.reshape(B, -1, H, W).to(dtype=vw_dtype)
     else:
         dvw = None
 
     if kw_needs_grad:
         dkw = dk_fn(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
         _, _, H, W = dkw.shape
-        dkw = dkw.reshape(B, -1, H, W)
+        dkw = dkw.reshape(B, -1, H, W).to(dtype=kw_dtype)
     else:
         dkw = None
 
     if qw_needs_grad:
         dqw = dq_fn(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
         _, _, H, W = dqw.shape
-        dqw = dqw.reshape(B, -1, H, W)
+        dqw = dqw.reshape(B, -1, H, W).to(dtype=qw_dtype)
     else:
         dqw = None
 
