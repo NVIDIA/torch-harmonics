@@ -208,8 +208,9 @@ if optimized_kernels_is_available():
         itype = inp.dtype
         cdtype = _compute_dtype(itype)
         # Cast inputs/vals to the compute dtype to keep accumulation precision
-        # at fp32 when inputs are fp16/bf16. The output tensor's dtype matches
-        # ``inp`` (the autograd Function allocates it that way).
+        # at fp32 when inputs are fp16/bf16. The kernel uses a single STORAGE_T
+        # for both ``inp`` and ``out``, so callers MUST pass ``out`` in the
+        # same compute dtype (the autograd Function allocates it that way).
         inp_c = inp.to(cdtype).contiguous()
         vals_c = vals.to(cdtype)
         disco_kernels.forward_ring_step.default(
