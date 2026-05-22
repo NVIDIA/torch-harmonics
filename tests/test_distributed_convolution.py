@@ -39,6 +39,7 @@ from testutils import (
     compare_tensors,
     disable_tf32,
     gather_tensor_hw,
+    maybe_autocast,
     set_seed,
     setup_class_from_context,
     setup_module,
@@ -155,6 +156,27 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", True, 1e-6, 1e-5],
             [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", False, 1e-6, 1e-5],
             [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", True, 1e-6, 1e-5],
+            # fp16 / bf16 AMP coverage. Tolerances are looser than the fp32
+            # rows because the bf16/fp16 cuBLAS rounding at each einsum's
+            # output dominates the abs error, and cross-rank reductions
+            # (polar reduce_scatter for ring; polar all_reduce for a2a)
+            # amplify cancellation at near-zero output positions — see the
+            # cross-rank-cancellation note in
+            # feedback_amp_fp16_cancellation. Starting tolerances mirror the
+            # serial test's sparse-against-dense AMP rows; tighten/loosen
+            # per-row if empirics warrant.
+            #
+            # a2a — covers both non-transpose and transpose branches.
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, False, "a2a", False, 2e-2, 1e-2],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, "a2a", False, 5e-2, 5e-2],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, True, "a2a", False, 2e-2, 1e-2],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, True, "a2a", False, 5e-2, 5e-2],
+            # ring (K-expanded activation saved across fwd/bwd).
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, False, "ring", True, 2e-2, 1e-2],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, "ring", True, 5e-2, 5e-2],
+            # ring_fused (K-expanded activation dropped, recomputed in bwd).
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, False, "ring_fused", True, 2e-2, 1e-2],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, "ring_fused", True, 5e-2, 5e-2],
         ],
         skip_on_empty=True,
     )
@@ -201,6 +223,12 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         if method == "ring" and not torch.cuda.is_available():
             self.skipTest("method='ring' is CUDA-only")
 
+        # For AMP dtypes the modules + inputs stay in float32 and autocast
+        # handles the downcast inside fwd/bwd — same pattern as the serial
+        # convolution tests in test_convolution.py.
+        is_amp = dtype in (torch.float16, torch.bfloat16)
+        module_dtype = torch.float32 if is_amp else dtype
+
         set_seed(333)
 
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
@@ -231,17 +259,17 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             # Transpose class does not yet accept method= / fused= — the
             # ``algorithm`` and ``p2p_buffer`` test parameters are ignored
             # on this branch.
-            conv_local = th.DiscreteContinuousConvTransposeS2(**disco_args).to(dtype=dtype, device=self.device)
+            conv_local = th.DiscreteContinuousConvTransposeS2(**disco_args).to(dtype=module_dtype, device=self.device)
             with mock.patch.dict(os.environ, env_override):
-                conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args).to(dtype=dtype, device=self.device)
+                conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args).to(dtype=module_dtype, device=self.device)
         else:
-            conv_local = th.DiscreteContinuousConvS2(**disco_args).to(dtype=dtype, device=self.device)
+            conv_local = th.DiscreteContinuousConvS2(**disco_args).to(dtype=module_dtype, device=self.device)
             with mock.patch.dict(os.environ, env_override):
                 conv_dist = thd.DistributedDiscreteContinuousConvS2(
                     **disco_args,
                     method=method,
                     fused=fused,
-                ).to(dtype=dtype, device=self.device)
+                ).to(dtype=module_dtype, device=self.device)
 
         # copy the weights from the local conv into the dist conv
         with torch.no_grad():
@@ -250,12 +278,13 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
                 conv_dist.bias.copy_(conv_local.bias)
 
         # create tensors
-        inp_full = torch.randn((B, C, H, W), dtype=dtype, device=self.device)
+        inp_full = torch.randn((B, C, H, W), dtype=module_dtype, device=self.device)
 
         # local conv
         # FWD pass
         inp_full.requires_grad = True
-        out_full = conv_local(inp_full)
+        with maybe_autocast(self.device.type, dtype):
+            out_full = conv_local(inp_full)
 
         # create grad for backward
         with torch.no_grad():
@@ -270,11 +299,13 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         # FWD pass
         inp_local = self._split_helper(inp_full.detach().clone())
         inp_local.requires_grad = True
-        out_local = conv_dist(inp_local)
+        with maybe_autocast(self.device.type, dtype):
+            out_local = conv_dist(inp_local)
 
         # BWD pass
         ograd_local = self._split_helper(ograd_full)
-        out_local = conv_dist(inp_local)
+        with maybe_autocast(self.device.type, dtype):
+            out_local = conv_dist(inp_local)
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
 
