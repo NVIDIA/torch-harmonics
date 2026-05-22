@@ -301,7 +301,14 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
             )
 
         B, C, H_in_local, _ = x.shape
-        # K-expanded output accumulator; partial in polar.
+        # K-expanded output accumulator; partial in polar. Allocated in
+        # compute_dtype (fp32 under AMP) because the fwd ring-step kernel
+        # uses a single STORAGE_T for both inp and out and the wrapper
+        # upcasts inp to compute_dtype — out must match. Keeping the
+        # accumulator in fp32 across ring steps also avoids the bf16/fp16
+        # rounding-during-accumulation that would amplify cross-rank
+        # cancellation (see _RingDiscoConvFwdFn.backward's grad_x_acc).
+        compute_dtype = _compute_dtype(x.dtype)
         y_acc = torch.zeros(
             B,
             C,
@@ -309,13 +316,13 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
             nlat_out,
             nlon_out_local_self,
             device=x.device,
-            dtype=x.dtype,
+            dtype=compute_dtype,
         )
 
         # Hoist the psi_vals cast out of the per-step wrapper (kernel
         # requires compute_dtype/fp32). The wrapper's defensive .to() is
         # then a no-op every ring step.
-        psi_vals_c = psi_vals.to(_compute_dtype(x.dtype))
+        psi_vals_c = psi_vals.to(compute_dtype)
 
         x_chunk = x.contiguous()
 
@@ -380,6 +387,10 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
                 # ring loop — no clone needed. Otherwise (legacy path)
                 # clone defensively as before.
                 x_chunk = recv_x if recv_pool is not None else recv_x.clone()
+
+        # Cast back to input dtype so the downstream einsum (and the bwd
+        # K-expanded grad) sees the same dtype the caller expects.
+        y_acc = y_acc.to(x.dtype)
 
         return y_acc
 
@@ -608,7 +619,11 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
 
         B, C, H_in_local, _ = x.shape
 
-        # K-expanded accumulator — transient, NOT saved.
+        # K-expanded accumulator — transient, NOT saved. Allocated in
+        # compute_dtype (fp32 under AMP); see note in
+        # _RingDiscoConvFwdFn.forward about the kernel's STORAGE_T contract
+        # and fp32-across-ring-steps precision intent.
+        compute_dtype = _compute_dtype(x.dtype)
         y_acc = torch.zeros(
             B,
             C,
@@ -616,10 +631,10 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
             nlat_out,
             nlon_out_local_self,
             device=x.device,
-            dtype=x.dtype,
+            dtype=compute_dtype,
         )
 
-        psi_vals_c = psi_vals.to(_compute_dtype(x.dtype))
+        psi_vals_c = psi_vals.to(compute_dtype)
 
         x_chunk = x.contiguous()
 
@@ -673,6 +688,11 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
                 for req in reqs:
                     req.wait()
                 x_chunk = recv_x if recv_pool is not None else recv_x.clone()
+
+        # Cast back to input dtype before the einsum so the contraction
+        # runs in the autocast-active dtype (matches the non-fused path
+        # and the bwd grad_w recompute which casts to grad_out.dtype).
+        y_acc = y_acc.to(x.dtype)
 
         # Weight contraction. y_acc dropped after this scope.
         H, W = nlat_out, nlon_out_local_self
@@ -883,6 +903,10 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
 
         # ---- grad_w path: recompute y_acc via a second ring fwd ----
         if ctx.needs_input_grad[1]:
+            # Allocate in compute_dtype to match the fwd ring kernel's
+            # STORAGE_T contract (the wrapper upcasts inp to fp32) and to
+            # keep accumulation in fp32 across ring steps. The downstream
+            # einsum already casts y_acc_r to grad_out.dtype below.
             y_acc = torch.zeros(
                 B,
                 C,
@@ -890,7 +914,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
                 H,
                 W,
                 device=x.device,
-                dtype=x.dtype,
+                dtype=compute_dtype,
             )
             x_chunk = x.contiguous()
 
