@@ -72,6 +72,15 @@ void verify_part_new(const int nlon_out,
                 const at::Tensor roff, 
                 const at::Tensor cols);
 
+void split_csr_rows(float thres,
+                    int64_t split_len,
+                    int64_t nrows,
+                    int32_t *row_idx,
+                    int64_t *row_off,
+                    int64_t *n_long_rows,
+                    int64_t *max_row_len0,
+                    int64_t *max_row_len1);
+
 unsigned int next_pow2(unsigned int x);
 
 void ensure_dyn_shmem(const void* kern, size_t shsize);
@@ -154,6 +163,22 @@ __device__ float4 __forceinline__ __vdiv(float s, float4 v) {
     return make_float4(s/v.x, s/v.y, s/v.z, s/v.w);;
 }
 
+__device__ __forceinline__ void atomicMax(float *ptr, float val) {
+
+    int *int_ptr = (int*)ptr;
+    int old = *int_ptr, assumed;
+
+    do {
+        assumed = old;
+        if (__int_as_float(assumed) >= val) {
+            break;
+        }
+        old = atomicCAS(int_ptr, assumed, __float_as_int(val));
+
+    } while (assumed != old);
+    return;
+}
+
 template<int BDIM_X,
          int NUM_IT,
          typename FUNC_T>
@@ -198,7 +223,7 @@ template<int BDIM_X,
          typename VAL_T>
 __device__ VAL_T __block_sum(VAL_T val) {
 
-    const int NWARP = (BDIM_X*BDIM_Y*BDIM_Z) / WARP_SIZE;
+    constexpr int NWARP = (BDIM_X*BDIM_Y*BDIM_Z) / WARP_SIZE;
 
     val = __warp_sum(val);
 
@@ -244,6 +269,74 @@ __device__ void swap_d(VAL_T &a, VAL_T &b) {
     b = tmp;
 
     return;
+}
+
+__device__ __forceinline__ unsigned int __laneid() {
+        unsigned int ret;
+        asm ("mov.u32 %0, %%laneid;" : "=r"(ret));
+        return ret;
+}
+
+__device__ __forceinline__ unsigned int __lanemask_lt() {
+        unsigned int ret;
+        asm ("mov.u32 %0, %%lanemask_lt;" : "=r"(ret));
+        return ret;
+}
+
+__device__ __forceinline__ int __warp_compact(bool pred, int *index) {
+        const unsigned int mask = __ballot_sync(FULL_MASK, pred);
+        *index = __popc(mask & __lanemask_lt());
+        return __popc(mask);
+}
+
+template<int BDIM_X,
+         int BDIM_Y=1>
+__device__ int __compact(bool pred, int *index) {
+
+    static_assert((BDIM_X == 32 && BDIM_Y  > 1) ||
+                  (BDIM_X  > 32 && BDIM_Y == 1)) ;
+
+    int ret = __warp_compact(pred, index);
+
+    if constexpr(BDIM_X > WARP_SIZE) {
+
+        constexpr int NWARP = BDIM_X / WARP_SIZE;
+
+        const int lid = __laneid();
+        const int wid = threadIdx.x / WARP_SIZE;
+
+        __shared__ int sh[NWARP];
+
+        if (lid == 0) {
+            sh[wid] = ret;
+        }
+        ret = __syncthreads_count(pred);
+
+        if (wid == 0) {
+
+            int val = (lid > 0 && lid < NWARP) ? sh[lid-1] : 0;
+
+            #pragma unroll
+            for(int i = 1; i < NWARP; i *= 2) {
+                const int recv = __shfl_up_sync(FULL_MASK, val, i);
+                if (lid >= i) {
+                    val += recv;
+                }
+            }
+            if (lid < NWARP) { sh[lid] = val; }
+        }
+        __syncthreads();
+
+        *index += sh[wid];
+        __syncthreads();
+    }
+    return ret;
+}
+
+template<int BDIM_X>
+__device__ __forceinline__ void __gsync() {
+    if constexpr(BDIM_X == WARP_SIZE) { __syncwarp();    }
+    else                              { __syncthreads(); }
 }
 
 // transpose utils

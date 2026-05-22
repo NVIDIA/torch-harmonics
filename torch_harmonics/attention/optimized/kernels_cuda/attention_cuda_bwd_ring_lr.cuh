@@ -30,116 +30,158 @@
 
 #pragma once
 
-__device__ __forceinline__ void atomicMax(float *ptr, float val) {
-
-    int *int_ptr = (int*)ptr;
-    
-    // Read the current value at the ptr
-    int old = *int_ptr, assumed;
-    
-    do {
-        assumed = old;
-        if (__int_as_float(assumed) >= val) {
-            break;
-        }
-        old = atomicCAS(int_ptr, assumed, __float_as_int(val));
-        
-    } while (assumed != old);
-    return;
-}
-
 template<int BDIM_X,
          int BDIM_Y,
          int NLOC,          // smallest int such that BDIM_X*NLOC >= nchan_in
          typename FLOATV_T> // either float or float4
 __global__
 __launch_bounds__(BDIM_X*BDIM_Y)
-void s2_attn_bwd_ring_pass1_softmax_k(const int nlat_max,
-                                      const int nchan_in,
-                                      const int nlat_halo,
-                                      const int nlon_kx,
-                                      const int nlon_in,
-                                      const int pscale,           // GLOBAL pscale = nlon_in / nlon_out_global
-                                      const int lon_lo_kx,
-                                      const int lat_halo_start,
-                                      const int nlat_out,
-                                      const int nlon_out,
+void s2_attn_bwd_ring_pass1_softmax_k(const __grid_constant__ attn_params_t p,
+                                      const int shcol_len_max,
+                                      const int nlat_max,
                                       const FLOATV_T *__restrict__ kx,           // [batch][nlat_halo][nlon_kx][nchan_in]
                                       const FLOATV_T *__restrict__ qy,           // [batch][nlat_out][nlon_out][nchan_in]
                                       const int32_t  *__restrict__ row_idx,
                                       const int64_t  *__restrict__ row_off,
                                       const int64_t  *__restrict__ col_idx,
-                                      const float    *__restrict__ qdotk_max_prev,   
+                                      const float    *__restrict__ qdotk_max_prev,
                                             float    *__restrict__ qdotk_max_curr) {  // NEW, caller inits to -inf each ring step
 
     static_assert(0 == (BDIM_X & (BDIM_X-1)));
     static_assert(0 == (BDIM_Y & (BDIM_Y-1)));
-    static_assert((BDIM_X == 32 && BDIM_Y  > 1) ||
-                  (BDIM_X  > 32 && BDIM_Y == 1)) ;
+    static_assert((BDIM_X == WARP_SIZE && BDIM_Y  > 1) ||
+                  (BDIM_X  > WARP_SIZE && BDIM_Y == 1)) ;
 
     const int tidx = threadIdx.x;
+    const int tidy = threadIdx.y;
 
-    const int blk_per_row = gridDim.y; // blocks along Y process the same (ho,wo) 
-                                       // point by iteration over the (same) CSR 
+    const int blk_per_row = gridDim.y; // blocks along Y process the same (ho,wo)
+                                       // point by iteration over the (same) CSR
                                        // row in an interleaved fashion
     const int blk_split_id = blockIdx.y;
 
     const int batch = blockIdx.z;
     const uint64_t ctaid = uint64_t(blockIdx.x) * blockDim.y + threadIdx.y;
 
+    const int &nchan_in       = p.nchan_in;
+    const int &nlat_halo      = p.nlat_halo;
+    const int &nlon_kx        = p.nlon_kx;
+    const int &nlon_in        = p.nlon_in;
+    const int &pscale         = p.pscale;
+    const int &lon_lo_kx      = p.lon_lo_kx;
+    const int &lat_halo_start = p.lat_halo_start;
+    const int &nlat_out       = p.nlat_out;
+    const int &nlon_out       = p.nlon_out;
+
     if (ctaid >= uint64_t(nlat_max)*nlon_out) {
         return;
     }
 
-    const int h     = ctaid / nlon_out;
-    const int wo    = ctaid - (h * nlon_out);
-    const int ho    = row_idx[h];
+    const int h  = ctaid / nlon_out;
+    const int wo = ctaid - (h * nlon_out);
+    const int ho = row_idx[h];
 
-    kx += int64_t(batch)*nlat_halo*nlon_kx*nchan_in + tidx;
-    qy += int64_t(batch)*nlat_out*nlon_out*nchan_in  + int64_t(ho)*nlon_out*nchan_in  + int64_t(wo)*nchan_in + tidx;
+    kx += int64_t(batch)*nlat_halo*nlon_kx*nchan_in;
+    qy += int64_t(batch)*nlat_out*nlon_out*nchan_in + int64_t(ho)*nlon_out*nchan_in + int64_t(wo)*nchan_in + tidx;
+
+    extern __shared__ __align__(sizeof(float4)) float shext[];
+
+    // just to simplify the seatup of the shared memory layout
+    using FLOATV_PTR_T = const FLOATV_T *;
+
+    FLOATV_PTR_T *shkx_ptr = NULL;
+#if 0
+    FLOATV_T     *shqy     = NULL;
+    if constexpr(sizeof(FLOATV_T) > sizeof(FLOATV_PTR_T)) {
+        FLOATV_T *base = reinterpret_cast<FLOATV_T *>(shext);
+        shqy  = base + tidy*nchan_in;
+        shkx_ptr = reinterpret_cast<FLOATV_PTR_T *>(base + BDIM_Y*nchan_in) + tidy*shcol_len_max;
+    } else {
+        FLOATV_PTR_T *base = reinterpret_cast<FLOATV_PTR_T *>(shext);
+        shkx_ptr = base + tidy*shcol_len_max;
+        shqy  = reinterpret_cast<FLOATV_T *>(base + BDIM_Y*shcol_len_max) + tidy*nchan_in;
+    }
+    shqy += tidx;
+#else
+    FLOATV_PTR_T *base = reinterpret_cast<FLOATV_PTR_T *>(shext);
+    shkx_ptr = base + tidy*shcol_len_max;
+#endif
 
     FLOATV_T loc_qy[NLOC];
-    strided_op<BDIM_X, NLOC>(nchan_in,  [&](int i) { loc_qy[i] = qy[i*BDIM_X]; });
-
+#if 0
+    strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { shqy[i*BDIM_X] = qy[i*BDIM_X]; });
+#else
+    strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { loc_qy[i] = qy[i*BDIM_X]; });
+#endif
     const int64_t out_flat = int64_t(batch)*nlat_out*nlon_out + int64_t(ho)*nlon_out + wo;
 
-    qdotk_max_prev  += out_flat;
-    qdotk_max_curr  += out_flat;
+    qdotk_max_prev += out_flat;
+    qdotk_max_curr += out_flat;
 
-    // Load current state
     float qdotk_max = qdotk_max_prev[0];
-
-    // `pscale` is the GLOBAL ratio nlon_in / nlon_out_global, passed by the caller.
-    // The kernel's `nlon_out` is the LOCAL output width (nlon_out_local), not the global one.
 
     const int64_t rbeg = row_off[ho];
     const int64_t rend = row_off[ho + 1];
-    col_idx += rbeg;
-    const int rlen = rend - rbeg;
+    const int     rlen = rend - rbeg;
 
-    for (int off = blk_split_id; off < rlen; off += blk_per_row) {
+    col_idx += rbeg + blk_split_id;
 
-        const int64_t col   = col_idx[off];
-        const int hi_global = col / nlon_in;
-        const int wi        = col - (hi_global * nlon_in);
-        const int wi_wo     = wi + pscale * wo;
+    const int rlen_div = rlen / blk_per_row;
+    const int rlen_mod = rlen % blk_per_row;
 
-        const int wip       = wi_wo - (wi_wo / nlon_in) * nlon_in;
-        if (wip < lon_lo_kx || wip >= lon_lo_kx + nlon_kx) continue;
-        
-        const int hi_local  = hi_global - lat_halo_start;
-        if (hi_local < 0 || hi_local >= nlat_halo) continue;
+    int n = rlen_div + (blk_split_id < rlen_mod);
+    int n_active = 0;
 
-        const int wip_local = wip - lon_lo_kx;
+    for (int i = 0; i < n; i += BDIM_X) {
 
-        const FLOATV_T *_kx = kx + int64_t(hi_local)*nlon_kx*nchan_in + int64_t(wip_local)*nchan_in;
+        const FLOATV_T *kx_ptr = NULL;
+
+        if (i+tidx < n) {
+            const int64_t col = col_idx[(i+tidx)*blk_per_row];
+
+            const int hi_global = col / nlon_in;
+            const int wi        = col - (hi_global * nlon_in);
+            const int wi_wo     = wi + pscale * wo;
+
+            const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
+
+            if (wip >= lon_lo_kx && wip < lon_lo_kx + nlon_kx) {
+
+                const int hi_local  = hi_global - lat_halo_start;
+
+                if (hi_local >= 0 && hi_local < nlat_halo) {
+
+                    const int wip_local = wip - lon_lo_kx;
+                    kx_ptr = kx + int64_t(hi_local)*nlon_kx*nchan_in + int64_t(wip_local)*nchan_in;
+                }
+            }
+        }
+
+        int toff;
+        int ntot = __compact<BDIM_X, BDIM_Y>(kx_ptr != NULL, &toff);
+        if (kx_ptr != NULL) {
+            shkx_ptr[n_active + toff] = kx_ptr;
+        }
+        n_active += ntot;
+    }
+    n = n_active;
+
+    __gsync<BDIM_X>();
+
+    for (int i = 0; i < n; i++) {
+
+        const FLOATV_T *__restrict__ _kx = shkx_ptr[i] + tidx;
 
         FLOATV_T qdotk_v = __vset<FLOATV_T>(0.0f);
+#if 0
+        strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { qdotk_v = __vadd(qdotk_v, __vmul(shqy[i*BDIM_X], _kx[i*BDIM_X])); });
+#else
         strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { qdotk_v = __vadd(qdotk_v, __vmul(loc_qy[i], _kx[i*BDIM_X])); });
-
+#endif
         float qdotk = __vred(qdotk_v);
-        if constexpr(BDIM_X == 32) { qdotk = __warp_sum(qdotk);          } 
-        else                       { qdotk = __block_sum<BDIM_X>(qdotk); }
+
+        if constexpr(BDIM_X == WARP_SIZE) { qdotk = __warp_sum(qdotk);          }
+        else                              { qdotk = __block_sum<BDIM_X>(qdotk); }
 
         qdotk_max = max(qdotk_max, qdotk);
     }
@@ -156,10 +198,8 @@ template<int BDIM_X,
          typename FLOATV_T> // either float or float4
 __global__
 __launch_bounds__(BDIM_X*BDIM_Y)
-void s2_attn_bwd_ring_pass1_rescale_k(const int nlat_max,
-                                      const int nchan_in,
-                                      const int nlat_out,
-                                      const int nlon_out,
+void s2_attn_bwd_ring_pass1_rescale_k(const __grid_constant__ attn_params_t p,
+                                      const int nlat_max,
                                       const int32_t  *__restrict__ row_idx,
                                             float    *__restrict__ alpha_sum_buf,      // [batch][nlat_out][nlon_out] (in/out)
                                             float    *__restrict__ qdotk_max_prev,      // [batch][nlat_out][nlon_out] (in/out)
@@ -170,20 +210,24 @@ void s2_attn_bwd_ring_pass1_rescale_k(const int nlat_max,
 
     static_assert(0 == (BDIM_X & (BDIM_X-1)));
     static_assert(0 == (BDIM_Y & (BDIM_Y-1)));
-    static_assert((BDIM_X == 32 && BDIM_Y  > 1) ||
-                  (BDIM_X  > 32 && BDIM_Y == 1)) ;
+    static_assert((BDIM_X == WARP_SIZE && BDIM_Y  > 1) ||
+                  (BDIM_X  > WARP_SIZE && BDIM_Y == 1)) ;
 
     const int tidx = threadIdx.x;
     const int batch = blockIdx.y;
     const uint64_t ctaid = uint64_t(blockIdx.x) * blockDim.y + threadIdx.y;
 
+    const int &nchan_in = p.nchan_in;
+    const int &nlat_out = p.nlat_out;
+    const int &nlon_out = p.nlon_out;
+
     if (ctaid >= uint64_t(nlat_max)*nlon_out) {
         return;
     }
 
-    const int h     = ctaid / nlon_out;
-    const int wo    = ctaid - (h * nlon_out);
-    const int ho    = row_idx[h];
+    const int h  = ctaid / nlon_out;
+    const int wo = ctaid - (h * nlon_out);
+    const int ho = row_idx[h];
 
     const int64_t out_flat = int64_t(batch)*nlat_out*nlon_out + int64_t(ho)*nlon_out + wo;
 
@@ -214,10 +258,10 @@ void s2_attn_bwd_ring_pass1_rescale_k(const int nlat_max,
 
     strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { loc_k__[i] = __vscale(max_correction, loc_k__[i]); });
     strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { loc_kvw[i] = __vscale(max_correction, loc_kvw[i]); });
-    
+
     strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) {   alpha_k_buf[i*BDIM_X] = loc_k__[i]; });
     strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { alpha_kvw_buf[i*BDIM_X] = loc_kvw[i]; });
-    
+
     if (!tidx) {
         qdotk_max_prev[0] = qdotk_max_new; // used for next ring call
         alpha_sum_buf[0] = alpha_sum;
@@ -234,17 +278,9 @@ template<int BDIM_X,
          typename FLOATV_T> // either float or float4
 __global__
 __launch_bounds__(BDIM_X*BDIM_Y)
-void s2_attn_bwd_ring_pass1_finalize_k(const int nlat_max,
-                                       const int nchan_in,
-                                       const int nchan_out,
-                                       const int nlat_halo,
-                                       const int nlon_kx,
-                                       const int nlon_in,
-                                       const int pscale,           // GLOBAL pscale = nlon_in / nlon_out_global
-                                       const int lon_lo_kx,
-                                       const int lat_halo_start,
-                                       const int nlat_out,
-                                       const int nlon_out,
+void s2_attn_bwd_ring_pass1_finalize_k(const __grid_constant__ attn_params_t p,
+                                       const int shcol_len_max,
+                                       const int nlat_max,
                                        const FLOATV_T *__restrict__ kx,           // [batch][nlat_halo][nlon_kx][nchan_in]
                                        const FLOATV_T *__restrict__ vx,           // [batch][nlat_halo][nlon_kx][nchan_out]
                                        const FLOATV_T *__restrict__ qy,           // [batch][nlat_out][nlon_out][nchan_in]
@@ -261,18 +297,30 @@ void s2_attn_bwd_ring_pass1_finalize_k(const int nlat_max,
 
     static_assert(0 == (BDIM_X & (BDIM_X-1)));
     static_assert(0 == (BDIM_Y & (BDIM_Y-1)));
-    static_assert((BDIM_X == 32 && BDIM_Y  > 1) ||
-                  (BDIM_X  > 32 && BDIM_Y == 1)) ;
+    static_assert((BDIM_X == WARP_SIZE && BDIM_Y  > 1) ||
+                  (BDIM_X  > WARP_SIZE && BDIM_Y == 1)) ;
 
     const int tidx = threadIdx.x;
-    
-    const int blk_per_row = gridDim.y; // blocks along Y process the same (ho,wo) 
-                                       // point by iteration over the (same) CSR 
+    const int tidy = threadIdx.y;
+
+    const int blk_per_row = gridDim.y; // blocks along Y process the same (ho,wo)
+                                       // point by iteration over the (same) CSR
                                        // row in an interleaved fashion
     const int blk_split_id = blockIdx.y;
 
     const int batch = blockIdx.z;
-    const uint64_t ctaid = uint64_t(blockIdx.x) * blockDim.y + threadIdx.y;
+    const uint64_t ctaid = uint64_t(blockIdx.x)*blockDim.y + threadIdx.y;
+
+    const int &nchan_in       = p.nchan_in;
+    const int &nchan_out      = p.nchan_out;
+    const int &nlat_halo      = p.nlat_halo;
+    const int &nlon_kx        = p.nlon_kx;
+    const int &nlon_in        = p.nlon_in;
+    const int &pscale         = p.pscale;
+    const int &lon_lo_kx      = p.lon_lo_kx;
+    const int &lat_halo_start = p.lat_halo_start;
+    const int &nlat_out       = p.nlat_out;
+    const int &nlon_out       = p.nlon_out;
 
     if (ctaid >= uint64_t(nlat_max)*nlon_out) {
         return;
@@ -280,17 +328,41 @@ void s2_attn_bwd_ring_pass1_finalize_k(const int nlat_max,
 
     extern __shared__ __align__(sizeof(float4)) float shext[];
 
-    FLOATV_T *sh_dy = reinterpret_cast<FLOATV_T *>(shext) + threadIdx.y*(nchan_in+nchan_out) + tidx;
-    FLOATV_T *sh_qy = sh_dy + nchan_out; // [nchan_in], so always offest by tidx
+    // just to simplify the seatup of the shared memory layout
+    using FLOATV_PTR_T = const FLOATV_T *;
+
+    // chunked into 4 srrays: dy[nchan_out], qy[nchan_in], shkx_ptr[shcol_len_max], shvx_ptr[shcol_len_max]
+    FLOATV_T     *base_fltv     = NULL;
+    FLOATV_PTR_T *base_fltv_ptr = NULL;
+    float        *base_flt      = NULL;
+
+    if constexpr(sizeof(FLOATV_T) > sizeof(FLOATV_PTR_T)) {
+        base_fltv     = reinterpret_cast<FLOATV_T     *>(shext);
+        base_fltv_ptr = reinterpret_cast<FLOATV_PTR_T *>(base_fltv + BDIM_Y*(nchan_in+nchan_out)); 
+        base_flt      = reinterpret_cast<float        *>(base_fltv_ptr + BDIM_Y*2*shcol_len_max);
+    } else {
+        base_fltv_ptr = reinterpret_cast<FLOATV_PTR_T *>(shext);
+        base_fltv     = reinterpret_cast<FLOATV_T     *>(base_fltv_ptr  + BDIM_Y*2*shcol_len_max);
+        base_flt      = reinterpret_cast<float        *>(base_fltv + BDIM_Y*(nchan_in+nchan_out));
+    }
+
+    FLOATV_T     *sh_dy    = base_fltv                            + tidy*nchan_out;      // [nchan_out]
+    FLOATV_T     *sh_qy    = base_fltv     + BDIM_Y*nchan_out     + tidy*nchan_in;       // [nchan_in]
+    FLOATV_PTR_T *shkx_ptr = base_fltv_ptr                        + tidy*shcol_len_max;  // [shcol_len_max]
+    FLOATV_PTR_T *shvx_ptr = base_fltv_ptr + BDIM_Y*shcol_len_max + tidy*shcol_len_max;  // [shcol_len_max]
+    float        *shweight = base_flt                             + tidy*shcol_len_max;  // [shcol_len_max]
+
+    sh_dy += tidx;
+    sh_qy += tidx;
 
     const int h     = ctaid / nlon_out;
     const int wo    = ctaid - (h * nlon_out);
     const int ho    = row_idx[h];
 
-    kx += int64_t(batch)*nlat_halo*nlon_kx*nchan_in + tidx;
-    qy += int64_t(batch)*nlat_out*nlon_out*nchan_in  + int64_t(ho)*nlon_out*nchan_in  + int64_t(wo)*nchan_in + tidx;
+    kx += int64_t(batch)*nlat_halo*nlon_kx*nchan_in; //  + tidx;
+    vx += int64_t(batch)*nlat_halo*nlon_kx*nchan_out;//  + tidx;
 
-    vx += int64_t(batch)*nlat_halo*nlon_kx*nchan_out + tidx;
+    qy += int64_t(batch)*nlat_out*nlon_out*nchan_in  + int64_t(ho)*nlon_out*nchan_in  + int64_t(wo)*nchan_in  + tidx;
     dy += int64_t(batch)*nlat_out*nlon_out*nchan_out + int64_t(ho)*nlon_out*nchan_out + int64_t(wo)*nchan_out + tidx;
 
     const int64_t out_flat = int64_t(batch)*nlat_out*nlon_out + int64_t(ho)*nlon_out + wo;
@@ -313,7 +385,7 @@ void s2_attn_bwd_ring_pass1_finalize_k(const int nlat_max,
     // sh_alpha_k[nchan_in], sh_alpha_kvw[nchan_in], sh_dy[nchan_out]
     FLOATV_T loc_k__[NLOC];
     FLOATV_T loc_kvw[NLOC];
-        
+
     strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { loc_k__[i] = __vset<FLOATV_T>(0); });
     strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { loc_kvw[i] = __vset<FLOATV_T>(0); });
 
@@ -321,41 +393,79 @@ void s2_attn_bwd_ring_pass1_finalize_k(const int nlat_max,
     float alpha_sum = 0;
     float integral = 0;
     float qdotk_max_new = qdotk_max_curr[0];
-
+    
     const int64_t rbeg = row_off[ho];
     const int64_t rend = row_off[ho + 1];
-    col_idx += rbeg;
-    const int rlen = rend - rbeg;
+    const int     rlen = rend - rbeg;
 
-    // Pass B: accumulate alpha_sum, integral, alpha_k, alpha_kvw against
-    // the now-final qdotk_max, no per-iteration max_correction needed.
-    for (int off = blk_split_id; off < rlen; off += blk_per_row) {
+    col_idx += rbeg + blk_split_id;
 
-        const int64_t col   = col_idx[off];
-        const int hi_global = col / nlon_in;
-        const int wi        = col - (hi_global * nlon_in);
-        const int wi_wo     = wi + pscale * wo;
-        const int wip       = wi_wo - (wi_wo / nlon_in) * nlon_in;
+    const int rlen_div = rlen / blk_per_row;
+    const int rlen_mod = rlen % blk_per_row;
 
-        if (wip < lon_lo_kx || wip >= lon_lo_kx + nlon_kx) continue;
+    int n = rlen_div + (blk_split_id < rlen_mod);
+    int n_active = 0;
 
-        const int hi_local  = hi_global - lat_halo_start;
-        if (hi_local < 0 || hi_local >= nlat_halo) continue;
-        const int wip_local = wip - lon_lo_kx;
+    for (int i = 0; i < n; i += BDIM_X) {
 
-        const FLOATV_T *_kx = kx + int64_t(hi_local)*nlon_kx*nchan_in  + int64_t(wip_local)*nchan_in;
-        const FLOATV_T *_vx = vx + int64_t(hi_local)*nlon_kx*nchan_out + int64_t(wip_local)*nchan_out;
+        const FLOATV_T *kx_ptr = NULL;
+        const FLOATV_T *vx_ptr = NULL;
+        float weight = 0;
+
+        if (i+tidx < n) {
+            const int64_t col = col_idx[(i+tidx)*blk_per_row];
+
+            const int hi_global = col / nlon_in;
+            const int wi        = col - (hi_global * nlon_in);
+            const int wi_wo     = wi + pscale * wo;
+
+            const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
+
+            if (wip >= lon_lo_kx && wip < lon_lo_kx + nlon_kx) {
+
+                const int hi_local  = hi_global - lat_halo_start;
+
+                if (hi_local >= 0 && hi_local < nlat_halo) {
+
+                    const int wip_local = wip - lon_lo_kx;
+                    kx_ptr = kx + int64_t(hi_local)*nlon_kx*nchan_in  + int64_t(wip_local)*nchan_in;
+                    vx_ptr = vx + int64_t(hi_local)*nlon_kx*nchan_out + int64_t(wip_local)*nchan_out;
+                    weight = quad_weights[hi_global];
+                }
+            }
+        }
+
+        int toff;
+        int ntot = __compact<BDIM_X, BDIM_Y>(kx_ptr != NULL, &toff);
+        if (kx_ptr != NULL) {
+            shkx_ptr[n_active + toff] = kx_ptr;
+            shvx_ptr[n_active + toff] = vx_ptr;
+            shweight[n_active + toff] = weight;
+        }
+        n_active += ntot;
+    }
+    n = n_active;
+
+    __gsync<BDIM_X>();
+
+    for (int i = 0; i < n; i++) {
+
+        const FLOATV_T *_kx = shkx_ptr[i] + tidx;
+        const FLOATV_T *_vx = shvx_ptr[i] + tidx;
 
         FLOATV_T qdotk_v = __vset<FLOATV_T>(0.0f);
         FLOATV_T gdotv_v = __vset<FLOATV_T>(0.0f);
 
-        strided_op<BDIM_X,               NLOC>    (nchan_in,  [&](int i) { qdotk_v = __vadd(qdotk_v, __vmul(sh_qy[i*BDIM_X], _kx[i*BDIM_X])); });
+        FLOATV_T loc_kx[NLOC];
+        strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { loc_kx[i] = _kx[i*BDIM_X]; });
+
+        strided_op<BDIM_X,               NLOC>    (nchan_in,  [&](int i) { qdotk_v = __vadd(qdotk_v, __vmul(sh_qy[i*BDIM_X], loc_kx[i])); }); //_kx[i*BDIM_X])); });
         strided_op<BDIM_X, CHOUT_AS_IN ? NLOC : 0>(nchan_out, [&](int i) { gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[i*BDIM_X], _vx[i*BDIM_X])); });
 
         float qdotk = __vred(qdotk_v);
         float gdotv = __vred(gdotv_v);
 
-        if constexpr(BDIM_X == 32) {
+        if constexpr(BDIM_X == WARP_SIZE) {
             qdotk = __warp_sum(qdotk);
             gdotv = __warp_sum(gdotv);
         } else {
@@ -363,14 +473,14 @@ void s2_attn_bwd_ring_pass1_finalize_k(const int nlat_max,
             gdotv = __block_sum<BDIM_X>(gdotv);
         }
 
-        const float alpha_inz  = expf(qdotk - qdotk_max_new) * quad_weights[hi_global];
+        const float alpha_inz  = expf(qdotk - qdotk_max_new) * shweight[i]; //quad_weights[hi_global];
         const float ainz_gdotv = alpha_inz * gdotv;
 
         alpha_sum += alpha_inz;
         integral  += ainz_gdotv;
 
-        strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { loc_k__[i] = __vadd(loc_k__[i], __vscale(alpha_inz,  _kx[i*BDIM_X])); });
-        strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { loc_kvw[i] = __vadd(loc_kvw[i], __vscale(ainz_gdotv, _kx[i*BDIM_X])); });
+        strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { loc_k__[i] = __vadd(loc_k__[i], __vscale( alpha_inz, loc_kx[i])); }); //_kx[i*BDIM_X])); });
+        strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { loc_kvw[i] = __vadd(loc_kvw[i], __vscale(ainz_gdotv, loc_kx[i])); }); //_kx[i*BDIM_X])); });
     }
 
     // Store updated state
@@ -379,29 +489,35 @@ void s2_attn_bwd_ring_pass1_finalize_k(const int nlat_max,
         //qdotk_max_buf[0] = qdotk_max; // no need to store, after kernel qdotk_max_curr will be copied into qdotk_max_prev
         atomicAdd(integral_buf, integral);
     }
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 900
+    constexpr bool DO_SPLIT_VEC = sizeof(FLOATV_T) / sizeof(float) == 4;
+#else
+    constexpr bool DO_SPLIT_VEC = false;
+#endif
+    if constexpr(DO_SPLIT_VEC) {
+        strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { atomicAdd(&alpha_k_buf[i*BDIM_X].x, loc_k__[i].x);
+                                                        atomicAdd(&alpha_k_buf[i*BDIM_X].y, loc_k__[i].y);
+                                                        atomicAdd(&alpha_k_buf[i*BDIM_X].z, loc_k__[i].z);
+                                                        atomicAdd(&alpha_k_buf[i*BDIM_X].w, loc_k__[i].w); });
 
-    strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { atomicAdd(alpha_k_buf   + i*BDIM_X, loc_k__[i]); });
-    strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { atomicAdd(alpha_kvw_buf + i*BDIM_X, loc_kvw[i]); });
-
+        strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { atomicAdd(&alpha_kvw_buf[i*BDIM_X].x, loc_kvw[i].x);
+                                                        atomicAdd(&alpha_kvw_buf[i*BDIM_X].y, loc_kvw[i].y);
+                                                        atomicAdd(&alpha_kvw_buf[i*BDIM_X].z, loc_kvw[i].z);
+                                                        atomicAdd(&alpha_kvw_buf[i*BDIM_X].w, loc_kvw[i].w); });
+    } else {
+        strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { atomicAdd(alpha_k_buf   + i*BDIM_X, loc_k__[i]); });
+        strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { atomicAdd(alpha_kvw_buf + i*BDIM_X, loc_kvw[i]); });
+    }
     return;
 }
 
 template<int BDIM_X,
          int LOC_SIZE,
          typename FLOATV_T>
-void spc_attn_ring_pass1_bwd_long_rows(int64_t n_long_rows,
+void spc_attn_ring_pass1_bwd_long_rows(attn_params_t params,
+                                       int64_t n_long_rows,
                                        int64_t max_row_len,
                                        int64_t batch_size,
-                                       int64_t nchans_in,
-                                       int64_t nchans_out,
-                                       int64_t nlon_in,
-                                       int64_t pscale,
-                                       int64_t nlat_halo,
-                                       int64_t nlon_kx,
-                                       int64_t lon_lo_kx,
-                                       int64_t lat_halo_start,
-                                       int64_t nlat_out,
-                                       int64_t nlon_out,
                                        FLOATV_T *_kxp,
                                        FLOATV_T *_vxp,
                                        FLOATV_T *_qyp,
@@ -421,28 +537,23 @@ void spc_attn_ring_pass1_bwd_long_rows(int64_t n_long_rows,
     static_assert(std::is_same<FLOATV_T, float>::value ||
                   std::is_same<FLOATV_T, float4>::value);
 
-    // TMA prerequisites:                                                                                                                                                              
-    //   - FLOATV_T == float4 (TMA bulk-async copy needs 16-B alignment)
-    //   - loaded device code compiled for compute_90+ (ptxVersion is                                                                                                                  
-    //     resolved per-current-device, so this alone gates correctly                                                                                                                  
-    //     across SASS-only and PTX-JIT builds)
-    constexpr bool VEC4    = std::is_same_v<FLOATV_T, float4>;                                                                                                                         
-    const bool     use_tma = VEC4 && (getPtxver() >= 90); 
+    if (!n_long_rows) {
+        return;
+    }
 
-    const bool chout_as_in = (nchans_out >= BDIM_X*(LOC_SIZE-1) && 
+    const int nlat_out = params.nlat_out;
+    const int nlon_out = params.nlon_out;
+    const int nchans_in  = params.nchan_in;
+    const int nchans_out = params.nchan_out;
+
+    const bool chout_as_in = (nchans_out >= BDIM_X*(LOC_SIZE-1) &&
                               nchans_out <= BDIM_X* LOC_SIZE  );
 
-    constexpr int BDIM_Y = (BDIM_X <= 32) ? THREADS/BDIM_X : 1;
+    constexpr int BDIM_Y = (BDIM_X <= WARP_SIZE) ? THREADS/BDIM_X : 1;
 
-    int cta_per_row = min(int64_t(32), DIV_UP(max_row_len, PASS2_MIN_WORK_PER_BLOCK));
 
     dim3 block(BDIM_X, BDIM_Y);
 
-    dim3 grid_lr  (DIV_UP(n_long_rows*nlon_out, block.y), cta_per_row, batch_size);
-    dim3 grid_resc(DIV_UP(n_long_rows*nlon_out, block.y),              batch_size);
-
-
-    // temporary for correctness only
     torch::Tensor t_qdotk_max_new = torch::from_blob(_qdotk_max,
                                                      {batch_size*nlat_out*nlon_out},
                                                      torch::TensorOptions().dtype(torch::kFloat32)
@@ -450,75 +561,53 @@ void spc_attn_ring_pass1_bwd_long_rows(int64_t n_long_rows,
 
     float *_qdotk_max_new = reinterpret_cast<float *>(t_qdotk_max_new.data_ptr());
 
-    if (0 && use_tma) {
+    const int cta_per_row = min(int64_t(32), DIV_UP(max_row_len, PASS2_MIN_WORK_PER_BLOCK));
+
+    dim3 grid_lr  (DIV_UP(n_long_rows*nlon_out, block.y), cta_per_row, batch_size);
+    dim3 grid_resc(DIV_UP(n_long_rows*nlon_out, block.y),              batch_size);
 #if 0
-        //                                       qy           dy         2x kx          2x vx
-        size_t shsize = sizeof(FLOATV_T)*(/*nchans_in +*/ nchans_out + nchans_in*2 + nchans_out*2) * block.y;
-#if 0
-        printf("getPtxver(): %d\n", getPtxver());
-        printf("Launching s2_attn_bwd_ring_pass1_special_tma_k<%d, %d, %d, %d><<<(%u, %u), (%u, %u), %zu, ...>>>\n",
-                BDIM_X, BDIM_Y, chout_as_in, CUR_LOC_SIZE, grid.x, grid.y, block.x, block.y, shsize);
+    printf("getPtxver(): %d\n", getPtxver());
+    printf("n_long_rows: %ld, max_row_len: %ld\n", n_long_rows, max_row_len);
+    printf("Launching s2_attn_bwd_ring_pass1_softmax_k<%d, %d, %d><<<(%u, %u, %u), (%u, %u), ...>>>\n",
+            BDIM_X, BDIM_Y, LOC_SIZE, grid_lr.x, grid_lr.y, grid_lr.z, block.x, block.y);
 #endif
-        if (chout_as_in) {
-            auto kern = &s2_attn_bwd_ring_pass1_special_tma_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE, FLOATV_T>;
+    const int max_niter_cta = DIV_UP(max_row_len, cta_per_row);
 
-            ensure_dyn_shmem(reinterpret_cast<const void*>(kern), shsize);
-
-            kern<<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
-                                                  nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
-                                                  _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
-                                                  _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw);
-        } else {
-            auto kern = &s2_attn_bwd_ring_pass1_special_tma_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE, FLOATV_T>;
-
-            ensure_dyn_shmem(reinterpret_cast<const void*>(kern), shsize);
-
-            kern<<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_halo, nlon_kx,
-                                                  nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
-                                                  _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
-                                                  _alpha_sum, _qdotk_max, _integral, _alpha_k, _alpha_kvw);
-        }
-        CHECK_ERROR("s2_attn_bwd_ring_pass1_special_tma_k");
-#endif
-    } else {
-#if 0
-        printf("getPtxver(): %d\n", getPtxver());
-        printf("n_long_rows: %ld, max_row_len: %ld\n", n_long_rows, max_row_len);
-        printf("Launching s2_attn_bwd_ring_pass1_softmax_k<%d, %d, %d><<<(%u, %u, %u), (%u, %u), ...>>>\n",
-                BDIM_X, BDIM_Y, LOC_SIZE, grid_lr.x, grid_lr.y, grid_lr.z, block.x, block.y);
-#endif
-        s2_attn_bwd_ring_pass1_softmax_k<BDIM_X, BDIM_Y, LOC_SIZE>
-                                        <<<grid_lr, block, 0, stream>>>(n_long_rows,
-                                                                       nchans_in, nlat_halo, nlon_kx,
-                                                                       nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
-                                                                       _kxp, _qyp, _row_idx, _row_off, _col_idx, _qdotk_max, _qdotk_max_new);
-        CHECK_ERROR("s2_attn_bwd_ring_pass1_softmax_k");
+    size_t shsize = (/*sizeof(FLOATV_T)*nchans_in +*/ sizeof(FLOATV_T *)*max_niter_cta)* block.y;
         
-        // also copies _qdotk_max_new values for long rows back into caller-provided _qdotk_max buffer
-        s2_attn_bwd_ring_pass1_rescale_k<BDIM_X, BDIM_Y, LOC_SIZE>
-                                        <<<grid_resc, block, 0, stream>>>(n_long_rows,
-                                                                          nchans_in, nlat_out, nlon_out, _row_idx,
-                                                                          _alpha_sum, _qdotk_max, _qdotk_max_new, _integral, _alpha_k, _alpha_kvw);
-        CHECK_ERROR("s2_attn_bwd_ring_pass1_rescale_k");
+    auto kern = &s2_attn_bwd_ring_pass1_softmax_k<BDIM_X, BDIM_Y, LOC_SIZE, FLOATV_T>;
+    ensure_dyn_shmem(reinterpret_cast<const void*>(kern), shsize);
 
-        size_t shsize = sizeof(FLOATV_T)*(nchans_in + nchans_out) * block.y;
-        if (chout_as_in) {
-            s2_attn_bwd_ring_pass1_finalize_k<BDIM_X, BDIM_Y, 1, LOC_SIZE>
-                                            <<<grid_lr, block, shsize, stream>>>(n_long_rows,
-                                                                                 nchans_in, nchans_out, nlat_halo, nlon_kx,
-                                                                                 nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
-                                                                                 _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
-                                                                                 _alpha_sum, _qdotk_max_new, _integral, _alpha_k, _alpha_kvw);
-        } else {
-            s2_attn_bwd_ring_pass1_finalize_k<BDIM_X, BDIM_Y, 0, LOC_SIZE>
-                                            <<<grid_lr, block, shsize, stream>>>(n_long_rows,
-                                                                                 nchans_in, nchans_out, nlat_halo, nlon_kx,
-                                                                                 nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out, nlon_out,
-                                                                                 _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
-                                                                                 _alpha_sum, _qdotk_max_new, _integral, _alpha_k, _alpha_kvw);
-        }
-        CHECK_ERROR("s2_attn_bwd_ring_pass1_finalize_k");
+    kern<<<grid_lr, block, shsize, stream>>>(params, max_niter_cta, n_long_rows, _kxp, _qyp,
+                                             _row_idx, _row_off, _col_idx, _qdotk_max, _qdotk_max_new);
+
+    CHECK_ERROR("s2_attn_bwd_ring_pass1_softmax_k");
+
+    // also copies _qdotk_max_new values for long rows back into caller-provided _qdotk_max buffer
+    s2_attn_bwd_ring_pass1_rescale_k<BDIM_X, BDIM_Y, LOC_SIZE>
+                                    <<<grid_resc, block, 0, stream>>>(params, n_long_rows, _row_idx, 
+                                                                      _alpha_sum, _qdotk_max, _qdotk_max_new, _integral, _alpha_k, _alpha_kvw);
+    CHECK_ERROR("s2_attn_bwd_ring_pass1_rescale_k");
+
+    shsize = (sizeof(FLOATV_T)*(nchans_in + nchans_out) + sizeof(FLOATV_T *)*max_niter_cta*2 + sizeof(float)*max_niter_cta) * block.y;
+
+    if (chout_as_in) {
+        auto kern = &s2_attn_bwd_ring_pass1_finalize_k<BDIM_X, BDIM_Y, 1, LOC_SIZE, FLOATV_T>;
+        ensure_dyn_shmem(reinterpret_cast<const void*>(kern), shsize);
+
+        kern<<<grid_lr, block, shsize, stream>>>(params, max_niter_cta, n_long_rows, _kxp, _vxp, _qyp, _dyp,
+                                                 _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum,
+                                                 _qdotk_max_new, _integral, _alpha_k, _alpha_kvw);
+    } else {
+        auto kern = &s2_attn_bwd_ring_pass1_finalize_k<BDIM_X, BDIM_Y, 0, LOC_SIZE, FLOATV_T>;
+        ensure_dyn_shmem(reinterpret_cast<const void*>(kern), shsize);
+
+        kern<<<grid_lr, block, shsize, stream>>>(params, max_niter_cta, n_long_rows, _kxp, _vxp, _qyp, _dyp,
+                                                 _row_idx, _row_off, _col_idx, _quad_weights, _alpha_sum,
+                                                 _qdotk_max_new, _integral, _alpha_k, _alpha_kvw);
     }
+    CHECK_ERROR("s2_attn_bwd_ring_pass1_finalize_k");
+
     return;
 }
 
@@ -642,7 +731,7 @@ void s2_attn_bwd_ring_step_pass1_special_vec_k(const int nchan_in,
         strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { qdotk_v = __vadd(qdotk_v, __vmul(sh_qy[i*BDIM_X], _kx[i*BDIM_X])); });
 
         float qdotk = __vred(qdotk_v);
-        if constexpr(BDIM_X == 32) {
+        if constexpr(BDIM_X == WARP_SIZE) {
             qdotk = __warp_sum(qdotk);
         } else {
             qdotk = __block_sum<BDIM_X>(qdotk);
@@ -691,7 +780,7 @@ void s2_attn_bwd_ring_step_pass1_special_vec_k(const int nchan_in,
         float qdotk = __vred(qdotk_v);
         float gdotv = __vred(gdotv_v);
 
-        if constexpr(BDIM_X == 32) {
+        if constexpr(BDIM_X == WARP_SIZE) {
             qdotk = __warp_sum(qdotk);
             gdotv = __warp_sum(gdotv);
         } else {
