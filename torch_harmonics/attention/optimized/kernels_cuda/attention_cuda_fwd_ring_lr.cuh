@@ -45,7 +45,7 @@ void s2_attn_fwd_ring_softmax_k(const __grid_constant__ attn_params_t p,
                                 const int64_t  *__restrict__ row_off,
                                 const int64_t  *__restrict__ col_idx,
                                 const float    *__restrict__ qdotk_max_prev,
-                                      float    *__restrict__ qdotk_max_curr) {  // NEW, caller inits to -inf each ring step
+                                      float    *__restrict__ qdotk_max_curr) {
 
     static_assert(0 == (BDIM_X & (BDIM_X-1)));
     static_assert(0 == (BDIM_Y & (BDIM_Y-1)));
@@ -97,8 +97,8 @@ void s2_attn_fwd_ring_softmax_k(const __grid_constant__ attn_params_t p,
         shqy  = base + tidy*nchan_in;
         shkx_ptr = reinterpret_cast<FLOATV_PTR_T *>(base + BDIM_Y*nchan_in) + tidy*shcol_len_max;
     } else {
-      FLOATV_PTR_T *base = reinterpret_cast<FLOATV_PTR_T *>(shext);
-      shkx_ptr = base + tidy*shcol_len_max;
+        FLOATV_PTR_T *base = reinterpret_cast<FLOATV_PTR_T *>(shext);
+        shkx_ptr = base + tidy*shcol_len_max;
         shqy  = reinterpret_cast<FLOATV_T *>(base + BDIM_Y*shcol_len_max) + tidy*nchan_in;
     }
     shqy += tidx;
@@ -179,10 +179,7 @@ void s2_attn_fwd_ring_softmax_k(const __grid_constant__ attn_params_t p,
         strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { qdotk_v = __vadd(qdotk_v, __vmul(loc_qy[i], _kx[i*BDIM_X])); });
 #endif
         float qdotk = __vred(qdotk_v);
-
-        if constexpr(BDIM_X == WARP_SIZE) { qdotk = __warp_sum(qdotk);          }
-        else                              { qdotk = __block_sum<BDIM_X>(qdotk); }
-
+        __group_sum<BDIM_X, BDIM_Y>(qdotk);
         qdotk_max = max(qdotk_max, qdotk);
     }
 
@@ -437,8 +434,7 @@ void s2_attn_fwd_ring_finalize_k(const __grid_constant__ attn_params_t p,
         strided_op<BDIM_X, CHIN_AS_OUT ? NLOC : 0>(nchan_in, [&](int i) { qdotkv = __vadd(qdotkv, __vmul(shq[i*BDIM_X], _kx[i*BDIM_X])); });
 
         float qdotk = __vred(qdotkv);
-        if constexpr(BDIM_X == WARP_SIZE) { qdotk =          __warp_sum(qdotk); }
-        else                              { qdotk = __block_sum<BDIM_X>(qdotk); }
+        __group_sum<BDIM_X, BDIM_Y>(qdotk);
 
         const float alpha  = expf(qdotk - qdotk_max_new) * shweight[i]; //quad_weights[hi_global];
 
@@ -516,7 +512,7 @@ void spc_attn_ring_fwd_long_rows(attn_params_t params,
 
     float *_qdotk_max_new = reinterpret_cast<float *>(t_qdotk_max_new.data_ptr());
 
-    const int cta_per_row = min(int64_t(32), DIV_UP(max_row_len, PASS2_MIN_WORK_PER_BLOCK));
+    const int cta_per_row = min(int64_t(SPLIT_LONG_ROW_MAX_BLK_X_ROW), DIV_UP(max_row_len, SPLIT_LONG_ROW_MIN_WORK_X_BLK));
 
     dim3 grid_lr  (DIV_UP(n_long_rows*nlon_out, block.y), cta_per_row, batch_size);
     dim3 grid_resc(DIV_UP(n_long_rows*nlon_out, block.y),              batch_size);

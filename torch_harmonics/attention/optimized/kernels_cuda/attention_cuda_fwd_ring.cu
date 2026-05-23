@@ -48,10 +48,6 @@
 
 #define MAX_LOCAL_ARR_LEN (16)
 
-#define PASS2_MIN_WORK_PER_BLOCK (32)
-#define SPLIT_ROW_LENGTH_THRES   (0.1f)
-#define SPLIT_ROW_MIN_LONG_R_LEN  (1024)
-
 // Ring-step variant of the forward attention kernel. Used by
 // DistributedNeighborhoodAttentionS2: K/V are sharded along longitude across
 // an azimuth process group; each call processes one rotating chunk and
@@ -60,20 +56,6 @@
 // pscale * lon_lo_out (see _build_local_psi in distributed_attention.py).
 
 namespace attention_kernels {
-
-// same as the one from attention_cuda_bwd_ring.cu, should it be moved to attention_cuda_utils.cuh?
-struct attn_params_t {
-    int nchan_in;
-    int nchan_out;
-    int nlat_halo;
-    int nlon_kx;
-    int nlon_in;
-    int pscale;
-    int lon_lo_kx;
-    int lat_halo_start;
-    int nlat_out;
-    int nlon_out;
-}; 
 
 template<int BDIM_X,
          typename FLOATV_T>
@@ -185,8 +167,10 @@ void s2_attn_fwd_ring_generic_k(
     }
 
     // Store updated state back to buffers
-    alpha_sum_buf[0] = alpha_sum;
-    qdotk_max_buf[0] = qdotk_max;
+    if (!tidx) {
+        alpha_sum_buf[0] = alpha_sum;
+        qdotk_max_buf[0] = qdotk_max;
+    }
     for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
         y_acc[chan] = shy[chan];
     }
@@ -396,8 +380,8 @@ void s2_attn_fwd_ring_special_k(const __grid_constant__ attn_params_t p,
         strided_op<BDIM_X, CHIN_AS_OUT ? NLOC : 0>(nchan_in,  [&](int i) { qdotkv = __vadd(qdotkv, __vmul(shq[i*BDIM_X], _kx[i*BDIM_X])); });
 
         float qdotk = __vred(qdotkv);
-        if constexpr(BDIM_X == WARP_SIZE) { qdotk =          __warp_sum(qdotk); }
-        else                              { qdotk = __block_sum<BDIM_X>(qdotk); }
+
+        __group_sum<BDIM_X, BDIM_Y>(qdotk);
 
         const float qdotk_max_tmp = max(qdotk_max, qdotk);
         const float alpha         = expf(qdotk - qdotk_max_tmp) * shweight[i];
@@ -450,18 +434,19 @@ void launch_spc_attn_ring_fwd(attn_params_t params,
         const int nlat_out = params.nlat_out;
         const int nlon_out = params.nlon_out;
         const int nchans_in  = params.nchan_in;
-        const int nchans_out = params.nchan_out;
 
         int64_t n_long_rows;
         int64_t max_row_len;
         int64_t mid_row_len;
 
-        // finds the (initial) number of rows with length >= than 0.1
-        // of the longest row, i.e. the first; if there are such rows,
-        // they are processed with a separate kernel invocation, using 
-        // multiple blocks per row, in order to mitigate the imbalance
-        // causing long temporal tails in kernel execution.
-        split_csr_rows(SPLIT_ROW_LENGTH_THRES, SPLIT_ROW_MIN_LONG_R_LEN,
+        // splits the rows in "long" and "short" rows; long rows have
+        // a length >= max(SPLIT_LONG_ROW_MIN_LEN(1024), len(row_0))
+        // (since the rows are sorted in decreasing order, row_0 is the
+        // longest row); short rows are the remaining rows.
+        // If there are long rows, they are processed with a separate 
+        // kernels using multiple blocks per row, in order to mitigate 
+        // the imbalance causing long temporal tails.
+        split_csr_rows(SPLIT_ROW_LENGTH_THRES, SPLIT_LONG_ROW_MIN_LEN,
                        nlat_out, _row_idx, _row_off, &n_long_rows, &max_row_len, &mid_row_len);
 
         if (n_long_rows > 0) {

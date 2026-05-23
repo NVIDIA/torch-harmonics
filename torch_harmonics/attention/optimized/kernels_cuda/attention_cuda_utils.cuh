@@ -38,7 +38,25 @@
 #define FULL_MASK (0xFFFFFFFF)
 #define DIV_UP(a,b) (((a)+((b)-1))/(b))
 
+#define SPLIT_ROW_LENGTH_THRES (0.1f)
+#define SPLIT_LONG_ROW_MIN_LEN (1024)
+#define SPLIT_LONG_ROW_MIN_WORK_X_BLK (32)
+#define SPLIT_LONG_ROW_MAX_BLK_X_ROW (32)
+
 namespace attention_kernels {
+
+struct attn_params_t {
+    int nchan_in;
+    int nchan_out;
+    int nlat_halo;
+    int nlon_kx;
+    int nlon_in;
+    int pscale;
+    int lon_lo_kx;
+    int lat_halo_start;
+    int nlat_out;
+    int nlon_out;
+}; 
 
 // CSR rows sorting kernels and functions
 at::Tensor sortRows(int nlat_out, at::Tensor row_off, cudaStream_t stream);
@@ -215,6 +233,70 @@ __device__ VAL_T __warp_sum(VAL_T val) {
         val += __shfl_xor_sync(FULL_MASK, val, i, WARP_SIZE);
     }
     return val;
+}
+
+// Performs BDIM_Y reductions along BDIM_X, if BDIM_X == 32;
+// otherwise performs one reduction along BDIM_X (BDIM_Y==1)
+template<int BDIM_X,
+         int BDIM_Y,
+         typename VAL_T,
+         typename... REST_T>
+__device__ void __group_sum(VAL_T &v0, REST_T&... rest) {
+
+    static_assert(0 == (BDIM_X % WARP_SIZE));
+    static_assert((BDIM_X == WARP_SIZE && BDIM_Y  > 1) ||
+                  (BDIM_X  > WARP_SIZE && BDIM_Y == 1)) ;
+
+    static_assert((std::is_same_v<VAL_T, REST_T> && ...),
+                  "__group_sum: all arguments must have the same type");
+
+    constexpr int N = 1 + sizeof...(REST_T);
+
+    VAL_T vals[N] = {v0, rest...};
+
+    #pragma unroll
+    for (int i = 0; i < N; i++) {
+        vals[i] = __warp_sum(vals[i]);
+    }
+
+    if constexpr(BDIM_X > WARP_SIZE) {
+    
+        constexpr int NWARP = (BDIM_X*BDIM_Y) / WARP_SIZE;
+
+        const int tid = threadIdx.y*BDIM_X + threadIdx.x;
+
+        const int lid = tid % WARP_SIZE;
+        const int wid = tid / WARP_SIZE;
+
+        __shared__ VAL_T sh[N][NWARP];
+
+        if (lid == 0) {
+            #pragma unroll
+            for (int i = 0; i < N; i++) {
+                sh[i][wid] = vals[i];
+            }
+        }
+        __syncthreads();
+
+        for(int i = wid; i < N; i += NWARP) {
+            VAL_T v = (lid < NWARP) ? sh[i][lid] : __vset<VAL_T>(0);
+            v = __warp_sum(v);
+            if (!lid) {
+                sh[i][0] = v;
+            }
+        }
+        __syncthreads();
+
+        #pragma unroll
+        for (int i = 0; i < N; i++) {
+            vals[i] = sh[i][0];
+        }
+        __syncthreads();
+    }
+
+    v0 = vals[0];
+    int i = 1;
+    ((rest = vals[i++]), ...);
 }
 
 template<int BDIM_X,

@@ -48,10 +48,6 @@
 
 #define MAX_LOCAL_ARR_LEN (16)
 
-#define PASS2_MIN_WORK_PER_BLOCK (32)
-#define SPLIT_ROW_LENGTH_THRES   (0.1f)
-#define SPLIT_ROW_MIN_LONG_R_LEN  (1024)
-
 // Ring-step backward variant for DistributedNeighborhoodAttentionS2. Two
 // passes per ring step:
 //   pass1: accumulate softmax statistics (alpha_sum, qdotk_max, integral)
@@ -63,19 +59,6 @@
 // _build_local_psi in distributed_attention.py).
 
 namespace attention_kernels {
-
-struct attn_params_t {
-    int nchan_in;
-    int nchan_out;
-    int nlat_halo;
-    int nlon_kx;
-    int nlon_in;
-    int pscale;
-    int lon_lo_kx;
-    int lat_halo_start;
-    int nlat_out;
-    int nlon_out;
-}; 
 
 void dump_csr_linear(const char *fname, int64_t pscale, int64_t nlon_in, int64_t lon_lo_kx, int nlon_kx, int64_t lat_halo_start, int nlat_halo, int64_t nrows, at::Tensor row_idx, at::Tensor row_off, at::Tensor col_idx);
 
@@ -214,9 +197,11 @@ void s2_attn_bwd_ring_pass1_generic_k(
     }
 
     // Store updated state
-    alpha_sum_buf[0] = alpha_sum;
-    qdotk_max_buf[0] = qdotk_max;
-    integral_buf[0]  = integral;
+    if (!tidx) {
+        alpha_sum_buf[0] = alpha_sum;
+        qdotk_max_buf[0] = qdotk_max;
+        integral_buf[0]  = integral;
+    }
     for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
         alpha_k_buf[chan]   = sh_alpha_k[chan];
         alpha_kvw_buf[chan] = sh_alpha_kvw[chan];
@@ -452,13 +437,7 @@ void s2_attn_bwd_ring_pass1_special_k(const __grid_constant__ attn_params_t p,
         float qdotk = __vred(qdotk_v);
         float gdotv = __vred(gdotv_v);
 
-        if constexpr(BDIM_X == WARP_SIZE) { 
-            qdotk = __warp_sum(qdotk); 
-            gdotv = __warp_sum(gdotv); 
-        } else {
-            qdotk = __block_sum<BDIM_X>(qdotk);
-            gdotv = __block_sum<BDIM_X>(gdotv);
-        }
+        __group_sum<BDIM_X, BDIM_Y>(qdotk, gdotv);
 
         const float qdotk_max_tmp = max(qdotk_max, qdotk);
         const float alpha_inz     = expf(qdotk - qdotk_max_tmp) * shweight[i]; //quad_weights[hi_global];
@@ -528,12 +507,14 @@ void launch_spc_attn_ring_pass1_bwd(attn_params_t params,
         int64_t max_row_len;
         int64_t mid_row_len;
 
-        // finds the (initial) number of rows with length >= than 0.1
-        // of the longest row, i.e. the first; if there are such rows,
-        // they are processed with a separate kernel invocation, using 
-        // multiple blocks per row, in order to mitigate the imbalance
-        // causing long temporal tails in kernel execution.
-        split_csr_rows(SPLIT_ROW_LENGTH_THRES, SPLIT_ROW_MIN_LONG_R_LEN,
+        // splits the rows in "long" and "short" rows; long rows have
+        // a length >= max(SPLIT_LONG_ROW_MIN_LEN(1024), len(row_0))
+        // (since the rows are sorted in decreasing order, row_0 is the
+        // longest row); short rows are the remaining rows.
+        // If there are long rows, they are processed with a separate 
+        // kernels using multiple blocks per row, in order to mitigate 
+        // the imbalance causing long temporal tails.
+        split_csr_rows(SPLIT_ROW_LENGTH_THRES, SPLIT_LONG_ROW_MIN_LEN,
                        nlat_out, _row_idx, _row_off, &n_long_rows, &max_row_len, &mid_row_len);
 
         if (n_long_rows > 0) {
@@ -1009,7 +990,9 @@ void s2_attn_bwd_ring_pass2_special_k(const __grid_constant__ attn_params_t p,
             if (wip >= lon_lo_kx && wip < lon_lo_kx + nlon_kx) {
                 hi_local  = hi_global - lat_halo_start;
                 if (hi_local >= 0 && hi_local < nlat_halo) {
+
                     wip_local = wip - lon_lo_kx;
+                    weight = quad_weights[hi_global];
                 }
             }
         }
@@ -1020,7 +1003,6 @@ void s2_attn_bwd_ring_pass2_special_k(const __grid_constant__ attn_params_t p,
         if (wip_local != -1) {
             shhi_loc[n_active + toff] = hi_local;
             shwi_loc[n_active + toff] = wip_local;
-
             shweight[n_active + toff] = weight;
         }
         n_active += ntot;
@@ -1049,38 +1031,36 @@ void s2_attn_bwd_ring_pass2_special_k(const __grid_constant__ attn_params_t p,
         float qdotk = __vred(qdotk_v);
         float gdotv = __vred(gdotv_v);
 
-        if constexpr(BDIM_X == WARP_SIZE) { 
-            qdotk = __warp_sum(qdotk); 
-            gdotv = __warp_sum(gdotv); 
-        } else {
-            qdotk = __block_sum<BDIM_X>(qdotk);
-            gdotv = __block_sum<BDIM_X>(gdotv);
-        }
+        __group_sum<BDIM_X, BDIM_Y>(qdotk, gdotv);
 
         const float alpha_inz  = expf(qdotk - qdotk_max) * shweight[i];
         const float alpha_mul  = alpha_inz * alpha_sum_inv;
         const float scale_dkx = (gdotv - integral_norm) * alpha_mul;
         const float scale_dvx = alpha_mul;
 
-#if __CUDA_ARCH__ < 900
         constexpr int VEC_SIZE = sizeof(FLOATV_T)/sizeof(float);
-
-        float *sh_qy_scl = reinterpret_cast<float *>(sh_qy - tidx);
-        float *sh_dy_scl = reinterpret_cast<float *>(sh_dy - tidx);
-
-        float *_dkx_scl  = reinterpret_cast<float *>(_dkx - tidx); 
-        float *_dvx_scl  = reinterpret_cast<float *>(_dvx - tidx);
-        
-        for (int chan = tidx; chan < nchan_in*VEC_SIZE; chan += BDIM_X) {
-            atomicAdd(_dkx_scl + chan, scale_dkx*sh_qy_scl[chan]);
-        }
-        for (int chan = tidx; chan < nchan_out*VEC_SIZE; chan += BDIM_X) {
-            atomicAdd(_dvx_scl + chan, scale_dvx*sh_dy_scl[chan]);
-        }
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 900
+        constexpr bool DO_SPLIT_VEC = VEC_SIZE == 4;
 #else
-        strided_op<BDIM_X,               NLOC    >(nchan_in,  [&](int i) { atomicAdd(_dkx + i*BDIM_X, __vscale(scale_dkx,       loc_qy[i])); });
-        strided_op<BDIM_X, CHOUT_AS_IN ? NLOC : 0>(nchan_out, [&](int i) { atomicAdd(_dvx + i*BDIM_X, __vscale(scale_dvx, sh_dy[i*BDIM_X])); });
+        constexpr bool DO_SPLIT_VEC = false;
 #endif
+        if constexpr(DO_SPLIT_VEC) {
+            float *sh_qy_scl = reinterpret_cast<float *>(sh_qy - tidx);
+            float *sh_dy_scl = reinterpret_cast<float *>(sh_dy - tidx);
+
+            float *_dkx_scl  = reinterpret_cast<float *>(_dkx - tidx); 
+            float *_dvx_scl  = reinterpret_cast<float *>(_dvx - tidx);
+            
+            for (int chan = tidx; chan < nchan_in*VEC_SIZE; chan += BDIM_X) {
+                atomicAdd(_dkx_scl + chan, scale_dkx*sh_qy_scl[chan]);
+            }
+            for (int chan = tidx; chan < nchan_out*VEC_SIZE; chan += BDIM_X) {
+                atomicAdd(_dvx_scl + chan, scale_dvx*sh_dy_scl[chan]);
+            }
+        } else {
+            strided_op<BDIM_X,               NLOC    >(nchan_in,  [&](int i) { atomicAdd(_dkx + i*BDIM_X, __vscale(scale_dkx,       loc_qy[i])); });
+            strided_op<BDIM_X, CHOUT_AS_IN ? NLOC : 0>(nchan_out, [&](int i) { atomicAdd(_dvx + i*BDIM_X, __vscale(scale_dvx, sh_dy[i*BDIM_X])); });
+        }
     }
     return;
 }
@@ -1163,12 +1143,14 @@ void launch_spc_attn_ring_pass2_bwd(attn_params_t params,
         int64_t max_row_len;
         int64_t mid_row_len;
 
-        // finds the (initial) number of rows with length >= than 0.1
-        // of the longest row, i.e. the first; if there are such rows,
-        // they are processed with a separate kernel invocation, using 
-        // multiple blocks per row, in order to mitigate the imbalance
-        // causing long temporal tails in kernel execution.
-        split_csr_rows(SPLIT_ROW_LENGTH_THRES, SPLIT_ROW_MIN_LONG_R_LEN,
+        // splits the rows in "long" and "short" rows; long rows have
+        // a length >= max(SPLIT_LONG_ROW_MIN_LEN(1024), len(row_0))
+        // (since the rows are sorted in decreasing order, row_0 is the
+        // longest row); short rows are the remaining rows.
+        // If there are long rows, they are processed with a separate 
+        // kernels using multiple blocks per row, in order to mitigate 
+        // the imbalance causing long temporal tails.
+        split_csr_rows(SPLIT_ROW_LENGTH_THRES, SPLIT_LONG_ROW_MIN_LEN,
                        nlat_out, _row_idx, _row_off, &n_long_rows, &max_row_len, &mid_row_len);
 
         // nloc determines the size of local arrays used to store
@@ -1189,7 +1171,7 @@ void launch_spc_attn_ring_pass2_bwd(attn_params_t params,
 
         // if there are "long rows" use at most
         // 32 blocks for each one (empirically determined) 
-        int cta_per_row = min(int64_t(32), DIV_UP(max_row_len, PASS2_MIN_WORK_PER_BLOCK));
+        int cta_per_row = min(int64_t(SPLIT_LONG_ROW_MAX_BLK_X_ROW), DIV_UP(max_row_len, SPLIT_LONG_ROW_MIN_WORK_X_BLK));
 
         dim3 grid_lr(DIV_UP(          n_long_rows *nlon_out, block.y), cta_per_row, batch_size);
         dim3 grid   (DIV_UP((nlat_out-n_long_rows)*nlon_out, block.y),           1, batch_size);
