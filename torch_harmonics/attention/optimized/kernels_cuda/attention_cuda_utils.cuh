@@ -35,7 +35,7 @@
 #include <ATen/cuda/CUDAUtils.h>
 
 #define WARP_SIZE (32)
-#define FULL_MASK (0xFFFFFFFF)
+#define FULL_MASK (0xFFFFFFFFu)
 #define DIV_UP(a,b) (((a)+((b)-1))/(b))
 
 #define SPLIT_ROW_LENGTH_THRES (0.1f)
@@ -416,7 +416,7 @@ __device__ int __compact(bool pred, int *index) {
 }
 
 template<int BDIM_X>
-__device__ __forceinline__ void __gsync() {
+__device__ __forceinline__ void __group_sync() {
     if constexpr(BDIM_X == WARP_SIZE) { __syncwarp();    }
     else                              { __syncthreads(); }
 }
