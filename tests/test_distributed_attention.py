@@ -35,6 +35,7 @@ import torch
 from parameterized import parameterized
 from testutils import (
     compare_tensors,
+    disable_tf32,
     gather_tensor_hw,
     maybe_autocast,
     set_seed,
@@ -69,6 +70,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         setup_class_from_context(cls, _DIST_CTX)
+        disable_tf32()
         if not torch.cuda.is_available():
             raise unittest.SkipTest("Distributed neighborhood attention requires CUDA")
 
