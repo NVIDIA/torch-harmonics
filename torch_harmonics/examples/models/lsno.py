@@ -590,7 +590,7 @@ class LocalSphericalNeuralOperator(nn.Module):
             upsample_sht=upsample_sht,
         )
 
-    @torch.jit.ignore
+    @torch.compiler.disable
     def no_weight_decay(self):
         return {"pos_embed", "cls_token"}
 
