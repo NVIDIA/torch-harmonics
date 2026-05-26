@@ -32,22 +32,21 @@
 
 #include "../attention.h"
 
-namespace attention_kernels {
+namespace attention_kernels
+{
 
     // Upsample forward dispatch helper. Defined in attention_cpu_fwd_upsample.cpp;
     // called by s2_attention_fwd_cpu when nlon_out is an integer multiple of
     // nlon_in. Takes accessors over tensors already in physical (B, H, W, C)
     // layout (set up by the wrapper); the template kernel stays file-local.
-    void s2_attn_fwd_upsample_dispatch(
-        const torch::PackedTensorAccessor64<float, 4> kx_arr,
-        const torch::PackedTensorAccessor64<float, 4> vx_arr,
-        const torch::PackedTensorAccessor64<float, 4> qy_arr,
-        const torch::PackedTensorAccessor64<float, 1> quad_weights_arr,
-        const torch::PackedTensorAccessor64<int64_t, 1> col_idx_arr,
-        const torch::PackedTensorAccessor64<int64_t, 1> roff_arr,
-        torch::PackedTensorAccessor64<float, 4> y_arr,
-        int64_t nlon_in, int64_t nlat_in,
-        int64_t nlat_out, int64_t nlon_out,
-        int64_t batch_size, int64_t nchannels_in, int64_t nchannels_out);
+    void s2_attn_fwd_upsample_dispatch(const torch::PackedTensorAccessor64<float, 4> kx_arr,
+                                       const torch::PackedTensorAccessor64<float, 4> vx_arr,
+                                       const torch::PackedTensorAccessor64<float, 4> qy_arr,
+                                       const torch::PackedTensorAccessor64<float, 1> quad_weights_arr,
+                                       const torch::PackedTensorAccessor64<int64_t, 1> col_idx_arr,
+                                       const torch::PackedTensorAccessor64<int64_t, 1> roff_arr,
+                                       torch::PackedTensorAccessor64<float, 4> y_arr, int64_t nlon_in, int64_t nlat_in,
+                                       int64_t nlat_out, int64_t nlon_out, int64_t batch_size, int64_t nchannels_in,
+                                       int64_t nchannels_out);
 
-}
+} // namespace attention_kernels
