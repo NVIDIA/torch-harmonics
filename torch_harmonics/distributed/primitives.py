@@ -645,10 +645,6 @@ def reduce_from_scatter_to_azimuth_region(input_, dim_):
 
 
 @torch.compiler.disable()
-def reduce_from_scatter_to_azimuth_region(input_, dim_):
-    return _ReduceFromScatterToAzimuthRegion.apply(input_, dim_)
-
-@torch.compiler.disable()
 def gather_from_copy_to_polar_region(input_, dim_, shapes_):
     return _GatherFromCopyToPolarRegion.apply(input_, dim_, shapes_)
 
