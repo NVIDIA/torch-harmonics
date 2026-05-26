@@ -33,7 +33,7 @@ import os
 import sys
 import warnings
 
-from setuptools import find_packages, setup
+from setuptools import setup
 
 
 def get_compile_args(module_name):
@@ -158,7 +158,9 @@ def get_ext_modules():
     attention_sources = [
         "torch_harmonics/attention/optimized/attention_interface.cpp",
         "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_fwd.cpp",
+        "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_fwd_upsample.cpp",
         "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_bwd.cpp",
+        "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_bwd_upsample.cpp",
     ]
 
     if BUILD_CUDA:
@@ -191,31 +193,9 @@ if __name__ == "__main__":
         if any(arg in sys.argv for arg in ("build_ext", "build", "install", "bdist_wheel")):
             raise RuntimeError("PyTorch is required to build torch-harmonics extensions. Please install PyTorch first.")
 
+    # Package metadata and dependencies live in pyproject.toml (PEP 621).
     setup(
-        name="torch_harmonics",
-        packages=find_packages(),
         ext_modules=ext_modules,
         cmdclass=cmdclass,
-        python_requires=">=3.9",
-        install_requires=[
-            "torch>=2.8.0",
-            "numpy>=1.22.4",
-        ],
-        extras_require={
-            "dev": [
-                "pytest>=6.0.0",
-                "pytest-cov>=3.0.0",
-                "coverage>=6.5.0",
-                "parameterized",
-                "scipy>=1.9.0",
-            ],
-            "2d3ds": [
-                "requests",
-                "tarfile",
-                "tqdm",
-                "pillow",
-                "h5py",
-            ],
-        },
-        zip_safe=False,  # Required for extensions
+        zip_safe=False,  # required for extensions
     )
