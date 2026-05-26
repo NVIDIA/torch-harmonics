@@ -530,7 +530,7 @@ torch.library.register_autograd("attention_kernels::_neighborhood_s2_attention_t
 # Autocast: cast kw/vw/qw to the autocast dtype before calling the op. The op
 # body already promotes to fp32 internally for softmax numerics and casts the
 # output back. Index tensors and quad_weights pass through.
-@torch.library.register_autocast("attention_kernels::_neighborhood_s2_attention_torch", "cuda", cast_inputs=None)
+@torch.library.register_autocast("attention_kernels::_neighborhood_s2_attention_torch", "cuda", None)
 def _(kw, vw, qw, quad_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out):
     cast_dtype = torch.get_autocast_dtype("cuda")
     return _neighborhood_s2_attention_torch(kw.to(cast_dtype), vw.to(cast_dtype), qw.to(cast_dtype), quad_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out)
