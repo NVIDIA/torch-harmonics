@@ -34,7 +34,8 @@
 #include <limits>
 #include <vector>
 
-namespace attention_kernels {
+namespace attention_kernels
+{
 
     // -----------------------------------------------------------------------
     // Upsample backward.
@@ -79,33 +80,29 @@ namespace attention_kernels {
     // -----------------------------------------------------------------------
     template <typename scalar_t>
     static void s2_attn_bwd_upsample_kernel(
-        const torch::PackedTensorAccessor64<scalar_t, 4> kx_arr,
-        const torch::PackedTensorAccessor64<scalar_t, 4> vx_arr,
-        const torch::PackedTensorAccessor64<scalar_t, 4> qy_arr,
-        const torch::PackedTensorAccessor64<scalar_t, 4> dy_arr,
+        const torch::PackedTensorAccessor64<scalar_t, 4> kx_arr, const torch::PackedTensorAccessor64<scalar_t, 4> vx_arr,
+        const torch::PackedTensorAccessor64<scalar_t, 4> qy_arr, const torch::PackedTensorAccessor64<scalar_t, 4> dy_arr,
         const torch::PackedTensorAccessor64<scalar_t, 1> quad_weights_arr,
         const torch::PackedTensorAccessor64<int64_t, 1> col_idx_arr,
-        const torch::PackedTensorAccessor64<int64_t, 1> roff_arr,
-        torch::PackedTensorAccessor64<scalar_t, 4> dqy_arr,
-        torch::PackedTensorAccessor64<scalar_t, 4> dvx_arr,
-        torch::PackedTensorAccessor64<scalar_t, 4> dkx_arr,
-        const int64_t nlon_in, const int64_t nlat_in,
-        const int64_t nlat_out, const int64_t nlon_out,
-        const int64_t batch_size, const int64_t nchannels_in, const int64_t nchannels_out) {
+        const torch::PackedTensorAccessor64<int64_t, 1> roff_arr, torch::PackedTensorAccessor64<scalar_t, 4> dqy_arr,
+        torch::PackedTensorAccessor64<scalar_t, 4> dvx_arr, torch::PackedTensorAccessor64<scalar_t, 4> dkx_arr,
+        const int64_t nlon_in, const int64_t nlat_in, const int64_t nlat_out, const int64_t nlon_out,
+        const int64_t batch_size, const int64_t nchannels_in, const int64_t nchannels_out)
+    {
 
         const int64_t pscale_out = nlon_out / nlon_in;
 
         // Hoist base pointers + strides. Channel stride is 1 throughout.
-        const scalar_t* __restrict__ kx_base = kx_arr.data();
-        const scalar_t* __restrict__ vx_base = vx_arr.data();
-        const scalar_t* __restrict__ qy_base = qy_arr.data();
-        const scalar_t* __restrict__ dy_base = dy_arr.data();
-        scalar_t* __restrict__       dkx_base = dkx_arr.data();
-        scalar_t* __restrict__       dvx_base = dvx_arr.data();
-        scalar_t* __restrict__       dqy_base = dqy_arr.data();
-        const scalar_t* __restrict__ quad_p  = quad_weights_arr.data();
-        const int64_t* __restrict__  col_p   = col_idx_arr.data();
-        const int64_t* __restrict__  roff_p  = roff_arr.data();
+        const scalar_t *__restrict__ kx_base = kx_arr.data();
+        const scalar_t *__restrict__ vx_base = vx_arr.data();
+        const scalar_t *__restrict__ qy_base = qy_arr.data();
+        const scalar_t *__restrict__ dy_base = dy_arr.data();
+        scalar_t *__restrict__ dkx_base = dkx_arr.data();
+        scalar_t *__restrict__ dvx_base = dvx_arr.data();
+        scalar_t *__restrict__ dqy_base = dqy_arr.data();
+        const scalar_t *__restrict__ quad_p = quad_weights_arr.data();
+        const int64_t *__restrict__ col_p = col_idx_arr.data();
+        const int64_t *__restrict__ roff_p = roff_arr.data();
 
         const int64_t kx_sB = kx_arr.stride(0), kx_sH = kx_arr.stride(1), kx_sW = kx_arr.stride(2);
         const int64_t vx_sB = vx_arr.stride(0), vx_sH = vx_arr.stride(1), vx_sW = vx_arr.stride(2);
@@ -117,56 +114,50 @@ namespace attention_kernels {
 
         // max nnz per psi row (keyed by hi); buffer stride.
         int64_t max_nnz = 0;
-        for (int64_t hi = 0; hi < nlat_in; hi++) {
-            max_nnz = std::max(max_nnz, roff_p[hi + 1] - roff_p[hi]);
-        }
+        for (int64_t hi = 0; hi < nlat_in; hi++) { max_nnz = std::max(max_nnz, roff_p[hi + 1] - roff_p[hi]); }
 
         // Shared softmax-stats buffers.
         //   alpha_nz_buf, gdotv_nz_buf: per (b, hi, idz_local, wi). Indexed so
         //     that for fixed (b, hi, idz_local), wi varies contiguously.
         //   alpha_sum_buf, alpha_gdotv_buf: per (b, ho, wo). Stride-1 in wo.
         const int64_t nz_buf_per_hi = max_nnz * nlon_in;
-        const int64_t nz_buf_total  = batch_size * nlat_in  * nz_buf_per_hi;
-        const int64_t sc_buf_total  = batch_size * nlat_out * nlon_out;
+        const int64_t nz_buf_total = batch_size * nlat_in * nz_buf_per_hi;
+        const int64_t sc_buf_total = batch_size * nlat_out * nlon_out;
 
-        std::vector<float> alpha_nz_buf  (nz_buf_total);
-        std::vector<float> gdotv_nz_buf  (nz_buf_total);
-        std::vector<float> alpha_sum_buf (sc_buf_total);
+        std::vector<float> alpha_nz_buf(nz_buf_total);
+        std::vector<float> gdotv_nz_buf(nz_buf_total);
+        std::vector<float> alpha_sum_buf(sc_buf_total);
         std::vector<float> alpha_gdotv_buf(sc_buf_total);
 
         auto nz_off = [&](int64_t b, int64_t hi, int64_t idz_local, int64_t wi) -> int64_t {
             return ((b * nlat_in + hi) * max_nnz + idz_local) * nlon_in + wi;
         };
-        auto sc_off = [&](int64_t b, int64_t ho, int64_t wo) -> int64_t {
-            return (b * nlat_out + ho) * nlon_out + wo;
-        };
+        auto sc_off = [&](int64_t b, int64_t ho, int64_t wo) -> int64_t { return (b * nlat_out + ho) * nlon_out + wo; };
 
-        // ----- Phase A: precompute softmax stats per (b, ho, wo) -----
-        // Redundant scan over psi[hi] for matches (mirrors fwd upsample).
-        #pragma omp parallel
+// ----- Phase A: precompute softmax stats per (b, ho, wo) -----
+// Redundant scan over psi[hi] for matches (mirrors fwd upsample).
+#pragma omp parallel
         {
             // per-thread qdotk scratch sized for max possible matches per cell.
             // Conservative bound: total psi nnz (all entries could match in
             // worst case). In practice much smaller; we resize the active prefix.
             std::vector<float> qdotk_local(roff_p[nlat_in]);
 
-            #pragma omp for collapse(3)
+#pragma omp for collapse(3)
             for (int64_t b = 0; b < batch_size; b++) {
                 for (int64_t ho = 0; ho < nlat_out; ho++) {
                     for (int64_t wo = 0; wo < nlon_out; wo++) {
 
                         // per-(b, ho, wo) base pointers
-                        const scalar_t* __restrict__ qy_bow =
-                            qy_base + b * qy_sB + ho * qy_sH + wo * qy_sW;
-                        const scalar_t* __restrict__ dy_bow =
-                            dy_base + b * dy_sB + ho * dy_sH + wo * dy_sW;
+                        const scalar_t *__restrict__ qy_bow = qy_base + b * qy_sB + ho * qy_sH + wo * qy_sW;
+                        const scalar_t *__restrict__ dy_bow = dy_base + b * dy_sB + ho * dy_sH + wo * dy_sW;
 
                         // pass 1: find qdotk_max over contributing entries
                         int64_t n_match = 0;
                         float qdotk_max = -std::numeric_limits<float>::max();
                         for (int64_t hi = 0; hi < nlat_in; hi++) {
                             const int64_t zstart = roff_p[hi];
-                            const int64_t zend   = roff_p[hi + 1];
+                            const int64_t zend = roff_p[hi + 1];
                             for (int64_t idz = zstart; idz < zend; idz++) {
                                 const int64_t col = col_p[idz];
                                 const int64_t ho_neigh = col / nlon_out;
@@ -177,11 +168,10 @@ namespace attention_kernels {
                                 if (wo_diff % pscale_out != 0) continue;
                                 const int64_t wi = wo_diff / pscale_out;
 
-                                const scalar_t* __restrict__ kx_biwi =
-                                    kx_base + b * kx_sB + hi * kx_sH + wi * kx_sW;
+                                const scalar_t *__restrict__ kx_biwi = kx_base + b * kx_sB + hi * kx_sH + wi * kx_sW;
 
                                 float qdotk = 0.0f;
-                                #pragma omp simd reduction(+:qdotk)
+#pragma omp simd reduction(+ : qdotk)
                                 for (int64_t cit = 0; cit < nchannels_in; cit++) {
                                     qdotk += static_cast<float>(qy_bow[cit] * kx_biwi[cit]);
                                 }
@@ -191,12 +181,12 @@ namespace attention_kernels {
                         }
 
                         // pass 2: compute alpha_nz, gdotv_nz, sums (same iteration order)
-                        float alpha_sum   = 0.0f;
+                        float alpha_sum = 0.0f;
                         float alpha_gdotv = 0.0f;
                         int64_t match_idx = 0;
                         for (int64_t hi = 0; hi < nlat_in; hi++) {
                             const int64_t zstart = roff_p[hi];
-                            const int64_t zend   = roff_p[hi + 1];
+                            const int64_t zend = roff_p[hi + 1];
                             const float qw_hi = static_cast<float>(quad_p[hi]);
                             for (int64_t idz = zstart; idz < zend; idz++) {
                                 const int64_t col = col_p[idz];
@@ -206,48 +196,47 @@ namespace attention_kernels {
                                 int64_t wo_diff = wo - wo_canonical;
                                 if (wo_diff < 0) wo_diff += nlon_out;
                                 if (wo_diff % pscale_out != 0) continue;
-                                const int64_t wi        = wo_diff / pscale_out;
+                                const int64_t wi = wo_diff / pscale_out;
                                 const int64_t idz_local = idz - zstart;
 
-                                const scalar_t* __restrict__ vx_biwi =
-                                    vx_base + b * vx_sB + hi * vx_sH + wi * vx_sW;
+                                const scalar_t *__restrict__ vx_biwi = vx_base + b * vx_sB + hi * vx_sH + wi * vx_sW;
 
                                 const float alpha = std::exp(qdotk_local[match_idx++] - qdotk_max) * qw_hi;
 
                                 float gdotv = 0.0f;
-                                #pragma omp simd reduction(+:gdotv)
+#pragma omp simd reduction(+ : gdotv)
                                 for (int64_t cot = 0; cot < nchannels_out; cot++) {
                                     gdotv += static_cast<float>(dy_bow[cot] * vx_biwi[cot]);
                                 }
 
                                 alpha_nz_buf[nz_off(b, hi, idz_local, wi)] = alpha;
                                 gdotv_nz_buf[nz_off(b, hi, idz_local, wi)] = gdotv;
-                                alpha_sum   += alpha;
+                                alpha_sum += alpha;
                                 alpha_gdotv += alpha * gdotv;
                             }
                         }
 
-                        alpha_sum_buf  [sc_off(b, ho, wo)] = alpha_sum;
+                        alpha_sum_buf[sc_off(b, ho, wo)] = alpha_sum;
                         alpha_gdotv_buf[sc_off(b, ho, wo)] = alpha_gdotv;
                     }
                 }
             }
         }
 
-        // ----- Phase B: dqy and dkx, parallel over (b, ci) -----
-        // Walks psi[hi] directly (no filter / no redundant scan) — psi is
-        // natively keyed by hi here. Mirrors fwd downsample's iteration.
-        #pragma omp parallel
+// ----- Phase B: dqy and dkx, parallel over (b, ci) -----
+// Walks psi[hi] directly (no filter / no redundant scan) — psi is
+// natively keyed by hi here. Mirrors fwd downsample's iteration.
+#pragma omp parallel
         {
             std::vector<float> scratch_dqy(static_cast<size_t>(nlat_out) * static_cast<size_t>(nlon_out));
             std::vector<float> scratch_dkx_row(static_cast<size_t>(nlon_in));
 
-            #pragma omp for collapse(2)
+#pragma omp for collapse(2)
             for (int64_t b = 0; b < batch_size; b++) {
                 for (int64_t ci = 0; ci < nchannels_in; ci++) {
 
-                    const int64_t qy_b_off  = b * qy_sB;
-                    const int64_t kx_b_off  = b * kx_sB;
+                    const int64_t qy_b_off = b * qy_sB;
+                    const int64_t kx_b_off = b * kx_sB;
                     const int64_t dkx_b_off = b * dkx_sB;
                     const int64_t dqy_b_off = b * dqy_sB;
 
@@ -257,13 +246,13 @@ namespace attention_kernels {
                         std::fill(scratch_dkx_row.begin(), scratch_dkx_row.end(), 0.0f);
 
                         const int64_t zstart = roff_p[hi];
-                        const int64_t zend   = roff_p[hi + 1];
+                        const int64_t zend = roff_p[hi + 1];
 
                         for (int64_t idz = zstart; idz < zend; idz++) {
-                            const int64_t col          = col_p[idz];
-                            const int64_t ho_neigh     = col / nlon_out;
+                            const int64_t col = col_p[idz];
+                            const int64_t ho_neigh = col / nlon_out;
                             const int64_t wo_canonical = col % nlon_out;
-                            const int64_t idz_local    = idz - zstart;
+                            const int64_t idz_local = idz - zstart;
 
                             for (int64_t wi = 0; wi < nlon_in; wi++) {
                                 int64_t wo = wo_canonical + pscale_out * wi;
@@ -272,85 +261,84 @@ namespace attention_kernels {
                                 const int64_t nz_off_wi = nz_off(b, hi, idz_local, wi);
                                 const int64_t sc_off_wo = sc_off(b, ho_neigh, wo);
 
-                                const float alpha_nz    = alpha_nz_buf  [nz_off_wi];
-                                const float gdotv       = gdotv_nz_buf  [nz_off_wi];
-                                const float alpha_sum   = alpha_sum_buf [sc_off_wo];
+                                const float alpha_nz = alpha_nz_buf[nz_off_wi];
+                                const float gdotv = gdotv_nz_buf[nz_off_wi];
+                                const float alpha_sum = alpha_sum_buf[sc_off_wo];
                                 const float alpha_gdotv = alpha_gdotv_buf[sc_off_wo];
-                                const float inv_sum     = 1.0f / alpha_sum;
-                                const float integral    = alpha_gdotv * inv_sum;
-                                const float alpha_norm  = alpha_nz * inv_sum;
+                                const float inv_sum = 1.0f / alpha_sum;
+                                const float integral = alpha_gdotv * inv_sum;
+                                const float alpha_norm = alpha_nz * inv_sum;
 
-                                const float kx_v = static_cast<float>(
-                                    kx_base[kx_b_off + hi * kx_sH + wi * kx_sW + ci]);
-                                const float qy_v = static_cast<float>(
-                                    qy_base[qy_b_off + ho_neigh * qy_sH + wo * qy_sW + ci]);
+                                const float kx_v = static_cast<float>(kx_base[kx_b_off + hi * kx_sH + wi * kx_sW + ci]);
+                                const float qy_v
+                                    = static_cast<float>(qy_base[qy_b_off + ho_neigh * qy_sH + wo * qy_sW + ci]);
 
                                 const float weight = alpha_norm * (gdotv - integral);
-                                scratch_dkx_row[wi]                  += qy_v * weight;
+                                scratch_dkx_row[wi] += qy_v * weight;
                                 scratch_dqy[ho_neigh * nlon_out + wo] += kx_v * weight;
                             }
                         }
 
                         // flush per-hi dkx scratch
                         for (int64_t wi = 0; wi < nlon_in; wi++) {
-                            dkx_base[dkx_b_off + hi * dkx_sH + wi * dkx_sW + ci] +=
-                                static_cast<scalar_t>(scratch_dkx_row[wi]);
+                            dkx_base[dkx_b_off + hi * dkx_sH + wi * dkx_sW + ci]
+                                += static_cast<scalar_t>(scratch_dkx_row[wi]);
                         }
                     }
 
                     // flush persisted dqy scratch
                     for (int64_t ho = 0; ho < nlat_out; ho++) {
                         for (int64_t wo = 0; wo < nlon_out; wo++) {
-                            dqy_base[dqy_b_off + ho * dqy_sH + wo * dqy_sW + ci] +=
-                                static_cast<scalar_t>(scratch_dqy[ho * nlon_out + wo]);
+                            dqy_base[dqy_b_off + ho * dqy_sH + wo * dqy_sW + ci]
+                                += static_cast<scalar_t>(scratch_dqy[ho * nlon_out + wo]);
                         }
                     }
                 }
             }
         }
 
-        // ----- Phase C: dvx, parallel over (b, co) -----
-        #pragma omp parallel
+// ----- Phase C: dvx, parallel over (b, co) -----
+#pragma omp parallel
         {
             std::vector<float> scratch_dvx_row(static_cast<size_t>(nlon_in));
 
-            #pragma omp for collapse(2)
+#pragma omp for collapse(2)
             for (int64_t b = 0; b < batch_size; b++) {
                 for (int64_t co = 0; co < nchannels_out; co++) {
 
-                    const int64_t dy_b_off  = b * dy_sB;
+                    const int64_t dy_b_off = b * dy_sB;
                     const int64_t dvx_b_off = b * dvx_sB;
 
                     for (int64_t hi = 0; hi < nlat_in; hi++) {
                         std::fill(scratch_dvx_row.begin(), scratch_dvx_row.end(), 0.0f);
 
                         const int64_t zstart = roff_p[hi];
-                        const int64_t zend   = roff_p[hi + 1];
+                        const int64_t zend = roff_p[hi + 1];
 
                         for (int64_t idz = zstart; idz < zend; idz++) {
-                            const int64_t col          = col_p[idz];
-                            const int64_t ho_neigh     = col / nlon_out;
+                            const int64_t col = col_p[idz];
+                            const int64_t ho_neigh = col / nlon_out;
                             const int64_t wo_canonical = col % nlon_out;
-                            const int64_t idz_local    = idz - zstart;
+                            const int64_t idz_local = idz - zstart;
 
                             for (int64_t wi = 0; wi < nlon_in; wi++) {
                                 int64_t wo = wo_canonical + pscale_out * wi;
                                 if (wo >= nlon_out) wo -= nlon_out;
 
-                                const float alpha_nz   = alpha_nz_buf[nz_off(b, hi, idz_local, wi)];
-                                const float inv_sum    = 1.0f / alpha_sum_buf[sc_off(b, ho_neigh, wo)];
+                                const float alpha_nz = alpha_nz_buf[nz_off(b, hi, idz_local, wi)];
+                                const float inv_sum = 1.0f / alpha_sum_buf[sc_off(b, ho_neigh, wo)];
                                 const float alpha_norm = alpha_nz * inv_sum;
 
-                                const float dy_v = static_cast<float>(
-                                    dy_base[dy_b_off + ho_neigh * dy_sH + wo * dy_sW + co]);
+                                const float dy_v
+                                    = static_cast<float>(dy_base[dy_b_off + ho_neigh * dy_sH + wo * dy_sW + co]);
                                 scratch_dvx_row[wi] += alpha_norm * dy_v;
                             }
                         }
 
                         // flush per-hi dvx scratch
                         for (int64_t wi = 0; wi < nlon_in; wi++) {
-                            dvx_base[dvx_b_off + hi * dvx_sH + wi * dvx_sW + co] +=
-                                static_cast<scalar_t>(scratch_dvx_row[wi]);
+                            dvx_base[dvx_b_off + hi * dvx_sH + wi * dvx_sW + co]
+                                += static_cast<scalar_t>(scratch_dvx_row[wi]);
                         }
                     }
                 }
@@ -358,28 +346,20 @@ namespace attention_kernels {
         }
     }
 
-
     void s2_attn_bwd_upsample_dispatch(
-        const torch::PackedTensorAccessor64<float, 4> kx_arr,
-        const torch::PackedTensorAccessor64<float, 4> vx_arr,
-        const torch::PackedTensorAccessor64<float, 4> qy_arr,
-        const torch::PackedTensorAccessor64<float, 4> dy_arr,
+        const torch::PackedTensorAccessor64<float, 4> kx_arr, const torch::PackedTensorAccessor64<float, 4> vx_arr,
+        const torch::PackedTensorAccessor64<float, 4> qy_arr, const torch::PackedTensorAccessor64<float, 4> dy_arr,
         const torch::PackedTensorAccessor64<float, 1> quad_weights_arr,
         const torch::PackedTensorAccessor64<int64_t, 1> col_idx_arr,
-        const torch::PackedTensorAccessor64<int64_t, 1> roff_arr,
-        torch::PackedTensorAccessor64<float, 4> dqy_arr,
-        torch::PackedTensorAccessor64<float, 4> dvx_arr,
-        torch::PackedTensorAccessor64<float, 4> dkx_arr,
-        int64_t nlon_in, int64_t nlat_in,
-        int64_t nlat_out, int64_t nlon_out,
-        int64_t batch_size, int64_t nchannels_in, int64_t nchannels_out) {
+        const torch::PackedTensorAccessor64<int64_t, 1> roff_arr, torch::PackedTensorAccessor64<float, 4> dqy_arr,
+        torch::PackedTensorAccessor64<float, 4> dvx_arr, torch::PackedTensorAccessor64<float, 4> dkx_arr,
+        int64_t nlon_in, int64_t nlat_in, int64_t nlat_out, int64_t nlon_out, int64_t batch_size, int64_t nchannels_in,
+        int64_t nchannels_out)
+    {
 
-        s2_attn_bwd_upsample_kernel<float>(
-            kx_arr, vx_arr, qy_arr, dy_arr,
-            quad_weights_arr, col_idx_arr, roff_arr,
-            dqy_arr, dvx_arr, dkx_arr,
-            nlon_in, nlat_in, nlat_out, nlon_out,
-            batch_size, nchannels_in, nchannels_out);
+        s2_attn_bwd_upsample_kernel<float>(kx_arr, vx_arr, qy_arr, dy_arr, quad_weights_arr, col_idx_arr, roff_arr,
+                                           dqy_arr, dvx_arr, dkx_arr, nlon_in, nlat_in, nlat_out, nlon_out, batch_size,
+                                           nchannels_in, nchannels_out);
     }
 
-}
+} // namespace attention_kernels
