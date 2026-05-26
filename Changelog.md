@@ -2,6 +2,12 @@
 
 ## Versioning
 
+### v0.9.2a
+
+* Fused DISCO kernel for serial convolution: fuses the sparse psi contraction and weight multiplication into a single autograd region, avoiding the K-expanded intermediate activation in the graph and reducing memory footprint by a factor of K. Enabled via `fused=True` on `DiscreteContinuousConvS2`.
+* Distributed DISCO convolution now uses `reduce_scatter` instead of `all_reduce` + `scatter` for the polar reduction, cutting communicated data volume in half.
+* New ring communication variant for distributed DISCO convolution (`method="ring"`): nearest-neighbor rotation along the azimuth group replaces the bulk all-to-all transpose. The K-expanded intermediate never crosses any collective, making this path better suited for deep-channel / narrow-spatial layers. CUDA-only; set `fused=True` for maximum activation-memory savings (recomputes the ring forward in backward). Double-buffered P2P transfers available via `TORCH_HARMONICS_P2P_BUFFER=1`.
+
 ### v0.9.1
 
 * Fourier-Bessel filter basis; Hann window basis with per-type init factors via `get_init_factors`
