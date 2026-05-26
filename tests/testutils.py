@@ -40,6 +40,21 @@ import torch_harmonics.distributed as thd
 
 
 def set_seed(seed=333):
+    """Set the torch + CUDA random seed.
+
+    The ``seed`` argument can be overridden by the ``TORCH_HARMONICS_TEST_SEED``
+    environment variable. Useful for distinguishing statistical (precision)
+    failures from systematic (bug) failures: if a test fails with seed=333 but
+    passes with seed=666 (and vice versa across rows), the failure is
+    statistical — the per-row data distribution happens to land just over the
+    AMP noise floor. A systematic bug fails consistently across seeds.
+
+    Usage:
+        TORCH_HARMONICS_TEST_SEED=666 pytest tests/test_convolution.py ...
+    """
+    env_seed = os.environ.get("TORCH_HARMONICS_TEST_SEED")
+    if env_seed is not None:
+        seed = int(env_seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
