@@ -393,14 +393,14 @@ class TestReduceScatter(unittest.TestCase):
             # B, C,  H,  W, split_dim   ── H and W chosen to cover both
             #                              even and uneven splits for polar
             #                              group sizes typical at launch (2 or 4).
-            [2,  4, 16, 32, -2],   # H=16  → even for P∈{1,2,4,8}
-            [2,  4, 17, 32, -2],   # H=17  → uneven for P>1
-            [2,  4, 33, 32, -2],   # H=33  → uneven for P∈{2,4}
-            [2,  4, 16, 32, -1],   # W=32  → even
-            [2,  4, 16, 33, -1],   # W=33  → uneven
-            [1,  1,  7, 13, -2],   # tiny + uneven for P∈{2,3,4}
-            [1,  1,  7, 13, -1],
-            [2,  4, 11,  9, -2],   # both dims uneven across most P
+            [2, 4, 16, 32, -2],  # H=16  → even for P∈{1,2,4,8}
+            [2, 4, 17, 32, -2],  # H=17  → uneven for P>1
+            [2, 4, 33, 32, -2],  # H=33  → uneven for P∈{2,4}
+            [2, 4, 16, 32, -1],  # W=32  → even
+            [2, 4, 16, 33, -1],  # W=33  → uneven
+            [1, 1, 7, 13, -2],  # tiny + uneven for P∈{2,3,4}
+            [1, 1, 7, 13, -1],
+            [2, 4, 11, 9, -2],  # both dims uneven across most P
         ],
         skip_on_empty=True,
     )
@@ -439,17 +439,16 @@ class TestReduceScatter(unittest.TestCase):
 
         # Shape contract: my_expected along scattered dim, others unchanged.
         self.assertEqual(
-            out.shape[dim], my_expected,
-            f"reduce_scatter output dim {dim} = {out.shape[dim]}, "
-            f"expected {my_expected} from compute_split_shapes",
+            out.shape[dim],
+            my_expected,
+            f"reduce_scatter output dim {dim} = {out.shape[dim]}, " f"expected {my_expected} from compute_split_shapes",
         )
         ref_shape = list(x_local.shape)
         ref_shape[dim] = my_expected
         self.assertEqual(tuple(out.shape), tuple(ref_shape))
 
         self.assertTrue(
-            compare_tensors("reduce_from_scatter_to_polar fwd", ref, out,
-                            atol=1e-5, rtol=1e-4, verbose=True),
+            compare_tensors("reduce_from_scatter_to_polar fwd", ref, out, atol=1e-5, rtol=1e-4, verbose=True),
             "forward output does not match the gather-then-slice reference",
         )
 
@@ -463,12 +462,12 @@ class TestReduceScatter(unittest.TestCase):
             grad_ref = dy.clone()
 
         self.assertEqual(
-            tuple(x.grad.shape), tuple(x_local.shape),
+            tuple(x.grad.shape),
+            tuple(x_local.shape),
             "backward gradient shape must equal the forward input shape",
         )
         self.assertTrue(
-            compare_tensors("reduce_from_scatter_to_polar bwd", grad_ref, x.grad,
-                            atol=1e-5, rtol=1e-4, verbose=True),
+            compare_tensors("reduce_from_scatter_to_polar bwd", grad_ref, x.grad, atol=1e-5, rtol=1e-4, verbose=True),
             "input gradient does not match the all-gathered upstream gradient",
         )
 
@@ -477,14 +476,14 @@ class TestReduceScatter(unittest.TestCase):
             # B, C,  H,  W, split_dim   ── azimuth-natural cases scatter
             #                              along W; we also exercise H to
             #                              confirm the primitive is dim-agnostic.
-            [2,  4, 16, 32, -1],   # W=32  → even for P∈{1,2,4,8}
-            [2,  4, 16, 33, -1],   # W=33  → uneven for P>1
-            [2,  4, 16, 65, -1],   # W=65  → uneven for P∈{2,4}
-            [2,  4, 16, 32, -2],   # H=16  → even
-            [2,  4, 17, 32, -2],   # H=17  → uneven for P>1
-            [1,  1,  7, 13, -1],   # tiny + uneven for P∈{2,3,4}
-            [1,  1,  7, 13, -2],
-            [2,  4, 11,  9, -1],
+            [2, 4, 16, 32, -1],  # W=32  → even for P∈{1,2,4,8}
+            [2, 4, 16, 33, -1],  # W=33  → uneven for P>1
+            [2, 4, 16, 65, -1],  # W=65  → uneven for P∈{2,4}
+            [2, 4, 16, 32, -2],  # H=16  → even
+            [2, 4, 17, 32, -2],  # H=17  → uneven for P>1
+            [1, 1, 7, 13, -1],  # tiny + uneven for P∈{2,3,4}
+            [1, 1, 7, 13, -2],
+            [2, 4, 11, 9, -1],
         ],
         skip_on_empty=True,
     )
@@ -518,17 +517,16 @@ class TestReduceScatter(unittest.TestCase):
         out = reduce_from_scatter_to_azimuth_region(x, split_dim)
 
         self.assertEqual(
-            out.shape[dim], my_expected,
-            f"reduce_scatter output dim {dim} = {out.shape[dim]}, "
-            f"expected {my_expected} from compute_split_shapes",
+            out.shape[dim],
+            my_expected,
+            f"reduce_scatter output dim {dim} = {out.shape[dim]}, " f"expected {my_expected} from compute_split_shapes",
         )
         ref_shape = list(x_local.shape)
         ref_shape[dim] = my_expected
         self.assertEqual(tuple(out.shape), tuple(ref_shape))
 
         self.assertTrue(
-            compare_tensors("reduce_from_scatter_to_azimuth fwd", ref, out,
-                            atol=1e-5, rtol=1e-4, verbose=True),
+            compare_tensors("reduce_from_scatter_to_azimuth fwd", ref, out, atol=1e-5, rtol=1e-4, verbose=True),
             "forward output does not match the gather-then-slice reference",
         )
 
@@ -541,12 +539,12 @@ class TestReduceScatter(unittest.TestCase):
             grad_ref = dy.clone()
 
         self.assertEqual(
-            tuple(x.grad.shape), tuple(x_local.shape),
+            tuple(x.grad.shape),
+            tuple(x_local.shape),
             "backward gradient shape must equal the forward input shape",
         )
         self.assertTrue(
-            compare_tensors("reduce_from_scatter_to_azimuth bwd", grad_ref, x.grad,
-                            atol=1e-5, rtol=1e-4, verbose=True),
+            compare_tensors("reduce_from_scatter_to_azimuth bwd", grad_ref, x.grad, atol=1e-5, rtol=1e-4, verbose=True),
             "input gradient does not match the all-gathered upstream gradient",
         )
 
