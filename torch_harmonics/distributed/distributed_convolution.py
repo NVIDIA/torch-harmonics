@@ -46,13 +46,9 @@ from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contractio
 # distributed stuff
 from .primitives import (
     compute_split_shapes,
-    copy_to_polar_region,
     distributed_transpose_azimuth,
     gather_from_copy_to_polar_region,
-    gather_from_polar_region,
-    reduce_from_polar_region,
     reduce_from_scatter_to_polar_region,
-    scatter_to_polar_region,
 )
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 

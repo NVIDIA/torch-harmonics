@@ -311,7 +311,7 @@ def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
     orig_shapes = compute_split_shapes(input_.shape[dim_], comm_size)
     max_chunk = max(orig_shapes)
     my_chunk = orig_shapes[comm_rank]
-    is_even = (min(orig_shapes) == max_chunk)
+    is_even = min(orig_shapes) == max_chunk
 
     dtype = input_.dtype
     work_dtype = torch.float32 if (use_fp32 and dtype != torch.float32) else dtype
@@ -642,6 +642,7 @@ def reduce_from_scatter_to_polar_region(input_, dim_):
 @torch.compiler.disable()
 def reduce_from_scatter_to_azimuth_region(input_, dim_):
     return _ReduceFromScatterToAzimuthRegion.apply(input_, dim_)
+
 
 @torch.compiler.disable()
 def gather_from_copy_to_polar_region(input_, dim_, shapes_):
