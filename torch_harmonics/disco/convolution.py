@@ -570,9 +570,19 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         if self.fused:
             out = _disco_s2_fused_conv_optimized(
-                x, weight_r,
-                self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals,
-                self.kernel_size, self.nlat_out, self.nlon_out, self.groups, self.groupsize)
+                x,
+                weight_r,
+                self.psi_roff_idx,
+                self.psi_ker_idx,
+                self.psi_row_idx,
+                self.psi_col_idx,
+                self.psi_vals,
+                self.kernel_size,
+                self.nlat_out,
+                self.nlon_out,
+                self.groups,
+                self.groupsize,
+            )
         else:
             if self.optimized_kernel:
                 x = _disco_s2_contraction_optimized(
