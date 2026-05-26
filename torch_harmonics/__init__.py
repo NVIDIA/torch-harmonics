@@ -29,7 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-__version__ = "0.9.1"
+__version__ = "0.9.2a"
 
 from . import examples, quadrature, random_fields
 from .attention import AttentionS2, NeighborhoodAttentionS2
