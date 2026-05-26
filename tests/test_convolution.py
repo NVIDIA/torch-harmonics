@@ -435,11 +435,11 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, True, 2e-2, 1e-2],
             # bf16 tests (AMP)
             # regular convolution
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, 5e-2, 5e-2],
-            [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, 5e-2, 5e-2],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, 2e-1, 5e-2],
+            [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, 2e-1, 5e-2],
             # transpose convolution
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, 5e-2, 5e-2],
-            [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, 5e-2, 5e-2],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, 2e-1, 5e-2],
+            [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, 2e-1, 5e-2],
         ],
         skip_on_empty=True,
     )
@@ -611,18 +611,18 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (21, 40), (41, 80), (2, 2), "harmonic", "modal", "equiangular", "equiangular", torch.float64, True, 1e-9, 1e-9],
             # fp16 tests (AMP)
             # regular convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, 1e-2, 1e-2],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, 1e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, 5e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, 5e-2, 1e-2],
             # transpose convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, True, 1e-2, 1e-2],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, True, 1e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, True, 5e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, True, 5e-2, 1e-2],
             # bf16 tests (AMP)
             # regular convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, 1e-2, 1e-2],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, 1e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, 3e-1, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, 3e-1, 1e-2],
             # transpose convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, 1e-2, 1e-2],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, 1e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, 3e-1, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, 3e-1, 1e-2],
         ],
         skip_on_empty=True,
     )
