@@ -204,18 +204,24 @@ if optimized_kernels_is_available():
 
     @torch.library.custom_op("disco_kernels::_disco_s2_fused_conv_optimized", mutates_args=())
     def _disco_s2_fused_conv_optimized(
-        inp: torch.Tensor, weight: torch.Tensor,
-        roff_idx: torch.Tensor, ker_idx: torch.Tensor,
-        row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
-        kernel_size: int, nlat_out: int, nlon_out: int,
-        groups: int, groupsize: int) -> torch.Tensor:
+        inp: torch.Tensor,
+        weight: torch.Tensor,
+        roff_idx: torch.Tensor,
+        ker_idx: torch.Tensor,
+        row_idx: torch.Tensor,
+        col_idx: torch.Tensor,
+        vals: torch.Tensor,
+        kernel_size: int,
+        nlat_out: int,
+        nlon_out: int,
+        groups: int,
+        groupsize: int,
+    ) -> torch.Tensor:
 
         # sparse contraction: (B, C, H_in, W_in) -> (B, C, K, H_out, W_out)
         itype = inp.dtype
         cdtype = _compute_dtype(itype)
-        x_expanded = disco_kernels.forward.default(
-            inp.to(cdtype).contiguous(), roff_idx, ker_idx, row_idx, col_idx,
-            vals.to(cdtype), kernel_size, nlat_out, nlon_out)
+        x_expanded = disco_kernels.forward.default(inp.to(cdtype).contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals.to(cdtype), kernel_size, nlat_out, nlon_out)
         x_expanded = x_expanded.to(itype)
 
         # weight contraction: (B, G, Cg, K, H, W) x (G, Og, Cg, K) -> (B, O, H, W)
@@ -226,14 +232,22 @@ if optimized_kernels_is_available():
         return out
 
     @torch.library.register_fake("disco_kernels::_disco_s2_fused_conv_optimized")
-    def _(inp: torch.Tensor, weight: torch.Tensor,
-          roff_idx: torch.Tensor, ker_idx: torch.Tensor,
-          row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor,
-          kernel_size: int, nlat_out: int, nlon_out: int,
-          groups: int, groupsize: int) -> torch.Tensor:
+    def _(
+        inp: torch.Tensor,
+        weight: torch.Tensor,
+        roff_idx: torch.Tensor,
+        ker_idx: torch.Tensor,
+        row_idx: torch.Tensor,
+        col_idx: torch.Tensor,
+        vals: torch.Tensor,
+        kernel_size: int,
+        nlat_out: int,
+        nlon_out: int,
+        groups: int,
+        groupsize: int,
+    ) -> torch.Tensor:
         out_channels = groups * weight.shape[1]
-        return torch.empty(inp.shape[0], out_channels, nlat_out, nlon_out,
-                           dtype=inp.dtype, device=inp.device)
+        return torch.empty(inp.shape[0], out_channels, nlat_out, nlon_out, dtype=inp.dtype, device=inp.device)
 
 
 def _setup_context_fused_conv_backward(ctx, inputs, output):
@@ -270,25 +284,18 @@ def _disco_s2_fused_conv_bwd_optimized(ctx, grad_output):
         grad_x_expanded = grad_x_expanded.reshape(B, -1, K, H, W).contiguous()
 
         # transpose contraction back to input space
-        grad_inp = disco_kernels.backward.default(
-            grad_x_expanded.to(cdtype).contiguous(),
-            roff_idx, ker_idx, row_idx, col_idx, vals_c,
-            K, inp.shape[-2], inp.shape[-1])
+        grad_inp = disco_kernels.backward.default(grad_x_expanded.to(cdtype).contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
         grad_inp = grad_inp.to(itype)
 
     if ctx.needs_input_grad[1]:
         # recompute x_expanded from inp (the trade: one extra forward pass)
-        x_expanded = disco_kernels.forward.default(
-            inp.to(cdtype).contiguous(),
-            roff_idx, ker_idx, row_idx, col_idx, vals_c,
-            K, H, W)
+        x_expanded = disco_kernels.forward.default(inp.to(cdtype).contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, H, W)
         x_expanded = x_expanded.to(itype).reshape(B, G, Cg, K, H, W)
 
         # weight gradient: (B, G, Og, H, W) x (B, G, Cg, K, H, W) -> (G, Og, Cg, K)
         grad_weight = torch.einsum("bgoxy,bgckxy->gock", grad_output_r, x_expanded)
 
-    return (grad_inp, grad_weight,
-            None, None, None, None, None, None, None, None, None, None)
+    return (grad_inp, grad_weight, None, None, None, None, None, None, None, None, None, None)
 
 
 if optimized_kernels_is_available():

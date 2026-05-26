@@ -889,15 +889,25 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         if fused and not transpose:
             # opcheck for fused conv op
             weight_r = conv.weight.reshape(conv.groups, -1, conv.weight.shape[1], conv.weight.shape[2])
-            test_inputs = (inp, weight_r,
-                           conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals,
-                           conv.kernel_size, conv.nlat_out, conv.nlon_out, conv.groups, conv.groupsize)
+            test_inputs = (
+                inp,
+                weight_r,
+                conv.psi_roff_idx,
+                conv.psi_ker_idx,
+                conv.psi_row_idx,
+                conv.psi_col_idx,
+                conv.psi_vals,
+                conv.kernel_size,
+                conv.nlat_out,
+                conv.nlon_out,
+                conv.groups,
+                conv.groupsize,
+            )
             opcheck(torch.ops.disco_kernels._disco_s2_fused_conv_optimized, test_inputs)
         else:
             if transpose:
                 inp = torch.randn(batch_size, conv.kernel_size, in_channels, *in_shape, device=self.device)
-            test_inputs = (inp, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals,
-                           conv.kernel_size, conv.nlat_out, conv.nlon_out)
+            test_inputs = (inp, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals, conv.kernel_size, conv.nlat_out, conv.nlon_out)
             if not transpose:
                 opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs)
             else:
