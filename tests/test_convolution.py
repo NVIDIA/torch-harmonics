@@ -728,6 +728,65 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
+            # [transpose, in_shape, out_shape, autocast_dtype]
+            # regular DISCO (downsample): in > out
+            [False, (16, 32), (8, 16), torch.float16],
+            [False, (16, 32), (8, 16), torch.bfloat16],
+            # transpose DISCO (upsample): in < out
+            [True, (8, 16), (16, 32), torch.float16],
+            [True, (8, 16), (16, 32), torch.bfloat16],
+        ],
+        skip_on_empty=True,
+    )
+    def test_optimized_autocast_dtype(self, transpose, in_shape, out_shape, autocast_dtype):
+        """Direct check that the autocast registration on the optimized DISCO custom_ops
+        produces output in the active autocast dtype.
+
+        Uses bias=False so the final op of the conv module is the einsum, which is
+        autocast-eligible and preserves the autocast dtype. A bias add of bf16+fp32
+        would dtype-promote to fp32 and mask the autocast contract we're testing.
+        """
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+        if not optimized_kernels_is_available():
+            raise unittest.SkipTest("skipping test because optimized kernels are not available")
+
+        set_seed(333)
+
+        Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
+        nlat_in = in_shape[0]
+        theta_cutoff = 4 * torch.pi / float(nlat_in - 1)
+
+        conv = Conv(
+            in_channels=4,
+            out_channels=4,
+            in_shape=in_shape,
+            out_shape=out_shape,
+            kernel_shape=(3,),
+            basis_type="piecewise linear",
+            basis_norm_mode="mean",
+            groups=1,
+            grid_in="equiangular",
+            grid_out="equiangular",
+            bias=False,
+            theta_cutoff=theta_cutoff,
+            optimized_kernel=True,
+        ).to(self.device)
+
+        # Module + input in fp32; autocast handles the cast inside fwd.
+        x = torch.randn(2, 4, *in_shape, device=self.device, dtype=torch.float32)
+
+        with torch.autocast(self.device.type, dtype=autocast_dtype):
+            out = conv(x)
+
+        self.assertEqual(
+            out.dtype,
+            autocast_dtype,
+            f"{Conv.__name__} output dtype {out.dtype} != autocast dtype {autocast_dtype}",
+        )
+
+    @parameterized.expand(
+        [
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
             [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", False, 1e-4, 1e-4],
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],

@@ -38,6 +38,7 @@ from attention_helpers import optimized_kernels_is_available
 
 from torch_harmonics.attention import attention_kernels
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
+from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_setup_context
 
 from .primitives import compute_split_shapes, get_group_neighbors, polar_halo_exchange
 from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -78,6 +79,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
     """
 
     @staticmethod
+    @torch.amp.custom_fwd(device_type="cuda")
     def forward(
         kw,
         vw,
@@ -162,6 +164,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         return y_out, alpha_sum, qdotk_max
 
     @staticmethod
+    @_custom_setup_context(device_type="cuda")
     def setup_context(ctx, inputs, output):
         (
             kw,
@@ -200,6 +203,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         ctx.az_size = az_size
 
     @staticmethod
+    @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, dy, _dalpha_sum, _dqdotk_max):
         # _dalpha_sum and _dqdotk_max are always None (non-differentiable outputs)
         (kw, vw, qw, psi_col_idx, psi_roff_idx, psi_row_idx, quad_weights, fwd_alpha_sum, fwd_qdotk_max) = ctx.saved_tensors
@@ -678,6 +682,11 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         # Global pscale — the kernel must not infer this from local shapes,
         # because kernel `nlon_out` is nlon_out_local which differs when az_size > 1.
         pscale = self.nlon_in // self.nlon_out
+        # Under autocast, cast k/v/q to the autocast dtype before .apply() —
+        # mirrors PyTorch's autocast-eligible-op dataflow. Upstream Linear
+        # projections under autocast already produce bf16, so this is usually
+        # a no-op; covers the case where upstream is fp32-producing.
+        key_halo, value_halo, query_proj = _cast_to_autocast_dtype(key_halo, value_halo, query_proj)
         out, _, _ = _RingNeighborhoodAttentionFn.apply(
             key_halo,
             value_halo,

@@ -237,3 +237,12 @@ if optimized_kernels_is_available():
     torch.library.register_autograd(
         "attention_kernels::_neighborhood_s2_attention_optimized", _neighborhood_s2_attention_bwd_optimized, setup_context=_setup_context_attention_backward
     )
+
+    # Autocast: cast kw/vw/qw to the autocast dtype before calling the op.
+    # The op body already upcasts to fp32 internally for softmax stability
+    # and casts the output back, so this just establishes the autocast
+    # boundary. Index tensors (col_idx, row_off) and quad_weights pass through.
+    @torch.library.register_autocast("attention_kernels::_neighborhood_s2_attention_optimized", "cuda")
+    def _(kw, vw, qw, quad_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out):
+        cast_dtype = torch.get_autocast_dtype("cuda")
+        return _neighborhood_s2_attention_optimized(kw.to(cast_dtype), vw.to(cast_dtype), qw.to(cast_dtype), quad_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out)

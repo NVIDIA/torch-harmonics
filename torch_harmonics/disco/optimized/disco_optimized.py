@@ -307,6 +307,14 @@ def _disco_s2_contraction_bwd_optimized(ctx, grad_output):
 if optimized_kernels_is_available():
     torch.library.register_autograd("disco_kernels::_disco_s2_contraction_optimized", _disco_s2_contraction_bwd_optimized, setup_context=_setup_context_conv_backward)
 
+    # Autocast: cast activation to the autocast dtype before calling the op.
+    # The op body already upcasts to fp32 internally for precision and casts
+    # the output back, so this just establishes the autocast boundary.
+    @torch.library.register_autocast("disco_kernels::_disco_s2_contraction_optimized", "cuda")
+    def _(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out):
+        cast_dtype = torch.get_autocast_dtype("cuda")
+        return _disco_s2_contraction_optimized(inp.to(cast_dtype), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+
 
 # Transpose convolution related
 def _disco_s2_transpose_contraction_bwd_optimized(ctx, grad_output):
@@ -329,3 +337,8 @@ if optimized_kernels_is_available():
     torch.library.register_autograd(
         "disco_kernels::_disco_s2_transpose_contraction_optimized", _disco_s2_transpose_contraction_bwd_optimized, setup_context=_setup_context_conv_backward
     )
+
+    @torch.library.register_autocast("disco_kernels::_disco_s2_transpose_contraction_optimized", "cuda")
+    def _(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out):
+        cast_dtype = torch.get_autocast_dtype("cuda")
+        return _disco_s2_transpose_contraction_optimized(inp.to(cast_dtype), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
