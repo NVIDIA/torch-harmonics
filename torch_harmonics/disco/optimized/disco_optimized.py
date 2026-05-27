@@ -143,6 +143,127 @@ if optimized_kernels_is_available():
         out_shape = (inp.shape[0], inp.shape[1], nlat_out, nlon_out)
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
+    # ring-step forward fake — schema returns None (op mutates ``out``)
+    @torch.library.register_fake("disco_kernels::forward_ring_step")
+    def _(
+        inp: torch.Tensor,
+        out: torch.Tensor,
+        roff_idx: torch.Tensor,
+        ker_idx: torch.Tensor,
+        row_idx: torch.Tensor,
+        col_idx: torch.Tensor,
+        vals: torch.Tensor,
+        kernel_size: int,
+        nlat_out: int,
+        nlon_out_local_self: int,
+        nlon_in_global: int,
+        pscale: int,
+        lon_lo_src: int,
+        nlon_in_local_src: int,
+    ) -> None:
+        return None
+
+    # ring-step backward fake — same shape contract; mutates ``out``
+    @torch.library.register_fake("disco_kernels::backward_ring_step")
+    def _(
+        inp: torch.Tensor,
+        out: torch.Tensor,
+        roff_idx: torch.Tensor,
+        ker_idx: torch.Tensor,
+        row_idx: torch.Tensor,
+        col_idx: torch.Tensor,
+        vals: torch.Tensor,
+        kernel_size: int,
+        nlat_in: int,
+        nlon_in_local_self: int,
+        nlon_in_global: int,
+        pscale: int,
+        pscale_wo_offset: int,
+        lon_lo_in_self: int,
+        nlon_out_local_src: int,
+    ) -> None:
+        return None
+
+    # ring-step forward Python wrapper.
+    def _disco_s2_contraction_ring_step_optimized(
+        inp: torch.Tensor,
+        out: torch.Tensor,
+        roff_idx: torch.Tensor,
+        ker_idx: torch.Tensor,
+        row_idx: torch.Tensor,
+        col_idx: torch.Tensor,
+        vals: torch.Tensor,
+        kernel_size: int,
+        nlat_out: int,
+        nlon_out_local_self: int,
+        nlon_in_global: int,
+        pscale: int,
+        lon_lo_src: int,
+        nlon_in_local_src: int,
+    ) -> None:
+        itype = inp.dtype
+        cdtype = _compute_dtype(itype)
+        # Cast inputs/vals to the compute dtype to keep accumulation precision
+        # at fp32 when inputs are fp16/bf16.
+        inp_c = inp.to(cdtype).contiguous()
+        vals_c = vals.to(cdtype)
+        disco_kernels.forward_ring_step.default(
+            inp_c,
+            out,
+            roff_idx,
+            ker_idx,
+            row_idx,
+            col_idx,
+            vals_c,
+            kernel_size,
+            nlat_out,
+            nlon_out_local_self,
+            nlon_in_global,
+            pscale,
+            lon_lo_src,
+            nlon_in_local_src,
+        )
+
+    # ring-step transpose Python wrapper. Unlike the forward wrapper, we
+    # DON'T upcast ``inp`` here: the kernel's storage_t/compute_t split
+    # casts on load and accumulates in fp32 regardless.
+    def _disco_s2_transpose_contraction_ring_step_optimized(
+        inp: torch.Tensor,
+        out: torch.Tensor,
+        roff_idx: torch.Tensor,
+        ker_idx: torch.Tensor,
+        row_idx: torch.Tensor,
+        col_idx: torch.Tensor,
+        vals: torch.Tensor,
+        kernel_size: int,
+        nlat_in: int,
+        nlon_in_local_self: int,
+        nlon_in_global: int,
+        pscale: int,
+        pscale_wo_offset: int,
+        lon_lo_in_self: int,
+        nlon_out_local_src: int,
+    ) -> None:
+        # vals must be in compute_t (fp32) — kernel reads them as such.
+        vals_c = vals.to(_compute_dtype(inp.dtype))
+        disco_kernels.backward_ring_step.default(
+            inp.contiguous(),
+            out,
+            roff_idx,
+            ker_idx,
+            row_idx,
+            col_idx,
+            vals_c,
+            kernel_size,
+            nlat_in,
+            nlon_in_local_self,
+            nlon_in_global,
+            pscale,
+            pscale_wo_offset,
+            lon_lo_in_self,
+            nlon_out_local_src,
+        )
+
 
 # general routines: this is the same for forward and transpose
 def _setup_context_conv_backward(ctx, inputs, output):
@@ -194,4 +315,113 @@ def _disco_s2_transpose_contraction_bwd_optimized(ctx, grad_output):
 if optimized_kernels_is_available():
     torch.library.register_autograd(
         "disco_kernels::_disco_s2_transpose_contraction_optimized", _disco_s2_transpose_contraction_bwd_optimized, setup_context=_setup_context_conv_backward
+    )
+
+
+# Fused convolution + weight contraction.
+# Avoids storing the K-expanded intermediate (B, C, K, H, W) in the autograd graph
+# by recomputing the contraction during backward instead.
+if optimized_kernels_is_available():
+
+    @torch.library.custom_op("disco_kernels::_disco_s2_fused_conv_optimized", mutates_args=())
+    def _disco_s2_fused_conv_optimized(
+        inp: torch.Tensor,
+        weight: torch.Tensor,
+        roff_idx: torch.Tensor,
+        ker_idx: torch.Tensor,
+        row_idx: torch.Tensor,
+        col_idx: torch.Tensor,
+        vals: torch.Tensor,
+        kernel_size: int,
+        nlat_out: int,
+        nlon_out: int,
+        groups: int,
+        groupsize: int,
+    ) -> torch.Tensor:
+
+        # sparse contraction: (B, C, H_in, W_in) -> (B, C, K, H_out, W_out)
+        itype = inp.dtype
+        cdtype = _compute_dtype(itype)
+        x_expanded = disco_kernels.forward.default(inp.to(cdtype).contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals.to(cdtype), kernel_size, nlat_out, nlon_out)
+        x_expanded = x_expanded.to(itype)
+
+        # weight contraction: (B, G, Cg, K, H, W) x (G, Og, Cg, K) -> (B, O, H, W)
+        B, C, K, H, W = x_expanded.shape
+        x_expanded = x_expanded.reshape(B, groups, groupsize, K, H, W)
+        out = torch.einsum("bgckxy,gock->bgoxy", x_expanded, weight.to(itype)).contiguous()
+        out = out.reshape(B, -1, H, W)
+        return out
+
+    @torch.library.register_fake("disco_kernels::_disco_s2_fused_conv_optimized")
+    def _(
+        inp: torch.Tensor,
+        weight: torch.Tensor,
+        roff_idx: torch.Tensor,
+        ker_idx: torch.Tensor,
+        row_idx: torch.Tensor,
+        col_idx: torch.Tensor,
+        vals: torch.Tensor,
+        kernel_size: int,
+        nlat_out: int,
+        nlon_out: int,
+        groups: int,
+        groupsize: int,
+    ) -> torch.Tensor:
+        out_channels = groups * weight.shape[1]
+        return torch.empty(inp.shape[0], out_channels, nlat_out, nlon_out, dtype=inp.dtype, device=inp.device)
+
+
+def _setup_context_fused_conv_backward(ctx, inputs, output):
+    inp, weight, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out, groups, groupsize = inputs
+    ctx.save_for_backward(inp, weight, roff_idx, ker_idx, row_idx, col_idx, vals)
+    ctx.kernel_size = kernel_size
+    ctx.nlat_out = nlat_out
+    ctx.nlon_out = nlon_out
+    ctx.groups = groups
+    ctx.groupsize = groupsize
+
+
+def _disco_s2_fused_conv_bwd_optimized(ctx, grad_output):
+    inp, weight, roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
+
+    itype = grad_output.dtype
+    cdtype = _compute_dtype(itype)
+    vals_c = vals.to(cdtype)
+
+    K = ctx.kernel_size
+    G, Cg = ctx.groups, ctx.groupsize
+    H, W = ctx.nlat_out, ctx.nlon_out
+    Og = weight.shape[1]
+    B = grad_output.shape[0]
+    grad_output_r = grad_output.reshape(B, G, Og, H, W)
+
+    grad_inp = None
+    grad_weight = None
+
+    if ctx.needs_input_grad[0]:
+        # einsum backward: expand grad into K-space
+        # (B, G, Og, H, W) x (G, Og, Cg, K) -> (B, G, Cg, K, H, W)
+        grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
+        grad_x_expanded = grad_x_expanded.reshape(B, -1, K, H, W).contiguous()
+
+        # transpose contraction back to input space
+        grad_inp = disco_kernels.backward.default(grad_x_expanded.to(cdtype).contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
+        grad_inp = grad_inp.to(itype)
+
+    if ctx.needs_input_grad[1]:
+        # recompute x_expanded from inp (the trade: one extra forward pass)
+        x_expanded = disco_kernels.forward.default(inp.to(cdtype).contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, H, W)
+        x_expanded = x_expanded.to(itype).reshape(B, G, Cg, K, H, W)
+
+        # weight gradient: (B, G, Og, H, W) x (B, G, Cg, K, H, W) -> (G, Og, Cg, K)
+        grad_weight = torch.einsum("bgoxy,bgckxy->gock", grad_output_r, x_expanded)
+
+    return (grad_inp, grad_weight, None, None, None, None, None, None, None, None, None, None)
+
+
+if optimized_kernels_is_available():
+    torch.library.register_autograd(
+        "disco_kernels::_disco_s2_fused_conv_optimized",
+        _disco_s2_fused_conv_bwd_optimized,
+        setup_context=_setup_context_fused_conv_backward,
     )

@@ -27,12 +27,12 @@ readme = "README.md"
 dynamic = ["version"]
 
 description = "Differentiable signal processing on the sphere for PyTorch."
+license = { file = "LICENSE.txt" }
 requires-python = ">=3.9"
 
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3.9",
-    "License :: OSI Approved :: BSD License",
     "Operating System :: OS Independent",
 ]
 
@@ -43,7 +43,7 @@ dependencies = [
 
 
 [tool.setuptools_scm]
-fallback_version = "0.9.1a0"
+fallback_version = "0.9.2a"
 
 [tool.setuptools.packages.find]
     include = ["torch_harmonics*"]
@@ -55,7 +55,7 @@ dev = [
     "coverage>=6.5.0",
     "parameterized",
     "scipy>=1.9.0",
-    "pre-commit>=3.0.0",
+    "pre-commit>=4.0.0",
     "black>=24.0.0",
     "ruff>=0.4.0",
 ]

@@ -102,6 +102,12 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         _, C_v, _, _ = vw.shape
         device = kw.device
 
+        # Capture input dtype so we can cast the user-visible output (y_out)
+        # back at the end of forward. The internal accumulators (y_acc,
+        # alpha_sum, qdotk_max) stay fp32 — softmax stability requires that,
+        # and the saved alpha_sum/qdotk_max feed fp32 math in backward.
+        inp_dtype = kw.dtype
+
         # Allocate state buffers in formats expected by the CUDA kernels:
         # y_acc: channels-last [B, H, W, C_v];  scalars: [B, H, W]
         y_acc = torch.zeros(B, nlat_out_local, nlon_out_local, C_v, device=device, dtype=torch.float32)
@@ -145,9 +151,10 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                 kw_chunk = recv_kw.clone()
                 vw_chunk = recv_vw.clone()
 
-        # Finalize: y = y_acc / alpha_sum  (both channels-last layout)
+        # Finalize: y = y_acc / alpha_sum  (both channels-last layout). Cast
+        # back to the input dtype to keep the op faithful to its input dtype.
         y_out = y_acc / alpha_sum.unsqueeze(-1)  # [B, H, W, C_v]
-        y_out = y_out.permute(0, 3, 1, 2).contiguous()  # [B, C_v, H, W]
+        y_out = y_out.permute(0, 3, 1, 2).to(dtype=inp_dtype).contiguous()  # [B, C_v, H, W]
 
         # alpha_sum and qdotk_max are returned so setup_context can save them;
         # they are marked non-differentiable there, so backward still only
@@ -225,7 +232,18 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         _, C_v, _, _ = vw.shape
         device = kw.device
 
-        dy_cf = dy.contiguous()  # channels-first [B, C_v, H, W]
+        # Capture input dtypes so the returned grads can be cast back. Promote
+        # kw/vw/qw/dy to fp32 for the kernel calls — internal accumulators
+        # (integral_buf, alpha_k/kvw_buf, dkw/dvw_full_cl) are already fp32,
+        # so feeding the kernels fp32 inputs keeps the math consistent and
+        # avoids dtype-mismatch dispatch errors when inputs are bf16/fp16.
+        kw_dtype = kw.dtype
+        vw_dtype = vw.dtype
+        qw_dtype = qw.dtype
+        kw = kw.to(torch.float32)
+        vw = vw.to(torch.float32)
+        qw = qw.to(torch.float32)
+        dy_cf = dy.to(torch.float32).contiguous()  # channels-first [B, C_v, H, W]
 
         # ----------------------------------------------------------------
         # Backward pass 1: re-accumulate {alpha_sum, qdotk_max, integral,
@@ -294,7 +312,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         if qw_needs_grad:
             alpha_sum_inv_sq = alpha_sum_inv**2
             dqy_cl = alpha_sum_inv_sq.unsqueeze(-1) * (fwd_alpha_sum.unsqueeze(-1) * alpha_kvw_buf - integral_buf.unsqueeze(-1) * alpha_k_buf)  # [B, H, W, C_k]
-            dqy = dqy_cl.permute(0, 3, 1, 2).contiguous()  # [B, C_k, H, W]
+            dqy = dqy_cl.permute(0, 3, 1, 2).to(dtype=qw_dtype).contiguous()  # [B, C_k, H, W]
         else:
             dqy = None
 
@@ -375,12 +393,12 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
             # middle H_in rows as the gradient for key_proj/value_proj.
             if kw_needs_grad:
                 dkw_cl = dkw_full_cl[:, :, my_lo : my_lo + my_nlon, :].contiguous()
-                dkw = dkw_cl.permute(0, 3, 1, 2).contiguous()  # [B, C_k, H_halo, W_local]
+                dkw = dkw_cl.permute(0, 3, 1, 2).to(dtype=kw_dtype).contiguous()  # [B, C_k, H_halo, W_local]
             else:
                 dkw = None
             if vw_needs_grad:
                 dvw_cl = dvw_full_cl[:, :, my_lo : my_lo + my_nlon, :].contiguous()
-                dvw = dvw_cl.permute(0, 3, 1, 2).contiguous()  # [B, C_v, H_halo, W_local]
+                dvw = dvw_cl.permute(0, 3, 1, 2).to(dtype=vw_dtype).contiguous()  # [B, C_v, H_halo, W_local]
             else:
                 dvw = None
         else:

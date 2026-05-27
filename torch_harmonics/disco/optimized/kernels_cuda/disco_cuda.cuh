@@ -56,4 +56,16 @@ namespace disco_kernels
     torch::Tensor disco_cuda_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
                                  torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo);
 
+    // ring-step forward kernel (used by the distributed ring-exchange conv).
+    void disco_cuda_fwd_ring_step(torch::Tensor inp, torch::Tensor out, torch::Tensor roff_idx, torch::Tensor ker_idx,
+                                  torch::Tensor row_idx, torch::Tensor col_idx, torch::Tensor val, int64_t K,
+                                  int64_t Ho, int64_t Wo_local_self, int64_t Wi_global, int64_t pscale,
+                                  int64_t lon_lo_src, int64_t nlon_in_local_src);
+
+    // ring-step backward (transpose) kernel.
+    void disco_cuda_bwd_ring_step(torch::Tensor inp, torch::Tensor out, torch::Tensor roff_idx, torch::Tensor ker_idx,
+                                  torch::Tensor row_idx, torch::Tensor col_idx, torch::Tensor val, int64_t K,
+                                  int64_t Ho, int64_t Wo_local_self, int64_t Wo_global, int64_t pscale,
+                                  int64_t pscale_wo_offset, int64_t lon_lo_in_self, int64_t nlon_out_local_src);
+
 } // namespace disco_kernels

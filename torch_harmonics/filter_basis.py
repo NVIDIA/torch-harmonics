@@ -124,7 +124,12 @@ class FilterBasis(metaclass=abc.ABCMeta):
         r, phi = torch.meshgrid(r, phi, indexing="ij")
 
         iidx, vals = self.compute_support_vals(r, phi, r_cutoff=r_cutoff)
-        psi = torch.sparse_coo_tensor(iidx.t(), vals, size=(self.kernel_size, nr, nphi)).to_dense()
+        # Indices come from compute_support_vals and are valid by construction.
+        # Skip the sparse-invariant pass and silence the implicit-default
+        # UserWarning PyTorch emits when neither enable=True nor enable=False
+        # is chosen explicitly.
+        with torch.sparse.check_sparse_tensor_invariants(enable=False):
+            psi = torch.sparse_coo_tensor(iidx.t(), vals, size=(self.kernel_size, nr, nphi)).to_dense()
 
         norms_sq = (psi**2 * r.unsqueeze(0) * dr * dphi).sum(dim=(-2, -1))
         return norms_sq.sqrt()

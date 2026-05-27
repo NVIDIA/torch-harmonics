@@ -29,26 +29,17 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-# we need this in order to enable distributed
-from .distributed_attention import DistributedNeighborhoodAttentionS2
-from .distributed_convolution import DistributedDiscreteContinuousConvS2, DistributedDiscreteContinuousConvTransposeS2
-from .distributed_quadrature import DistributedQuadratureS2
-from .distributed_resample import DistributedResampleS2
-from .distributed_sht import DistributedInverseRealSHT, DistributedInverseRealVectorSHT, DistributedRealSHT, DistributedRealVectorSHT
-from .distributed_spectral_convolution import DistributedSpectralConvS2
-from .primitives import (
-    compute_split_shapes,
-    copy_to_azimuth_region,
-    copy_to_polar_region,
-    distributed_transpose_azimuth,
-    distributed_transpose_polar,
-    gather_from_copy_to_polar_region,
-    gather_from_polar_region,
-    reduce_from_azimuth_region,
-    reduce_from_polar_region,
-    reduce_from_scatter_to_azimuth_region,
-    reduce_from_scatter_to_polar_region,
-    scatter_to_polar_region,
-    split_tensor_along_dim,
+"""
+Per-algorithm Python orchestration kernels for the distributed conv/SHT
+modules.  Each submodule exposes one or more ``_distributed_*_fwd_<method>``
+entry points that take an input tensor + module-precomputed state and
+return the output of one forward pass for that algorithm. The public
+classes in ``torch_harmonics.distributed`` dispatch into these based on
+their ``method=`` flag (mirroring Transformer Engine's context-parallelism
+API).
+"""
+
+from .distributed_convolution_kernels import (
+    _distributed_disco_fwd_a2a,
+    _distributed_disco_fwd_ring,
 )
-from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, config, finalize, init, is_initialized, polar_group, polar_group_rank, polar_group_size
