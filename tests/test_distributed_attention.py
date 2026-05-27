@@ -36,6 +36,7 @@ import torch
 from parameterized import parameterized
 from testutils import (
     compare_tensors,
+    disable_tf32,
     gather_tensor_hw,
     set_seed,
     setup_class_from_context,
@@ -86,6 +87,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         setup_class_from_context(cls, _DIST_CTX)
         if not torch.cuda.is_available():
             raise unittest.SkipTest("Distributed neighborhood attention requires CUDA")
+        disable_tf32()
 
     def _split_helper(self, tensor):
         return split_tensor_hw(
