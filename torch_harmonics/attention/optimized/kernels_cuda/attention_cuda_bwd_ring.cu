@@ -1555,9 +1555,7 @@ void s2_attn_bwd_ring_pass2_special_k(const __grid_constant__ attn_params_t p,
     int      *shwi_loc = base_int + BDIM_Y*shcol_len_max + tidy*shcol_len_max;  // [shcol_len_max]
     float    *shweight = base_flt                        + tidy*shcol_len_max;  // [shcol_len_max]
 
-#if __CUDA_ARCH__ < 900
-    FLOATV_T *sh_qy = base_fltv + BDIM_Y*nchan_out + tidy*nchan_in;
-#endif
+    FLOATV_T *sh_qy = nullptr; // used only for archs < 90
 
     const int h  = ctaid / nlon_out;
     const int wo = ctaid - (h * nlon_out);
@@ -1583,6 +1581,7 @@ void s2_attn_bwd_ring_pass2_special_k(const __grid_constant__ attn_params_t p,
     strided_op<BDIM_X,               NLOC    >(nchan_in,  [&](int i) {              loc_qy[i] = qy[i*BDIM_X+tidx]; });
     strided_op<BDIM_X, CHOUT_AS_IN ? NLOC : 0>(nchan_out, [&](int i) { sh_dy[i*BDIM_X + tidx] = dy[i*BDIM_X+tidx]; });
 #if __CUDA_ARCH__ < 900
+    sh_qy = base_fltv + BDIM_Y*nchan_out + tidy*nchan_in;
     strided_op<BDIM_X,               NLOC    >(nchan_in,  [&](int i) { sh_qy[i*BDIM_X + tidx] = loc_qy[i]; });
 
     if constexpr(std::is_same<FLOATV_T, float4>::value) {
