@@ -29,6 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import os
 import unittest
 
 import torch
@@ -46,6 +47,21 @@ from testutils import (
 
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
+
+# Opt-in gate for slow / large-grid parameterized cases (e.g. 721x1440 ERA5-like
+# shapes). Mirrors the TORCH_HARMONICS_RUN_PERF_TESTS pattern in
+# tests/test_attention.py and tests/test_convolution.py, and the slow gate in
+# tests/test_distributed_attention.py.
+_run_slow_tests = os.getenv("TORCH_HARMONICS_RUN_SLOW_TESTS", "0") == "1"
+
+# (nlat_in, nlon_in, nlat_out, nlon_out) shapes whose parameterized cases are
+# gated behind TORCH_HARMONICS_RUN_SLOW_TESTS=1.
+_SLOW_DISCO_SHAPES = frozenset(
+    {
+        (721, 1440, 721, 1440),
+        (721, 1440, 360, 720),
+    }
+)
 
 # shared state
 _DIST_CTX = {}
@@ -132,6 +148,11 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, 1e-6, 1e-6],
             [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float64, False, 1e-6, 1e-6],
             [65, 128, 65, 128, 32, 8, (3, 4), "morlet", "mean", 1, "equiangular", "equiangular", torch.float64, True, 1e-6, 1e-6],
+            # ERA5-like grids, gated behind TORCH_HARMONICS_RUN_SLOW_TESTS=1.
+            # batch_size and num_chan dialed down (2, 8) vs the rest of the suite (32, 8)
+            # to keep the working set under a few GB at these resolutions.
+            [721, 1440, 721, 1440, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, 1e-6, 1e-5],
+            [721, 1440, 360, 720, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular", "legendre-gauss", torch.float32, False, 1e-6, 1e-5],
         ],
         skip_on_empty=True,
     )
@@ -155,6 +176,8 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         rtol,
         verbose=True,
     ):
+        if (nlat_in, nlon_in, nlat_out, nlon_out) in _SLOW_DISCO_SHAPES and not _run_slow_tests:
+            self.skipTest("slow test; set TORCH_HARMONICS_RUN_SLOW_TESTS=1 to run")
 
         set_seed(333)
 

@@ -38,8 +38,26 @@
 #define FULL_MASK (0xFFFFFFFF)
 #define DIV_UP(a, b) (((a) + ((b) - 1)) / (b))
 
+#define SPLIT_ROW_LENGTH_THRES (0.1f)
+#define SPLIT_LONG_ROW_MIN_LEN (1024)
+#define SPLIT_LONG_ROW_MIN_WORK_X_BLK (32)
+#define SPLIT_LONG_ROW_MAX_BLK_X_ROW (32)
+
 namespace attention_kernels
 {
+
+    struct attn_params_t {
+        int nchan_in;
+        int nchan_out;
+        int nlat_halo;
+        int nlon_kx;
+        int nlon_in;
+        int pscale;
+        int lon_lo_kx;
+        int lat_halo_start;
+        int nlat_out;
+        int nlon_out;
+    };
 
     // CSR rows sorting kernels and functions
     at::Tensor sortRows(int nlat_out, at::Tensor row_off, cudaStream_t stream);
@@ -60,6 +78,9 @@ namespace attention_kernels
     void verify_part_new(const int nlon_out, const int nlat_in, const int nlon_in,
                          const int npart, // partitioning data
                          const int *part_off, const int *part_val, const at::Tensor roff, const at::Tensor cols);
+
+    void split_csr_rows(float thres, int64_t split_len, int64_t nrows, int32_t *row_idx, int64_t *row_off,
+                        int64_t *n_long_rows, int64_t *max_row_len0, int64_t *max_row_len1);
 
     unsigned int next_pow2(unsigned int x);
 
@@ -128,6 +149,20 @@ namespace attention_kernels
         ;
     }
 
+    __device__ __forceinline__ void atomicMax(float *ptr, float val)
+    {
+        int *int_ptr = (int *)ptr;
+        int old = *int_ptr, assumed;
+
+        do {
+            assumed = old;
+            if (__int_as_float(assumed) >= val) { break; }
+            old = atomicCAS(int_ptr, assumed, __float_as_int(val));
+
+        } while (assumed != old);
+        return;
+    }
+
     template <int BDIM_X, int NUM_IT, typename FUNC_T> __device__ __forceinline__ void strided_op(int n, FUNC_T op)
     {
 
@@ -154,6 +189,57 @@ namespace attention_kernels
 #pragma unroll
         for (int i = WARP_SIZE / 2; i; i /= 2) { val += __shfl_xor_sync(FULL_MASK, val, i, WARP_SIZE); }
         return val;
+    }
+
+    // Performs BDIM_Y reductions along BDIM_X, if BDIM_X == 32;
+    // otherwise performs one reduction along BDIM_X (BDIM_Y==1)
+    template <int BDIM_X, int BDIM_Y, typename VAL_T, typename... REST_T>
+    __device__ void __group_sum(VAL_T &v0, REST_T &...rest)
+    {
+        static_assert(0 == (BDIM_X % WARP_SIZE));
+        static_assert((BDIM_X == WARP_SIZE && BDIM_Y > 1) || (BDIM_X > WARP_SIZE && BDIM_Y == 1));
+
+        static_assert((std::is_same_v<VAL_T, REST_T> && ...), "__group_sum: all arguments must have the same type");
+
+        constexpr int N = 1 + sizeof...(REST_T);
+
+        VAL_T vals[N] = {v0, rest...};
+
+#pragma unroll
+        for (int i = 0; i < N; i++) { vals[i] = __warp_sum(vals[i]); }
+
+        if constexpr (BDIM_X > WARP_SIZE) {
+
+            constexpr int NWARP = (BDIM_X * BDIM_Y) / WARP_SIZE;
+
+            const int tid = threadIdx.y * BDIM_X + threadIdx.x;
+
+            const int lid = tid % WARP_SIZE;
+            const int wid = tid / WARP_SIZE;
+
+            __shared__ VAL_T sh[N][NWARP];
+
+            if (lid == 0) {
+#pragma unroll
+                for (int i = 0; i < N; i++) { sh[i][wid] = vals[i]; }
+            }
+            __syncthreads();
+
+            for (int i = wid; i < N; i += NWARP) {
+                VAL_T v = (lid < NWARP) ? sh[i][lid] : __vset<VAL_T>(0);
+                v = __warp_sum(v);
+                if (!lid) { sh[i][0] = v; }
+            }
+            __syncthreads();
+
+#pragma unroll
+            for (int i = 0; i < N; i++) { vals[i] = sh[i][0]; }
+            __syncthreads();
+        }
+
+        v0 = vals[0];
+        int i = 1;
+        ((rest = vals[i++]), ...);
     }
 
     template <int BDIM_X, int BDIM_Y = 1, int BDIM_Z = 1, typename VAL_T> __device__ VAL_T __block_sum(VAL_T val)
@@ -201,6 +287,73 @@ namespace attention_kernels
         b = tmp;
 
         return;
+    }
+
+    __device__ __forceinline__ unsigned int __laneid()
+    {
+        unsigned int ret;
+        asm("mov.u32 %0, %%laneid;" : "=r"(ret));
+        return ret;
+    }
+
+    __device__ __forceinline__ unsigned int __lanemask_lt()
+    {
+        unsigned int ret;
+        asm("mov.u32 %0, %%lanemask_lt;" : "=r"(ret));
+        return ret;
+    }
+
+    __device__ __forceinline__ int __warp_compact(bool pred, int *index)
+    {
+        const unsigned int mask = __ballot_sync(FULL_MASK, pred);
+        *index = __popc(mask & __lanemask_lt());
+        return __popc(mask);
+    }
+
+    template <int BDIM_X, int BDIM_Y = 1> __device__ int __compact(bool pred, int *index)
+    {
+        static_assert((BDIM_X == 32 && BDIM_Y > 1) || (BDIM_X > 32 && BDIM_Y == 1));
+
+        int ret = __warp_compact(pred, index);
+
+        if constexpr (BDIM_X > WARP_SIZE) {
+
+            constexpr int NWARP = BDIM_X / WARP_SIZE;
+
+            const int lid = __laneid();
+            const int wid = threadIdx.x / WARP_SIZE;
+
+            __shared__ int sh[NWARP];
+
+            if (lid == 0) { sh[wid] = ret; }
+            ret = __syncthreads_count(pred);
+
+            if (wid == 0) {
+
+                int val = (lid > 0 && lid < NWARP) ? sh[lid - 1] : 0;
+
+#pragma unroll
+                for (int i = 1; i < NWARP; i *= 2) {
+                    const int recv = __shfl_up_sync(FULL_MASK, val, i);
+                    if (lid >= i) { val += recv; }
+                }
+                if (lid < NWARP) { sh[lid] = val; }
+            }
+            __syncthreads();
+
+            *index += sh[wid];
+            __syncthreads();
+        }
+        return ret;
+    }
+
+    template <int BDIM_X> __device__ __forceinline__ void __group_sync()
+    {
+        if constexpr (BDIM_X == WARP_SIZE) {
+            __syncwarp();
+        } else {
+            __syncthreads();
+        }
     }
 
     // transpose utils
