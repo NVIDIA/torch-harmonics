@@ -1478,9 +1478,7 @@ namespace attention_kernels
         int *shwi_loc = base_int + BDIM_Y * shcol_len_max + tidy * shcol_len_max; // [shcol_len_max]
         float *shweight = base_flt + tidy * shcol_len_max;                        // [shcol_len_max]
 
-#if __CUDA_ARCH__ < 900
-        FLOATV_T *sh_qy = base_fltv + BDIM_Y * nchan_out + tidy * nchan_in;
-#endif
+        FLOATV_T *sh_qy = nullptr; // used only for archs < 90
 
         const int h = ctaid / nlon_out;
         const int wo = ctaid - (h * nlon_out);
@@ -1509,6 +1507,7 @@ namespace attention_kernels
         strided_op<BDIM_X, CHOUT_AS_IN ? NLOC : 0>(nchan_out,
                                                    [&](int i) { sh_dy[i * BDIM_X + tidx] = dy[i * BDIM_X + tidx]; });
 #if __CUDA_ARCH__ < 900
+        sh_qy = base_fltv + BDIM_Y * nchan_out + tidy * nchan_in;
         strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { sh_qy[i * BDIM_X + tidx] = loc_qy[i]; });
 
         if constexpr (std::is_same<FLOATV_T, float4>::value) {
@@ -1605,13 +1604,12 @@ namespace attention_kernels
             const float scale_dvx = alpha_mul;
 
             constexpr int VEC_SIZE = sizeof(FLOATV_T) / sizeof(float);
-            // The scalar-split fast path uses sh_qy, which is only declared above when
-            // __CUDA_ARCH__ < 900. Gate the branch with the same preprocessor predicate
-            // (not `if constexpr`) so that under sm_90+ the body is entirely excluded
-            // rather than parsed-but-discarded -- otherwise the non-dependent reference
-            // to sh_qy fails name lookup. Mirrors the pattern in s2_attn_bwd_ring_pass2_generic_k.
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 900
-            if constexpr (VEC_SIZE == 4) {
+            constexpr bool DO_SPLIT_VEC = VEC_SIZE == 4;
+#else
+            constexpr bool DO_SPLIT_VEC = false;
+#endif
+            if constexpr (DO_SPLIT_VEC) {
                 float *sh_qy_scl = reinterpret_cast<float *>(sh_qy);
                 float *sh_dy_scl = reinterpret_cast<float *>(sh_dy);
 
@@ -1624,9 +1622,7 @@ namespace attention_kernels
                 for (int chan = tidx; chan < nchan_out * VEC_SIZE; chan += BDIM_X) {
                     atomicAdd(_dvx_scl + chan, scale_dvx * sh_dy_scl[chan]);
                 }
-            } else
-#endif
-            {
+            } else {
                 strided_op<BDIM_X, NLOC>(
                     nchan_in, [&](int i) { atomicAdd(_dkx + i * BDIM_X + tidx, __vscale(scale_dkx, loc_qy[i])); });
                 strided_op<BDIM_X, CHOUT_AS_IN ? NLOC : 0>(nchan_out, [&](int i) {
