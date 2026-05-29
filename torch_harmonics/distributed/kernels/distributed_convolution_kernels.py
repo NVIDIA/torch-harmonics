@@ -298,6 +298,7 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
         use_p2p_buffer: bool = False,
         comm_stream: Optional[torch.cuda.Stream] = None,
         recv_pool_fwd: Optional[List[torch.Tensor]] = None,
+        recv_pool_bwd_grad_y_ke: Optional[List[torch.Tensor]] = None,
     ):
         if not optimized_kernels_is_available():
             raise NotImplementedError(
@@ -440,6 +441,7 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
             use_p2p_buffer,
             comm_stream,
             recv_pool_fwd,
+            recv_pool_bwd_grad_y_ke,
         ) = inputs
 
         ctx.save_for_backward(
@@ -466,6 +468,10 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
         ctx.x_device = x.device
         ctx.use_p2p_buffer = use_p2p_buffer
         ctx.comm_stream = comm_stream
+        # Module-owned recv pool for the bwd grad_y rotation. None when
+        # p2p_buffer is off or az_size <= 1; bwd falls back to per-call
+        # allocation in that case.
+        ctx.recv_pool_bwd_grad_y_ke = recv_pool_bwd_grad_y_ke
 
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
@@ -514,12 +520,16 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
         grad_y_chunk = grad_y_acc.contiguous()
         lon_lo_in_self = lon_in_chunk_starts[az_rank]
 
-        # Pre-allocate the recv slots for grad_y rotation when opted in.
-        # grad_y is K-expanded so its slot shape carries the K dim.
+        # Recv pool for grad_y (K-expanded) rotation. Prefer the
+        # module-owned pool when use_p2p_buffer is on; otherwise fall
+        # back to per-call allocation. See the fwd path for why module
+        # ownership matters (caching allocator vs NCCL internal stream).
         K_dim = grad_y_acc.shape[2]
         H_out_local = grad_y_acc.shape[3]
-        recv_pool = None
-        if ctx.use_p2p_buffer and az_size > 1:
+        recv_pool_bwd = getattr(ctx, "recv_pool_bwd_grad_y_ke", None)
+        if recv_pool_bwd is not None:
+            recv_pool = recv_pool_bwd
+        elif ctx.use_p2p_buffer and az_size > 1:
             recv_pool = [
                 torch.empty(
                     B,
@@ -532,6 +542,14 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
                 )
                 for s in range(az_size - 1)
             ]
+        else:
+            recv_pool = None
+
+        # Same unified comm/compute stream pattern as the fwd ring loop.
+        compute_stream = torch.cuda.current_stream(ctx.x_device)
+        cs = ctx.comm_stream if ctx.comm_stream is not None else compute_stream
+        cs.wait_stream(compute_stream)
+        ev = torch.cuda.Event() if az_size > 1 else None
 
         for step in range(az_size):
             src_rank = (az_rank + step) % az_size
@@ -545,12 +563,16 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
 
             if step < az_size - 1:
                 next_src = (az_rank + step + 1) % az_size
-                recv_gy, reqs = _ring_y_chunk(
-                    grad_y_chunk,
-                    az_group,
-                    lon_out_local_sizes[next_src],
-                    recv_buf=recv_pool[step] if recv_pool is not None else None,
-                )
+                # Bring cs up to compute_stream's state so the next post
+                # sees the prev iter's ``recv_gy.clone()`` on the no-pool path.
+                cs.wait_stream(compute_stream)
+                with torch.cuda.stream(cs):
+                    recv_gy, reqs = _ring_y_chunk(
+                        grad_y_chunk,
+                        az_group,
+                        lon_out_local_sizes[next_src],
+                        recv_buf=recv_pool[step] if recv_pool is not None else None,
+                    )
 
             _disco_s2_transpose_contraction_ring_step_optimized(
                 grad_y_chunk,
@@ -571,8 +593,11 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
             )
 
             if step < az_size - 1:
-                for req in reqs:
-                    req.wait()
+                with torch.cuda.stream(cs):
+                    for req in reqs:
+                        req.wait()
+                    ev.record(cs)
+                compute_stream.wait_event(ev)
                 grad_y_chunk = recv_gy if recv_pool is not None else recv_gy.clone()
 
         if compute_dtype != ctx.x_dtype:
@@ -580,7 +605,7 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
         else:
             grad_x = grad_x_acc
 
-        # 20 non-tensor positional inputs; gradients return None for them.
+        # 21 non-tensor positional inputs; gradients return None for them.
         return (
             grad_x,
             None,
@@ -603,6 +628,7 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
             None,  # use_p2p_buffer
             None,  # comm_stream
             None,  # recv_pool_fwd
+            None,  # recv_pool_bwd_grad_y_ke
         )
 
 
@@ -644,6 +670,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
         use_p2p_buffer: bool = False,
         comm_stream: Optional[torch.cuda.Stream] = None,
         recv_pool_fwd: Optional[List[torch.Tensor]] = None,
+        recv_pool_bwd_grad_out: Optional[List[torch.Tensor]] = None,
     ):
         if not optimized_kernels_is_available():
             raise NotImplementedError("ring DISCO step kernel is not built (fused path).")
@@ -780,6 +807,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
             use_p2p_buffer,
             comm_stream,
             recv_pool_fwd,
+            recv_pool_bwd_grad_out,
         ) = inputs
 
         # We save x — the whole point of the fused path. y_acc is NOT saved.
@@ -808,6 +836,11 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
         ctx.groupsize = groupsize
         ctx.use_p2p_buffer = use_p2p_buffer
         ctx.comm_stream = comm_stream
+        # Module-owned recv pools for the bwd. recv_pool_fwd is reused
+        # by the grad_w recompute (same x shape as fwd); recv_pool_bwd_grad_out
+        # is for the grad_x path's grad_out rotation.
+        ctx.recv_pool_fwd = recv_pool_fwd
+        ctx.recv_pool_bwd_grad_out = recv_pool_bwd_grad_out
 
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
@@ -887,9 +920,11 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
             # grad_out has shape (B, O_total, H, W_chunk); O_total = G*Og.
             O_total = grad_out_chunk.shape[1]
 
-            # Pre-allocate recv slots for the grad_out rotation when opted in.
-            recv_pool = None
-            if ctx.use_p2p_buffer and az_size > 1:
+            # Recv pool for grad_out rotation. Prefer the module-owned pool.
+            recv_pool_bwd = getattr(ctx, "recv_pool_bwd_grad_out", None)
+            if recv_pool_bwd is not None:
+                recv_pool = recv_pool_bwd
+            elif ctx.use_p2p_buffer and az_size > 1:
                 recv_pool = [
                     torch.empty(
                         B,
@@ -901,6 +936,14 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
                     )
                     for s in range(az_size - 1)
                 ]
+            else:
+                recv_pool = None
+
+            # Unified comm/compute stream pattern, mirroring the fwd ring loop.
+            compute_stream = torch.cuda.current_stream(x.device)
+            cs = ctx.comm_stream if ctx.comm_stream is not None else compute_stream
+            cs.wait_stream(compute_stream)
+            ev = torch.cuda.Event() if az_size > 1 else None
 
             for step in range(az_size):
                 src_rank = (az_rank + step) % az_size
@@ -910,12 +953,16 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
 
                 if step < az_size - 1:
                     next_src = (az_rank + step + 1) % az_size
-                    recv_go, reqs = _ring_x_chunk(
-                        grad_out_chunk,
-                        az_group,
-                        lon_out_local_sizes[next_src],
-                        recv_buf=recv_pool[step] if recv_pool is not None else None,
-                    )
+                    # See _RingDiscoConvS2Fn.forward for why this wait_stream
+                    # is needed (no-pool clone is on compute_stream).
+                    cs.wait_stream(compute_stream)
+                    with torch.cuda.stream(cs):
+                        recv_go, reqs = _ring_x_chunk(
+                            grad_out_chunk,
+                            az_group,
+                            lon_out_local_sizes[next_src],
+                            recv_buf=recv_pool[step] if recv_pool is not None else None,
+                        )
 
                 B_, O_, H_, W_chunk = grad_out_chunk.shape
                 grad_out_chunk_r = grad_out_chunk.reshape(B_, G, Og, H_, W_chunk)
@@ -948,8 +995,11 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
                 del grad_y_ke_chunk, grad_out_chunk_r
 
                 if step < az_size - 1:
-                    for req in reqs:
-                        req.wait()
+                    with torch.cuda.stream(cs):
+                        for req in reqs:
+                            req.wait()
+                        ev.record(cs)
+                    compute_stream.wait_event(ev)
                     grad_out_chunk = recv_go if recv_pool is not None else recv_go.clone()
 
             grad_x = grad_x_acc.to(x.dtype) if compute_dtype != x.dtype else grad_x_acc
@@ -973,9 +1023,14 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
             )
             x_chunk = x.contiguous()
 
-            # Pre-allocate recv slots for the x_chunk rotation when opted in.
-            recv_pool = None
-            if ctx.use_p2p_buffer and az_size > 1:
+            # Recv pool for the x_chunk rotation. Reuse the module-owned
+            # fwd pool when available (same shape as fwd); otherwise fall
+            # back to per-call allocation. The fwd pool was saved on ctx
+            # during setup_context.
+            recv_pool_fwd_ref = getattr(ctx, "recv_pool_fwd", None)
+            if recv_pool_fwd_ref is not None:
+                recv_pool = recv_pool_fwd_ref
+            elif ctx.use_p2p_buffer and az_size > 1:
                 recv_pool = [
                     torch.empty(
                         B,
@@ -987,6 +1042,14 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
                     )
                     for s in range(az_size - 1)
                 ]
+            else:
+                recv_pool = None
+
+            # Unified comm/compute stream pattern, mirroring the fwd ring loop.
+            compute_stream = torch.cuda.current_stream(x.device)
+            cs = ctx.comm_stream if ctx.comm_stream is not None else compute_stream
+            cs.wait_stream(compute_stream)
+            ev = torch.cuda.Event() if az_size > 1 else None
 
             for step in range(az_size):
                 src_rank = (az_rank + step) % az_size
@@ -995,12 +1058,14 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
 
                 if step < az_size - 1:
                     next_src = (az_rank + step + 1) % az_size
-                    recv_x, reqs = _ring_x_chunk(
-                        x_chunk,
-                        az_group,
-                        lon_in_local_sizes[next_src],
-                        recv_buf=recv_pool[step] if recv_pool is not None else None,
-                    )
+                    cs.wait_stream(compute_stream)
+                    with torch.cuda.stream(cs):
+                        recv_x, reqs = _ring_x_chunk(
+                            x_chunk,
+                            az_group,
+                            lon_in_local_sizes[next_src],
+                            recv_buf=recv_pool[step] if recv_pool is not None else None,
+                        )
 
                 _disco_s2_contraction_ring_step_optimized(
                     x_chunk,
@@ -1020,15 +1085,18 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
                 )
 
                 if step < az_size - 1:
-                    for req in reqs:
-                        req.wait()
+                    with torch.cuda.stream(cs):
+                        for req in reqs:
+                            req.wait()
+                        ev.record(cs)
+                    compute_stream.wait_event(ev)
                     x_chunk = recv_x if recv_pool is not None else recv_x.clone()
 
             y_acc_r = y_acc.reshape(B, G, Cg, K, H, W).to(grad_out.dtype)
             grad_weight = torch.einsum("bgoxy,bgckxy->gock", grad_out_r, y_acc_r)
             grad_weight = grad_weight.reshape(weight.shape).to(weight.dtype).contiguous()
 
-        # 24 positional inputs total; gradients are None except for x, weight.
+        # 25 positional inputs total; gradients are None except for x, weight.
         return (
             grad_x,
             grad_weight,
@@ -1054,6 +1122,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
             None,  # use_p2p_buffer
             None,  # comm_stream
             None,  # recv_pool_fwd
+            None,  # recv_pool_bwd_grad_out
         )
 
 
@@ -1090,6 +1159,8 @@ def _distributed_disco_fwd_ring(
     use_p2p_buffer: bool = False,
     comm_stream: Optional[torch.cuda.Stream] = None,
     recv_pool_fwd: Optional[List[torch.Tensor]] = None,
+    recv_pool_bwd_grad_y_ke: Optional[List[torch.Tensor]] = None,
+    recv_pool_bwd_grad_out: Optional[List[torch.Tensor]] = None,
 ) -> torch.Tensor:
     """Ring-exchange distributed DISCO forward.
 
@@ -1142,6 +1213,7 @@ def _distributed_disco_fwd_ring(
             use_p2p_buffer,
             comm_stream,
             recv_pool_fwd,
+            recv_pool_bwd_grad_out,
         )
     else:
         # If azimuth is not actually distributed, the ring degenerates to
@@ -1181,6 +1253,7 @@ def _distributed_disco_fwd_ring(
                 use_p2p_buffer,
                 comm_stream,
                 recv_pool_fwd,
+                recv_pool_bwd_grad_y_ke,
             )
 
         # Local einsum with the replicated weight, run BEFORE the polar

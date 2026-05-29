@@ -240,8 +240,20 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         # still in flight — without it, a stacked-layer model (or back-to-
         # back tests in one process) can see aliased recv memory and
         # produce wrong forward output for specific configs.
+        #
+        # Three pools total for ring method:
+        #  - ``_recv_pool_fwd``: x-chunk rotation in fwd; also reused by the
+        #    fused bwd's grad_w recompute (same x shape).
+        #  - ``_recv_pool_bwd_grad_y_ke``: K-expanded grad_y rotation in the
+        #    non-fused (S2Fn) bwd grad_x path.
+        #  - ``_recv_pool_bwd_grad_out``: grad_out (no K) rotation in the
+        #    fused (FusedFn) bwd grad_x path.
         self._recv_pool_fwd: Optional[list] = None
         self._recv_pool_fwd_key: Optional[tuple] = None
+        self._recv_pool_bwd_grad_y_ke: Optional[list] = None
+        self._recv_pool_bwd_grad_y_ke_key: Optional[tuple] = None
+        self._recv_pool_bwd_grad_out: Optional[list] = None
+        self._recv_pool_bwd_grad_out_key: Optional[tuple] = None
 
         # method='ring' requires the optimized CUDA ring-step kernels.
         # Assert their availability up front so misconfigured builds fail
@@ -423,6 +435,78 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
+    def _autocast_buf_dtype(self, x: torch.Tensor):
+        """Resolve the dtype the wrapper will use after the autocast cast.
+
+        Returns ``torch.get_autocast_dtype(device_type)`` when autocast is
+        enabled for ``x``'s device, else ``x.dtype``. Recv buffers MUST
+        match this dtype or NCCL hangs on a size mismatch.
+        """
+        device_type = x.device.type
+        if x.is_floating_point() and torch.is_autocast_enabled(device_type):
+            return torch.get_autocast_dtype(device_type)
+        return x.dtype
+
+    def _maybe_get_recv_pool_bwd_grad_y_ke(self, x: torch.Tensor):
+        """Lazy module-owned recv buffers for the non-fused (S2Fn) bwd's
+        K-expanded grad_y rotation. Shape per slot:
+        (B, C, kernel_size, nlat_out_local, lon_out_local[next_src]).
+
+        Allocated using the same autocast-aware dtype as fwd because the
+        Function preserves grad_y_acc in that dtype (returned from fwd
+        cast to ``x.dtype``); the bwd uses ``grad_y_acc.contiguous()`` as
+        the rotation tensor.
+        """
+        if self.method != "ring" or not self._use_p2p_buffer or self.comm_size_azimuth <= 1:
+            return None
+        B, C = x.shape[0], x.shape[1]
+        K = self.kernel_size
+        H_out_local = self.nlat_out_local
+        buf_dtype = self._autocast_buf_dtype(x)
+        key = (B, C, K, H_out_local, buf_dtype, x.device)
+        if self._recv_pool_bwd_grad_y_ke_key != key:
+            self._recv_pool_bwd_grad_y_ke = [
+                torch.empty(
+                    B,
+                    C,
+                    K,
+                    H_out_local,
+                    self.lon_out_shapes[(self.comm_rank_azimuth + s + 1) % self.comm_size_azimuth],
+                    device=x.device,
+                    dtype=buf_dtype,
+                )
+                for s in range(self.comm_size_azimuth - 1)
+            ]
+            self._recv_pool_bwd_grad_y_ke_key = key
+        return self._recv_pool_bwd_grad_y_ke
+
+    def _maybe_get_recv_pool_bwd_grad_out(self, x: torch.Tensor):
+        """Lazy module-owned recv buffers for the fused (FusedFn) bwd's
+        grad_out rotation. Shape per slot:
+        (B, out_channels, nlat_out_local, lon_out_local[next_src]).
+        """
+        if self.method != "ring" or not self._use_p2p_buffer or self.comm_size_azimuth <= 1:
+            return None
+        B = x.shape[0]
+        O_total = self.weight.shape[0]
+        H_out_local = self.nlat_out_local
+        buf_dtype = self._autocast_buf_dtype(x)
+        key = (B, O_total, H_out_local, buf_dtype, x.device)
+        if self._recv_pool_bwd_grad_out_key != key:
+            self._recv_pool_bwd_grad_out = [
+                torch.empty(
+                    B,
+                    O_total,
+                    H_out_local,
+                    self.lon_out_shapes[(self.comm_rank_azimuth + s + 1) % self.comm_size_azimuth],
+                    device=x.device,
+                    dtype=buf_dtype,
+                )
+                for s in range(self.comm_size_azimuth - 1)
+            ]
+            self._recv_pool_bwd_grad_out_key = key
+        return self._recv_pool_bwd_grad_out
+
     def _maybe_get_recv_pool_fwd(self, x: torch.Tensor):
         """Lazily allocate module-owned recv buffers for the ring fwd P2P.
 
@@ -442,13 +526,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         """
         if self.method != "ring" or not self._use_p2p_buffer or self.comm_size_azimuth <= 1:
             return None
-        # Match the autocast cast that _distributed_disco_fwd_ring will apply.
-        device_type = x.device.type
-        if x.is_floating_point() and torch.is_autocast_enabled(device_type):
-            buf_dtype = torch.get_autocast_dtype(device_type)
-        else:
-            buf_dtype = x.dtype
         B, C, H_in_local = x.shape[0], x.shape[1], x.shape[2]
+        buf_dtype = self._autocast_buf_dtype(x)
         key = (B, C, H_in_local, buf_dtype, x.device)
         if self._recv_pool_fwd_key != key:
             self._recv_pool_fwd = [
@@ -513,6 +592,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 use_p2p_buffer=self._use_p2p_buffer,
                 comm_stream=self._comm_stream,
                 recv_pool_fwd=self._maybe_get_recv_pool_fwd(x),
+                recv_pool_bwd_grad_y_ke=self._maybe_get_recv_pool_bwd_grad_y_ke(x),
+                recv_pool_bwd_grad_out=self._maybe_get_recv_pool_bwd_grad_out(x),
             )
 
         if self.bias is not None:
