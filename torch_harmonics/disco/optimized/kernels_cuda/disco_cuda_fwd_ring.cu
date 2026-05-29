@@ -55,8 +55,28 @@
 #include <ATen/Dispatch.h>
 #include <ATen/OpMathType.h>
 
+#include <cstdlib>
+
 namespace disco_kernels
 {
+
+    // Wi_global threshold below which the doubled-shmem fast path is used.
+    // Above it, shmem (~2 * Wi_global * sizeof(STORAGE_T) per block) starts
+    // to limit occupancy and we fall back to the masked kernel.
+    // Tunable via TORCH_HARMONICS_RING_FWD_FAST_MAX; default 5000 is tuned
+    // for fp32 storage on H100/B200 (~40 KB shmem per block). Setting it to
+    // 0 forces the masked path. Re-read every call so it can be flipped
+    // within one process.
+    static int _ring_fwd_fast_path_wi_max()
+    {
+        constexpr int default_max = 5000;
+        const char *e = std::getenv("TORCH_HARMONICS_RING_FWD_FAST_MAX");
+        if (e == nullptr || *e == '\0') return default_max;
+        char *end = nullptr;
+        long v = std::strtol(e, &end, 10);
+        if (end == e || *end != '\0' || v < 0) return default_max;
+        return static_cast<int>(v);
+    }
 
     template <int BDIM_X, int ELXTH, typename STORAGE_T, typename COMPUTE_T>
     __device__ void disco_fwd_ring_d(const int Hi, const int Wi_local_src, const int Wi_global, const int K,
@@ -134,16 +154,16 @@ namespace disco_kernels
                 int w_in_global = wi_shifted + pscale * pp;
                 if (w_in_global >= Wi_global) w_in_global -= Wi_global;
 
-                // Range check against this src's chunk. Out-of-chunk entries
-                // are picked up at a different ring step. Cast to unsigned so
-                // the (w_in_local < 0) and (w_in_local >= Wi_local_src) checks
-                // collapse into one compare; the FMA stays branch-free by
-                // reading __sh[0] for the masked-out lanes and selecting zero.
+                // Range check against this src's chunk. Skip entries that fall
+                // outside; a different ring step will pick them up.
+                // NOTE: the unsigned-compare + branch-free predicated FMA form
+                // of this check produced wrong values on H100 + 2x4 + p2p=True
+                // + harmonic (3,4) + 65x128 (test_38). Cause not yet known;
+                // keep the explicit branch form until we have a fix.
                 const int w_in_local = w_in_global - lon_lo_src;
-                const bool in_range = ((unsigned)w_in_local < (unsigned)Wi_local_src);
-                const int safe_idx = in_range ? w_in_local : 0;
-                const COMPUTE_T s = static_cast<COMPUTE_T>(__sh[safe_idx]);
-                __reg[i] += in_range ? (val * s) : COMPUTE_T(0);
+                if (w_in_local >= 0 && w_in_local < Wi_local_src) {
+                    __reg[i] += val * static_cast<COMPUTE_T>(__sh[w_in_local]);
+                }
             }
         }
 
@@ -159,21 +179,129 @@ namespace disco_kernels
         }
     }
 
-    template <int BDIM_X, int ELXTH, int PSCALE, typename STORAGE_T, typename COMPUTE_T>
+    // Fast doubled-shmem variant: ports disco_cuda_fwd's mod-elision trick to
+    // the ring case. shmem is sized to (2 * Wi_global + pscale * slack) and
+    // zero-filled; the local chunk is then placed at [lon_lo_src, lon_lo_src
+    // + Wi_local_src) AND duplicated at [Wi_global + lon_lo_src, ...). All
+    // out-of-chunk shmem positions stay zero, so out-of-chunk reads in the
+    // inner loop contribute nothing — matching the masked variant's
+    // semantics without the per-iter branches. The implicit wrap at
+    // Wi_global is absorbed by the duplicate. Selected at launch time when
+    // Wi_global <= _ring_fwd_fast_path_wi_max() (default 5000, env-tunable).
+    template <int BDIM_X, int ELXTH, typename STORAGE_T, typename COMPUTE_T>
+    __device__ void disco_fwd_ring_d_fast(const int Hi, const int Wi_local_src, const int Wi_global, const int K,
+                                          const int Ho, const int Wo_local_self, const int pscale, const int lon_lo_src,
+                                          const int64_t *__restrict__ roff, const int64_t *__restrict__ kers,
+                                          const int64_t *__restrict__ rows, const int64_t *__restrict__ cols,
+                                          const COMPUTE_T *__restrict__ vals, const STORAGE_T *__restrict__ inp,
+                                          STORAGE_T *__restrict__ out)
+    {
+        const int tid = threadIdx.x;
+
+        const int64_t bidx = blockIdx.x;
+        const int64_t bidy = blockIdx.y;
+
+        int64_t soff = roff[bidx];
+        int64_t eoff = roff[bidx + 1];
+
+        if (soff == eoff) return;
+
+        const int64_t ker = kers[soff];
+        const int64_t row = rows[soff];
+
+        inp += bidy * Hi * Wi_local_src;
+        out += bidy * K * Ho * Wo_local_self + ker * Ho * Wo_local_self + row * Wo_local_self;
+
+        COMPUTE_T __reg[ELXTH] = {0};
+
+        extern __shared__ __align__(sizeof(double)) unsigned char __sh_ptr[];
+        STORAGE_T *__sh = reinterpret_cast<STORAGE_T *>(__sh_ptr);
+
+        // Zero-fill the full shmem extent. Positions outside the chunk stay
+        // zero for the whole kernel lifetime; only the two chunk windows are
+        // refreshed on row changes.
+        const int sh_total = Wi_global * 2 + pscale * (BDIM_X * ELXTH - Wo_local_self);
+        for (int i = tid; i < sh_total; i += BDIM_X) { __sh[i] = STORAGE_T(0); }
+        __syncthreads();
+
+        int col_prev = cols[soff];
+        int h_prev = col_prev / Wi_global;
+        int w_prev = col_prev - h_prev * Wi_global;
+
+        for (int i = tid; i < Wi_local_src; i += BDIM_X) {
+            const STORAGE_T v = inp[h_prev * Wi_local_src + i];
+            __sh[lon_lo_src + i] = v;
+            __sh[Wi_global + lon_lo_src + i] = v;
+        }
+        __syncthreads();
+
+        for (int64_t nz = soff; nz < eoff; nz++) {
+
+            const int col = cols[nz];
+            const COMPUTE_T val = vals[nz];
+
+            if (col >= col_prev - w_prev + Wi_global) {
+                col_prev = col;
+                h_prev = col / Wi_global;
+                w_prev = col - h_prev * Wi_global;
+
+                __syncthreads();
+                // Only refresh the chunk windows; the outside region stays
+                // zero across row changes.
+                for (int i = tid; i < Wi_local_src; i += BDIM_X) {
+                    const STORAGE_T v = inp[h_prev * Wi_local_src + i];
+                    __sh[lon_lo_src + i] = v;
+                    __sh[Wi_global + lon_lo_src + i] = v;
+                }
+                __syncthreads();
+            }
+
+            const int wi_shifted = col - h_prev * Wi_global;
+
+#pragma unroll
+            for (int i = 0; i < ELXTH; i++) {
+                const int pp = i * BDIM_X + tid;
+                const int wpp = wi_shifted + pscale * pp;
+                __reg[i] += val * static_cast<COMPUTE_T>(__sh[wpp]);
+            }
+        }
+
+#pragma unroll
+        for (int i = 0; i < ELXTH; i++) {
+            const int pp = i * BDIM_X + tid;
+            if (pp >= Wo_local_self) break;
+
+            out[pp] = static_cast<STORAGE_T>(static_cast<COMPUTE_T>(out[pp]) + __reg[i]);
+        }
+    }
+
+    template <int BDIM_X, int ELXTH, int PSCALE, bool FAST, typename STORAGE_T, typename COMPUTE_T>
     __global__ __launch_bounds__(BDIM_X) void disco_fwd_ring_blk_k(
         const int Hi, const int Wi_local_src, const int Wi_global, const int K, const int Ho, const int Wo_local_self,
         const int pscale, const int lon_lo_src, const int64_t *__restrict__ roff, const int64_t *__restrict__ kers,
         const int64_t *__restrict__ rows, const int64_t *__restrict__ cols, const COMPUTE_T *__restrict__ vals,
         const STORAGE_T *__restrict__ inp, STORAGE_T *__restrict__ out)
     {
-        if constexpr (PSCALE != 0) {
-            disco_fwd_ring_d<BDIM_X, ELXTH, STORAGE_T, COMPUTE_T>(Hi, Wi_local_src, Wi_global, K, Ho, Wo_local_self,
-                                                                  PSCALE, lon_lo_src, roff, kers, rows, cols, vals, inp,
-                                                                  out);
+        if constexpr (FAST) {
+            if constexpr (PSCALE != 0) {
+                disco_fwd_ring_d_fast<BDIM_X, ELXTH, STORAGE_T, COMPUTE_T>(Hi, Wi_local_src, Wi_global, K, Ho,
+                                                                           Wo_local_self, PSCALE, lon_lo_src, roff,
+                                                                           kers, rows, cols, vals, inp, out);
+            } else {
+                disco_fwd_ring_d_fast<BDIM_X, ELXTH, STORAGE_T, COMPUTE_T>(Hi, Wi_local_src, Wi_global, K, Ho,
+                                                                           Wo_local_self, pscale, lon_lo_src, roff,
+                                                                           kers, rows, cols, vals, inp, out);
+            }
         } else {
-            disco_fwd_ring_d<BDIM_X, ELXTH, STORAGE_T, COMPUTE_T>(Hi, Wi_local_src, Wi_global, K, Ho, Wo_local_self,
-                                                                  pscale, lon_lo_src, roff, kers, rows, cols, vals, inp,
-                                                                  out);
+            if constexpr (PSCALE != 0) {
+                disco_fwd_ring_d<BDIM_X, ELXTH, STORAGE_T, COMPUTE_T>(Hi, Wi_local_src, Wi_global, K, Ho, Wo_local_self,
+                                                                      PSCALE, lon_lo_src, roff, kers, rows, cols, vals,
+                                                                      inp, out);
+            } else {
+                disco_fwd_ring_d<BDIM_X, ELXTH, STORAGE_T, COMPUTE_T>(Hi, Wi_local_src, Wi_global, K, Ho, Wo_local_self,
+                                                                      pscale, lon_lo_src, roff, kers, rows, cols, vals,
+                                                                      inp, out);
+            }
         }
     }
 
@@ -189,30 +317,61 @@ namespace disco_kernels
             if (NTH * ELXTH >= Wo_local_self) {
                 dim3 grid(nrows, BC);
 
-                // Shmem holds a single Wi_local_src-wide input row (one rank's chunk).
-                size_t shmem = sizeof(*out_d) * Wi_local_src;
+                // Fast path: doubled-shmem mod-elision (cheap inner loop,
+                // shmem ~ 2 * Wi_global). Fallback: masked kernel that only
+                // stages the local chunk (Wi_local_src). Switch on Wi_global
+                // to keep shmem bounded.
+                const bool use_fast = (Wi_global <= _ring_fwd_fast_path_wi_max());
+                const size_t shmem = use_fast ?
+                    sizeof(*out_d) * (Wi_global * 2 + pscale * (NTH * ELXTH - Wo_local_self)) :
+                    sizeof(*out_d) * Wi_local_src;
 
-                switch (pscale) {
-                case 1:
-                    disco_fwd_ring_blk_k<NTH, ELXTH, 1, STORAGE_T, COMPUTE_T>
-                        <<<grid, NTH, shmem, stream>>>(Hi, Wi_local_src, Wi_global, K, Ho, Wo_local_self, pscale,
-                                                       lon_lo_src, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
-                    break;
-                case 2:
-                    disco_fwd_ring_blk_k<NTH, ELXTH, 2, STORAGE_T, COMPUTE_T>
-                        <<<grid, NTH, shmem, stream>>>(Hi, Wi_local_src, Wi_global, K, Ho, Wo_local_self, pscale,
-                                                       lon_lo_src, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
-                    break;
-                case 3:
-                    disco_fwd_ring_blk_k<NTH, ELXTH, 3, STORAGE_T, COMPUTE_T>
-                        <<<grid, NTH, shmem, stream>>>(Hi, Wi_local_src, Wi_global, K, Ho, Wo_local_self, pscale,
-                                                       lon_lo_src, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
-                    break;
-                default:
-                    disco_fwd_ring_blk_k<NTH, ELXTH, 0, STORAGE_T, COMPUTE_T>
-                        <<<grid, NTH, shmem, stream>>>(Hi, Wi_local_src, Wi_global, K, Ho, Wo_local_self, pscale,
-                                                       lon_lo_src, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
-                    break;
+                if (use_fast) {
+                    switch (pscale) {
+                    case 1:
+                        disco_fwd_ring_blk_k<NTH, ELXTH, 1, true, STORAGE_T, COMPUTE_T>
+                            <<<grid, NTH, shmem, stream>>>(Hi, Wi_local_src, Wi_global, K, Ho, Wo_local_self, pscale,
+                                                           lon_lo_src, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
+                        break;
+                    case 2:
+                        disco_fwd_ring_blk_k<NTH, ELXTH, 2, true, STORAGE_T, COMPUTE_T>
+                            <<<grid, NTH, shmem, stream>>>(Hi, Wi_local_src, Wi_global, K, Ho, Wo_local_self, pscale,
+                                                           lon_lo_src, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
+                        break;
+                    case 3:
+                        disco_fwd_ring_blk_k<NTH, ELXTH, 3, true, STORAGE_T, COMPUTE_T>
+                            <<<grid, NTH, shmem, stream>>>(Hi, Wi_local_src, Wi_global, K, Ho, Wo_local_self, pscale,
+                                                           lon_lo_src, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
+                        break;
+                    default:
+                        disco_fwd_ring_blk_k<NTH, ELXTH, 0, true, STORAGE_T, COMPUTE_T>
+                            <<<grid, NTH, shmem, stream>>>(Hi, Wi_local_src, Wi_global, K, Ho, Wo_local_self, pscale,
+                                                           lon_lo_src, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
+                        break;
+                    }
+                } else {
+                    switch (pscale) {
+                    case 1:
+                        disco_fwd_ring_blk_k<NTH, ELXTH, 1, false, STORAGE_T, COMPUTE_T>
+                            <<<grid, NTH, shmem, stream>>>(Hi, Wi_local_src, Wi_global, K, Ho, Wo_local_self, pscale,
+                                                           lon_lo_src, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
+                        break;
+                    case 2:
+                        disco_fwd_ring_blk_k<NTH, ELXTH, 2, false, STORAGE_T, COMPUTE_T>
+                            <<<grid, NTH, shmem, stream>>>(Hi, Wi_local_src, Wi_global, K, Ho, Wo_local_self, pscale,
+                                                           lon_lo_src, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
+                        break;
+                    case 3:
+                        disco_fwd_ring_blk_k<NTH, ELXTH, 3, false, STORAGE_T, COMPUTE_T>
+                            <<<grid, NTH, shmem, stream>>>(Hi, Wi_local_src, Wi_global, K, Ho, Wo_local_self, pscale,
+                                                           lon_lo_src, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
+                        break;
+                    default:
+                        disco_fwd_ring_blk_k<NTH, ELXTH, 0, false, STORAGE_T, COMPUTE_T>
+                            <<<grid, NTH, shmem, stream>>>(Hi, Wi_local_src, Wi_global, K, Ho, Wo_local_self, pscale,
+                                                           lon_lo_src, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
+                        break;
+                    }
                 }
             } else {
                 launch_kernel_ring<NTH, ELXTH + 1, STORAGE_T, COMPUTE_T>(

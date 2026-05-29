@@ -209,6 +209,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         optimized_kernel: Optional[bool] = True,
         method: str = "a2a",
         fused: bool = False,
+        comm_stream: Optional["torch.cuda.Stream"] = None,
     ):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
@@ -217,6 +218,10 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             raise ValueError(f"DistributedDiscreteContinuousConvS2: unknown method={method!r}; " f"expected 'a2a' or 'ring'.")
         self.method = method
         self.fused = bool(fused)
+        # Optional dedicated CUDA stream for ring P2P. When set, send/recv
+        # is posted from this stream so it can overlap with the per-step
+        # kernel on the compute stream. Only used for method="ring".
+        self._comm_stream = comm_stream
 
         # Opt-in: pre-allocate ring P2P recv buffers once per ring loop
         # (instead of one torch.empty per step) and drop the per-step
@@ -226,6 +231,17 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         # ``TORCH_HARMONICS_P2P_BUFFER=1`` in the environment.
         # Only meaningful for ``method="ring"``; ignored otherwise.
         self._use_p2p_buffer = os.environ.get("TORCH_HARMONICS_P2P_BUFFER", "0") == "1"
+
+        # Module-owned recv buffers for the ring P2P. When ``use_p2p_buffer``
+        # is on, the buffers are lazily allocated on the first forward call
+        # (shape depends on batch size) and reused across calls. Module
+        # ownership prevents the caching allocator from recycling the
+        # memory while NCCL writes to it from its internal stream are
+        # still in flight — without it, a stacked-layer model (or back-to-
+        # back tests in one process) can see aliased recv memory and
+        # produce wrong forward output for specific configs.
+        self._recv_pool_fwd: Optional[list] = None
+        self._recv_pool_fwd_key: Optional[tuple] = None
 
         # method='ring' requires the optimized CUDA ring-step kernels.
         # Assert their availability up front so misconfigured builds fail
@@ -407,6 +423,48 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
+    def _maybe_get_recv_pool_fwd(self, x: torch.Tensor):
+        """Lazily allocate module-owned recv buffers for the ring fwd P2P.
+
+        Returns a list of az_size-1 tensors sized for each neighbor's chunk,
+        or None when the p2p-buffer optimization is off, az_size == 1, or
+        the method isn't ring. Allocations are cached by (B, C, H_in_local,
+        dtype, device); a signature mismatch triggers a re-allocation.
+
+        Why module-owned: the caching allocator never sees these buffers
+        as free, so it cannot recycle their memory into other tensors
+        while NCCL's internal-stream writes are still in flight.
+
+        Dtype: the wrapper ``_distributed_disco_fwd_ring`` casts ``x`` to
+        the autocast dtype before the ring P2P; recv buffers MUST match
+        that dtype or NCCL will hang on a size mismatch. Mirror that
+        cast here so allocation matches what the ring actually transmits.
+        """
+        if self.method != "ring" or not self._use_p2p_buffer or self.comm_size_azimuth <= 1:
+            return None
+        # Match the autocast cast that _distributed_disco_fwd_ring will apply.
+        device_type = x.device.type
+        if x.is_floating_point() and torch.is_autocast_enabled(device_type):
+            buf_dtype = torch.get_autocast_dtype(device_type)
+        else:
+            buf_dtype = x.dtype
+        B, C, H_in_local = x.shape[0], x.shape[1], x.shape[2]
+        key = (B, C, H_in_local, buf_dtype, x.device)
+        if self._recv_pool_fwd_key != key:
+            self._recv_pool_fwd = [
+                torch.empty(
+                    B,
+                    C,
+                    H_in_local,
+                    self.lon_in_shapes[(self.comm_rank_azimuth + s + 1) % self.comm_size_azimuth],
+                    device=x.device,
+                    dtype=buf_dtype,
+                )
+                for s in range(self.comm_size_azimuth - 1)
+            ]
+            self._recv_pool_fwd_key = key
+        return self._recv_pool_fwd
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.method == "a2a":
             out = _distributed_disco_fwd_a2a(
@@ -453,6 +511,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 groupsize=self.groupsize,
                 fused=self.fused,
                 use_p2p_buffer=self._use_p2p_buffer,
+                comm_stream=self._comm_stream,
+                recv_pool_fwd=self._maybe_get_recv_pool_fwd(x),
             )
 
         if self.bias is not None:

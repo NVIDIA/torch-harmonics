@@ -70,6 +70,23 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         setup_class_from_context(cls, _DIST_CTX)
         disable_tf32()
 
+    def tearDown(self):
+        # Each test creates a fresh conv module whose module-owned recv
+        # buffers go out of scope at end-of-test. The caching allocator
+        # then marks that memory free using only the compute stream's
+        # view of liveness — but NCCL writes on its internal stream may
+        # still be in flight, so the next test's allocations can recycle
+        # memory that NCCL is still writing to → cross-test corruption.
+        # torch.cuda.synchronize() waits on ALL streams on the device,
+        # including NCCL's internal stream, which is sufficient to
+        # ensure each test starts from a fully clean local state.
+        #
+        # In production (long-lived stacked-layer models) module-owned
+        # buffers persist for the model's lifetime, so this scenario
+        # doesn't arise and no in-code sync is needed.
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
     def _split_helper(self, tensor):
         return split_tensor_hw(tensor, hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
 
@@ -113,7 +130,6 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         [
             # fp32 tests
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
             [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
             [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
@@ -156,6 +172,25 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", True, 1e-6, 1e-5],
             [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", False, 1e-6, 1e-5],
             [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", True, 1e-6, 1e-5],
+            # ring_stream / ring_fused_stream: same algorithms with a real
+            # dedicated CUDA stream for the ring P2P. Validates that the
+            # explicit comm-stream + event-sync path matches the
+            # single-stream path numerically.
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_stream", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_stream", True, 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_stream", True, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused_stream", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused_stream", True, 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused_stream", True, 1e-6, 1e-5],
+            # ring_masked / ring_fused_masked: force the masked kernel
+            # fallback via TORCH_HARMONICS_RING_FWD_FAST_MAX=0 so the
+            # non-fast-path branch is covered on small test grids.
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_masked", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_masked", True, 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_masked", True, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused_masked", False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused_masked", True, 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused_masked", True, 1e-6, 1e-5],
             # fp16 / bf16 AMP coverage. Tolerances are looser than the fp32
             # rows because the bf16/fp16 cuBLAS rounding at each einsum's
             # output dominates the abs error, and cross-rank reductions
@@ -177,6 +212,9 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             # ring_fused (K-expanded activation dropped, recomputed in bwd).
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, False, "ring_fused", True, 2e-2, 1e-2],
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, "ring_fused", True, 5e-2, 5e-2],
+            # ring_stream / ring_fused_stream AMP rows — same tolerances.
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, False, "ring_stream", True, 2e-2, 1e-2],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, "ring_fused_stream", True, 5e-2, 5e-2],
         ],
         skip_on_empty=True,
     )
@@ -208,20 +246,38 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         # ``ring`` selects the ring algorithm with the K-expanded
         # activation saved across fwd/bwd; ``ring_fused`` additionally
         # drops that activation (bwd recomputes it via a second ring fwd).
+        # The ``_stream`` variants pass a dedicated CUDA stream for the
+        # ring P2P (so send/recv overlaps with the per-step kernel on
+        # the compute stream); the non-``_stream`` variants pass
+        # comm_stream=None (single-stream fallback).
         # The transpose class does not accept ``method=`` yet, so ignore
         # algorithm for the transpose branch.
         if algorithm == "a2a":
-            method, fused = "a2a", False
+            method, fused, use_comm_stream, force_masked = "a2a", False, False, False
         elif algorithm == "ring":
-            method, fused = "ring", False
+            method, fused, use_comm_stream, force_masked = "ring", False, False, False
         elif algorithm == "ring_fused":
-            method, fused = "ring", True
+            method, fused, use_comm_stream, force_masked = "ring", True, False, False
+        elif algorithm == "ring_stream":
+            method, fused, use_comm_stream, force_masked = "ring", False, True, False
+        elif algorithm == "ring_fused_stream":
+            method, fused, use_comm_stream, force_masked = "ring", True, True, False
+        elif algorithm == "ring_masked":
+            # Force the masked-kernel fallback path via the env var so this
+            # branch is covered on the existing small test grids.
+            method, fused, use_comm_stream, force_masked = "ring", False, False, True
+        elif algorithm == "ring_fused_masked":
+            method, fused, use_comm_stream, force_masked = "ring", True, False, True
         else:
             raise ValueError(f"unknown algorithm={algorithm!r}")
 
         # Ring path is CUDA-only — skip gracefully when CUDA isn't there.
         if method == "ring" and not torch.cuda.is_available():
             self.skipTest("method='ring' is CUDA-only")
+
+        # Allocate the dedicated comm stream for the _stream variants.
+        # Stays None for the single-stream variants.
+        comm_stream = torch.cuda.Stream(device=self.device) if use_comm_stream else None
 
         # For AMP dtypes the modules + inputs stay in float32 and autocast
         # handles the downcast inside fwd/bwd — same pattern as the serial
@@ -248,11 +304,13 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         )
 
         # The distributed conv reads TORCH_HARMONICS_P2P_BUFFER once in
-        # __init__ and stores the flag on the instance. Patch the env
-        # around construction so each parametrize row exercises the
-        # requested code path. mock.patch.dict restores the prior value
-        # automatically when the context exits.
+        # __init__ and stores the flag on the instance.
+        # TORCH_HARMONICS_RING_FWD_FAST_MAX is read by the C++ ring fwd
+        # kernel every launch — setting it to "0" forces the masked
+        # fallback path so it can be covered on the existing small grids.
         env_override = {"TORCH_HARMONICS_P2P_BUFFER": "1" if p2p_buffer else "0"}
+        if force_masked:
+            env_override["TORCH_HARMONICS_RING_FWD_FAST_MAX"] = "0"
 
         # set up handles
         if transpose:
@@ -269,6 +327,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
                     **disco_args,
                     method=method,
                     fused=fused,
+                    comm_stream=comm_stream,
                 ).to(dtype=module_dtype, device=self.device)
 
         # copy the weights from the local conv into the dist conv
@@ -295,19 +354,23 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         out_full.backward(ograd_full)
         igrad_full = inp_full.grad.clone()
 
-        # distributed conv
+        # distributed conv. The env patch is re-applied around the
+        # fwd/bwd because TORCH_HARMONICS_RING_FWD_FAST_MAX is read by
+        # the C++ kernel at each launch (whereas TORCH_HARMONICS_P2P_BUFFER
+        # was already consumed during __init__).
         # FWD pass
         inp_local = self._split_helper(inp_full.detach().clone())
         inp_local.requires_grad = True
-        with maybe_autocast(self.device.type, dtype):
-            out_local = conv_dist(inp_local)
+        with mock.patch.dict(os.environ, env_override):
+            with maybe_autocast(self.device.type, dtype):
+                out_local = conv_dist(inp_local)
 
-        # BWD pass
-        ograd_local = self._split_helper(ograd_full)
-        with maybe_autocast(self.device.type, dtype):
-            out_local = conv_dist(inp_local)
-        out_local.backward(ograd_local)
-        igrad_local = inp_local.grad.clone()
+            # BWD pass
+            ograd_local = self._split_helper(ograd_full)
+            with maybe_autocast(self.device.type, dtype):
+                out_local = conv_dist(inp_local)
+            out_local.backward(ograd_local)
+            igrad_local = inp_local.grad.clone()
 
         # evaluate FWD pass
         out_gather_full = self._gather_helper_fwd(out_local, conv_dist)
