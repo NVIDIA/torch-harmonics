@@ -353,17 +353,30 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
         else:
             recv_pool = None
 
-        if comm_stream is None:
-            # Single-stream path: matches the pre-session loop exactly.
-            # NCCL runs on its own internal stream and PyTorch's at-issue
-            # event sync against the compute stream handles ordering.
-            for step in range(az_size):
-                src_rank = (az_rank + step) % az_size
-                lon_lo_src = lon_in_chunk_starts[src_rank]
-                nlon_in_local_src = lon_in_local_sizes[src_rank]
+        # Ring loop. When ``comm_stream`` is provided we post send/recv on
+        # it so NCCL's at-issue event sync gates only against the comm
+        # stream (not compute_stream's pending kernels), letting comm[i]
+        # overlap with kernel[i]. The cs.wait_stream() / ev.record() /
+        # compute_stream.wait_event() calls collapse to no-ops when
+        # ``cs is compute_stream`` so the single-stream case matches the
+        # pre-session behavior.
+        compute_stream = torch.cuda.current_stream(x.device)
+        cs = comm_stream if comm_stream is not None else compute_stream
+        cs.wait_stream(compute_stream)
+        ev = torch.cuda.Event() if az_size > 1 else None
 
-                if step < az_size - 1:
-                    next_src = (az_rank + step + 1) % az_size
+        for step in range(az_size):
+            src_rank = (az_rank + step) % az_size
+            lon_lo_src = lon_in_chunk_starts[src_rank]
+            nlon_in_local_src = lon_in_local_sizes[src_rank]
+
+            if step < az_size - 1:
+                next_src = (az_rank + step + 1) % az_size
+                # Bring cs up to compute_stream's current state so the next
+                # post sees any compute-side ops queued in the previous
+                # iteration (notably ``recv_x.clone()`` on the no-pool path).
+                cs.wait_stream(compute_stream)
+                with torch.cuda.stream(cs):
                     recv_x, reqs = _ring_x_chunk(
                         x_chunk,
                         az_group,
@@ -371,84 +384,30 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
                         recv_buf=recv_pool[step] if recv_pool is not None else None,
                     )
 
-                _disco_s2_contraction_ring_step_optimized(
-                    x_chunk,
-                    y_acc,
-                    psi_roff_idx,
-                    psi_ker_idx,
-                    psi_row_idx,
-                    psi_col_idx,
-                    psi_vals_c,
-                    kernel_size,
-                    nlat_out,
-                    nlon_out_local_self,
-                    nlon_in_global,
-                    pscale,
-                    lon_lo_src,
-                    nlon_in_local_src,
-                )
+            _disco_s2_contraction_ring_step_optimized(
+                x_chunk,
+                y_acc,
+                psi_roff_idx,
+                psi_ker_idx,
+                psi_row_idx,
+                psi_col_idx,
+                psi_vals_c,
+                kernel_size,
+                nlat_out,
+                nlon_out_local_self,
+                nlon_in_global,
+                pscale,
+                lon_lo_src,
+                nlon_in_local_src,
+            )
 
-                if step < az_size - 1:
+            if step < az_size - 1:
+                with torch.cuda.stream(cs):
                     for req in reqs:
                         req.wait()
-                    x_chunk = recv_x if recv_pool is not None else recv_x.clone()
-        else:
-            # Dedicated comm-stream path: post send/recv on `comm_stream`
-            # so NCCL's at-issue event sync gates only against that stream
-            # (not compute_stream's pending kernels), letting comm[i]
-            # overlap with kernel[i]. Cross-stream sync via an event.
-            compute_stream = torch.cuda.current_stream(x.device)
-            cs = comm_stream
-            cs.wait_stream(compute_stream)
-            ev = torch.cuda.Event() if az_size > 1 else None
-
-            for step in range(az_size):
-                src_rank = (az_rank + step) % az_size
-                lon_lo_src = lon_in_chunk_starts[src_rank]
-                nlon_in_local_src = lon_in_local_sizes[src_rank]
-
-                if step < az_size - 1:
-                    next_src = (az_rank + step + 1) % az_size
-                    # Bring cs up to compute_stream's current state before
-                    # posting the next comm. Without this, any compute-side
-                    # op queued in the previous iteration (notably the
-                    # ``recv_x.clone()`` on the no-pool path) is invisible
-                    # to NCCL's at-issue event sync on cs, so the send may
-                    # race with that clone. Cheap when no compute work is
-                    # pending (just an event-wait insertion).
-                    cs.wait_stream(compute_stream)
-                    with torch.cuda.stream(cs):
-                        recv_x, reqs = _ring_x_chunk(
-                            x_chunk,
-                            az_group,
-                            lon_in_local_sizes[next_src],
-                            recv_buf=recv_pool[step] if recv_pool is not None else None,
-                        )
-
-                _disco_s2_contraction_ring_step_optimized(
-                    x_chunk,
-                    y_acc,
-                    psi_roff_idx,
-                    psi_ker_idx,
-                    psi_row_idx,
-                    psi_col_idx,
-                    psi_vals_c,
-                    kernel_size,
-                    nlat_out,
-                    nlon_out_local_self,
-                    nlon_in_global,
-                    pscale,
-                    lon_lo_src,
-                    nlon_in_local_src,
-                )
-
-                if step < az_size - 1:
-                    with torch.cuda.stream(cs):
-                        for req in reqs:
-                            req.wait()
-                        ev.record(cs)
-                    compute_stream.wait_event(ev)
-                    x_chunk = recv_x if recv_pool is not None else recv_x.clone()
+                    ev.record(cs)
+                compute_stream.wait_event(ev)
+                x_chunk = recv_x if recv_pool is not None else recv_x.clone()
 
         # Cast back to input dtype so the downstream einsum (and the bwd
         # K-expanded grad) sees the same dtype the caller expects.
@@ -731,14 +690,23 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
             recv_pool = None
 
         # See _RingDiscoConvS2Fn.forward for the comm/compute stream rationale.
-        if comm_stream is None:
-            for step in range(az_size):
-                src_rank = (az_rank + step) % az_size
-                lon_lo_src = lon_in_chunk_starts[src_rank]
-                nlon_in_local_src = lon_in_local_sizes[src_rank]
+        compute_stream = torch.cuda.current_stream(x.device)
+        cs = comm_stream if comm_stream is not None else compute_stream
+        cs.wait_stream(compute_stream)
+        ev = torch.cuda.Event() if az_size > 1 else None
 
-                if step < az_size - 1:
-                    next_src = (az_rank + step + 1) % az_size
+        for step in range(az_size):
+            src_rank = (az_rank + step) % az_size
+            lon_lo_src = lon_in_chunk_starts[src_rank]
+            nlon_in_local_src = lon_in_local_sizes[src_rank]
+
+            if step < az_size - 1:
+                next_src = (az_rank + step + 1) % az_size
+                # Bring cs up to compute_stream's current state so the next
+                # post sees any compute-side ops queued in the previous
+                # iteration (notably ``recv_x.clone()`` on the no-pool path).
+                cs.wait_stream(compute_stream)
+                with torch.cuda.stream(cs):
                     recv_x, reqs = _ring_x_chunk(
                         x_chunk,
                         az_group,
@@ -746,75 +714,30 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
                         recv_buf=recv_pool[step] if recv_pool is not None else None,
                     )
 
-                _disco_s2_contraction_ring_step_optimized(
-                    x_chunk,
-                    y_acc,
-                    psi_roff_idx,
-                    psi_ker_idx,
-                    psi_row_idx,
-                    psi_col_idx,
-                    psi_vals_c,
-                    kernel_size,
-                    nlat_out,
-                    nlon_out_local_self,
-                    nlon_in_global,
-                    pscale,
-                    lon_lo_src,
-                    nlon_in_local_src,
-                )
+            _disco_s2_contraction_ring_step_optimized(
+                x_chunk,
+                y_acc,
+                psi_roff_idx,
+                psi_ker_idx,
+                psi_row_idx,
+                psi_col_idx,
+                psi_vals_c,
+                kernel_size,
+                nlat_out,
+                nlon_out_local_self,
+                nlon_in_global,
+                pscale,
+                lon_lo_src,
+                nlon_in_local_src,
+            )
 
-                if step < az_size - 1:
+            if step < az_size - 1:
+                with torch.cuda.stream(cs):
                     for req in reqs:
                         req.wait()
-                    x_chunk = recv_x if recv_pool is not None else recv_x.clone()
-        else:
-            compute_stream = torch.cuda.current_stream(x.device)
-            cs = comm_stream
-            cs.wait_stream(compute_stream)
-            ev = torch.cuda.Event() if az_size > 1 else None
-
-            for step in range(az_size):
-                src_rank = (az_rank + step) % az_size
-                lon_lo_src = lon_in_chunk_starts[src_rank]
-                nlon_in_local_src = lon_in_local_sizes[src_rank]
-
-                if step < az_size - 1:
-                    next_src = (az_rank + step + 1) % az_size
-                    # See _RingDiscoConvS2Fn.forward for why this wait_stream
-                    # is needed (no-pool clone is on compute_stream).
-                    cs.wait_stream(compute_stream)
-                    with torch.cuda.stream(cs):
-                        recv_x, reqs = _ring_x_chunk(
-                            x_chunk,
-                            az_group,
-                            lon_in_local_sizes[next_src],
-                            recv_buf=recv_pool[step] if recv_pool is not None else None,
-                        )
-
-                _disco_s2_contraction_ring_step_optimized(
-                    x_chunk,
-                    y_acc,
-                    psi_roff_idx,
-                    psi_ker_idx,
-                    psi_row_idx,
-                    psi_col_idx,
-                    psi_vals_c,
-                    kernel_size,
-                    nlat_out,
-                    nlon_out_local_self,
-                    nlon_in_global,
-                    pscale,
-                    lon_lo_src,
-                    nlon_in_local_src,
-                )
-
-                if step < az_size - 1:
-                    with torch.cuda.stream(cs):
-                        for req in reqs:
-                            req.wait()
-                        ev.record(cs)
-                    compute_stream.wait_event(ev)
-                    x_chunk = recv_x if recv_pool is not None else recv_x.clone()
+                    ev.record(cs)
+                compute_stream.wait_event(ev)
+                x_chunk = recv_x if recv_pool is not None else recv_x.clone()
 
         # Cast back to input dtype before the einsum so the contraction
         # runs in the autocast-active dtype (matches the non-fused path
