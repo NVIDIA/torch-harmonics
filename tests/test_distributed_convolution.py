@@ -422,12 +422,13 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         # evaluate parameter gradients — local per-rank contributions
         # summed across the h and w groups must match the serial gradient.
         # Parameter grads are sums over batch + local spatial → accumulate
-        # fp32 reduction noise the per-element output and input-grad checks
-        # don't see; loosen by a constant factor to absorb it. Empirically
-        # H100 a2a-path weight grads accumulate ~5-10x more noise than V100
-        # in absolute terms (different SM count / warp scheduling changes
-        # the reduction order); factor 1000 covers both.
-        param_grad_tol_factor = 1000.0
+        # reduction noise that per-element output / input-grad checks
+        # don't see. Use a higher factor for fp32 (where the base tolerance
+        # is tight at 1e-6/1e-5 and H100's a2a reductions can drift up to
+        # ~5e-3 absolute) than for AMP (where the base is already 4–5
+        # orders of magnitude looser; the same factor would make the
+        # bound meaninglessly large).
+        param_grad_tol_factor = 10.0 if is_amp else 1000.0
         pg_atol, pg_rtol = atol * param_grad_tol_factor, rtol * param_grad_tol_factor
         if conv_dist.weight.grad is not None:
             wgrad = self._allreduce_param_grad(conv_dist.weight.grad)
