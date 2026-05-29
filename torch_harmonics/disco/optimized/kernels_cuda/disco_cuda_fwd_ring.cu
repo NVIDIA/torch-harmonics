@@ -154,16 +154,16 @@ namespace disco_kernels
                 int w_in_global = wi_shifted + pscale * pp;
                 if (w_in_global >= Wi_global) w_in_global -= Wi_global;
 
-                // Range check against this src's chunk. Skip entries that fall
-                // outside; a different ring step will pick them up.
-                // NOTE: the unsigned-compare + branch-free predicated FMA form
-                // of this check produced wrong values on H100 + 2x4 + p2p=True
-                // + harmonic (3,4) + 65x128 (test_38). Cause not yet known;
-                // keep the explicit branch form until we have a fix.
+                // Range check against this src's chunk. Out-of-chunk entries
+                // are picked up at a different ring step. Cast to unsigned so
+                // the (w_in_local < 0) and (w_in_local >= Wi_local_src) checks
+                // collapse into one compare; the FMA stays branch-free by
+                // reading __sh[0] for the masked-out lanes and selecting zero.
                 const int w_in_local = w_in_global - lon_lo_src;
-                if (w_in_local >= 0 && w_in_local < Wi_local_src) {
-                    __reg[i] += val * static_cast<COMPUTE_T>(__sh[w_in_local]);
-                }
+                const bool in_range = ((unsigned)w_in_local < (unsigned)Wi_local_src);
+                const int safe_idx = in_range ? w_in_local : 0;
+                const COMPUTE_T s = static_cast<COMPUTE_T>(__sh[safe_idx]);
+                __reg[i] += in_range ? (val * s) : COMPUTE_T(0);
             }
         }
 
