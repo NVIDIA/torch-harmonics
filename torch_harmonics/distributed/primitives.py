@@ -58,7 +58,7 @@ def _check_shapes(msg, shapes_gather, shapes_expected):
 def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
     """Compute the split shapes for a given size and number of chunks."""
 
-    assert size >= num_chunks, f"Cannot split {size} elements into {num_chunks} chunks; " f"every chunk must be non-empty."
+    torch._check(size >= num_chunks, lambda: f"Cannot split {size} elements into {num_chunks} chunks; every chunk must be non-empty.")
 
     base, remainder = divmod(size, num_chunks)
     return [base + 1] * remainder + [base] * (num_chunks - remainder)
@@ -67,11 +67,10 @@ def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
 def split_tensor_along_dim(tensor, dim, num_chunks):
     """Split a tensor along a given dimension into a given number of chunks."""
 
-    assert dim < tensor.dim(), f"Error, tensor dimension is {tensor.dim()} which cannot be split along {dim}"
-    assert (
-        tensor.shape[dim] >= num_chunks
-    ), f"Error, cannot split dim {dim} of size {tensor.shape[dim]} into \
-                                              {num_chunks} chunks. Empty slices are currently not supported."
+    torch._check(dim < tensor.dim(), lambda: f"Error, tensor dimension is {tensor.dim()} which cannot be split along {dim}")
+    torch._check(
+        tensor.shape[dim] >= num_chunks, lambda: f"Error, cannot split dim {dim} of size {tensor.shape[dim]} into {num_chunks} chunks. Empty slices are currently not supported."
+    )
 
     # get split
     sections = compute_split_shapes(tensor.shape[dim], num_chunks)

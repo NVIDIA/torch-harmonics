@@ -163,7 +163,9 @@ class AttentionS2(nn.Module):
             value = query
 
         # change this later to allow arbitrary number of batch dims
-        assert (query.dim() == key.dim()) and (key.dim() == value.dim()) and (value.dim() == 4)
+        torch._check(query.dim() == 4, lambda: f"Expected 4-dimensional query tensor, got {query.dim()} dimensions")
+        torch._check(key.dim() == 4, lambda: f"Expected 4-dimensional key tensor, got {key.dim()} dimensions")
+        torch._check(value.dim() == 4, lambda: f"Expected 4-dimensional value tensor, got {value.dim()} dimensions")
 
         # perform QKV projections
         query = nn.functional.conv2d(query, self.q_weights, bias=self.q_bias)
@@ -399,14 +401,15 @@ class NeighborhoodAttentionS2(nn.Module):
             value = query
 
         # change this later to allow arbitrary number of batch dims
-        assert (query.dim() == key.dim()) and (key.dim() == value.dim()) and (value.dim() == 4)
-
-        if query.shape[-2] != self.nlat_out or query.shape[-1] != self.nlon_out:
-            raise ValueError(f"query spatial shape {(query.shape[-2], query.shape[-1])} does not match out_shape {(self.nlat_out, self.nlon_out)}")
-        if key.shape[-2] != self.nlat_in or key.shape[-1] != self.nlon_in:
-            raise ValueError(f"key spatial shape {(key.shape[-2], key.shape[-1])} does not match in_shape {(self.nlat_in, self.nlon_in)}")
-        if value.shape[-2] != self.nlat_in or value.shape[-1] != self.nlon_in:
-            raise ValueError(f"value spatial shape {(value.shape[-2], value.shape[-1])} does not match in_shape {(self.nlat_in, self.nlon_in)}")
+        torch._check(query.dim() == 4, lambda: f"Expected 4-dimensional query tensor, got {query.dim()} dimensions")
+        torch._check(key.dim() == 4, lambda: f"Expected 4-dimensional key tensor, got {key.dim()} dimensions")
+        torch._check(value.dim() == 4, lambda: f"Expected 4-dimensional value tensor, got {value.dim()} dimensions")
+        torch._check(query.shape[-2] == self.nlat_out, lambda: f"Expected query latitudes shape[-2]=={self.nlat_out}, got {query.shape[-2]}")
+        torch._check(query.shape[-1] == self.nlon_out, lambda: f"Expected query longitudes shape[-1]=={self.nlon_out}, got {query.shape[-1]}")
+        torch._check(key.shape[-2] == self.nlat_in, lambda: f"Expected key latitudes shape[-2]=={self.nlat_in}, got {key.shape[-2]}")
+        torch._check(key.shape[-1] == self.nlon_in, lambda: f"Expected key longitudes shape[-1]=={self.nlon_in}, got {key.shape[-1]}")
+        torch._check(value.shape[-2] == self.nlat_in, lambda: f"Expected value latitudes shape[-2]=={self.nlat_in}, got {value.shape[-2]}")
+        torch._check(value.shape[-1] == self.nlon_in, lambda: f"Expected value longitudes shape[-1]=={self.nlon_in}, got {value.shape[-1]}")
 
         # perform QKV projections
         query = nn.functional.conv2d(query, self.q_weights, bias=self.q_bias)

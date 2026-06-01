@@ -133,11 +133,9 @@ class DistributedRealSHT(nn.Module):
 
     def forward(self, x: torch.Tensor):
 
-        if x.dim() < 3:
-            raise ValueError(f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
-
-        assert x.shape[-2] == self.nlat_local
-        assert x.shape[-1] == self.nlon_local
+        torch._check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
+        torch._check(x.shape[-2] == self.nlat_local, lambda: f"Expected latitudes shape[-2]=={self.nlat_local}, got {x.shape[-2]}")
+        torch._check(x.shape[-1] == self.nlon_local, lambda: f"Expected longitudes shape[-1]=={self.nlon_local}, got {x.shape[-1]}")
 
         # we need to ensure that we can split the channels evenly
         num_chans = x.shape[-3]
@@ -266,11 +264,9 @@ class DistributedInverseRealSHT(nn.Module):
 
     def forward(self, x: torch.Tensor):
 
-        if x.dim() < 3:
-            raise ValueError(f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
-
-        assert x.shape[-2] == self.lmax_local
-        assert x.shape[-1] == self.mmax_local
+        torch._check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
+        torch._check(x.shape[-2] == self.lmax_local, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax_local}, got {x.shape[-2]}")
+        torch._check(x.shape[-1] == self.mmax_local, lambda: f"Expected spherical harmonic orders (mmax) shape[-1]=={self.mmax_local}, got {x.shape[-1]}")
 
         # we need to ensure that we can split the channels evenly
         num_chans = x.shape[-3]
@@ -407,12 +403,10 @@ class DistributedRealVectorSHT(nn.Module):
 
     def forward(self, x: torch.Tensor):
 
-        if x.dim() < 4:
-            raise ValueError(f"Expected tensor with at least 4 dimensions but got {x.dim()} instead")
-
-        assert x.shape[-3] == 2
-        assert x.shape[-2] == self.nlat_local
-        assert x.shape[-1] == self.nlon_local
+        torch._check(x.dim() >= 4, lambda: f"Expected tensor with at least 4 dimensions but got {x.dim()} instead")
+        torch._check(x.shape[-3] == 2, lambda: f"Expected vector field shape[-3]==2, got {x.shape[-3]}")
+        torch._check(x.shape[-2] == self.nlat_local, lambda: f"Expected latitudes shape[-2]=={self.nlat_local}, got {x.shape[-2]}")
+        torch._check(x.shape[-1] == self.nlon_local, lambda: f"Expected longitudes shape[-1]=={self.nlon_local}, got {x.shape[-1]}")
 
         # we need to ensure that we can split the channels evenly
         num_chans = x.shape[-4]
@@ -547,12 +541,10 @@ class DistributedInverseRealVectorSHT(nn.Module):
 
     def forward(self, x: torch.Tensor):
 
-        if x.dim() < 4:
-            raise ValueError(f"Expected tensor with at least 4 dimensions but got {x.dim()} instead")
-
-        assert x.shape[-3] == 2
-        assert x.shape[-2] == self.lmax_local
-        assert x.shape[-1] == self.mmax_local
+        torch._check(x.dim() >= 4, lambda: f"Expected tensor with at least 4 dimensions but got {x.dim()} instead")
+        torch._check(x.shape[-3] == 2, lambda: f"Expected vector field shape[-3]==2, got {x.shape[-3]}")
+        torch._check(x.shape[-2] == self.lmax_local, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax_local}, got {x.shape[-2]}")
+        torch._check(x.shape[-1] == self.mmax_local, lambda: f"Expected spherical harmonic orders (mmax) shape[-1]=={self.mmax_local}, got {x.shape[-1]}")
 
         # store num channels
         num_chans = x.shape[-4]
