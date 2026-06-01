@@ -899,7 +899,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         self.assertTrue(duration <= threshold, msg=f"Backward execution time on device {self.device.type} is too high: {duration:.2f} ms > {threshold:.2f} ms")
 
     def test_wrong_shape_assertions(self):
-        """Verify that forward raises ValueError on spatial-shape mismatches."""
+        """Verify that forward raises RuntimeError on spatial-shape mismatches."""
         B, C = 2, 16
         in_shape = (12, 24)
         out_shape = (6, 12)
@@ -921,15 +921,15 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         # 1. Self-attention on an up/downsampling module: a single tensor cannot
         #    simultaneously satisfy in_shape (for k/v) and out_shape (for q).
-        with self.assertRaises(ValueError):
+        with self.assertRaises(RuntimeError):
             model(q)  # key defaults to query, but key must have in_shape
 
         # 2. q_shape == k_shape != v_shape: key carries out_shape instead of in_shape.
-        with self.assertRaises(ValueError):
+        with self.assertRaises(RuntimeError):
             model(q, q, kv)
 
         # 3. q_shape == v_shape != k_shape: value carries out_shape instead of in_shape.
-        with self.assertRaises(ValueError):
+        with self.assertRaises(RuntimeError):
             model(q, kv, q)
 
 
