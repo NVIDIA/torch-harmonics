@@ -104,13 +104,13 @@ class TestComputeSplitShapes(unittest.TestCase):
         self.assertEqual(shapes, [1, 1, 1, 1])
 
     def test_fails_when_size_less_than_num_chunks(self):
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(RuntimeError):
             compute_split_shapes(2, 5)
 
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(RuntimeError):
             compute_split_shapes(1, 2)
 
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(RuntimeError):
             compute_split_shapes(0, 1)
 
 
