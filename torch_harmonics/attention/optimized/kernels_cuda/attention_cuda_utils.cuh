@@ -236,8 +236,10 @@ namespace attention_kernels
         grid.y = DIV_UP(src.size(3), block.x);
         grid.z = src.size(2) * src.size(0);
 
-        assert(grid.y < 65536);
-        assert(grid.z < 65536);
+        TORCH_CHECK(grid.y < 65536, "permute_to0231: grid.y (", grid.y,
+                    ") exceeds CUDA gridDim.y limit of 65535; input nlon dimension is too large");
+        TORCH_CHECK(grid.z < 65536, "permute_to0231: grid.z (", grid.z,
+                    ") exceeds CUDA gridDim.z limit of 65535; batch * nlat is too large");
 
         // get stream
         auto stream = at::cuda::getCurrentCUDAStream().stream();
@@ -316,8 +318,10 @@ namespace attention_kernels
         grid.y = DIV_UP(src.size(3), block.x);
         grid.z = src.size(1) * src.size(0);
 
-        assert(grid.y < 65536);
-        assert(grid.z < 65536);
+        TORCH_CHECK(grid.y < 65536, "permute_to0312: grid.y (", grid.y,
+                    ") exceeds CUDA gridDim.y limit of 65535; input nlon dimension is too large");
+        TORCH_CHECK(grid.z < 65536, "permute_to0312: grid.z (", grid.z,
+                    ") exceeds CUDA gridDim.z limit of 65535; batch * nchn is too large");
 
         // get stream
         auto stream = at::cuda::getCurrentCUDAStream().stream();
