@@ -302,7 +302,8 @@ class SphericalNeuralOperatorBlock(nn.Module):
             self.inner_skip = nn.Conv2d(input_dim, output_dim, 1, 1)
             nn.init.normal_(self.inner_skip.weight, std=math.sqrt(gain_factor / input_dim))
         elif inner_skip == "identity":
-            assert input_dim == output_dim
+            if input_dim != output_dim:
+                raise ValueError(f"inner_skip='identity' requires input_dim == output_dim, got input_dim={input_dim}, output_dim={output_dim}")
             self.inner_skip = nn.Identity()
         elif inner_skip == "none":
             pass
@@ -342,7 +343,8 @@ class SphericalNeuralOperatorBlock(nn.Module):
             self.outer_skip = nn.Conv2d(input_dim, input_dim, 1, 1)
             torch.nn.init.normal_(self.outer_skip.weight, std=math.sqrt(gain_factor / input_dim))
         elif outer_skip == "identity":
-            assert input_dim == output_dim
+            if input_dim != output_dim:
+                raise ValueError(f"outer_skip='identity' requires input_dim == output_dim, got input_dim={input_dim}, output_dim={output_dim}")
             self.outer_skip = nn.Identity()
         elif outer_skip == "none":
             pass

@@ -64,7 +64,8 @@ class GaussianRandomFieldS2(torch.nn.Module):
 
         # Default value of sigma if None is given.
         if sigma is None:
-            assert alpha > 1.0, f"Alpha must be greater than one, got {alpha}."
+            if alpha <= 1.0:
+                raise ValueError(f"Alpha must be greater than one, got {alpha}.")
             sigma = tau ** (0.5 * (2 * alpha - 2.0))
 
         # Inverse SHT

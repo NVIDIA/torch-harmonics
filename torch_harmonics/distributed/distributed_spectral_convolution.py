@@ -103,8 +103,10 @@ class DistributedSpectralConvS2(nn.Module):
     ):
         super().__init__()
 
-        assert in_channels % num_groups == 0
-        assert out_channels % num_groups == 0
+        if in_channels % num_groups != 0:
+            raise ValueError(f"in_channels ({in_channels}) must be divisible by num_groups ({num_groups})")
+        if out_channels % num_groups != 0:
+            raise ValueError(f"out_channels ({out_channels}) must be divisible by num_groups ({num_groups})")
 
         # copy inputs
         self.in_channels = in_channels

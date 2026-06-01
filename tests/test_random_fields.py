@@ -116,8 +116,8 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
         skip_on_empty=True,
     )
     def test_alpha_assertion(self, nlat, alpha, verbose=False):
-        """alpha <= 1 with sigma=None must raise AssertionError."""
-        with self.assertRaises(AssertionError):
+        """alpha <= 1 with sigma=None must raise ValueError."""
+        with self.assertRaises(ValueError):
             GaussianRandomFieldS2(nlat, alpha=alpha, sigma=None)
 
     @parameterized.expand(

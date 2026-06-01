@@ -429,7 +429,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             )
 
     def test_wrong_shape_assertions(self):
-        """Verify that forward raises ValueError on spatial-shape mismatches."""
+        """Verify that forward raises RuntimeError on spatial-shape mismatches."""
         B, C = 2, 16
         in_shape = (64, 128)
         out_shape = (32, 64)
@@ -450,15 +450,15 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         # 1. Self-attention on an up/downsampling module: a single tensor cannot
         #    simultaneously satisfy in_shape (for k/v) and out_shape (for q).
-        with self.assertRaises(ValueError):
+        with self.assertRaises(RuntimeError):
             attn(q_local)  # key defaults to query, but key must have in_shape
 
         # 2. q_shape == k_shape != v_shape: key carries out_shape instead of in_shape.
-        with self.assertRaises(ValueError):
+        with self.assertRaises(RuntimeError):
             attn(q_local, q_local, k_local)
 
         # 3. q_shape == v_shape != k_shape: value carries out_shape instead of in_shape.
-        with self.assertRaises(ValueError):
+        with self.assertRaises(RuntimeError):
             attn(q_local, k_local, q_local)
 
 
