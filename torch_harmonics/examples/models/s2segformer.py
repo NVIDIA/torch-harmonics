@@ -410,7 +410,8 @@ class TransformerBlock(nn.Module):
         if isinstance(drop_path_rates, float):
             drop_path_rates = [x.item() for x in torch.linspace(0, drop_path_rates, nrep)]
 
-        assert len(drop_path_rates) == nrep
+        if len(drop_path_rates) != nrep:
+            raise ValueError(f"drop_path_rates must have length {nrep}, got {len(drop_path_rates)}")
 
         self.fwd = [
             OverlapPatchMerging(
@@ -677,8 +678,10 @@ class SphericalSegformer(nn.Module):
         self.depths = depths
         self.kernel_shape = kernel_shape
 
-        assert len(self.heads) == self.num_blocks
-        assert len(self.depths) == self.num_blocks
+        if len(self.heads) != self.num_blocks:
+            raise ValueError(f"heads must have length num_blocks={self.num_blocks}, got {len(self.heads)}")
+        if len(self.depths) != self.num_blocks:
+            raise ValueError(f"depths must have length num_blocks={self.num_blocks}, got {len(self.depths)}")
 
         # activation function
         if activation_function == "relu":

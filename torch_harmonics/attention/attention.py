@@ -97,7 +97,8 @@ class AttentionS2(nn.Module):
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
 
-        assert self.nlon_in % self.nlon_out == 0, f"nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}) for the attention p-shift to be exact"
+        if self.nlon_in % self.nlon_out != 0:
+            raise ValueError(f"nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}) for the attention p-shift to be exact")
 
         self.in_channels = in_channels
         self.num_heads = num_heads
@@ -274,9 +275,8 @@ class NeighborhoodAttentionS2(nn.Module):
         # of nlon_in. Self-attention (nlon_in == nlon_out) satisfies both and falls
         # through the gather path with pscale == 1.
         self.upsample = (self.nlon_out % self.nlon_in == 0) and (self.nlon_in % self.nlon_out != 0)
-        assert (
-            self.nlon_in % self.nlon_out == 0
-        ) or self.upsample, f"either nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}), or vice versa, for the attention p-shift to be exact"
+        if not (self.nlon_in % self.nlon_out == 0 or self.upsample):
+            raise ValueError(f"either nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}), or vice versa, for the attention p-shift to be exact")
 
         self.in_channels = in_channels
         self.num_heads = num_heads

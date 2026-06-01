@@ -488,7 +488,8 @@ class SphericalUNet(nn.Module):
         self.depths = depths
         self.kernel_shape = kernel_shape
 
-        assert len(self.depths) == self.num_blocks
+        if len(self.depths) != self.num_blocks:
+            raise ValueError(f"depths must have length num_blocks={self.num_blocks}, got {len(self.depths)}")
 
         # activation function
         if activation_function == "relu":
