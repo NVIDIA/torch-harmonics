@@ -9,6 +9,8 @@
 * New ring communication variant for distributed DISCO convolution (`method="ring"`): nearest-neighbor rotation along the azimuth group replaces the bulk all-to-all transpose. The K-expanded intermediate never crosses any collective, making this path better suited for deep-channel / narrow-spatial layers. CUDA-only; set `fused=True` for maximum activation-memory savings (recomputes the ring forward in backward). Double-buffered P2P transfers available via `TORCH_HARMONICS_P2P_BUFFER=1`.
 * Improved performance for CPU based attention kernels.
 * Converted all Python assert statements to torch._check for better torch.compile friendliness. All asserts in cosntructors were converted into ValueErrors for streamlined and clear error handling. In C++ and CUDA compiled code, all dynamic asserts were changed to TORCH_CHECK calls.
+* Improved performance of distributed attention kernels achieved by splitting the kernel into two different ones for dense and less dense rows. This happens behind the scenes and the distributed attention API is unchanged.
+* Improved distributed tests: tests now only print on rank 0 and test states are broadcast to all ranks before being triggered, to ensure clean failure on all ranks in case of failing tests.
 
 ### v0.9.1
 
