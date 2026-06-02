@@ -62,7 +62,12 @@ def _grid():
 
 
 def _world_rank():
-    return int(os.getenv("WORLD_RANK", 0))
+    # Prefer WORLD_RANK; fall back to RANK (both are exported by the launch
+    # scripts, but RANK is the more common convention for torchrun-style launches).
+    rank = os.getenv("WORLD_RANK")
+    if rank is None:
+        rank = os.getenv("RANK", 0)
+    return int(rank)
 
 
 @pytest.hookimpl(trylast=True)
