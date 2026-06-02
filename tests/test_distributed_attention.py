@@ -39,6 +39,7 @@ from testutils import (
     disable_tf32,
     gather_tensor_hw,
     maybe_autocast,
+    reduce_success,
     set_seed,
     setup_class_from_context,
     setup_module,
@@ -347,15 +348,21 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         torch.cuda.synchronize()
 
+        # Print diagnostics from rank 0 only; assert the all-reduced verdict on every
+        # rank so a failure on any rank fails the test consistently (see reduce_success).
+        verbose = verbose and self.world_rank == 0
+
         # ---- compare forward ----
         out_gather = self._gather_helper_fwd(out_local, attn_dist)
-        self.assertTrue(compare_tensors("forward output", out_full, out_gather, atol=atol, rtol=rtol, verbose=verbose))
+        ok = compare_tensors("forward output", out_full, out_gather, atol=atol, rtol=rtol, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "forward output")
 
         # ---- compare backward ----
         for inp in ["q", "k", "v"]:
             use_out = inp == "q"
             igrad_gather = self._gather_helper_bwd(igrad_local[inp], attn_dist, use_out_shapes=use_out)
-            self.assertTrue(compare_tensors(f"input gradient {inp}", igrad_full[inp], igrad_gather, atol=atol, rtol=rtol, verbose=verbose))
+            ok = compare_tensors(f"input gradient {inp}", igrad_full[inp], igrad_gather, atol=atol, rtol=rtol, verbose=verbose)
+            self.assertTrue(reduce_success(ok, self.device), f"input gradient {inp}")
 
     @parameterized.expand(
         [
@@ -463,9 +470,14 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         igrad_local = {n: (inp_local[n].grad.clone() if inp_local[n].grad is not None else None) for n in ("k", "v", "q")}
         torch.cuda.synchronize()
 
+        # Print diagnostics from rank 0 only; assert the all-reduced verdict on every
+        # rank so a failure on any rank fails the test consistently (see reduce_success).
+        verbose = verbose and self.world_rank == 0
+
         # ---- compare forward ----
         out_gather = self._gather_helper_fwd(out_local, attn_dist)
-        self.assertTrue(compare_tensors("forward output", out_full, out_gather, atol=atol, rtol=rtol, verbose=verbose))
+        ok = compare_tensors("forward output", out_full, out_gather, atol=atol, rtol=rtol, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "forward output")
 
         # ---- contract: frozen input grads must be None on both ----
         self.assertIsNone(igrad_full[frozen], f"serial: frozen input {frozen} must have None grad")
@@ -487,16 +499,15 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             self.assertIsNotNone(igrad_local[n], f"distributed: unfrozen input {n} should have a grad")
             use_out = n == "q"
             igrad_gather = self._gather_helper_bwd(igrad_local[n], attn_dist, use_out_shapes=use_out)
-            self.assertTrue(
-                compare_tensors(
-                    f"input grad {n} (frozen={frozen})",
-                    igrad_full[n],
-                    igrad_gather,
-                    atol=atol,
-                    rtol=rtol,
-                    verbose=verbose,
-                )
+            ok = compare_tensors(
+                f"input grad {n} (frozen={frozen})",
+                igrad_full[n],
+                igrad_gather,
+                atol=atol,
+                rtol=rtol,
+                verbose=verbose,
             )
+            self.assertTrue(reduce_success(ok, self.device), f"input grad {n} (frozen={frozen})")
 
     def test_wrong_shape_assertions(self):
         """Verify that forward raises RuntimeError on spatial-shape mismatches."""

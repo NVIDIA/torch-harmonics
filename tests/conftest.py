@@ -38,16 +38,47 @@ the suite is launched in distributed mode (GRID_H or GRID_W > 1):
     node-id so the grid is visible alongside every test name in `-v` output (e.g.
     `test_distributed_neighborhood_attention_00[h=2,w=4]`).
 
-Both hooks no-op when GRID_H == GRID_W == 1, so plain non-distributed pytest
-invocations see zero additional output. The per-test suffix additionally
-filters on filenames starting with `test_distributed_`.
+It also keeps rank 0 the single source of console output:
+  * `pytest_configure`: on any non-zero WORLD_RANK, unregisters pytest's terminal
+    reporter so only rank 0 prints the session header, progress, per-test results
+    and summary. This is safe because distributed comparisons all-reduce their
+    verdict (see testutils.reduce_success), so rank 0 fails whenever any rank does
+    -- the silenced ranks can never hide a failure. Each rank still returns its own
+    process exit code to the launcher.
+
+The grid hooks no-op when GRID_H == GRID_W == 1, and the reporter is only silenced
+on non-zero ranks, so plain non-distributed pytest invocations see zero change in
+output. The per-test suffix additionally filters on filenames starting with
+`test_distributed_`.
 """
 
 import os
 
+import pytest
+
 
 def _grid():
     return int(os.getenv("GRID_H", 1)), int(os.getenv("GRID_W", 1))
+
+
+def _world_rank():
+    return int(os.getenv("WORLD_RANK", 0))
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_configure(config):
+    # Silence pytest's own console output on every rank except rank 0.
+    #
+    # trylast=True is required: conftest hooks run before the builtin terminal
+    # plugin's pytest_configure (LIFO order), so without it the "terminalreporter"
+    # plugin is not registered yet and get_plugin() returns None -- letting every
+    # rank keep reporting (the duplicate-output bug). Running last ensures the
+    # reporter exists by the time we unregister it.
+    if _world_rank() == 0:
+        return
+    reporter = config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        config.pluginmanager.unregister(reporter)
 
 
 def pytest_report_header(config):

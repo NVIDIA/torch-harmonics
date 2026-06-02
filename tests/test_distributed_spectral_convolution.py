@@ -37,6 +37,7 @@ from testutils import (
     compare_tensors,
     disable_tf32,
     gather_tensor_hw,
+    reduce_success,
     set_seed,
     setup_class_from_context,
     setup_module,
@@ -163,19 +164,25 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
 
+        # Print diagnostics from rank 0 only; assert the all-reduced verdict on every
+        # rank so a failure on any rank fails the test consistently (see reduce_success).
+        verbose = verbose and self.world_rank == 0
+
         out_gather_full = self._gather_helper(
             out_local,
             conv_dist.isht.lat_shapes,
             conv_dist.isht.lon_shapes,
         )
-        self.assertTrue(compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose))
+        ok = compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "output")
 
         igrad_gather_full = self._gather_helper(
             igrad_local,
             conv_dist.sht.lat_shapes,
             conv_dist.sht.lon_shapes,
         )
-        self.assertTrue(compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose))
+        ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "gradients")
 
 
 if __name__ == "__main__":
