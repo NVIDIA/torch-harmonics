@@ -53,16 +53,16 @@ def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: in
     on GPU, make sure to use the custom kernel written in CUDA.
     """
 
-    assert len(psi.shape) == 3
-    assert len(x.shape) == 4
+    torch._check(psi.dim() == 3, lambda: f"Expected 3-dimensional psi tensor, got {psi.dim()} dimensions")
+    torch._check(x.dim() == 4, lambda: f"Expected 4-dimensional input tensor, got {x.dim()} dimensions")
     psi = psi.to(x.device)
 
     batch_size, n_chans, nlat_in, nlon_in = x.shape
     kernel_size, nlat_out, _ = psi.shape
 
-    assert psi.shape[-1] == nlat_in * nlon_in
-    assert nlon_in % nlon_out == 0
-    assert nlon_in >= nlat_out
+    torch._check(psi.shape[-1] == nlat_in * nlon_in, lambda: f"Expected psi.shape[-1]=={nlat_in * nlon_in}, got {psi.shape[-1]}")
+    torch._check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
+    torch._check(nlon_in >= nlat_out, lambda: f"Expected nlon_in ({nlon_in}) >= nlat_out ({nlat_out})")
     pscale = nlon_in // nlon_out
 
     # add a dummy dimension for nkernel and move the batch and channel dims to the end
@@ -92,15 +92,15 @@ def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: in
 
 # transpose convolution
 def _disco_s2_transpose_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
-    assert len(psi.shape) == 3
-    assert len(x.shape) == 5
+    torch._check(psi.dim() == 3, lambda: f"Expected 3-dimensional psi tensor, got {psi.dim()} dimensions")
+    torch._check(x.dim() == 5, lambda: f"Expected 5-dimensional input tensor, got {x.dim()} dimensions")
     psi = psi.to(x.device)
 
     batch_size, n_chans, kernel_size, nlat_in, nlon_in = x.shape
     kernel_size, nlat_out, n_out = psi.shape
 
-    assert n_out % nlon_out == 0
-    assert nlon_out >= nlon_in
+    torch._check(n_out % nlon_out == 0, lambda: f"Expected n_out ({n_out}) to be an integer multiple of nlon_out ({nlon_out})")
+    torch._check(nlon_out >= nlon_in, lambda: f"Expected nlon_out ({nlon_out}) >= nlon_in ({nlon_in})")
     pscale = nlon_out // nlon_in
 
     # interleave zeros along the longitude dimension to allow for fractional offsets to be considered
