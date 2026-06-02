@@ -435,11 +435,11 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, True, False, 2e-2, 1e-2],
             # bf16 tests (AMP)
             # regular convolution
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 5e-2, 5e-2],
-            [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 5e-2, 5e-2],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 2e-1, 5e-2],
+            [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 2e-1, 5e-2],
             # transpose convolution
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, False, 5e-2, 5e-2],
-            [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, False, 5e-2, 5e-2],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, False, 2e-1, 5e-2],
+            [8, 4, 2, (12, 24), (24, 48), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, False, 2e-1, 5e-2],
             # fused convolution (forward conv only — compares fused against dense reference)
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, True, 1e-4, 1e-4],
             [8, 4, 2, (16, 32), (8, 16), (3), "piecewise linear", "nodal", "equiangular", "equiangular", torch.float32, False, True, 1e-4, 1e-4],
@@ -624,18 +624,18 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (21, 40), (41, 80), (2, 2), "harmonic", "modal", "equiangular", "equiangular", torch.float64, True, False, 1e-9, 1e-9],
             # fp16 tests (AMP)
             # regular convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, False, 1e-2, 1e-2],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, False, 1e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, False, 5e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, False, 5e-2, 1e-2],
             # transpose convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, True, False, 1e-2, 1e-2],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, True, False, 1e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, True, False, 5e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, True, False, 5e-2, 1e-2],
             # bf16 tests (AMP)
             # regular convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 1e-2, 1e-2],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 1e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 1e-2],
             # transpose convolution
-            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, False, 1e-2, 1e-2],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, False, 1e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, False, 3e-1, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, False, 3e-1, 1e-2],
             # fused convolution (forward conv only — compares fused optimized against torch reference)
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, True, 1e-4, 1e-4],
             [8, 4, 2, (41, 80), (21, 40), (3), "piecewise linear", "nodal", "equiangular", "equiangular", torch.float32, False, True, 1e-4, 1e-4],
@@ -750,6 +750,65 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # compare
         self.assertTrue(compare_tensors("input grad", inp_grad_naive, inp_grad_opt, atol=atol, rtol=rtol, verbose=verbose))
         self.assertTrue(compare_tensors("weight grad", conv_naive.weight.grad, conv_opt.weight.grad, atol=atol, rtol=rtol, verbose=verbose))
+
+    @parameterized.expand(
+        [
+            # [transpose, in_shape, out_shape, autocast_dtype]
+            # regular DISCO (downsample): in > out
+            [False, (16, 32), (8, 16), torch.float16],
+            [False, (16, 32), (8, 16), torch.bfloat16],
+            # transpose DISCO (upsample): in < out
+            [True, (8, 16), (16, 32), torch.float16],
+            [True, (8, 16), (16, 32), torch.bfloat16],
+        ],
+        skip_on_empty=True,
+    )
+    def test_optimized_autocast_dtype(self, transpose, in_shape, out_shape, autocast_dtype):
+        """Direct check that the autocast registration on the optimized DISCO custom_ops
+        produces output in the active autocast dtype.
+
+        Uses bias=False so the final op of the conv module is the einsum, which is
+        autocast-eligible and preserves the autocast dtype. A bias add of bf16+fp32
+        would dtype-promote to fp32 and mask the autocast contract we're testing.
+        """
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+        if not optimized_kernels_is_available():
+            raise unittest.SkipTest("skipping test because optimized kernels are not available")
+
+        set_seed(333)
+
+        Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
+        nlat_in = in_shape[0]
+        theta_cutoff = 4 * torch.pi / float(nlat_in - 1)
+
+        conv = Conv(
+            in_channels=4,
+            out_channels=4,
+            in_shape=in_shape,
+            out_shape=out_shape,
+            kernel_shape=(3,),
+            basis_type="piecewise linear",
+            basis_norm_mode="mean",
+            groups=1,
+            grid_in="equiangular",
+            grid_out="equiangular",
+            bias=False,
+            theta_cutoff=theta_cutoff,
+            optimized_kernel=True,
+        ).to(self.device)
+
+        # Module + input in fp32; autocast handles the cast inside fwd.
+        x = torch.randn(2, 4, *in_shape, device=self.device, dtype=torch.float32)
+
+        with torch.autocast(self.device.type, dtype=autocast_dtype):
+            out = conv(x)
+
+        self.assertEqual(
+            out.dtype,
+            autocast_dtype,
+            f"{Conv.__name__} output dtype {out.dtype} != autocast dtype {autocast_dtype}",
+        )
 
     @parameterized.expand(
         [

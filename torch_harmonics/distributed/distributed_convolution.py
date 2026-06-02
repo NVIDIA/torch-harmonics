@@ -44,14 +44,26 @@ from torch_harmonics.disco.convolution import (
 from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_transpose_contraction_torch
 from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_transpose_contraction_optimized
 
-# distributed stuff
-from .kernels import _distributed_disco_fwd_a2a, _distributed_disco_fwd_ring
+# per-method orchestration entry points
+from .kernels import (
+    _distributed_disco_fwd_a2a,
+    _distributed_disco_fwd_ring,
+)
+
+# distributed stuff — relative imports to avoid the circular dependency
+# through torch_harmonics.distributed.__init__.
 from .primitives import (
     compute_split_shapes,
     distributed_transpose_azimuth,
     gather_from_copy_to_polar_region,
 )
-from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
+from .utils import (
+    azimuth_group,
+    azimuth_group_rank,
+    azimuth_group_size,
+    polar_group_rank,
+    polar_group_size,
+)
 
 
 def _split_distributed_convolution_tensor_s2(
@@ -219,19 +231,22 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         # Assert their availability up front so misconfigured builds fail
         # at construction rather than first forward.
         if self.method == "ring":
-            assert torch.cuda.is_available(), (
-                "DistributedDiscreteContinuousConvS2(method='ring') is CUDA-only: "
-                "the ring loop relies on dist.batch_isend_irecv (NCCL) and the "
-                "per-step kernels are CUDA ops. Use method='a2a' for CPU/gloo backends."
-            )
-            assert optimized_kernels_is_available(), (
-                "DistributedDiscreteContinuousConvS2(method='ring') requires the "
-                "optimized ring-step CUDA kernels "
-                "(_disco_s2_contraction_ring_step_optimized and its transpose "
-                "variant), but they are not present in this build. Rebuild the "
-                "optimized DISCO library or use method='a2a'."
-            )
-            assert optimized_kernel, "DistributedDiscreteContinuousConvS2(method='ring') requires " "optimized_kernel=True (the ring step is CUDA-only)."
+            if not torch.cuda.is_available():
+                raise NotImplementedError(
+                    "DistributedDiscreteContinuousConvS2(method='ring') is CUDA-only: "
+                    "the ring loop relies on dist.batch_isend_irecv (NCCL) and the "
+                    "per-step kernels are CUDA ops. Use method='a2a' for CPU/gloo backends."
+                )
+            if not optimized_kernels_is_available():
+                raise NotImplementedError(
+                    "DistributedDiscreteContinuousConvS2(method='ring') requires the "
+                    "optimized ring-step CUDA kernels "
+                    "(_disco_s2_contraction_ring_step_optimized and its transpose "
+                    "variant), but they are not present in this build. Rebuild the "
+                    "optimized DISCO library or use method='a2a'."
+                )
+            if not optimized_kernel:
+                raise NotImplementedError("DistributedDiscreteContinuousConvS2(method='ring') requires optimized_kernel=True (the ring step is CUDA-only).")
 
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape

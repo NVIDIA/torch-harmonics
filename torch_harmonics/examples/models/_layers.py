@@ -105,7 +105,6 @@ def trunc_normal_(tensor, mean=0.0, std=1.0, a=-2.0, b=2.0):
     return _no_grad_trunc_normal_(tensor, mean, std, a, b)
 
 
-@torch.jit.script
 def drop_path(x: torch.Tensor, drop_prob: float = 0.0, training: bool = False) -> torch.Tensor:
     """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
     This is the same as the DropConnect impl I created for EfficientNet, etc networks, however,
@@ -195,7 +194,8 @@ class PatchEmbed(nn.Module):
 
         # gather input
         B, C, H, W = x.shape
-        assert H == self.img_size[0] and W == self.img_size[1], f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
+        torch._check(H == self.img_size[0], lambda: f"Input image height ({H}) doesn't match model ({self.img_size[0]}).")
+        torch._check(W == self.img_size[1], lambda: f"Input image width ({W}) doesn't match model ({self.img_size[1]}).")
         # new: B, C, H*W
         x = self.proj(x).flatten(2)
         return x
@@ -259,7 +259,7 @@ class MLP(nn.Module):
         else:
             self.fwd = nn.Sequential(fc1, act, fc2)
 
-    @torch.jit.ignore
+    @torch.compiler.disable
     def checkpoint_forward(self, x):
 
         return checkpoint(self.fwd, x)
@@ -413,9 +413,6 @@ class SpectralConvS2(nn.Module):
 
         # remember factorization details
         self.operator_type = operator_type
-
-        assert self.inverse_transform.lmax == self.modes_lat
-        assert self.inverse_transform.mmax == self.modes_lon
 
         weight_shape = [out_channels, in_channels]
 

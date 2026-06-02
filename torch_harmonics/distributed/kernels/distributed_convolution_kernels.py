@@ -74,6 +74,7 @@ from disco_helpers import optimized_kernels_is_available
 from torch_harmonics.disco._disco_utils import _compute_dtype
 from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_contraction_torch
 from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_optimized
+from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_setup_context
 
 # The optimized ring-step CUDA wrappers are defined inside
 # disco_optimized.py's ``if optimized_kernels_is_available():`` block, so
@@ -274,6 +275,7 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
     """
 
     @staticmethod
+    @torch.amp.custom_fwd(device_type="cuda")
     def forward(
         x,
         psi_roff_idx,
@@ -395,6 +397,7 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
         return y_acc
 
     @staticmethod
+    @_custom_setup_context(device_type="cuda")
     def setup_context(ctx, inputs, output):
         (
             x,
@@ -443,6 +446,7 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
         ctx.use_p2p_buffer = use_p2p_buffer
 
     @staticmethod
+    @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_y_acc):
         if not optimized_kernels_is_available():
             raise NotImplementedError("ring DISCO transpose step kernel is not built.")
@@ -590,6 +594,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
     """
 
     @staticmethod
+    @torch.amp.custom_fwd(device_type="cuda")
     def forward(
         x,
         weight,
@@ -703,6 +708,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
         return out
 
     @staticmethod
+    @_custom_setup_context(device_type="cuda")
     def setup_context(ctx, inputs, output):
         (
             x,
@@ -756,6 +762,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
         ctx.use_p2p_buffer = use_p2p_buffer
 
     @staticmethod
+    @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_out):
         if not optimized_kernels_is_available():
             raise NotImplementedError("ring DISCO transpose step kernel is not built (fused path).")
@@ -1047,6 +1054,13 @@ def _distributed_disco_fwd_ring(
     """
     if not optimized_kernels_is_available():
         raise NotImplementedError('Ring DISCO step kernels are not built. Use method="a2a" until ' "the optimized ring kernels are added to torch_harmonics/disco/optimized/.")
+
+    # Under autocast, cast activation + weight to the autocast dtype before
+    # .apply() — matches the dataflow of PyTorch's built-in autocast-eligible
+    # ops. Setup_context will then save the cast tensors and ring P2P chunks
+    # travel at the smaller dtype. Internal accumulators stay fp32 per
+    # _RingDiscoConv*Fn.forward.
+    x, weight = _cast_to_autocast_dtype(x, weight)
 
     if fused:
         # Fused ring fwd + einsum, saving x (not the K-expanded

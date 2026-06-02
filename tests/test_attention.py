@@ -37,7 +37,7 @@ from time import perf_counter_ns
 import torch
 import torch.nn.functional as F
 from parameterized import parameterized, parameterized_class
-from testutils import compare_tensors, disable_tf32, set_seed
+from testutils import compare_tensors, disable_tf32, maybe_autocast, set_seed
 from torch.library import opcheck
 
 # from torch.autograd import gradcheck
@@ -85,81 +85,90 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
     @parameterized.expand(
         [
             # Format: [batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, use_qknorm, atol, rtol]
-            [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],
-            [4, 4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],
-            [4, 4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],
-            [4, 4, 8, 4, (6, 12), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],
-            [4, 8, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],
-            [4, 1, 1, 1, (2, 4), (2, 4), "equiangular", "equiangular", False, 1e-5, 1e-3],
-            [4, 1, 4, 1, (2, 4), (2, 4), "equiangular", "equiangular", False, 1e-5, 1e-3],
-            [4, 4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", False, 1e-5, 1e-3],
-            [4, 4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", False, 1e-5, 1e-3],
+            [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],
+            [4, 4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],
+            [4, 4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],
+            [4, 4, 8, 4, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],
+            [4, 8, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],
+            [4, 1, 1, 1, (2, 4), (2, 4), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],
+            [4, 1, 4, 1, (2, 4), (2, 4), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],
+            [4, 4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", False, torch.float32, 1e-5, 1e-3],
+            [4, 4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", False, torch.float32, 1e-5, 1e-3],
             # downsampling: nlon_in must be an integer multiple of nlon_out (pscale = nlon_in / nlon_out)
-            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],  # lat 2x, lon 2x (pscale=2)
-            [4, 4, 8, 4, (12, 24), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],  # C_in<C_out asym, pscale=2
-            [4, 4, 4, 1, (6, 12), (6, 6), "equiangular", "equiangular", False, 1e-5, 1e-3],  # lon-only, pscale=2
-            [4, 4, 4, 1, (12, 24), (6, 8), "equiangular", "equiangular", False, 1e-5, 1e-3],  # pscale=3
-            [4, 4, 4, 1, (12, 24), (3, 6), "equiangular", "equiangular", False, 1e-5, 1e-3],  # pscale=4
-            [4, 4, 4, 1, (12, 12), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],  # lat-only, pscale=1
-            [4, 4, 4, 1, (12, 24), (6, 12), "legendre-gauss", "legendre-gauss", False, 1e-5, 1e-3],  # LG grid, pscale=2
+            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # lat 2x, lon 2x (pscale=2)
+            [4, 4, 8, 4, (12, 24), (6, 12), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # C_in<C_out asym, pscale=2
+            [4, 4, 4, 1, (6, 12), (6, 6), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # lon-only, pscale=2
+            [4, 4, 4, 1, (12, 24), (6, 8), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # pscale=3
+            [4, 4, 4, 1, (12, 24), (3, 6), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # pscale=4
+            [4, 4, 4, 1, (12, 12), (6, 12), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # lat-only, pscale=1
+            [4, 4, 4, 1, (12, 24), (6, 12), "legendre-gauss", "legendre-gauss", False, torch.float32, 1e-5, 1e-3],  # LG grid, pscale=2
             # odd latitude sizes
-            [4, 4, 4, 1, (7, 12), (5, 6), "equiangular", "equiangular", False, 1e-5, 1e-3],  # odd-odd lat, pscale=2
-            [4, 4, 4, 1, (9, 12), (5, 4), "equiangular", "equiangular", False, 1e-5, 1e-3],  # odd-odd lat, pscale=3
-            [4, 4, 4, 1, (11, 24), (7, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],  # odd-odd lat, pscale=2
-            [4, 4, 4, 1, (12, 24), (11, 24), "equiangular", "equiangular", False, 1e-5, 1e-3],  # odd nlat_out only, pscale=1
+            [4, 4, 4, 1, (7, 12), (5, 6), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # odd-odd lat, pscale=2
+            [4, 4, 4, 1, (9, 12), (5, 4), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # odd-odd lat, pscale=3
+            [4, 4, 4, 1, (11, 24), (7, 12), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # odd-odd lat, pscale=2
+            [4, 4, 4, 1, (12, 24), (11, 24), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # odd nlat_out only, pscale=1
             # upsampling: mirror of the downsampling rows above (in_shape ↔ out_shape, grid_in ↔ grid_out)
-            [4, 8, 4, 4, (6, 12), (12, 24), "equiangular", "equiangular", False, 1e-5, 1e-3],  # pscale_out=2
-            [4, 4, 8, 4, (6, 12), (12, 24), "equiangular", "equiangular", False, 1e-5, 1e-3],  # C_in<C_out asym, pscale_out=2
-            [4, 4, 4, 1, (6, 6), (6, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],  # lon-only, pscale_out=2
-            [4, 4, 4, 1, (6, 8), (12, 24), "equiangular", "equiangular", False, 1e-5, 1e-3],  # pscale_out=3
-            [4, 4, 4, 1, (3, 6), (12, 24), "equiangular", "equiangular", False, 1e-5, 1e-3],  # pscale_out=4
-            [4, 4, 4, 1, (6, 12), (12, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],  # lat-only, pscale_out=1
-            [4, 4, 4, 1, (6, 12), (12, 24), "legendre-gauss", "legendre-gauss", False, 1e-5, 1e-3],  # LG grid, pscale_out=2
-            [4, 4, 4, 1, (5, 6), (7, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],  # odd-odd lat, pscale_out=2
-            [4, 4, 4, 1, (5, 4), (9, 12), "equiangular", "equiangular", False, 1e-5, 1e-3],  # odd-odd lat, pscale_out=3
-            [4, 4, 4, 1, (7, 12), (11, 24), "equiangular", "equiangular", False, 1e-5, 1e-3],  # odd-odd lat, pscale_out=2
-            [4, 4, 4, 1, (11, 24), (12, 24), "equiangular", "equiangular", False, 1e-5, 1e-3],  # odd nlat_in only, pscale_out=1
+            [4, 8, 4, 4, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # pscale_out=2
+            [4, 4, 8, 4, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # C_in<C_out asym, pscale_out=2
+            [4, 4, 4, 1, (6, 6), (6, 12), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # lon-only, pscale_out=2
+            [4, 4, 4, 1, (6, 8), (12, 24), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # pscale_out=3
+            [4, 4, 4, 1, (3, 6), (12, 24), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # pscale_out=4
+            [4, 4, 4, 1, (6, 12), (12, 12), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # lat-only, pscale_out=1
+            [4, 4, 4, 1, (6, 12), (12, 24), "legendre-gauss", "legendre-gauss", False, torch.float32, 1e-5, 1e-3],  # LG grid, pscale_out=2
+            [4, 4, 4, 1, (5, 6), (7, 12), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # odd-odd lat, pscale_out=2
+            [4, 4, 4, 1, (5, 4), (9, 12), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # odd-odd lat, pscale_out=3
+            [4, 4, 4, 1, (7, 12), (11, 24), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # odd-odd lat, pscale_out=2
+            [4, 4, 4, 1, (11, 24), (12, 24), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # odd nlat_in only, pscale_out=1
             # same cases with QK norm enabled
-            [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
-            [4, 4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
-            [4, 4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
-            [4, 4, 8, 4, (6, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
-            [4, 8, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
-            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],
-            [4, 1, 1, 1, (2, 4), (2, 4), "equiangular", "equiangular", True, 1e-5, 1e-3],
-            [4, 1, 4, 1, (2, 4), (2, 4), "equiangular", "equiangular", True, 1e-5, 1e-3],
-            [4, 4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", True, 1e-5, 1e-3],
-            [4, 4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", True, 1e-5, 1e-3],
+            [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],
+            [4, 4, 4, 2, (6, 12), (6, 12), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],
+            [4, 4, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],
+            [4, 4, 8, 4, (6, 12), (6, 12), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],
+            [4, 8, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],
+            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],
+            [4, 1, 1, 1, (2, 4), (2, 4), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],
+            [4, 1, 4, 1, (2, 4), (2, 4), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],
+            [4, 4, 4, 4, (6, 12), (6, 12), "legendre-gauss", "legendre-gauss", True, torch.float32, 1e-5, 1e-3],
+            [4, 4, 4, 1, (6, 12), (6, 12), "lobatto", "lobatto", True, torch.float32, 1e-5, 1e-3],
             # downsampling: nlon_in must be an integer multiple of nlon_out (pscale = nlon_in / nlon_out)
-            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],  # lat 2x, lon 2x (pscale=2)
-            [4, 4, 8, 4, (12, 24), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],  # C_in<C_out asym, pscale=2
-            [4, 4, 4, 1, (6, 12), (6, 6), "equiangular", "equiangular", True, 1e-5, 1e-3],  # lon-only, pscale=2
-            [4, 4, 4, 1, (12, 24), (6, 8), "equiangular", "equiangular", True, 1e-5, 1e-3],  # pscale=3
-            [4, 4, 4, 1, (12, 24), (3, 6), "equiangular", "equiangular", True, 1e-5, 1e-3],  # pscale=4
-            [4, 4, 4, 1, (12, 12), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],  # lat-only, pscale=1
-            [4, 4, 4, 1, (12, 24), (6, 12), "legendre-gauss", "legendre-gauss", True, 1e-5, 1e-3],  # LG grid, pscale=2
+            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # lat 2x, lon 2x (pscale=2)
+            [4, 4, 8, 4, (12, 24), (6, 12), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # C_in<C_out asym, pscale=2
+            [4, 4, 4, 1, (6, 12), (6, 6), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # lon-only, pscale=2
+            [4, 4, 4, 1, (12, 24), (6, 8), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # pscale=3
+            [4, 4, 4, 1, (12, 24), (3, 6), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # pscale=4
+            [4, 4, 4, 1, (12, 12), (6, 12), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # lat-only, pscale=1
+            [4, 4, 4, 1, (12, 24), (6, 12), "legendre-gauss", "legendre-gauss", True, torch.float32, 1e-5, 1e-3],  # LG grid, pscale=2
             # odd latitude sizes
-            [4, 4, 4, 1, (7, 12), (5, 6), "equiangular", "equiangular", True, 1e-5, 1e-3],  # odd-odd lat, pscale=2
-            [4, 4, 4, 1, (9, 12), (5, 4), "equiangular", "equiangular", True, 1e-5, 1e-3],  # odd-odd lat, pscale=3
-            [4, 4, 4, 1, (11, 24), (7, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],  # odd-odd lat, pscale=2
-            [4, 4, 4, 1, (12, 24), (11, 24), "equiangular", "equiangular", True, 1e-5, 1e-3],  # odd nlat_out only, pscale=1
+            [4, 4, 4, 1, (7, 12), (5, 6), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # odd-odd lat, pscale=2
+            [4, 4, 4, 1, (9, 12), (5, 4), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # odd-odd lat, pscale=3
+            [4, 4, 4, 1, (11, 24), (7, 12), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # odd-odd lat, pscale=2
+            [4, 4, 4, 1, (12, 24), (11, 24), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # odd nlat_out only, pscale=1
             # upsampling: mirror of the downsampling rows above (in_shape ↔ out_shape, grid_in ↔ grid_out)
-            [4, 8, 4, 4, (6, 12), (12, 24), "equiangular", "equiangular", True, 1e-5, 1e-3],  # pscale_out=2
-            [4, 4, 8, 4, (6, 12), (12, 24), "equiangular", "equiangular", True, 1e-5, 1e-3],  # C_in<C_out asym, pscale_out=2
-            [4, 4, 4, 1, (6, 6), (6, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],  # lon-only, pscale_out=2
-            [4, 4, 4, 1, (6, 8), (12, 24), "equiangular", "equiangular", True, 1e-5, 1e-3],  # pscale_out=3
-            [4, 4, 4, 1, (3, 6), (12, 24), "equiangular", "equiangular", True, 1e-5, 1e-3],  # pscale_out=4
-            [4, 4, 4, 1, (6, 12), (12, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],  # lat-only, pscale_out=1
-            [4, 4, 4, 1, (6, 12), (12, 24), "legendre-gauss", "legendre-gauss", True, 1e-5, 1e-3],  # LG grid, pscale_out=2
-            [4, 4, 4, 1, (5, 6), (7, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],  # odd-odd lat, pscale_out=2
-            [4, 4, 4, 1, (5, 4), (9, 12), "equiangular", "equiangular", True, 1e-5, 1e-3],  # odd-odd lat, pscale_out=3
-            [4, 4, 4, 1, (7, 12), (11, 24), "equiangular", "equiangular", True, 1e-5, 1e-3],  # odd-odd lat, pscale_out=2
-            [4, 4, 4, 1, (11, 24), (12, 24), "equiangular", "equiangular", True, 1e-5, 1e-3],  # odd nlat_in only, pscale_out=1
+            [4, 8, 4, 4, (6, 12), (12, 24), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # pscale_out=2
+            [4, 4, 8, 4, (6, 12), (12, 24), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # C_in<C_out asym, pscale_out=2
+            [4, 4, 4, 1, (6, 6), (6, 12), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # lon-only, pscale_out=2
+            [4, 4, 4, 1, (6, 8), (12, 24), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # pscale_out=3
+            [4, 4, 4, 1, (3, 6), (12, 24), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # pscale_out=4
+            [4, 4, 4, 1, (6, 12), (12, 12), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # lat-only, pscale_out=1
+            [4, 4, 4, 1, (6, 12), (12, 24), "legendre-gauss", "legendre-gauss", True, torch.float32, 1e-5, 1e-3],  # LG grid, pscale_out=2
+            [4, 4, 4, 1, (5, 6), (7, 12), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # odd-odd lat, pscale_out=2
+            [4, 4, 4, 1, (5, 4), (9, 12), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # odd-odd lat, pscale_out=3
+            [4, 4, 4, 1, (7, 12), (11, 24), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # odd-odd lat, pscale_out=2
+            [4, 4, 4, 1, (11, 24), (12, 24), "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-3],  # odd nlat_in only, pscale_out=1
+            # AMP coverage — one row per code path × dtype. Tolerances are
+            # looser because cuBLAS bf16/fp16 rounding at the einsum output
+            # dominates the abs error; see feedback_amp_fp16_cancellation.
+            # downsampling
+            [4, 4, 4, 1, (12, 24), (6, 12), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
+            [4, 4, 4, 1, (12, 24), (6, 12), "equiangular", "equiangular", False, torch.bfloat16, 5e-2, 5e-2],
+            # upsampling
+            [4, 4, 4, 1, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
+            [4, 4, 4, 1, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.bfloat16, 5e-2, 5e-2],
         ],
         skip_on_empty=True,
     )
     @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
-    def test_custom_implementation(self, batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, use_qknorm, atol, rtol, verbose=False):
+    def test_custom_implementation(self, batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, use_qknorm, dtype, atol, rtol, verbose=False):
         """Tests numerical equivalence between the custom (CUDA) implementation and the reference torch implementation"""
 
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
@@ -212,11 +221,12 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         for (name_ref, p_ref), (name_opt, p_opt) in zip(model_ref.named_parameters(), model_opt.named_parameters()):
             self.assertTrue(torch.allclose(p_ref.cpu(), p_opt.cpu()))
 
-        # reference forward passes
-        out_ref = model_ref(inputs_ref["q"], inputs_ref["k"], inputs_ref["v"])
-
-        # Device output
-        out_opt = model_opt(inputs_opt["q"], inputs_opt["k"], inputs_opt["v"])
+        # Forward passes — modules + inputs stay fp32; maybe_autocast wraps
+        # fwd in autocast(dtype) for fp16/bf16 and is a no-op for fp32, so
+        # the same body covers fp32 + AMP rows uniformly.
+        with maybe_autocast(self.device.type, dtype):
+            out_ref = model_ref(inputs_ref["q"], inputs_ref["k"], inputs_ref["v"])
+            out_opt = model_opt(inputs_opt["q"], inputs_opt["k"], inputs_opt["v"])
 
         # Check forward equivalence
         self.assertTrue(torch.allclose(out_opt, out_ref, atol=atol, rtol=rtol), "Forward outputs differ between torch reference and custom implementation")
@@ -237,6 +247,63 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             pgrad_opt = p_opt.grad.cpu()
             pgrad_ref = p_ref.grad.cpu()
             self.assertTrue(compare_tensors(f"parameter grad {name_ref}", pgrad_opt, pgrad_ref, atol=atol, rtol=rtol, verbose=verbose))
+
+    @parameterized.expand(
+        [
+            # [in_shape, out_shape, autocast_dtype]
+            # downsample (nlon_in % nlon_out == 0)
+            [(12, 24), (6, 12), torch.float16],
+            [(12, 24), (6, 12), torch.bfloat16],
+            # upsample (nlon_out % nlon_in == 0)
+            [(6, 12), (12, 24), torch.float16],
+            [(6, 12), (12, 24), torch.bfloat16],
+        ],
+        skip_on_empty=True,
+    )
+    @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
+    def test_optimized_autocast_dtype(self, in_shape, out_shape, autocast_dtype):
+        """Direct check that the autocast registration on the optimized attention
+        custom_op produces output in the active autocast dtype.
+
+        Uses bias=False so the final op of the attention module is the output
+        projection (Linear, autocast-eligible), which preserves the autocast dtype.
+        A bias add of bf16+fp32 would dtype-promote to fp32 and mask the autocast
+        contract we're testing.
+        """
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+
+        set_seed(333)
+
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        model = NeighborhoodAttentionS2(
+            in_channels=4,
+            out_channels=4,
+            num_heads=1,
+            in_shape=in_shape,
+            out_shape=out_shape,
+            grid_in="equiangular",
+            grid_out="equiangular",
+            bias=False,
+            use_qknorm=False,
+            optimized_kernel=True,
+        ).to(self.device)
+
+        # Inputs in fp32; autocast handles the cast inside fwd.
+        k = torch.randn(2, 4, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
+        v = torch.randn(2, 4, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
+        q = torch.randn(2, 4, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+
+        with torch.autocast(self.device.type, dtype=autocast_dtype):
+            out = model(q, k, v)
+
+        self.assertEqual(
+            out.dtype,
+            autocast_dtype,
+            f"Attention output dtype {out.dtype} != autocast dtype {autocast_dtype}",
+        )
 
     @parameterized.expand(
         [
@@ -899,7 +966,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         self.assertTrue(duration <= threshold, msg=f"Backward execution time on device {self.device.type} is too high: {duration:.2f} ms > {threshold:.2f} ms")
 
     def test_wrong_shape_assertions(self):
-        """Verify that forward raises ValueError on spatial-shape mismatches."""
+        """Verify that forward raises RuntimeError on spatial-shape mismatches."""
         B, C = 2, 16
         in_shape = (12, 24)
         out_shape = (6, 12)
@@ -921,15 +988,15 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         # 1. Self-attention on an up/downsampling module: a single tensor cannot
         #    simultaneously satisfy in_shape (for k/v) and out_shape (for q).
-        with self.assertRaises(ValueError):
+        with self.assertRaises(RuntimeError):
             model(q)  # key defaults to query, but key must have in_shape
 
         # 2. q_shape == k_shape != v_shape: key carries out_shape instead of in_shape.
-        with self.assertRaises(ValueError):
+        with self.assertRaises(RuntimeError):
             model(q, q, kv)
 
         # 3. q_shape == v_shape != k_shape: value carries out_shape instead of in_shape.
-        with self.assertRaises(ValueError):
+        with self.assertRaises(RuntimeError):
             model(q, kv, q)
 
 
