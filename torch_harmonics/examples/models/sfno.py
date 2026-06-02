@@ -395,7 +395,7 @@ class SphericalFourierNeuralOperator(nn.Module):
         else:
             self.residual_projection = nn.Identity()
 
-    @torch.jit.ignore
+    @torch.compiler.disable
     def no_weight_decay(self):
         return {"pos_embed", "cls_token"}
 

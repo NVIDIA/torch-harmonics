@@ -35,7 +35,9 @@ import torch
 from parameterized import parameterized
 from testutils import (
     compare_tensors,
+    disable_tf32,
     gather_tensor_hw,
+    maybe_autocast,
     set_seed,
     setup_class_from_context,
     setup_module,
@@ -68,6 +70,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         setup_class_from_context(cls, _DIST_CTX)
+        disable_tf32()
         if not torch.cuda.is_available():
             raise unittest.SkipTest("Distributed neighborhood attention requires CUDA")
 
@@ -118,52 +121,58 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         [
             # nlat_in, nlon_in, nlat_out, nlon_out, batch_size, in_channels, num_heads, k_channels, out_channels, grid_in, grid_out, use_qknorm, atol, rtol
             # same shape tests
-            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
-            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
-            [64, 128, 64, 128, 2, 16, 1, 8, 8, "equiangular", "equiangular", False, 1e-5, 1e-4],
-            [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 1, 8, 8, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             # downsampling tests, pscale=2 (lat+lon)
-            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
-            [65, 128, 33, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            [65, 128, 33, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             # pscale=3 downsampling (exercises pscale*wo kernel arithmetic)
-            [64, 96, 32, 32, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 96, 32, 32, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             # pscale=4 downsampling
-            [64, 128, 32, 32, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 128, 32, 32, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             # lon-only downsampling (same nlat; isolates azimuth ring with pscale_lon=2, no lat halo)
-            [64, 128, 64, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 128, 64, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             # lat-only downsampling (same nlon, pscale_lon=1; isolates polar halo exchange)
-            [64, 128, 32, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 128, 32, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             # odd nlat_in -> even nlat_out, pscale_lon=2
-            [65, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [65, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             # legendre-gauss grid (same-shape + downsampling)
-            [64, 128, 64, 128, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", False, 1e-5, 1e-4],
-            [64, 128, 32, 64, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", False, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", False, torch.float32, 1e-5, 1e-4],
+            [64, 128, 32, 64, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", False, torch.float32, 1e-5, 1e-4],
             # mixed grid: equiangular input -> legendre-gauss output
-            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, 1e-5, 1e-4],
-            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, torch.float32, 1e-5, 1e-4],
+            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, torch.float32, 1e-5, 1e-4],
             # heads=4 with asymmetric channels (k=32, out=16; in=16)
-            [64, 128, 64, 128, 2, 16, 4, 32, 16, "equiangular", "equiangular", False, 1e-5, 1e-4],
-            [64, 128, 32, 64, 2, 16, 4, 32, 16, "equiangular", "equiangular", False, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 4, 32, 16, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            [64, 128, 32, 64, 2, 16, 4, 32, 16, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             # same cases with QK norm enabled
-            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
-            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
-            [64, 128, 64, 128, 2, 16, 1, 8, 8, "equiangular", "equiangular", True, 1e-5, 1e-4],
-            [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 1, 8, 8, "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-4],
+            [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-4],
             # downsampling tests with QK norm enabled, pscale=2
-            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
-            [65, 128, 33, 64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-4],
+            [65, 128, 33, 64, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-4],
             # pscale=3 / pscale=4 downsampling with QK norm
-            [64, 96, 32, 32, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
-            [64, 128, 32, 32, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [64, 96, 32, 32, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-4],
+            [64, 128, 32, 32, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-4],
             # lon-only / lat-only downsampling with QK norm
-            [64, 128, 64, 64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
-            [64, 128, 32, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [64, 128, 64, 64, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-4],
+            [64, 128, 32, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-4],
             # odd nlat_in -> even nlat_out with QK norm
-            [65, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", True, 1e-5, 1e-4],
+            [65, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-4],
             # legendre-gauss grid with QK norm
-            [64, 128, 64, 128, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", True, 1e-5, 1e-4],
-            [64, 128, 32, 64, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", True, 1e-5, 1e-4],
+            [64, 128, 64, 128, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", True, torch.float32, 1e-5, 1e-4],
+            [64, 128, 32, 64, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", True, torch.float32, 1e-5, 1e-4],
             # upsampling is not supported by the kernel yet (serial layer asserts nlon_in % nlon_out == 0)
+            # AMP coverage — one row per dtype on a downsample config. Tolerances
+            # are looser than the fp32 rows because bf16/fp16 cuBLAS rounding at
+            # the einsum output dominates the abs error, and the distributed path
+            # adds a cross-rank reduce on top (see feedback_amp_fp16_cancellation).
+            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float16, 5e-2, 1e-2],
+            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.bfloat16, 3e-1, 5e-2],
         ],
         skip_on_empty=True,
     )
@@ -181,6 +190,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         grid_in,
         grid_out,
         use_qknorm,
+        dtype,
         atol,
         rtol,
         verbose=True,
@@ -228,7 +238,11 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         }
 
         # ---- serial forward ----
-        out_full = attn_serial(inp_full["q"], inp_full["k"], inp_full["v"])
+        # Modules + inputs stay fp32; maybe_autocast wraps fwd in autocast(dtype)
+        # for fp16/bf16, no-op for fp32. Backward runs outside autocast, per the
+        # standard PyTorch AMP pattern.
+        with maybe_autocast(self.device.type, dtype):
+            out_full = attn_serial(inp_full["q"], inp_full["k"], inp_full["v"])
 
         torch.cuda.synchronize()
 
@@ -248,7 +262,8 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         for inp in ["q", "k", "v"]:
             inp_local[inp] = self._split_helper(inp_full[inp].detach())
             inp_local[inp].requires_grad_(True)
-        out_local = attn_dist(inp_local["q"], inp_local["k"], inp_local["v"])
+        with maybe_autocast(self.device.type, dtype):
+            out_local = attn_dist(inp_local["q"], inp_local["k"], inp_local["v"])
 
         torch.cuda.synchronize()
 

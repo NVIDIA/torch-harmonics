@@ -184,7 +184,11 @@ if optimized_kernels_is_available():
     ) -> None:
         return None
 
-    # ring-step forward Python wrapper.
+    # ring-step forward Python wrapper. Performs the dtype dance the
+    # serial forward op does and forwards into the in-place CUDA kernel.
+    # Note this is a plain function — not a custom_op — because the
+    # underlying op mutates ``out`` and we want the autograd Function in
+    # distributed_convolution_ring.py to drive the ring loop and zero-init.
     def _disco_s2_contraction_ring_step_optimized(
         inp: torch.Tensor,
         out: torch.Tensor,
@@ -204,7 +208,9 @@ if optimized_kernels_is_available():
         itype = inp.dtype
         cdtype = _compute_dtype(itype)
         # Cast inputs/vals to the compute dtype to keep accumulation precision
-        # at fp32 when inputs are fp16/bf16.
+        # at fp32 when inputs are fp16/bf16. The kernel uses a single STORAGE_T
+        # for both ``inp`` and ``out``, so callers MUST pass ``out`` in the
+        # same compute dtype (the autograd Function allocates it that way).
         inp_c = inp.to(cdtype).contiguous()
         vals_c = vals.to(cdtype)
         disco_kernels.forward_ring_step.default(
@@ -224,9 +230,15 @@ if optimized_kernels_is_available():
             nlon_in_local_src,
         )
 
-    # ring-step transpose Python wrapper. Unlike the forward wrapper, we
-    # DON'T upcast ``inp`` here: the kernel's storage_t/compute_t split
-    # casts on load and accumulates in fp32 regardless.
+    # ring-step transpose Python wrapper. Mirrors the forward wrapper but
+    # the underlying op accumulates into a compute_t (fp32) buffer; the
+    # autograd Function in distributed_convolution_ring.py handles the
+    # final cast back to the input dtype.
+    #
+    # Unlike the forward wrapper, we DON'T upcast ``inp`` here: the kernel
+    # template's storage_t/compute_t split casts STORAGE_T -> COMPUTE_T on
+    # load and accumulates in fp32 regardless, so a Python-side upcast is
+    # pure overhead (an extra alloc + copy per ring step under AMP).
     def _disco_s2_transpose_contraction_ring_step_optimized(
         inp: torch.Tensor,
         out: torch.Tensor,
@@ -245,6 +257,7 @@ if optimized_kernels_is_available():
         nlon_out_local_src: int,
     ) -> None:
         # vals must be in compute_t (fp32) — kernel reads them as such.
+        # ``out`` is grad_x_acc and is already fp32 (compute_dtype).
         vals_c = vals.to(_compute_dtype(inp.dtype))
         disco_kernels.backward_ring_step.default(
             inp.contiguous(),
@@ -294,6 +307,19 @@ def _disco_s2_contraction_bwd_optimized(ctx, grad_output):
 if optimized_kernels_is_available():
     torch.library.register_autograd("disco_kernels::_disco_s2_contraction_optimized", _disco_s2_contraction_bwd_optimized, setup_context=_setup_context_conv_backward)
 
+    # Autocast: register at the dispatcher's AutocastCUDA key. We use
+    # torch.library.impl (not register_autocast) because register_autocast's
+    # ``cast_inputs`` hard-codes a single dtype and can't follow the active
+    # autocast dtype. The `autocast(enabled=False)` guard on the inner call
+    # excludes the AutocastCUDA key from the dispatch set so the inner call
+    # routes to the regular CUDA kernel (the op body) instead of recursing
+    # back into this autocast kernel.
+    @torch.library.impl("disco_kernels::_disco_s2_contraction_optimized", "AutocastCUDA")
+    def _(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out):
+        cast_dtype = torch.get_autocast_dtype("cuda")
+        with torch.amp.autocast("cuda", enabled=False):
+            return _disco_s2_contraction_optimized(inp.to(cast_dtype), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+
 
 # Transpose convolution related
 def _disco_s2_transpose_contraction_bwd_optimized(ctx, grad_output):
@@ -316,6 +342,12 @@ if optimized_kernels_is_available():
     torch.library.register_autograd(
         "disco_kernels::_disco_s2_transpose_contraction_optimized", _disco_s2_transpose_contraction_bwd_optimized, setup_context=_setup_context_conv_backward
     )
+
+    @torch.library.impl("disco_kernels::_disco_s2_transpose_contraction_optimized", "AutocastCUDA")
+    def _(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out):
+        cast_dtype = torch.get_autocast_dtype("cuda")
+        with torch.amp.autocast("cuda", enabled=False):
+            return _disco_s2_transpose_contraction_optimized(inp.to(cast_dtype), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
 
 
 # Fused convolution + weight contraction.

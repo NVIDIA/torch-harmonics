@@ -237,3 +237,12 @@ if optimized_kernels_is_available():
     torch.library.register_autograd(
         "attention_kernels::_neighborhood_s2_attention_optimized", _neighborhood_s2_attention_bwd_optimized, setup_context=_setup_context_attention_backward
     )
+
+    # Autocast: register at the dispatcher's AutocastCUDA key (not via
+    # register_autocast — that API hard-codes ``cast_inputs`` and can't follow
+    # the active autocast dtype). Index tensors and quad_weights pass through.
+    @torch.library.impl("attention_kernels::_neighborhood_s2_attention_optimized", "AutocastCUDA")
+    def _(kw, vw, qw, quad_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out):
+        cast_dtype = torch.get_autocast_dtype("cuda")
+        with torch.amp.autocast("cuda", enabled=False):
+            return _neighborhood_s2_attention_optimized(kw.to(cast_dtype), vw.to(cast_dtype), qw.to(cast_dtype), quad_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out)

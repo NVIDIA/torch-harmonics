@@ -44,14 +44,26 @@ from torch_harmonics.disco.convolution import (
 from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_transpose_contraction_torch
 from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_transpose_contraction_optimized
 
-# distributed stuff
-from .kernels import _distributed_disco_fwd_a2a, _distributed_disco_fwd_ring
+# per-method orchestration entry points
+from .kernels import (
+    _distributed_disco_fwd_a2a,
+    _distributed_disco_fwd_ring,
+)
+
+# distributed stuff — relative imports to avoid the circular dependency
+# through torch_harmonics.distributed.__init__.
 from .primitives import (
     compute_split_shapes,
     distributed_transpose_azimuth,
     gather_from_copy_to_polar_region,
 )
-from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
+from .utils import (
+    azimuth_group,
+    azimuth_group_rank,
+    azimuth_group_size,
+    polar_group_rank,
+    polar_group_size,
+)
 
 
 def _split_distributed_convolution_tensor_s2(
