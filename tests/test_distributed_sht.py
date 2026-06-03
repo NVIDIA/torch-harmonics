@@ -118,6 +118,16 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [33, 64, None, 1, 10, "equiangular", False, 1e-6, 1e-6],
             [33, 64, None, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
             [8, 16, None, 1, 10, "equiangular", False, 1e-6, 1e-6],
+            # fewer channels than the polar group size (gh #207): B*C must be padded
+            # up to the group size before the channel-axis transposes. Looser tolerance
+            # here: padding pushes the (inert) channel GEMM from the batch-1 algorithm the
+            # serial reference uses into the batch>=2 regime, a ~1e-6 fp32 rounding shift.
+            # Divisible-channel cases never cross that boundary, so they stay at 1e-7.
+            [32, 64, None, 1, 1, "equiangular", False, 1e-5, 1e-5],
+            [32, 64, None, 1, 1, "legendre-gauss", False, 1e-5, 1e-5],
+            [32, 64, None, 1, 2, "equiangular", False, 1e-5, 1e-5],
+            [32, 64, None, 1, 1, "equiangular", True, 1e-5, 1e-5],
+            [32, 64, None, 1, 2, "equiangular", True, 1e-5, 1e-5],
             # Vector SHT
             [32, 64, None, 32, 8, "equiangular", True, 1e-7, 1e-9],
             [32, 64, None, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
@@ -218,6 +228,16 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, None, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
             [33, 64, None, 1, 10, "equiangular", False, 1e-6, 1e-6],
             [33, 64, None, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
+            # fewer channels than the polar group size (gh #207): B*C must be padded
+            # up to the group size before the channel-axis transposes. Looser tolerance
+            # here: padding pushes the (inert) channel GEMM from the batch-1 algorithm the
+            # serial reference uses into the batch>=2 regime, a ~1e-6 fp32 rounding shift.
+            # Divisible-channel cases never cross that boundary, so they stay at 1e-7.
+            [32, 64, None, 1, 1, "equiangular", False, 1e-5, 1e-5],
+            [32, 64, None, 1, 1, "legendre-gauss", False, 1e-5, 1e-5],
+            [32, 64, None, 1, 2, "equiangular", False, 1e-5, 1e-5],
+            [32, 64, None, 1, 1, "equiangular", True, 1e-5, 1e-5],
+            [32, 64, None, 1, 2, "equiangular", True, 1e-5, 1e-5],
             # Vector SHT
             [32, 64, None, 32, 8, "equiangular", True, 1e-7, 1e-9],
             [32, 64, None, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
