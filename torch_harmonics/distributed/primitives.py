@@ -80,6 +80,64 @@ def split_tensor_along_dim(tensor, dim, num_chunks):
     return tensor_list
 
 
+def flatten_and_pad_leading_dims(tensor: torch.Tensor, min_leading_size: int, num_trailing_dims: int = 2):
+    """Collapse all but the trailing ``num_trailing_dims`` dims into a single leading dim, padding it to at least ``min_leading_size``.
+
+    The distributed (S)HT redistributes this leading ("channel/batch") axis across
+    the process grid via all-to-all transposes, which require every rank to receive
+    a non-empty chunk -- i.e. the leading dim must be at least the (largest) group
+    size. Uneven splits are fine (e.g. 5 elements over 4 ranks -> [2, 1, 1, 1]), so
+    we only pad when the leading dim is *smaller* than the group size, never up to a
+    multiple of it. Since the transforms are linear, zero-padding leaves the real
+    entries untouched; :func:`unpad_and_unflatten_leading_dims` restores the original
+    layout afterwards.
+
+    Parameters
+    ----------
+    tensor : torch.Tensor
+        Tensor whose last ``num_trailing_dims`` dims are the transform dims (everything
+        before them is flattened into the leading axis).
+    min_leading_size : int
+        Minimum size the flattened leading dim must reach. Pass
+        ``max(comm_size_polar, comm_size_azimuth)`` -- both transpose directions split
+        this same axis, so it must be at least as large as the larger group.
+    num_trailing_dims : int
+        Number of trailing dims to keep intact. ``2`` for the scalar SHT (``nlat, nlon``);
+        ``3`` for the vector SHT (``2, nlat, nlon``), so the component axis is preserved.
+
+    Returns
+    -------
+    tensor : torch.Tensor
+        Flattened (and possibly zero-padded) contiguous tensor with shape
+        ``(M_pad, *trailing)``.
+    lead_shape : torch.Size
+        The original leading dims, used to restore the shape later.
+    lead_size : int
+        The true (pre-pad) flattened leading size, used to slice off the padding.
+    """
+    lead_shape = tensor.shape[:-num_trailing_dims]
+    tensor = tensor.reshape(-1, *tensor.shape[-num_trailing_dims:])
+    lead_size = tensor.shape[0]
+
+    if lead_size < min_leading_size:
+        # new_zeros preserves dtype (incl. complex) and device
+        zeros = tensor.new_zeros((min_leading_size - lead_size, *tensor.shape[1:]))
+        tensor = torch.cat([tensor, zeros], dim=0)
+
+    return tensor.contiguous(), lead_shape, lead_size
+
+
+def unpad_and_unflatten_leading_dims(tensor: torch.Tensor, lead_shape, lead_size: int, num_trailing_dims: int = 2) -> torch.Tensor:
+    """Inverse of :func:`flatten_and_pad_leading_dims`: drop the padding rows and restore the leading dims.
+
+    The trailing ``num_trailing_dims`` dims are taken from ``tensor`` as-is, so this is
+    valid even when the transform changed them (e.g. ``nlat, nlon`` -> ``lmax, mmax``).
+    ``num_trailing_dims`` must match the value passed to the flatten call.
+    """
+    tensor = tensor.narrow(0, 0, lead_size)
+    return tensor.reshape(*lead_shape, *tensor.shape[-num_trailing_dims:]).contiguous()
+
+
 def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False, verify_shapes=None):
 
     if verify_shapes is None:
