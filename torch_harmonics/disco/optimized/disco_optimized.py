@@ -205,6 +205,11 @@ if optimized_kernels_is_available():
         lon_lo_src: int,
         nlon_in_local_src: int,
     ) -> None:
+        # Detach before dynamo traces: requires_grad alternates across ring
+        # steps (x_chunk=x has grad on step 0, recv_x does not on later steps),
+        # causing a guard mismatch and recompile storm. Autograd is handled
+        # entirely by the outer torch.autograd.Function.
+        inp = inp.detach()
         itype = inp.dtype
         cdtype = _compute_dtype(itype)
         # Cast inputs/vals to the compute dtype to keep accumulation precision
@@ -256,6 +261,9 @@ if optimized_kernels_is_available():
         lon_lo_in_self: int,
         nlon_out_local_src: int,
     ) -> None:
+        # Detach for the same reason as the forward wrapper: requires_grad
+        # alternates across backward ring steps, causing dynamo recompiles.
+        inp = inp.detach()
         # vals must be in compute_t (fp32) — kernel reads them as such.
         # ``out`` is grad_x_acc and is already fp32 (compute_dtype).
         vals_c = vals.to(_compute_dtype(inp.dtype))
