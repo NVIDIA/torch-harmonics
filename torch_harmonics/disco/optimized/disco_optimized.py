@@ -189,6 +189,11 @@ if optimized_kernels_is_available():
     # Note this is a plain function — not a custom_op — because the
     # underlying op mutates ``out`` and we want the autograd Function in
     # distributed_convolution_ring.py to drive the ring loop and zero-init.
+    # @torch.compiler.disable(): dynamo would guard on every input's
+    # dispatch key set (ADInplaceOrView alternates between training and
+    # inference), causing a recompile storm. The CUDA kernel inside is
+    # already compiled; there is nothing useful for inductor to trace here.
+    @torch.compiler.disable()
     def _disco_s2_contraction_ring_step_optimized(
         inp: torch.Tensor,
         out: torch.Tensor,
@@ -244,6 +249,7 @@ if optimized_kernels_is_available():
     # template's storage_t/compute_t split casts STORAGE_T -> COMPUTE_T on
     # load and accumulates in fp32 regardless, so a Python-side upcast is
     # pure overhead (an extra alloc + copy per ring step under AMP).
+    @torch.compiler.disable()
     def _disco_s2_transpose_contraction_ring_step_optimized(
         inp: torch.Tensor,
         out: torch.Tensor,

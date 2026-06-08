@@ -300,7 +300,7 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
         recv_pool_fwd: Optional[List[torch.Tensor]] = None,
         recv_pool_bwd_grad_y_ke: Optional[List[torch.Tensor]] = None,
     ):
-        if not optimized_kernels_is_available():
+        if _disco_s2_contraction_ring_step_optimized is None:
             raise NotImplementedError(
                 "ring DISCO step kernel is not built. Add " "_disco_s2_contraction_ring_step_optimized + transpose variant " "to torch_harmonics/disco/optimized/."
             )
@@ -476,7 +476,7 @@ class _RingDiscoConvS2Fn(torch.autograd.Function):
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_y_acc):
-        if not optimized_kernels_is_available():
+        if _disco_s2_transpose_contraction_ring_step_optimized is None:
             raise NotImplementedError("ring DISCO transpose step kernel is not built.")
 
         (
@@ -672,7 +672,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
         recv_pool_fwd: Optional[List[torch.Tensor]] = None,
         recv_pool_bwd_grad_out: Optional[List[torch.Tensor]] = None,
     ):
-        if not optimized_kernels_is_available():
+        if _disco_s2_contraction_ring_step_optimized is None:
             raise NotImplementedError("ring DISCO step kernel is not built (fused path).")
 
         B, C, H_in_local, _ = x.shape
@@ -845,7 +845,7 @@ class _RingDiscoConvFusedFn(torch.autograd.Function):
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_out):
-        if not optimized_kernels_is_available():
+        if _disco_s2_transpose_contraction_ring_step_optimized is None:
             raise NotImplementedError("ring DISCO transpose step kernel is not built (fused path).")
 
         (
@@ -1175,7 +1175,7 @@ def _distributed_disco_fwd_ring(
 
     Returns the polar-reduced output WITHOUT bias.
     """
-    if not optimized_kernels_is_available():
+    if _disco_s2_contraction_ring_step_optimized is None:
         raise NotImplementedError('Ring DISCO step kernels are not built. Use method="a2a" until ' "the optimized ring kernels are added to torch_harmonics/disco/optimized/.")
 
     # Under autocast, cast activation + weight to the autocast dtype before
