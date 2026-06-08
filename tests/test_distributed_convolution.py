@@ -222,8 +222,8 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused_stream", True, 1e-6, 1e-5],
             [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused_stream", True, 1e-6, 1e-5],
             # ring_masked / ring_fused_masked: force the masked kernel
-            # fallback via TORCH_HARMONICS_RING_FWD_FAST_MAX=0 so the
-            # non-fast-path branch is covered on small test grids.
+            # via TORCH_HARMONICS_RING_FWD_BAND=0 so the masked branch is
+            # covered on small test grids (the default path is the band kernel).
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_masked", False, 1e-6, 1e-5],
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_masked", True, 1e-6, 1e-5],
             [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_masked", True, 1e-6, 1e-5],
@@ -344,12 +344,12 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
         # The distributed conv reads TORCH_HARMONICS_P2P_BUFFER once in
         # __init__ and stores the flag on the instance.
-        # TORCH_HARMONICS_RING_FWD_FAST_MAX is read by the C++ ring fwd
-        # kernel every launch — setting it to "0" forces the masked
-        # fallback path so it can be covered on the existing small grids.
+        # TORCH_HARMONICS_RING_FWD_BAND is read by the C++ ring fwd kernel
+        # every launch — setting it to "0" selects the masked kernel instead
+        # of the default band kernel so that branch is covered on small grids.
         env_override = {"TORCH_HARMONICS_P2P_BUFFER": "1" if p2p_buffer else "0"}
         if force_masked:
-            env_override["TORCH_HARMONICS_RING_FWD_FAST_MAX"] = "0"
+            env_override["TORCH_HARMONICS_RING_FWD_BAND"] = "0"
 
         # set up handles
         if transpose:
@@ -394,7 +394,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         igrad_full = inp_full.grad.clone()
 
         # distributed conv. The env patch is re-applied around the
-        # fwd/bwd because TORCH_HARMONICS_RING_FWD_FAST_MAX is read by
+        # fwd/bwd because TORCH_HARMONICS_RING_FWD_BAND is read by
         # the C++ kernel at each launch (whereas TORCH_HARMONICS_P2P_BUFFER
         # was already consumed during __init__).
         # FWD pass
@@ -525,7 +525,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
         env_override = {"TORCH_HARMONICS_P2P_BUFFER": "1" if p2p_buffer else "0"}
         if force_masked:
-            env_override["TORCH_HARMONICS_RING_FWD_FAST_MAX"] = "0"
+            env_override["TORCH_HARMONICS_RING_FWD_BAND"] = "0"
 
         # Serial reference: two stacked local convs.
         conv1_local = th.DiscreteContinuousConvS2(**common_args).to(dtype=module_dtype, device=self.device)
