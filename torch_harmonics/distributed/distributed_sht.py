@@ -37,7 +37,14 @@ from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.quadrature import clenshaw_curtiss_weights, legendre_gauss_weights, lobatto_weights
 from torch_harmonics.truncation import truncate_sht
 
-from .primitives import compute_split_shapes, distributed_transpose_azimuth, distributed_transpose_polar, split_tensor_along_dim
+from .primitives import (
+    compute_split_shapes,
+    distributed_transpose_azimuth,
+    distributed_transpose_polar,
+    flatten_and_pad_leading_dims,
+    split_tensor_along_dim,
+    unpad_and_unflatten_leading_dims,
+)
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 
@@ -45,7 +52,10 @@ class DistributedRealSHT(nn.Module):
     """
     Defines a module for computing the forward (real-valued) SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
-    The SHT is applied to the last two dimensions of the input
+    The SHT is applied to the last two dimensions of the input. Leading (batch/channel)
+    dimensions smaller than the process-grid size are zero-padded internally so the
+    transform's all-to-all transposes can redistribute them, then sliced back on output;
+    since the transform is linear this is exact.
 
     Parameters
     ----------
@@ -137,7 +147,11 @@ class DistributedRealSHT(nn.Module):
         torch._check(x.shape[-2] == self.nlat_local, lambda: f"Expected latitudes shape[-2]=={self.nlat_local}, got {x.shape[-2]}")
         torch._check(x.shape[-1] == self.nlon_local, lambda: f"Expected longitudes shape[-1]=={self.nlon_local}, got {x.shape[-1]}")
 
-        # we need to ensure that we can split the channels evenly
+        # the transposes below redistribute the leading (channel/batch) axis across the
+        # process grid, so it must be at least as large as the larger comm group. Flatten
+        # all leading dims into that axis and zero-pad it if needed (linear transform, so
+        # padding stays zero); restore the original layout before returning.
+        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, max(self.comm_size_polar, self.comm_size_azimuth))
         num_chans = x.shape[-3]
 
         # h and w is split. First we make w local by transposing into channel dim
@@ -172,6 +186,9 @@ class DistributedRealSHT(nn.Module):
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
             x = distributed_transpose_polar(x, (-2, -3), chan_shapes)
 
+        # drop padding and restore the original leading dims
+        x = unpad_and_unflatten_leading_dims(x, lead_shape, lead_size)
+
         return x
 
 
@@ -179,6 +196,9 @@ class DistributedInverseRealSHT(nn.Module):
     """
     Defines a module for computing the inverse (real-valued) SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Leading (batch/channel) dimensions smaller than the process-grid size are zero-padded
+    internally so the transform's all-to-all transposes can redistribute them, then sliced
+    back on output; since the transform is linear this is exact.
 
     Parameters
     ----------
@@ -268,7 +288,11 @@ class DistributedInverseRealSHT(nn.Module):
         torch._check(x.shape[-2] == self.lmax_local, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax_local}, got {x.shape[-2]}")
         torch._check(x.shape[-1] == self.mmax_local, lambda: f"Expected spherical harmonic orders (mmax) shape[-1]=={self.mmax_local}, got {x.shape[-1]}")
 
-        # we need to ensure that we can split the channels evenly
+        # the transposes below redistribute the leading (channel/batch) axis across the
+        # process grid, so it must be at least as large as the larger comm group. Flatten
+        # all leading dims into that axis and zero-pad it if needed (linear transform, so
+        # padding stays zero); restore the original layout before returning.
+        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, max(self.comm_size_polar, self.comm_size_azimuth))
         num_chans = x.shape[-3]
 
         # transpose: after that, channels are split, l is local:
@@ -303,6 +327,9 @@ class DistributedInverseRealSHT(nn.Module):
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
             x = distributed_transpose_azimuth(x, (-1, -3), chan_shapes)
 
+        # drop padding and restore the original leading dims
+        x = unpad_and_unflatten_leading_dims(x, lead_shape, lead_size)
+
         return x
 
 
@@ -310,7 +337,10 @@ class DistributedRealVectorSHT(nn.Module):
     """
     Defines a module for computing the forward (real) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
-    The SHT is applied to the last three dimensions of the input.
+    The SHT is applied to the last three dimensions of the input. Leading (batch/channel)
+    dimensions smaller than the process-grid size are zero-padded internally so the
+    transform's all-to-all transposes can redistribute them, then sliced back on output;
+    since the transform is linear this is exact.
 
     Parameters
     ----------
@@ -408,7 +438,12 @@ class DistributedRealVectorSHT(nn.Module):
         torch._check(x.shape[-2] == self.nlat_local, lambda: f"Expected latitudes shape[-2]=={self.nlat_local}, got {x.shape[-2]}")
         torch._check(x.shape[-1] == self.nlon_local, lambda: f"Expected longitudes shape[-1]=={self.nlon_local}, got {x.shape[-1]}")
 
-        # we need to ensure that we can split the channels evenly
+        # the transposes below redistribute the leading (channel/batch) axis across the
+        # process grid, so it must be at least as large as the larger comm group. Flatten
+        # all leading dims into that axis -- keeping the trailing (2, nlat, nlon) intact --
+        # and zero-pad it if needed (linear transform, so padding stays zero); restore the
+        # original layout before returning.
+        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, max(self.comm_size_polar, self.comm_size_azimuth), num_trailing_dims=3)
         num_chans = x.shape[-4]
 
         # h and w is split. First we make w local by transposing into channel dim
@@ -450,6 +485,9 @@ class DistributedRealVectorSHT(nn.Module):
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
             x = distributed_transpose_polar(x, (-2, -4), chan_shapes)
 
+        # drop padding and restore the original leading dims
+        x = unpad_and_unflatten_leading_dims(x, lead_shape, lead_size, num_trailing_dims=3)
+
         return x
 
 
@@ -457,6 +495,9 @@ class DistributedInverseRealVectorSHT(nn.Module):
     """
     Defines a module for computing the inverse (real-valued) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Leading (batch/channel) dimensions smaller than the process-grid size are zero-padded
+    internally so the transform's all-to-all transposes can redistribute them, then sliced
+    back on output; since the transform is linear this is exact.
 
     Parameters
     ----------
@@ -546,7 +587,12 @@ class DistributedInverseRealVectorSHT(nn.Module):
         torch._check(x.shape[-2] == self.lmax_local, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax_local}, got {x.shape[-2]}")
         torch._check(x.shape[-1] == self.mmax_local, lambda: f"Expected spherical harmonic orders (mmax) shape[-1]=={self.mmax_local}, got {x.shape[-1]}")
 
-        # store num channels
+        # the transposes below redistribute the leading (channel/batch) axis across the
+        # process grid, so it must be at least as large as the larger comm group. Flatten
+        # all leading dims into that axis -- keeping the trailing (2, lmax, mmax) intact --
+        # and zero-pad it if needed (linear transform, so padding stays zero); restore the
+        # original layout before returning.
+        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, max(self.comm_size_polar, self.comm_size_azimuth), num_trailing_dims=3)
         num_chans = x.shape[-4]
 
         # transpose: after that, channels are split, l is local:
@@ -588,5 +634,8 @@ class DistributedInverseRealVectorSHT(nn.Module):
         if self.comm_size_azimuth > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
             x = distributed_transpose_azimuth(x, (-1, -4), chan_shapes)
+
+        # drop padding and restore the original leading dims
+        x = unpad_and_unflatten_leading_dims(x, lead_shape, lead_size, num_trailing_dims=3)
 
         return x

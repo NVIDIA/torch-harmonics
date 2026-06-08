@@ -99,6 +99,13 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
             [(33, 64), (65, 128), 4, 8, 1, "equiangular", "equiangular", False, 1e-6, 1e-6],
             [(64, 128), (64, 128), 4, 8, 1, "equiangular", "legendre-gauss", False, 1e-6, 1e-6],
             [(65, 128), (65, 128), 4, 8, 1, "equiangular", "legendre-gauss", False, 1e-6, 1e-6],
+            # fewer channels than the polar group size (gh #207): B*C is padded inside the
+            # internal (i)SHT. batch_size=1 so B*C is just num_chan. Looser tolerance because
+            # padding pushes the channel GEMM into the batch>=2 regime the serial path does
+            # not use (see test_distributed_sht), a benign ~1e-6 fp32 rounding shift.
+            [(64, 128), (64, 128), 1, 1, 1, "equiangular", "equiangular", False, 1e-5, 1e-5],
+            [(64, 128), (64, 128), 1, 2, 1, "equiangular", "equiangular", False, 1e-5, 1e-5],
+            [(64, 128), (64, 128), 1, 1, 1, "equiangular", "legendre-gauss", False, 1e-5, 1e-5],
             # with bias
             [(64, 128), (64, 128), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
             [(65, 128), (65, 128), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
@@ -107,6 +114,9 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
             [(33, 64), (65, 128), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
             [(64, 128), (64, 128), 4, 8, 1, "equiangular", "legendre-gauss", True, 1e-6, 1e-6],
             [(65, 128), (65, 128), 4, 8, 1, "equiangular", "legendre-gauss", True, 1e-6, 1e-6],
+            # fewer channels than the polar group size (gh #207), with bias
+            [(64, 128), (64, 128), 1, 1, 1, "equiangular", "equiangular", True, 1e-5, 1e-5],
+            [(64, 128), (64, 128), 1, 2, 1, "equiangular", "equiangular", True, 1e-5, 1e-5],
         ],
         skip_on_empty=True,
     )
