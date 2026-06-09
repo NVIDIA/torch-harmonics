@@ -1134,7 +1134,7 @@ namespace attention_kernels
 
         constexpr int VEC_SIZE = sizeof(float4) / sizeof(float);
 
-        attn_params_t params;
+        attn_params_t params = {0};
 
         params.nchan_in = nchans_in;
         params.nchan_out = nchans_out;
@@ -1511,11 +1511,7 @@ namespace attention_kernels
         strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { sh_qy[i * BDIM_X + tidx] = loc_qy[i]; });
 
         if constexpr (std::is_same<FLOATV_T, float4>::value) {
-            if constexpr (BDIM_X == WARP_SIZE) {
-                __syncwarp();
-            } else {
-                __syncthreads();
-            }
+            __group_sync<BDIM_X>();
         }
 #endif
 
@@ -1587,11 +1583,8 @@ namespace attention_kernels
             FLOATV_T qdotk_v = __vset<FLOATV_T>(0.0f);
             FLOATV_T gdotv_v = __vset<FLOATV_T>(0.0f);
 
-            strided_op<BDIM_X, NLOC>(
-                nchan_in, [&](int i) { qdotk_v = __vadd(qdotk_v, __vmul(loc_qy[i], _kx[i * BDIM_X + tidx])); });
-            strided_op<BDIM_X, CHOUT_AS_IN ? NLOC : 0>(nchan_out, [&](int i) {
-                gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[i * BDIM_X + tidx], _vx[i * BDIM_X + tidx]));
-            });
+            strided_op<BDIM_X,               NLOC    >( nchan_in, [&](int i) { qdotk_v = __vadd(qdotk_v, __vmul(loc_qy[i], _kx[i * BDIM_X + tidx])); });
+            strided_op<BDIM_X, CHOUT_AS_IN ? NLOC : 0>(nchan_out, [&](int i) { gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[i * BDIM_X + tidx], _vx[i * BDIM_X + tidx])); });
 
             float qdotk = __vred(qdotk_v);
             float gdotv = __vred(gdotv_v);
@@ -1798,7 +1791,7 @@ namespace attention_kernels
 
         constexpr int VEC_SIZE = sizeof(float4) / sizeof(float);
 
-        attn_params_t params;
+        attn_params_t params = {0};
 
         params.nchan_in = nchans_in;
         params.nchan_out = nchans_out;

@@ -51,6 +51,7 @@ namespace attention_kernels
         int nchan_out;
         int nlat_halo;
         int nlon_kx;
+        int nlat_in;
         int nlon_in;
         int pscale;
         int lon_lo_kx;

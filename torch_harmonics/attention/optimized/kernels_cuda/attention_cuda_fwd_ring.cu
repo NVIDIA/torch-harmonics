@@ -247,13 +247,13 @@ namespace attention_kernels
             + int64_t(wo) * nchan_in + tidx;
 
         alignas(float4) extern __shared__ float shext[];
-
+#if 1
         // just to simplify the seatup of the shared memory layout
         using FLOATV_PTR_T = const FLOATV_T *;
 
         FLOATV_T *shqy = NULL;
         FLOATV_PTR_T *shkx_ptr = NULL;
-#if 1
+
         if constexpr (sizeof(FLOATV_T) > sizeof(FLOATV_PTR_T)) {
             FLOATV_T *base = reinterpret_cast<FLOATV_T *>(shext);
             shqy = base + tidy * nchan_in;
@@ -608,7 +608,7 @@ namespace attention_kernels
                 atomicAdd(&y_acc[i * BDIM_X].w, locy[i].w);
             });
         } else {
-            strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) { atomicAdd(y_acc + i * BDIM_X, locy[i]); });
+            strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) { atomicAdd(y_acc + i*BDIM_X, locy[i]); });
         }
         return;
     }
@@ -1006,7 +1006,7 @@ namespace attention_kernels
 
         constexpr int VEC_SIZE = sizeof(float4) / sizeof(float);
 
-        attn_params_t params;
+        attn_params_t params = {0};
 
         params.nchan_in = nchans_in;
         params.nchan_out = nchans_out;
