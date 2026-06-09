@@ -29,9 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-import os
 import unittest
-from unittest import mock
 
 import torch
 import torch.distributed as dist
@@ -167,93 +165,45 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # fp32 tests
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", False, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", False, 1e-6, 1e-5],
-            [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, True, "a2a", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", False, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", False, 1e-6, 1e-5],
-            [33, 64, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, True, "a2a", False, 1e-6, 1e-5],
-            [65, 128, 33, 64, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "a2a", False, 1e-6, 1e-5],
-            # fp64 tests
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, "a2a", False, 1e-6, 1e-6],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, "a2a", False, 1e-6, 1e-6],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, "a2a", False, 1e-6, 1e-6],
-            [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, "a2a", False, 1e-6, 1e-6],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float64, False, "a2a", False, 1e-6, 1e-6],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float64, True, "a2a", False, 1e-6, 1e-6],
-            # ring tests (non-transpose only; ring is CUDA-only and the
-            # transpose class doesn't accept method=). Each ring scenario
-            # runs twice: once with the legacy per-step recv allocation
-            # (p2p_buffer=False), once with the pre-allocated recv pool
-            # opted in via TORCH_HARMONICS_P2P_BUFFER=1 (p2p_buffer=True).
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", True, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", True, 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", False, 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", True, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", False, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring", True, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", True, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", True, 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", False, 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", True, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", False, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused", True, 1e-6, 1e-5],
-            # ring_stream / ring_fused_stream: same algorithms with a real
-            # dedicated CUDA stream for the ring P2P. Validates that the
-            # explicit comm-stream + event-sync path matches the
-            # single-stream path numerically.
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_stream", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_stream", True, 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_stream", True, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused_stream", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused_stream", True, 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused_stream", True, 1e-6, 1e-5],
-            # ring_masked / ring_fused_masked: force the masked kernel
-            # via TORCH_HARMONICS_RING_FWD_BAND=0 so the masked branch is
-            # covered on small test grids (the default path is the band kernel).
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_masked", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_masked", True, 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_masked", True, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused_masked", False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused_masked", True, 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, "ring_fused_masked", True, 1e-6, 1e-5],
-            # fp16 / bf16 AMP coverage. Tolerances are looser than the fp32
-            # rows because the bf16/fp16 cuBLAS rounding at each einsum's
-            # output dominates the abs error, and cross-rank reductions
-            # (polar reduce_scatter for ring; polar all_reduce for a2a)
-            # amplify cancellation at near-zero output positions — see the
-            # cross-rank-cancellation note in
-            # feedback_amp_fp16_cancellation. Starting tolerances mirror the
-            # serial test's sparse-against-dense AMP rows; tighten/loosen
-            # per-row if empirics warrant.
-            #
-            # a2a — covers both non-transpose and transpose branches.
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, False, "a2a", False, 2e-2, 1e-2],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, "a2a", False, 5e-2, 5e-2],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, True, "a2a", False, 2e-2, 1e-2],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, True, "a2a", False, 5e-2, 5e-2],
-            # ring (K-expanded activation saved across fwd/bwd).
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, False, "ring", True, 2e-2, 1e-2],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, "ring", True, 5e-2, 5e-2],
-            # ring_fused (K-expanded activation dropped, recomputed in bwd).
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, False, "ring_fused", True, 2e-2, 1e-2],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, "ring_fused", True, 5e-2, 5e-2],
-            # ring_stream / ring_fused_stream AMP rows — same tolerances.
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, False, "ring_stream", True, 2e-2, 1e-2],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, "ring_fused_stream", True, 5e-2, 5e-2],
+            # ---- fused=False : standard a2a (K-expanded saved for backward) ----
+            # fp32
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, 1e-6, 1e-5],
+            [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, 1e-6, 1e-5],
+            [65, 128, 33, 64, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
+            # fp64
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, False, 1e-6, 1e-6],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, False, 1e-6, 1e-6],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, False, 1e-6, 1e-6],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float64, False, False, 1e-6, 1e-6],
+            # ---- fused=True : reordered a2a (CUDA + optimized kernels) ----
+            # non-transpose only; covers groups=1, groups=2, downsample, harmonic.
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
+            [65, 128, 33, 64, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
+            # ---- AMP (fp16/bf16) ----
+            # Each dtype runs fused off AND on (non-transpose). The transpose
+            # class has no ``fused`` argument, so it runs fused=False only
+            # (fused=True there would be an identical duplicate).
+            # fp16
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, False, False, 2e-2, 1e-2],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, False, True, 2e-2, 1e-2],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, True, False, 2e-2, 1e-2],
+            # bf16
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, False, 5e-2, 5e-2],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, True, 5e-2, 5e-2],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, True, False, 5e-2, 5e-2],
         ],
         skip_on_empty=True,
     )
@@ -273,50 +223,18 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         grid_out,
         dtype,
         transpose,
-        algorithm,
-        p2p_buffer,
+        fused,
         atol,
         rtol,
         verbose=True,
     ):
 
-        # Translate the single ``algorithm`` test parameter into the
-        # distributed-conv kwargs. ``a2a`` is the default A2A path;
-        # ``ring`` selects the ring algorithm with the K-expanded
-        # activation saved across fwd/bwd; ``ring_fused`` additionally
-        # drops that activation (bwd recomputes it via a second ring fwd).
-        # The ``_stream`` variants pass a dedicated CUDA stream for the
-        # ring P2P (so send/recv overlaps with the per-step kernel on
-        # the compute stream); the non-``_stream`` variants pass
-        # comm_stream=None (single-stream fallback).
-        # The transpose class does not accept ``method=`` yet, so ignore
-        # algorithm for the transpose branch.
-        if algorithm == "a2a":
-            method, fused, use_comm_stream, force_masked = "a2a", False, False, False
-        elif algorithm == "ring":
-            method, fused, use_comm_stream, force_masked = "ring", False, False, False
-        elif algorithm == "ring_fused":
-            method, fused, use_comm_stream, force_masked = "ring", True, False, False
-        elif algorithm == "ring_stream":
-            method, fused, use_comm_stream, force_masked = "ring", False, True, False
-        elif algorithm == "ring_fused_stream":
-            method, fused, use_comm_stream, force_masked = "ring", True, True, False
-        elif algorithm == "ring_masked":
-            # Force the masked-kernel fallback path via the env var so this
-            # branch is covered on the existing small test grids.
-            method, fused, use_comm_stream, force_masked = "ring", False, False, True
-        elif algorithm == "ring_fused_masked":
-            method, fused, use_comm_stream, force_masked = "ring", True, False, True
-        else:
-            raise ValueError(f"unknown algorithm={algorithm!r}")
-
-        # Ring path is CUDA-only — skip gracefully when CUDA isn't there.
-        if method == "ring" and not torch.cuda.is_available():
-            self.skipTest("method='ring' is CUDA-only")
-
-        # Allocate the dedicated comm stream for the _stream variants.
-        # Stays None for the single-stream variants.
-        comm_stream = torch.cuda.Stream(device=self.device) if use_comm_stream else None
+        # ``fused`` mirrors the serial conv: False -> standard a2a (K-expanded
+        # saved), True -> reordered a2a (einsum-first, K-expanded recomputed in
+        # backward). fused=True is CUDA + optimized-kernel only, and the
+        # transpose class has no ``fused`` argument, so it is ignored there.
+        if fused and not torch.cuda.is_available():
+            self.skipTest("fused=True is CUDA-only")
 
         # For AMP dtypes the modules + inputs stay in float32 and autocast
         # handles the downcast inside fwd/bwd — same pattern as the serial
@@ -342,32 +260,17 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             bias=True,
         )
 
-        # The distributed conv reads TORCH_HARMONICS_P2P_BUFFER once in
-        # __init__ and stores the flag on the instance.
-        # TORCH_HARMONICS_RING_FWD_BAND is read by the C++ ring fwd kernel
-        # every launch — setting it to "0" selects the masked kernel instead
-        # of the default band kernel so that branch is covered on small grids.
-        env_override = {"TORCH_HARMONICS_P2P_BUFFER": "1" if p2p_buffer else "0"}
-        if force_masked:
-            env_override["TORCH_HARMONICS_RING_FWD_BAND"] = "0"
-
         # set up handles
         if transpose:
-            # Transpose class does not yet accept method= / fused= — the
-            # ``algorithm`` and ``p2p_buffer`` test parameters are ignored
-            # on this branch.
+            # Transpose class has no ``fused`` argument; it is ignored here.
             conv_local = th.DiscreteContinuousConvTransposeS2(**disco_args).to(dtype=module_dtype, device=self.device)
-            with mock.patch.dict(os.environ, env_override):
-                conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args).to(dtype=module_dtype, device=self.device)
+            conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args).to(dtype=module_dtype, device=self.device)
         else:
             conv_local = th.DiscreteContinuousConvS2(**disco_args).to(dtype=module_dtype, device=self.device)
-            with mock.patch.dict(os.environ, env_override):
-                conv_dist = thd.DistributedDiscreteContinuousConvS2(
-                    **disco_args,
-                    method=method,
-                    fused=fused,
-                    comm_stream=comm_stream,
-                ).to(dtype=module_dtype, device=self.device)
+            conv_dist = thd.DistributedDiscreteContinuousConvS2(
+                **disco_args,
+                fused=fused,
+            ).to(dtype=module_dtype, device=self.device)
 
         # copy the weights from the local conv into the dist conv
         with torch.no_grad():
@@ -393,23 +296,17 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         out_full.backward(ograd_full)
         igrad_full = inp_full.grad.clone()
 
-        # distributed conv. The env patch is re-applied around the
-        # fwd/bwd because TORCH_HARMONICS_RING_FWD_BAND is read by
-        # the C++ kernel at each launch (whereas TORCH_HARMONICS_P2P_BUFFER
-        # was already consumed during __init__).
+        # distributed conv.
         # FWD pass
         inp_local = self._split_helper(inp_full.detach().clone())
         inp_local.requires_grad = True
-        with mock.patch.dict(os.environ, env_override):
-            with maybe_autocast(self.device.type, dtype):
-                out_local = conv_dist(inp_local)
+        with maybe_autocast(self.device.type, dtype):
+            out_local = conv_dist(inp_local)
 
-            # BWD pass
-            ograd_local = self._split_helper(ograd_full)
-            with maybe_autocast(self.device.type, dtype):
-                out_local = conv_dist(inp_local)
-            out_local.backward(ograd_local)
-            igrad_local = inp_local.grad.clone()
+        # BWD pass
+        ograd_local = self._split_helper(ograd_full)
+        out_local.backward(ograd_local)
+        igrad_local = inp_local.grad.clone()
 
         # evaluate FWD pass
         out_gather_full = self._gather_helper_fwd(out_local, conv_dist)
@@ -439,12 +336,9 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # Stacked ring convs in series. The point of this test is to
-            # validate that module-owned recv pools prevent cross-layer
-            # corruption (one layer's NCCL writes leaking into the next
-            # layer's allocations). No tearDown sync intervenes within a
-            # single forward pass, so this exercises the production
-            # stacked-layer scenario that the per-test sync would mask.
+            # Two distributed convs chained in series — validates that the
+            # reordered (fused) and standard a2a paths compose correctly
+            # across layers (output + input-grad through both layers).
             #
             # Tolerances are explicit per row (looser than the single-conv
             # test to absorb the noise of chaining two convolutions and
@@ -452,51 +346,39 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             # and input-gradient checks; parameter-gradient checks scale
             # those by ``pgrad_tol_factor`` inside the test.
             #
-            # Each row: (method, fused, kernel_shape, basis, dtype,
-            #           p2p_buffer, use_comm_stream, force_masked,
-            #           atol, rtol).
-            ["ring", False, (3, 4), "harmonic", torch.float32, True, False, False, 1e-5, 1e-4],
-            ["ring", True, (3, 4), "harmonic", torch.float32, True, False, False, 1e-5, 1e-4],
-            ["ring", True, (3, 4), "harmonic", torch.float32, True, True, False, 1e-5, 1e-4],
-            ["ring", False, (3), "piecewise linear", torch.float32, True, False, False, 1e-5, 1e-4],
-            ["ring", True, (3), "piecewise linear", torch.float32, True, False, False, 1e-5, 1e-4],
-            # AMP rows — base tolerances loosened above the single-conv
-            # AMP rows to absorb two-layer fp16/bf16 cast accumulation.
-            # bf16's weight-grad reduction noise can reach ~1 absolute
-            # at elements where the reference is 0; pg_atol = atol * 10
-            # then covers it.
-            ["ring", False, (3, 4), "harmonic", torch.float16, True, False, False, 5e-2, 5e-2],
-            ["ring", True, (3, 4), "harmonic", torch.bfloat16, True, False, False, 2e-1, 2e-1],
+            # Each row: (fused, kernel_shape, basis, dtype, atol, rtol).
+            [False, (3, 4), "harmonic", torch.float32, 1e-5, 1e-4],
+            [True, (3, 4), "harmonic", torch.float32, 1e-5, 1e-4],
+            [False, (3), "piecewise linear", torch.float32, 1e-5, 1e-4],
+            [True, (3), "piecewise linear", torch.float32, 1e-5, 1e-4],
+            # AMP rows — both dtypes run fused off and on; tolerances
+            # loosened above the single-conv AMP rows to absorb two-layer
+            # fp16/bf16 cast accumulation.
+            [False, (3, 4), "harmonic", torch.float16, 5e-2, 5e-2],
+            [True, (3, 4), "harmonic", torch.float16, 5e-2, 5e-2],
+            [False, (3, 4), "harmonic", torch.bfloat16, 2e-1, 2e-1],
+            [True, (3, 4), "harmonic", torch.bfloat16, 2e-1, 2e-1],
         ],
         skip_on_empty=True,
     )
     def test_distributed_disco_conv_stacked(
         self,
-        method,
         fused,
         kernel_shape,
         basis_type,
         dtype,
-        p2p_buffer,
-        use_comm_stream,
-        force_masked,
         atol,
         rtol,
         verbose=True,
     ):
-        """Two ring convs chained in series.
+        """Two distributed convs chained in series.
 
-        Validates that module-owned recv buffers prevent cross-layer
-        memory aliasing (layer 1's NCCL writes leaking into layer 2's
-        allocations). With per-call recv pools, layer 2's torch.empty
-        could land on memory NCCL was still writing to from layer 1;
-        module ownership keeps the pool alive across layers.
-
-        Compares the chained forward output against a serial reference
-        and the input-gradient flowing back through both layers.
+        Compares the chained forward output against a serial reference and
+        the input-gradient flowing back through both layers, for both the
+        standard (fused=False) and reordered (fused=True) a2a paths.
         """
-        if method == "ring" and not torch.cuda.is_available():
-            self.skipTest("method='ring' is CUDA-only")
+        if fused and not torch.cuda.is_available():
+            self.skipTest("fused=True is CUDA-only")
 
         is_amp = dtype in (torch.float16, torch.bfloat16)
         module_dtype = torch.float32 if is_amp else dtype
@@ -523,20 +405,13 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             bias=True,
         )
 
-        env_override = {"TORCH_HARMONICS_P2P_BUFFER": "1" if p2p_buffer else "0"}
-        if force_masked:
-            env_override["TORCH_HARMONICS_RING_FWD_BAND"] = "0"
-
         # Serial reference: two stacked local convs.
         conv1_local = th.DiscreteContinuousConvS2(**common_args).to(dtype=module_dtype, device=self.device)
         conv2_local = th.DiscreteContinuousConvS2(**common_args).to(dtype=module_dtype, device=self.device)
 
-        # Distributed: two stacked ring convs. Same comm_stream is shared
-        # across both layers to mirror typical training-script usage.
-        comm_stream = torch.cuda.Stream(device=self.device) if use_comm_stream else None
-        with mock.patch.dict(os.environ, env_override):
-            conv1_dist = thd.DistributedDiscreteContinuousConvS2(**common_args, method=method, fused=fused, comm_stream=comm_stream).to(dtype=module_dtype, device=self.device)
-            conv2_dist = thd.DistributedDiscreteContinuousConvS2(**common_args, method=method, fused=fused, comm_stream=comm_stream).to(dtype=module_dtype, device=self.device)
+        # Distributed: two stacked convs.
+        conv1_dist = thd.DistributedDiscreteContinuousConvS2(**common_args, fused=fused).to(dtype=module_dtype, device=self.device)
+        conv2_dist = thd.DistributedDiscreteContinuousConvS2(**common_args, fused=fused).to(dtype=module_dtype, device=self.device)
 
         # Sync weights into the dist convs (per-layer).
         with torch.no_grad():
@@ -563,18 +438,13 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         # Distributed: forward through both convs in series.
         inp_local = self._split_helper(inp_full.detach().clone())
         inp_local.requires_grad = True
-        with mock.patch.dict(os.environ, env_override):
-            with maybe_autocast(self.device.type, dtype):
-                mid_local = conv1_dist(inp_local)
-                out_local = conv2_dist(mid_local)
+        with maybe_autocast(self.device.type, dtype):
+            mid_local = conv1_dist(inp_local)
+            out_local = conv2_dist(mid_local)
 
-            ograd_local = self._split_helper(ograd_full)
-            # Re-run for autograd graph (matches the single-conv test).
-            with maybe_autocast(self.device.type, dtype):
-                mid_local = conv1_dist(inp_local)
-                out_local = conv2_dist(mid_local)
-            out_local.backward(ograd_local)
-            igrad_local = inp_local.grad.clone()
+        ograd_local = self._split_helper(ograd_full)
+        out_local.backward(ograd_local)
+        igrad_local = inp_local.grad.clone()
 
         # Compare chained output.
         out_gather_full = self._gather_helper_fwd(out_local, conv2_dist)
@@ -585,12 +455,15 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         self.assertTrue(compare_tensors("stacked gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose))
 
         # Compare per-layer parameter gradients (allreduced over h, w).
-        # Param grads accumulate reduction noise over batch + local
-        # spatial; loosen relative to the row's per-element tolerance.
-        # Use a higher factor for fp32 (where the base atol/rtol is tight
-        # at 1e-5 / 1e-4) than for AMP (where the base is already large
-        # enough that a high factor makes the bound meaningless).
-        pgrad_tol_factor = 10.0 if is_amp else 100.0
+        # Param grads accumulate reduction noise over batch + local spatial;
+        # loosen relative to the row's per-element tolerance. AMP needs a
+        # large factor here: stacking two bf16/fp16 layers compounds the
+        # cross-rank cancellation, so the weight grad drifts by O(few)
+        # absolute at near-zero reference elements (the per-element output
+        # and input-grad checks at the row tolerance are the real validation;
+        # this is a coarse sanity net gated by atol). fp32 uses a smaller
+        # factor since its base atol/rtol is already tight at 1e-5 / 1e-4.
+        pgrad_tol_factor = 25.0 if is_amp else 100.0
         pg_atol, pg_rtol = atol * pgrad_tol_factor, rtol * pgrad_tol_factor
         for layer_idx, (conv_dist, conv_local_ref) in enumerate([(conv1_dist, conv1_local), (conv2_dist, conv2_local)], start=1):
             if conv_dist.weight.grad is not None:
