@@ -29,6 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import os
 import unittest
 
 import torch
@@ -39,6 +40,7 @@ from testutils import (
     disable_tf32,
     gather_tensor_hw,
     maybe_autocast,
+    reduce_success,
     set_seed,
     setup_class_from_context,
     setup_module,
@@ -48,6 +50,21 @@ from testutils import (
 
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
+
+# Opt-in gate for slow / large-grid parameterized cases (e.g. 721x1440 ERA5-like
+# shapes). Mirrors the TORCH_HARMONICS_RUN_PERF_TESTS pattern in
+# tests/test_attention.py and tests/test_convolution.py, and the slow gate in
+# tests/test_distributed_attention.py.
+_run_slow_tests = os.getenv("TORCH_HARMONICS_RUN_SLOW_TESTS", "0") == "1"
+
+# (nlat_in, nlon_in, nlat_out, nlon_out) shapes whose parameterized cases are
+# gated behind TORCH_HARMONICS_RUN_SLOW_TESTS=1.
+_SLOW_DISCO_SHAPES = frozenset(
+    {
+        (721, 1440, 721, 1440),
+        (721, 1440, 360, 720),
+    }
+)
 
 # shared state
 _DIST_CTX = {}
@@ -184,6 +201,11 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, False, 1e-6, 1e-6],
             [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, False, 1e-6, 1e-6],
             [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float64, False, False, 1e-6, 1e-6],
+            # ERA5-like grids, gated behind TORCH_HARMONICS_RUN_SLOW_TESTS=1.
+            # batch_size and num_chan dialed down (2, 8) vs the rest of the suite (32, 8)
+            # to keep the working set under a few GB at these resolutions.
+            [721, 1440, 721, 1440, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
+            [721, 1440, 360, 720, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular", "legendre-gauss", torch.float32, False, False, 1e-6, 1e-5],
             # ---- fused=True : reordered a2a (CUDA + optimized kernels) ----
             # non-transpose only; covers groups=1, groups=2, downsample, harmonic.
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
@@ -228,6 +250,8 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         rtol,
         verbose=True,
     ):
+        if (nlat_in, nlon_in, nlat_out, nlon_out) in _SLOW_DISCO_SHAPES and not _run_slow_tests:
+            self.skipTest("slow test; set TORCH_HARMONICS_RUN_SLOW_TESTS=1 to run")
 
         # ``fused`` mirrors the serial conv: False -> standard a2a (K-expanded
         # saved), True -> reordered a2a (einsum-first, K-expanded recomputed in
@@ -308,13 +332,19 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
 
+        # Print diagnostics from rank 0 only; assert the all-reduced verdict on every
+        # rank so a failure on any rank fails the test consistently (see reduce_success).
+        verbose = verbose and self.world_rank == 0
+
         # evaluate FWD pass
         out_gather_full = self._gather_helper_fwd(out_local, conv_dist)
-        self.assertTrue(compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose))
+        ok = compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "output")
 
         # evaluate BWD pass
         igrad_gather_full = self._gather_helper_bwd(igrad_local, conv_dist)
-        self.assertTrue(compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose))
+        ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "gradients")
 
         # evaluate parameter gradients — local per-rank contributions
         # summed across the h and w groups must match the serial gradient.

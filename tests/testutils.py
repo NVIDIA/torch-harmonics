@@ -252,6 +252,26 @@ def gather_tensor_hw(tensor, hdim=-2, wdim=-1, hshapes=[], wshapes=[], hsize=1, 
     return tensor
 
 
+def reduce_success(success, device, group=None):
+    """All-reduce a per-rank boolean check result with logical AND.
+
+    Returns the *global* verdict on every rank so that all ranks assert
+    consistently: a failure on any single rank fails the test on all ranks.
+    This avoids one rank raising (and bailing out of the test) while the
+    others are still waiting on a subsequent collective -- which would
+    otherwise hang the job at the next all-gather / teardown barrier.
+
+    Only the reporting (e.g. ``compare_tensors(verbose=...)``) should be
+    rank-0-gated; the assert itself must run on every rank using the value
+    returned here.
+    """
+    if not dist.is_initialized() or dist.get_world_size(group) == 1:
+        return bool(success)
+    flag = torch.tensor([1 if success else 0], dtype=torch.int32, device=device)
+    dist.all_reduce(flag, op=dist.ReduceOp.MIN, group=group)
+    return bool(flag.item())
+
+
 def compare_tensors(msg, tensor1, tensor2, atol=1e-8, rtol=1e-5, verbose=False):
 
     # some None checks

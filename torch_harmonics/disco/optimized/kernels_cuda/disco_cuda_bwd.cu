@@ -239,7 +239,8 @@ namespace disco_kernels
         // get stream
         auto stream = at::cuda::getCurrentCUDAStream().stream();
 
-        // assert
+        // the wide launch configs (128/256/512/1024 lanes) split the per-thread element count
+        // as (ELXTH_MAX / 2) + 1, so ELXTH_MAX must be even for the partition to be exact
         static_assert(0 == (ELXTH_MAX % 2));
 
         if (Wo <= 64 * ELXTH_MAX) {

@@ -37,6 +37,7 @@ from testutils import (
     compare_tensors,
     disable_tf32,
     gather_tensor_hw,
+    reduce_success,
     set_seed,
     setup_class_from_context,
     setup_module,
@@ -98,6 +99,13 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
             [(33, 64), (65, 128), 4, 8, 1, "equiangular", "equiangular", False, 1e-6, 1e-6],
             [(64, 128), (64, 128), 4, 8, 1, "equiangular", "legendre-gauss", False, 1e-6, 1e-6],
             [(65, 128), (65, 128), 4, 8, 1, "equiangular", "legendre-gauss", False, 1e-6, 1e-6],
+            # fewer channels than the polar group size (gh #207): B*C is padded inside the
+            # internal (i)SHT. batch_size=1 so B*C is just num_chan. Looser tolerance because
+            # padding pushes the channel GEMM into the batch>=2 regime the serial path does
+            # not use (see test_distributed_sht), a benign ~1e-6 fp32 rounding shift.
+            [(64, 128), (64, 128), 1, 1, 1, "equiangular", "equiangular", False, 1e-5, 1e-5],
+            [(64, 128), (64, 128), 1, 2, 1, "equiangular", "equiangular", False, 1e-5, 1e-5],
+            [(64, 128), (64, 128), 1, 1, 1, "equiangular", "legendre-gauss", False, 1e-5, 1e-5],
             # with bias
             [(64, 128), (64, 128), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
             [(65, 128), (65, 128), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
@@ -106,6 +114,9 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
             [(33, 64), (65, 128), 4, 8, 1, "equiangular", "equiangular", True, 1e-6, 1e-6],
             [(64, 128), (64, 128), 4, 8, 1, "equiangular", "legendre-gauss", True, 1e-6, 1e-6],
             [(65, 128), (65, 128), 4, 8, 1, "equiangular", "legendre-gauss", True, 1e-6, 1e-6],
+            # fewer channels than the polar group size (gh #207), with bias
+            [(64, 128), (64, 128), 1, 1, 1, "equiangular", "equiangular", True, 1e-5, 1e-5],
+            [(64, 128), (64, 128), 1, 2, 1, "equiangular", "equiangular", True, 1e-5, 1e-5],
         ],
         skip_on_empty=True,
     )
@@ -163,19 +174,25 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
 
+        # Print diagnostics from rank 0 only; assert the all-reduced verdict on every
+        # rank so a failure on any rank fails the test consistently (see reduce_success).
+        verbose = verbose and self.world_rank == 0
+
         out_gather_full = self._gather_helper(
             out_local,
             conv_dist.isht.lat_shapes,
             conv_dist.isht.lon_shapes,
         )
-        self.assertTrue(compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose))
+        ok = compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "output")
 
         igrad_gather_full = self._gather_helper(
             igrad_local,
             conv_dist.sht.lat_shapes,
             conv_dist.sht.lon_shapes,
         )
-        self.assertTrue(compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose))
+        ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "gradients")
 
 
 if __name__ == "__main__":

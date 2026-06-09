@@ -348,7 +348,7 @@ namespace attention_kernels
         vx += int64_t(batch) * nlat_in * nlon_in * nchan_out; // + tidx;
         dy += int64_t(batch) * nlat_out * nlon_out * nchan_out + int64_t(ho) * nlon_out * nchan_out
             + int64_t(wo) * nchan_out; // + tidx;
-        if (CHOUT_AS_IN) {
+        if constexpr (CHOUT_AS_IN) {
             vx += tidx;
             dy += tidx;
         }
@@ -356,7 +356,7 @@ namespace attention_kernels
         // offset output tensors
         dkx += int64_t(batch) * nlat_in * nlon_in * nchan_in + tidx;
         dvx += int64_t(batch) * nlat_in * nlon_in * nchan_out; // + tidx;
-        if (CHOUT_AS_IN) { dvx += tidx; }
+        if constexpr (CHOUT_AS_IN) { dvx += tidx; }
         dqy += int64_t(batch) * nlat_out * nlon_out * nchan_in + int64_t(ho) * nlon_out * nchan_in
             + int64_t(wo) * nchan_in + tidx;
 
@@ -371,7 +371,7 @@ namespace attention_kernels
         for (int i = 0; i < NLOC_M1; i++) { sh_qy[i * BDIM_X] = qy[i * BDIM_X]; }
         if (NLOC_M1 * BDIM_X + tidx < nchan_in) { sh_qy[NLOC_M1 * BDIM_X] = qy[NLOC_M1 * BDIM_X]; }
 
-        if (CHOUT_AS_IN) {
+        if constexpr (CHOUT_AS_IN) {
 #pragma unroll
             for (int i = 0; i < NLOC_M1; i++) { sh_dy[i * BDIM_X] = dy[i * BDIM_X]; }
             if (NLOC_M1 * BDIM_X + tidx < nchan_out) { sh_dy[NLOC_M1 * BDIM_X] = dy[NLOC_M1 * BDIM_X]; }

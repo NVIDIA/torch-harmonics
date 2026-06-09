@@ -37,6 +37,7 @@ from testutils import (
     compare_tensors,
     disable_tf32,
     gather_tensor_hw,
+    reduce_success,
     set_seed,
     setup_class_from_context,
     setup_module,
@@ -118,6 +119,16 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [33, 64, None, 1, 10, "equiangular", False, 1e-6, 1e-6],
             [33, 64, None, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
             [8, 16, None, 1, 10, "equiangular", False, 1e-6, 1e-6],
+            # fewer channels than the polar group size (gh #207): B*C must be padded
+            # up to the group size before the channel-axis transposes. Looser tolerance
+            # here: padding pushes the (inert) channel GEMM from the batch-1 algorithm the
+            # serial reference uses into the batch>=2 regime, a ~1e-6 fp32 rounding shift.
+            # Divisible-channel cases never cross that boundary, so they stay at 1e-7.
+            [32, 64, None, 1, 1, "equiangular", False, 1e-5, 1e-5],
+            [32, 64, None, 1, 1, "legendre-gauss", False, 1e-5, 1e-5],
+            [32, 64, None, 1, 2, "equiangular", False, 1e-5, 1e-5],
+            [32, 64, None, 1, 1, "equiangular", True, 1e-5, 1e-5],
+            [32, 64, None, 1, 2, "equiangular", True, 1e-5, 1e-5],
             # Vector SHT
             [32, 64, None, 32, 8, "equiangular", True, 1e-7, 1e-9],
             [32, 64, None, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
@@ -198,13 +209,19 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
 
+        # Print diagnostics from rank 0 only; assert the all-reduced verdict on every
+        # rank so a failure on any rank fails the test consistently (see reduce_success).
+        verbose = verbose and self.world_rank == 0
+
         # evaluate FWD pass
         out_gather_full = self._gather_helper_fwd(out_local, forward_transform_dist)
-        self.assertTrue(compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose))
+        ok = compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "output")
 
         # evaluate BWD pass
         igrad_gather_full = self._gather_helper_bwd(igrad_local, forward_transform_dist)
-        self.assertTrue(compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose))
+        ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "gradients")
 
     @parameterized.expand(
         [
@@ -218,6 +235,16 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, None, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
             [33, 64, None, 1, 10, "equiangular", False, 1e-6, 1e-6],
             [33, 64, None, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
+            # fewer channels than the polar group size (gh #207): B*C must be padded
+            # up to the group size before the channel-axis transposes. Looser tolerance
+            # here: padding pushes the (inert) channel GEMM from the batch-1 algorithm the
+            # serial reference uses into the batch>=2 regime, a ~1e-6 fp32 rounding shift.
+            # Divisible-channel cases never cross that boundary, so they stay at 1e-7.
+            [32, 64, None, 1, 1, "equiangular", False, 1e-5, 1e-5],
+            [32, 64, None, 1, 1, "legendre-gauss", False, 1e-5, 1e-5],
+            [32, 64, None, 1, 2, "equiangular", False, 1e-5, 1e-5],
+            [32, 64, None, 1, 1, "equiangular", True, 1e-5, 1e-5],
+            [32, 64, None, 1, 2, "equiangular", True, 1e-5, 1e-5],
             # Vector SHT
             [32, 64, None, 32, 8, "equiangular", True, 1e-7, 1e-9],
             [32, 64, None, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
@@ -307,13 +334,19 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
 
+        # Print diagnostics from rank 0 only; assert the all-reduced verdict on every
+        # rank so a failure on any rank fails the test consistently (see reduce_success).
+        verbose = verbose and self.world_rank == 0
+
         # evaluate FWD pass
         out_gather_full = self._gather_helper_bwd(out_local, backward_transform_dist)
-        self.assertTrue(compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose))
+        ok = compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "output")
 
         # evaluate BWD pass
         igrad_gather_full = self._gather_helper_fwd(igrad_local, backward_transform_dist)
-        self.assertTrue(compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose))
+        ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "gradients")
 
 
 if __name__ == "__main__":
