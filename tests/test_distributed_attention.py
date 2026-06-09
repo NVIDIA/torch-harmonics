@@ -29,6 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import os
 import unittest
 
 import torch
@@ -38,6 +39,7 @@ from testutils import (
     disable_tf32,
     gather_tensor_hw,
     maybe_autocast,
+    reduce_success,
     set_seed,
     setup_class_from_context,
     setup_module,
@@ -47,6 +49,21 @@ from testutils import (
 
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
+
+# Opt-in gate for slow / large-grid parameterized cases (e.g. 721x1440 ERA5-like
+# shapes that exercise the long-row branch of the ring backward dispatch).
+# Mirrors the TORCH_HARMONICS_RUN_PERF_TESTS pattern in tests/test_attention.py
+# and tests/test_convolution.py.
+_run_slow_tests = os.getenv("TORCH_HARMONICS_RUN_SLOW_TESTS", "0") == "1"
+
+# (nlat_in, nlon_in, nlat_out, nlon_out) shapes whose parameterized cases are
+# gated behind TORCH_HARMONICS_RUN_SLOW_TESTS=1.
+_SLOW_ATTN_SHAPES = frozenset(
+    {
+        (721, 1440, 721, 1440),
+        (721, 1440, 360, 720),
+    }
+)
 
 # shared state
 _DIST_CTX = {}
@@ -73,6 +90,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         disable_tf32()
         if not torch.cuda.is_available():
             raise unittest.SkipTest("Distributed neighborhood attention requires CUDA")
+        disable_tf32()
 
     def _split_helper(self, tensor):
         return split_tensor_hw(
@@ -119,12 +137,21 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # nlat_in, nlon_in, nlat_out, nlon_out, batch_size, in_channels, num_heads, k_channels, out_channels, grid_in, grid_out, use_qknorm, atol, rtol
+            # nlat_in, nlon_in, nlat_out, nlon_out, batch_size, in_channels, num_heads, k_channels, out_channels, grid_in, grid_out, use_qknorm, dtype, atol, rtol
             # same shape tests
             [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 1, 8, 8, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # Long-row coverage on realistic ERA5-like grids. With default theta_cutoff
+            # = pi/(nlat_out-1), wide nlon_in makes the kernel disk cover the full
+            # longitude ring near the poles, so pole rows exceed SPLIT_LONG_ROW_MIN_LEN
+            # (1024) while mid-latitude rows stay short -- exercising BOTH the long-row
+            # and short-row branches of the ring backward pass-2 dispatch. Memory note:
+            # 721x1440 x B=2 x C=16 fp32 ~250 MB per major tensor; expect a few GB
+            # working-set including halos and gradient buffers. Splittable up to 2x4
+            # (uneven polar shard for odd nlat is handled by the test framework).
+            [721, 1440, 721, 1440, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             # downsampling tests, pscale=2 (lat+lon)
             [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             [65, 128, 33, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
@@ -144,6 +171,12 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             # mixed grid: equiangular input -> legendre-gauss output
             [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, torch.float32, 1e-5, 1e-4],
             [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, torch.float32, 1e-5, 1e-4],
+            # Realistic ERA5-like downsample (equi -> LG, ~2x lat/lon). theta_cutoff =
+            # pi/359 gives a kernel band ~4 input lats deep, so pole rows hit several
+            # x nlon_in = O(5760) entries (long) while equator rows stay ~O(64) (short).
+            # Exercises long-row branch in combination with pscale>1 and a mixed grid.
+            # Same memory caveat as the 721x1440 same-shape case above.
+            [721, 1440, 360, 720, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, torch.float32, 1e-5, 1e-4],
             # heads=4 with asymmetric channels (k=32, out=16; in=16)
             [64, 128, 64, 128, 2, 16, 4, 32, 16, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             [64, 128, 32, 64, 2, 16, 4, 32, 16, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
@@ -166,6 +199,41 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             # legendre-gauss grid with QK norm
             [64, 128, 64, 128, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", True, torch.float32, 1e-5, 1e-4],
             [64, 128, 32, 64, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", True, torch.float32, 1e-5, 1e-4],
+            # scalar (non-vectorized) path: per-head channels not divisible by 4
+            # same-shape, CHOUT_AS_IN=True (nchans_in=nchans_out=10)
+            [64, 128, 64, 128, 2, 10, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # downsampling pscale=2, CHOUT_AS_IN=True
+            [64, 128, 32, 64, 2, 10, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # CHOUT_AS_IN=False, scalar path (nchans_in=5, nchans_out=3 per head)
+            [64, 128, 64, 128, 2, 16, 4, 20, 12, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # downsampling pscale=2, CHOUT_AS_IN=False, scalar path
+            [64, 128, 32, 64, 2, 16, 4, 20, 12, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # BDIM_X dispatch coverage. The kernel picks BDIM_X = next_pow2(max(32, ceil(nchans/16))),
+            # where FWD uses nchans_out and BWD pass1/pass2 use nchans_in. With heads=1 and default
+            # k_channels/out_channels, all three dispatches land in the same bucket. Spatial dims are
+            # kept small to bound memory; only one row per bucket since the same kernel template
+            # is exercised regardless of grid/pscale.
+            # BDIM_X=64   (per-head 513..1024)
+            [32, 64, 32, 64, 2, 576, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # BDIM_X=128  (per-head 1025..2048)
+            [32, 64, 32, 64, 2, 1280, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # BDIM_X=256  (per-head 2049..4096)
+            [16, 32, 16, 32, 2, 2560, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # BDIM_X=512 and BDIM_X=1024 disabled until the LDG bwd pass1/pass2 launches
+            # call ``ensure_dyn_shmem``. The dynamic-shmem request for pass1/pass2 is
+            # ``sizeof(float4) * (nchans_in + nchans_out) * block.y``; at the BDIM_X=1024
+            # configuration (nchans=8704, float4 vec = 2176) that's ~69.6 KiB, exceeding the
+            # default 48 KiB per-CTA opt-in on every CUDA arch. Only the TMA branches
+            # currently call ensure_dyn_shmem; the LDG branches launch the kernel directly
+            # with the oversized shsize, which the driver rejects with cudaErrorInvalidValue.
+            # See attention_cuda_bwd_ring.cu (LDG pass1/pass2 dispatch) — fix is to mirror
+            # the ensure_dyn_shmem call already present in the TMA branches.
+            #
+            # # BDIM_X=512  (per-head 4097..8192)
+            # [16, 32, 16, 32, 2, 4608, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # # BDIM_X=1024 (per-head 8193..16384). This also stresses the dynamic-shmem opt-in
+            # # (ensure_dyn_shmem) on the TMA path: ~5*nchans*4 B exceeds the default 48 KiB limit.
+            # [8, 16, 8, 16, 2, 8704, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             # upsampling is not supported by the kernel yet (serial layer asserts nlon_in % nlon_out == 0)
             # AMP coverage — one row per dtype on a downsample config. Tolerances
             # are looser than the fp32 rows because bf16/fp16 cuBLAS rounding at
@@ -195,6 +263,9 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         rtol,
         verbose=True,
     ):
+        if (nlat_in, nlon_in, nlat_out, nlon_out) in _SLOW_ATTN_SHAPES and not _run_slow_tests:
+            self.skipTest("slow test; set TORCH_HARMONICS_RUN_SLOW_TESTS=1 to run")
+
         set_seed(333)
 
         B, C, Hi, Wi, Ho, Wo = batch_size, in_channels, nlat_in, nlon_in, nlat_out, nlon_out
@@ -277,15 +348,21 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         torch.cuda.synchronize()
 
+        # Print diagnostics from rank 0 only; assert the all-reduced verdict on every
+        # rank so a failure on any rank fails the test consistently (see reduce_success).
+        verbose = verbose and self.world_rank == 0
+
         # ---- compare forward ----
         out_gather = self._gather_helper_fwd(out_local, attn_dist)
-        self.assertTrue(compare_tensors("forward output", out_full, out_gather, atol=atol, rtol=rtol, verbose=verbose))
+        ok = compare_tensors("forward output", out_full, out_gather, atol=atol, rtol=rtol, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "forward output")
 
         # ---- compare backward ----
         for inp in ["q", "k", "v"]:
             use_out = inp == "q"
             igrad_gather = self._gather_helper_bwd(igrad_local[inp], attn_dist, use_out_shapes=use_out)
-            self.assertTrue(compare_tensors(f"input gradient {inp}", igrad_full[inp], igrad_gather, atol=atol, rtol=rtol, verbose=verbose))
+            ok = compare_tensors(f"input gradient {inp}", igrad_full[inp], igrad_gather, atol=atol, rtol=rtol, verbose=verbose)
+            self.assertTrue(reduce_success(ok, self.device), f"input gradient {inp}")
 
     @parameterized.expand(
         [
@@ -393,9 +470,14 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         igrad_local = {n: (inp_local[n].grad.clone() if inp_local[n].grad is not None else None) for n in ("k", "v", "q")}
         torch.cuda.synchronize()
 
+        # Print diagnostics from rank 0 only; assert the all-reduced verdict on every
+        # rank so a failure on any rank fails the test consistently (see reduce_success).
+        verbose = verbose and self.world_rank == 0
+
         # ---- compare forward ----
         out_gather = self._gather_helper_fwd(out_local, attn_dist)
-        self.assertTrue(compare_tensors("forward output", out_full, out_gather, atol=atol, rtol=rtol, verbose=verbose))
+        ok = compare_tensors("forward output", out_full, out_gather, atol=atol, rtol=rtol, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "forward output")
 
         # ---- contract: frozen input grads must be None on both ----
         self.assertIsNone(igrad_full[frozen], f"serial: frozen input {frozen} must have None grad")
@@ -417,16 +499,15 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             self.assertIsNotNone(igrad_local[n], f"distributed: unfrozen input {n} should have a grad")
             use_out = n == "q"
             igrad_gather = self._gather_helper_bwd(igrad_local[n], attn_dist, use_out_shapes=use_out)
-            self.assertTrue(
-                compare_tensors(
-                    f"input grad {n} (frozen={frozen})",
-                    igrad_full[n],
-                    igrad_gather,
-                    atol=atol,
-                    rtol=rtol,
-                    verbose=verbose,
-                )
+            ok = compare_tensors(
+                f"input grad {n} (frozen={frozen})",
+                igrad_full[n],
+                igrad_gather,
+                atol=atol,
+                rtol=rtol,
+                verbose=verbose,
             )
+            self.assertTrue(reduce_success(ok, self.device), f"input grad {n} (frozen={frozen})")
 
     def test_wrong_shape_assertions(self):
         """Verify that forward raises RuntimeError on spatial-shape mismatches."""

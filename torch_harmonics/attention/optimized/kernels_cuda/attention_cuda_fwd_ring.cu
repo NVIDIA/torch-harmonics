@@ -39,10 +39,14 @@
 #include <cub/cub.cuh>
 #include <limits>
 
+#include <cuda/barrier>
+
 #include "cudamacro.h"
 #include "attention_cuda_utils.cuh"
 
 #define THREADS (64)
+
+#define MAX_LOCAL_ARR_LEN (16)
 
 // Ring-step variant of the forward attention kernel. Used by
 // DistributedNeighborhoodAttentionS2: K/V are sharded along longitude across
@@ -54,19 +58,11 @@
 namespace attention_kernels
 {
 
-    template <int THREADS_PER_BLOCK,
-              typename FLOATV_T>
-    __global__ __launch_bounds__(THREADS_PER_BLOCK) void s2_attn_fwd_ring_step_generic_vec_k(
-        int nchan_in,                    // no. of FLOATV_T elements along channel dim
-        int nchan_out,                   // no. of FLOATV_T elements along channel dim
-        int nlat_halo,                   // number of lat rows in kx/vx chunk (with halo)
-        int nlon_kx,                     // number of lon columns in kx/vx chunk
-        int nlon_in,                     // GLOBAL nlon_in (for modular arithmetic)
-        int pscale,                      // GLOBAL pscale = nlon_in / nlon_out_global
-        int lon_lo_kx,                   // global lon start of kx chunk
-        int lat_halo_start,              // global lat index of first row in kx chunk
-        int nlat_out,                    // local output lat size
-        int nlon_out,                    // local output lon size
+    // **************** start generic kernel ****************
+
+    template <int BDIM_X, typename FLOATV_T>
+    __global__ __launch_bounds__(BDIM_X) void s2_attn_fwd_ring_generic_k(
+        const __grid_constant__ attn_params_t p,
         const FLOATV_T *__restrict__ kx, // [batch][nlat_halo][nlon_kx][nchan_in]
         const FLOATV_T *__restrict__ vx, // [batch][nlat_halo][nlon_kx][nchan_out]
         const FLOATV_T *__restrict__ qy, // [batch][nlat_out][nlon_out][nchan_in]
@@ -78,7 +74,18 @@ namespace attention_kernels
         float *__restrict__ qdotk_max_buf       // [batch][nlat_out][nlon_out] (in/out)
     )
     {
-        extern __shared__ __align__(sizeof(float4)) float shext[];
+        const int &nchan_in = p.nchan_in;
+        const int &nchan_out = p.nchan_out;
+        const int &nlat_halo = p.nlat_halo;
+        const int &nlon_kx = p.nlon_kx;
+        const int &nlon_in = p.nlon_in;
+        const int &pscale = p.pscale;
+        const int &lon_lo_kx = p.lon_lo_kx;
+        const int &lat_halo_start = p.lat_halo_start;
+        const int &nlat_out = p.nlat_out;
+        const int &nlon_out = p.nlon_out;
+
+        alignas(float4) extern __shared__ float shext[];
         FLOATV_T *shy = reinterpret_cast<FLOATV_T *>(shext) + threadIdx.y * nchan_out;
 
         const int batch = blockIdx.y;
@@ -155,10 +162,818 @@ namespace attention_kernels
         }
 
         // Store updated state back to buffers
-        alpha_sum_buf[0] = alpha_sum;
-        qdotk_max_buf[0] = qdotk_max;
+        if (!tidx) {
+            alpha_sum_buf[0] = alpha_sum;
+            qdotk_max_buf[0] = qdotk_max;
+        }
         for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { y_acc[chan] = shy[chan]; }
     }
+
+    template <typename FLOATV_T>
+    void launch_gen_attn_ring_fwd(attn_params_t params, int64_t batch_size, FLOATV_T *_kxp, FLOATV_T *_vxp,
+                                  FLOATV_T *_qyp, int32_t *_row_idx, int64_t *_row_off, int64_t *_col_idx,
+                                  float *_quad_weights, FLOATV_T *_y_acc, float *_alpha_sum, float *_qdotk_max,
+                                  cudaStream_t stream)
+    {
+
+        const int nlat_out = params.nlat_out;
+        const int nlon_out = params.nlon_out;
+        const int nchans_out = params.nchan_out;
+
+        dim3 block(WARP_SIZE, THREADS / WARP_SIZE);
+        dim3 grid(DIV_UP(nlat_out * nlon_out, block.y), batch_size);
+
+        size_t shsize = sizeof(FLOATV_T) * nchans_out * block.y;
+
+        auto kern = &s2_attn_fwd_ring_generic_k<THREADS, FLOATV_T>;
+        ensure_dyn_shmem(reinterpret_cast<const void *>(kern), shsize);
+
+        kern<<<grid, block, shsize, stream>>>(params, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights,
+                                              _y_acc, _alpha_sum, _qdotk_max);
+
+        CHECK_ERROR("s2_attn_fwd_ring_generic_k");
+
+        return;
+    }
+
+    // **************** end generic kernel ****************
+
+    // **************** start long-rows specific kernels ****************
+
+    template <int BDIM_X, int BDIM_Y,
+              int NLOC,          // smallest int such that BDIM_X*NLOC >= nchan_in
+              typename FLOATV_T> // either float or float4
+    __global__ __launch_bounds__(BDIM_X *BDIM_Y) void s2_attn_fwd_ring_softmax_k(
+        const __grid_constant__ attn_params_t p, const int shcol_len_max, const int nlat_max,
+        const FLOATV_T *__restrict__ kx, // [batch][nlat_halo][nlon_kx][nchan_in]
+        const FLOATV_T *__restrict__ qy, // [batch][nlat_out][nlon_out][nchan_in]
+        const int32_t *__restrict__ row_idx, const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx,
+        const float *__restrict__ qdotk_max_prev, float *__restrict__ qdotk_max_curr)
+    {
+
+        static_assert(0 == (BDIM_X & (BDIM_X - 1)));
+        static_assert(0 == (BDIM_Y & (BDIM_Y - 1)));
+        static_assert((BDIM_X == WARP_SIZE && BDIM_Y > 1) || (BDIM_X > WARP_SIZE && BDIM_Y == 1));
+
+        const int tidx = threadIdx.x;
+        const int tidy = threadIdx.y;
+
+        const int blk_per_row = gridDim.y; // blocks along Y process the same (ho,wo)
+                                           // point by iteration over the (same) CSR
+                                           // row in an interleaved fashion
+        const int blk_split_id = blockIdx.y;
+
+        const int batch = blockIdx.z;
+        const uint64_t ctaid = uint64_t(blockIdx.x) * blockDim.y + threadIdx.y;
+
+        const int &nchan_in = p.nchan_in;
+        const int &nlat_halo = p.nlat_halo;
+        const int &nlon_kx = p.nlon_kx;
+        const int &nlon_in = p.nlon_in;
+        const int &pscale = p.pscale;
+        const int &lon_lo_kx = p.lon_lo_kx;
+        const int &lat_halo_start = p.lat_halo_start;
+        const int &nlat_out = p.nlat_out;
+        const int &nlon_out = p.nlon_out;
+
+        if (ctaid >= uint64_t(nlat_max) * nlon_out) { return; }
+
+        const int h = ctaid / nlon_out;
+        const int wo = ctaid - (h * nlon_out);
+        const int ho = row_idx[h];
+
+        kx += int64_t(batch) * nlat_halo * nlon_kx * nchan_in;
+        qy += int64_t(batch) * nlat_out * nlon_out * nchan_in + int64_t(ho) * nlon_out * nchan_in
+            + int64_t(wo) * nchan_in + tidx;
+
+        alignas(float4) extern __shared__ float shext[];
+
+        // just to simplify the seatup of the shared memory layout
+        using FLOATV_PTR_T = const FLOATV_T *;
+
+        FLOATV_T *shqy = NULL;
+        FLOATV_PTR_T *shkx_ptr = NULL;
+#if 1
+        if constexpr (sizeof(FLOATV_T) > sizeof(FLOATV_PTR_T)) {
+            FLOATV_T *base = reinterpret_cast<FLOATV_T *>(shext);
+            shqy = base + tidy * nchan_in;
+            shkx_ptr = reinterpret_cast<FLOATV_PTR_T *>(base + BDIM_Y * nchan_in) + tidy * shcol_len_max;
+        } else {
+            FLOATV_PTR_T *base = reinterpret_cast<FLOATV_PTR_T *>(shext);
+            shkx_ptr = base + tidy * shcol_len_max;
+            shqy = reinterpret_cast<FLOATV_T *>(base + BDIM_Y * shcol_len_max) + tidy * nchan_in;
+        }
+        shqy += tidx;
+#else
+        FLOATV_PTR_T *base = reinterpret_cast<FLOATV_PTR_T *>(shext);
+        shkx_ptr = base + tidy * shcol_len_max;
+#endif
+
+#if 1
+        strided_op<BDIM_X, 0>(nchan_in, [&](int i) { shqy[i * BDIM_X] = qy[i * BDIM_X]; });
+#else
+        FLOATV_T loc_qy[NLOC];
+        strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { loc_qy[i] = qy[i * BDIM_X]; });
+#endif
+        const int64_t out_flat = int64_t(batch) * nlat_out * nlon_out + int64_t(ho) * nlon_out + wo;
+
+        qdotk_max_prev += out_flat;
+        qdotk_max_curr += out_flat;
+
+        float qdotk_max = qdotk_max_prev[0];
+
+        const int64_t rbeg = row_off[ho];
+        const int64_t rend = row_off[ho + 1];
+        const int rlen = rend - rbeg;
+
+        col_idx += rbeg + blk_split_id;
+
+        const int rlen_div = rlen / blk_per_row;
+        const int rlen_mod = rlen % blk_per_row;
+
+        int n = rlen_div + (blk_split_id < rlen_mod);
+        int n_active = 0;
+
+        for (int i = 0; i < n; i += BDIM_X) {
+
+            const FLOATV_T *kx_ptr = NULL;
+
+            if (i + tidx < n) {
+                const int64_t col = col_idx[(i + tidx) * blk_per_row];
+
+                const int hi_global = col / nlon_in;
+                const int wi = col - (hi_global * nlon_in);
+                const int wi_wo = wi + pscale * wo;
+
+                const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
+
+                if (wip >= lon_lo_kx && wip < lon_lo_kx + nlon_kx) {
+
+                    const int hi_local = hi_global - lat_halo_start;
+
+                    if (hi_local >= 0 && hi_local < nlat_halo) {
+
+                        const int wip_local = wip - lon_lo_kx;
+                        kx_ptr = kx + int64_t(hi_local) * nlon_kx * nchan_in + int64_t(wip_local) * nchan_in;
+                    }
+                }
+            }
+
+            int toff;
+            int ntot = __compact<BDIM_X, BDIM_Y>(kx_ptr != NULL, &toff);
+            if (kx_ptr != NULL) { shkx_ptr[n_active + toff] = kx_ptr; }
+            n_active += ntot;
+        }
+        n = n_active;
+
+        __group_sync<BDIM_X>();
+
+        for (int i = 0; i < n; i++) {
+
+            const FLOATV_T *__restrict__ _kx = shkx_ptr[i] + tidx;
+
+            FLOATV_T qdotk_v = __vset<FLOATV_T>(0.0f);
+#if 1
+            strided_op<BDIM_X, 0>(nchan_in,
+                                  [&](int i) { qdotk_v = __vadd(qdotk_v, __vmul(shqy[i * BDIM_X], _kx[i * BDIM_X])); });
+#else
+            strided_op<BDIM_X, NLOC>(nchan_in,
+                                     [&](int i) { qdotk_v = __vadd(qdotk_v, __vmul(loc_qy[i], _kx[i * BDIM_X])); });
+#endif
+            float qdotk = __vred(qdotk_v);
+            __group_sum<BDIM_X, BDIM_Y>(qdotk);
+            qdotk_max = max(qdotk_max, qdotk);
+        }
+
+        if (!tidx) { atomicMax(qdotk_max_curr, qdotk_max); }
+        return;
+    }
+
+    template <int BDIM_X, int BDIM_Y,
+              int NLOC,          // smallest int such that BDIM_X*NLOC >= nchan_in
+              typename FLOATV_T> // either float or float4
+    __global__ __launch_bounds__(BDIM_X *BDIM_Y) void s2_attn_fwd_ring_rescale_k(
+        const __grid_constant__ attn_params_t p, const int nlat_max, const int32_t *__restrict__ row_idx,
+        float *__restrict__ alpha_sum_buf,  // [batch][nlat_out][nlon_out] (in/out)
+        float *__restrict__ qdotk_max_prev, // [batch][nlat_out][nlon_out] (in/out)
+        float *__restrict__ qdotk_max_curr, // [batch][nlat_out][nlon_out] (in/out)
+        FLOATV_T *__restrict__ y_acc)
+    { // [batch][nlat_out][nlon_out][nchan_in] (in/out)
+
+        static_assert(0 == (BDIM_X & (BDIM_X - 1)));
+        static_assert(0 == (BDIM_Y & (BDIM_Y - 1)));
+        static_assert((BDIM_X == WARP_SIZE && BDIM_Y > 1) || (BDIM_X > WARP_SIZE && BDIM_Y == 1));
+
+        const int tidx = threadIdx.x;
+        const int batch = blockIdx.y;
+        const uint64_t ctaid = uint64_t(blockIdx.x) * blockDim.y + threadIdx.y;
+
+        const int &nchan_out = p.nchan_out;
+        const int &nlat_out = p.nlat_out;
+        const int &nlon_out = p.nlon_out;
+
+        if (ctaid >= uint64_t(nlat_max) * nlon_out) { return; }
+
+        const int h = ctaid / nlon_out;
+        const int wo = ctaid - (h * nlon_out);
+        const int ho = row_idx[h];
+
+        const int64_t out_flat = int64_t(batch) * nlat_out * nlon_out + int64_t(ho) * nlon_out + wo;
+
+        qdotk_max_prev += out_flat;
+        qdotk_max_curr += out_flat;
+        alpha_sum_buf += out_flat;
+
+        y_acc += out_flat * nchan_out + tidx;
+
+        const float qdotk_max_old = qdotk_max_prev[0];
+        const float qdotk_max_new = qdotk_max_curr[0];
+
+        if (qdotk_max_old == qdotk_max_new) { return; }
+
+        const float max_correction = expf(qdotk_max_old - qdotk_max_new);
+
+        const float alpha_sum = max_correction * alpha_sum_buf[0];
+
+        FLOATV_T locy[NLOC];
+
+        strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) { locy[i] = y_acc[i * BDIM_X]; });
+        strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) { locy[i] = __vscale(max_correction, locy[i]); });
+        strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) { y_acc[i * BDIM_X] = locy[i]; });
+
+        if (!tidx) {
+            qdotk_max_prev[0] = qdotk_max_new; // used for next ring call
+            alpha_sum_buf[0] = alpha_sum;
+        }
+
+        return;
+    }
+
+    template <int BDIM_X, int BDIM_Y,
+              int CHIN_AS_OUT,   // 1 iif "BDIM_X*(NLOC-1) <= nchan_out <= BDIM_X*NLOC" else 0
+              int NLOC,          // smallest int such that BDIM_X*NLOC >= nchan_in
+              typename FLOATV_T> // either float or float4
+    __global__ __launch_bounds__(BDIM_X *BDIM_Y) void s2_attn_fwd_ring_finalize_k(
+        const __grid_constant__ attn_params_t p, const int shcol_len_max, const int nlat_max,
+        const FLOATV_T *__restrict__ kx, // [batch][nlat_halo][nlon_kx][nchan_in]
+        const FLOATV_T *__restrict__ vx, // [batch][nlat_halo][nlon_kx][nchan_out]
+        const FLOATV_T *__restrict__ qy, // [batch][nlat_out][nlon_out][nchan_in]
+        const int32_t *__restrict__ row_idx, const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx,
+        const float *__restrict__ quad_weights,
+        float *__restrict__ alpha_sum_buf,  // [batch][nlat_out][nlon_out] (in/out)
+        float *__restrict__ qdotk_max_curr, // [batch][nlat_out][nlon_out] (in/out)
+        FLOATV_T *__restrict__ y_acc)
+    { // [batch][nlat_out][nlon_out][nchan_out] (in/out)
+
+        static_assert(0 == (BDIM_X & (BDIM_X - 1)));
+        static_assert(0 == (BDIM_Y & (BDIM_Y - 1)));
+        static_assert((BDIM_X == WARP_SIZE && BDIM_Y > 1) || (BDIM_X > WARP_SIZE && BDIM_Y == 1));
+
+        const int tidx = threadIdx.x;
+        const int tidy = threadIdx.y;
+
+        const int blk_per_row = gridDim.y; // blocks along Y process the same (ho,wo)
+                                           // point by iteration over the (same) CSR
+                                           // row in an interleaved fashion
+        const int blk_split_id = blockIdx.y;
+
+        const int batch = blockIdx.z;
+        const uint64_t ctaid = uint64_t(blockIdx.x) * blockDim.y + threadIdx.y;
+
+        const int &nchan_in = p.nchan_in;
+        const int &nchan_out = p.nchan_out;
+        const int &nlat_halo = p.nlat_halo;
+        const int &nlon_kx = p.nlon_kx;
+        const int &nlon_in = p.nlon_in;
+        const int &pscale = p.pscale;
+        const int &lon_lo_kx = p.lon_lo_kx;
+        const int &lat_halo_start = p.lat_halo_start;
+        const int &nlat_out = p.nlat_out;
+        const int &nlon_out = p.nlon_out;
+
+        if (ctaid >= uint64_t(nlat_max) * nlon_out) { return; }
+
+        alignas(float4) extern __shared__ float shext[];
+
+        // FLOATV_T *sh_dy = reinterpret_cast<FLOATV_T *>(shext) + threadIdx.y*(nchan_in+nchan_out) + tidx;
+        // FLOATV_T *sh_qy = sh_dy + nchan_out; // [nchan_in], so always offest by tidx
+
+        // just to simplify the seatup of the shared memory layout
+        using FLOATV_PTR_T = const FLOATV_T *;
+
+        // chunked into 4 arrays: FLOATV_T shq[BDIM_Y][nchan_in]
+        //                        FLOATV_T *shkx_ptr[BDIM_Y][shcol_len_max]
+        //                        FLOATV_T *shvx_ptr[BDIM_Y][shcol_len_max]
+        //                        float     shweight[BDIM_Y][shcol_len_max]
+        FLOATV_T *base_fltv = NULL;
+        FLOATV_PTR_T *base_fltv_ptr = NULL;
+        float *base_flt = NULL;
+
+        if constexpr (sizeof(FLOATV_T) > sizeof(FLOATV_PTR_T)) {
+            base_fltv = reinterpret_cast<FLOATV_T *>(shext);
+            base_fltv_ptr = reinterpret_cast<FLOATV_PTR_T *>(base_fltv + BDIM_Y * nchan_in);
+            base_flt = reinterpret_cast<float *>(base_fltv_ptr + BDIM_Y * 2 * shcol_len_max);
+        } else {
+            base_fltv_ptr = reinterpret_cast<FLOATV_PTR_T *>(shext);
+            base_fltv = reinterpret_cast<FLOATV_T *>(base_fltv_ptr + BDIM_Y * 2 * shcol_len_max);
+            base_flt = reinterpret_cast<float *>(base_fltv + BDIM_Y * nchan_in);
+        }
+
+        FLOATV_T *shq = base_fltv + tidy * nchan_in;                                            // [nchan_in]
+        FLOATV_PTR_T *shkx_ptr = base_fltv_ptr + tidy * shcol_len_max;                          // [shcol_len_max]
+        FLOATV_PTR_T *shvx_ptr = base_fltv_ptr + BDIM_Y * shcol_len_max + tidy * shcol_len_max; // [shcol_len_max]
+        float *shweight = base_flt + tidy * shcol_len_max;                                      // [shcol_len_max]
+
+        shq += tidx;
+
+        const int h = ctaid / nlon_out;
+        const int wo = ctaid - (h * nlon_out);
+        const int ho = row_idx[h];
+
+        kx += int64_t(batch) * nlat_halo * nlon_kx * nchan_in;  //  + tidx;
+        vx += int64_t(batch) * nlat_halo * nlon_kx * nchan_out; //  + tidx;
+
+        qy += int64_t(batch) * nlat_out * nlon_out * nchan_in + int64_t(ho) * nlon_out * nchan_in
+            + int64_t(wo) * nchan_in + tidx;
+
+        const int64_t out_flat = int64_t(batch) * nlat_out * nlon_out + int64_t(ho) * nlon_out + wo;
+
+        y_acc += out_flat * nchan_out + tidx;
+        alpha_sum_buf += out_flat;
+        qdotk_max_curr += out_flat;
+
+        // Load current state
+        float alpha_sum = 0;
+        float qdotk_max_new = qdotk_max_curr[0];
+
+        FLOATV_T locy[NLOC];
+        strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) { locy[i] = __vset<FLOATV_T>(0); });
+
+        strided_op<BDIM_X, CHIN_AS_OUT ? NLOC : 0>(nchan_in, [&](int i) { shq[i * BDIM_X] = qy[i * BDIM_X]; });
+
+        // `pscale` is the GLOBAL ratio nlon_in / nlon_out_global, passed by the caller.
+        // Computing it here as `nlon_in / nlon_out` would be wrong because the kernel's
+        // `nlon_out` is the LOCAL output width (nlon_out_local), not the global one.
+
+        const int64_t rbeg = row_off[ho];
+        const int64_t rend = row_off[ho + 1];
+        const int rlen = rend - rbeg;
+
+        col_idx += rbeg + blk_split_id;
+
+        const int rlen_div = rlen / blk_per_row;
+        const int rlen_mod = rlen % blk_per_row;
+
+        int n = rlen_div + (blk_split_id < rlen_mod);
+        int n_active = 0;
+
+        for (int i = 0; i < n; i += BDIM_X) {
+
+            const FLOATV_T *kx_ptr = NULL;
+            const FLOATV_T *vx_ptr = NULL;
+            float weight = 0;
+
+            if (i + tidx < n) {
+                const int64_t col = col_idx[(i + tidx) * blk_per_row];
+
+                const int hi_global = col / nlon_in;
+                const int wi = col - (hi_global * nlon_in);
+                const int wi_wo = wi + pscale * wo;
+
+                const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
+
+                if (wip >= lon_lo_kx && wip < lon_lo_kx + nlon_kx) {
+
+                    const int hi_local = hi_global - lat_halo_start;
+
+                    if (hi_local >= 0 && hi_local < nlat_halo) {
+
+                        const int wip_local = wip - lon_lo_kx;
+                        kx_ptr = kx + int64_t(hi_local) * nlon_kx * nchan_in + int64_t(wip_local) * nchan_in;
+                        vx_ptr = vx + int64_t(hi_local) * nlon_kx * nchan_out + int64_t(wip_local) * nchan_out;
+                        weight = quad_weights[hi_global];
+                    }
+                }
+            }
+
+            int toff;
+            int ntot = __compact<BDIM_X, BDIM_Y>(kx_ptr != NULL, &toff);
+            if (kx_ptr != NULL) {
+                shkx_ptr[n_active + toff] = kx_ptr;
+                shvx_ptr[n_active + toff] = vx_ptr;
+                shweight[n_active + toff] = weight;
+            }
+            n_active += ntot;
+        }
+        n = n_active;
+
+        __group_sync<BDIM_X>();
+
+        for (int i = 0; i < n; i++) {
+
+            const FLOATV_T *_kx = shkx_ptr[i] + tidx;
+            const FLOATV_T *_vx = shvx_ptr[i] + tidx;
+
+            FLOATV_T qdotkv = __vset<FLOATV_T>(0.f);
+            strided_op<BDIM_X, CHIN_AS_OUT ? NLOC : 0>(
+                nchan_in, [&](int i) { qdotkv = __vadd(qdotkv, __vmul(shq[i * BDIM_X], _kx[i * BDIM_X])); });
+
+            float qdotk = __vred(qdotkv);
+            __group_sum<BDIM_X, BDIM_Y>(qdotk);
+
+            const float alpha = expf(qdotk - qdotk_max_new) * shweight[i]; // quad_weights[hi_global];
+
+            alpha_sum += alpha;
+
+            strided_op<BDIM_X, NLOC>(nchan_out,
+                                     [&](int i) { locy[i] = __vadd(locy[i], __vscale(alpha, _vx[i * BDIM_X])); });
+        }
+
+        // Store updated state
+        if (!tidx) {
+            atomicAdd(alpha_sum_buf, alpha_sum);
+            // qdotk_max_buf[0] = qdotk_max; // no need to store, after kernel qdotk_max_curr will be copied into qdotk_max_prev
+        }
+
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 900
+        constexpr bool DO_SPLIT_VEC = sizeof(FLOATV_T) / sizeof(float) == 4;
+#else
+        constexpr bool DO_SPLIT_VEC = false;
+#endif
+        if constexpr (DO_SPLIT_VEC) {
+            strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) {
+                atomicAdd(&y_acc[i * BDIM_X].x, locy[i].x);
+                atomicAdd(&y_acc[i * BDIM_X].y, locy[i].y);
+                atomicAdd(&y_acc[i * BDIM_X].z, locy[i].z);
+                atomicAdd(&y_acc[i * BDIM_X].w, locy[i].w);
+            });
+        } else {
+            strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) { atomicAdd(y_acc + i * BDIM_X, locy[i]); });
+        }
+        return;
+    }
+
+    template <int BDIM_X, int LOC_SIZE, typename FLOATV_T>
+    void spc_attn_ring_fwd_long_rows(attn_params_t params, int64_t n_long_rows, int64_t max_row_len, int64_t batch_size,
+                                     FLOATV_T *_kxp, FLOATV_T *_vxp, FLOATV_T *_qyp, int32_t *_row_idx,
+                                     int64_t *_row_off, int64_t *_col_idx, float *_quad_weights, FLOATV_T *_y_acc,
+                                     float *_alpha_sum, float *_qdotk_max, cudaStream_t stream)
+    {
+
+        static_assert(0 == (BDIM_X & (BDIM_X - 1)));
+        static_assert(std::is_same<FLOATV_T, float>::value || std::is_same<FLOATV_T, float4>::value);
+
+        if (!n_long_rows) { return; }
+
+        const int nlat_out = params.nlat_out;
+        const int nlon_out = params.nlon_out;
+        const int nchans_in = params.nchan_in;
+        const int nchans_out = params.nchan_out;
+
+        const bool chin_as_out = (nchans_in >= BDIM_X * (LOC_SIZE - 1) && nchans_in <= BDIM_X * LOC_SIZE);
+
+        constexpr int BDIM_Y = (BDIM_X <= WARP_SIZE) ? THREADS / BDIM_X : 1;
+
+        dim3 block(BDIM_X, BDIM_Y);
+
+        // temporary, should this be passed into the module like qdotk_max_buf?
+        torch::Tensor t_qdotk_max_new
+            = torch::from_blob(_qdotk_max, {batch_size * nlat_out * nlon_out},
+                               torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA))
+                  .clone();
+
+        float *_qdotk_max_new = reinterpret_cast<float *>(t_qdotk_max_new.data_ptr());
+
+        const int cta_per_row
+            = min(int64_t(SPLIT_LONG_ROW_MAX_BLK_X_ROW), DIV_UP(max_row_len, SPLIT_LONG_ROW_MIN_WORK_X_BLK));
+
+        dim3 grid_lr(DIV_UP(n_long_rows * nlon_out, block.y), cta_per_row, batch_size);
+        dim3 grid_resc(DIV_UP(n_long_rows * nlon_out, block.y), batch_size);
+#if 0
+    printf("getPtxver(): %d\n", getPtxver());
+    printf("n_long_rows: %ld, max_row_len: %ld\n", n_long_rows, max_row_len);
+    printf("Launching s2_attn_fwd_ring_softmax_k<%d, %d, %d><<<(%u, %u, %u), (%u, %u), ...>>>\n",
+            BDIM_X, BDIM_Y, LOC_SIZE, grid_lr.x, grid_lr.y, grid_lr.z, block.x, block.y);
+#endif
+        const int max_niter_cta = DIV_UP(max_row_len, cta_per_row);
+
+        size_t shsize = (sizeof(FLOATV_T) * nchans_in + sizeof(FLOATV_T *) * max_niter_cta) * block.y;
+
+        auto kern = &s2_attn_fwd_ring_softmax_k<BDIM_X, BDIM_Y, LOC_SIZE, FLOATV_T>;
+        ensure_dyn_shmem(reinterpret_cast<const void *>(kern), shsize);
+
+        kern<<<grid_lr, block, shsize, stream>>>(params, max_niter_cta, n_long_rows, _kxp, _qyp, _row_idx, _row_off,
+                                                 _col_idx, _qdotk_max, _qdotk_max_new);
+        CHECK_ERROR("s2_attn_fwd_ring_softmax_k");
+
+        // also copies _qdotk_max_new values for long rows back into caller-provided _qdotk_max buffer
+        s2_attn_fwd_ring_rescale_k<BDIM_X, BDIM_Y, LOC_SIZE><<<grid_resc, block, 0, stream>>>(
+            params, n_long_rows, _row_idx, _alpha_sum, _qdotk_max, _qdotk_max_new, _y_acc);
+        CHECK_ERROR("s2_attn_fwd_ring_rescale_k");
+
+        shsize = (sizeof(FLOATV_T) * (nchans_in + nchans_out) + sizeof(FLOATV_T *) * max_niter_cta * 2
+                  + sizeof(float) * max_niter_cta)
+            * block.y;
+        if (chin_as_out) {
+            auto kern = &s2_attn_fwd_ring_finalize_k<BDIM_X, BDIM_Y, 1, LOC_SIZE, FLOATV_T>;
+            ensure_dyn_shmem(reinterpret_cast<const void *>(kern), shsize);
+
+            kern<<<grid_lr, block, shsize, stream>>>(params, max_niter_cta, n_long_rows, _kxp, _vxp, _qyp, _row_idx,
+                                                     _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max_new,
+                                                     _y_acc);
+        } else {
+            auto kern = &s2_attn_fwd_ring_finalize_k<BDIM_X, BDIM_Y, 0, LOC_SIZE, FLOATV_T>;
+            ensure_dyn_shmem(reinterpret_cast<const void *>(kern), shsize);
+
+            kern<<<grid_lr, block, shsize, stream>>>(params, max_niter_cta, n_long_rows, _kxp, _vxp, _qyp, _row_idx,
+                                                     _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max_new,
+                                                     _y_acc);
+        }
+        CHECK_ERROR("s2_attn_fwd_ring_finalize_k");
+
+        return;
+    }
+
+    // **************** end long-rows specific kernels ****************
+
+    // **************** start specialized kernel ****************
+
+    template <int BDIM_X, int BDIM_Y,
+              int CHIN_AS_OUT, // 1 iif "BDIM_X*(NLOC-1) <= nchan_in <= BDIM_X*NLOC" else 0
+              int NLOC,        // smallest int such that BDIM_X*NLOC >= nchan_out
+              typename FLOATV_T>
+    __global__ __launch_bounds__(BDIM_X *BDIM_Y) void s2_attn_fwd_ring_special_k(
+        const __grid_constant__ attn_params_t p, const int shcol_len_max, const int nlat_max,
+        const FLOATV_T *__restrict__ kx, // [batch][nlat_halo][nlon_kx][nchan_in]
+        const FLOATV_T *__restrict__ vx, // [batch][nlat_halo][nlon_kx][nchan_out]
+        const FLOATV_T *__restrict__ qy, // [batch][nlat_out][nlon_out][nchan_in]
+        const int32_t *__restrict__ row_idx, const int64_t *__restrict__ row_off,
+        const int64_t *__restrict__ col_idx,    // wi already shifted by pscale * lon_lo_out
+        const float *__restrict__ quad_weights, // [nlat_in_global]
+        FLOATV_T *__restrict__ y_acc,           // [batch][nlat_out][nlon_out][nchan_out] (in/out)
+        float *__restrict__ alpha_sum_buf,      // [batch][nlat_out][nlon_out] (in/out)
+        float *__restrict__ qdotk_max_buf)
+    { // [batch][nlat_out][nlon_out] (in/out)
+
+        static_assert(0 == (BDIM_X & (BDIM_X - 1)));
+        static_assert(0 == (BDIM_Y & (BDIM_Y - 1)));
+        static_assert((BDIM_X == WARP_SIZE && BDIM_Y > 1) || (BDIM_X > WARP_SIZE && BDIM_Y == 1));
+
+        const int tidx = threadIdx.x;
+        const int tidy = threadIdx.y;
+
+        const int ctaid = blockIdx.x * blockDim.y + threadIdx.y;
+        const int batch = blockIdx.y;
+
+        const int &nchan_in = p.nchan_in;
+        const int &nchan_out = p.nchan_out;
+        const int &nlat_halo = p.nlat_halo;
+        const int &nlon_kx = p.nlon_kx;
+        const int &nlon_in = p.nlon_in;
+        const int &pscale = p.pscale;
+        const int &lon_lo_kx = p.lon_lo_kx;
+        const int &lat_halo_start = p.lat_halo_start;
+        const int &nlat_out = p.nlat_out;
+        const int &nlon_out = p.nlon_out;
+
+        if (ctaid >= nlat_max * nlon_out) { return; }
+
+        alignas(float4) extern __shared__ float shext[];
+
+        using FLOATV_PTR_T = const FLOATV_T *;
+
+        // chunked into 4 arrays: FLOATV_T shq[BDIM_Y][nchan_in]
+        //                        FLOATV_T *shkx_ptr[BDIM_Y][shcol_len_max]
+        //                        FLOATV_T *shvx_ptr[BDIM_Y][shcol_len_max]
+        //                        float     shweight[BDIM_Y][shcol_len_max]
+        FLOATV_T *base_fltv = NULL;
+        FLOATV_PTR_T *base_fltv_ptr = NULL;
+        float *base_flt = NULL;
+
+        if constexpr (sizeof(FLOATV_T) > sizeof(FLOATV_PTR_T)) {
+            base_fltv = reinterpret_cast<FLOATV_T *>(shext);
+            base_fltv_ptr = reinterpret_cast<FLOATV_PTR_T *>(base_fltv + BDIM_Y * nchan_in);
+            base_flt = reinterpret_cast<float *>(base_fltv_ptr + BDIM_Y * 2 * shcol_len_max);
+        } else {
+            base_fltv_ptr = reinterpret_cast<FLOATV_PTR_T *>(shext);
+            base_fltv = reinterpret_cast<FLOATV_T *>(base_fltv_ptr + BDIM_Y * 2 * shcol_len_max);
+            base_flt = reinterpret_cast<float *>(base_fltv + BDIM_Y * nchan_in);
+        }
+
+        FLOATV_T *shq = base_fltv + tidy * nchan_in;
+        FLOATV_PTR_T *shkx_ptr = base_fltv_ptr + tidy * shcol_len_max;
+        FLOATV_PTR_T *shvx_ptr = base_fltv_ptr + BDIM_Y * shcol_len_max + tidy * shcol_len_max;
+        float *shweight = base_flt + tidy * shcol_len_max;
+
+        shq += tidx;
+
+        const int h = ctaid / nlon_out;
+        const int wo = ctaid - (h * nlon_out); // LOCAL wo
+        const int ho = row_idx[h];
+
+        kx += int64_t(batch) * nlat_halo * nlon_kx * nchan_in;
+        vx += int64_t(batch) * nlat_halo * nlon_kx * nchan_out;
+
+        qy += int64_t(batch) * nlat_out * nlon_out * nchan_in + int64_t(ho) * nlon_out * nchan_in
+            + int64_t(wo) * nchan_in + tidx;
+
+        const int64_t out_flat = int64_t(batch) * nlat_out * nlon_out + int64_t(ho) * nlon_out + wo;
+
+        y_acc += out_flat * nchan_out + tidx;
+        alpha_sum_buf += out_flat;
+        qdotk_max_buf += out_flat;
+
+        FLOATV_T locy[NLOC];
+
+        // Load current state from buffers
+        float alpha_sum = alpha_sum_buf[0];
+        float qdotk_max = qdotk_max_buf[0];
+
+        strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) { locy[i] = y_acc[i * BDIM_X]; });
+        strided_op<BDIM_X, CHIN_AS_OUT ? NLOC : 0>(nchan_in, [&](int i) { shq[i * BDIM_X] = qy[i * BDIM_X]; });
+
+        // `pscale` is the GLOBAL ratio nlon_in / nlon_out_global, passed by the caller.
+        // Computing it here as `nlon_in / nlon_out` would be wrong because the kernel's
+        // `nlon_out` is the LOCAL output width (nlon_out_local), not the global one.
+
+        const int64_t rbeg = row_off[ho];
+        const int64_t rend = row_off[ho + 1];
+        const int rlen = rend - rbeg;
+        col_idx += rbeg;
+
+        int n = rlen;
+        int n_active = 0;
+
+        for (int i = 0; i < n; i += BDIM_X) {
+
+            const FLOATV_T *kx_ptr = NULL;
+            const FLOATV_T *vx_ptr = NULL;
+            float weight = 0;
+
+            if (i + tidx < n) {
+                const int64_t col = col_idx[i + tidx];
+
+                const int hi_global = col / nlon_in;
+                const int wi = col - (hi_global * nlon_in);
+                const int wi_wo = wi + pscale * wo;
+
+                const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
+
+                if (wip >= lon_lo_kx && wip < lon_lo_kx + nlon_kx) {
+
+                    const int hi_local = hi_global - lat_halo_start;
+
+                    if (hi_local >= 0 && hi_local < nlat_halo) {
+
+                        const int wip_local = wip - lon_lo_kx;
+                        kx_ptr = kx + int64_t(hi_local) * nlon_kx * nchan_in + int64_t(wip_local) * nchan_in;
+                        vx_ptr = vx + int64_t(hi_local) * nlon_kx * nchan_out + int64_t(wip_local) * nchan_out;
+                        weight = quad_weights[hi_global];
+                    }
+                }
+            }
+
+            int toff;
+            int ntot = __compact<BDIM_X, BDIM_Y>(kx_ptr != NULL, &toff);
+            if (kx_ptr != NULL) {
+                shkx_ptr[n_active + toff] = kx_ptr;
+                shvx_ptr[n_active + toff] = vx_ptr;
+                shweight[n_active + toff] = weight;
+            }
+            n_active += ntot;
+        }
+        __group_sync<BDIM_X>();
+
+        n = n_active;
+
+        if (n == 0) { return; }
+
+        for (int i = 0; i < n; i++) {
+
+            const FLOATV_T *_kx = shkx_ptr[i] + tidx;
+            const FLOATV_T *_vx = shvx_ptr[i] + tidx;
+
+            FLOATV_T qdotkv = __vset<FLOATV_T>(0.f);
+            strided_op<BDIM_X, CHIN_AS_OUT ? NLOC : 0>(
+                nchan_in, [&](int i) { qdotkv = __vadd(qdotkv, __vmul(shq[i * BDIM_X], _kx[i * BDIM_X])); });
+
+            float qdotk = __vred(qdotkv);
+
+            __group_sum<BDIM_X, BDIM_Y>(qdotk);
+
+            const float qdotk_max_tmp = max(qdotk_max, qdotk);
+            const float alpha = expf(qdotk - qdotk_max_tmp) * shweight[i];
+            const float exp_save = expf(qdotk_max - qdotk_max_tmp);
+
+            alpha_sum = alpha + alpha_sum * exp_save;
+
+            strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) {
+                locy[i] = __vadd(__vscale(exp_save, locy[i]), __vscale(alpha, _vx[i * BDIM_X]));
+            });
+            qdotk_max = qdotk_max_tmp;
+        }
+
+        // Store updated state back to buffers, no need for BDIM_X benign race conditions...
+        if (!tidx) {
+            alpha_sum_buf[0] = alpha_sum;
+            qdotk_max_buf[0] = qdotk_max;
+        }
+
+        strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) { y_acc[i * BDIM_X] = locy[i]; });
+
+        return;
+    }
+
+    template <int BDIM_X, int CUR_LOC_SIZE,
+              int MAX_LOC_SIZE, // max size of FLOATV_T[] local array
+              typename FLOATV_T>
+    void launch_spc_attn_ring_fwd(attn_params_t params, int nloc, int64_t batch_size, FLOATV_T *_kxp, FLOATV_T *_vxp,
+                                  FLOATV_T *_qyp, int32_t *_row_idx, int64_t *_row_off, int64_t *_col_idx,
+                                  float *_quad_weights, FLOATV_T *_y_acc, float *_alpha_sum, float *_qdotk_max,
+                                  cudaStream_t stream)
+    {
+
+        static_assert(0 == (BDIM_X & (BDIM_X - 1)));
+        static_assert(std::is_same<FLOATV_T, float>::value || std::is_same<FLOATV_T, float4>::value);
+
+        if (CUR_LOC_SIZE == nloc) {
+
+            const int nlat_out = params.nlat_out;
+            const int nlon_out = params.nlon_out;
+            const int nchans_in = params.nchan_in;
+
+            int64_t n_long_rows;
+            int64_t max_row_len;
+            int64_t mid_row_len;
+
+            // splits the rows in "long" and "short" rows; long rows have
+            // a length >= max(SPLIT_LONG_ROW_MIN_LEN(1024), len(row_0))
+            // (since the rows are sorted in decreasing order, row_0 is the
+            // longest row); short rows are the remaining rows.
+            // If there are long rows, they are processed with a separate
+            // kernels using multiple blocks per row, in order to mitigate
+            // the imbalance causing long temporal tails.
+            split_csr_rows(SPLIT_ROW_LENGTH_THRES, SPLIT_LONG_ROW_MIN_LEN, nlat_out, _row_idx, _row_off, &n_long_rows,
+                           &max_row_len, &mid_row_len);
+
+            if (n_long_rows > 0) {
+                // processes the "long rows", from _row_idx[0] to _row_idx[n_long_rows-1]
+                spc_attn_ring_fwd_long_rows<BDIM_X, CUR_LOC_SIZE>(params, n_long_rows, max_row_len, batch_size, _kxp,
+                                                                  _vxp, _qyp, _row_idx, _row_off, _col_idx,
+                                                                  _quad_weights, _y_acc, _alpha_sum, _qdotk_max, stream);
+            }
+
+            int64_t n_reg_rows = nlat_out - n_long_rows;
+            if (!n_reg_rows) { return; }
+            // process the "short rows", from _row_idx[n_long_rows] to _row_idx[nlat_out-1]
+
+            // nloc determines the size of local arrays used to store
+            // y vectors, of length nchans_out;
+            // if nchans_in is >= BDIM_X*(nloc-1) and <= BDIM_X*nloc
+            // then we can use the same compile-time known loops used
+            // for output channels, with the execpetion of testing
+            // whether to execute the last iteration based on "nchans_in"
+            // rather than on "nchans_out"; in this way as long as the
+            // difference between the number of input and output channels
+            // is <= BDIM_X we can use the faster path
+            const bool chin_as_out = (nchans_in >= BDIM_X * (CUR_LOC_SIZE - 1) && nchans_in <= BDIM_X * CUR_LOC_SIZE);
+
+            constexpr int BDIM_Y = (BDIM_X <= WARP_SIZE) ? THREADS / BDIM_X : 1;
+
+            dim3 block(BDIM_X, BDIM_Y);
+            dim3 grid(DIV_UP(n_reg_rows * nlon_out, block.y), batch_size);
+
+            size_t shsize
+                = (sizeof(FLOATV_T) * nchans_in + sizeof(FLOATV_T *) * mid_row_len * 2 + sizeof(float) * mid_row_len)
+                * block.y;
+
+            if (chin_as_out) {
+                auto kern = &s2_attn_fwd_ring_special_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE, FLOATV_T>;
+                ensure_dyn_shmem(reinterpret_cast<const void *>(kern), shsize);
+
+                kern<<<grid, block, shsize, stream>>>(params, mid_row_len, n_reg_rows, _kxp, _vxp, _qyp,
+                                                      _row_idx + n_long_rows, _row_off, _col_idx, _quad_weights, _y_acc,
+                                                      _alpha_sum, _qdotk_max);
+            } else {
+                auto kern = &s2_attn_fwd_ring_special_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE, FLOATV_T>;
+                ensure_dyn_shmem(reinterpret_cast<const void *>(kern), shsize);
+
+                kern<<<grid, block, shsize, stream>>>(params, mid_row_len, n_reg_rows, _kxp, _vxp, _qyp,
+                                                      _row_idx + n_long_rows, _row_off, _col_idx, _quad_weights, _y_acc,
+                                                      _alpha_sum, _qdotk_max);
+            }
+            CHECK_ERROR("s2_attn_fwd_ring_special_k");
+
+            return;
+        }
+        if constexpr (CUR_LOC_SIZE < MAX_LOC_SIZE) {
+            launch_spc_attn_ring_fwd<BDIM_X, CUR_LOC_SIZE + 1, MAX_LOC_SIZE>(params, nloc, batch_size, _kxp, _vxp, _qyp,
+                                                                             _row_idx, _row_off, _col_idx, _quad_weights,
+                                                                             _y_acc, _alpha_sum, _qdotk_max, stream);
+        }
+    }
+
+    // **************** end specialized kernel ****************
 
     static void s2_attn_fwd_ring_step_dispatch(int64_t batch_size, int64_t nchans_in, int64_t nchans_out, int64_t nlon_in,
                                                int64_t pscale, int64_t nlat_halo, int64_t nlon_kx, int64_t lon_lo_kx,
@@ -168,46 +983,146 @@ namespace attention_kernels
                                                at::Tensor y_acc, at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf)
     {
 
+        static_assert(0 == (MAX_LOCAL_ARR_LEN & (MAX_LOCAL_ARR_LEN - 1)));
+
         auto stream = at::cuda::getCurrentCUDAStream().stream();
 
-        dim3 block(WARP_SIZE, THREADS / WARP_SIZE);
-        dim3 grid(DIV_UP(nlat_out * nlon_out, block.y), batch_size);
+        // smallest power of two "bdimx" (>=32) s.t. bdimx*MAX_LOCAL_ARR_LEN >= nchans_out
+        int bdimx;
+        bdimx = DIV_UP(nchans_out, MAX_LOCAL_ARR_LEN);
+        bdimx = max(bdimx, WARP_SIZE);
+        bdimx = next_pow2(bdimx);
 
         float *_kxp = reinterpret_cast<float *>(kxP.data_ptr());
         float *_vxp = reinterpret_cast<float *>(vxP.data_ptr());
         float *_qyp = reinterpret_cast<float *>(qyP.data_ptr());
-        float *_y_acc = reinterpret_cast<float *>(y_acc.data_ptr());
-        float *_alpha_sum = reinterpret_cast<float *>(alpha_sum_buf.data_ptr());
-        float *_qdotk_max = reinterpret_cast<float *>(qdotk_max_buf.data_ptr());
         int32_t *_row_idx = reinterpret_cast<int32_t *>(row_idx.data_ptr());
         int64_t *_row_off = reinterpret_cast<int64_t *>(row_off.data_ptr());
         int64_t *_col_idx = reinterpret_cast<int64_t *>(col_idx.data_ptr());
         float *_quad_weights = reinterpret_cast<float *>(quad_weights.data_ptr());
+        float *_y_acc = reinterpret_cast<float *>(y_acc.data_ptr());
+        float *_alpha_sum = reinterpret_cast<float *>(alpha_sum_buf.data_ptr());
+        float *_qdotk_max = reinterpret_cast<float *>(qdotk_max_buf.data_ptr());
 
         constexpr int VEC_SIZE = sizeof(float4) / sizeof(float);
+
+        attn_params_t params;
+
+        params.nchan_in = nchans_in;
+        params.nchan_out = nchans_out;
+        params.nlat_halo = nlat_halo;
+        params.nlon_kx = nlon_kx;
+        params.nlon_in = nlon_in;
+        params.pscale = pscale;
+        params.lon_lo_kx = lon_lo_kx;
+        params.lat_halo_start = lat_halo_start;
+        params.nlat_out = nlat_out;
+        params.nlon_out = nlon_out;
 
         if (!is_aligned<sizeof(float4)>(_kxp) || !is_aligned<sizeof(float4)>(_vxp) || !is_aligned<sizeof(float4)>(_qyp)
             || !is_aligned<sizeof(float4)>(_y_acc) || (nchans_in % VEC_SIZE) != 0 || (nchans_out % VEC_SIZE) != 0) {
 
-            size_t shsize = sizeof(float) * nchans_out * block.y;
-            s2_attn_fwd_ring_step_generic_vec_k<THREADS, float><<<grid, block, shsize, stream>>>(
-                nchans_in, nchans_out, nlat_halo, nlon_kx, nlon_in, pscale, lon_lo_kx, lat_halo_start, nlat_out,
-                nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _y_acc, _alpha_sum, _qdotk_max);
-            CHECK_ERROR("s2_attn_fwd_ring_step_generic_vec_k<float>");
+            const int nloc = DIV_UP(nchans_out, bdimx);
+
+            // to avoid the compilation of unused template instances;
+            // we use a block size BDIM_X that is the smallest power of 2
+            // such that BDIM_X*MAX_LOCAL_ARR_LEN >= nchans_out, so
+            // BDIM_X > 32 are used only for:
+            //
+            //  (BDIM_X-1)*MAX_LOCAL_ARR_LEN < nchans_out <= BDIM_X*MAX_LOCAL_ARR_LEN
+            constexpr int MIN_LOC_ARR_LEN = MAX_LOCAL_ARR_LEN / 2 + 1;
+
+            switch (bdimx) {
+            case 32:
+                launch_spc_attn_ring_fwd<32, 1, MAX_LOCAL_ARR_LEN>(params, nloc, batch_size, _kxp, _vxp, _qyp, _row_idx,
+                                                                   _row_off, _col_idx, _quad_weights, _y_acc,
+                                                                   _alpha_sum, _qdotk_max, stream);
+                break;
+            case 64:
+                launch_spc_attn_ring_fwd<64, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(
+                    params, nloc, batch_size, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _y_acc,
+                    _alpha_sum, _qdotk_max, stream);
+                break;
+            case 128:
+                launch_spc_attn_ring_fwd<128, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(
+                    params, nloc, batch_size, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _y_acc,
+                    _alpha_sum, _qdotk_max, stream);
+                break;
+            case 256:
+                launch_spc_attn_ring_fwd<256, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(
+                    params, nloc, batch_size, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _y_acc,
+                    _alpha_sum, _qdotk_max, stream);
+                break;
+            case 512:
+                launch_spc_attn_ring_fwd<512, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(
+                    params, nloc, batch_size, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _y_acc,
+                    _alpha_sum, _qdotk_max, stream);
+                break;
+            case 1024:
+                launch_spc_attn_ring_fwd<1024, MIN_LOC_ARR_LEN, MAX_LOCAL_ARR_LEN>(
+                    params, nloc, batch_size, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _y_acc,
+                    _alpha_sum, _qdotk_max, stream);
+                break;
+            default:
+                launch_gen_attn_ring_fwd(params, batch_size, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx,
+                                         _quad_weights, _y_acc, _alpha_sum, _qdotk_max, stream);
+                break;
+            }
 
         } else {
 
             float4 *_kxp4 = reinterpret_cast<float4 *>(_kxp);
             float4 *_vxp4 = reinterpret_cast<float4 *>(_vxp);
             float4 *_qyp4 = reinterpret_cast<float4 *>(_qyp);
-            float4 *_yacc4 = reinterpret_cast<float4 *>(_y_acc);
+            float4 *_y_acc4 = reinterpret_cast<float4 *>(_y_acc);
 
-            size_t shsize = sizeof(float4) * (nchans_out / VEC_SIZE) * block.y;
-            s2_attn_fwd_ring_step_generic_vec_k<THREADS, float4><<<grid, block, shsize, stream>>>(
-                nchans_in / VEC_SIZE, nchans_out / VEC_SIZE, nlat_halo, nlon_kx, nlon_in, pscale, lon_lo_kx,
-                lat_halo_start, nlat_out, nlon_out, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights,
-                _yacc4, _alpha_sum, _qdotk_max);
-            CHECK_ERROR("s2_attn_fwd_ring_step_generic_vec_k<float4>");
+            nchans_in /= VEC_SIZE;
+            nchans_out /= VEC_SIZE;
+
+            params.nchan_in = nchans_in;
+            params.nchan_out = nchans_out;
+
+            const int nloc = DIV_UP(nchans_out, bdimx);
+
+            constexpr int MAX_LOCAL_VEC_LEN = MAX_LOCAL_ARR_LEN / VEC_SIZE;
+            constexpr int MIN_LOC_VEC_LEN = MAX_LOCAL_VEC_LEN / 2 + 1;
+
+            switch (bdimx) {
+            case 32:
+                launch_spc_attn_ring_fwd<32, 1, MAX_LOCAL_VEC_LEN>(params, nloc, batch_size, _kxp4, _vxp4, _qyp4,
+                                                                   _row_idx, _row_off, _col_idx, _quad_weights, _y_acc4,
+                                                                   _alpha_sum, _qdotk_max, stream);
+                break;
+            case 64:
+                launch_spc_attn_ring_fwd<64, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(
+                    params, nloc, batch_size, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _y_acc4,
+                    _alpha_sum, _qdotk_max, stream);
+                break;
+            case 128:
+                launch_spc_attn_ring_fwd<128, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(
+                    params, nloc, batch_size, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _y_acc4,
+                    _alpha_sum, _qdotk_max, stream);
+                break;
+            case 256:
+                launch_spc_attn_ring_fwd<256, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(
+                    params, nloc, batch_size, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _y_acc4,
+                    _alpha_sum, _qdotk_max, stream);
+                break;
+            case 512:
+                launch_spc_attn_ring_fwd<512, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(
+                    params, nloc, batch_size, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _y_acc4,
+                    _alpha_sum, _qdotk_max, stream);
+                break;
+            case 1024:
+                launch_spc_attn_ring_fwd<1024, MIN_LOC_VEC_LEN, MAX_LOCAL_VEC_LEN>(
+                    params, nloc, batch_size, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx, _quad_weights, _y_acc4,
+                    _alpha_sum, _qdotk_max, stream);
+                break;
+            default:
+                launch_gen_attn_ring_fwd(params, batch_size, _kxp4, _vxp4, _qyp4, _row_idx, _row_off, _col_idx,
+                                         _quad_weights, _y_acc4, _alpha_sum, _qdotk_max, stream);
+                break;
+            }
         }
     }
 
