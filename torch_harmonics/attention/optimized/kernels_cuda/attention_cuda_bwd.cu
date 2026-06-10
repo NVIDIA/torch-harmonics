@@ -52,6 +52,8 @@
 
 #define MAX_LOCAL_ARR_LEN (16)
 
+#define USE_SPLIT_ROW_BWD
+
 namespace attention_kernels
 {
 
@@ -764,7 +766,7 @@ namespace attention_kernels
  
         // sh_dy[BDIM_Y][nchan_out], sh_qy[BDIM_Y][nchan_in]
         alignas(float4) extern __shared__ float shext[];
-#if 1
+
         // chunked into 4 arrays: FLOATV_T sh_dy[BDIM_Y][nchan_out]
         //                        FLOATV_T sh_qy[BDIM_Y][nchan_in]
         //                        int64_t *shoff[BDIM_Y][shcol_len_max]
@@ -787,10 +789,7 @@ namespace attention_kernels
         FLOATV_T *sh_qy    = base_fltv + BDIM_Y*nchan_out     + tidy*nchan_in;      // [nchan_in]
         int64_t  *shoff    = base_i64                         + tidy*shcol_len_max; // [shcol_len_max]
         float    *shweight = base_flt                         + tidy*shcol_len_max; // [shcol_len_max]
-#else
-        FLOATV_T *sh_dy = reinterpret_cast<FLOATV_T *>(shext) + tidy*(nchan_in + nchan_out);
-        FLOATV_T *sh_qy = sh_dy + nchan_out;
-#endif
+
         const int h  = ctaid / nlon_out;
         const int wo = ctaid - h*nlon_out;
         const int ho = row_idx[h];
@@ -825,7 +824,7 @@ namespace attention_kernels
         const int64_t rbeg = row_off[ho];
         const int64_t rend = row_off[ho + 1];
         const int     rlen = rend - rbeg;
-#if 1
+
         const int rlen_div = rlen / blk_per_row;
         const int rlen_mod = rlen % blk_per_row;
 
@@ -851,21 +850,7 @@ namespace attention_kernels
 
             const FLOATV_T *_kx = kx + shoff[i]*nchan_in;
             const FLOATV_T *_vx = vx + shoff[i]*nchan_out;
-#else
-        col_idx += rbeg;
- 
-        for (int i = blk_split_id; i < rlen; i += blk_per_row) {
 
-            const int64_t col = col_idx[i];
-
-            const int hi    = col / nlon_in;
-            const int wi    = col - hi*nlon_in;
-            const int wi_wo = wi + pscale*wo;
-            const int wip   = wi_wo - (wi_wo/nlon_in)*nlon_in;
- 
-            const FLOATV_T *_kx = kx + int64_t(hi)*nlon_in*nchan_in  + int64_t(wip)*nchan_in;
-            const FLOATV_T *_vx = vx + int64_t(hi)*nlon_in*nchan_out + int64_t(wip)*nchan_out;
-#endif 
             FLOATV_T qdotk_v = __vset<FLOATV_T>(0.f);
             FLOATV_T gdotv_v = __vset<FLOATV_T>(0.f);
  
@@ -877,17 +862,14 @@ namespace attention_kernels
 
             __group_sum<BDIM_X, BDIM_Y>(qdotk, gdotv);
  
-            const float alpha_inz     = expf(qdotk - qdotk_max) * shweight[i]; //quad_weights[hi];
+            const float alpha_inz     = expf(qdotk - qdotk_max) * shweight[i];
             const float alpha_mul     = alpha_inz * alpha_sum_inv;
             const float scale_fact_qy = (gdotv - integral_norm) * alpha_mul;
             const float scale_fact_dy =                           alpha_mul;
-#if 1
+
             FLOATV_T *_dkx = dkx + shoff[i]*nchan_in; 
             FLOATV_T *_dvx = dvx + shoff[i]*nchan_out;
-#else 
-            FLOATV_T *_dkx = dkx + int64_t(hi)*nlon_in*nchan_in  + int64_t(wip)*nchan_in;
-            FLOATV_T *_dvx = dvx + int64_t(hi)*nlon_in*nchan_out + int64_t(wip)*nchan_out;
-#endif
+
             constexpr int VEC_SIZE = sizeof(FLOATV_T)/sizeof(float);
 
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 900
@@ -1022,7 +1004,7 @@ namespace attention_kernels
         }
         { // scatter into _dkxp, _dvxp
             size_t shsize = (sizeof(FLOATV_T)*(nchan_in + nchan_out) +
-                             sizeof(int64_t)*max_niter_cta /* *2 */ +
+                             sizeof(int64_t)*max_niter_cta +
                              sizeof(float)*max_niter_cta) * block.y;
             if (chout_as_in) {
 
@@ -1095,10 +1077,10 @@ namespace attention_kernels
         if (ctaid >= uint64_t(/*nlat_out*/nlat_max)*nlon_out) { return; }
 
         extern __shared__ __align__(sizeof(float4)) float shext[];
-#if 1
+#ifdef USE_SPLIT_ROW_BWD
         // chunked into 4 arrays: FLOATV_T sh_dy[BDIM_Y][nchan_out]
         //                        FLOATV_T sh_qy[BDIM_Y][nchan_in]
-        //                        int64_t *shoff[BDIM_Y][shcol_len_max]
+        //                        int64_t  shoff[BDIM_Y][shcol_len_max]
         //                        float shweight[BDIM_Y][shcol_len_max]
         FLOATV_T *base_fltv = NULL;
         int64_t  *base_i64  = NULL;
@@ -1179,7 +1161,7 @@ namespace attention_kernels
         const int64_t rbeg = row_off[ho];
         const int64_t rend = row_off[ho + 1];
         const int     rlen = rend - rbeg;
-#if 1
+#ifdef USE_SPLIT_ROW_BWD
         col_idx += rbeg;
 
         for (int i = tidx; i < rlen; i += BDIM_X) {
@@ -1230,7 +1212,11 @@ namespace attention_kernels
             __group_sum<BDIM_X, BDIM_Y>(qdotk, gdotv);
 
             const float qdotk_max_tmp = max(qdotk_max, qdotk);
-            const float alpha_inz = expf(qdotk - qdotk_max_tmp)*shweight[i]; //quad_weights[hi];
+#ifdef USE_SPLIT_ROW_BWD
+            const float alpha_inz = expf(qdotk - qdotk_max_tmp)*shweight[i];
+#else
+            const float alpha_inz = expf(qdotk - qdotk_max_tmp)*quad_weights[hi];
+#endif
             const float max_correction = expf(qdotk_max - qdotk_max_tmp);
 
             alpha_sum = alpha_sum*max_correction + alpha_inz;
@@ -1254,7 +1240,7 @@ namespace attention_kernels
         strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) {
             dqy[i*BDIM_X + tidx] = __vscale(alpha_sum_inv_sq, __vsub(__vscale(alpha_sum, loc_kvw[i]), __vmul(loc_vw_[i], loc_k__[i])));
         });
-#if 1
+#ifdef USE_SPLIT_ROW_BWD
         for (int i = 0; i < rlen; i++) {
 
             const FLOATV_T *_kx = kx + shoff[i]*nchan_in;
@@ -1284,11 +1270,14 @@ namespace attention_kernels
 
             __group_sum<BDIM_X, BDIM_Y>(qdotk, gdotv);
 
-            const float alpha_inz = expf(qdotk - qdotk_max)*shweight[i]; //quad_weights[hi];
-#if 1
+#ifdef USE_SPLIT_ROW_BWD
+            const float alpha_inz = expf(qdotk - qdotk_max)*shweight[i];
+
             FLOATV_T *_dkx = dkx + shoff[i]*nchan_in;
             FLOATV_T *_dvx = dvx + shoff[i]*nchan_out;
 #else
+            const float alpha_inz = expf(qdotk - qdotk_max)*quad_weights[hi];
+
             FLOATV_T *_dkx = dkx + int64_t(hi)*nlon_in*nchan_in + int64_t(wip)*nchan_in;
             FLOATV_T *_dvx = dvx + int64_t(hi)*nlon_in*nchan_out + int64_t(wip)*nchan_out;
 #endif
@@ -1352,10 +1341,10 @@ namespace attention_kernels
             const int nchan_in  = params.nchan_in;
             const int nchan_out = params.nchan_out;
 
-            int64_t n_long_rows;
-            int64_t max_row_len;
-            int64_t mid_row_len;
-
+            int64_t n_long_rows = 0;
+            int64_t max_row_len = 0;
+            int64_t mid_row_len = 0;
+#ifdef USE_SPLIT_ROW_BWD
             // splits the rows in "long" and "short" rows; long rows have
             // a length >= max(SPLIT_LONG_ROW_MIN_LEN(1024), len(row_0))
             // (since the rows are sorted in decreasing order, row_0 is the
@@ -1375,7 +1364,7 @@ namespace attention_kernels
                                                              _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx,
                                                              _quad_weights, _dkxp, _dvxp, _dqyp, stream);
             }
-
+#endif
             int64_t n_reg_rows = nlat_out - n_long_rows;
             if (!n_reg_rows) { return; }
             // process the "short rows", from _row_idx[n_long_rows] to _row_idx[nlat_out-1]
@@ -1397,11 +1386,13 @@ namespace attention_kernels
 
             dim3 block(BDIM_X, BDIM_Y);
             dim3 grid(DIV_UP(/*nlat_out*/n_reg_rows*nlon_out, block.y), batch_size);
-            
+#ifdef USE_SPLIT_ROW_BWD
             size_t shsize = (sizeof(FLOATV_T)*(nchan_in + nchan_out) +
                              sizeof(int64_t)*mid_row_len +
                              sizeof(float  )*mid_row_len)* block.y; 
-
+#else
+            size_t shsize = sizeof(FLOATV_T)*(nchan_in + nchan_out) * block.y; 
+#endif
             if (chout_as_in) {
                 auto kern = &s2_attn_bwd_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE, FLOATV_T>;
                 ensure_dyn_shmem(reinterpret_cast<const void *>(kern), shsize);
