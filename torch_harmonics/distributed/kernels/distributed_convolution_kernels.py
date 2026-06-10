@@ -287,4 +287,11 @@ def _distributed_disco_fwd_a2a_reordered(
     if comm_size_azimuth > 1:
         out = reduce_from_scatter_to_azimuth_region(out, -1)
 
-    return out
+    # Force standard (channels-first) contiguity. The reduce-scatters can hand
+    # back a channels-last / non-default-strided tensor; without this it
+    # propagates downstream and trips DDP's gradient-layout-contract warning on
+    # the next layer (e.g. the 1x1 MLP conv gets a channels-last weight grad).
+    # The non-reordered a2a path is already contiguous via its einsum. Use a
+    # plain .contiguous() (the memory_format= kwarg is silently ignored in some
+    # op paths).
+    return out.contiguous()
