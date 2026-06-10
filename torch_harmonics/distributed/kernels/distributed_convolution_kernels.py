@@ -220,39 +220,47 @@ def _distributed_disco_fwd_a2a_reordered(
     if _disco_s2_fused_conv_optimized is None:
         raise NotImplementedError("fused=True requires the optimized DISCO CUDA kernels " "(_disco_s2_fused_conv_optimized); rebuild the optimized library " "or use fused=False.")
 
-    az = comm_size_azimuth
-    ar = comm_rank_azimuth
-    O, _, K = weight.shape  # weight: (O, groupsize, K)
-    Og = O // groups
-    C = groups * groupsize
+    out_channels, _, K = weight.shape  # weight: (out_channels, groupsize, K)
+    out_per_group = out_channels // groups
+    in_channels = groups * groupsize
 
     # 1. azimuth transpose W->C: full W, even channel shard.
-    x = distributed_transpose_azimuth(x, (1, -1), lon_in_shapes) if az > 1 else x
-    Cloc = x.shape[1]
-    cstart = ([0] + list(accumulate(compute_split_shapes(C, az)[:-1])))[ar] if az > 1 else 0
-    cend = cstart + Cloc
+    x = distributed_transpose_azimuth(x, (1, -1), lon_in_shapes) if comm_size_azimuth > 1 else x
+    local_in_channels = x.shape[1]
+    chan_start = ([0] + list(accumulate(compute_split_shapes(in_channels, comm_size_azimuth)[:-1])))[comm_rank_azimuth] if comm_size_azimuth > 1 else 0
+    chan_end = chan_start + local_in_channels
 
     if groups == 1:
-        # within-group channel split: one local group of size Cloc, no padding.
-        xpad = x.contiguous()
-        w_loc = weight[:, cstart:cend, :].reshape(1, O, Cloc, K)  # (G=1, Og=O, Cg=Cloc, K)
-        lg, gs_eff, og0 = 1, Cloc, 0
+        # within-group channel split: one local group of size local_in_channels, no padding.
+        x_padded = x.contiguous()
+        weight_local = weight[:, chan_start:chan_end, :].reshape(1, out_channels, local_in_channels, K)
+        n_local_groups, local_groupsize, out_channel_offset = 1, local_in_channels, 0
     else:
-        # round the channel shard to group boundaries; zero-fill the rest.
-        g_lo = cstart // groupsize
-        g_hi = -(-cend // groupsize)  # ceil
-        lg = g_hi - g_lo
-        gs_eff = groupsize
-        og0 = g_lo * Og
-        xpad = x.new_zeros(x.shape[0], lg * groupsize, x.shape[2], x.shape[3])
-        off = cstart - g_lo * groupsize
-        xpad[:, off : off + Cloc] = x
-        w_loc = weight.reshape(groups, Og, groupsize, K)[g_lo:g_hi]  # (lg, Og, gs, K)
+        # round the channel shard to whole-group boundaries.
+        group_lo = chan_start // groupsize  # floor
+        group_hi = (chan_end + groupsize - 1) // groupsize  # ceil
+        n_local_groups = group_hi - group_lo
+        local_groupsize = groupsize
+        out_channel_offset = group_lo * out_per_group
+        if n_local_groups * groupsize == local_in_channels:
+            # shard is already whole groups (e.g. groupsize == 1, or a
+            # group-aligned even split) — no padding/copy needed.
+            x_padded = x.contiguous()
+        else:
+            # the even split cut a group; zero-fill the shard out to group
+            # boundaries (a split group's halves are summed back by the
+            # azimuth reduce-scatter below).
+            x_padded = x.new_zeros(x.shape[0], n_local_groups * groupsize, x.shape[2], x.shape[3])
+            pad_offset = chan_start - group_lo * groupsize
+            x_padded[:, pad_offset : pad_offset + local_in_channels] = x
+        # (n_local_groups, out_per_group, groupsize, K)
+        weight_local = weight.reshape(groups, out_per_group, groupsize, K)[group_lo:group_hi]
 
-    # 2+3. fused contraction + local weight einsum -> (B, lg*Og, H_out_full, W_full).
-    op_out = _disco_s2_fused_conv_optimized(
-        xpad,
-        w_loc,
+    # 2+3. fused contraction + local weight einsum ->
+    #      (B, n_local_groups * out_per_group, H_out_full, W_full).
+    local_out = _disco_s2_fused_conv_optimized(
+        x_padded,
+        weight_local,
         psi_roff_idx,
         psi_ker_idx,
         psi_row_idx,
@@ -261,19 +269,22 @@ def _distributed_disco_fwd_a2a_reordered(
         kernel_size,
         nlat_out_local,
         nlon_out,
-        lg,
-        gs_eff,
+        n_local_groups,
+        local_groupsize,
     )
 
-    # 4. place into a full-O tensor (zeros for groups this rank doesn't touch).
+    # 4. place into a full output-channel tensor (zeros for groups this rank
+    #    doesn't touch; a group split across ranks is summed by the azimuth rs).
     if groups == 1:
-        out = op_out  # already full O (partial over C; summed by the azimuth rs)
+        out = local_out  # already full out_channels (partial over C; summed by the azimuth rs)
     else:
-        out = op_out.new_zeros(op_out.shape[0], O, op_out.shape[-2], op_out.shape[-1])
-        out[:, og0 : og0 + lg * Og] = op_out
+        out = local_out.new_zeros(local_out.shape[0], out_channels, local_out.shape[-2], local_out.shape[-1])
+        out[:, out_channel_offset : out_channel_offset + n_local_groups * out_per_group] = local_out
 
     # 5. collectives on the small K-less output.
     out = reduce_from_scatter_to_polar_region(out, -2)
-    if az > 1:
+
+    if comm_size_azimuth > 1:
         out = reduce_from_scatter_to_azimuth_region(out, -1)
+
     return out

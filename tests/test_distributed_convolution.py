@@ -196,6 +196,10 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
             [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, 1e-6, 1e-5],
             [65, 128, 33, 64, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
+            # group coverage: depthwise (groups == n_channels) and a groupsize>1
+            # split (C=12, groups=3 -> groupsize=4).
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 8, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 12, (3), "piecewise linear", "mean", 3, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
             # fp64
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, False, 1e-6, 1e-6],
             [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, False, 1e-6, 1e-6],
@@ -207,13 +211,20 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             [721, 1440, 721, 1440, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
             [721, 1440, 360, 720, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular", "legendre-gauss", torch.float32, False, False, 1e-6, 1e-5],
             # ---- fused=True : reordered a2a (CUDA + optimized kernels) ----
-            # non-transpose only; covers groups=1, groups=2, downsample, harmonic.
+            # non-transpose only; downsample + harmonic.
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
             [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
             [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
             [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
             [65, 128, 33, 64, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
+            # group coverage for the padded grouped path:
+            #  groups=1            -> within-group channel split (no padding)
+            #  groups=2 (gs=4)     -> split cuts a group at az>=4 (padding)
+            #  groups=3,C=12 (gs=4)-> split cuts a group at az=2 and az=4 (padding)
+            #  groups=C (gs=1)     -> depthwise; every channel a group (no-pad fast path)
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 12, (3), "piecewise linear", "mean", 3, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 8, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
             # ---- AMP (fp16/bf16) ----
             # Each dtype runs fused off AND on (non-transpose). The transpose
             # class has no ``fused`` argument, so it runs fused=False only
