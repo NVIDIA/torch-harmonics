@@ -30,16 +30,15 @@
 #
 
 """
-Per-algorithm Python orchestration kernels for the distributed conv/SHT
-modules.  Each submodule exposes one or more ``_distributed_*_fwd_<method>``
-entry points that take an input tensor + module-precomputed state and
-return the output of one forward pass for that algorithm. The public
-classes in ``torch_harmonics.distributed`` dispatch into these based on
-their ``method=`` flag (mirroring Transformer Engine's context-parallelism
-API).
+Python orchestration kernels for the distributed conv/SHT modules. Each
+submodule exposes ``_distributed_*_fwd`` entry points that take an input
+tensor + module-precomputed state and return one forward pass. The
+distributed conv exposes a standard a2a forward (``_distributed_disco_fwd_a2a``)
+and a reordered/fused variant (``_distributed_disco_fwd_a2a_reordered``),
+selected by the public ``fused=`` flag.
 """
 
 from .distributed_convolution_kernels import (
     _distributed_disco_fwd_a2a,
-    _distributed_disco_fwd_ring,
+    _distributed_disco_fwd_a2a_reordered,
 )

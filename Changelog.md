@@ -6,7 +6,7 @@
 
 * Fused DISCO kernel for serial convolution: fuses the sparse psi contraction and weight multiplication into a single autograd region, avoiding the K-expanded intermediate activation in the graph and reducing memory footprint by a factor of K. Enabled via `fused=True` on `DiscreteContinuousConvS2`.
 * Distributed DISCO convolution now uses `reduce_scatter` instead of `all_reduce` + `scatter` for the polar reduction, cutting communicated data volume in half.
-* New ring communication variant for distributed DISCO convolution (`method="ring"`): nearest-neighbor rotation along the azimuth group replaces the bulk all-to-all transpose. The K-expanded intermediate never crosses any collective, making this path better suited for deep-channel / narrow-spatial layers. CUDA-only; set `fused=True` for maximum activation-memory savings (recomputes the ring forward in backward). Double-buffered P2P transfers available via `TORCH_HARMONICS_P2P_BUFFER=1`.
+* Added fused distributed DISCO convolution variant which reduces activation storage.
 * Improved performance for CPU based attention kernels.
 * Converted all Python assert statements to torch._check for better torch.compile friendliness. All asserts in cosntructors were converted into ValueErrors for streamlined and clear error handling. In C++ and CUDA compiled code, all dynamic asserts were changed to TORCH_CHECK calls.
 * Improved performance of distributed attention kernels achieved by splitting the kernel into two different ones for dense and less dense rows. This happens behind the scenes and the distributed attention API is unchanged.
