@@ -90,9 +90,10 @@ namespace attention_kernels
     void split_csr_rows(float thres, int64_t split_len, int64_t nrows, int32_t *row_idx, int64_t *row_off,
                         int64_t *n_long_rows, int64_t *max_row_len0, int64_t *max_row_len1);
 
-    // One-time host-side wrapper around split_csr_rows, exposed as the
-    // "split_csr_rows" op so Python can precompute the row split once (the
-    // result is constant for a fixed psi) and pass it into the ring-step ops.
+    // One-time wrapper exposed as the "split_csr_rows" op so Python can
+    // precompute the row split once (constant for a fixed psi) and pass it into
+    // the ring-step ops. Handles CPU and CUDA row_idx/row_off; the module
+    // constructor calls it on the still-on-CPU local psi buffers.
     std::tuple<int64_t, int64_t, int64_t> split_csr_rows_op(at::Tensor row_idx, at::Tensor row_off, int64_t nlat_out);
 
     unsigned int next_pow2(unsigned int x);
