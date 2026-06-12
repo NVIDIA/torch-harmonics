@@ -164,6 +164,15 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             # upsampling
             [4, 4, 4, 1, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
             [4, 4, 4, 1, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.bfloat16, 5e-2, 5e-2],
+            # same-resolution gather (self-attention) — the path the down/upsample rows skip
+            [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
+            [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.bfloat16, 5e-2, 5e-2],
+            # gather, multi-head + asymmetric channels (C_in > C_out)
+            [4, 8, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
+            [4, 8, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.bfloat16, 5e-2, 5e-2],
+            # gather with QK norm enabled
+            [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", True, torch.float16, 2e-2, 1e-2],
+            [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", True, torch.bfloat16, 5e-2, 5e-2],
         ],
         skip_on_empty=True,
     )

@@ -29,6 +29,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "attention_cuda.cuh"
+#include <ATen/Dispatch.h>
+#include <ATen/OpMathType.h>
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/cuda/detail/KernelUtils.h>
 #include <ATen/cuda/detail/IndexUtils.cuh>
@@ -527,33 +529,47 @@ namespace attention_kernels
         // extract dtype
         auto qy_type = qy.dtype();
 
-        torch::Tensor kxP = kx.to(torch::kFloat32);
-        torch::Tensor vxP = vx.to(torch::kFloat32);
-        torch::Tensor qyP = qy.to(torch::kFloat32);
+        torch::Tensor y;
 
-        // these are much safer than checking is_contiguous(at::MemoryFormat::ChannelsLast)
-        // the former fails for num_channels == 1
-        bool kx_is_channels_last = kxP.strides()[1] == 1;
-        bool vx_is_channels_last = vxP.strides()[1] == 1;
-        bool qy_is_channels_last = qyP.strides()[1] == 1;
+        // ATen dispatch over the input dtype. Tier A: the body still upcasts to
+        // fp32 and runs the existing fp32-only kernels, so behavior is identical
+        // for every dtype (fp16/bf16 continue to work via the upcast path). The
+        // storage_t/compute_t aliases are the plumbing Tier B uses to move the
+        // conversion from this whole-tensor upcast down to the load/store sites.
+        AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, qy.scalar_type(), "s2_attention_fwd_cuda", [&] {
+            using storage_t = scalar_t;
+            using compute_t = at::opmath_type<storage_t>;
+            (void)sizeof(storage_t);
+            (void)sizeof(compute_t);
 
-        if (!kx_is_channels_last) { kxP = permute_4D_to0231(kxP); }
-        if (!vx_is_channels_last) { vxP = permute_4D_to0231(vxP); }
-        if (!qy_is_channels_last) { qyP = permute_4D_to0231(qyP); }
+            torch::Tensor kxP = kx.to(torch::kFloat32);
+            torch::Tensor vxP = vx.to(torch::kFloat32);
+            torch::Tensor qyP = qy.to(torch::kFloat32);
 
-        int64_t out_dims[] = {batch_size, nlat_out, nlon_out, nchans_out};
-        torch::Tensor yP = torch::empty(out_dims, kxP.options());
+            // these are much safer than checking is_contiguous(at::MemoryFormat::ChannelsLast)
+            // the former fails for num_channels == 1
+            bool kx_is_channels_last = kxP.strides()[1] == 1;
+            bool vx_is_channels_last = vxP.strides()[1] == 1;
+            bool qy_is_channels_last = qyP.strides()[1] == 1;
 
-        if (downsample) {
-            s2_attn_fwd_dispatch(batch_size, nchans_in, nchans_out, nlon_in, nlat_out, nlon_out, kxP, vxP, qyP,
-                                 psi_row_off, psi_col_idx, quad_weights, yP);
-        } else {
-            s2_attn_fwd_upsample_dispatch(batch_size, nchans_in, nchans_out, nlon_in, nlat_in, nlat_out, nlon_out, kxP,
-                                          vxP, qyP, psi_row_off, psi_col_idx, quad_weights, yP);
-        }
+            if (!kx_is_channels_last) { kxP = permute_4D_to0231(kxP); }
+            if (!vx_is_channels_last) { vxP = permute_4D_to0231(vxP); }
+            if (!qy_is_channels_last) { qyP = permute_4D_to0231(qyP); }
 
-        torch::Tensor y = yP;
-        if (!qy_is_channels_last) { y = permute_4D_to0312(y); }
+            int64_t out_dims[] = {batch_size, nlat_out, nlon_out, nchans_out};
+            torch::Tensor yP = torch::empty(out_dims, kxP.options());
+
+            if (downsample) {
+                s2_attn_fwd_dispatch(batch_size, nchans_in, nchans_out, nlon_in, nlat_out, nlon_out, kxP, vxP, qyP,
+                                     psi_row_off, psi_col_idx, quad_weights, yP);
+            } else {
+                s2_attn_fwd_upsample_dispatch(batch_size, nchans_in, nchans_out, nlon_in, nlat_in, nlat_out, nlon_out,
+                                              kxP, vxP, qyP, psi_row_off, psi_col_idx, quad_weights, yP);
+            }
+
+            y = yP;
+            if (!qy_is_channels_last) { y = permute_4D_to0312(y); }
+        });
 
         // convert precision back to starting
         y = y.to(qy_type);

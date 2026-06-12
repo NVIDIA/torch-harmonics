@@ -241,6 +241,12 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             # adds a cross-rank reduce on top (see feedback_amp_fp16_cancellation).
             [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float16, 5e-2, 1e-2],
             [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.bfloat16, 3e-1, 5e-2],
+            # same-resolution gather (self-attention) — the path the downsample rows skip
+            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float16, 5e-2, 1e-2],
+            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.bfloat16, 3e-1, 5e-2],
+            # multi-head same-resolution gather
+            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, torch.float16, 5e-2, 1e-2],
+            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, torch.bfloat16, 3e-1, 5e-2],
         ],
         skip_on_empty=True,
     )
