@@ -96,9 +96,18 @@ namespace attention_kernels
         // LOCAL output width and would give the wrong ratio when az_size > 1).
         // col_idx must have wi pre-shifted by pscale * lon_lo_out — see
         // _build_local_psi in distributed_attention.py.
+        // split_csr_rows precomputes the long/short row split for a fixed psi
+        // (returns n_long_rows, max_row_len, mid_row_len). Called once from the
+        // module constructor; the result is passed into the ring-step ops below
+        // as the trailing (n_long_rows, max_row_len, mid_row_len) ints, hoisting
+        // it out of the per-step hot path (where it otherwise cost a 24-byte D2H
+        // sync/step). NOT pt2-compliant and intentionally has no fake/meta impl:
+        // it is a setup-time host-side scalar computation that is never traced.
+        m.def("split_csr_rows(Tensor row_idx, Tensor row_off, int nlat_out) -> (int, int, int)");
         m.def("forward_ring_step(Tensor kx, Tensor vx, Tensor qy, Tensor(a!) y_acc, Tensor(b!) alpha_sum_buf, "
               "Tensor(c!) qdotk_max_buf, Tensor quad_weights, Tensor col_idx, Tensor row_off, Tensor row_idx, int "
-              "nlon_in, int pscale, int lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out) -> ()",
+              "nlon_in, int pscale, int lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out, int n_long_rows, "
+              "int max_row_len, int mid_row_len) -> ()",
               {at::Tag::pt2_compliant_tag});
         // Backward is split into two passes: pass1 finalizes per-output softmax
         // statistics (alpha_sum, qdotk_max, integral, alpha_k, alpha_kvw), pass2
@@ -106,12 +115,13 @@ namespace attention_kernels
         m.def("backward_ring_step_pass1(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor(a!) alpha_sum_buf, "
               "Tensor(b!) qdotk_max_buf, Tensor(c!) integral_buf, Tensor(d!) alpha_k_buf, Tensor(e!) alpha_kvw_buf, "
               "Tensor quad_weights, Tensor col_idx, Tensor row_off, Tensor row_idx, int nlon_in, int pscale, int "
-              "lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out) -> ()",
+              "lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out, int n_long_rows, int max_row_len, int "
+              "mid_row_len) -> ()",
               {at::Tag::pt2_compliant_tag});
         m.def("backward_ring_step_pass2(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor alpha_sum_buf, Tensor "
               "qdotk_max_buf, Tensor integral_norm_buf, Tensor(a!) dkx, Tensor(b!) dvx, Tensor quad_weights, Tensor "
               "col_idx, Tensor row_off, Tensor row_idx, int nlon_in, int pscale, int lon_lo_kx, int lat_halo_start, "
-              "int nlat_out, int nlon_out) -> ()",
+              "int nlat_out, int nlon_out, int n_long_rows, int max_row_len, int mid_row_len) -> ()",
               {at::Tag::pt2_compliant_tag});
     }
 

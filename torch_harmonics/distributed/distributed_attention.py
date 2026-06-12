@@ -99,6 +99,9 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         az_group,
         az_rank: int,
         az_size: int,
+        psi_n_long_rows: int,
+        psi_max_row_len: int,
+        psi_mid_row_len: int,
     ):
         B, _, _, _ = kw.shape
         _, C_v, _, _ = vw.shape
@@ -145,6 +148,9 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                 lat_halo_start,
                 nlat_out_local,
                 nlon_out_local,
+                psi_n_long_rows,
+                psi_max_row_len,
+                psi_mid_row_len,
             )
 
             if step < az_size - 1:
@@ -185,6 +191,9 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
             az_group,
             az_rank,
             az_size,
+            psi_n_long_rows,
+            psi_max_row_len,
+            psi_mid_row_len,
         ) = inputs
         y_out, alpha_sum, qdotk_max = output
         # alpha_sum and qdotk_max are internal accumulators, not true outputs;
@@ -201,6 +210,9 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         ctx.az_group = az_group
         ctx.az_rank = az_rank
         ctx.az_size = az_size
+        ctx.psi_n_long_rows = psi_n_long_rows
+        ctx.psi_max_row_len = psi_max_row_len
+        ctx.psi_mid_row_len = psi_mid_row_len
 
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
@@ -218,6 +230,9 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         az_group = ctx.az_group
         az_rank = ctx.az_rank
         az_size = ctx.az_size
+        psi_n_long_rows = ctx.psi_n_long_rows
+        psi_max_row_len = ctx.psi_max_row_len
+        psi_mid_row_len = ctx.psi_mid_row_len
 
         # Autograd contract: skip per-branch work (kernel calls, allreduces) for any
         # of {kw, vw, qw} that doesn't need a gradient, and return None in those slots.
@@ -230,7 +245,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # Defensive: if somehow none of (kw, vw, qw) need grad (e.g., user wired
         # requires_grad onto one of the index buffers), there's nothing to compute.
         if not (kw_needs_grad or vw_needs_grad or qw_needs_grad):
-            return (None,) * 18
+            return (None,) * 21
 
         B, C_k, H_halo, _ = kw.shape
         _, C_v, _, _ = vw.shape
@@ -294,6 +309,9 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                 lat_halo_start,
                 nlat_out_local,
                 nlon_out_local,
+                psi_n_long_rows,
+                psi_max_row_len,
+                psi_mid_row_len,
             )
 
             if step < az_size - 1:
@@ -367,6 +385,9 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                     lat_halo_start,
                     nlat_out_local,
                     nlon_out_local,
+                    psi_n_long_rows,
+                    psi_max_row_len,
+                    psi_mid_row_len,
                 )
 
                 if kw_needs_grad:
@@ -412,8 +433,9 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # Return grads for (kw, vw, qw, psi_col, psi_roff, psi_row, quad_weights,
         #                   nlon_in, pscale, lon_chunk_starts, nlon_kx_list, lat_halo_start,
         #                   nlat_out_local, nlon_out_local, r_lat,
-        #                   az_group, az_rank, az_size)
-        return dkw, dvw, dqy, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None
+        #                   az_group, az_rank, az_size,
+        #                   psi_n_long_rows, psi_max_row_len, psi_mid_row_len)
+        return (dkw, dvw, dqy, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -520,7 +542,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         # We filter to only the rows owned by this rank and shift the wi
         # component of col_idx by lon_lo_out so that the kernel can use
         # local wo directly without knowing the global lon offset.
-        self._build_local_psi()
+        self._build_local_psi()  # also precomputes self.psi_{n_long_rows,max_row_len,mid_row_len}
 
         # ---- lat halo size ----
         # Compute r_lat from the global psi: maximum |hi_global - ho_global|
@@ -574,6 +596,18 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         self.register_buffer("psi_col_idx_local", col_idx_shifted, persistent=False)
         self.register_buffer("psi_roff_idx_local", roff_local, persistent=False)
         self.register_buffer("psi_row_idx_local", row_idx_local, persistent=False)
+
+        # Precompute the CSR long/short row split once, here in the constructor,
+        # on the still-on-CPU local psi buffers (split_csr_rows has a CPU path).
+        # The split depends only on the psi sparsity geometry, which is fixed
+        # after init, so it is identical on every ring step / iteration. Computing
+        # it once keeps it off the per-step hot path (it otherwise cost a 24-byte
+        # D2H sync per ring step) and off any compiled forward. Stored as plain
+        # Python ints and threaded into the ring-step ops.
+        n_long_rows, max_row_len, mid_row_len = attention_kernels.split_csr_rows.default(row_idx_local, roff_local, self.nlat_out_local)
+        self.psi_n_long_rows = int(n_long_rows)
+        self.psi_max_row_len = int(max_row_len)
+        self.psi_mid_row_len = int(mid_row_len)
 
     def _compute_r_lat(self) -> int:
         """Max lat halo radius needed across all polar ranks.
@@ -707,6 +741,9 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
             azimuth_group(),
             self.comm_rank_azimuth,
             self.comm_size_azimuth,
+            self.psi_n_long_rows,
+            self.psi_max_row_len,
+            self.psi_mid_row_len,
         )  # [Bnh, C_v, H_out_local, W_out_local]
 
         # unfold num_heads

@@ -250,6 +250,73 @@ namespace attention_kernels
 
         return;
     }
+
+    // One-time wrapper, exposed as the "split_csr_rows" op. The split is a pure
+    // function of the psi sparsity geometry (row_idx/row_off/nlat_out), which is
+    // fixed after init, so callers invoke this once (from the module constructor)
+    // and thread the result into every ring step instead of recomputing it (and
+    // paying a 24-byte D2H sync) per step. row_idx is int32, row_off is int64.
+    //
+    // Registered for both CPU and CUDA: the constructor computes the split while
+    // the local psi buffers are still on the CPU (before .to(device)), so the CPU
+    // path is the one normally taken. The CUDA path keeps the op valid if it is
+    // ever called on device tensors. The CPU scan mirrors get_rlen_boundary_k
+    // exactly (same constants + same float truncation in the threshold) so both
+    // backends select identical long/short row splits.
+    std::tuple<int64_t, int64_t, int64_t> split_csr_rows_op(at::Tensor row_idx, at::Tensor row_off, int64_t nlat_out)
+    {
+        if (nlat_out <= 0) { return std::make_tuple(int64_t(0), int64_t(0), int64_t(0)); }
+
+        if (row_idx.is_cuda()) {
+            CHECK_CUDA_TENSOR(row_idx);
+            CHECK_CUDA_TENSOR(row_off);
+
+            int32_t *_row_idx = reinterpret_cast<int32_t *>(row_idx.data_ptr());
+            int64_t *_row_off = reinterpret_cast<int64_t *>(row_off.data_ptr());
+
+            int64_t n_long_rows = 0, max_row_len = 0, mid_row_len = 0;
+            split_csr_rows(SPLIT_ROW_LENGTH_THRES, SPLIT_LONG_ROW_MIN_LEN, nlat_out, _row_idx, _row_off, &n_long_rows,
+                           &max_row_len, &mid_row_len);
+
+            return std::make_tuple(n_long_rows, max_row_len, mid_row_len);
+        }
+
+        // CPU path: host-side scan. Rows are sorted by decreasing length, so the
+        // "long" rows form a prefix; count it and read the first short row length.
+        at::Tensor ri = row_idx.contiguous();
+        at::Tensor ro = row_off.contiguous();
+        const int32_t *idx = ri.data_ptr<int32_t>();
+        const int64_t *off = ro.data_ptr<int64_t>();
+
+        const int64_t max_rlen = off[idx[0] + 1] - off[idx[0]];
+        const int64_t thres_len = int64_t(float(max_rlen) * SPLIT_ROW_LENGTH_THRES);
+        const int64_t min_longr_len
+            = (int64_t(SPLIT_LONG_ROW_MIN_LEN) > thres_len) ? int64_t(SPLIT_LONG_ROW_MIN_LEN) : thres_len;
+
+        int64_t tot_long = 0;
+        for (int64_t i = 0; i < nlat_out; i++) {
+            const int32_t row = idx[i];
+            const int64_t rlen = off[row + 1] - off[row];
+            if (rlen >= min_longr_len) {
+                tot_long++;
+            } else {
+                break;
+            }
+        }
+
+        const int64_t n_long_rows = tot_long;
+        const int64_t max_row_len = tot_long ? max_rlen : 0;
+        int64_t mid_row_len = 0;
+        if (tot_long < nlat_out) {
+            const int32_t first_short_row = idx[tot_long];
+            mid_row_len = off[first_short_row + 1] - off[first_short_row];
+        }
+
+        return std::make_tuple(n_long_rows, max_row_len, mid_row_len);
+    }
+
+    TORCH_LIBRARY_IMPL(attention_kernels, CPU, m) { m.impl("split_csr_rows", &split_csr_rows_op); }
+    TORCH_LIBRARY_IMPL(attention_kernels, CUDA, m) { m.impl("split_csr_rows", &split_csr_rows_op); }
     // END - CSR row splitting kernels and functions
 
     // BEGIN - general host-side functions
