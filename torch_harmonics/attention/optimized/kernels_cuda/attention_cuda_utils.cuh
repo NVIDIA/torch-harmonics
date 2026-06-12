@@ -57,6 +57,14 @@ namespace attention_kernels
         int lat_halo_start;
         int nlat_out;
         int nlon_out;
+        // Precomputed CSR row split (see split_csr_rows). These depend only on
+        // the psi sparsity geometry (row_idx/row_off/nlat_out), which is fixed
+        // after init, so they are computed once on the host side and threaded
+        // in via the ring-step dispatch instead of being recomputed every ring
+        // step (which previously incurred a per-step 24-byte D2H sync).
+        int64_t n_long_rows;
+        int64_t max_row_len;
+        int64_t mid_row_len;
     };
 
     // CSR rows sorting kernels and functions
@@ -81,6 +89,11 @@ namespace attention_kernels
 
     void split_csr_rows(float thres, int64_t split_len, int64_t nrows, int32_t *row_idx, int64_t *row_off,
                         int64_t *n_long_rows, int64_t *max_row_len0, int64_t *max_row_len1);
+
+    // One-time host-side wrapper around split_csr_rows, exposed as the
+    // "split_csr_rows" op so Python can precompute the row split once (the
+    // result is constant for a fixed psi) and pass it into the ring-step ops.
+    std::tuple<int64_t, int64_t, int64_t> split_csr_rows_op(at::Tensor row_idx, at::Tensor row_off, int64_t nlat_out);
 
     unsigned int next_pow2(unsigned int x);
 

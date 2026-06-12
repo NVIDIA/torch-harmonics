@@ -250,6 +250,28 @@ namespace attention_kernels
 
         return;
     }
+
+    // One-time host-side wrapper, exposed as the "split_csr_rows" op. The split
+    // is a pure function of the psi sparsity geometry (row_idx/row_off/nlat_out),
+    // which is fixed after init, so callers invoke this once and thread the
+    // result into every ring step instead of recomputing it (and paying a
+    // 24-byte D2H sync) per step. row_idx is int32, row_off is int64, both CUDA.
+    std::tuple<int64_t, int64_t, int64_t> split_csr_rows_op(at::Tensor row_idx, at::Tensor row_off, int64_t nlat_out)
+    {
+        CHECK_CUDA_TENSOR(row_idx);
+        CHECK_CUDA_TENSOR(row_off);
+
+        int32_t *_row_idx = reinterpret_cast<int32_t *>(row_idx.data_ptr());
+        int64_t *_row_off = reinterpret_cast<int64_t *>(row_off.data_ptr());
+
+        int64_t n_long_rows = 0, max_row_len = 0, mid_row_len = 0;
+        split_csr_rows(SPLIT_ROW_LENGTH_THRES, SPLIT_LONG_ROW_MIN_LEN, nlat_out, _row_idx, _row_off, &n_long_rows,
+                       &max_row_len, &mid_row_len);
+
+        return std::make_tuple(n_long_rows, max_row_len, mid_row_len);
+    }
+
+    TORCH_LIBRARY_IMPL(attention_kernels, CUDA, m) { m.impl("split_csr_rows", &split_csr_rows_op); }
     // END - CSR row splitting kernels and functions
 
     // BEGIN - general host-side functions

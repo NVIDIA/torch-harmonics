@@ -902,19 +902,17 @@ namespace attention_kernels
             const int nlon_out = params.nlon_out;
             const int nchans_in = params.nchan_in;
 
-            int64_t n_long_rows;
-            int64_t max_row_len;
-            int64_t mid_row_len;
-
-            // splits the rows in "long" and "short" rows; long rows have
-            // a length >= max(SPLIT_LONG_ROW_MIN_LEN(1024), len(row_0))
-            // (since the rows are sorted in decreasing order, row_0 is the
-            // longest row); short rows are the remaining rows.
-            // If there are long rows, they are processed with a separate
-            // kernels using multiple blocks per row, in order to mitigate
-            // the imbalance causing long temporal tails.
-            split_csr_rows(SPLIT_ROW_LENGTH_THRES, SPLIT_LONG_ROW_MIN_LEN, nlat_out, _row_idx, _row_off, &n_long_rows,
-                           &max_row_len, &mid_row_len);
+            // Row split (long vs short rows) precomputed once at setup and
+            // threaded in via params — see split_csr_rows / split_csr_rows_op.
+            // long rows have a length >= max(SPLIT_LONG_ROW_MIN_LEN(1024),
+            // len(row_0)) (rows are sorted in decreasing order, so row_0 is the
+            // longest); short rows are the remaining rows. If there are long
+            // rows, they are processed with a separate kernel using multiple
+            // blocks per row, to mitigate the imbalance causing long temporal
+            // tails.
+            const int64_t n_long_rows = params.n_long_rows;
+            const int64_t max_row_len = params.max_row_len;
+            const int64_t mid_row_len = params.mid_row_len;
 
             if (n_long_rows > 0) {
                 // processes the "long rows", from _row_idx[0] to _row_idx[n_long_rows-1]
@@ -980,7 +978,8 @@ namespace attention_kernels
                                                int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out,
                                                at::Tensor kxP, at::Tensor vxP, at::Tensor qyP, at::Tensor row_idx,
                                                at::Tensor row_off, at::Tensor col_idx, at::Tensor quad_weights,
-                                               at::Tensor y_acc, at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf)
+                                               at::Tensor y_acc, at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
+                                               int64_t n_long_rows, int64_t max_row_len, int64_t mid_row_len)
     {
 
         static_assert(0 == (MAX_LOCAL_ARR_LEN & (MAX_LOCAL_ARR_LEN - 1)));
@@ -1018,6 +1017,9 @@ namespace attention_kernels
         params.lat_halo_start = lat_halo_start;
         params.nlat_out = nlat_out;
         params.nlon_out = nlon_out;
+        params.n_long_rows = n_long_rows;
+        params.max_row_len = max_row_len;
+        params.mid_row_len = mid_row_len;
 
         if (!is_aligned<sizeof(float4)>(_kxp) || !is_aligned<sizeof(float4)>(_vxp) || !is_aligned<sizeof(float4)>(_qyp)
             || !is_aligned<sizeof(float4)>(_y_acc) || (nchans_in % VEC_SIZE) != 0 || (nchans_out % VEC_SIZE) != 0) {
@@ -1130,7 +1132,8 @@ namespace attention_kernels
                                          at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf, at::Tensor quad_weights,
                                          at::Tensor psi_col_idx, at::Tensor psi_row_off, at::Tensor psi_row_idx,
                                          int64_t nlon_in, int64_t pscale, int64_t lon_lo_kx, int64_t lat_halo_start,
-                                         int64_t nlat_out, int64_t nlon_out)
+                                         int64_t nlat_out, int64_t nlon_out, int64_t n_long_rows, int64_t max_row_len,
+                                         int64_t mid_row_len)
     {
         CHECK_CUDA_INPUT_TENSOR(kx);
         CHECK_CUDA_INPUT_TENSOR(vx);
@@ -1163,7 +1166,8 @@ namespace attention_kernels
 
         s2_attn_fwd_ring_step_dispatch(batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx,
                                        lon_lo_kx, lat_halo_start, nlat_out, nlon_out, kxP, vxP, qyP, psi_row_idx,
-                                       psi_row_off, psi_col_idx, quad_weights, y_acc, alpha_sum_buf, qdotk_max_buf);
+                                       psi_row_off, psi_col_idx, quad_weights, y_acc, alpha_sum_buf, qdotk_max_buf,
+                                       n_long_rows, max_row_len, mid_row_len);
 
         C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
