@@ -542,15 +542,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         # We filter to only the rows owned by this rank and shift the wi
         # component of col_idx by lon_lo_out so that the kernel can use
         # local wo directly without knowing the global lon offset.
-        self._build_local_psi()
-
-        # Cache for the precomputed CSR row split (n_long_rows, max_row_len,
-        # mid_row_len). It is a pure function of the local psi geometry, which
-        # is fixed after init, so it is computed once on first forward (when the
-        # psi buffers are guaranteed to be on the CUDA device) and reused — see
-        # _row_split(). This hoists split_csr_rows out of the per-ring-step hot
-        # path, where it otherwise cost a 24-byte D2H sync every step.
-        self._psi_row_split = None
+        self._build_local_psi()  # also precomputes self.psi_{n_long_rows,max_row_len,mid_row_len}
 
         # ---- lat halo size ----
         # Compute r_lat from the global psi: maximum |hi_global - ho_global|
@@ -605,20 +597,17 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         self.register_buffer("psi_roff_idx_local", roff_local, persistent=False)
         self.register_buffer("psi_row_idx_local", row_idx_local, persistent=False)
 
-    def _row_split(self):
-        """Precomputed (n_long_rows, max_row_len, mid_row_len) for the local psi.
-
-        Computed once and cached. The split depends only on the psi sparsity
-        geometry (psi_row_idx_local / psi_roff_idx_local / nlat_out_local),
-        which is fixed after init, so the result is identical on every ring step
-        and every iteration. Computing it here (lazily, on first forward) keeps
-        it off the per-step hot path; the underlying op does one kernel launch
-        and one 24-byte D2H, but only once per module lifetime.
-        """
-        if self._psi_row_split is None:
-            n_long_rows, max_row_len, mid_row_len = attention_kernels.split_csr_rows.default(self.psi_row_idx_local, self.psi_roff_idx_local, self.nlat_out_local)
-            self._psi_row_split = (int(n_long_rows), int(max_row_len), int(mid_row_len))
-        return self._psi_row_split
+        # Precompute the CSR long/short row split once, here in the constructor,
+        # on the still-on-CPU local psi buffers (split_csr_rows has a CPU path).
+        # The split depends only on the psi sparsity geometry, which is fixed
+        # after init, so it is identical on every ring step / iteration. Computing
+        # it once keeps it off the per-step hot path (it otherwise cost a 24-byte
+        # D2H sync per ring step) and off any compiled forward. Stored as plain
+        # Python ints and threaded into the ring-step ops.
+        n_long_rows, max_row_len, mid_row_len = attention_kernels.split_csr_rows.default(row_idx_local, roff_local, self.nlat_out_local)
+        self.psi_n_long_rows = int(n_long_rows)
+        self.psi_max_row_len = int(max_row_len)
+        self.psi_mid_row_len = int(mid_row_len)
 
     def _compute_r_lat(self) -> int:
         """Max lat halo radius needed across all polar ranks.
@@ -733,7 +722,6 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         # projections under autocast already produce bf16, so this is usually
         # a no-op; covers the case where upstream is fp32-producing.
         key_halo, value_halo, query_proj = _cast_to_autocast_dtype(key_halo, value_halo, query_proj)
-        psi_n_long_rows, psi_max_row_len, psi_mid_row_len = self._row_split()
         out, _, _ = _RingNeighborhoodAttentionFn.apply(
             key_halo,
             value_halo,
@@ -753,9 +741,9 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
             azimuth_group(),
             self.comm_rank_azimuth,
             self.comm_size_azimuth,
-            psi_n_long_rows,
-            psi_max_row_len,
-            psi_mid_row_len,
+            self.psi_n_long_rows,
+            self.psi_max_row_len,
+            self.psi_mid_row_len,
         )  # [Bnh, C_v, H_out_local, W_out_local]
 
         # unfold num_heads
