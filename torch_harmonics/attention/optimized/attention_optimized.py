@@ -85,6 +85,9 @@ if optimized_kernels_is_available():
         lat_halo_start: int,
         nlat_out: int,
         nlon_out: int,
+        n_long_rows: int,
+        max_row_len: int,
+        mid_row_len: int,
     ) -> None:
         pass
 
@@ -109,6 +112,9 @@ if optimized_kernels_is_available():
         lat_halo_start: int,
         nlat_out: int,
         nlon_out: int,
+        n_long_rows: int,
+        max_row_len: int,
+        mid_row_len: int,
     ) -> None:
         pass
 
@@ -133,6 +139,9 @@ if optimized_kernels_is_available():
         lat_halo_start: int,
         nlat_out: int,
         nlon_out: int,
+        n_long_rows: int,
+        max_row_len: int,
+        mid_row_len: int,
     ) -> None:
         pass
 
