@@ -1030,5 +1030,62 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             model(q, kv, q)
 
 
+class TestSplitCsrRows(unittest.TestCase):
+    """The split_csr_rows op has two implementations: a CPU host scan (used by the
+    DistributedNeighborhoodAttentionS2 constructor, which runs on the still-on-CPU
+    psi buffers) and the original CUDA kernel. They must select identical long/short
+    row splits, otherwise the constructor (CPU) and any device-side call would size
+    the ring kernels differently."""
+
+    @staticmethod
+    def _build_csr(row_lengths):
+        """Build (row_idx int32 sorted by decreasing length, row_off int64 prefix sum)
+        from a 1D tensor of per-row nnz — mirrors how _build_local_psi constructs them."""
+        rl = torch.as_tensor(row_lengths, dtype=torch.int64)
+        n = rl.numel()
+        row_off = torch.zeros(n + 1, dtype=torch.int64)
+        torch.cumsum(rl, dim=0, out=row_off[1:])
+        row_idx = torch.argsort(rl, descending=True).to(torch.int32)
+        return row_idx, row_off
+
+    @parameterized.expand(
+        [
+            # name, per-row lengths
+            ["all_short_uniform", [16] * 32],
+            ["all_short_varied", [3, 7, 1, 12, 5, 9, 2, 8, 4, 11]],
+            ["all_equal", [512] * 20],
+            ["single_row", [777]],
+            # long rows present: lengths above the SPLIT_LONG_ROW_MIN_LEN (1024) floor
+            ["one_long_rest_short", [4096] + [16] * 31],
+            ["several_long_floor_1024", [2048, 1536, 1100, 1024, 64, 32, 16, 8]],
+            # threshold branch dominates the floor (0.1 * max_rlen > 1024)
+            ["thres_branch_above_floor", [40000, 39000, 12000, 5000, 100, 50, 10]],
+            # boundary: a row exactly at the floor
+            ["exactly_at_floor", [1024, 1024, 1023, 512, 1]],
+            ["descending_ramp", list(range(200, 0, -1))],
+        ],
+        skip_on_empty=True,
+    )
+    @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
+    def test_cpu_cuda_equivalence(self, name, row_lengths):
+        if not (torch.cuda.is_available() and cuda_kernels_is_available()):
+            raise unittest.SkipTest("split_csr_rows CPU/CUDA comparison requires CUDA kernels")
+
+        row_idx, row_off = self._build_csr(row_lengths)
+        nlat_out = row_idx.numel()
+
+        cpu_out = torch.ops.attention_kernels.split_csr_rows(row_idx, row_off, nlat_out)
+        cuda_out = torch.ops.attention_kernels.split_csr_rows(row_idx.cuda(), row_off.cuda(), nlat_out)
+
+        cpu_out = tuple(int(x) for x in cpu_out)
+        cuda_out = tuple(int(x) for x in cuda_out)
+
+        self.assertEqual(
+            cpu_out,
+            cuda_out,
+            msg=f"[{name}] CPU split {cpu_out} != CUDA split {cuda_out} " f"(n_long_rows, max_row_len, mid_row_len)",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
