@@ -1022,19 +1022,16 @@ namespace attention_kernels
             // const int nchans_in  = params.nchan_in;
             const int nchans_out = params.nchan_out;
 
-            int64_t n_long_rows;
-            int64_t max_row_len;
-            int64_t mid_row_len;
-
-            // splits the rows in "long" and "short" rows; long rows have
-            // a length >= max(SPLIT_LONG_ROW_MIN_LEN(1024), len(row_0))
-            // (since the rows are sorted in decreasing order, row_0 is the
-            // longest row); short rows are the remaining rows.
-            // If there are long rows, they are processed with a separate
-            // kernels using multiple blocks per row, in order to mitigate
-            // the imbalance causing long temporal tails.
-            split_csr_rows(SPLIT_ROW_LENGTH_THRES, SPLIT_LONG_ROW_MIN_LEN, nlat_out, _row_idx, _row_off, &n_long_rows,
-                           &max_row_len, &mid_row_len);
+            // Row split precomputed once at setup and threaded in via params —
+            // see split_csr_rows / split_csr_rows_op. long rows have a length
+            // >= max(SPLIT_LONG_ROW_MIN_LEN(1024), len(row_0)) (rows are sorted
+            // in decreasing order, so row_0 is the longest); short rows are the
+            // remaining rows. If there are long rows, they are processed with a
+            // separate kernel using multiple blocks per row, to mitigate the
+            // imbalance causing long temporal tails.
+            const int64_t n_long_rows = params.n_long_rows;
+            const int64_t max_row_len = params.max_row_len;
+            const int64_t mid_row_len = params.mid_row_len;
 
             if (n_long_rows > 0) {
                 // processes the "long rows", from _row_idx[0] to _row_idx[n_long_rows-1]
@@ -1107,7 +1104,7 @@ namespace attention_kernels
         int64_t nlon_kx, int64_t lon_lo_kx, int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out, at::Tensor kxP,
         at::Tensor vxP, at::Tensor qyP, at::Tensor dyP, at::Tensor row_idx, at::Tensor row_off, at::Tensor col_idx,
         at::Tensor quad_weights, at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf, at::Tensor integral_buf,
-        at::Tensor alpha_k_buf, at::Tensor alpha_kvw_buf)
+        at::Tensor alpha_k_buf, at::Tensor alpha_kvw_buf, int64_t n_long_rows, int64_t max_row_len, int64_t mid_row_len)
     {
 
         auto stream = at::cuda::getCurrentCUDAStream().stream();
@@ -1146,6 +1143,9 @@ namespace attention_kernels
         params.lat_halo_start = lat_halo_start;
         params.nlat_out = nlat_out;
         params.nlon_out = nlon_out;
+        params.n_long_rows = n_long_rows;
+        params.max_row_len = max_row_len;
+        params.mid_row_len = mid_row_len;
 
         if (!is_aligned<sizeof(float4)>(_kxp) || !is_aligned<sizeof(float4)>(_vxp) || !is_aligned<sizeof(float4)>(_qyp)
             || !is_aligned<sizeof(float4)>(_dyp) || (nchans_in % VEC_SIZE) != 0 || (nchans_out % VEC_SIZE) != 0) {
@@ -1653,19 +1653,16 @@ namespace attention_kernels
             int nchans_in = params.nchan_in;
             int nchans_out = params.nchan_out;
 
-            int64_t n_long_rows;
-            int64_t max_row_len;
-            int64_t mid_row_len;
-
-            // splits the rows in "long" and "short" rows; long rows have
-            // a length >= max(SPLIT_LONG_ROW_MIN_LEN(1024), len(row_0))
-            // (since the rows are sorted in decreasing order, row_0 is the
-            // longest row); short rows are the remaining rows.
-            // If there are long rows, they are processed with a separate
-            // kernels using multiple blocks per row, in order to mitigate
-            // the imbalance causing long temporal tails.
-            split_csr_rows(SPLIT_ROW_LENGTH_THRES, SPLIT_LONG_ROW_MIN_LEN, nlat_out, _row_idx, _row_off, &n_long_rows,
-                           &max_row_len, &mid_row_len);
+            // Row split precomputed once at setup and threaded in via params —
+            // see split_csr_rows / split_csr_rows_op. long rows have a length
+            // >= max(SPLIT_LONG_ROW_MIN_LEN(1024), len(row_0)) (rows are sorted
+            // in decreasing order, so row_0 is the longest); short rows are the
+            // remaining rows. If there are long rows, they are processed with a
+            // separate kernel using multiple blocks per row, to mitigate the
+            // imbalance causing long temporal tails.
+            const int64_t n_long_rows = params.n_long_rows;
+            const int64_t max_row_len = params.max_row_len;
+            const int64_t mid_row_len = params.mid_row_len;
 
             int64_t n_reg_rows = nlat_out - n_long_rows;
 
@@ -1764,14 +1761,12 @@ namespace attention_kernels
 
     ///////////////// END PASS2 SECTION
 
-    static void s2_attn_bwd_ring_step_pass2_dispatch(int64_t batch_size, int64_t nchans_in, int64_t nchans_out,
-                                                     int64_t nlon_in, int64_t pscale, int64_t nlat_halo,
-                                                     int64_t nlon_kx, int64_t lon_lo_kx, int64_t lat_halo_start,
-                                                     int64_t nlat_out, int64_t nlon_out, at::Tensor kxP, at::Tensor vxP,
-                                                     at::Tensor qyP, at::Tensor dyP, at::Tensor row_idx,
-                                                     at::Tensor row_off, at::Tensor col_idx, at::Tensor quad_weights,
-                                                     at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
-                                                     at::Tensor integral_norm_buf, at::Tensor dkxP, at::Tensor dvxP)
+    static void s2_attn_bwd_ring_step_pass2_dispatch(
+        int64_t batch_size, int64_t nchans_in, int64_t nchans_out, int64_t nlon_in, int64_t pscale, int64_t nlat_halo,
+        int64_t nlon_kx, int64_t lon_lo_kx, int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out, at::Tensor kxP,
+        at::Tensor vxP, at::Tensor qyP, at::Tensor dyP, at::Tensor row_idx, at::Tensor row_off, at::Tensor col_idx,
+        at::Tensor quad_weights, at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf, at::Tensor integral_norm_buf,
+        at::Tensor dkxP, at::Tensor dvxP, int64_t n_long_rows, int64_t max_row_len, int64_t mid_row_len)
     {
 
         auto stream = at::cuda::getCurrentCUDAStream().stream();
@@ -1810,6 +1805,9 @@ namespace attention_kernels
         params.lat_halo_start = lat_halo_start;
         params.nlat_out = nlat_out;
         params.nlon_out = nlon_out;
+        params.n_long_rows = n_long_rows;
+        params.max_row_len = max_row_len;
+        params.mid_row_len = mid_row_len;
 
         if (!is_aligned<sizeof(float4)>(_kxp) || !is_aligned<sizeof(float4)>(_vxp) || !is_aligned<sizeof(float4)>(_qyp)
             || !is_aligned<sizeof(float4)>(_dyp) || (nchans_in % VEC_SIZE) != 0 || (nchans_out % VEC_SIZE) != 0) {
@@ -1910,7 +1908,8 @@ namespace attention_kernels
                                                at::Tensor integral_buf, at::Tensor alpha_k_buf, at::Tensor alpha_kvw_buf,
                                                at::Tensor quad_weights, at::Tensor psi_col_idx, at::Tensor psi_row_off,
                                                at::Tensor psi_row_idx, int64_t nlon_in, int64_t pscale, int64_t lon_lo_kx,
-                                               int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out)
+                                               int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out,
+                                               int64_t n_long_rows, int64_t max_row_len, int64_t mid_row_len)
     {
         CHECK_CUDA_INPUT_TENSOR(kx);
         CHECK_CUDA_INPUT_TENSOR(vx);
@@ -1942,10 +1941,10 @@ namespace attention_kernels
         if (qyP.strides()[1] != 1) { qyP = permute_4D_to0231(qyP); }
         if (dyP.strides()[1] != 1) { dyP = permute_4D_to0231(dyP); }
 
-        s2_attn_bwd_ring_step_pass1_dispatch(batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx,
-                                             lon_lo_kx, lat_halo_start, nlat_out, nlon_out, kxP, vxP, qyP, dyP,
-                                             psi_row_idx, psi_row_off, psi_col_idx, quad_weights, alpha_sum_buf,
-                                             qdotk_max_buf, integral_buf, alpha_k_buf, alpha_kvw_buf);
+        s2_attn_bwd_ring_step_pass1_dispatch(
+            batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out,
+            nlon_out, kxP, vxP, qyP, dyP, psi_row_idx, psi_row_off, psi_col_idx, quad_weights, alpha_sum_buf,
+            qdotk_max_buf, integral_buf, alpha_k_buf, alpha_kvw_buf, n_long_rows, max_row_len, mid_row_len);
 
         C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
@@ -1955,7 +1954,8 @@ namespace attention_kernels
                                                at::Tensor integral_norm_buf, at::Tensor dkx, at::Tensor dvx,
                                                at::Tensor quad_weights, at::Tensor psi_col_idx, at::Tensor psi_row_off,
                                                at::Tensor psi_row_idx, int64_t nlon_in, int64_t pscale, int64_t lon_lo_kx,
-                                               int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out)
+                                               int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out,
+                                               int64_t n_long_rows, int64_t max_row_len, int64_t mid_row_len)
     {
         CHECK_CUDA_INPUT_TENSOR(kx);
         CHECK_CUDA_INPUT_TENSOR(vx);
@@ -1990,10 +1990,10 @@ namespace attention_kernels
     dump_csr_linear("csr_attn_distr", pscale, nlon_in, lon_lo_kx, nlon_kx, lat_halo_start, nlat_halo, nlat_out, psi_row_idx, psi_row_off, psi_col_idx);
 #endif
         // dkx/dvx are already in channels-last format (allocated that way in Python)
-        s2_attn_bwd_ring_step_pass2_dispatch(batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx,
-                                             lon_lo_kx, lat_halo_start, nlat_out, nlon_out, kxP, vxP, qyP, dyP,
-                                             psi_row_idx, psi_row_off, psi_col_idx, quad_weights, alpha_sum_buf,
-                                             qdotk_max_buf, integral_norm_buf, dkx, dvx);
+        s2_attn_bwd_ring_step_pass2_dispatch(
+            batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start, nlat_out,
+            nlon_out, kxP, vxP, qyP, dyP, psi_row_idx, psi_row_off, psi_col_idx, quad_weights, alpha_sum_buf,
+            qdotk_max_buf, integral_norm_buf, dkx, dvx, n_long_rows, max_row_len, mid_row_len);
 
         C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
