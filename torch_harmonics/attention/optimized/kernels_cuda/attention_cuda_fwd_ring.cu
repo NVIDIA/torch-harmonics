@@ -29,6 +29,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "attention_cuda.cuh"
+#include <ATen/Dispatch.h>
+#include <ATen/OpMathType.h>
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/cuda/detail/KernelUtils.h>
 #include <ATen/cuda/detail/IndexUtils.cuh>
@@ -1152,22 +1154,34 @@ namespace attention_kernels
         const size_t nchans_in = qy.size(1);
         const size_t nchans_out = vx.size(1);
 
-        torch::Tensor kxP = kx.to(torch::kFloat32);
-        torch::Tensor vxP = vx.to(torch::kFloat32);
-        torch::Tensor qyP = qy.to(torch::kFloat32);
+        // ATen dispatch over the input dtype. Tier A: the body still upcasts to
+        // fp32 and runs the existing fp32-only kernels (state buffers y_acc /
+        // alpha_sum / qdotk_max stay fp32), so behavior is identical for every
+        // dtype. storage_t/compute_t are the plumbing Tier B uses to move the
+        // conversion from this whole-tensor upcast to the load/store sites.
+        AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, qy.scalar_type(), "s2_attention_fwd_ring_step_cuda", [&] {
+            using storage_t = scalar_t;
+            using compute_t = at::opmath_type<storage_t>;
+            (void)sizeof(storage_t);
+            (void)sizeof(compute_t);
 
-        bool kx_is_channels_last = kxP.strides()[1] == 1;
-        bool vx_is_channels_last = vxP.strides()[1] == 1;
-        bool qy_is_channels_last = qyP.strides()[1] == 1;
+            torch::Tensor kxP = kx.to(torch::kFloat32);
+            torch::Tensor vxP = vx.to(torch::kFloat32);
+            torch::Tensor qyP = qy.to(torch::kFloat32);
 
-        if (!kx_is_channels_last) { kxP = permute_4D_to0231(kxP); }
-        if (!vx_is_channels_last) { vxP = permute_4D_to0231(vxP); }
-        if (!qy_is_channels_last) { qyP = permute_4D_to0231(qyP); }
+            bool kx_is_channels_last = kxP.strides()[1] == 1;
+            bool vx_is_channels_last = vxP.strides()[1] == 1;
+            bool qy_is_channels_last = qyP.strides()[1] == 1;
 
-        s2_attn_fwd_ring_step_dispatch(batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx,
-                                       lon_lo_kx, lat_halo_start, nlat_out, nlon_out, kxP, vxP, qyP, psi_row_idx,
-                                       psi_row_off, psi_col_idx, quad_weights, y_acc, alpha_sum_buf, qdotk_max_buf,
-                                       n_long_rows, max_row_len, mid_row_len);
+            if (!kx_is_channels_last) { kxP = permute_4D_to0231(kxP); }
+            if (!vx_is_channels_last) { vxP = permute_4D_to0231(vxP); }
+            if (!qy_is_channels_last) { qyP = permute_4D_to0231(qyP); }
+
+            s2_attn_fwd_ring_step_dispatch(batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx,
+                                           lon_lo_kx, lat_halo_start, nlat_out, nlon_out, kxP, vxP, qyP, psi_row_idx,
+                                           psi_row_off, psi_col_idx, quad_weights, y_acc, alpha_sum_buf, qdotk_max_buf,
+                                           n_long_rows, max_row_len, mid_row_len);
+        });
 
         C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
