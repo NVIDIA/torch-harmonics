@@ -805,13 +805,37 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         nnz_per_row = (att.psi_roff_idx[1:] - att.psi_roff_idx[:-1]).cpu()
         row_idx_kernel = torch.argsort(nnz_per_row, descending=True).to(torch.int32).to(self.device)
 
+        # Precomputed CSR row split, threaded into every ring-step op (constant for a
+        # fixed psi; see split_csr_rows_op / _row_split in distributed_attention.py).
+        n_long_rows, max_row_len, mid_row_len = torch.ops.attention_kernels.split_csr_rows(row_idx_kernel, att.psi_roff_idx, nlat_out)
+
         # ---- forward ring step ----
         # State buffers in channels-last layout, as expected by the CUDA kernels.
         y_acc = torch.zeros(Bnh, nlat_out, nlon_out, C_v, device=self.device, dtype=torch.float32)
         alpha_sum = torch.zeros(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
         qdotk_max = torch.full((Bnh, nlat_out, nlon_out), float("-inf"), device=self.device, dtype=torch.float32)
 
-        fwd_inputs = (kw, vw, qw, y_acc, alpha_sum, qdotk_max, att.quad_weights, att.psi_col_idx, att.psi_roff_idx, row_idx_kernel, nlon_in, pscale, 0, 0, nlat_out, nlon_out)
+        fwd_inputs = (
+            kw,
+            vw,
+            qw,
+            y_acc,
+            alpha_sum,
+            qdotk_max,
+            att.quad_weights,
+            att.psi_col_idx,
+            att.psi_roff_idx,
+            row_idx_kernel,
+            nlon_in,
+            pscale,
+            0,
+            0,
+            nlat_out,
+            nlon_out,
+            n_long_rows,
+            max_row_len,
+            mid_row_len,
+        )
 
         opcheck(torch.ops.attention_kernels.forward_ring_step, fwd_inputs)
 
@@ -844,6 +868,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             0,
             nlat_out,
             nlon_out,
+            n_long_rows,
+            max_row_len,
+            mid_row_len,
         )
 
         opcheck(torch.ops.attention_kernels.backward_ring_step_pass1, bwd1_inputs)
@@ -879,6 +906,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             0,
             nlat_out,
             nlon_out,
+            n_long_rows,
+            max_row_len,
+            mid_row_len,
         )
 
         opcheck(torch.ops.attention_kernels.backward_ring_step_pass2, bwd2_inputs)
