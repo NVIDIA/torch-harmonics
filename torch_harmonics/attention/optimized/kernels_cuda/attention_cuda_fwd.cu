@@ -67,7 +67,7 @@ namespace attention_kernels
     // called with (blockDim.x=32 and blockDim.y>1, BDIM_X=blockDim.x*blockDim.y)
     template <int BDIM_X,
               typename FLOATV_T> // either float or float4
-    __global__ __launch_bounds__(BDIM_X) void s2_attn_fwd_generic_vec_k(
+    __global__ __launch_bounds__(BDIM_X) void s2_attn_fwd_generic_k(
         const __grid_constant__ attn_params_t p,
         const FLOATV_T *__restrict__ kx,
         const FLOATV_T *__restrict__ vx, const FLOATV_T *__restrict__ qy, const int32_t *__restrict__ row_idx,
@@ -175,11 +175,11 @@ namespace attention_kernels
 
         size_t shsize = sizeof(FLOATV_T)*nchans_out*block.y;
         
-        auto kern = &s2_attn_fwd_generic_vec_k<THREADS, FLOATV_T>;
+        auto kern = &s2_attn_fwd_generic_k<THREADS, FLOATV_T>;
         ensure_dyn_shmem(reinterpret_cast<const void *>(kern), shsize);
 
         kern<<<grid, block, shsize, stream>>>(params, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp);
-        CHECK_ERROR("s2_attn_fwd_generic_vec_k");
+        CHECK_ERROR("s2_attn_fwd_generic_k");
 
         return;
     }
@@ -375,7 +375,7 @@ namespace attention_kernels
         //int64_t  *base_i64 = NULL;
         float    *base_flt      = NULL;
 
-        if constexpr (sizeof(FLOATV_T) > sizeof(int64_t)) {
+        if constexpr (sizeof(FLOATV_T) > sizeof(FLOATV_PTR_T)) {
             base_fltv     = reinterpret_cast<FLOATV_T     *>(shext);
             base_fltv_ptr = reinterpret_cast<FLOATV_PTR_T *>(base_fltv     + BDIM_Y*nchan_in);
             base_flt      = reinterpret_cast<float        *>(base_fltv_ptr + BDIM_Y*2*shcol_len_max);
@@ -616,17 +616,17 @@ namespace attention_kernels
               int NLOC,          // smallest int such that BDIM_X*NLOC >= nchan_out
               typename FLOATV_T> // either float or float4
     __global__ __launch_bounds__(BDIM_X*BDIM_Y)
-    void s2_attn_fwd_special_vec_k(const __grid_constant__ attn_params_t p,
-                                   const int shcol_len_max,
-                                   const int nlat_max, 
-                                   const FLOATV_T *__restrict__ kx,
-                                   const FLOATV_T *__restrict__ vx,
-                                   const FLOATV_T *__restrict__ qy,
-                                   const int32_t *__restrict__ row_idx,
-                                   const int64_t *__restrict__ row_off,
-                                   const int64_t *__restrict__ col_idx,
-                                   const float *__restrict__ quad_weights,
-                                         FLOATV_T *__restrict__ y) {
+    void s2_attn_fwd_special_k(const __grid_constant__ attn_params_t p,
+                               const int shcol_len_max,
+                               const int nlat_max, 
+                               const FLOATV_T *__restrict__ kx,
+                               const FLOATV_T *__restrict__ vx,
+                               const FLOATV_T *__restrict__ qy,
+                               const int32_t *__restrict__ row_idx,
+                               const int64_t *__restrict__ row_off,
+                               const int64_t *__restrict__ col_idx,
+                               const float *__restrict__ quad_weights,
+                                     FLOATV_T *__restrict__ y) {
 
         static_assert(0 == (BDIM_X & (BDIM_X - 1)));
         static_assert(0 == (BDIM_Y & (BDIM_Y - 1)));
@@ -836,17 +836,17 @@ namespace attention_kernels
             size_t shsize = sizeof(FLOATV_T)*nchan_in*block.y; // block.y > 1 iif block.x==32
 #endif
             if (chin_as_out) {
-                auto kern = &s2_attn_fwd_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE, FLOATV_T>;
+                auto kern = &s2_attn_fwd_special_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE, FLOATV_T>;
                 ensure_dyn_shmem(reinterpret_cast<const void *>(kern), shsize);
 
                 kern<<<grid, block, shsize, stream>>>(params, mid_row_len, n_reg_rows, _kxp, _vxp, _qyp, _row_idx + n_long_rows, _row_off, _col_idx, _quad_weights, _yp);
             } else {
-                auto kern = &s2_attn_fwd_special_vec_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE, FLOATV_T>;
+                auto kern = &s2_attn_fwd_special_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE, FLOATV_T>;
                 ensure_dyn_shmem(reinterpret_cast<const void *>(kern), shsize);
                 
                 kern<<<grid, block, shsize, stream>>>(params, mid_row_len, n_reg_rows, _kxp, _vxp, _qyp, _row_idx + n_long_rows, _row_off, _col_idx, _quad_weights, _yp);
             }
-            CHECK_ERROR("s2_attn_fwd_special_vec_k");
+            CHECK_ERROR("s2_attn_fwd_special_k");
 
             return;
         }
