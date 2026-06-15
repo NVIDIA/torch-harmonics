@@ -53,6 +53,7 @@
 // =====================================================================================
 
 #include "attention_cuda.cuh"
+#include <ATen/Dispatch.h>
 #include <ATen/cuda/CUDAUtils.h>
 
 #include <cuda_runtime.h>
@@ -68,17 +69,22 @@ namespace attention_kernels
 
     // Output-centric online-softmax kernel for the scatter direction.
     // Called with (blockDim.x = WARP_SIZE, blockDim.y = THREADS_PER_BLOCK / WARP_SIZE).
-    template <int THREADS_PER_BLOCK,
-              typename FLOATV_T> // float or float4
+    //
+    // STORAGE_T is the global-memory element type (float4 for the fp32 vectorized
+    // path; float / c10::Half / c10::BFloat16 for the scalar path). COMPUTE_T is the
+    // arithmetic type (float4 / float); all dot-products, softmax and accumulation
+    // happen in COMPUTE_T. vload/vstore widen/narrow at the memory boundary.
+    template <int THREADS_PER_BLOCK, typename STORAGE_T>
     __global__ __launch_bounds__(THREADS_PER_BLOCK) void s2_attn_fwd_upsample_generic_vec_k(
         int nchan_in, int nchan_out, int nlat_in, int nlon_in, int nlat_out, int nlon_out,
-        const FLOATV_T *__restrict__ kx, const FLOATV_T *__restrict__ vx, const FLOATV_T *__restrict__ qy,
+        const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy,
         const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx,
-        const float *__restrict__ quad_weights, FLOATV_T *__restrict__ y)
+        const float *__restrict__ quad_weights, STORAGE_T *__restrict__ y)
     {
+        using COMPUTE_T = typename vec_traits<STORAGE_T>::compute_t;
 
         extern __shared__ __align__(sizeof(float4)) float shext[];
-        FLOATV_T *shy = reinterpret_cast<FLOATV_T *>(shext) + threadIdx.y * nchan_out;
+        COMPUTE_T *shy = reinterpret_cast<COMPUTE_T *>(shext) + threadIdx.y * nchan_out;
 
         const int batch = blockIdx.y;
         const int wid = blockIdx.x * blockDim.y + threadIdx.y;
@@ -94,7 +100,7 @@ namespace attention_kernels
         const int pscale_out = nlon_out / nlon_in;
 
         // initialize per-cell shared accumulator
-        for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { shy[chan] = __vset<FLOATV_T>(0.f); }
+        for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { shy[chan] = __vset<COMPUTE_T>(0.f); }
 
         // batch-shift base pointers (channels-last layout)
         kx += int64_t(batch) * nlat_in * nlon_in * nchan_in;
@@ -130,13 +136,13 @@ namespace attention_kernels
                 if ((wo_diff % pscale_out) != 0) continue;
                 const int wi = wo_diff / pscale_out;
 
-                const FLOATV_T *_kx = kx + int64_t(hi) * nlon_in * nchan_in + int64_t(wi) * nchan_in;
-                const FLOATV_T *_vx = vx + int64_t(hi) * nlon_in * nchan_out + int64_t(wi) * nchan_out;
+                const STORAGE_T *_kx = kx + int64_t(hi) * nlon_in * nchan_in + int64_t(wi) * nchan_in;
+                const STORAGE_T *_vx = vx + int64_t(hi) * nlon_in * nchan_out + int64_t(wi) * nchan_out;
 
                 // qdotk = <qy[ho, wo, :], kx[hi, wi, :]>
-                FLOATV_T qdotkv = __vset<FLOATV_T>(0.f);
+                COMPUTE_T qdotkv = __vset<COMPUTE_T>(0.f);
                 for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
-                    qdotkv = __vadd(qdotkv, __vmul(qy[chan], _kx[chan]));
+                    qdotkv = __vadd(qdotkv, __vmul(vload(qy, chan), vload(_kx, chan)));
                 }
                 const float qdotk = __warp_sum(__vred(qdotkv));
 
@@ -148,7 +154,7 @@ namespace attention_kernels
                 alpha_sum = alpha + alpha_sum * exp_save;
 
                 for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
-                    shy[chan] = __vadd(__vscale(exp_save, shy[chan]), __vscale(alpha, _vx[chan]));
+                    shy[chan] = __vadd(__vscale(exp_save, shy[chan]), __vscale(alpha, vload(_vx, chan)));
                 }
                 qdotk_max = qdotk_max_tmp;
             }
@@ -156,20 +162,21 @@ namespace attention_kernels
 
         // finalize: y[b, ho, wo, :] = shy[:] / alpha_sum
         const float inv_alpha = 1.0f / alpha_sum;
-        for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { y[chan] = __vscale(inv_alpha, shy[chan]); }
+        for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { vstore(y, chan, __vscale(inv_alpha, shy[chan])); }
     }
 
-    template <typename FLOATV_T>
+    template <typename STORAGE_T>
     static void launch_gen_attn_fwd_upsample(int batch_size, int nchans_in, int nchans_out, int nlat_in, int nlon_in,
-                                             int nlat_out, int nlon_out, FLOATV_T *_kxp, FLOATV_T *_vxp, FLOATV_T *_qyp,
-                                             int64_t *_row_off, int64_t *_col_idx, float *_quad_weights, FLOATV_T *_yp,
-                                             cudaStream_t stream)
+                                             int nlat_out, int nlon_out, STORAGE_T *_kxp, STORAGE_T *_vxp,
+                                             STORAGE_T *_qyp, int64_t *_row_off, int64_t *_col_idx,
+                                             float *_quad_weights, STORAGE_T *_yp, cudaStream_t stream)
     {
 
         dim3 block(WARP_SIZE, THREADS / WARP_SIZE);
         dim3 grid(DIV_UP(nlat_out * nlon_out, block.y), batch_size);
 
-        const size_t shsize = sizeof(FLOATV_T) * nchans_out * block.y;
+        // shared memory holds compute-type (COMPUTE_T) data, not STORAGE_T
+        const size_t shsize = sizeof(typename vec_traits<STORAGE_T>::compute_t) * nchans_out * block.y;
 
         s2_attn_fwd_upsample_generic_vec_k<THREADS>
             <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp,
@@ -182,6 +189,10 @@ namespace attention_kernels
     // upsample (nlon_out % nlon_in == 0). Vec/non-vec branching mirrors the
     // downsample dispatcher; only the generic kernel is instantiated for now.
     // -----------------------------------------------------------------------------
+    // Native-storage dispatch (Tier B). Kept NON-templated (it is called from a
+    // different TU, attention_cuda_fwd.cu) and does its own AT_DISPATCH over the
+    // input dtype: fp16/bf16 take the scalar STORAGE_T path (widen at load, fp32
+    // compute, narrow the output at store); fp32 keeps the float4 vectorized path.
     void s2_attn_fwd_upsample_dispatch(int batch_size, size_t nchans_in, size_t nchans_out, int64_t nlon_in,
                                        int64_t nlat_in, int64_t nlat_out, int64_t nlon_out, torch::Tensor kxP,
                                        torch::Tensor vxP, torch::Tensor qyP, torch::Tensor psi_row_off,
@@ -190,39 +201,46 @@ namespace attention_kernels
 
         auto stream = at::cuda::getCurrentCUDAStream().stream();
 
-        float *_kxp = reinterpret_cast<float *>(kxP.data_ptr());
-        float *_vxp = reinterpret_cast<float *>(vxP.data_ptr());
-        float *_qyp = reinterpret_cast<float *>(qyP.data_ptr());
-        float *_yp = reinterpret_cast<float *>(yP.data_ptr());
-
         int64_t *_row_off = reinterpret_cast<int64_t *>(psi_row_off.data_ptr());
         int64_t *_col_idx = reinterpret_cast<int64_t *>(psi_col_idx.data_ptr());
         float *_quad_weights = reinterpret_cast<float *>(quad_weights.data_ptr());
 
-        constexpr int VEC_SIZE = sizeof(float4) / sizeof(float);
+        AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, qyP.scalar_type(), "s2_attn_fwd_upsample", [&] {
+            scalar_t *_kxp = reinterpret_cast<scalar_t *>(kxP.data_ptr());
+            scalar_t *_vxp = reinterpret_cast<scalar_t *>(vxP.data_ptr());
+            scalar_t *_qyp = reinterpret_cast<scalar_t *>(qyP.data_ptr());
+            scalar_t *_yp = reinterpret_cast<scalar_t *>(yP.data_ptr());
 
-        if (!is_aligned<sizeof(float4)>(_kxp) || !is_aligned<sizeof(float4)>(_vxp) || !is_aligned<sizeof(float4)>(_qyp)
-            || !is_aligned<sizeof(float4)>(_yp) || (nchans_in % VEC_SIZE) != 0 || (nchans_out % VEC_SIZE) != 0) {
+            const int b = batch_size;
+            const int nci = static_cast<int>(nchans_in);
+            const int nco = static_cast<int>(nchans_out);
+            const int nli = static_cast<int>(nlat_in);
+            const int nlonI = static_cast<int>(nlon_in);
+            const int nlo = static_cast<int>(nlat_out);
+            const int nlonO = static_cast<int>(nlon_out);
 
-            launch_gen_attn_fwd_upsample<float>(batch_size, static_cast<int>(nchans_in), static_cast<int>(nchans_out),
-                                                static_cast<int>(nlat_in), static_cast<int>(nlon_in),
-                                                static_cast<int>(nlat_out), static_cast<int>(nlon_out), _kxp, _vxp,
-                                                _qyp, _row_off, _col_idx, _quad_weights, _yp, stream);
-        } else {
-
-            float4 *_kxp4 = reinterpret_cast<float4 *>(_kxp);
-            float4 *_vxp4 = reinterpret_cast<float4 *>(_vxp);
-            float4 *_qyp4 = reinterpret_cast<float4 *>(_qyp);
-            float4 *_yp4 = reinterpret_cast<float4 *>(_yp);
-
-            const size_t nchans_in_v = nchans_in / VEC_SIZE;
-            const size_t nchans_out_v = nchans_out / VEC_SIZE;
-
-            launch_gen_attn_fwd_upsample<float4>(
-                batch_size, static_cast<int>(nchans_in_v), static_cast<int>(nchans_out_v), static_cast<int>(nlat_in),
-                static_cast<int>(nlon_in), static_cast<int>(nlat_out), static_cast<int>(nlon_out), _kxp4, _vxp4, _qyp4,
-                _row_off, _col_idx, _quad_weights, _yp4, stream);
-        }
+            if constexpr (std::is_same<scalar_t, float>::value) {
+                constexpr int VEC_SIZE = sizeof(float4) / sizeof(float);
+                const bool use_vec = is_aligned<sizeof(float4)>(_kxp) && is_aligned<sizeof(float4)>(_vxp)
+                    && is_aligned<sizeof(float4)>(_qyp) && is_aligned<sizeof(float4)>(_yp)
+                    && (nchans_in % VEC_SIZE) == 0 && (nchans_out % VEC_SIZE) == 0;
+                if (use_vec) {
+                    // STORAGE_T deduces to float4 from the pointers (NO explicit template
+                    // arg: nvcc mishandles explicit-arg substitution with vec_traits in body).
+                    launch_gen_attn_fwd_upsample(b, nci / VEC_SIZE, nco / VEC_SIZE, nli, nlonI, nlo, nlonO,
+                                                 reinterpret_cast<float4 *>(_kxp), reinterpret_cast<float4 *>(_vxp),
+                                                 reinterpret_cast<float4 *>(_qyp), _row_off, _col_idx, _quad_weights,
+                                                 reinterpret_cast<float4 *>(_yp), stream);
+                } else {
+                    launch_gen_attn_fwd_upsample(b, nci, nco, nli, nlonI, nlo, nlonO, _kxp, _vxp, _qyp, _row_off,
+                                                 _col_idx, _quad_weights, _yp, stream);
+                }
+            } else {
+                // STORAGE_T deduces to scalar_t (fp16/bf16/double).
+                launch_gen_attn_fwd_upsample(b, nci, nco, nli, nlonI, nlo, nlonO, _kxp, _vxp, _qyp, _row_off, _col_idx,
+                                             _quad_weights, _yp, stream);
+            }
+        });
     }
 
 } // namespace attention_kernels

@@ -561,10 +561,12 @@ namespace attention_kernels
                 y = yP;
                 if (!qy_is_channels_last) { y = permute_4D_to0312(y); }
             } else {
-                // upsample path: still fp32 internally (Tier B not applied to scatter kernels)
-                torch::Tensor kxP = kx.to(torch::kFloat32);
-                torch::Tensor vxP = vx.to(torch::kFloat32);
-                torch::Tensor qyP = qy.to(torch::kFloat32);
+                // upsample (scatter) path: native storage. s2_attn_fwd_upsample_dispatch
+                // does its own AT_DISPATCH and widens fp16/bf16 at load (fp32 compute),
+                // narrowing the output at store — same as the gather path.
+                torch::Tensor kxP = kx;
+                torch::Tensor vxP = vx;
+                torch::Tensor qyP = qy;
 
                 bool kx_is_channels_last = kxP.strides()[1] == 1;
                 bool vx_is_channels_last = vxP.strides()[1] == 1;
@@ -574,7 +576,7 @@ namespace attention_kernels
                 if (!vx_is_channels_last) { vxP = permute_4D_to0231(vxP); }
                 if (!qy_is_channels_last) { qyP = permute_4D_to0231(qyP); }
 
-                torch::Tensor yP = torch::empty(out_dims, kxP.options()); // fp32
+                torch::Tensor yP = torch::empty(out_dims, kxP.options()); // native dtype
 
                 s2_attn_fwd_upsample_dispatch(batch_size, nchans_in, nchans_out, nlon_in, nlat_in, nlat_out, nlon_out,
                                               kxP, vxP, qyP, psi_row_off, psi_col_idx, quad_weights, yP);
@@ -584,8 +586,8 @@ namespace attention_kernels
             }
         });
 
-        // convert precision back to starting dtype. No-op for the native gather
-        // path (y is already qy_type); downcasts the fp32 upsample result.
+        // convert precision back to starting dtype. No-op now that both the gather
+        // and upsample paths produce native-dtype output; kept as a safety net.
         y = y.to(qy_type);
 
         C10_CUDA_KERNEL_LAUNCH_CHECK();
