@@ -876,8 +876,8 @@ namespace attention_kernels
         // scatter-accumulated (reduced-precision atomics would lose precision);
         // they are cast back to the input dtype at the end.
         //
-        // Scatter (upsample) path: scatter kernels are not yet on native storage,
-        // so we still upcast inputs to fp32. fp32 inputs are unaffected either way.
+        // Scatter (upsample) path: native storage as well — inputs stay in their
+        // dtype (widened at load inside the dispatch), gradients stay fp32.
         AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, qy.scalar_type(), "s2_attention_bwd_dkvq_cuda", [&] {
             using storage_t = scalar_t;
 
@@ -918,11 +918,11 @@ namespace attention_kernels
                 if (!vx_is_channels_last) { dvx = permute_4D_to0312(dvx); }
                 if (!qy_is_channels_last) { dqy = permute_4D_to0312(dqy); }
             } else {
-                // upsample path: still fp32 internally (Tier B not applied to scatter kernels)
-                torch::Tensor kxP = kx.to(torch::kFloat32);
-                torch::Tensor vxP = vx.to(torch::kFloat32);
-                torch::Tensor qyP = qy.to(torch::kFloat32);
-                torch::Tensor dyP = dy.to(torch::kFloat32);
+                // native-storage scatter (upsample) path
+                torch::Tensor kxP = kx;
+                torch::Tensor vxP = vx;
+                torch::Tensor qyP = qy;
+                torch::Tensor dyP = dy;
 
                 bool kx_is_channels_last = kxP.strides()[1] == 1;
                 bool vx_is_channels_last = vxP.strides()[1] == 1;
