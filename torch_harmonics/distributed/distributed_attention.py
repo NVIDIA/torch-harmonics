@@ -251,18 +251,18 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         _, C_v, _, _ = vw.shape
         device = kw.device
 
-        # Capture input dtypes so the returned grads can be cast back. Promote
-        # kw/vw/qw/dy to fp32 for the kernel calls — internal accumulators
-        # (integral_buf, alpha_k/kvw_buf, dkw/dvw_full_cl) are already fp32,
-        # so feeding the kernels fp32 inputs keeps the math consistent and
-        # avoids dtype-mismatch dispatch errors when inputs are bf16/fp16.
+        # Capture input dtypes so the returned grads can be cast back. The
+        # backward ring kernels consume kw/vw/qw/dy in their native dtype (Tier B:
+        # widen fp16/bf16 at load, fp32 compute/accumulation). Keeping them native
+        # — instead of upcasting to fp32 here — also keeps the backward ring
+        # exchange at 16-bit under AMP (halved K/V comm volume), matching the
+        # forward ring. The fp32 accumulators (integral_buf, alpha_k/kvw_buf,
+        # dkw/dvw_full_cl) are unaffected; the returned grads are cast back to the
+        # captured input dtypes at the end.
         kw_dtype = kw.dtype
         vw_dtype = vw.dtype
         qw_dtype = qw.dtype
-        kw = kw.to(torch.float32)
-        vw = vw.to(torch.float32)
-        qw = qw.to(torch.float32)
-        dy_cf = dy.to(torch.float32).contiguous()  # channels-first [B, C_v, H, W]
+        dy_cf = dy.contiguous()  # channels-first [B, C_v, H, W], native dtype
 
         # ----------------------------------------------------------------
         # Backward pass 1: re-accumulate {alpha_sum, qdotk_max, integral,
