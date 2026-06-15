@@ -34,6 +34,8 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDAUtils.h>
 
+#include <type_traits>
+
 #define WARP_SIZE (32)
 #define FULL_MASK (0xFFFFFFFF)
 #define DIV_UP(a, b) (((a) + ((b) - 1)) / (b))
@@ -162,6 +164,39 @@ namespace attention_kernels
         return make_float4(s / v.x, s / v.y, s / v.z, s / v.w);
         ;
     }
+
+    // ---- storage <-> compute helpers for native fp16/bf16 storage ----
+    //
+    // Kernels are templated on STORAGE_T (the element type as laid out in global
+    // memory). The COMPUTE_T it maps to is the type used for all arithmetic /
+    // accumulation: float4 stays float4 (the fp32 vectorized fast path), every
+    // scalar storage type (float, c10::Half, c10::BFloat16) computes in float.
+    // vload widens STORAGE_T -> COMPUTE_T at the load site; vstore narrows back
+    // at the store site. c10::Half / c10::BFloat16 provide device-side
+    // conversions to/from float, so no half intrinsics are needed here.
+    template <typename STORAGE_T> struct vec_traits {
+        using compute_t = float;
+    };
+    template <> struct vec_traits<float4> {
+        using compute_t = float4;
+    };
+
+    // scalar load/store: STORAGE_T in {float, c10::Half, c10::BFloat16}; compute_t == float.
+    // The return type is spelled via vec_traits so the float4 specialization below
+    // (which returns float4) matches the primary template's signature.
+    template <typename STORAGE_T>
+    __device__ __forceinline__ typename vec_traits<STORAGE_T>::compute_t vload(const STORAGE_T *p, int idx)
+    {
+        return static_cast<float>(p[idx]);
+    }
+    template <typename STORAGE_T> __device__ __forceinline__ void vstore(STORAGE_T *p, int idx, float v)
+    {
+        p[idx] = static_cast<STORAGE_T>(v);
+    }
+
+    // float4 vectorized load/store (fp32 fast path): identity, no conversion
+    template <> __device__ __forceinline__ float4 vload<float4>(const float4 *p, int idx) { return p[idx]; }
+    __device__ __forceinline__ void vstore(float4 *p, int idx, float4 v) { p[idx] = v; }
 
     __device__ __forceinline__ void atomicMax(float *ptr, float val)
     {
