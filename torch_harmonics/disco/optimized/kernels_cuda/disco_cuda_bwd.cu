@@ -231,7 +231,11 @@ namespace disco_kernels
         // the kernel uses pscale = Wo / Wi; require an integer ratio so the p-shift is exact
         TORCH_CHECK(Wo % Wi == 0, "Wo (", Wo, ") must be an integer multiple of Wi (", Wi, ")");
 
-        // allocate output
+        // allocate output. NOTE: unlike the forward kernel (which writes storage_t),
+        // the backward kernel writes its result in COMPUTE type (out.data_ptr<compute_t>(),
+        // i.e. fp32 for fp16/bf16 inp). vals is already compute type, so we key the
+        // output dtype off vals; the Python op narrows the fp32 grad back to the input
+        // dtype. Keying this off inp.dtype() would mismatch the kernel under fp16/bf16.
         int64_t out_dims[] = {B, C, Ho, Wo};
         auto options = torch::TensorOptions().device(inp.device()).dtype(val.dtype());
         torch::Tensor out = torch::zeros(out_dims, options);
@@ -244,55 +248,55 @@ namespace disco_kernels
         static_assert(0 == (ELXTH_MAX % 2));
 
         if (Wo <= 64 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_cuda", ([&] {
-                                           using storage_t = scalar_t;
-                                           using compute_t = typename at::opmath_type<storage_t>;
-                                           launch_kernel<64, 1, storage_t, compute_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
-                                               inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
-                                       }));
+            AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, inp.scalar_type(), "disco_backward_cuda", ([&] {
+                                                using storage_t = scalar_t;
+                                                using compute_t = typename at::opmath_type<storage_t>;
+                                                launch_kernel<64, 1, storage_t, compute_t>(
+                                                    BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                                                    ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                                                    col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
+                                                    inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
+                                            }));
         } else if (Wo <= 128 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_cuda", ([&] {
-                                           using storage_t = scalar_t;
-                                           using compute_t = typename at::opmath_type<storage_t>;
-                                           launch_kernel<128, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
-                                               inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
-                                       }));
+            AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, inp.scalar_type(), "disco_backward_cuda", ([&] {
+                                                using storage_t = scalar_t;
+                                                using compute_t = typename at::opmath_type<storage_t>;
+                                                launch_kernel<128, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
+                                                    BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                                                    ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                                                    col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
+                                                    inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
+                                            }));
         } else if (Wo <= 256 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_cuda", ([&] {
-                                           using storage_t = scalar_t;
-                                           using compute_t = typename at::opmath_type<storage_t>;
-                                           launch_kernel<256, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
-                                               inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
-                                       }));
+            AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, inp.scalar_type(), "disco_backward_cuda", ([&] {
+                                                using storage_t = scalar_t;
+                                                using compute_t = typename at::opmath_type<storage_t>;
+                                                launch_kernel<256, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
+                                                    BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                                                    ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                                                    col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
+                                                    inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
+                                            }));
         } else if (Wo <= 512 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_cuda", ([&] {
-                                           using storage_t = scalar_t;
-                                           using compute_t = typename at::opmath_type<storage_t>;
-                                           launch_kernel<512, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
-                                               inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
-                                       }));
+            AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, inp.scalar_type(), "disco_backward_cuda", ([&] {
+                                                using storage_t = scalar_t;
+                                                using compute_t = typename at::opmath_type<storage_t>;
+                                                launch_kernel<512, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
+                                                    BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                                                    ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                                                    col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
+                                                    inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
+                                            }));
         } else if (Wo <= 1024 * ELXTH_MAX) {
-            AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_cuda", ([&] {
-                                           using storage_t = scalar_t;
-                                           using compute_t = typename at::opmath_type<storage_t>;
-                                           launch_kernel<1024, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
-                                               BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
-                                               ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
-                                               col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
-                                               inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
-                                       }));
+            AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, inp.scalar_type(), "disco_backward_cuda", ([&] {
+                                                using storage_t = scalar_t;
+                                                using compute_t = typename at::opmath_type<storage_t>;
+                                                launch_kernel<1024, (ELXTH_MAX / 2) + 1, storage_t, compute_t>(
+                                                    BC, Hi, Wi, K, Ho, Wo, nrows, roff_idx.data_ptr<int64_t>(),
+                                                    ker_idx.data_ptr<int64_t>(), row_idx.data_ptr<int64_t>(),
+                                                    col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
+                                                    inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
+                                            }));
         } else {
             fprintf(stderr, "%s:%d: error, unsupported Wo value (%ld), max supported is %d\n", __FILE__, __LINE__, Wo,
                     1024 * ELXTH_MAX);

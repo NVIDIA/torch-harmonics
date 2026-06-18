@@ -84,7 +84,10 @@ if optimized_kernels_is_available():
     ) -> torch.Tensor:
         itype = inp.dtype
         cdtype = _compute_dtype(itype)
-        inp = inp.to(cdtype).contiguous()
+        # keep the activation native (storage dtype) so fp16/bf16 reach the kernel,
+        # which accumulates in fp32 internally; vals stays compute type (fp32 for
+        # half), matching the kernel's val.data_ptr<compute_t>(). fp32/fp64 unchanged.
+        inp = inp.contiguous()
         vals = vals.to(cdtype)
         out = disco_kernels.forward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
         out = out.to(itype)
@@ -105,7 +108,10 @@ if optimized_kernels_is_available():
     ) -> torch.Tensor:
         itype = inp.dtype
         cdtype = _compute_dtype(itype)
-        inp = inp.to(cdtype).contiguous()
+        # keep the activation native (storage dtype) so fp16/bf16 reach the kernel,
+        # which accumulates in fp32 internally; vals stays compute type (fp32 for
+        # half), matching the kernel's val.data_ptr<compute_t>(). fp32/fp64 unchanged.
+        inp = inp.contiguous()
         vals = vals.to(cdtype)
         out = disco_kernels.backward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
         out = out.to(itype)
@@ -160,7 +166,9 @@ def _disco_s2_contraction_bwd_optimized(ctx, grad_output):
     if ctx.needs_input_grad[0]:
         gtype = grad_output.dtype
         cdtype = _compute_dtype(gtype)
-        grad_output = grad_output.to(cdtype).contiguous()
+        # keep grad native (storage dtype); kernel accumulates in fp32. vals stays
+        # compute type (fp32 for half), matching val.data_ptr<compute_t>().
+        grad_output = grad_output.contiguous()
         vals = vals.to(cdtype)
         grad_input = disco_kernels.backward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals, ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
         grad_input = grad_input.to(gtype)
@@ -194,7 +202,9 @@ def _disco_s2_transpose_contraction_bwd_optimized(ctx, grad_output):
     if ctx.needs_input_grad[0]:
         gtype = grad_output.dtype
         cdtype = _compute_dtype(gtype)
-        grad_output = grad_output.to(cdtype).contiguous()
+        # keep grad native (storage dtype); kernel accumulates in fp32. vals stays
+        # compute type (fp32 for half), matching val.data_ptr<compute_t>().
+        grad_output = grad_output.contiguous()
         vals = vals.to(cdtype)
         grad_input = disco_kernels.forward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals, ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
         grad_input = grad_input.to(gtype)
@@ -240,7 +250,7 @@ if optimized_kernels_is_available():
         # sparse contraction: (B, C, H_in, W_in) -> (B, C, K, H_out, W_out)
         itype = inp.dtype
         cdtype = _compute_dtype(itype)
-        x_expanded = disco_kernels.forward.default(inp.to(cdtype).contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals.to(cdtype), kernel_size, nlat_out, nlon_out)
+        x_expanded = disco_kernels.forward.default(inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals.to(cdtype), kernel_size, nlat_out, nlon_out)
         x_expanded = x_expanded.to(itype)
 
         # weight contraction: (B, G, Cg, K, H, W) x (G, Og, Cg, K) -> (B, O, H, W)
@@ -303,12 +313,12 @@ def _disco_s2_fused_conv_bwd_optimized(ctx, grad_output):
         grad_x_expanded = grad_x_expanded.reshape(B, -1, K, H, W).contiguous()
 
         # transpose contraction back to input space
-        grad_inp = disco_kernels.backward.default(grad_x_expanded.to(cdtype).contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
+        grad_inp = disco_kernels.backward.default(grad_x_expanded.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
         grad_inp = grad_inp.to(itype)
 
     if ctx.needs_input_grad[1]:
         # recompute x_expanded from inp (the trade: one extra forward pass)
-        x_expanded = disco_kernels.forward.default(inp.to(cdtype).contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, H, W)
+        x_expanded = disco_kernels.forward.default(inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, H, W)
         x_expanded = x_expanded.to(itype).reshape(B, G, Cg, K, H, W)
 
         # weight gradient: (B, G, Og, H, W) x (B, G, Cg, K, H, W) -> (G, Og, Cg, K)
