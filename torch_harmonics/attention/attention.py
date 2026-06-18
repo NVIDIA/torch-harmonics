@@ -196,11 +196,12 @@ class AttentionS2(nn.Module):
 
         # apply scale — if scale is a tensor (e.g. learnable), multiply into query
         # directly since SDPA only accepts a float scale
+        dropout_p = self.drop_rate if self.training else 0.0
         if isinstance(self.scale, torch.Tensor):
             query = query * self.scale
-            out = F.scaled_dot_product_attention(query, key, value, attn_mask=self.log_quad_weights, dropout_p=self.drop_rate, scale=1.0)
+            out = F.scaled_dot_product_attention(query, key, value, attn_mask=self.log_quad_weights, dropout_p=dropout_p, scale=1.0)
         else:
-            out = F.scaled_dot_product_attention(query, key, value, attn_mask=self.log_quad_weights, dropout_p=self.drop_rate, scale=self.scale)
+            out = F.scaled_dot_product_attention(query, key, value, attn_mask=self.log_quad_weights, dropout_p=dropout_p, scale=self.scale)
 
         # reshape
         B, _, _, C = out.shape
