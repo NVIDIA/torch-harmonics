@@ -137,6 +137,42 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
         self.assertEqual(u.shape, (4, nlat, 2 * nlat))
         self.assertTrue(torch.isfinite(u).all(), "output contains non-finite values")
 
+    @parameterized.expand(
+        [
+            [16, "equiangular"],
+            [16, "legendre-gauss"],
+            [16, "lobatto"],
+        ],
+        skip_on_empty=True,
+    )
+    def test_single_sample_preserves_batch_dimension(self, nlat, grid, verbose=False):
+        """Sampling one field preserves the leading batch dimension."""
+        field = GaussianRandomFieldS2(nlat, grid=grid).to(self.device)
+
+        set_seed(333)
+        u = field(1)
+
+        self.assertEqual(u.shape, (1, nlat, 2 * nlat))
+        self.assertTrue(torch.isfinite(u).all(), "output contains non-finite values")
+
+    @parameterized.expand(
+        [
+            [2, "equiangular"],
+            [2, "lobatto"],
+        ],
+        skip_on_empty=True,
+    )
+    def test_sampling_preserves_tiny_truncation_dimensions(self, nlat, grid, verbose=False):
+        """Sampling with lmax=mmax=1 preserves the sample and spectral dimensions."""
+        field = GaussianRandomFieldS2(nlat, grid=grid).to(self.device)
+
+        for num_samples in [1, 2, 4]:
+            set_seed(333)
+            u = field(num_samples)
+
+            self.assertEqual(u.shape, (num_samples, nlat, 2 * nlat))
+            self.assertTrue(torch.isfinite(u).all(), "output contains non-finite values")
+
 
 @parameterized_class(("device"), _devices)
 class TestGaussianRandomFieldS2Probabilistic(unittest.TestCase):

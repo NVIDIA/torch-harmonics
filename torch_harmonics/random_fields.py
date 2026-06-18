@@ -97,7 +97,7 @@ class GaussianRandomFieldS2(torch.nn.Module):
         if xi is None:
             lmax = self.isht.lmax
             mmax = self.isht.mmax
-            xi = self.gaussian_noise.sample(torch.Size((N, lmax, mmax, 2))).squeeze()
+            xi = self.gaussian_noise.sample(torch.Size((N, lmax, mmax, 2))).squeeze(-1)
             xi = torch.view_as_complex(xi)
 
         # Karhunen-Loeve expansion.
