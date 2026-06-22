@@ -168,18 +168,21 @@ if optimized_kernels_is_available():
         B, _, H, W = qw.shape
         qw = qw.reshape(B * nh, -1, H, W)
 
-        # convert to float32
+        # Keep the native dtype: the CUDA forward op handles fp16/bf16/fp32 natively
+        # (Tier B storage refactor), so the earlier .to(float32) upcast here was a
+        # leftover that forced the op onto the fp32 branch — the module never exercised
+        # the reduced-precision kernels under autocast.
         inp_dtype = kw.dtype
-        kw = kw.to(torch.float32).contiguous()
-        vw = vw.to(torch.float32).contiguous()
-        qw = qw.to(torch.float32).contiguous()
+        kw = kw.contiguous()
+        vw = vw.contiguous()
+        qw = qw.contiguous()
 
         output = attention_kernels.forward.default(kw, vw, qw, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
 
         _, C, H, W = output.shape
         output = output.reshape(B, -1, H, W)
 
-        # convert back precision
+        # native dtype already; cast is a no-op safety net for the fp32 path.
         output = output.to(dtype=inp_dtype)
 
         return output
@@ -218,15 +221,16 @@ def _neighborhood_s2_attention_bwd_optimized(ctx, grad_output):
     B, _, H, W = grad_output.shape
     grad_output = grad_output.reshape(B * nh, -1, H, W)
 
-    # save type and convert to float32
+    # Keep the native dtype: the CUDA backward handles fp16/bf16 natively (Tier B),
+    # accumulating gradients in fp32 internally and casting back at the op boundary.
     kw_dtype = kw.dtype
     vw_dtype = vw.dtype
     qw_dtype = qw.dtype
 
-    kw = kw.to(torch.float32).contiguous()
-    vw = vw.to(torch.float32).contiguous()
-    qw = qw.to(torch.float32).contiguous()
-    grad_output = grad_output.to(torch.float32).contiguous()
+    kw = kw.contiguous()
+    vw = vw.contiguous()
+    qw = qw.contiguous()
+    grad_output = grad_output.contiguous()
 
     dkw, dvw, dqw = attention_kernels.backward.default(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
 

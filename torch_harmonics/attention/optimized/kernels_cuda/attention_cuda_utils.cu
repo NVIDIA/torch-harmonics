@@ -127,12 +127,14 @@ namespace attention_kernels
 
         // to be further specialized for additional archs, if necessary
         if (ptxv < 100) {
-            AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0231_k_tile_generic",
-                                       ([&] { launch_permute_to0231<TRANSP_WARPS_X_TILE_GENERIC, scalar_t>(src, dst); }));
+            AT_DISPATCH_FLOATING_TYPES_AND2(
+                at::kHalf, at::kBFloat16, src.scalar_type(), "permute_to0231_k_tile_generic",
+                ([&] { launch_permute_to0231<TRANSP_WARPS_X_TILE_GENERIC, scalar_t>(src, dst); }));
             CHECK_ERROR("permute_to0231_k_tile_generic");
         } else {
-            AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0231_k_tile_sm100",
-                                       ([&] { launch_permute_to0231<TRANSP_WARPS_X_TILE_SM100, scalar_t>(src, dst); }));
+            AT_DISPATCH_FLOATING_TYPES_AND2(
+                at::kHalf, at::kBFloat16, src.scalar_type(), "permute_to0231_k_tile_sm100",
+                ([&] { launch_permute_to0231<TRANSP_WARPS_X_TILE_SM100, scalar_t>(src, dst); }));
             CHECK_ERROR("permute_to0231_k_tile_sm100");
         }
 
@@ -149,12 +151,14 @@ namespace attention_kernels
 
         // to be further specialized for additional archs, if necessary
         if (ptxv < 100) {
-            AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0312_k_tile_generic",
-                                       ([&] { launch_permute_to0312<TRANSP_WARPS_X_TILE_GENERIC, scalar_t>(src, dst); }));
+            AT_DISPATCH_FLOATING_TYPES_AND2(
+                at::kHalf, at::kBFloat16, src.scalar_type(), "permute_to0312_k_tile_generic",
+                ([&] { launch_permute_to0312<TRANSP_WARPS_X_TILE_GENERIC, scalar_t>(src, dst); }));
             CHECK_ERROR("permute_to0312_k_tile_generic");
         } else {
-            AT_DISPATCH_FLOATING_TYPES(src.scalar_type(), "permute_to0312_k_tile_sm100",
-                                       ([&] { launch_permute_to0312<TRANSP_WARPS_X_TILE_SM100, scalar_t>(src, dst); }));
+            AT_DISPATCH_FLOATING_TYPES_AND2(
+                at::kHalf, at::kBFloat16, src.scalar_type(), "permute_to0312_k_tile_sm100",
+                ([&] { launch_permute_to0312<TRANSP_WARPS_X_TILE_SM100, scalar_t>(src, dst); }));
             CHECK_ERROR("permute_to0312_k_tile_sm100");
         }
 

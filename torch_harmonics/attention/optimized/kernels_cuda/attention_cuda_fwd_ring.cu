@@ -29,6 +29,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "attention_cuda.cuh"
+#include <ATen/Dispatch.h>
+#include <ATen/OpMathType.h>
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/cuda/detail/KernelUtils.h>
 #include <ATen/cuda/detail/IndexUtils.cuh>
@@ -60,20 +62,22 @@ namespace attention_kernels
 
     // **************** start generic kernel ****************
 
-    template <int BDIM_X, typename FLOATV_T>
+    template <int BDIM_X, typename STORAGE_T>
     __global__ __launch_bounds__(BDIM_X) void s2_attn_fwd_ring_generic_k(
         const __grid_constant__ attn_params_t p,
-        const FLOATV_T *__restrict__ kx, // [batch][nlat_halo][nlon_kx][nchan_in]
-        const FLOATV_T *__restrict__ vx, // [batch][nlat_halo][nlon_kx][nchan_out]
-        const FLOATV_T *__restrict__ qy, // [batch][nlat_out][nlon_out][nchan_in]
+        const STORAGE_T *__restrict__ kx, // [batch][nlat_halo][nlon_kx][nchan_in]
+        const STORAGE_T *__restrict__ vx, // [batch][nlat_halo][nlon_kx][nchan_out]
+        const STORAGE_T *__restrict__ qy, // [batch][nlat_out][nlon_out][nchan_in]
         const int32_t *__restrict__ row_idx, const int64_t *__restrict__ row_off,
-        const int64_t *__restrict__ col_idx,    // wi already shifted by pscale * lon_lo_out
-        const float *__restrict__ quad_weights, // [nlat_in_global]
-        FLOATV_T *__restrict__ y_acc,           // [batch][nlat_out][nlon_out][nchan_out] (in/out)
-        float *__restrict__ alpha_sum_buf,      // [batch][nlat_out][nlon_out] (in/out)
-        float *__restrict__ qdotk_max_buf       // [batch][nlat_out][nlon_out] (in/out)
+        const int64_t *__restrict__ col_idx,                           // wi already shifted by pscale * lon_lo_out
+        const float *__restrict__ quad_weights,                        // [nlat_in_global]
+        typename vec_traits<STORAGE_T>::compute_t *__restrict__ y_acc, // [batch][nlat_out][nlon_out][nchan_out] (in/out)
+        float *__restrict__ alpha_sum_buf,                             // [batch][nlat_out][nlon_out] (in/out)
+        float *__restrict__ qdotk_max_buf                              // [batch][nlat_out][nlon_out] (in/out)
     )
     {
+        using COMPUTE_T = typename vec_traits<STORAGE_T>::compute_t;
+
         const int &nchan_in = p.nchan_in;
         const int &nchan_out = p.nchan_out;
         const int &nlat_halo = p.nlat_halo;
@@ -86,7 +90,7 @@ namespace attention_kernels
         const int &nlon_out = p.nlon_out;
 
         alignas(float4) extern __shared__ float shext[];
-        FLOATV_T *shy = reinterpret_cast<FLOATV_T *>(shext) + threadIdx.y * nchan_out;
+        COMPUTE_T *shy = reinterpret_cast<COMPUTE_T *>(shext) + threadIdx.y * nchan_out;
 
         const int batch = blockIdx.y;
         const int wid = blockIdx.x * blockDim.y + threadIdx.y;
@@ -141,12 +145,12 @@ namespace attention_kernels
             if (hi_local < 0 || hi_local >= nlat_halo) continue;
             const int wip_local = wip - lon_lo_kx;
 
-            const FLOATV_T *_kx = kx + int64_t(hi_local) * nlon_kx * nchan_in + int64_t(wip_local) * nchan_in;
-            const FLOATV_T *_vx = vx + int64_t(hi_local) * nlon_kx * nchan_out + int64_t(wip_local) * nchan_out;
+            const STORAGE_T *_kx = kx + int64_t(hi_local) * nlon_kx * nchan_in + int64_t(wip_local) * nchan_in;
+            const STORAGE_T *_vx = vx + int64_t(hi_local) * nlon_kx * nchan_out + int64_t(wip_local) * nchan_out;
 
-            FLOATV_T qdotkv = __vset<FLOATV_T>(0.f);
+            COMPUTE_T qdotkv = __vset<COMPUTE_T>(0.f);
             for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
-                qdotkv = __vadd(qdotkv, __vmul(qy[chan], _kx[chan]));
+                qdotkv = __vadd(qdotkv, __vmul(vload(qy, chan), vload(_kx, chan)));
             }
             float qdotk = __warp_sum(__vred(qdotkv));
 
@@ -156,7 +160,7 @@ namespace attention_kernels
 
             alpha_sum = alpha + alpha_sum * exp_save;
             for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
-                shy[chan] = __vadd(__vscale(exp_save, shy[chan]), __vscale(alpha, _vx[chan]));
+                shy[chan] = __vadd(__vscale(exp_save, shy[chan]), __vscale(alpha, vload(_vx, chan)));
             }
             qdotk_max = qdotk_max_tmp;
         }
@@ -169,11 +173,11 @@ namespace attention_kernels
         for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { y_acc[chan] = shy[chan]; }
     }
 
-    template <typename FLOATV_T>
-    void launch_gen_attn_ring_fwd(attn_params_t params, int64_t batch_size, FLOATV_T *_kxp, FLOATV_T *_vxp,
-                                  FLOATV_T *_qyp, int32_t *_row_idx, int64_t *_row_off, int64_t *_col_idx,
-                                  float *_quad_weights, FLOATV_T *_y_acc, float *_alpha_sum, float *_qdotk_max,
-                                  cudaStream_t stream)
+    template <typename STORAGE_T>
+    void launch_gen_attn_ring_fwd(attn_params_t params, int64_t batch_size, STORAGE_T *_kxp, STORAGE_T *_vxp,
+                                  STORAGE_T *_qyp, int32_t *_row_idx, int64_t *_row_off, int64_t *_col_idx,
+                                  float *_quad_weights, typename vec_traits<STORAGE_T>::compute_t *_y_acc,
+                                  float *_alpha_sum, float *_qdotk_max, cudaStream_t stream)
     {
 
         const int nlat_out = params.nlat_out;
@@ -183,9 +187,9 @@ namespace attention_kernels
         dim3 block(WARP_SIZE, THREADS / WARP_SIZE);
         dim3 grid(DIV_UP(nlat_out * nlon_out, block.y), batch_size);
 
-        size_t shsize = sizeof(FLOATV_T) * nchans_out * block.y;
+        size_t shsize = sizeof(typename vec_traits<STORAGE_T>::compute_t) * nchans_out * block.y;
 
-        auto kern = &s2_attn_fwd_ring_generic_k<THREADS, FLOATV_T>;
+        auto kern = &s2_attn_fwd_ring_generic_k<THREADS, STORAGE_T>;
         ensure_dyn_shmem(reinterpret_cast<const void *>(kern), shsize);
 
         kern<<<grid, block, shsize, stream>>>(params, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights,
@@ -201,15 +205,16 @@ namespace attention_kernels
     // **************** start long-rows specific kernels ****************
 
     template <int BDIM_X, int BDIM_Y,
-              int NLOC,          // smallest int such that BDIM_X*NLOC >= nchan_in
-              typename FLOATV_T> // either float or float4
+              int NLOC, // smallest int such that BDIM_X*NLOC >= nchan_in
+              typename STORAGE_T>
     __global__ __launch_bounds__(BDIM_X *BDIM_Y) void s2_attn_fwd_ring_softmax_k(
         const __grid_constant__ attn_params_t p, const int shcol_len_max, const int nlat_max,
-        const FLOATV_T *__restrict__ kx, // [batch][nlat_halo][nlon_kx][nchan_in]
-        const FLOATV_T *__restrict__ qy, // [batch][nlat_out][nlon_out][nchan_in]
+        const STORAGE_T *__restrict__ kx, // [batch][nlat_halo][nlon_kx][nchan_in]
+        const STORAGE_T *__restrict__ qy, // [batch][nlat_out][nlon_out][nchan_in]
         const int32_t *__restrict__ row_idx, const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx,
         const float *__restrict__ qdotk_max_prev, float *__restrict__ qdotk_max_curr)
     {
+        using COMPUTE_T = typename vec_traits<STORAGE_T>::compute_t;
 
         static_assert(0 == (BDIM_X & (BDIM_X - 1)));
         static_assert(0 == (BDIM_Y & (BDIM_Y - 1)));
@@ -249,19 +254,19 @@ namespace attention_kernels
         alignas(float4) extern __shared__ float shext[];
 
         // just to simplify the seatup of the shared memory layout
-        using FLOATV_PTR_T = const FLOATV_T *;
+        using FLOATV_PTR_T = const STORAGE_T *;
 
-        FLOATV_T *shqy = NULL;
+        COMPUTE_T *shqy = NULL;
         FLOATV_PTR_T *shkx_ptr = NULL;
 #if 1
-        if constexpr (sizeof(FLOATV_T) > sizeof(FLOATV_PTR_T)) {
-            FLOATV_T *base = reinterpret_cast<FLOATV_T *>(shext);
+        if constexpr (sizeof(COMPUTE_T) > sizeof(FLOATV_PTR_T)) {
+            COMPUTE_T *base = reinterpret_cast<COMPUTE_T *>(shext);
             shqy = base + tidy * nchan_in;
             shkx_ptr = reinterpret_cast<FLOATV_PTR_T *>(base + BDIM_Y * nchan_in) + tidy * shcol_len_max;
         } else {
             FLOATV_PTR_T *base = reinterpret_cast<FLOATV_PTR_T *>(shext);
             shkx_ptr = base + tidy * shcol_len_max;
-            shqy = reinterpret_cast<FLOATV_T *>(base + BDIM_Y * shcol_len_max) + tidy * nchan_in;
+            shqy = reinterpret_cast<COMPUTE_T *>(base + BDIM_Y * shcol_len_max) + tidy * nchan_in;
         }
         shqy += tidx;
 #else
@@ -270,10 +275,10 @@ namespace attention_kernels
 #endif
 
 #if 1
-        strided_op<BDIM_X, 0>(nchan_in, [&](int i) { shqy[i * BDIM_X] = qy[i * BDIM_X]; });
+        strided_op<BDIM_X, 0>(nchan_in, [&](int i) { shqy[i * BDIM_X] = vload(qy, i * BDIM_X); });
 #else
-        FLOATV_T loc_qy[NLOC];
-        strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { loc_qy[i] = qy[i * BDIM_X]; });
+        COMPUTE_T loc_qy[NLOC];
+        strided_op<BDIM_X, NLOC>(nchan_in, [&](int i) { loc_qy[i] = vload(qy, i * BDIM_X); });
 #endif
         const int64_t out_flat = int64_t(batch) * nlat_out * nlon_out + int64_t(ho) * nlon_out + wo;
 
@@ -296,7 +301,7 @@ namespace attention_kernels
 
         for (int i = 0; i < n; i += BDIM_X) {
 
-            const FLOATV_T *kx_ptr = NULL;
+            const STORAGE_T *kx_ptr = NULL;
 
             if (i + tidx < n) {
                 const int64_t col = col_idx[(i + tidx) * blk_per_row];
@@ -330,15 +335,15 @@ namespace attention_kernels
 
         for (int i = 0; i < n; i++) {
 
-            const FLOATV_T *__restrict__ _kx = shkx_ptr[i] + tidx;
+            const STORAGE_T *__restrict__ _kx = shkx_ptr[i] + tidx;
 
-            FLOATV_T qdotk_v = __vset<FLOATV_T>(0.0f);
+            COMPUTE_T qdotk_v = __vset<COMPUTE_T>(0.0f);
 #if 1
-            strided_op<BDIM_X, 0>(nchan_in,
-                                  [&](int i) { qdotk_v = __vadd(qdotk_v, __vmul(shqy[i * BDIM_X], _kx[i * BDIM_X])); });
+            strided_op<BDIM_X, 0>(
+                nchan_in, [&](int i) { qdotk_v = __vadd(qdotk_v, __vmul(shqy[i * BDIM_X], vload(_kx, i * BDIM_X))); });
 #else
-            strided_op<BDIM_X, NLOC>(nchan_in,
-                                     [&](int i) { qdotk_v = __vadd(qdotk_v, __vmul(loc_qy[i], _kx[i * BDIM_X])); });
+            strided_op<BDIM_X, NLOC>(
+                nchan_in, [&](int i) { qdotk_v = __vadd(qdotk_v, __vmul(loc_qy[i], vload(_kx, i * BDIM_X))); });
 #endif
             float qdotk = __vred(qdotk_v);
             __group_sum<BDIM_X, BDIM_Y>(qdotk);
@@ -350,15 +355,16 @@ namespace attention_kernels
     }
 
     template <int BDIM_X, int BDIM_Y,
-              int NLOC,          // smallest int such that BDIM_X*NLOC >= nchan_in
-              typename FLOATV_T> // either float or float4
+              int NLOC, // smallest int such that BDIM_X*NLOC >= nchan_in
+              typename STORAGE_T>
     __global__ __launch_bounds__(BDIM_X *BDIM_Y) void s2_attn_fwd_ring_rescale_k(
         const __grid_constant__ attn_params_t p, const int nlat_max, const int32_t *__restrict__ row_idx,
         float *__restrict__ alpha_sum_buf,  // [batch][nlat_out][nlon_out] (in/out)
         float *__restrict__ qdotk_max_prev, // [batch][nlat_out][nlon_out] (in/out)
         float *__restrict__ qdotk_max_curr, // [batch][nlat_out][nlon_out] (in/out)
-        FLOATV_T *__restrict__ y_acc)
+        typename vec_traits<STORAGE_T>::compute_t *__restrict__ y_acc)
     { // [batch][nlat_out][nlon_out][nchan_in] (in/out)
+        using COMPUTE_T = typename vec_traits<STORAGE_T>::compute_t;
 
         static_assert(0 == (BDIM_X & (BDIM_X - 1)));
         static_assert(0 == (BDIM_Y & (BDIM_Y - 1)));
@@ -395,7 +401,7 @@ namespace attention_kernels
 
         const float alpha_sum = max_correction * alpha_sum_buf[0];
 
-        FLOATV_T locy[NLOC];
+        COMPUTE_T locy[NLOC];
 
         strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) { locy[i] = y_acc[i * BDIM_X]; });
         strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) { locy[i] = __vscale(max_correction, locy[i]); });
@@ -410,20 +416,21 @@ namespace attention_kernels
     }
 
     template <int BDIM_X, int BDIM_Y,
-              int CHIN_AS_OUT,   // 1 iif "BDIM_X*(NLOC-1) <= nchan_out <= BDIM_X*NLOC" else 0
-              int NLOC,          // smallest int such that BDIM_X*NLOC >= nchan_in
-              typename FLOATV_T> // either float or float4
+              int CHIN_AS_OUT, // 1 iif "BDIM_X*(NLOC-1) <= nchan_out <= BDIM_X*NLOC" else 0
+              int NLOC,        // smallest int such that BDIM_X*NLOC >= nchan_in
+              typename STORAGE_T>
     __global__ __launch_bounds__(BDIM_X *BDIM_Y) void s2_attn_fwd_ring_finalize_k(
         const __grid_constant__ attn_params_t p, const int shcol_len_max, const int nlat_max,
-        const FLOATV_T *__restrict__ kx, // [batch][nlat_halo][nlon_kx][nchan_in]
-        const FLOATV_T *__restrict__ vx, // [batch][nlat_halo][nlon_kx][nchan_out]
-        const FLOATV_T *__restrict__ qy, // [batch][nlat_out][nlon_out][nchan_in]
+        const STORAGE_T *__restrict__ kx, // [batch][nlat_halo][nlon_kx][nchan_in]
+        const STORAGE_T *__restrict__ vx, // [batch][nlat_halo][nlon_kx][nchan_out]
+        const STORAGE_T *__restrict__ qy, // [batch][nlat_out][nlon_out][nchan_in]
         const int32_t *__restrict__ row_idx, const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx,
         const float *__restrict__ quad_weights,
         float *__restrict__ alpha_sum_buf,  // [batch][nlat_out][nlon_out] (in/out)
         float *__restrict__ qdotk_max_curr, // [batch][nlat_out][nlon_out] (in/out)
-        FLOATV_T *__restrict__ y_acc)
+        typename vec_traits<STORAGE_T>::compute_t *__restrict__ y_acc)
     { // [batch][nlat_out][nlon_out][nchan_out] (in/out)
+        using COMPUTE_T = typename vec_traits<STORAGE_T>::compute_t;
 
         static_assert(0 == (BDIM_X & (BDIM_X - 1)));
         static_assert(0 == (BDIM_Y & (BDIM_Y - 1)));
@@ -455,31 +462,31 @@ namespace attention_kernels
 
         alignas(float4) extern __shared__ float shext[];
 
-        // FLOATV_T *sh_dy = reinterpret_cast<FLOATV_T *>(shext) + threadIdx.y*(nchan_in+nchan_out) + tidx;
-        // FLOATV_T *sh_qy = sh_dy + nchan_out; // [nchan_in], so always offest by tidx
+        // COMPUTE_T *sh_dy = reinterpret_cast<COMPUTE_T *>(shext) + threadIdx.y*(nchan_in+nchan_out) + tidx;
+        // COMPUTE_T *sh_qy = sh_dy + nchan_out; // [nchan_in], so always offest by tidx
 
         // just to simplify the seatup of the shared memory layout
-        using FLOATV_PTR_T = const FLOATV_T *;
+        using FLOATV_PTR_T = const STORAGE_T *;
 
-        // chunked into 4 arrays: FLOATV_T shq[BDIM_Y][nchan_in]
-        //                        FLOATV_T *shkx_ptr[BDIM_Y][shcol_len_max]
-        //                        FLOATV_T *shvx_ptr[BDIM_Y][shcol_len_max]
+        // chunked into 4 arrays: COMPUTE_T shq[BDIM_Y][nchan_in]
+        //                        STORAGE_T *shkx_ptr[BDIM_Y][shcol_len_max]
+        //                        STORAGE_T *shvx_ptr[BDIM_Y][shcol_len_max]
         //                        float     shweight[BDIM_Y][shcol_len_max]
-        FLOATV_T *base_fltv = NULL;
+        COMPUTE_T *base_fltv = NULL;
         FLOATV_PTR_T *base_fltv_ptr = NULL;
         float *base_flt = NULL;
 
-        if constexpr (sizeof(FLOATV_T) > sizeof(FLOATV_PTR_T)) {
-            base_fltv = reinterpret_cast<FLOATV_T *>(shext);
+        if constexpr (sizeof(COMPUTE_T) > sizeof(FLOATV_PTR_T)) {
+            base_fltv = reinterpret_cast<COMPUTE_T *>(shext);
             base_fltv_ptr = reinterpret_cast<FLOATV_PTR_T *>(base_fltv + BDIM_Y * nchan_in);
             base_flt = reinterpret_cast<float *>(base_fltv_ptr + BDIM_Y * 2 * shcol_len_max);
         } else {
             base_fltv_ptr = reinterpret_cast<FLOATV_PTR_T *>(shext);
-            base_fltv = reinterpret_cast<FLOATV_T *>(base_fltv_ptr + BDIM_Y * 2 * shcol_len_max);
+            base_fltv = reinterpret_cast<COMPUTE_T *>(base_fltv_ptr + BDIM_Y * 2 * shcol_len_max);
             base_flt = reinterpret_cast<float *>(base_fltv + BDIM_Y * nchan_in);
         }
 
-        FLOATV_T *shq = base_fltv + tidy * nchan_in;                                            // [nchan_in]
+        COMPUTE_T *shq = base_fltv + tidy * nchan_in;                                           // [nchan_in]
         FLOATV_PTR_T *shkx_ptr = base_fltv_ptr + tidy * shcol_len_max;                          // [shcol_len_max]
         FLOATV_PTR_T *shvx_ptr = base_fltv_ptr + BDIM_Y * shcol_len_max + tidy * shcol_len_max; // [shcol_len_max]
         float *shweight = base_flt + tidy * shcol_len_max;                                      // [shcol_len_max]
@@ -506,10 +513,10 @@ namespace attention_kernels
         float alpha_sum = 0;
         float qdotk_max_new = qdotk_max_curr[0];
 
-        FLOATV_T locy[NLOC];
-        strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) { locy[i] = __vset<FLOATV_T>(0); });
+        COMPUTE_T locy[NLOC];
+        strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) { locy[i] = __vset<COMPUTE_T>(0); });
 
-        strided_op<BDIM_X, CHIN_AS_OUT ? NLOC : 0>(nchan_in, [&](int i) { shq[i * BDIM_X] = qy[i * BDIM_X]; });
+        strided_op<BDIM_X, CHIN_AS_OUT ? NLOC : 0>(nchan_in, [&](int i) { shq[i * BDIM_X] = vload(qy, i * BDIM_X); });
 
         // `pscale` is the GLOBAL ratio nlon_in / nlon_out_global, passed by the caller.
         // Computing it here as `nlon_in / nlon_out` would be wrong because the kernel's
@@ -529,8 +536,8 @@ namespace attention_kernels
 
         for (int i = 0; i < n; i += BDIM_X) {
 
-            const FLOATV_T *kx_ptr = NULL;
-            const FLOATV_T *vx_ptr = NULL;
+            const STORAGE_T *kx_ptr = NULL;
+            const STORAGE_T *vx_ptr = NULL;
             float weight = 0;
 
             if (i + tidx < n) {
@@ -571,12 +578,12 @@ namespace attention_kernels
 
         for (int i = 0; i < n; i++) {
 
-            const FLOATV_T *_kx = shkx_ptr[i] + tidx;
-            const FLOATV_T *_vx = shvx_ptr[i] + tidx;
+            const STORAGE_T *_kx = shkx_ptr[i] + tidx;
+            const STORAGE_T *_vx = shvx_ptr[i] + tidx;
 
-            FLOATV_T qdotkv = __vset<FLOATV_T>(0.f);
+            COMPUTE_T qdotkv = __vset<COMPUTE_T>(0.f);
             strided_op<BDIM_X, CHIN_AS_OUT ? NLOC : 0>(
-                nchan_in, [&](int i) { qdotkv = __vadd(qdotkv, __vmul(shq[i * BDIM_X], _kx[i * BDIM_X])); });
+                nchan_in, [&](int i) { qdotkv = __vadd(qdotkv, __vmul(shq[i * BDIM_X], vload(_kx, i * BDIM_X))); });
 
             float qdotk = __vred(qdotkv);
             __group_sum<BDIM_X, BDIM_Y>(qdotk);
@@ -586,7 +593,7 @@ namespace attention_kernels
             alpha_sum += alpha;
 
             strided_op<BDIM_X, NLOC>(nchan_out,
-                                     [&](int i) { locy[i] = __vadd(locy[i], __vscale(alpha, _vx[i * BDIM_X])); });
+                                     [&](int i) { locy[i] = __vadd(locy[i], __vscale(alpha, vload(_vx, i * BDIM_X))); });
         }
 
         // Store updated state
@@ -596,7 +603,7 @@ namespace attention_kernels
         }
 
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 900
-        constexpr bool DO_SPLIT_VEC = sizeof(FLOATV_T) / sizeof(float) == 4;
+        constexpr bool DO_SPLIT_VEC = sizeof(COMPUTE_T) / sizeof(float) == 4;
 #else
         constexpr bool DO_SPLIT_VEC = false;
 #endif
@@ -613,15 +620,16 @@ namespace attention_kernels
         return;
     }
 
-    template <int BDIM_X, int LOC_SIZE, typename FLOATV_T>
+    template <int BDIM_X, int LOC_SIZE, typename STORAGE_T>
     void spc_attn_ring_fwd_long_rows(attn_params_t params, int64_t n_long_rows, int64_t max_row_len, int64_t batch_size,
-                                     FLOATV_T *_kxp, FLOATV_T *_vxp, FLOATV_T *_qyp, int32_t *_row_idx,
-                                     int64_t *_row_off, int64_t *_col_idx, float *_quad_weights, FLOATV_T *_y_acc,
-                                     float *_alpha_sum, float *_qdotk_max, cudaStream_t stream)
+                                     STORAGE_T *_kxp, STORAGE_T *_vxp, STORAGE_T *_qyp, int32_t *_row_idx,
+                                     int64_t *_row_off, int64_t *_col_idx, float *_quad_weights,
+                                     typename vec_traits<STORAGE_T>::compute_t *_y_acc, float *_alpha_sum,
+                                     float *_qdotk_max, cudaStream_t stream)
     {
+        using COMPUTE_T = typename vec_traits<STORAGE_T>::compute_t;
 
         static_assert(0 == (BDIM_X & (BDIM_X - 1)));
-        static_assert(std::is_same<FLOATV_T, float>::value || std::is_same<FLOATV_T, float4>::value);
 
         if (!n_long_rows) { return; }
 
@@ -657,9 +665,9 @@ namespace attention_kernels
 #endif
         const int max_niter_cta = DIV_UP(max_row_len, cta_per_row);
 
-        size_t shsize = (sizeof(FLOATV_T) * nchans_in + sizeof(FLOATV_T *) * max_niter_cta) * block.y;
+        size_t shsize = (sizeof(COMPUTE_T) * nchans_in + sizeof(const STORAGE_T *) * max_niter_cta) * block.y;
 
-        auto kern = &s2_attn_fwd_ring_softmax_k<BDIM_X, BDIM_Y, LOC_SIZE, FLOATV_T>;
+        auto kern = &s2_attn_fwd_ring_softmax_k<BDIM_X, BDIM_Y, LOC_SIZE, STORAGE_T>;
         ensure_dyn_shmem(reinterpret_cast<const void *>(kern), shsize);
 
         kern<<<grid_lr, block, shsize, stream>>>(params, max_niter_cta, n_long_rows, _kxp, _qyp, _row_idx, _row_off,
@@ -667,22 +675,22 @@ namespace attention_kernels
         CHECK_ERROR("s2_attn_fwd_ring_softmax_k");
 
         // also copies _qdotk_max_new values for long rows back into caller-provided _qdotk_max buffer
-        s2_attn_fwd_ring_rescale_k<BDIM_X, BDIM_Y, LOC_SIZE><<<grid_resc, block, 0, stream>>>(
+        s2_attn_fwd_ring_rescale_k<BDIM_X, BDIM_Y, LOC_SIZE, STORAGE_T><<<grid_resc, block, 0, stream>>>(
             params, n_long_rows, _row_idx, _alpha_sum, _qdotk_max, _qdotk_max_new, _y_acc);
         CHECK_ERROR("s2_attn_fwd_ring_rescale_k");
 
-        shsize = (sizeof(FLOATV_T) * (nchans_in + nchans_out) + sizeof(FLOATV_T *) * max_niter_cta * 2
+        shsize = (sizeof(COMPUTE_T) * (nchans_in + nchans_out) + sizeof(const STORAGE_T *) * max_niter_cta * 2
                   + sizeof(float) * max_niter_cta)
             * block.y;
         if (chin_as_out) {
-            auto kern = &s2_attn_fwd_ring_finalize_k<BDIM_X, BDIM_Y, 1, LOC_SIZE, FLOATV_T>;
+            auto kern = &s2_attn_fwd_ring_finalize_k<BDIM_X, BDIM_Y, 1, LOC_SIZE, STORAGE_T>;
             ensure_dyn_shmem(reinterpret_cast<const void *>(kern), shsize);
 
             kern<<<grid_lr, block, shsize, stream>>>(params, max_niter_cta, n_long_rows, _kxp, _vxp, _qyp, _row_idx,
                                                      _row_off, _col_idx, _quad_weights, _alpha_sum, _qdotk_max_new,
                                                      _y_acc);
         } else {
-            auto kern = &s2_attn_fwd_ring_finalize_k<BDIM_X, BDIM_Y, 0, LOC_SIZE, FLOATV_T>;
+            auto kern = &s2_attn_fwd_ring_finalize_k<BDIM_X, BDIM_Y, 0, LOC_SIZE, STORAGE_T>;
             ensure_dyn_shmem(reinterpret_cast<const void *>(kern), shsize);
 
             kern<<<grid_lr, block, shsize, stream>>>(params, max_niter_cta, n_long_rows, _kxp, _vxp, _qyp, _row_idx,
@@ -701,19 +709,20 @@ namespace attention_kernels
     template <int BDIM_X, int BDIM_Y,
               int CHIN_AS_OUT, // 1 iif "BDIM_X*(NLOC-1) <= nchan_in <= BDIM_X*NLOC" else 0
               int NLOC,        // smallest int such that BDIM_X*NLOC >= nchan_out
-              typename FLOATV_T>
+              typename STORAGE_T>
     __global__ __launch_bounds__(BDIM_X *BDIM_Y) void s2_attn_fwd_ring_special_k(
         const __grid_constant__ attn_params_t p, const int shcol_len_max, const int nlat_max,
-        const FLOATV_T *__restrict__ kx, // [batch][nlat_halo][nlon_kx][nchan_in]
-        const FLOATV_T *__restrict__ vx, // [batch][nlat_halo][nlon_kx][nchan_out]
-        const FLOATV_T *__restrict__ qy, // [batch][nlat_out][nlon_out][nchan_in]
+        const STORAGE_T *__restrict__ kx, // [batch][nlat_halo][nlon_kx][nchan_in]
+        const STORAGE_T *__restrict__ vx, // [batch][nlat_halo][nlon_kx][nchan_out]
+        const STORAGE_T *__restrict__ qy, // [batch][nlat_out][nlon_out][nchan_in]
         const int32_t *__restrict__ row_idx, const int64_t *__restrict__ row_off,
-        const int64_t *__restrict__ col_idx,    // wi already shifted by pscale * lon_lo_out
-        const float *__restrict__ quad_weights, // [nlat_in_global]
-        FLOATV_T *__restrict__ y_acc,           // [batch][nlat_out][nlon_out][nchan_out] (in/out)
-        float *__restrict__ alpha_sum_buf,      // [batch][nlat_out][nlon_out] (in/out)
+        const int64_t *__restrict__ col_idx,                           // wi already shifted by pscale * lon_lo_out
+        const float *__restrict__ quad_weights,                        // [nlat_in_global]
+        typename vec_traits<STORAGE_T>::compute_t *__restrict__ y_acc, // [batch][nlat_out][nlon_out][nchan_out] (in/out)
+        float *__restrict__ alpha_sum_buf,                             // [batch][nlat_out][nlon_out] (in/out)
         float *__restrict__ qdotk_max_buf)
     { // [batch][nlat_out][nlon_out] (in/out)
+        using COMPUTE_T = typename vec_traits<STORAGE_T>::compute_t;
 
         static_assert(0 == (BDIM_X & (BDIM_X - 1)));
         static_assert(0 == (BDIM_Y & (BDIM_Y - 1)));
@@ -740,27 +749,27 @@ namespace attention_kernels
 
         alignas(float4) extern __shared__ float shext[];
 
-        using FLOATV_PTR_T = const FLOATV_T *;
+        using FLOATV_PTR_T = const STORAGE_T *;
 
-        // chunked into 4 arrays: FLOATV_T shq[BDIM_Y][nchan_in]
-        //                        FLOATV_T *shkx_ptr[BDIM_Y][shcol_len_max]
-        //                        FLOATV_T *shvx_ptr[BDIM_Y][shcol_len_max]
+        // chunked into 4 arrays: COMPUTE_T shq[BDIM_Y][nchan_in]
+        //                        STORAGE_T *shkx_ptr[BDIM_Y][shcol_len_max]
+        //                        STORAGE_T *shvx_ptr[BDIM_Y][shcol_len_max]
         //                        float     shweight[BDIM_Y][shcol_len_max]
-        FLOATV_T *base_fltv = NULL;
+        COMPUTE_T *base_fltv = NULL;
         FLOATV_PTR_T *base_fltv_ptr = NULL;
         float *base_flt = NULL;
 
-        if constexpr (sizeof(FLOATV_T) > sizeof(FLOATV_PTR_T)) {
-            base_fltv = reinterpret_cast<FLOATV_T *>(shext);
+        if constexpr (sizeof(COMPUTE_T) > sizeof(FLOATV_PTR_T)) {
+            base_fltv = reinterpret_cast<COMPUTE_T *>(shext);
             base_fltv_ptr = reinterpret_cast<FLOATV_PTR_T *>(base_fltv + BDIM_Y * nchan_in);
             base_flt = reinterpret_cast<float *>(base_fltv_ptr + BDIM_Y * 2 * shcol_len_max);
         } else {
             base_fltv_ptr = reinterpret_cast<FLOATV_PTR_T *>(shext);
-            base_fltv = reinterpret_cast<FLOATV_T *>(base_fltv_ptr + BDIM_Y * 2 * shcol_len_max);
+            base_fltv = reinterpret_cast<COMPUTE_T *>(base_fltv_ptr + BDIM_Y * 2 * shcol_len_max);
             base_flt = reinterpret_cast<float *>(base_fltv + BDIM_Y * nchan_in);
         }
 
-        FLOATV_T *shq = base_fltv + tidy * nchan_in;
+        COMPUTE_T *shq = base_fltv + tidy * nchan_in;
         FLOATV_PTR_T *shkx_ptr = base_fltv_ptr + tidy * shcol_len_max;
         FLOATV_PTR_T *shvx_ptr = base_fltv_ptr + BDIM_Y * shcol_len_max + tidy * shcol_len_max;
         float *shweight = base_flt + tidy * shcol_len_max;
@@ -783,14 +792,14 @@ namespace attention_kernels
         alpha_sum_buf += out_flat;
         qdotk_max_buf += out_flat;
 
-        FLOATV_T locy[NLOC];
+        COMPUTE_T locy[NLOC];
 
         // Load current state from buffers
         float alpha_sum = alpha_sum_buf[0];
         float qdotk_max = qdotk_max_buf[0];
 
         strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) { locy[i] = y_acc[i * BDIM_X]; });
-        strided_op<BDIM_X, CHIN_AS_OUT ? NLOC : 0>(nchan_in, [&](int i) { shq[i * BDIM_X] = qy[i * BDIM_X]; });
+        strided_op<BDIM_X, CHIN_AS_OUT ? NLOC : 0>(nchan_in, [&](int i) { shq[i * BDIM_X] = vload(qy, i * BDIM_X); });
 
         // `pscale` is the GLOBAL ratio nlon_in / nlon_out_global, passed by the caller.
         // Computing it here as `nlon_in / nlon_out` would be wrong because the kernel's
@@ -806,8 +815,8 @@ namespace attention_kernels
 
         for (int i = 0; i < n; i += BDIM_X) {
 
-            const FLOATV_T *kx_ptr = NULL;
-            const FLOATV_T *vx_ptr = NULL;
+            const STORAGE_T *kx_ptr = NULL;
+            const STORAGE_T *vx_ptr = NULL;
             float weight = 0;
 
             if (i + tidx < n) {
@@ -850,12 +859,12 @@ namespace attention_kernels
 
         for (int i = 0; i < n; i++) {
 
-            const FLOATV_T *_kx = shkx_ptr[i] + tidx;
-            const FLOATV_T *_vx = shvx_ptr[i] + tidx;
+            const STORAGE_T *_kx = shkx_ptr[i] + tidx;
+            const STORAGE_T *_vx = shvx_ptr[i] + tidx;
 
-            FLOATV_T qdotkv = __vset<FLOATV_T>(0.f);
+            COMPUTE_T qdotkv = __vset<COMPUTE_T>(0.f);
             strided_op<BDIM_X, CHIN_AS_OUT ? NLOC : 0>(
-                nchan_in, [&](int i) { qdotkv = __vadd(qdotkv, __vmul(shq[i * BDIM_X], _kx[i * BDIM_X])); });
+                nchan_in, [&](int i) { qdotkv = __vadd(qdotkv, __vmul(shq[i * BDIM_X], vload(_kx, i * BDIM_X))); });
 
             float qdotk = __vred(qdotkv);
 
@@ -868,7 +877,7 @@ namespace attention_kernels
             alpha_sum = alpha + alpha_sum * exp_save;
 
             strided_op<BDIM_X, NLOC>(nchan_out, [&](int i) {
-                locy[i] = __vadd(__vscale(exp_save, locy[i]), __vscale(alpha, _vx[i * BDIM_X]));
+                locy[i] = __vadd(__vscale(exp_save, locy[i]), __vscale(alpha, vload(_vx, i * BDIM_X)));
             });
             qdotk_max = qdotk_max_tmp;
         }
@@ -885,16 +894,16 @@ namespace attention_kernels
     }
 
     template <int BDIM_X, int CUR_LOC_SIZE,
-              int MAX_LOC_SIZE, // max size of FLOATV_T[] local array
-              typename FLOATV_T>
-    void launch_spc_attn_ring_fwd(attn_params_t params, int nloc, int64_t batch_size, FLOATV_T *_kxp, FLOATV_T *_vxp,
-                                  FLOATV_T *_qyp, int32_t *_row_idx, int64_t *_row_off, int64_t *_col_idx,
-                                  float *_quad_weights, FLOATV_T *_y_acc, float *_alpha_sum, float *_qdotk_max,
-                                  cudaStream_t stream)
+              int MAX_LOC_SIZE, // max size of COMPUTE_T[] local array
+              typename STORAGE_T>
+    void launch_spc_attn_ring_fwd(attn_params_t params, int nloc, int64_t batch_size, STORAGE_T *_kxp, STORAGE_T *_vxp,
+                                  STORAGE_T *_qyp, int32_t *_row_idx, int64_t *_row_off, int64_t *_col_idx,
+                                  float *_quad_weights, typename vec_traits<STORAGE_T>::compute_t *_y_acc,
+                                  float *_alpha_sum, float *_qdotk_max, cudaStream_t stream)
     {
+        using COMPUTE_T = typename vec_traits<STORAGE_T>::compute_t;
 
         static_assert(0 == (BDIM_X & (BDIM_X - 1)));
-        static_assert(std::is_same<FLOATV_T, float>::value || std::is_same<FLOATV_T, float4>::value);
 
         if (CUR_LOC_SIZE == nloc) {
 
@@ -941,19 +950,19 @@ namespace attention_kernels
             dim3 block(BDIM_X, BDIM_Y);
             dim3 grid(DIV_UP(n_reg_rows * nlon_out, block.y), batch_size);
 
-            size_t shsize
-                = (sizeof(FLOATV_T) * nchans_in + sizeof(FLOATV_T *) * mid_row_len * 2 + sizeof(float) * mid_row_len)
+            size_t shsize = (sizeof(COMPUTE_T) * nchans_in + sizeof(const STORAGE_T *) * mid_row_len * 2
+                             + sizeof(float) * mid_row_len)
                 * block.y;
 
             if (chin_as_out) {
-                auto kern = &s2_attn_fwd_ring_special_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE, FLOATV_T>;
+                auto kern = &s2_attn_fwd_ring_special_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE, STORAGE_T>;
                 ensure_dyn_shmem(reinterpret_cast<const void *>(kern), shsize);
 
                 kern<<<grid, block, shsize, stream>>>(params, mid_row_len, n_reg_rows, _kxp, _vxp, _qyp,
                                                       _row_idx + n_long_rows, _row_off, _col_idx, _quad_weights, _y_acc,
                                                       _alpha_sum, _qdotk_max);
             } else {
-                auto kern = &s2_attn_fwd_ring_special_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE, FLOATV_T>;
+                auto kern = &s2_attn_fwd_ring_special_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE, STORAGE_T>;
                 ensure_dyn_shmem(reinterpret_cast<const void *>(kern), shsize);
 
                 kern<<<grid, block, shsize, stream>>>(params, mid_row_len, n_reg_rows, _kxp, _vxp, _qyp,
@@ -973,6 +982,7 @@ namespace attention_kernels
 
     // **************** end specialized kernel ****************
 
+    template <typename scalar_t>
     static void s2_attn_fwd_ring_step_dispatch(int64_t batch_size, int64_t nchans_in, int64_t nchans_out, int64_t nlon_in,
                                                int64_t pscale, int64_t nlat_halo, int64_t nlon_kx, int64_t lon_lo_kx,
                                                int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out,
@@ -992,9 +1002,9 @@ namespace attention_kernels
         bdimx = max(bdimx, WARP_SIZE);
         bdimx = next_pow2(bdimx);
 
-        float *_kxp = reinterpret_cast<float *>(kxP.data_ptr());
-        float *_vxp = reinterpret_cast<float *>(vxP.data_ptr());
-        float *_qyp = reinterpret_cast<float *>(qyP.data_ptr());
+        scalar_t *_kxp = reinterpret_cast<scalar_t *>(kxP.data_ptr());
+        scalar_t *_vxp = reinterpret_cast<scalar_t *>(vxP.data_ptr());
+        scalar_t *_qyp = reinterpret_cast<scalar_t *>(qyP.data_ptr());
         int32_t *_row_idx = reinterpret_cast<int32_t *>(row_idx.data_ptr());
         int64_t *_row_off = reinterpret_cast<int64_t *>(row_off.data_ptr());
         int64_t *_col_idx = reinterpret_cast<int64_t *>(col_idx.data_ptr());
@@ -1021,8 +1031,13 @@ namespace attention_kernels
         params.max_row_len = max_row_len;
         params.mid_row_len = mid_row_len;
 
-        if (!is_aligned<sizeof(float4)>(_kxp) || !is_aligned<sizeof(float4)>(_vxp) || !is_aligned<sizeof(float4)>(_qyp)
-            || !is_aligned<sizeof(float4)>(_y_acc) || (nchans_in % VEC_SIZE) != 0 || (nchans_out % VEC_SIZE) != 0) {
+        // fp32: float4 vectorized when 16B-aligned + 4-divisible, else scalar.
+        // fp16/bf16: always the scalar STORAGE_T path (widen at load, fp32 state).
+        const bool use_vec = std::is_same<scalar_t, float>::value && is_aligned<sizeof(float4)>(_kxp)
+            && is_aligned<sizeof(float4)>(_vxp) && is_aligned<sizeof(float4)>(_qyp)
+            && is_aligned<sizeof(float4)>(_y_acc) && (nchans_in % VEC_SIZE) == 0 && (nchans_out % VEC_SIZE) == 0;
+
+        if (!use_vec) {
 
             const int nloc = DIV_UP(nchans_out, bdimx);
 
@@ -1071,7 +1086,7 @@ namespace attention_kernels
                 break;
             }
 
-        } else {
+        } else if constexpr (std::is_same<scalar_t, float>::value) {
 
             float4 *_kxp4 = reinterpret_cast<float4 *>(_kxp);
             float4 *_vxp4 = reinterpret_cast<float4 *>(_vxp);
@@ -1152,22 +1167,32 @@ namespace attention_kernels
         const size_t nchans_in = qy.size(1);
         const size_t nchans_out = vx.size(1);
 
-        torch::Tensor kxP = kx.to(torch::kFloat32);
-        torch::Tensor vxP = vx.to(torch::kFloat32);
-        torch::Tensor qyP = qy.to(torch::kFloat32);
+        // ATen dispatch over the input dtype. Tier B: native storage. kx/vx/qy
+        // keep their dtype; the kernels widen to fp32 at load (vload) so there is
+        // no whole-tensor fp32 copy and read bandwidth for fp16/bf16 is halved.
+        // The state buffers y_acc / alpha_sum / qdotk_max are passed in from Python
+        // as fp32 and stay fp32 (compute/accumulation are fp32 in-kernel).
+        AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, qy.scalar_type(), "s2_attention_fwd_ring_step_cuda", [&] {
+            using storage_t = scalar_t;
 
-        bool kx_is_channels_last = kxP.strides()[1] == 1;
-        bool vx_is_channels_last = vxP.strides()[1] == 1;
-        bool qy_is_channels_last = qyP.strides()[1] == 1;
+            // native storage: no upcast
+            torch::Tensor kxP = kx;
+            torch::Tensor vxP = vx;
+            torch::Tensor qyP = qy;
 
-        if (!kx_is_channels_last) { kxP = permute_4D_to0231(kxP); }
-        if (!vx_is_channels_last) { vxP = permute_4D_to0231(vxP); }
-        if (!qy_is_channels_last) { qyP = permute_4D_to0231(qyP); }
+            bool kx_is_channels_last = kxP.strides()[1] == 1;
+            bool vx_is_channels_last = vxP.strides()[1] == 1;
+            bool qy_is_channels_last = qyP.strides()[1] == 1;
 
-        s2_attn_fwd_ring_step_dispatch(batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx,
-                                       lon_lo_kx, lat_halo_start, nlat_out, nlon_out, kxP, vxP, qyP, psi_row_idx,
-                                       psi_row_off, psi_col_idx, quad_weights, y_acc, alpha_sum_buf, qdotk_max_buf,
-                                       n_long_rows, max_row_len, mid_row_len);
+            if (!kx_is_channels_last) { kxP = permute_4D_to0231(kxP); }
+            if (!vx_is_channels_last) { vxP = permute_4D_to0231(vxP); }
+            if (!qy_is_channels_last) { qyP = permute_4D_to0231(qyP); }
+
+            s2_attn_fwd_ring_step_dispatch<storage_t>(
+                batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start,
+                nlat_out, nlon_out, kxP, vxP, qyP, psi_row_idx, psi_row_off, psi_col_idx, quad_weights, y_acc,
+                alpha_sum_buf, qdotk_max_buf, n_long_rows, max_row_len, mid_row_len);
+        });
 
         C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
