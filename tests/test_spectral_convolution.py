@@ -452,6 +452,50 @@ class TestSpectralConvS2(unittest.TestCase):
             msg="spectral_bias.grad should contain non-zero entries",
         )
 
+    @parameterized.expand(
+        [
+            # nlat, nlon, in_channels, out_channels, num_groups
+            [16, 32, 4, 8, 1],
+            [16, 32, 8, 4, 1],
+            [16, 32, 4, 8, 2],
+        ],
+        skip_on_empty=True,
+    )
+    def test_spectral_bias_supports_channel_projection(self, nlat, nlon, in_channels, out_channels, num_groups, verbose=False):
+        """Spectral bias works if input and output channel counts differ."""
+        set_seed(333)
+
+        conv = SpectralConvS2(
+            in_shape=(nlat, nlon),
+            out_shape=(nlat, nlon),
+            in_channels=in_channels,
+            out_channels=out_channels,
+            num_groups=num_groups,
+            grid_in="equiangular",
+            grid_out="equiangular",
+            bias=True,
+        ).to(self.device)
+
+        self.assertEqual(conv.spectral_bias.shape, (1, in_channels, conv.lmax, conv.mmax))
+
+        with torch.no_grad():
+            conv.spectral_bias.data.fill_(0.1)
+
+        x = torch.randn(2, in_channels, nlat, nlon, device=self.device)
+        y = conv(x)
+
+        self.assertEqual(y.shape, (2, out_channels, nlat, nlon))
+        self.assertTrue(torch.isfinite(y).all(), "output contains non-finite values")
+
+        loss = y.sum()
+        loss.backward()
+
+        self.assertIsNotNone(conv.spectral_bias.grad, msg="spectral_bias.grad should not be None")
+        self.assertTrue(
+            conv.spectral_bias.grad.abs().max().item() > 0.0,
+            msg="spectral_bias.grad should contain non-zero entries",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

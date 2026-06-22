@@ -149,7 +149,7 @@ class DistributedSpectralConvS2(nn.Module):
         self.weight = nn.Parameter(scale * torch.randn(*weight_shape, dtype=torch.complex64))
 
         if bias:
-            self.spectral_bias = nn.Parameter(torch.zeros(1, self.out_channels, self.lmax_local, self.mmax_local, dtype=torch.complex64))
+            self.spectral_bias = nn.Parameter(torch.zeros(1, self.in_channels, self.lmax_local, self.mmax_local, dtype=torch.complex64))
             self.quadrature = DistributedQuadratureS2(img_shape=in_shape, grid=grid_in, normalize=False)
 
     @torch.compile
