@@ -59,6 +59,15 @@ namespace attention_kernels
         // (channels-last) layout; we match that on the output side.
         const bool qy_is_channels_last = qy.strides()[1] == 1;
 
+        // The CPU kernels are fp32-only (the storage/compute split is a CUDA-only
+        // Tier B optimization). Upcast fp16/bf16 inputs to fp32 here and cast the
+        // result back at the end; on CPU reduced-precision compute is emulated, so
+        // this loses no performance and keeps the Python op device-agnostic.
+        const auto inp_dtype = qy.scalar_type();
+        kx = kx.to(torch::kFloat32);
+        vx = vx.to(torch::kFloat32);
+        qy = qy.to(torch::kFloat32);
+
         // Force inputs to physical (B, H, W, C) via explicit permute + contiguous.
         // Mirrors CUDA permute_4D_to0231; avoids relying on
         // MemoryFormat::ChannelsLast which is silently ignored on some PyTorch
@@ -97,7 +106,7 @@ namespace attention_kernels
         // BCHW.
         y = y.permute({0, 3, 1, 2});
         if (!qy_is_channels_last) { y = y.contiguous(); }
-        return y;
+        return y.to(inp_dtype);
     }
 
     // Implement the operators: CPU

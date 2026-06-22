@@ -618,6 +618,48 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
     @parameterized.expand(
         [
+            [None],
+            ["tensor"],
+        ],
+        skip_on_empty=True,
+    )
+    def test_attention_eval_disables_sdpa_dropout(self, scale_mode, verbose=False):
+        set_seed(333)
+
+        scale = None
+        if scale_mode == "tensor":
+            scale = torch.tensor(0.5, device=self.device, dtype=torch.float32)
+
+        model = AttentionS2(
+            in_channels=4,
+            out_channels=4,
+            num_heads=1,
+            in_shape=(4, 8),
+            out_shape=(4, 8),
+            grid_in="equiangular",
+            grid_out="equiangular",
+            scale=scale,
+            bias=False,
+            drop_rate=0.9,
+        ).to(self.device)
+        model.eval()
+
+        inputs = torch.randn(2, 4, 4, 8, device=self.device, dtype=torch.float32)
+
+        with torch.no_grad():
+            torch.manual_seed(101)
+            if self.device.type == "cuda":
+                torch.cuda.manual_seed(101)
+            out_a = model(inputs)
+            torch.manual_seed(202)
+            if self.device.type == "cuda":
+                torch.cuda.manual_seed(202)
+            out_b = model(inputs)
+
+        self.assertTrue(compare_tensors("eval disables SDPA dropout", out_a, out_b, atol=0.0, rtol=0.0, verbose=verbose))
+
+    @parameterized.expand(
+        [
             # Format: [batch_size, channels_in, channels_out, shape, grid, atol, rtol]
             [2, 4, 4, (4, 8), "equiangular", 1e-5, 1e-4],
             [2, 4, 8, (4, 8), "equiangular", 1e-5, 1e-4],
