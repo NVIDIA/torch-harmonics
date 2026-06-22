@@ -559,8 +559,8 @@ namespace attention_kernels
 
         float *_qdotk_max = qdotk_max_t.data_ptr<float>();
 
-        const int cta_per_row = min(int64_t(SPLIT_LONG_ROW_MAX_BLK_X_ROW),
-                                    DIV_UP(max_row_len, SPLIT_LONG_ROW_MIN_WORK_X_BLK));
+        const int cta_per_row = min( int64_t(SPLIT_LONG_ROW_MAX_BLK_X_ROW),
+                                     max(1l, DIV_UP(max_row_len, SPLIT_LONG_ROW_MIN_WORK_X_BLK)) );
 
         dim3 block(BDIM_X, BDIM_Y);
         dim3 grid(DIV_UP(n_long_rows*nlon_out, block.y), cta_per_row, batch_size); // softmax+finalize grid

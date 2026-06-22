@@ -39,8 +39,6 @@
 #include <cub/cub.cuh>
 #include <limits>
 
-#include <cuda/barrier>
-
 #include "cudamacro.h"
 #include "attention_cuda_utils.cuh"
 
@@ -728,8 +726,8 @@ namespace attention_kernels
 
         float *_qdotk_max_new = reinterpret_cast<float *>(t_qdotk_max_new.data_ptr());
 
-        const int cta_per_row
-            = min(int64_t(SPLIT_LONG_ROW_MAX_BLK_X_ROW), DIV_UP(max_row_len, SPLIT_LONG_ROW_MIN_WORK_X_BLK));
+        const int cta_per_row = 
+            min( int64_t(SPLIT_LONG_ROW_MAX_BLK_X_ROW), max(1l, DIV_UP(max_row_len, SPLIT_LONG_ROW_MIN_WORK_X_BLK)) );
 
         dim3 grid_lr(DIV_UP(n_long_rows * nlon_out, block.y), cta_per_row, batch_size);
         dim3 grid_resc(DIV_UP(n_long_rows * nlon_out, block.y), batch_size);
