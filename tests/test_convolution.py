@@ -1253,6 +1253,29 @@ class TestKpackedPath(unittest.TestCase):
         finally:
             conv.psi_kpacked_K_pad = original_k_pad
 
+    def test_kpacked_disabled_fused_fallback(self):
+        """fused=True + K_PAD=24 must fall back to CSR fused path and match fused=False output."""
+        set_seed(77)
+        conv_unfused = self._make_conv(1, 8, (16, 32), fused=False)
+        conv_fused = self._make_conv(1, 8, (16, 32), fused=True)
+        conv_fused.weight.data.copy_(conv_unfused.weight.data)
+
+        # Disable kpacked on both so both take the CSR path.
+        conv_unfused.psi_kpacked_K_pad = 24
+        conv_fused.psi_kpacked_K_pad = 24
+
+        inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device, requires_grad=True)
+        inp2 = inp.detach().clone().requires_grad_(True)
+
+        out_u = conv_unfused(inp)
+        out_f = conv_fused(inp2)
+        compare_tensors(out_u, out_f, atol=1e-3, rtol=1e-3)
+
+        grad = torch.randn_like(out_u)
+        out_u.backward(grad)
+        out_f.backward(grad.clone())
+        compare_tensors(inp.grad, inp2.grad, atol=1e-3, rtol=1e-3)
+
     @unittest.skipUnless(_is_sm90(), "kpacked forward requires SM_90a (Hopper)")
     def test_kpacked_opcheck(self):
         """forward_kpacked op satisfies the PT2 opcheck contract."""
