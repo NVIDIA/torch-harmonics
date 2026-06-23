@@ -112,12 +112,15 @@ def setup_distributed_context(ctx):
         ctx.device = torch.device("cpu")
         proc_backend = "gloo"
 
-    dist.init_process_group(
+    init_kwargs = dict(
         backend=proc_backend,
         init_method=f"tcp://{master_address}:{port}",
         rank=ctx.world_rank,
         world_size=ctx.world_size,
     )
+    if torch.cuda.is_available():
+        init_kwargs["device_id"] = ctx.device
+    dist.init_process_group(**init_kwargs)
 
     ctx.wrank = ctx.world_rank % ctx.grid_size_w
     ctx.hrank = ctx.world_rank // ctx.grid_size_w
