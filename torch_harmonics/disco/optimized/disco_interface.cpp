@@ -62,6 +62,10 @@ namespace disco_kernels
         m.def("backward(Tensor inp, Tensor roff_idx, Tensor ker_idx, Tensor row_idx, Tensor col_idx, Tensor vals, int "
               "kernel_size, int nlat_out, int nlon_out) -> Tensor",
               {at::Tag::pt2_compliant_tag});
+        // K-packed dense forward (WGMMA path, Hopper SM_90a + bf16/fp16 only)
+        m.def("forward_kpacked(Tensor inp, Tensor pack_idx, Tensor pack_val, Tensor pack_count, "
+              "int kernel_size, int nlat_out, int nlon_out) -> Tensor",
+              {at::Tag::pt2_compliant_tag});
     }
 
 } // namespace disco_kernels

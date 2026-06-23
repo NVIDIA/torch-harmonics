@@ -145,6 +145,7 @@ def get_ext_modules():
             [
                 "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd.cu",
                 "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd.cu",
+                "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_dense_kpacked_sm90.cu",
             ]
         )
         ext_modules.append(CUDAExtension("torch_harmonics.disco._C", disco_sources, extra_compile_args=get_compile_args("disco")))

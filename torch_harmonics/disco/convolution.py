@@ -36,7 +36,7 @@ from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from disco_helpers import optimized_kernels_is_available, preprocess_psi
+from disco_helpers import optimized_kernels_is_available, pack_psi_dense, preprocess_psi
 
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
@@ -44,7 +44,14 @@ from torch_harmonics.quadrature import precompute_latitudes, precompute_longitud
 
 from ._disco_utils import _get_psi
 from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
-from .optimized.disco_optimized import _disco_s2_contraction_optimized, _disco_s2_fused_conv_optimized, _disco_s2_transpose_contraction_optimized
+from .optimized.disco_optimized import (
+    _disco_s2_contraction_kpacked,
+    _disco_s2_contraction_optimized,
+    _disco_s2_fused_conv_kpacked,
+    _disco_s2_fused_conv_optimized,
+    _disco_s2_transpose_contraction_optimized,
+    _maybe_kpack_psi,
+)
 
 
 def _normalize_convolution_tensor_s2(
@@ -545,10 +552,33 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         col_idx = idx[2, ...].contiguous()
         vals = vals.contiguous()
 
+        self.psi_kpacked_K_pad = None  # set to int if kpacked buffers are available
+
         if self.optimized_kernel:
             # preprocessed data-structure for GPU kernel
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_out, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+
+            # optional K-packed dense layout for the WGMMA path (Hopper bf16/fp16).
+            # precompute here so it's available at forward time.
+            psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(
+                self.kernel_size,
+                self.nlat_out,
+                self.nlon_in,
+                0,
+                ker_idx,
+                row_idx,
+                col_idx,
+                vals,
+                roff_idx,
+            )
+            kpack = _maybe_kpack_psi(psi_packed_idx.contiguous(), psi_packed_vals.contiguous(), psi_packed_count.contiguous())
+            if kpack is not None:
+                kpacked_idx, kpacked_vals, kpacked_count, K_pad = kpack
+                self.register_buffer("psi_kpacked_idx", kpacked_idx, persistent=False)
+                self.register_buffer("psi_kpacked_vals", kpacked_vals, persistent=False)
+                self.register_buffer("psi_kpacked_count", kpacked_count, persistent=False)
+                self.psi_kpacked_K_pad = K_pad
 
         # save all datastructures
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
@@ -571,7 +601,27 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         weight_r = self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])
 
-        if self.fused:
+        _kpacked_ok = self.optimized_kernel and self.psi_kpacked_K_pad in (8, 16) and x.dtype in (torch.float16, torch.bfloat16)
+
+        if self.fused and _kpacked_ok:
+            out = _disco_s2_fused_conv_kpacked(
+                x,
+                weight_r,
+                self.psi_kpacked_idx,
+                self.psi_kpacked_vals,
+                self.psi_kpacked_count,
+                self.psi_roff_idx,
+                self.psi_ker_idx,
+                self.psi_row_idx,
+                self.psi_col_idx,
+                self.psi_vals,
+                self.kernel_size,
+                self.nlat_out,
+                self.nlon_out,
+                self.groups,
+                self.groupsize,
+            )
+        elif self.fused:
             out = _disco_s2_fused_conv_optimized(
                 x,
                 weight_r,
@@ -587,7 +637,22 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                 self.groupsize,
             )
         else:
-            if self.optimized_kernel:
+            if _kpacked_ok:
+                x = _disco_s2_contraction_kpacked(
+                    x,
+                    self.psi_kpacked_idx,
+                    self.psi_kpacked_vals,
+                    self.psi_kpacked_count,
+                    self.psi_roff_idx,
+                    self.psi_ker_idx,
+                    self.psi_row_idx,
+                    self.psi_col_idx,
+                    self.psi_vals,
+                    self.kernel_size,
+                    self.nlat_out,
+                    self.nlon_out,
+                )
+            elif self.optimized_kernel:
                 x = _disco_s2_contraction_optimized(
                     x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
                 )
