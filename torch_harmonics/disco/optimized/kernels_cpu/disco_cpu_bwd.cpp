@@ -48,6 +48,17 @@ namespace disco_kernels
         // the kernel uses pscale = Wo / Wi; require an integer ratio so the p-shift is exact
         TORCH_CHECK(Wo % inp.size(4) == 0, "Wo (", Wo, ") must be an integer multiple of Wi (", inp.size(4), ")");
 
+        // The CPU kernel is fp32/fp64-only (the storage/compute split is a CUDA-only
+        // optimization, and CPU fp16/bf16 arithmetic is emulated anyway). Upcast
+        // reduced-precision inputs (and vals) to fp32 and cast the result back; fp32
+        // and fp64 inputs are untouched (fp64 precision preserved).
+        const auto inp_dtype = inp.scalar_type();
+        const bool reduced_precision = (inp_dtype == at::kHalf || inp_dtype == at::kBFloat16);
+        if (reduced_precision) {
+            inp = inp.to(torch::kFloat32);
+            vals = vals.to(torch::kFloat32);
+        }
+
         // initialize output tensor
         auto out = torch::zeros({inp.size(0), inp.size(1), Ho, Wo}, inp.options());
 
@@ -60,7 +71,8 @@ namespace disco_kernels
                                         vals.packed_accessor64<scalar_t, 1>(), out.packed_accessor64<scalar_t, 4>());
             }));
 
-        return out;
+        // .to(inp_dtype) is a no-op when out is already inp_dtype (fp32/fp64 path).
+        return out.to(inp_dtype);
     }
 
     TORCH_LIBRARY_IMPL(disco_kernels, CPU, m) { m.impl("backward", &disco_cpu_bwd); }
