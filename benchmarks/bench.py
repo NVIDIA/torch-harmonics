@@ -192,6 +192,7 @@ def _zero_grads(state: dict) -> None:
 class BenchmarkResult:
     name: str
     device: str
+    arch: str  # GPU model name, or "cpu"
     dtype: str
     fwd_ms: float  # avg over iters
     bwd_ms: Optional[float]  # avg over iters; None if no backward
@@ -217,6 +218,9 @@ def run_entry(
 
     if device.type == "cuda":
         torch.cuda.empty_cache()
+        gpu = torch.cuda.get_device_properties(device).name
+    else:
+        gpu = "cpu"
 
     state = entry.setup(device, entry.dtype)
 
@@ -269,6 +273,7 @@ def run_entry(
     return BenchmarkResult(
         name=entry.name,
         device=str(device),
+        arch=gpu,
         dtype=str(entry.dtype),
         fwd_ms=fwd_ms,
         bwd_ms=bwd_ms,
