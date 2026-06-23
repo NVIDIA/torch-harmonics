@@ -43,7 +43,8 @@ further (2–5×).
 
 ## Comparison helpers
 
-**Tensor comparisons** — always use `compare_tensors`:
+**Tensor comparisons** — always use `compare_tensors`. The first argument is a
+name string used in failure messages; it is required:
 ```python
 ok = compare_tensors("output", ref, got, atol=atol, rtol=rtol, verbose=verbose)
 self.assertTrue(ok, "output")
