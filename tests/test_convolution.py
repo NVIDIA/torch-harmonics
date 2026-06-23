@@ -1193,12 +1193,12 @@ class TestKpackedPath(unittest.TestCase):
 
         out_u = conv_unfused(inp)
         out_f = conv_fused(inp2)
-        compare_tensors(out_u, out_f, atol=1e-2, rtol=1e-2)
+        self.assertTrue(compare_tensors("output", out_u, out_f, atol=1e-2, rtol=1e-2))
 
         grad = torch.randn_like(out_u)
         out_u.backward(grad)
         out_f.backward(grad.clone())
-        compare_tensors(inp.grad, inp2.grad, atol=1e-2, rtol=1e-2)
+        self.assertTrue(compare_tensors("inp grad", inp.grad, inp2.grad, atol=1e-2, rtol=1e-2))
 
     @unittest.skipUnless(_is_sm90(), "kpacked forward requires SM_90a (Hopper)")
     def test_kpacked_bwd_bc_tile_boundaries(self):
@@ -1235,7 +1235,7 @@ class TestKpackedPath(unittest.TestCase):
                 conv_bf16(inp_bf16).backward(grad)
                 conv_fp32(inp_fp32).backward(grad.float())
 
-                compare_tensors(inp_bf16.grad.float(), inp_fp32.grad, atol=1e-1, rtol=1e-1)
+                self.assertTrue(compare_tensors("inp grad", inp_bf16.grad.float(), inp_fp32.grad, atol=1e-1, rtol=1e-1))
 
     def test_kpacked_disabled_for_unsupported_k_pad(self):
         """K_PAD not in {8,16} must silently fall back to CSR, not crash."""
@@ -1269,12 +1269,12 @@ class TestKpackedPath(unittest.TestCase):
 
         out_u = conv_unfused(inp)
         out_f = conv_fused(inp2)
-        compare_tensors(out_u, out_f, atol=1e-3, rtol=1e-3)
+        self.assertTrue(compare_tensors("output", out_u, out_f, atol=1e-3, rtol=1e-3))
 
         grad = torch.randn_like(out_u)
         out_u.backward(grad)
         out_f.backward(grad.clone())
-        compare_tensors(inp.grad, inp2.grad, atol=1e-3, rtol=1e-3)
+        self.assertTrue(compare_tensors("inp grad", inp.grad, inp2.grad, atol=1e-3, rtol=1e-3))
 
     @unittest.skipUnless(_is_sm90(), "kpacked forward requires SM_90a (Hopper)")
     def test_kpacked_opcheck(self):
