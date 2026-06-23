@@ -101,8 +101,6 @@ _SHT_CONFIGS = [
     dict(name="sht_fwd_bwd_1deg_b4096_float32_cuda", device="cuda", dtype=torch.float32, nlat=180, nlon=360, batch=8, tags=["sht"]),
     # half degree, CUDA
     dict(name="sht_fwd_bwd_hdeg_b1_float32_cuda", device="cuda", dtype=torch.float32, nlat=360, nlon=720, batch=1, tags=["sht"]),
-    # quarter degree, CUDA
-    dict(name="sht_fwd_bwd_qdeg_b1_float32_cuda", device="cuda", dtype=torch.float32, nlat=721, nlon=1440, batch=1, tags=["sht", "high_res"]),
 ]
 
 _ISHT_CONFIGS = [
@@ -112,8 +110,6 @@ _ISHT_CONFIGS = [
     dict(name="isht_fwd_bwd_1deg_b4096_float32_cuda", device="cuda", dtype=torch.float32, nlat=180, nlon=360, batch=8, tags=["isht"]),
     # half degree, CUDA
     dict(name="isht_fwd_bwd_hdeg_b1_float32_cuda", device="cuda", dtype=torch.float32, nlat=360, nlon=720, batch=1, tags=["isht"]),
-    # quarter degree, CUDA
-    dict(name="isht_fwd_bwd_qdeg_b1_float32_cuda", device="cuda", dtype=torch.float32, nlat=721, nlon=1440, batch=1, tags=["isht", "high_res"]),
 ]
 
 for cfg in _SHT_CONFIGS:

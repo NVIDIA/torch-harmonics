@@ -84,6 +84,7 @@ def _is_regression(speedup: Optional[float], tol: float) -> bool:
 # ------------------------------------------------------------------------------
 
 _COL_NAME = 52
+_COL_ARCH = 24
 _COL_DEV = 10
 _COL_DTYPE = 10
 _COL_FWD = 9
@@ -108,7 +109,15 @@ def _fmt_speedup(speedup: Optional[float], tol: float) -> str:
 
 
 def _header(with_ref: bool) -> str:
-    h = f"{'name':<{_COL_NAME}} " f"{'device':<{_COL_DEV}} " f"{'dtype':<{_COL_DTYPE}} " f"{'fwd_ms':>{_COL_FWD}} " f"{'bwd_ms':>{_COL_BWD}} " f"{'ref_l_inf':>{_COL_ERR}}"
+    h = (
+        f"{'name':<{_COL_NAME}} "
+        f"{'architecture':<{_COL_ARCH}} "
+        f"{'device':<{_COL_DEV}} "
+        f"{'dtype':<{_COL_DTYPE}} "
+        f"{'fwd_ms':>{_COL_FWD}} "
+        f"{'bwd_ms':>{_COL_BWD}} "
+        f"{'ref_l_inf':>{_COL_ERR}}"
+    )
     if with_ref:
         h += f"  {'fwd_spd':>{_COL_SPD}}  {'bwd_spd':>{_COL_SPD}}"
     return h
@@ -121,6 +130,7 @@ def _row(
 ) -> str:
     line = (
         f"{r.name:<{_COL_NAME}} "
+        f"{r.arch:<{_COL_ARCH}} "
         f"{r.device:<{_COL_DEV}} "
         f"{r.dtype:<{_COL_DTYPE}} "
         f"{_fmt_ms(r.fwd_ms):>{_COL_FWD}} "
@@ -175,6 +185,7 @@ def print_table(
 def _result_to_dict(r: BenchmarkResult) -> dict:
     return {
         "name": r.name,
+        "architecture": r.arch,
         "device": r.device,
         "dtype": r.dtype,
         "fwd_ms": r.fwd_ms,
