@@ -1,0 +1,413 @@
+# coding=utf-8
+# SPDX-FileCopyrightText: Copyright (c) 2026 The torch-harmonics Authors. All rights reserved.
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+# list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+# this list of conditions and the following disclaimer in the documentation
+# and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+# contributors may be used to endorse or promote products derived from
+# this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+import torch
+from bench import BenchmarkEntry, register
+
+from torch_harmonics import DiscreteContinuousConvS2
+
+# ------------------------------------------------------------------------------
+# Setup / forward / backward / reference
+# ------------------------------------------------------------------------------
+
+
+def _disco_setup(batch, in_ch, out_ch, nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, theta_cutoff, optimized):
+    def setup(device, dtype):
+        conv = DiscreteContinuousConvS2(
+            in_channels=in_ch,
+            out_channels=out_ch,
+            in_shape=(nlat_in, nlon_in),
+            out_shape=(nlat_out, nlon_out),
+            kernel_shape=kernel_shape,
+            theta_cutoff=theta_cutoff,
+            optimized_kernel=optimized,
+        ).to(device=device, dtype=dtype)
+        x = torch.randn(batch, in_ch, nlat_in, nlon_in, dtype=dtype, device=device, requires_grad=True)
+        return {
+            "conv": conv,
+            "x": x,
+            "in_ch": in_ch,
+            "out_ch": out_ch,
+            "nlat_in": nlat_in,
+            "nlon_in": nlon_in,
+            "nlat_out": nlat_out,
+            "nlon_out": nlon_out,
+            "kernel_shape": kernel_shape,
+            "theta_cutoff": theta_cutoff,
+        }
+
+    return setup
+
+
+def _disco_forward(state):
+    return state["conv"](state["x"])
+
+
+def _disco_backward(state, out):
+    out.backward(torch.ones_like(out))
+
+
+def _disco_reference(state):
+    conv_ref = DiscreteContinuousConvS2(
+        in_channels=state["in_ch"],
+        out_channels=state["out_ch"],
+        in_shape=(state["nlat_in"], state["nlon_in"]),
+        out_shape=(state["nlat_out"], state["nlon_out"]),
+        kernel_shape=state["kernel_shape"],
+        theta_cutoff=state["theta_cutoff"],
+        optimized_kernel=False,
+    ).to(dtype=torch.float64)
+    conv_ref.load_state_dict({k: v.cpu().double() for k, v in state["conv"].state_dict().items()})
+    with torch.no_grad():
+        return conv_ref(state["x"].detach().cpu().double())
+
+
+# ------------------------------------------------------------------------------
+# Benchmark configs — all parameters explicit per entry
+# ------------------------------------------------------------------------------
+
+_DISCO_CONFIGS = [
+    # self-conv (same in/out grid), half-degree, theta_cutoff=0.017, CUDA
+    dict(
+        name="disco_s2_opt_hdeg_b1_c64_tc0017_float32_cuda",
+        device="cuda",
+        dtype=torch.float32,
+        batch=1,
+        in_ch=64,
+        out_ch=64,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.017,
+        optimized=True,
+        tags=["disco", "self"],
+    ),
+    dict(
+        name="disco_s2_opt_hdeg_b1_c64_tc0017_float16_cuda",
+        device="cuda",
+        dtype=torch.float16,
+        batch=1,
+        in_ch=64,
+        out_ch=64,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.017,
+        optimized=True,
+        tags=["disco", "self"],
+    ),
+    dict(
+        name="disco_s2_opt_hdeg_b1_c64_tc0017_bfloat16_cuda",
+        device="cuda",
+        dtype=torch.bfloat16,
+        batch=1,
+        in_ch=64,
+        out_ch=64,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.017,
+        optimized=True,
+        tags=["disco", "self"],
+    ),
+    # self-conv (same in/out grid), half-degree, theta_cutoff=0.03, CUDA
+    dict(
+        name="disco_s2_opt_hdeg_b1_c64_tc003_float32_cuda",
+        device="cuda",
+        dtype=torch.float32,
+        batch=1,
+        in_ch=64,
+        out_ch=64,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.03,
+        optimized=True,
+        tags=["disco", "self"],
+    ),
+    dict(
+        name="disco_s2_opt_hdeg_b1_c64_tc003_float16_cuda",
+        device="cuda",
+        dtype=torch.float16,
+        batch=1,
+        in_ch=64,
+        out_ch=64,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.03,
+        optimized=True,
+        tags=["disco", "self"],
+    ),
+    dict(
+        name="disco_s2_opt_hdeg_b1_c64_tc003_bfloat16_cuda",
+        device="cuda",
+        dtype=torch.bfloat16,
+        batch=1,
+        in_ch=64,
+        out_ch=64,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.03,
+        optimized=True,
+        tags=["disco", "self"],
+    ),
+    # self-conv, large channels, half-degree, CUDA
+    dict(
+        name="disco_s2_opt_hdeg_b1_c256_tc0017_float32_cuda",
+        device="cuda",
+        dtype=torch.float32,
+        batch=1,
+        in_ch=256,
+        out_ch=256,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.017,
+        optimized=True,
+        tags=["disco", "self", "large_channels"],
+    ),
+    dict(
+        name="disco_s2_opt_hdeg_b1_c256_tc0017_float16_cuda",
+        device="cuda",
+        dtype=torch.float16,
+        batch=1,
+        in_ch=256,
+        out_ch=256,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.017,
+        optimized=True,
+        tags=["disco", "self", "large_channels"],
+    ),
+    dict(
+        name="disco_s2_opt_hdeg_b1_c256_tc0017_bfloat16_cuda",
+        device="cuda",
+        dtype=torch.bfloat16,
+        batch=1,
+        in_ch=256,
+        out_ch=256,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.017,
+        optimized=True,
+        tags=["disco", "self", "large_channels"],
+    ),
+    dict(
+        name="disco_s2_opt_hdeg_b1_c256_tc003_float32_cuda",
+        device="cuda",
+        dtype=torch.float32,
+        batch=1,
+        in_ch=256,
+        out_ch=256,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.03,
+        optimized=True,
+        tags=["disco", "self", "large_channels"],
+    ),
+    dict(
+        name="disco_s2_opt_hdeg_b1_c256_tc003_float16_cuda",
+        device="cuda",
+        dtype=torch.float16,
+        batch=1,
+        in_ch=256,
+        out_ch=256,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.03,
+        optimized=True,
+        tags=["disco", "self", "large_channels"],
+    ),
+    dict(
+        name="disco_s2_opt_hdeg_b1_c256_tc003_bfloat16_cuda",
+        device="cuda",
+        dtype=torch.bfloat16,
+        batch=1,
+        in_ch=256,
+        out_ch=256,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.03,
+        optimized=True,
+        tags=["disco", "self", "large_channels"],
+    ),
+    # downsampling: quarter-degree -> half-degree, CUDA
+    dict(
+        name="disco_s2_opt_qdeg_hdeg_b1_c128_tc0017_float32_cuda",
+        device="cuda",
+        dtype=torch.float32,
+        batch=1,
+        in_ch=128,
+        out_ch=128,
+        nlat_in=721,
+        nlon_in=1440,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.017,
+        optimized=True,
+        tags=["disco", "downsample"],
+    ),
+    dict(
+        name="disco_s2_opt_qdeg_hdeg_b1_c128_tc0017_float16_cuda",
+        device="cuda",
+        dtype=torch.float16,
+        batch=1,
+        in_ch=128,
+        out_ch=128,
+        nlat_in=721,
+        nlon_in=1440,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.017,
+        optimized=True,
+        tags=["disco", "downsample"],
+    ),
+    dict(
+        name="disco_s2_opt_qdeg_hdeg_b1_c128_tc0017_bfloat16_cuda",
+        device="cuda",
+        dtype=torch.bfloat16,
+        batch=1,
+        in_ch=128,
+        out_ch=128,
+        nlat_in=721,
+        nlon_in=1440,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.017,
+        optimized=True,
+        tags=["disco", "downsample"],
+    ),
+    dict(
+        name="disco_s2_opt_qdeg_hdeg_b1_c128_tc003_float32_cuda",
+        device="cuda",
+        dtype=torch.float32,
+        batch=1,
+        in_ch=128,
+        out_ch=128,
+        nlat_in=721,
+        nlon_in=1440,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.03,
+        optimized=True,
+        tags=["disco", "downsample"],
+    ),
+    dict(
+        name="disco_s2_opt_qdeg_hdeg_b1_c128_tc003_float16_cuda",
+        device="cuda",
+        dtype=torch.float16,
+        batch=1,
+        in_ch=128,
+        out_ch=128,
+        nlat_in=721,
+        nlon_in=1440,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.03,
+        optimized=True,
+        tags=["disco", "downsample"],
+    ),
+    dict(
+        name="disco_s2_opt_qdeg_hdeg_b1_c128_tc003_bfloat16_cuda",
+        device="cuda",
+        dtype=torch.bfloat16,
+        batch=1,
+        in_ch=128,
+        out_ch=128,
+        nlat_in=721,
+        nlon_in=1440,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        theta_cutoff=0.03,
+        optimized=True,
+        tags=["disco", "downsample"],
+    ),
+]
+
+for cfg in _DISCO_CONFIGS:
+    register(
+        BenchmarkEntry(
+            name=cfg["name"],
+            device=cfg["device"],
+            dtype=cfg["dtype"],
+            setup=_disco_setup(
+                batch=cfg["batch"],
+                in_ch=cfg["in_ch"],
+                out_ch=cfg["out_ch"],
+                nlat_in=cfg["nlat_in"],
+                nlon_in=cfg["nlon_in"],
+                nlat_out=cfg["nlat_out"],
+                nlon_out=cfg["nlon_out"],
+                kernel_shape=cfg["kernel_shape"],
+                theta_cutoff=cfg["theta_cutoff"],
+                optimized=cfg["optimized"],
+            ),
+            forward=_disco_forward,
+            backward=_disco_backward,
+            reference=_disco_reference if cfg["in_ch"] <= 64 else None,
+            tags=cfg["tags"],
+        )
+    )
