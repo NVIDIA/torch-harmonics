@@ -27,7 +27,7 @@ description: >
 
 ## Naming Conventions
 
-The files for serial tests should be named `test_<feature_name>.py` 
+The files for serial tests should be named `test_<feature_name>.py`
 and distributed tests `test_distributed_<feature_name>.py` respectively.
 
 ---
