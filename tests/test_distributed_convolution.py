@@ -514,6 +514,84 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
                 bgrad = self._allreduce_param_grad(conv_dist.bias.grad)
                 self.assertTrue(compare_tensors(f"layer{layer_idx} bias grad", conv_local_ref.bias.grad, bgrad, atol=pg_atol, rtol=pg_rtol, verbose=verbose))
 
+    def _run_kpacked_fallback(self, fused: bool, dtype: torch.dtype, atol: float, rtol: float):
+        """Shared body for kpacked-fallback tests.
+
+        Monkeypatches psi_kpacked_K_pad to an ineligible value (24) so that
+        the distributed conv falls back to the CSR path even with bf16/fp16
+        input, and verifies fwd+bwd correctness against the serial reference
+        (which also has kpacked disabled via the same monkeypatch).
+        """
+        if fused and not torch.cuda.is_available():
+            self.skipTest("fused=True is CUDA-only")
+
+        set_seed(555)
+        nlat, nlon = 64, 128
+        B, C = 8, 8
+
+        args = dict(
+            in_channels=C,
+            out_channels=C,
+            in_shape=(nlat, nlon),
+            out_shape=(nlat, nlon),
+            basis_type="piecewise linear",
+            basis_norm_mode="mean",
+            kernel_shape=(3,),
+            groups=1,
+            grid_in="equiangular",
+            grid_out="equiangular",
+            bias=True,
+        )
+
+        conv_local = th.DiscreteContinuousConvS2(**args).to(dtype=torch.float32, device=self.device)
+        conv_dist = thd.DistributedDiscreteContinuousConvS2(**args, fused=fused).to(dtype=torch.float32, device=self.device)
+
+        with torch.no_grad():
+            conv_dist.weight.copy_(conv_local.weight)
+            conv_dist.bias.copy_(conv_local.bias)
+
+        # Force both to CSR fallback by making K_PAD ineligible.
+        conv_local.psi_kpacked_K_pad = 24
+        conv_dist.psi_kpacked_K_pad = 24
+
+        inp_full = torch.randn((B, C, nlat, nlon), dtype=torch.float32, device=self.device)
+
+        inp_full.requires_grad = True
+        with maybe_autocast(self.device.type, dtype):
+            out_full = conv_local(inp_full)
+        ograd_full = torch.randn_like(out_full)
+        out_full.backward(ograd_full)
+        igrad_full = inp_full.grad.clone()
+
+        inp_local = self._split_helper(inp_full.detach().clone())
+        inp_local.requires_grad = True
+        with maybe_autocast(self.device.type, dtype):
+            out_local = conv_dist(inp_local)
+        ograd_local = self._split_helper(ograd_full)
+        out_local.backward(ograd_local)
+        igrad_local = inp_local.grad.clone()
+
+        verbose = self.world_rank == 0
+        out_gather = self._gather_helper_fwd(out_local, conv_dist)
+        ok = compare_tensors("output", out_full, out_gather, atol=atol, rtol=rtol, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "output")
+
+        igrad_gather = self._gather_helper_bwd(igrad_local, conv_dist)
+        ok = compare_tensors("gradients", igrad_full, igrad_gather, atol=atol, rtol=rtol, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "gradients")
+
+    def test_kpacked_fallback_bf16_unfused(self):
+        """bf16 + kpacked disabled (K_PAD=24) → CSR path, fused=False."""
+        self._run_kpacked_fallback(fused=False, dtype=torch.bfloat16, atol=5e-2, rtol=5e-2)
+
+    def test_kpacked_fallback_bf16_fused(self):
+        """bf16 + kpacked disabled (K_PAD=24) → CSR path, fused=True."""
+        self._run_kpacked_fallback(fused=True, dtype=torch.bfloat16, atol=5e-2, rtol=5e-2)
+
+    def test_kpacked_fallback_fp16_unfused(self):
+        """fp16 + kpacked disabled (K_PAD=24) → CSR path, fused=False."""
+        self._run_kpacked_fallback(fused=False, dtype=torch.float16, atol=2e-2, rtol=1e-2)
+
 
 if __name__ == "__main__":
     unittest.main()
