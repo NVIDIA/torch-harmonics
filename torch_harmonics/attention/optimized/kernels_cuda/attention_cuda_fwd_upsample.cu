@@ -39,17 +39,16 @@
 // nlon_out, with pscale_out = nlon_out / nlon_in. Requires nlon_out % nlon_in
 // == 0.
 //
-// Algorithm: same online softmax as the downsample kernel (single pass over
-// contributors per output cell), but output-centric: each warp owns a unique
-// (b, ho, wo) cell and scans every psi[hi] row, skipping entries whose stored
-// ho_neigh doesn't match this output's ho and entries whose stored
-// wo_canonical doesn't satisfy the divisibility wo ≡ wo_canonical (mod
-// pscale_out). The mapping wi -> (wo_canonical + pscale_out * wi) mod nlon_out
-// is a bijection within each pscale_out residue class, so for every (ho, wo)
-// each contributing psi entry yields a unique wi = (wo - wo_canonical) /
-// pscale_out within [0, nlon_in). The redundant scan over non-matching psi
-// entries is the price for keeping the parallelization atomics-free, mirroring
-// the CPU upsample kernel.
+// Algorithm: INPUT-keyed scatter. Each warp owns a coarse input cell (b, hi, wi)
+// and walks ONLY its real psi row row_off[hi]..row_off[hi+1]. For each entry the
+// mapping wi -> wo = (wo_canonical + pscale_out * wi) mod nlon_out (a bijection
+// within each pscale_out residue class) gives the fine output cell it feeds, and
+// the warp scatters its contribution there via atomics. Because the softmax cell
+// (fine output) is not the row key (coarse input), the per-output-cell reduction
+// spans multiple warps, so the softmax is done in two passes with cross-warp
+// atomics (max, then normalize + accumulate) plus a finalize. This replaced an
+// output-centric scan kernel that rescanned every psi row per output cell — an
+// O(out_cells * nnz) cost that made it 15-76x slower than this O(nnz) form.
 // =====================================================================================
 
 #include "attention_cuda.cuh"
@@ -67,132 +66,205 @@
 namespace attention_kernels
 {
 
-    // Output-centric online-softmax kernel for the scatter direction.
-    // Called with (blockDim.x = WARP_SIZE, blockDim.y = THREADS_PER_BLOCK / WARP_SIZE).
+    // =====================================================================================
+    // SCATTER (input-keyed) forward. One warp per COARSE INPUT cell (hi, wi) walks ONLY
+    // its real psi row (row_off[hi]..row_off[hi+1]) and SCATTERS its contribution into
+    // the fine output cells via atomics, mirroring the downsample-backward structure.
+    // This replaces the old output-centric scan kernel, whose O(out_cells * nnz)
+    // redundant scan made it 15-76x slower (the scan is now O(nnz), gather-class).
     //
-    // STORAGE_T is the global-memory element type (float4 for the fp32 vectorized
-    // path; float / c10::Half / c10::BFloat16 for the scalar path). COMPUTE_T is the
-    // arithmetic type (float4 / float); all dot-products, softmax and accumulation
-    // happen in COMPUTE_T. vload/vstore widen/narrow at the memory boundary.
-    template <int THREADS_PER_BLOCK, typename STORAGE_T>
-    __global__ __launch_bounds__(THREADS_PER_BLOCK) void s2_attn_fwd_upsample_generic_vec_k(
-        int nchan_in, int nchan_out, int nlat_in, int nlon_in, int nlat_out, int nlon_out,
-        const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy,
-        const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx,
-        const float *__restrict__ quad_weights, STORAGE_T *__restrict__ y)
-    {
-        using COMPUTE_T = typename vec_traits<STORAGE_T>::compute_t;
+    // Because the softmax-normalization cell (fine output) is NOT the row key (coarse
+    // input), the per-output-cell reduction spans multiple coarse warps, so the softmax
+    // is done in the standard two-pass form with cross-warp atomics:
+    //   pass 1 (max):  scatter q.k -> atomicMax  into maxbuf[b, ho, wo]
+    //   pass 2 (acc):  scatter exp(q.k - max)*w -> atomicAdd into denom[b, ho, wo]
+    //                  and exp(...)*w*v          -> atomicAdd into numer[b, ho, wo, :]
+    //   finalize:      y[b, ho, wo, :] = numer / denom   (narrowed to STORAGE_T)
+    // numer/denom/maxbuf are fp32 regardless of activation dtype. Prototype is scalar
+    // (no float4 atomic fast path); activations widen at load via vload.
+    // =====================================================================================
 
-        extern __shared__ __align__(sizeof(float4)) float shext[];
-        COMPUTE_T *shy = reinterpret_cast<COMPUTE_T *>(shext) + threadIdx.y * nchan_out;
+    // float atomicMax (no native float overload); CAS loop, correct for any sign.
+    __device__ __forceinline__ float atomicMaxf(float *addr, float val)
+    {
+        int *ai = reinterpret_cast<int *>(addr);
+        int old = *ai;
+        while (val > __int_as_float(old)) {
+            const int assumed = old;
+            old = atomicCAS(ai, assumed, __float_as_int(val));
+            if (old == assumed) { break; }
+        }
+        return __int_as_float(old);
+    }
+
+    // map a coarse longitude wi + canonical fine longitude to the actual fine longitude
+    __device__ __forceinline__ int scatter_wo(int wo_canonical, int wi, int pscale_out, int nlon_out)
+    {
+        int wo = wo_canonical + pscale_out * wi; // < 2*nlon_out since both terms < nlon_out
+        if (wo >= nlon_out) { wo -= nlon_out; }
+        return wo;
+    }
+
+    // pass 1: per coarse cell, scatter q.k into the per-output-cell running max.
+    template <int THREADS_PER_BLOCK, typename STORAGE_T>
+    __global__ __launch_bounds__(THREADS_PER_BLOCK) void s2_attn_fwd_upsample_scatter_max_k(
+        int nchan_in, int nlat_in, int nlon_in, int nlat_out, int nlon_out, const STORAGE_T *__restrict__ kx,
+        const STORAGE_T *__restrict__ qy, const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx,
+        float *__restrict__ maxbuf)
+    {
+        extern __shared__ float shext[];
+        float *sh_k = shext + threadIdx.y * nchan_in;
 
         const int batch = blockIdx.y;
         const int wid = blockIdx.x * blockDim.y + threadIdx.y;
-
-        if (wid >= nlat_out * nlon_out) { return; }
+        if (wid >= nlat_in * nlon_in) { return; }
 
         const int tidx = threadIdx.x;
-
-        const int ho = wid / nlon_out;
-        const int wo = wid - (ho * nlon_out);
-
-        // one input lon step corresponds to pscale_out output lon steps
+        const int hi = wid / nlon_in;
+        const int wi = wid - hi * nlon_in;
         const int pscale_out = nlon_out / nlon_in;
 
-        // initialize per-cell shared accumulator
-        for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { shy[chan] = __vset<COMPUTE_T>(0.f); }
+        kx += int64_t(batch) * nlat_in * nlon_in * nchan_in + (int64_t(hi) * nlon_in + wi) * nchan_in;
+        qy += int64_t(batch) * nlat_out * nlon_out * nchan_in;
+        maxbuf += int64_t(batch) * nlat_out * nlon_out;
 
-        // batch-shift base pointers (channels-last layout)
-        kx += int64_t(batch) * nlat_in * nlon_in * nchan_in;
-        qy += int64_t(batch) * nlat_out * nlon_out * nchan_in + int64_t(ho) * nlon_out * nchan_in
-            + int64_t(wo) * nchan_in;
-        vx += int64_t(batch) * nlat_in * nlon_in * nchan_out;
-        y += int64_t(batch) * nlat_out * nlon_out * nchan_out + int64_t(ho) * nlon_out * nchan_out
-            + int64_t(wo) * nchan_out;
+        for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { sh_k[chan] = vload(kx, chan); }
 
-        float alpha_sum = 0.0f;
-        float qdotk_max = -FLT_MAX;
+        const int64_t rbeg = row_off[hi];
+        const int rlen = static_cast<int>(row_off[hi + 1] - rbeg);
+        const int64_t *col_hi = col_idx + rbeg;
 
-        // outer scan over all input rows; only entries with ho_neigh == ho contribute
-        for (int hi = 0; hi < nlat_in; hi++) {
+        for (int off = 0; off < rlen; off++) {
+            const int64_t col = col_hi[off];
+            const int ho = static_cast<int>(col / nlon_out);
+            const int wo = scatter_wo(static_cast<int>(col - int64_t(ho) * nlon_out), wi, pscale_out, nlon_out);
+            const STORAGE_T *_qy = qy + (int64_t(ho) * nlon_out + wo) * nchan_in;
 
-            const int64_t rbeg = row_off[hi];
-            const int64_t rend = row_off[hi + 1];
-            const int rlen = static_cast<int>(rend - rbeg);
-            const int64_t *col_idx_hi = col_idx + rbeg;
-
-            for (int off = 0; off < rlen; off++) {
-
-                const int64_t col = col_idx_hi[off];
-                const int ho_neigh = static_cast<int>(col / nlon_out);
-                if (ho_neigh != ho) continue;
-
-                const int wo_canonical = static_cast<int>(col - int64_t(ho_neigh) * nlon_out);
-
-                // wi such that (wo_canonical + pscale_out * wi) mod nlon_out == wo;
-                // exists iff (wo - wo_canonical) is divisible by pscale_out.
-                int wo_diff = wo - wo_canonical;
-                if (wo_diff < 0) wo_diff += nlon_out;
-                if ((wo_diff % pscale_out) != 0) continue;
-                const int wi = wo_diff / pscale_out;
-
-                const STORAGE_T *_kx = kx + int64_t(hi) * nlon_in * nchan_in + int64_t(wi) * nchan_in;
-                const STORAGE_T *_vx = vx + int64_t(hi) * nlon_in * nchan_out + int64_t(wi) * nchan_out;
-
-                // qdotk = <qy[ho, wo, :], kx[hi, wi, :]>
-                COMPUTE_T qdotkv = __vset<COMPUTE_T>(0.f);
-                for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
-                    qdotkv = __vadd(qdotkv, __vmul(vload(qy, chan), vload(_kx, chan)));
-                }
-                const float qdotk = __warp_sum(__vred(qdotkv));
-
-                // online softmax update (single pass; same as the gather kernel)
-                const float qdotk_max_tmp = max(qdotk_max, qdotk);
-                const float alpha = expf(qdotk - qdotk_max_tmp) * quad_weights[hi];
-                const float exp_save = expf(qdotk_max - qdotk_max_tmp);
-
-                alpha_sum = alpha + alpha_sum * exp_save;
-
-                for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
-                    shy[chan] = __vadd(__vscale(exp_save, shy[chan]), __vscale(alpha, vload(_vx, chan)));
-                }
-                qdotk_max = qdotk_max_tmp;
-            }
+            float qd = 0.f;
+            for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { qd += sh_k[chan] * vload(_qy, chan); }
+            qd = __warp_sum(qd);
+            if (tidx == 0) { atomicMaxf(&maxbuf[int64_t(ho) * nlon_out + wo], qd); }
         }
-
-        // finalize: y[b, ho, wo, :] = shy[:] / alpha_sum
-        const float inv_alpha = 1.0f / alpha_sum;
-        for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { vstore(y, chan, __vscale(inv_alpha, shy[chan])); }
     }
 
-    template <typename STORAGE_T>
-    static void launch_gen_attn_fwd_upsample(int batch_size, int nchans_in, int nchans_out, int nlat_in, int nlon_in,
-                                             int nlat_out, int nlon_out, STORAGE_T *_kxp, STORAGE_T *_vxp,
-                                             STORAGE_T *_qyp, int64_t *_row_off, int64_t *_col_idx,
-                                             float *_quad_weights, STORAGE_T *_yp, cudaStream_t stream)
+    // pass 2: per coarse cell, scatter exp(q.k - max)*w into denom and exp(...)*w*v into numer.
+    template <int THREADS_PER_BLOCK, typename STORAGE_T>
+    __global__ __launch_bounds__(THREADS_PER_BLOCK) void s2_attn_fwd_upsample_scatter_acc_k(
+        int nchan_in, int nchan_out, int nlat_in, int nlon_in, int nlat_out, int nlon_out,
+        const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy,
+        const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx, const float *__restrict__ quad_weights,
+        const float *__restrict__ maxbuf, float *__restrict__ numer, float *__restrict__ denom)
     {
+        extern __shared__ float shext[];
+        float *sh_k = shext + threadIdx.y * (nchan_in + nchan_out);
+        float *sh_v = sh_k + nchan_in;
+
+        const int batch = blockIdx.y;
+        const int wid = blockIdx.x * blockDim.y + threadIdx.y;
+        if (wid >= nlat_in * nlon_in) { return; }
+
+        const int tidx = threadIdx.x;
+        const int hi = wid / nlon_in;
+        const int wi = wid - hi * nlon_in;
+        const int pscale_out = nlon_out / nlon_in;
+
+        kx += int64_t(batch) * nlat_in * nlon_in * nchan_in + (int64_t(hi) * nlon_in + wi) * nchan_in;
+        vx += int64_t(batch) * nlat_in * nlon_in * nchan_out + (int64_t(hi) * nlon_in + wi) * nchan_out;
+        qy += int64_t(batch) * nlat_out * nlon_out * nchan_in;
+        numer += int64_t(batch) * nlat_out * nlon_out * nchan_out;
+        denom += int64_t(batch) * nlat_out * nlon_out;
+        maxbuf += int64_t(batch) * nlat_out * nlon_out;
+
+        for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { sh_k[chan] = vload(kx, chan); }
+        for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { sh_v[chan] = vload(vx, chan); }
+
+        const float qw = quad_weights[hi];
+        const int64_t rbeg = row_off[hi];
+        const int rlen = static_cast<int>(row_off[hi + 1] - rbeg);
+        const int64_t *col_hi = col_idx + rbeg;
+
+        for (int off = 0; off < rlen; off++) {
+            const int64_t col = col_hi[off];
+            const int ho = static_cast<int>(col / nlon_out);
+            const int wo = scatter_wo(static_cast<int>(col - int64_t(ho) * nlon_out), wi, pscale_out, nlon_out);
+            const int64_t cell = int64_t(ho) * nlon_out + wo;
+            const STORAGE_T *_qy = qy + cell * nchan_in;
+
+            float qd = 0.f;
+            for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { qd += sh_k[chan] * vload(_qy, chan); }
+            qd = __warp_sum(qd);
+
+            const float alpha = expf(qd - maxbuf[cell]) * qw;
+            if (tidx == 0) { atomicAdd(&denom[cell], alpha); }
+            float *_numer = numer + cell * nchan_out;
+            for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { atomicAdd(&_numer[chan], alpha * sh_v[chan]); }
+        }
+    }
+
+    // finalize: y[b, ho, wo, :] = numer / denom (one warp per fine output cell).
+    template <int THREADS_PER_BLOCK, typename STORAGE_T>
+    __global__ __launch_bounds__(THREADS_PER_BLOCK) void s2_attn_fwd_upsample_scatter_final_k(
+        int nchan_out, int nlat_out, int nlon_out, const float *__restrict__ numer, const float *__restrict__ denom,
+        STORAGE_T *__restrict__ y)
+    {
+        const int batch = blockIdx.y;
+        const int wid = blockIdx.x * blockDim.y + threadIdx.y;
+        if (wid >= nlat_out * nlon_out) { return; }
+        const int tidx = threadIdx.x;
+
+        const int64_t cell = int64_t(batch) * nlat_out * nlon_out + wid;
+        const float inv = 1.0f / denom[cell];
+        const float *_numer = numer + cell * nchan_out;
+        STORAGE_T *_y = y + cell * nchan_out;
+        for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { vstore(_y, chan, _numer[chan] * inv); }
+    }
+
+    // host launcher for the scatter forward (allocates the fp32 reduction buffers,
+    // runs the three passes). STORAGE_T deduces from the activation pointers.
+    template <typename STORAGE_T>
+    static void launch_attn_fwd_upsample_scatter(int batch_size, int nchans_in, int nchans_out, int nlat_in,
+                                                 int nlon_in, int nlat_out, int nlon_out, STORAGE_T *_kxp,
+                                                 STORAGE_T *_vxp, STORAGE_T *_qyp, int64_t *_row_off, int64_t *_col_idx,
+                                                 float *_quad_weights, STORAGE_T *_yp, cudaStream_t stream)
+    {
+        auto opts = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);
+        torch::Tensor numer = torch::zeros({batch_size, nlat_out, nlon_out, nchans_out}, opts);
+        torch::Tensor denom = torch::zeros({batch_size, nlat_out, nlon_out}, opts);
+        torch::Tensor maxbuf = torch::full({batch_size, nlat_out, nlon_out}, -FLT_MAX, opts);
+
+        float *_numer = reinterpret_cast<float *>(numer.data_ptr());
+        float *_denom = reinterpret_cast<float *>(denom.data_ptr());
+        float *_maxbuf = reinterpret_cast<float *>(maxbuf.data_ptr());
 
         dim3 block(WARP_SIZE, THREADS / WARP_SIZE);
-        dim3 grid(DIV_UP(nlat_out * nlon_out, block.y), batch_size);
+        dim3 grid_in(DIV_UP(nlat_in * nlon_in, block.y), batch_size);
+        dim3 grid_out(DIV_UP(nlat_out * nlon_out, block.y), batch_size);
 
-        // shared memory holds compute-type (COMPUTE_T) data, not STORAGE_T
-        const size_t shsize = sizeof(typename vec_traits<STORAGE_T>::compute_t) * nchans_out * block.y;
+        const size_t sh1 = sizeof(float) * nchans_in * block.y;
+        const size_t sh2 = sizeof(float) * (nchans_in + nchans_out) * block.y;
 
-        s2_attn_fwd_upsample_generic_vec_k<THREADS>
-            <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp,
-                                              _qyp, _row_off, _col_idx, _quad_weights, _yp);
-        CHECK_ERROR("s2_attn_fwd_upsample_generic_vec_k");
+        s2_attn_fwd_upsample_scatter_max_k<THREADS><<<grid_in, block, sh1, stream>>>(
+            nchans_in, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _qyp, _row_off, _col_idx, _maxbuf);
+        CHECK_ERROR("s2_attn_fwd_upsample_scatter_max_k");
+
+        s2_attn_fwd_upsample_scatter_acc_k<THREADS>
+            <<<grid_in, block, sh2, stream>>>(nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp,
+                                              _qyp, _row_off, _col_idx, _quad_weights, _maxbuf, _numer, _denom);
+        CHECK_ERROR("s2_attn_fwd_upsample_scatter_acc_k");
+
+        s2_attn_fwd_upsample_scatter_final_k<THREADS>
+            <<<grid_out, block, 0, stream>>>(nchans_out, nlat_out, nlon_out, _numer, _denom, _yp);
+        CHECK_ERROR("s2_attn_fwd_upsample_scatter_final_k");
     }
 
     // -----------------------------------------------------------------------------
     // host dispatcher — called from s2_attention_fwd_cuda when the direction is
-    // upsample (nlon_out % nlon_in == 0). Vec/non-vec branching mirrors the
-    // downsample dispatcher; only the generic kernel is instantiated for now.
+    // upsample (nlon_out % nlon_in == 0). Native-storage (Tier B): kept NON-templated
+    // (it is called from a different TU, attention_cuda_fwd.cu) and does its own
+    // AT_DISPATCH over the input dtype, then routes to the input-keyed scatter forward
+    // (scalar path for every dtype; activations widen at load, fp32 compute, output
+    // narrowed at store). The fp32 reduction buffers are allocated inside the launcher.
     // -----------------------------------------------------------------------------
-    // Native-storage dispatch (Tier B). Kept NON-templated (it is called from a
-    // different TU, attention_cuda_fwd.cu) and does its own AT_DISPATCH over the
-    // input dtype: fp16/bf16 take the scalar STORAGE_T path (widen at load, fp32
-    // compute, narrow the output at store); fp32 keeps the float4 vectorized path.
     void s2_attn_fwd_upsample_dispatch(int batch_size, size_t nchans_in, size_t nchans_out, int64_t nlon_in,
                                        int64_t nlat_in, int64_t nlat_out, int64_t nlon_out, torch::Tensor kxP,
                                        torch::Tensor vxP, torch::Tensor qyP, torch::Tensor psi_row_off,
@@ -211,35 +283,10 @@ namespace attention_kernels
             scalar_t *_qyp = reinterpret_cast<scalar_t *>(qyP.data_ptr());
             scalar_t *_yp = reinterpret_cast<scalar_t *>(yP.data_ptr());
 
-            const int b = batch_size;
-            const int nci = static_cast<int>(nchans_in);
-            const int nco = static_cast<int>(nchans_out);
-            const int nli = static_cast<int>(nlat_in);
-            const int nlonI = static_cast<int>(nlon_in);
-            const int nlo = static_cast<int>(nlat_out);
-            const int nlonO = static_cast<int>(nlon_out);
-
-            if constexpr (std::is_same<scalar_t, float>::value) {
-                constexpr int VEC_SIZE = sizeof(float4) / sizeof(float);
-                const bool use_vec = is_aligned<sizeof(float4)>(_kxp) && is_aligned<sizeof(float4)>(_vxp)
-                    && is_aligned<sizeof(float4)>(_qyp) && is_aligned<sizeof(float4)>(_yp)
-                    && (nchans_in % VEC_SIZE) == 0 && (nchans_out % VEC_SIZE) == 0;
-                if (use_vec) {
-                    // STORAGE_T deduces to float4 from the pointers (NO explicit template
-                    // arg: nvcc mishandles explicit-arg substitution with vec_traits in body).
-                    launch_gen_attn_fwd_upsample(b, nci / VEC_SIZE, nco / VEC_SIZE, nli, nlonI, nlo, nlonO,
-                                                 reinterpret_cast<float4 *>(_kxp), reinterpret_cast<float4 *>(_vxp),
-                                                 reinterpret_cast<float4 *>(_qyp), _row_off, _col_idx, _quad_weights,
-                                                 reinterpret_cast<float4 *>(_yp), stream);
-                } else {
-                    launch_gen_attn_fwd_upsample(b, nci, nco, nli, nlonI, nlo, nlonO, _kxp, _vxp, _qyp, _row_off,
-                                                 _col_idx, _quad_weights, _yp, stream);
-                }
-            } else {
-                // STORAGE_T deduces to scalar_t (fp16/bf16/double).
-                launch_gen_attn_fwd_upsample(b, nci, nco, nli, nlonI, nlo, nlonO, _kxp, _vxp, _qyp, _row_off, _col_idx,
-                                             _quad_weights, _yp, stream);
-            }
+            launch_attn_fwd_upsample_scatter(batch_size, static_cast<int>(nchans_in), static_cast<int>(nchans_out),
+                                             static_cast<int>(nlat_in), static_cast<int>(nlon_in),
+                                             static_cast<int>(nlat_out), static_cast<int>(nlon_out), _kxp, _vxp, _qyp,
+                                             _row_off, _col_idx, _quad_weights, _yp, stream);
         });
     }
 
