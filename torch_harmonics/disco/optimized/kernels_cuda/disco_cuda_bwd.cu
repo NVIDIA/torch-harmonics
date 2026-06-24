@@ -33,7 +33,6 @@
 
 #include <ATen/Dispatch.h>
 #include <ATen/OpMathType.h>
-#include <algorithm>
 
 namespace disco_kernels
 {
@@ -169,214 +168,39 @@ namespace disco_kernels
         return;
     }
 
-    // ---------------------------------------------------------------------------
-    // BC-tiled backward device function.
-    // Each CTA processes BC_TILE channels simultaneously, amortising index loads
-    // (roff/kers/rows/cols/vals) across BC_TILE accumulations. The index arrays
-    // are loaded once per CTA; the input rows and shmem accumulators are
-    // replicated BC_TILE times. Shared memory layout:
-    //   __sh[BC_TILE * pscale][BDIM_X * ELXTH * 2]   (COMPUTE_T)
-    // ---------------------------------------------------------------------------
-    template <int BDIM_X, int ELXTH, int BC_TILE, typename STORAGE_T, typename COMPUTE_T>
-    __device__ void disco_bwd_d_bctile(const int Hi, const int Wi, const int K, const int Ho, const int Wo,
-                                       const int pscale, const int BC_total, const int64_t *__restrict__ roff,
-                                       const int64_t *__restrict__ kers, const int64_t *__restrict__ rows,
-                                       const int64_t *__restrict__ cols, const COMPUTE_T *__restrict__ vals,
-                                       const STORAGE_T *__restrict__ inp, COMPUTE_T *__restrict__ out)
-    {
-        const int tid = threadIdx.x;
-        const int64_t bidx = blockIdx.x; // CSR row
-        const int bc_start = (int)blockIdx.y * BC_TILE;
-
-        int64_t soff = roff[bidx];
-        int64_t eoff = roff[bidx + 1];
-
-        const int64_t ker = kers[soff];
-        const int64_t row = rows[soff];
-
-        extern __shared__ __align__(sizeof(double)) unsigned char __sh_ptr[];
-        // __sh[BC_TILE * pscale][BDIM_X * ELXTH * 2]
-        COMPUTE_T(*__sh)[BDIM_X * ELXTH * 2] = reinterpret_cast<COMPUTE_T(*)[BDIM_X * ELXTH * 2]>(__sh_ptr);
-
-        // Load BC_TILE input rows into registers; zero-fill out-of-range bc slots.
-        COMPUTE_T __reg[BC_TILE][ELXTH];
-#pragma unroll
-        for (int b = 0; b < BC_TILE; b++) {
-            const int bc = bc_start + b;
-            if (bc < BC_total) {
-                const STORAGE_T *inp_bc = inp + (int64_t)bc * K * Hi * Wi + ker * Hi * Wi + row * Wi;
-#pragma unroll
-                for (int i = 0; i < ELXTH; i++) {
-                    __reg[b][i] = (i * BDIM_X + tid < Wi) ? static_cast<COMPUTE_T>(inp_bc[i * BDIM_X + tid]) :
-                                                            static_cast<COMPUTE_T>(0);
-                }
-            } else {
-#pragma unroll
-                for (int i = 0; i < ELXTH; i++) __reg[b][i] = static_cast<COMPUTE_T>(0);
-            }
-        }
-
-        // Reset shared accumulators.
-        for (int b = 0; b < BC_TILE; b++) {
-            for (int i = 0; i < pscale; i++) {
-#pragma unroll
-                for (int j = 0; j < 2 * BDIM_X * ELXTH; j += BDIM_X)
-                    __sh[b * pscale + i][j + tid] = static_cast<COMPUTE_T>(0);
-            }
-        }
-        __syncthreads();
-
-        int col_prev = cols[soff];
-        int h_prev = col_prev / Wo;
-        int w_prev = col_prev % Wo;
-
-        for (int64_t nz = soff; nz < eoff; nz++) {
-
-            const int col = cols[nz];
-            const COMPUTE_T val_nz = vals[nz];
-
-            if (col >= col_prev - w_prev + Wo) {
-                __syncthreads();
-                for (int b = 0; b < BC_TILE; b++) {
-                    const int bc = bc_start + b;
-                    if (bc >= BC_total) continue;
-                    COMPUTE_T *out_bc = out + (int64_t)bc * Ho * Wo;
-                    for (int i = 0; i < pscale; i++) {
-                        for (int j = tid; j < Wi; j += BDIM_X) {
-                            const COMPUTE_T v = __sh[b * pscale + i][j] + __sh[b * pscale + i][Wi + j];
-                            atomicAdd(&out_bc[h_prev * Wo + j * pscale + i], v);
-                            __sh[b * pscale + i][j] = static_cast<COMPUTE_T>(0);
-                            __sh[b * pscale + i][Wi + j] = static_cast<COMPUTE_T>(0);
-                        }
-                    }
-                }
-                __syncthreads();
-
-                col_prev = col;
-                h_prev = col / Wo;
-                w_prev = col % Wo;
-            }
-
-            const int w = w_prev + (col - col_prev);
-            const int w_mod_ps = w % pscale;
-            const int w_div_ps = w / pscale;
-
-#pragma unroll
-            for (int b = 0; b < BC_TILE; b++) {
-#pragma unroll
-                for (int i = 0; i < ELXTH; i++) {
-                    const int pp = i * BDIM_X + tid;
-                    __sh[b * pscale + w_mod_ps][w_div_ps + pp] += val_nz * __reg[b][i];
-                }
-            }
-            __syncthreads();
-        }
-        __syncthreads();
-
-        // Flush last row.
-        for (int b = 0; b < BC_TILE; b++) {
-            const int bc = bc_start + b;
-            if (bc >= BC_total) continue;
-            COMPUTE_T *out_bc = out + (int64_t)bc * Ho * Wo;
-            for (int i = 0; i < pscale; i++) {
-                for (int j = tid; j < Wi; j += BDIM_X) {
-                    const COMPUTE_T v = __sh[b * pscale + i][j] + __sh[b * pscale + i][Wi + j];
-                    atomicAdd(&out_bc[h_prev * Wo + j * pscale + i], v);
-                }
-            }
-        }
-    }
-
-    template <int BDIM_X, int ELXTH, int PSCALE, int BC_TILE, typename STORAGE_T, typename COMPUTE_T>
-    __global__ __launch_bounds__(BDIM_X) void disco_bwd_blk_k_bctile(
-        const int Hi, const int Wi, const int K, const int Ho, const int Wo, const int pscale, const int BC_total,
-        const int64_t *__restrict__ roff, const int64_t *__restrict__ kers, const int64_t *__restrict__ rows,
-        const int64_t *__restrict__ cols, const COMPUTE_T *__restrict__ vals, const STORAGE_T *__restrict__ inp,
-        COMPUTE_T *__restrict__ out)
-    {
-        if constexpr (PSCALE != 0) {
-            disco_bwd_d_bctile<BDIM_X, ELXTH, BC_TILE, STORAGE_T, COMPUTE_T>(Hi, Wi, K, Ho, Wo, PSCALE, BC_total, roff,
-                                                                             kers, rows, cols, vals, inp, out);
-        } else {
-            disco_bwd_d_bctile<BDIM_X, ELXTH, BC_TILE, STORAGE_T, COMPUTE_T>(Hi, Wi, K, Ho, Wo, pscale, BC_total, roff,
-                                                                             kers, rows, cols, vals, inp, out);
-        }
-    }
-
-    // BC_TILE=1 falls through to the original kernel; BC_TILE>1 uses the tiled variant.
-    template <int NTH, int ELXTH, int BC_TILE, typename STORAGE_T, typename COMPUTE_T>
+    template <int NTH, int ELXTH, typename STORAGE_T, typename COMPUTE_T>
     static void launch_kernel(int BC, int Hi, int Wi, int K, int Ho, int Wo, int64_t nrows, int64_t *roff_d,
                               int64_t *ker_d, int64_t *row_d, int64_t *col_d, COMPUTE_T *val_d, STORAGE_T *inp_d,
                               COMPUTE_T *out_d, cudaStream_t stream)
     {
-
         static_assert(sizeof(STORAGE_T) == 2 || sizeof(STORAGE_T) == 4 || sizeof(STORAGE_T) == 8);
 
         if constexpr (ELXTH <= ELXTH_MAX) {
             if (NTH * ELXTH >= Wi) {
                 const int pscale = Wo / Wi;
-                const int bc_blocks = (BC + BC_TILE - 1) / BC_TILE;
-                dim3 grid(nrows, bc_blocks);
-                size_t shmem = sizeof(*out_d) * (2 * (NTH * ELXTH) * pscale * BC_TILE);
+                dim3 grid(nrows, BC);
+                size_t shmem = sizeof(*out_d) * (2 * (NTH * ELXTH) * pscale);
 
-                if constexpr (BC_TILE == 1) {
-                    switch (pscale) {
-                    case 1:
-                        disco_bwd_blk_k<NTH, ELXTH, 1, STORAGE_T, COMPUTE_T><<<grid, NTH, shmem, stream>>>(
-                            Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
-                        break;
-                    case 2:
-                        disco_bwd_blk_k<NTH, ELXTH, 2, STORAGE_T, COMPUTE_T><<<grid, NTH, shmem, stream>>>(
-                            Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
-                        break;
-                    case 3:
-                        disco_bwd_blk_k<NTH, ELXTH, 3, STORAGE_T, COMPUTE_T><<<grid, NTH, shmem, stream>>>(
-                            Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
-                        break;
-                    default:
-                        disco_bwd_blk_k<NTH, ELXTH, 0, STORAGE_T, COMPUTE_T><<<grid, NTH, shmem, stream>>>(
-                            Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
-                    }
-                } else {
-                    // Kernels with large BC_TILE may exceed the default 48 KB shmem limit.
-                    auto set_shmem = [&](const void *fn) {
-                        if (shmem > 49152)
-                            cudaFuncSetAttribute(fn, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shmem);
-                    };
-                    switch (pscale) {
-                    case 1: {
-                        auto *fn = &disco_bwd_blk_k_bctile<NTH, ELXTH, 1, BC_TILE, STORAGE_T, COMPUTE_T>;
-                        set_shmem(reinterpret_cast<const void *>(fn));
-                        fn<<<grid, NTH, shmem, stream>>>(Hi, Wi, K, Ho, Wo, pscale, BC, roff_d, ker_d, row_d, col_d,
-                                                         val_d, inp_d, out_d);
-                        break;
-                    }
-                    case 2: {
-                        auto *fn = &disco_bwd_blk_k_bctile<NTH, ELXTH, 2, BC_TILE, STORAGE_T, COMPUTE_T>;
-                        set_shmem(reinterpret_cast<const void *>(fn));
-                        fn<<<grid, NTH, shmem, stream>>>(Hi, Wi, K, Ho, Wo, pscale, BC, roff_d, ker_d, row_d, col_d,
-                                                         val_d, inp_d, out_d);
-                        break;
-                    }
-                    case 3: {
-                        auto *fn = &disco_bwd_blk_k_bctile<NTH, ELXTH, 3, BC_TILE, STORAGE_T, COMPUTE_T>;
-                        set_shmem(reinterpret_cast<const void *>(fn));
-                        fn<<<grid, NTH, shmem, stream>>>(Hi, Wi, K, Ho, Wo, pscale, BC, roff_d, ker_d, row_d, col_d,
-                                                         val_d, inp_d, out_d);
-                        break;
-                    }
-                    default: {
-                        auto *fn = &disco_bwd_blk_k_bctile<NTH, ELXTH, 0, BC_TILE, STORAGE_T, COMPUTE_T>;
-                        set_shmem(reinterpret_cast<const void *>(fn));
-                        fn<<<grid, NTH, shmem, stream>>>(Hi, Wi, K, Ho, Wo, pscale, BC, roff_d, ker_d, row_d, col_d,
-                                                         val_d, inp_d, out_d);
-                        break;
-                    }
-                    }
+                switch (pscale) {
+                case 1:
+                    disco_bwd_blk_k<NTH, ELXTH, 1, STORAGE_T, COMPUTE_T><<<grid, NTH, shmem, stream>>>(
+                        Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
+                    break;
+                case 2:
+                    disco_bwd_blk_k<NTH, ELXTH, 2, STORAGE_T, COMPUTE_T><<<grid, NTH, shmem, stream>>>(
+                        Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
+                    break;
+                case 3:
+                    disco_bwd_blk_k<NTH, ELXTH, 3, STORAGE_T, COMPUTE_T><<<grid, NTH, shmem, stream>>>(
+                        Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
+                    break;
+                default:
+                    disco_bwd_blk_k<NTH, ELXTH, 0, STORAGE_T, COMPUTE_T><<<grid, NTH, shmem, stream>>>(
+                        Hi, Wi, K, Ho, Wo, pscale, roff_d, ker_d, row_d, col_d, val_d, inp_d, out_d);
                 }
             } else {
-                launch_kernel<NTH, ELXTH + 1, BC_TILE, STORAGE_T, COMPUTE_T>(BC, Hi, Wi, K, Ho, Wo, nrows, roff_d, ker_d,
-                                                                             row_d, col_d, val_d, inp_d, out_d, stream);
+                launch_kernel<NTH, ELXTH + 1, STORAGE_T, COMPUTE_T>(BC, Hi, Wi, K, Ho, Wo, nrows, roff_d, ker_d, row_d,
+                                                                    col_d, val_d, inp_d, out_d, stream);
             }
         }
         return;
@@ -421,12 +245,6 @@ namespace disco_kernels
         // as (ELXTH_MAX / 2) + 1, so ELXTH_MAX must be even for the partition to be exact
         static_assert(0 == (ELXTH_MAX % 2));
 
-        // BC_TILE: amortises index loads across channels per CTA. In practice the
-        // backward kernel is FMA-bound (not index-load-bound) for S2 sphere configs,
-        // so BC_TILE>1 only increases shmem and reduces occupancy. Keep at 1 until
-        // profiling shows a clear index-load bottleneck for a specific workload.
-        const int bc_tile = 1;
-
 #define LAUNCH(NTH, ELXTH_START)                                                                                       \
     AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, inp.scalar_type(), "disco_backward_cuda", ([&] {         \
                                         using storage_t = scalar_t;                                                    \
@@ -438,15 +256,8 @@ namespace disco_kernels
                                         auto *v = val.data_ptr<compute_t>();                                           \
                                         auto *i_ = inp.data_ptr<storage_t>();                                          \
                                         auto *o_ = out.data_ptr<compute_t>();                                          \
-                                        if (bc_tile == 8)                                                              \
-                                            launch_kernel<NTH, ELXTH_START, 8, storage_t, compute_t>(                  \
-                                                BC, Hi, Wi, K, Ho, Wo, nrows, roff, ker, row, col, v, i_, o_, stream); \
-                                        else if (bc_tile == 4)                                                         \
-                                            launch_kernel<NTH, ELXTH_START, 4, storage_t, compute_t>(                  \
-                                                BC, Hi, Wi, K, Ho, Wo, nrows, roff, ker, row, col, v, i_, o_, stream); \
-                                        else                                                                           \
-                                            launch_kernel<NTH, ELXTH_START, 1, storage_t, compute_t>(                  \
-                                                BC, Hi, Wi, K, Ho, Wo, nrows, roff, ker, row, col, v, i_, o_, stream); \
+                                        launch_kernel<NTH, ELXTH_START, storage_t, compute_t>(                         \
+                                            BC, Hi, Wi, K, Ho, Wo, nrows, roff, ker, row, col, v, i_, o_, stream);     \
                                     }))
 
         if (Wo <= 64 * ELXTH_MAX) {
