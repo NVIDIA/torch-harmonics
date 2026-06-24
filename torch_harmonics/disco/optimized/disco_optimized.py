@@ -29,11 +29,24 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import functools
+
 import torch
 from disco_helpers import optimized_kernels_is_available
 
 from .. import disco_kernels
 from .._disco_utils import _compute_dtype
+
+
+@functools.lru_cache(maxsize=None)
+def _kpacked_supported_on_device(device_index: int) -> bool:
+    """Return True if the WGMMA kpacked kernel is supported on this CUDA device.
+
+    The kernel targets SM_90a (Hopper); Blackwell (SM_10.x) and later have their
+    own WGMMA variant but are not yet compiled into this kernel.
+    """
+    major, _ = torch.cuda.get_device_capability(device_index)
+    return major == 9
 
 
 def _maybe_kpack_psi(psi_packed_idx, psi_packed_vals, psi_packed_count, n_align: int = 8):
