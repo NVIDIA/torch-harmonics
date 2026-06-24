@@ -96,20 +96,20 @@ def _isht_reference(state):
 
 _SHT_CONFIGS = [
     # 1 degree, CPU
-    dict(name="sht_fwd_bwd_1deg_b8_float32_cpu", device="cpu", dtype=torch.float32, nlat=180, nlon=360, batch=8, tags=["sht", "cpu"]),
+    dict(name="sht_fwd_bwd_1deg_b8_float32_cpu", device="cpu", dtype=torch.float32, nlat=180, nlon=360, batch=8, skip_correctness=False, tags=["sht", "cpu"]),
     # 1 degree, CUDA
-    dict(name="sht_fwd_bwd_1deg_b4096_float32_cuda", device="cuda", dtype=torch.float32, nlat=180, nlon=360, batch=8, tags=["sht"]),
+    dict(name="sht_fwd_bwd_1deg_b4096_float32_cuda", device="cuda", dtype=torch.float32, nlat=180, nlon=360, batch=8, skip_correctness=False, tags=["sht"]),
     # half degree, CUDA
-    dict(name="sht_fwd_bwd_hdeg_b1_float32_cuda", device="cuda", dtype=torch.float32, nlat=360, nlon=720, batch=1, tags=["sht"]),
+    dict(name="sht_fwd_bwd_hdeg_b1_float32_cuda", device="cuda", dtype=torch.float32, nlat=360, nlon=720, batch=1, skip_correctness=True, tags=["sht"]),
 ]
 
 _ISHT_CONFIGS = [
     # 1 degree, CPU
-    dict(name="isht_fwd_bwd_1deg_b8_float32_cpu", device="cpu", dtype=torch.float32, nlat=180, nlon=360, batch=8, tags=["isht", "cpu"]),
+    dict(name="isht_fwd_bwd_1deg_b8_float32_cpu", device="cpu", dtype=torch.float32, nlat=180, nlon=360, batch=8, skip_correctness=False, tags=["isht", "cpu"]),
     # 1 degree, CUDA
-    dict(name="isht_fwd_bwd_1deg_b4096_float32_cuda", device="cuda", dtype=torch.float32, nlat=180, nlon=360, batch=8, tags=["isht"]),
+    dict(name="isht_fwd_bwd_1deg_b4096_float32_cuda", device="cuda", dtype=torch.float32, nlat=180, nlon=360, batch=8, skip_correctness=False, tags=["isht"]),
     # half degree, CUDA
-    dict(name="isht_fwd_bwd_hdeg_b1_float32_cuda", device="cuda", dtype=torch.float32, nlat=360, nlon=720, batch=1, tags=["isht"]),
+    dict(name="isht_fwd_bwd_hdeg_b1_float32_cuda", device="cuda", dtype=torch.float32, nlat=360, nlon=720, batch=1, skip_correctness=True, tags=["isht"]),
 ]
 
 for cfg in _SHT_CONFIGS:
@@ -122,7 +122,7 @@ for cfg in _SHT_CONFIGS:
             forward=_sht_forward,
             backward=_sht_backward,
             reference=_sht_reference,
-            skip_correctness=cfg["nlat"] > 180,
+            skip_correctness=cfg["skip_correctness"],
             tags=cfg["tags"],
         )
     )
@@ -137,7 +137,7 @@ for cfg in _ISHT_CONFIGS:
             forward=_isht_forward,
             backward=_isht_backward,
             reference=_isht_reference,
-            skip_correctness=cfg["nlat"] > 180,
+            skip_correctness=cfg["skip_correctness"],
             tags=cfg["tags"],
         )
     )
