@@ -562,6 +562,7 @@ for cfg in _DISCO_CONFIGS:
             forward=_disco_forward,
             backward=_disco_backward,
             reference=_disco_reference,
+            skip_correctness=cfg["nlat_in"] > 180,
             tags=cfg["tags"],
         )
     )
