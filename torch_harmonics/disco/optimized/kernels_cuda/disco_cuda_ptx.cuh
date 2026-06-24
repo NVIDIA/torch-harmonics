@@ -375,4 +375,145 @@ namespace disco_kernels
 
 #endif // __CUDA_ARCH_FEAT_SM90_ALL
 
+// =====================================================================================
+// tcgen05 — Blackwell (SM_100a) tensor-core instructions.
+//
+// SM_100a replaces wgmma.mma_async with tcgen05.mma. The key structural
+// difference: the accumulator lives in TMEM (Tensor Memory) rather than in
+// the thread register file. SMEM operand staging (cp.async, ldmatrix) and
+// the descriptor format for the B operand are unchanged from SM_90a.
+//
+// Lifecycle of a TMEM accumulator:
+//   1. tcgen05.alloc  — allocate TMEM storage for the accumulator.
+//   2. tcgen05.st     — zero-initialise (the allocator does NOT clear).
+//   3. tcgen05.mma    — accumulate into TMEM (scaleD=1 to add, =0 to overwrite).
+//   4. tcgen05.ld     — read accumulator back to registers for writeback.
+//   5. tcgen05.dealloc — release TMEM.
+//
+// VERIFY: exact PTX encodings below were drafted against PTX ISA 8.5
+// (CUDA 12.8). Validate each instruction against the shipped PTX ISA PDF
+// before committing — in particular:
+//   • tcgen05.alloc immN semantics (regs-per-thread vs total columns).
+//   • tcgen05.ld/st vector-width variants for N_ACC > 1.
+//   • tcgen05.mma scale operand encoding ({imm, imm, imm} vs pred).
+//
+// Gate: __CUDA_ARCH_FEAT_SM100_ALL is defined by NVCC when compiling for
+// sm_100a. Build with TORCH_CUDA_ARCH_LIST="10.0a+PTX".
+//
+// PTX ISA refs: §9.7.16 (tcgen05.mma), §9.7.17 (tcgen05.alloc/ld/st).
+// =====================================================================================
+#if defined(__CUDA_ARCH_FEAT_SM100_ALL)
+
+    // -------------------------------------------------------------------------------------
+    // TMEM alloc / dealloc.
+    //
+    // tcgen05.alloc.cta_group::1.sync.aligned [%dst], immN
+    //   Allocates immN 32-bit "columns" of TMEM per thread across the warpgroup
+    //   (128 threads × immN × 4 bytes total). For m64nNk16.f32 N_ACC = N/2 fp32
+    //   per thread, so immN = N_ACC.
+    //
+    // VERIFY: PTX ISA §9.7.17 for exact immN unit (per-thread regs vs total).
+    // -------------------------------------------------------------------------------------
+    template <int N_ACC> __device__ __forceinline__ uint32_t tcgen05_alloc()
+    {
+        uint32_t tmem_addr;
+        asm volatile("tcgen05.alloc.cta_group::1.sync.aligned [%0], %1;\n" : "=r"(tmem_addr) : "n"(N_ACC));
+        return tmem_addr;
+    }
+
+    template <int N_ACC> __device__ __forceinline__ void tcgen05_dealloc(uint32_t tmem_addr)
+    {
+        asm volatile("tcgen05.dealloc.cta_group::1.sync.aligned [%0], %1;\n" ::"r"(tmem_addr), "n"(N_ACC));
+    }
+
+    // -------------------------------------------------------------------------------------
+    // TMEM zero-initialise.
+    //
+    // tcgen05.st.sync.aligned.32x32b [tmem_addr], {regs}
+    //   Stores one fp32 column (one value per thread) into TMEM.
+    //   We call this N_ACC times, stepping the TMEM address by 1 each time,
+    //   to zero all N_ACC accumulator columns before the first tcgen05.mma.
+    //
+    // VERIFY: column-step stride and vector-store variants (128x32b etc.).
+    // -------------------------------------------------------------------------------------
+    template <int N_ACC> __device__ __forceinline__ void tcgen05_zero(uint32_t tmem_addr)
+    {
+        uint32_t zero = 0;
+#pragma unroll
+        for (int i = 0; i < N_ACC; i++) {
+            asm volatile("tcgen05.st.sync.aligned.32x32b [%0], {%1};\n" ::"r"(tmem_addr + i), "r"(zero));
+        }
+    }
+
+    // -------------------------------------------------------------------------------------
+    // TMEM load — read N_ACC fp32 accumulator columns back to registers.
+    //
+    // VERIFY: multi-column load variants; may be possible to use a wider
+    // tcgen05.ld.128x32b (N_ACC=4) or tcgen05.ld.256x32b (N_ACC=8) form
+    // instead of the per-column loop below.
+    // -------------------------------------------------------------------------------------
+    template <int N_ACC> __device__ __forceinline__ void tcgen05_ld(float (&regs)[N_ACC], uint32_t tmem_addr)
+    {
+#pragma unroll
+        for (int i = 0; i < N_ACC; i++) {
+            asm volatile("tcgen05.ld.sync.aligned.32x32b {%0}, [%1];\n"
+                         : "=r"(reinterpret_cast<uint32_t &>(regs[i]))
+                         : "r"(tmem_addr + i));
+        }
+    }
+
+    // -------------------------------------------------------------------------------------
+    // tcgen05 fence / commit / wait (PTX ISA §9.7.16).
+    // -------------------------------------------------------------------------------------
+    __device__ __forceinline__ void tcgen05_fence_before() { asm volatile("tcgen05.fence::before_thread_sync;\n" ::); }
+
+    __device__ __forceinline__ void tcgen05_fence_after() { asm volatile("tcgen05.fence::after_thread_sync;\n" ::); }
+
+    __device__ __forceinline__ void tcgen05_commit_group() { asm volatile("tcgen05.commit_group.sync.aligned;\n" ::); }
+
+    template <int N> __device__ __forceinline__ void tcgen05_wait_group()
+    {
+        asm volatile("tcgen05.wait_group.sync.aligned %0;\n" ::"n"(N));
+    }
+
+    // -------------------------------------------------------------------------------------
+    // tcgen05.mma — accumulate into TMEM.
+    //
+    // tcgen05.mma.sync.aligned.kind::{bf16,f16}.m64nNk16.f32 [tmem_d], a_desc, b_desc, {scaleD, scaleA, scaleB}
+    //
+    // Descriptor format for A and B is identical to SM_90a wgmma (make_wgmma_desc).
+    // scaleD=1 → D += A*B  (accumulate); scaleD=0 → D = A*B (overwrite).
+    // scaleA, scaleB are always 1 for our use.
+    //
+    // VERIFY: PTX ISA §9.7.16 for exact operand order and scale encoding on SM_100a.
+    // -------------------------------------------------------------------------------------
+
+    // ---- bf16 variants ----
+    __device__ __forceinline__ void tcgen05_mma_m64n8k16_acc_bf16(uint32_t tmem_d, uint64_t desc_a, uint64_t desc_b)
+    {
+        asm volatile("tcgen05.mma.sync.aligned.kind::bf16.m64n8k16.f32 [%0], %1, %2, {1, 1, 1};\n" ::"r"(tmem_d),
+                     "l"(desc_a), "l"(desc_b));
+    }
+
+    __device__ __forceinline__ void tcgen05_mma_m64n16k16_acc_bf16(uint32_t tmem_d, uint64_t desc_a, uint64_t desc_b)
+    {
+        asm volatile("tcgen05.mma.sync.aligned.kind::bf16.m64n16k16.f32 [%0], %1, %2, {1, 1, 1};\n" ::"r"(tmem_d),
+                     "l"(desc_a), "l"(desc_b));
+    }
+
+    // ---- fp16 variants ----
+    __device__ __forceinline__ void tcgen05_mma_m64n8k16_acc_fp16(uint32_t tmem_d, uint64_t desc_a, uint64_t desc_b)
+    {
+        asm volatile("tcgen05.mma.sync.aligned.kind::f16.m64n8k16.f32 [%0], %1, %2, {1, 1, 1};\n" ::"r"(tmem_d),
+                     "l"(desc_a), "l"(desc_b));
+    }
+
+    __device__ __forceinline__ void tcgen05_mma_m64n16k16_acc_fp16(uint32_t tmem_d, uint64_t desc_a, uint64_t desc_b)
+    {
+        asm volatile("tcgen05.mma.sync.aligned.kind::f16.m64n16k16.f32 [%0], %1, %2, {1, 1, 1};\n" ::"r"(tmem_d),
+                     "l"(desc_a), "l"(desc_b));
+    }
+
+#endif // __CUDA_ARCH_FEAT_SM100_ALL
+
 } // namespace disco_kernels

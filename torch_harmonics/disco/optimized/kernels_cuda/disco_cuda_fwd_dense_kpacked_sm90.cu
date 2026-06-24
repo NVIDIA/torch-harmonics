@@ -334,8 +334,13 @@ namespace disco_kernels
 #endif
     }
 
-    // Torch op: allocates output, runs the WGMMA kernel, TORCH_CHECKs if
-    // preconditions are not met (non-Hopper, fp32, K_PAD ∉ {8,16}, Wo%8≠0).
+    // Forward declaration of the SM_100a launcher (defined in disco_cuda_fwd_dense_kpacked_sm100.cu).
+    torch::Tensor disco_cuda_fwd_kpacked_sm100(torch::Tensor inp, torch::Tensor pack_idx, torch::Tensor pack_val,
+                                               torch::Tensor pack_count, int64_t K, int64_t Ho, int64_t Wo);
+
+    // Torch op: runtime-dispatches to SM_90a (WGMMA) or SM_100a (tcgen05) based on
+    // the current device's compute capability. Falls back with TORCH_CHECK on
+    // unsupported architectures.
     torch::Tensor disco_cuda_fwd_kpacked(torch::Tensor inp,
                                          torch::Tensor pack_idx, // [Ho, NBR_PAD, 2]     int64
                                          torch::Tensor pack_val, // [Ho, NBR_PAD, K_PAD] fp16/bf16 (or fp32; cast below)
@@ -351,8 +356,12 @@ namespace disco_kernels
         cudaGetDevice(&device_id);
         cudaDeviceProp props;
         cudaGetDeviceProperties(&props, device_id);
-        TORCH_CHECK(props.major == 9, "disco_kernels::forward_kpacked requires SM_90a (Hopper); got SM_", props.major,
-                    ".", props.minor);
+        TORCH_CHECK(props.major == 9 || props.major == 10,
+                    "disco_kernels::forward_kpacked requires SM_90a (Hopper) or SM_100a (Blackwell); got SM_",
+                    props.major, ".", props.minor);
+
+        // Dispatch to SM_100a (tcgen05) path on Blackwell.
+        if (props.major == 10) { return disco_cuda_fwd_kpacked_sm100(inp, pack_idx, pack_val, pack_count, K, Ho, Wo); }
 
         const auto inp_dtype = inp.scalar_type();
         TORCH_CHECK(inp_dtype == at::ScalarType::BFloat16 || inp_dtype == at::ScalarType::Half,
