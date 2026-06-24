@@ -208,6 +208,7 @@ def run_entry(
     entry: BenchmarkEntry,
     warmup: int = 3,
     iters: int = 20,
+    skip_reference: bool = False,
 ) -> Optional[BenchmarkResult]:
     """
     Returns None if the entry's device requirement is not met on this machine.
@@ -262,7 +263,7 @@ def run_entry(
 
     # --- reference error ---
     ref_error = None
-    if entry.reference is not None and last_out is not None:
+    if not skip_reference and entry.reference is not None and last_out is not None:
         ref = entry.reference(state)
         cur = last_out.cpu()
         if torch.is_complex(cur):
