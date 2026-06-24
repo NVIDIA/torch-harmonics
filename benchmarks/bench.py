@@ -28,6 +28,8 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import dataclasses
+import platform
+import re
 import time
 from typing import Any, Callable, Optional
 
@@ -142,6 +144,45 @@ def get_entries(
 # ------------------------------------------------------------------------------
 
 
+def _get_cpu_name() -> str:
+    """Return a cleaned-up CPU model string, or 'Generic CPU' if not determinable."""
+    import subprocess
+
+    def _clean(name: str) -> str:
+        name = re.sub(r"\s+@\s+[\d.]+\s*GHz.*", "", name)  # drop "@ 2.00GHz" suffix
+        name = name.replace("(R)", "").replace("(TM)", "")  # drop trademark noise
+        return re.sub(r" {2,}", " ", name).strip()
+
+    # Linux: /proc/cpuinfo — works on x86; ARM has no "model name" here
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("model name"):
+                    return _clean(line.split(":", 1)[1].strip())
+    except OSError:
+        pass
+
+    # Linux: lscpu — works on both x86 and aarch64 (Grace shows "Neoverse-V2")
+    try:
+        out = subprocess.check_output(["lscpu"], text=True, stderr=subprocess.DEVNULL)
+        for line in out.splitlines():
+            if line.startswith("Model name"):
+                return _clean(line.split(":", 1)[1].strip())
+    except Exception:
+        pass
+
+    # macOS
+    try:
+        out = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], text=True, stderr=subprocess.DEVNULL).strip()
+        if out:
+            return _clean(out)
+    except Exception:
+        pass
+
+    name = platform.processor()
+    return _clean(name) if name else "Generic CPU"
+
+
 def _resolve_device(spec: str) -> tuple[bool, Optional[torch.device]]:
     """
     Returns (available, device).
@@ -225,7 +266,7 @@ def run_entry(
         torch.cuda.empty_cache()
         gpu = torch.cuda.get_device_properties(device).name
     else:
-        gpu = "cpu"
+        gpu = _get_cpu_name()
 
     state = entry.setup(device, entry.dtype)
 

@@ -54,18 +54,43 @@ from bench import BenchmarkResult, get_entries, run_entry
 # ------------------------------------------------------------------------------
 
 
-def load_reference_csv(path: str) -> dict[str, dict]:
-    """Load a previously saved CSV into a dict keyed by benchmark name."""
-    ref = {}
+def load_reference_csv(path: str) -> list[dict]:
+    """Load a previously saved CSV as a list of row dicts (multiple rows per name allowed)."""
+    rows = []
     with open(path, newline="") as f:
         for row in csv.DictReader(f):
-            name = row["name"]
-            ref[name] = {
-                "fwd_ms": float(row["fwd_ms"]) if row.get("fwd_ms") not in (None, "", "None") else None,
-                "bwd_ms": float(row["bwd_ms"]) if row.get("bwd_ms") not in (None, "", "None") else None,
-                "ref_error": float(row["ref_error"]) if row.get("ref_error") not in (None, "", "None") else None,
-            }
-    return ref
+            rows.append(
+                {
+                    "name": row["name"],
+                    "architecture": row.get("architecture", ""),
+                    "fwd_ms": float(row["fwd_ms"]) if row.get("fwd_ms") not in (None, "", "None") else None,
+                    "bwd_ms": float(row["bwd_ms"]) if row.get("bwd_ms") not in (None, "", "None") else None,
+                    "ref_error": float(row["ref_error"]) if row.get("ref_error") not in (None, "", "None") else None,
+                }
+            )
+    return rows
+
+
+def _lookup_reference(reference: Optional[list[dict]], result: "BenchmarkResult") -> Optional[dict]:
+    """Find the reference row matching result's name and architecture."""
+    if reference is None:
+        return None
+    # prefer an arch-matching row; fall back to a row with no arch recorded
+    fallback = None
+    for row in reference:
+        if row["name"] != result.name:
+            continue
+        if _arch_match(row, result):
+            return row
+        if not row.get("architecture"):
+            fallback = row
+    return fallback
+
+
+def _arch_match(ref: dict, result: "BenchmarkResult") -> bool:
+    """Return False if the reference entry was produced on a different GPU."""
+    arch = ref.get("architecture", "")
+    return not arch or _fmt_arch(arch) == _fmt_arch(result.arch)
 
 
 def _speedup(ref_ms: Optional[float], cur_ms: Optional[float]) -> Optional[float]:
@@ -128,7 +153,7 @@ def _render_rows(
 
     rows = []
     for r in results:
-        ref = reference.get(r.name) if reference else None
+        ref = _lookup_reference(reference, r)
         cells = [
             r.name,
             _fmt_arch(r.arch),
@@ -211,7 +236,7 @@ def print_table(
     n_regressions = 0
     if reference is not None:
         for r in results:
-            ref = reference.get(r.name)
+            ref = _lookup_reference(reference, r)
             if ref is not None:
                 fwd_spd = _speedup(ref.get("fwd_ms"), r.fwd_ms)
                 bwd_spd = _speedup(ref.get("bwd_ms"), r.bwd_ms)
@@ -296,7 +321,9 @@ def main() -> int:
     reference = None
     if args.reference_csv:
         reference = load_reference_csv(args.reference_csv)
-        print(f"reference : {args.reference_csv}  ({len(reference)} entries)")
+        ref_archs = sorted({r["architecture"] for r in reference if r.get("architecture")})
+        arch_str = ", ".join(_fmt_arch(a) for a in ref_archs) if ref_archs else "unknown"
+        print(f"reference : {args.reference_csv}  ({len(reference)} rows, arch: {arch_str})")
         print(f"tolerance : {args.regression_tol*100:.0f}%")
         print()
 
