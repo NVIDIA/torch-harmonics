@@ -39,19 +39,26 @@ from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
 
 def _attn_setup(batch, channels, num_heads, nlat, nlon):
     def setup(device, dtype):
+        # keep model in fp32; use autocast for fp16/bf16 — matches real usage
+        # (casting the full model to fp16 produces NaN from softmax overflow)
+        fp16_types = {torch.float16, torch.bfloat16}
+        model_dtype = torch.float32
         attn = AttentionS2(
             in_channels=channels,
             num_heads=num_heads,
             in_shape=(nlat, nlon),
             out_shape=(nlat, nlon),
-        ).to(device=device, dtype=dtype)
-        x = torch.randn(batch, channels, nlat, nlon, dtype=dtype, device=device, requires_grad=True)
-        return {"attn": attn, "x": x}
+        ).to(device=device, dtype=model_dtype)
+        x = torch.randn(batch, channels, nlat, nlon, dtype=torch.float32, device=device, requires_grad=True)
+        return {"attn": attn, "x": x, "dtype": dtype, "use_autocast": dtype in fp16_types, "device": device}
 
     return setup
 
 
 def _attn_forward(state):
+    if state["use_autocast"]:
+        with torch.autocast(state["device"].type, dtype=state["dtype"]):
+            return state["attn"](state["x"])
     return state["attn"](state["x"])
 
 
@@ -66,6 +73,7 @@ def _attn_backward(state, out):
 
 def _nattn_setup(batch, channels, num_heads, nlat_in, nlon_in, nlat_out, nlon_out, theta_cutoff, optimized):
     def setup(device, dtype):
+        fp16_types = {torch.float16, torch.bfloat16}
         attn = NeighborhoodAttentionS2(
             in_channels=channels,
             num_heads=num_heads,
@@ -73,8 +81,8 @@ def _nattn_setup(batch, channels, num_heads, nlat_in, nlon_in, nlat_out, nlon_ou
             out_shape=(nlat_out, nlon_out),
             theta_cutoff=theta_cutoff,
             optimized_kernel=optimized,
-        ).to(device=device, dtype=dtype)
-        x = torch.randn(batch, channels, nlat_in, nlon_in, dtype=dtype, device=device, requires_grad=True)
+        ).to(device=device, dtype=torch.float32)
+        x = torch.randn(batch, channels, nlat_in, nlon_in, dtype=torch.float32, device=device, requires_grad=True)
         return {
             "attn": attn,
             "x": x,
@@ -85,12 +93,18 @@ def _nattn_setup(batch, channels, num_heads, nlat_in, nlon_in, nlat_out, nlon_ou
             "nlat_out": nlat_out,
             "nlon_out": nlon_out,
             "theta_cutoff": theta_cutoff,
+            "dtype": dtype,
+            "use_autocast": dtype in fp16_types,
+            "device": device,
         }
 
     return setup
 
 
 def _nattn_forward(state):
+    if state["use_autocast"]:
+        with torch.autocast(state["device"].type, dtype=state["dtype"]):
+            return state["attn"](state["x"])
     return state["attn"](state["x"])
 
 
@@ -257,6 +271,98 @@ _NATTN_CONFIGS = [
         nlon_in=360,
         nlat_out=180,
         nlon_out=360,
+        theta_cutoff=0.03,
+        optimized=True,
+        tags=["attention", "neighborhood", "self"],
+    ),
+    # self-attention (same in/out grid), half-degree, theta_cutoff=0.017, CUDA
+    dict(
+        name="nattn_s2_opt_hdeg_b1_c64_h1_tc0017_float32_cuda",
+        device="cuda",
+        dtype=torch.float32,
+        batch=1,
+        channels=64,
+        num_heads=1,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        theta_cutoff=0.017,
+        optimized=True,
+        tags=["attention", "neighborhood", "self"],
+    ),
+    dict(
+        name="nattn_s2_opt_hdeg_b1_c64_h1_tc0017_float16_cuda",
+        device="cuda",
+        dtype=torch.float16,
+        batch=1,
+        channels=64,
+        num_heads=1,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        theta_cutoff=0.017,
+        optimized=True,
+        tags=["attention", "neighborhood", "self"],
+    ),
+    dict(
+        name="nattn_s2_opt_hdeg_b1_c64_h1_tc0017_bfloat16_cuda",
+        device="cuda",
+        dtype=torch.bfloat16,
+        batch=1,
+        channels=64,
+        num_heads=1,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        theta_cutoff=0.017,
+        optimized=True,
+        tags=["attention", "neighborhood", "self"],
+    ),
+    # self-attention (same in/out grid), half-degree, theta_cutoff=0.03, CUDA
+    dict(
+        name="nattn_s2_opt_hdeg_b1_c64_h1_tc003_float32_cuda",
+        device="cuda",
+        dtype=torch.float32,
+        batch=1,
+        channels=64,
+        num_heads=1,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        theta_cutoff=0.03,
+        optimized=True,
+        tags=["attention", "neighborhood", "self"],
+    ),
+    dict(
+        name="nattn_s2_opt_hdeg_b1_c64_h1_tc003_float16_cuda",
+        device="cuda",
+        dtype=torch.float16,
+        batch=1,
+        channels=64,
+        num_heads=1,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        theta_cutoff=0.03,
+        optimized=True,
+        tags=["attention", "neighborhood", "self"],
+    ),
+    dict(
+        name="nattn_s2_opt_hdeg_b1_c64_h1_tc003_bfloat16_cuda",
+        device="cuda",
+        dtype=torch.bfloat16,
+        batch=1,
+        channels=64,
+        num_heads=1,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
         theta_cutoff=0.03,
         optimized=True,
         tags=["attention", "neighborhood", "self"],

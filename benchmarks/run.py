@@ -230,6 +230,7 @@ def main() -> int:
     parser.add_argument("--save-csv", default=None, metavar="PATH", help="write results to a CSV file")
     parser.add_argument("--reference-csv", default=None, metavar="PATH", help="CSV produced by a previous --save-csv run; " "adds speedup columns and flags regressions")
     parser.add_argument("--regression-tol", type=float, default=0.05, metavar="F", help="slowdowns within this fraction of 1x are not flagged " "(default 0.05 = 5%%)")
+    parser.add_argument("--check-outputs", action="store_true", help="run float64/CPU reference and report ref_l_inf error")
     args = parser.parse_args()
 
     if torch.cuda.is_available():
@@ -259,7 +260,7 @@ def main() -> int:
     results, skipped = [], []
     for entry in entries:
         print(f"  {entry.name} ...", end=" ", flush=True)
-        result = run_entry(entry, warmup=args.warmup, iters=args.iters)
+        result = run_entry(entry, warmup=args.warmup, iters=args.iters, skip_reference=not args.check_outputs)
         if result is None:
             reason = f"device '{entry.device}' not available"
             print(f"skipped ({reason})")
