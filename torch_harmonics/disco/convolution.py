@@ -50,6 +50,7 @@ from .optimized.disco_optimized import (
     _disco_s2_fused_conv_kpacked,
     _disco_s2_fused_conv_optimized,
     _disco_s2_transpose_contraction_optimized,
+    _kpacked_supported_on_device,
     _maybe_kpack_psi,
 )
 
@@ -601,7 +602,13 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         weight_r = self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])
 
-        _kpacked_ok = self.optimized_kernel and self.psi_kpacked_K_pad in (8, 16) and x.dtype in (torch.float16, torch.bfloat16)
+        _kpacked_ok = (
+            self.optimized_kernel
+            and self.psi_kpacked_K_pad in (8, 16)
+            and x.dtype in (torch.float16, torch.bfloat16)
+            and x.is_cuda
+            and _kpacked_supported_on_device(x.get_device())
+        )
 
         if self.fused and _kpacked_ok:
             out = _disco_s2_fused_conv_kpacked(
