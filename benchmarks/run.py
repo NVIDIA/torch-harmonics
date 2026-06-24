@@ -83,65 +83,89 @@ def _is_regression(speedup: Optional[float], tol: float) -> bool:
 # Table printing
 # ------------------------------------------------------------------------------
 
-_COL_NAME = 52
-_COL_ARCH = 24
-_COL_DEV = 10
-_COL_DTYPE = 10
-_COL_FWD = 9
-_COL_BWD = 9
-_COL_ERR = 12
-_COL_SPD = 9  # speedup column width (shared for fwd and bwd)
+# Vendor prefixes to strip from GPU names for brevity
+_ARCH_STRIP = ("NVIDIA ", "AMD ", "Intel ")
+
+
+def _fmt_arch(arch: str) -> str:
+    for prefix in _ARCH_STRIP:
+        if arch.startswith(prefix):
+            return arch[len(prefix) :]
+    return arch
+
+
+def _fmt_dtype(dtype: str) -> str:
+    return dtype.replace("torch.", "")
 
 
 def _fmt_ms(v: Optional[float]) -> str:
-    return f"{v:8.2f}" if v is not None else "     n/a"
+    return f"{v:.2f}" if v is not None else "n/a"
 
 
 def _fmt_err(v: Optional[float]) -> str:
-    return f"{v:.3e}" if v is not None else "         n/a"
+    return f"{v:.3e}" if v is not None else "n/a"
 
 
 def _fmt_speedup(speedup: Optional[float], tol: float) -> str:
     if speedup is None:
-        return "     n/a"
-    flag = " !" if _is_regression(speedup, tol) else "  "
-    return f"{speedup:6.2f}x{flag}"
+        return "n/a"
+    flag = " !" if _is_regression(speedup, tol) else ""
+    return f"{speedup:.2f}x{flag}"
 
 
-def _header(with_ref: bool) -> str:
-    h = (
-        f"{'name':<{_COL_NAME}} "
-        f"{'architecture':<{_COL_ARCH}} "
-        f"{'device':<{_COL_DEV}} "
-        f"{'dtype':<{_COL_DTYPE}} "
-        f"{'fwd_ms':>{_COL_FWD}} "
-        f"{'bwd_ms':>{_COL_BWD}} "
-        f"{'ref_l_inf':>{_COL_ERR}}"
-    )
-    if with_ref:
-        h += f"  {'fwd_spd':>{_COL_SPD}}  {'bwd_spd':>{_COL_SPD}}"
-    return h
-
-
-def _row(
-    r: BenchmarkResult,
-    ref: Optional[dict],
+def _render_rows(
+    results: list[BenchmarkResult],
+    reference: Optional[dict[str, dict]],
     tol: float,
-) -> str:
-    line = (
-        f"{r.name:<{_COL_NAME}} "
-        f"{r.arch:<{_COL_ARCH}} "
-        f"{r.device:<{_COL_DEV}} "
-        f"{r.dtype:<{_COL_DTYPE}} "
-        f"{_fmt_ms(r.fwd_ms):>{_COL_FWD}} "
-        f"{_fmt_ms(r.bwd_ms):>{_COL_BWD}} "
-        f"{_fmt_err(r.ref_error):>{_COL_ERR}}"
-    )
-    if ref is not None:
-        fwd_spd = _speedup(ref.get("fwd_ms"), r.fwd_ms)
-        bwd_spd = _speedup(ref.get("bwd_ms"), r.bwd_ms)
-        line += f"  {_fmt_speedup(fwd_spd, tol):>{_COL_SPD}}  {_fmt_speedup(bwd_spd, tol):>{_COL_SPD}}"
-    return line
+    with_err: bool,
+) -> tuple[list[str], list[list[str]]]:
+    """Return (headers, data_rows) as lists of pre-formatted cell strings."""
+    headers = ["name", "architecture", "device", "dtype", "fwd_ms", "bwd_ms"]
+    if with_err:
+        headers.append("ref_l_inf")
+    if reference is not None:
+        headers += ["fwd_spd", "bwd_spd"]
+
+    rows = []
+    for r in results:
+        ref = reference.get(r.name) if reference else None
+        cells = [
+            r.name,
+            _fmt_arch(r.arch),
+            r.device,
+            _fmt_dtype(r.dtype),
+            _fmt_ms(r.fwd_ms),
+            _fmt_ms(r.bwd_ms),
+        ]
+        if with_err:
+            cells.append(_fmt_err(r.ref_error))
+        if ref is not None:
+            cells.append(_fmt_speedup(_speedup(ref.get("fwd_ms"), r.fwd_ms), tol))
+            cells.append(_fmt_speedup(_speedup(ref.get("bwd_ms"), r.bwd_ms), tol))
+        elif reference is not None:
+            cells += ["n/a", "n/a"]
+        rows.append(cells)
+
+    return headers, rows
+
+
+def _format_table(headers: list[str], rows: list[list[str]]) -> list[str]:
+    """Format headers + rows into fixed-width lines with dynamic column widths."""
+    # left-aligned columns by index (name, arch, device, dtype); rest right-aligned
+    LEFT = {0, 1, 2, 3}
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(cell))
+
+    def fmt_row(cells):
+        parts = []
+        for i, (cell, w) in enumerate(zip(cells, widths)):
+            parts.append(f"{cell:<{w}}" if i in LEFT else f"{cell:>{w}}")
+        return "  ".join(parts)
+
+    header_line = fmt_row(headers)
+    return [header_line, "-" * len(header_line)] + [fmt_row(r) for r in rows]
 
 
 def print_table(
@@ -151,27 +175,27 @@ def print_table(
     tol: float = 0.05,
 ) -> int:
     """Print results table. Returns number of flagged regressions."""
-    with_ref = reference is not None
-    h = _header(with_ref)
-    print(h)
-    print("-" * len(h))
+    with_err = any(r.ref_error is not None for r in results)
+    headers, rows = _render_rows(results, reference, tol, with_err)
+    for line in _format_table(headers, rows):
+        print(line)
 
     n_regressions = 0
-    for r in results:
-        ref = reference.get(r.name) if reference else None
-        print(_row(r, ref, tol))
-        if ref is not None:
-            fwd_spd = _speedup(ref.get("fwd_ms"), r.fwd_ms)
-            bwd_spd = _speedup(ref.get("bwd_ms"), r.bwd_ms)
-            if _is_regression(fwd_spd, tol) or _is_regression(bwd_spd, tol):
-                n_regressions += 1
+    if reference is not None:
+        for r in results:
+            ref = reference.get(r.name)
+            if ref is not None:
+                fwd_spd = _speedup(ref.get("fwd_ms"), r.fwd_ms)
+                bwd_spd = _speedup(ref.get("bwd_ms"), r.bwd_ms)
+                if _is_regression(fwd_spd, tol) or _is_regression(bwd_spd, tol):
+                    n_regressions += 1
 
     if skipped:
         print()
         for name, reason in skipped:
             print(f"  [skip] {name}  ({reason})")
 
-    if with_ref and n_regressions:
+    if reference is not None and n_regressions:
         print(f"\n  ! {n_regressions} regression(s) detected (tolerance {tol*100:.0f}%)")
 
     return n_regressions
