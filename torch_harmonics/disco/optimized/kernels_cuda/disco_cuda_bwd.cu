@@ -33,6 +33,7 @@
 
 #include <ATen/Dispatch.h>
 #include <ATen/OpMathType.h>
+#include <algorithm>
 
 namespace disco_kernels
 {
@@ -423,7 +424,17 @@ namespace disco_kernels
         // Select BC_TILE: amortises index loads across BC_TILE channels per CTA.
         // BC_TILE=8 → shmem grows 8× but index load traffic shrinks 8×, improving
         // FMA utilisation from ~13% to near-peak on L1-bound workloads (C≥8).
-        const int bc_tile = (BC >= 8) ? 8 : (BC >= 4) ? 4 : 1;
+        //
+        // Cap: shmem = 4 * 2 * Wi * pscale * BC_TILE (fp32 accumulator, NTH*ELXTH ≈ Wi).
+        // Keep shmem ≤ 48 KB so at least 4 blocks/SM can coexist (228 KB on GB200).
+        // Without the cap, large pscale (e.g. 4 for h1deg) or large Wi (hdeg) push
+        // shmem to 96 KB, collapsing occupancy to 2 blocks/SM and negating the
+        // amortization gain.
+        const int pscale_est = std::max(1, (int)(Wo / Wi)); // ≥1: avoids div-by-zero for upsampling (Wo<Wi)
+        const int max_bc_shmem = std::max(1, (int)(49152 / (8 * (int)Wi * pscale_est)));
+        const int bc_tile_want = (BC >= 8) ? 8 : (BC >= 4) ? 4 : 1;
+        const int max_bc_pow2 = (max_bc_shmem >= 8) ? 8 : (max_bc_shmem >= 4) ? 4 : 1;
+        const int bc_tile = std::min(bc_tile_want, max_bc_pow2);
 
 #define LAUNCH(NTH, ELXTH_START)                                                                                       \
     AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, inp.scalar_type(), "disco_backward_cuda", ([&] {         \
