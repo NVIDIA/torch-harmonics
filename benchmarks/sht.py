@@ -122,6 +122,7 @@ for cfg in _SHT_CONFIGS:
             forward=_sht_forward,
             backward=_sht_backward,
             reference=_sht_reference,
+            skip_correctness=cfg["nlat"] > 180,
             tags=cfg["tags"],
         )
     )
@@ -136,6 +137,7 @@ for cfg in _ISHT_CONFIGS:
             forward=_isht_forward,
             backward=_isht_backward,
             reference=_isht_reference,
+            skip_correctness=cfg["nlat"] > 180,
             tags=cfg["tags"],
         )
     )

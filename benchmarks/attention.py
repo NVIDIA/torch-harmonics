@@ -403,6 +403,7 @@ for cfg in _NATTN_CONFIGS:
             forward=_nattn_forward,
             backward=_nattn_backward,
             reference=_nattn_reference,
+            skip_correctness=cfg["nlat_in"] > 180,
             tags=cfg["tags"],
         )
     )

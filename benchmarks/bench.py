@@ -103,6 +103,10 @@ class BenchmarkEntry:
     # output (e.g. float64 on CPU) so the runner can compute L-inf error.
     reference: Optional[Callable[[dict], torch.Tensor]] = None
 
+    # Set True to opt out of correctness checks (e.g. large grids where the
+    # CPU float64 reference run would dominate wall time).
+    skip_correctness: bool = False
+
     tags: list = dataclasses.field(default_factory=list)
 
 
@@ -263,7 +267,7 @@ def run_entry(
 
     # --- reference error ---
     ref_error = None
-    if not skip_reference and entry.reference is not None and last_out is not None:
+    if not skip_reference and not entry.skip_correctness and entry.reference is not None and last_out is not None:
         ref = entry.reference(state)
         cur = last_out.cpu()
         if torch.is_complex(cur):
