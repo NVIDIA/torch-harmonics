@@ -82,10 +82,16 @@ def _nattn_setup(batch, channels, num_heads, nlat_in, nlon_in, nlat_out, nlon_ou
             theta_cutoff=theta_cutoff,
             optimized_kernel=optimized,
         ).to(device=device, dtype=torch.float32)
-        x = torch.randn(batch, channels, nlat_in, nlon_in, dtype=torch.float32, device=device, requires_grad=True)
+        # query lives on the output grid; key/value on the input grid.
+        # For self-attention (nlat_in==nlat_out) x_kv is unused (forward passes None).
+        x_q = torch.randn(batch, channels, nlat_out, nlon_out, dtype=torch.float32, device=device, requires_grad=True)
+        x_kv = None
+        if nlat_in != nlat_out or nlon_in != nlon_out:
+            x_kv = torch.randn(batch, channels, nlat_in, nlon_in, dtype=torch.float32, device=device, requires_grad=True)
         return {
             "attn": attn,
-            "x": x,
+            "x_q": x_q,
+            "x_kv": x_kv,
             "channels": channels,
             "num_heads": num_heads,
             "nlat_in": nlat_in,
@@ -102,10 +108,11 @@ def _nattn_setup(batch, channels, num_heads, nlat_in, nlon_in, nlat_out, nlon_ou
 
 
 def _nattn_forward(state):
+    q, kv = state["x_q"], state["x_kv"]
     if state["use_autocast"]:
         with torch.autocast(state["device"].type, dtype=state["dtype"]):
-            return state["attn"](state["x"])
-    return state["attn"](state["x"])
+            return state["attn"](q, kv, kv)
+    return state["attn"](q, kv, kv)
 
 
 def _nattn_backward(state, out):
@@ -122,8 +129,10 @@ def _nattn_reference(state):
         optimized_kernel=False,
     ).to(dtype=torch.float32)
     attn_ref.load_state_dict({k: v.cpu().float() for k, v in state["attn"].state_dict().items()})
+    q = state["x_q"].detach().cpu().float()
+    kv = state["x_kv"].detach().cpu().float() if state["x_kv"] is not None else None
     with torch.no_grad():
-        return attn_ref(state["x"].detach().cpu().float())
+        return attn_ref(q, kv, kv)
 
 
 # ------------------------------------------------------------------------------
