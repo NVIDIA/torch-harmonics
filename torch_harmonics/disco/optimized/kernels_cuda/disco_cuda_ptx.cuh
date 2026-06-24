@@ -117,21 +117,19 @@ namespace disco_kernels
 
 #endif // __CUDA_ARCH__ >= 800
 
-// =====================================================================================
-// WGMMA — warp-group matrix-multiply-accumulate.
-//
-// WGMMA is gated to the *architecture-specific* Hopper target (sm_90a), not
-// the forward-compatible sm_90. ptxas rejects WGMMA opcodes against plain
-// .target sm_90 — they require .target sm_90a. NVCC defines
-// `__CUDA_ARCH_FEAT_SM90_ALL` only when compiling for sm_90a, so we use that
-// macro to gate the inline asm. Build with TORCH_CUDA_ARCH_LIST="9.0a+PTX"
-// (lowercase `a`) to enable this path. Blackwell SM_100+ deprecated WGMMA
-// entirely in favour of the tcgen05.mma family — handled by separate guards.
-//
-// PTX ISA §9.7.16.
-// =====================================================================================
-#if defined(__CUDA_ARCH_FEAT_SM90_ALL)
-
+    // =====================================================================================
+    // WGMMA — warp-group matrix-multiply-accumulate.
+    //
+    // WGMMA is gated to the *architecture-specific* Hopper target (sm_90a), not
+    // the forward-compatible sm_90. ptxas rejects WGMMA opcodes against plain
+    // .target sm_90 — they require .target sm_90a. NVCC defines
+    // `__CUDA_ARCH_FEAT_SM90_ALL` only when compiling for sm_90a, so we use that
+    // macro to gate the inline asm. Build with TORCH_CUDA_ARCH_LIST="9.0a+PTX"
+    // (lowercase `a`) to enable this path. Blackwell SM_100+ deprecated WGMMA
+    // entirely in favour of the tcgen05.mma family — handled by separate guards.
+    //
+    // PTX ISA §9.7.16.
+    // =====================================================================================
     // -------------------------------------------------------------------------------------
     // Matrix descriptor (PTX ISA §9.7.16.5.1).
     //
@@ -161,8 +159,9 @@ namespace disco_kernels
     //                       but the descriptor still requires a value; use the
     //                       byte-stride between consecutive K-segments if any.)
     //
-    // IMPORTANT: this builder assumes no swizzle and base_offset=0. If we add
-    // swizzling later we'll need to thread those through.
+    // This builder is shared by SM_90a (WGMMA) and SM_100a (tcgen05.mma) —
+    // the descriptor format is identical across both architectures.
+    // IMPORTANT: this builder assumes no swizzle and base_offset=0.
     // -------------------------------------------------------------------------------------
     __device__ __forceinline__ uint64_t make_wgmma_desc(const void *smem_ptr, uint32_t leading_byte_offset,
                                                         uint32_t stride_byte_offset, uint32_t swizzle = 0)
@@ -175,6 +174,8 @@ namespace disco_kernels
         desc |= ((uint64_t)(swizzle & 0x3u)) << 62;                       // swizzle mode
         return desc;
     }
+
+#if defined(__CUDA_ARCH_FEAT_SM90_ALL)
 
     // -------------------------------------------------------------------------------------
     // WGMMA fence / commit / wait (PTX ISA §9.7.16.4.1 — §9.7.16.4.4).
