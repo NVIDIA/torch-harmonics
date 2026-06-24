@@ -4,6 +4,7 @@
 
 ### v0.9.2b
 
+* Added `benchmarks/` suite covering SHT, DISCO convolution (self and downsampling), and spherical attention (global, neighborhood self, neighborhood cross-resolution) across resolutions, dtypes, and channel counts. Entry point: `python benchmarks/run.py`. Supports baseline CSV comparison for regression tracking in performance PRs.
 * Fused DISCO kernel for serial convolution: fuses the sparse psi contraction and weight multiplication into a single autograd region, avoiding the K-expanded intermediate activation in the graph and reducing memory footprint by a factor of K. Enabled via `fused=True` on `DiscreteContinuousConvS2`.
 * Distributed DISCO convolution now uses `reduce_scatter` instead of `all_reduce` + `scatter` for the polar reduction, cutting communicated data volume in half.
 * Added fused distributed DISCO convolution variant which reduces activation storage.
