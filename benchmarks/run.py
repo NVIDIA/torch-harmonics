@@ -149,8 +149,20 @@ def _render_rows(
     return headers, rows
 
 
-def _format_table(headers: list[str], rows: list[list[str]]) -> list[str]:
-    """Format headers + rows into fixed-width lines with dynamic column widths."""
+def _group_key(name: str) -> str:
+    """Derive a display group from benchmark name prefix."""
+    if name.startswith("sht") or name.startswith("isht"):
+        return "sht"
+    if name.startswith("disco"):
+        return "disco"
+    return "attention"
+
+
+def _format_table(headers: list[str], rows: list[list[str]], separator_after: set) -> list[str]:
+    """Format headers + rows into fixed-width lines with dynamic column widths.
+
+    separator_after: set of row indices (0-based) after which to insert a blank separator line.
+    """
     # left-aligned columns by index (name, arch, device, dtype); rest right-aligned
     LEFT = {0, 1, 2, 3}
     widths = [len(h) for h in headers]
@@ -164,8 +176,14 @@ def _format_table(headers: list[str], rows: list[list[str]]) -> list[str]:
             parts.append(f"{cell:<{w}}" if i in LEFT else f"{cell:>{w}}")
         return "  ".join(parts)
 
+    total_width = len(fmt_row(headers))
     header_line = fmt_row(headers)
-    return [header_line, "-" * len(header_line)] + [fmt_row(r) for r in rows]
+    lines = [header_line, "-" * total_width]
+    for i, row in enumerate(rows):
+        lines.append(fmt_row(row))
+        if i in separator_after:
+            lines.append("")
+    return lines
 
 
 def print_table(
@@ -177,7 +195,17 @@ def print_table(
     """Print results table. Returns number of flagged regressions."""
     with_err = any(r.ref_error is not None for r in results)
     headers, rows = _render_rows(results, reference, tol, with_err)
-    for line in _format_table(headers, rows):
+
+    # insert blank lines between benchmark groups (sht / disco / attention)
+    separator_after: set = set()
+    prev_group = _group_key(results[0].name) if results else ""
+    for i, r in enumerate(results[1:], start=0):
+        g = _group_key(results[i + 1].name)
+        if g != prev_group:
+            separator_after.add(i)
+        prev_group = g
+
+    for line in _format_table(headers, rows, separator_after):
         print(line)
 
     n_regressions = 0
