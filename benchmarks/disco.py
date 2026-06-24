@@ -116,6 +116,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=False,
         tags=["disco", "self"],
     ),
     dict(
@@ -134,6 +135,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=False,
         tags=["disco", "self"],
     ),
     dict(
@@ -152,6 +154,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=False,
         tags=["disco", "self"],
     ),
     # self-conv (same in/out grid), 1-degree, theta_cutoff=0.03, CUDA
@@ -171,6 +174,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=False,
         tags=["disco", "self"],
     ),
     dict(
@@ -189,6 +193,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=False,
         tags=["disco", "self"],
     ),
     dict(
@@ -207,6 +212,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=False,
         tags=["disco", "self"],
     ),
     # self-conv, large channels, 1-degree, CUDA
@@ -226,6 +232,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=False,
         tags=["disco", "self", "large_channels"],
     ),
     dict(
@@ -244,6 +251,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=False,
         tags=["disco", "self", "large_channels"],
     ),
     dict(
@@ -262,6 +270,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=False,
         tags=["disco", "self", "large_channels"],
     ),
     dict(
@@ -280,6 +289,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=False,
         tags=["disco", "self", "large_channels"],
     ),
     dict(
@@ -298,6 +308,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=False,
         tags=["disco", "self", "large_channels"],
     ),
     dict(
@@ -316,6 +327,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=False,
         tags=["disco", "self", "large_channels"],
     ),
     # self-conv (same in/out grid), half-degree, theta_cutoff=0.017, CUDA
@@ -335,6 +347,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=True,
         tags=["disco", "self"],
     ),
     dict(
@@ -353,6 +366,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=True,
         tags=["disco", "self"],
     ),
     dict(
@@ -371,6 +385,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=True,
         tags=["disco", "self"],
     ),
     # self-conv (same in/out grid), half-degree, theta_cutoff=0.03, CUDA
@@ -390,6 +405,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=True,
         tags=["disco", "self"],
     ),
     dict(
@@ -408,6 +424,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=True,
         tags=["disco", "self"],
     ),
     dict(
@@ -426,6 +443,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=True,
         tags=["disco", "self"],
     ),
     # self-conv, large channels, half-degree, CUDA
@@ -445,6 +463,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=True,
         tags=["disco", "self", "large_channels"],
     ),
     dict(
@@ -463,6 +482,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=True,
         tags=["disco", "self", "large_channels"],
     ),
     dict(
@@ -481,6 +501,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=True,
         tags=["disco", "self", "large_channels"],
     ),
     dict(
@@ -499,6 +520,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=True,
         tags=["disco", "self", "large_channels"],
     ),
     dict(
@@ -517,6 +539,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=True,
         tags=["disco", "self", "large_channels"],
     ),
     dict(
@@ -535,6 +558,7 @@ _DISCO_CONFIGS = [
         basis_norm_mode="mean",
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=True,
         tags=["disco", "self", "large_channels"],
     ),
 ]
@@ -562,7 +586,7 @@ for cfg in _DISCO_CONFIGS:
             forward=_disco_forward,
             backward=_disco_backward,
             reference=_disco_reference,
-            skip_correctness=cfg["nlat_in"] > 180,
+            skip_correctness=cfg["skip_correctness"],
             tags=cfg["tags"],
         )
     )

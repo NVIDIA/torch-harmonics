@@ -182,6 +182,7 @@ _NATTN_CONFIGS = [
         nlon_out=360,
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=False,
         tags=["attention", "neighborhood", "cpu", "self"],
     ),
     # self-attention (same in/out grid), CUDA
@@ -198,6 +199,7 @@ _NATTN_CONFIGS = [
         nlon_out=360,
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=False,
         tags=["attention", "neighborhood", "self"],
     ),
     dict(
@@ -213,6 +215,7 @@ _NATTN_CONFIGS = [
         nlon_out=360,
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=False,
         tags=["attention", "neighborhood", "self"],
     ),
     dict(
@@ -228,6 +231,7 @@ _NATTN_CONFIGS = [
         nlon_out=360,
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=False,
         tags=["attention", "neighborhood", "self"],
     ),
     dict(
@@ -243,6 +247,7 @@ _NATTN_CONFIGS = [
         nlon_out=360,
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=False,
         tags=["attention", "neighborhood", "self"],
     ),
     dict(
@@ -258,6 +263,7 @@ _NATTN_CONFIGS = [
         nlon_out=360,
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=False,
         tags=["attention", "neighborhood", "self"],
     ),
     dict(
@@ -273,6 +279,7 @@ _NATTN_CONFIGS = [
         nlon_out=360,
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=False,
         tags=["attention", "neighborhood", "self"],
     ),
     # self-attention (same in/out grid), half-degree, theta_cutoff=0.017, CUDA
@@ -289,6 +296,7 @@ _NATTN_CONFIGS = [
         nlon_out=720,
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=True,
         tags=["attention", "neighborhood", "self"],
     ),
     dict(
@@ -304,6 +312,7 @@ _NATTN_CONFIGS = [
         nlon_out=720,
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=True,
         tags=["attention", "neighborhood", "self"],
     ),
     dict(
@@ -319,6 +328,7 @@ _NATTN_CONFIGS = [
         nlon_out=720,
         theta_cutoff=0.017,
         optimized=True,
+        skip_correctness=True,
         tags=["attention", "neighborhood", "self"],
     ),
     # self-attention (same in/out grid), half-degree, theta_cutoff=0.03, CUDA
@@ -335,6 +345,7 @@ _NATTN_CONFIGS = [
         nlon_out=720,
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=True,
         tags=["attention", "neighborhood", "self"],
     ),
     dict(
@@ -350,6 +361,7 @@ _NATTN_CONFIGS = [
         nlon_out=720,
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=True,
         tags=["attention", "neighborhood", "self"],
     ),
     dict(
@@ -365,6 +377,7 @@ _NATTN_CONFIGS = [
         nlon_out=720,
         theta_cutoff=0.03,
         optimized=True,
+        skip_correctness=True,
         tags=["attention", "neighborhood", "self"],
     ),
 ]
@@ -403,7 +416,7 @@ for cfg in _NATTN_CONFIGS:
             forward=_nattn_forward,
             backward=_nattn_backward,
             reference=_nattn_reference,
-            skip_correctness=cfg["nlat_in"] > 180,
+            skip_correctness=cfg["skip_correctness"],
             tags=cfg["tags"],
         )
     )
