@@ -122,10 +122,11 @@ namespace disco_kernels
         // ─── Bisection knob ──────────────────────────────────────────────────────
         // Set TCGEN05_BISECT to skip progressively more of the kernel to isolate
         // the instruction that causes cudaErrorIllegalInstruction:
-        //   0 = alloc + dealloc + relinquish only (skip st, mma, ld)
-        //   1 = + zero-init (tcgen05.st + wait::st)
-        //   2 = + MMA + wait (tcgen05.mma + commit + try_wait)
-        //   3 = full kernel (default)
+        //   0  = alloc + dealloc + relinquish only (skip st, mma, ld)
+        //   1  = + zero-init (tcgen05.st + wait::st)
+        //   21 = + mbarrier.init + full loop staging but skip tcgen05.mma/commit/wait
+        //   2  = + full MMA loop (tcgen05.mma + commit + try_wait) — was failing
+        //   3  = full kernel (default)
 #ifndef TCGEN05_BISECT
 #define TCGEN05_BISECT 3
 #endif
@@ -148,10 +149,6 @@ namespace disco_kernels
         // ─── Init MMA mbarrier ─────────────────────────────────────────────────
         uint32_t mbar_ptr = __cvta_generic_to_shared(&smem_mma_mbar);
         if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;\n" ::"r"(mbar_ptr) : "memory"); }
-        // fence.mbarrier_init makes the barrier init visible to the async tracking
-        // hardware before any thread issues tcgen05.commit. __syncthreads alone is
-        // insufficient — see CUTLASS cutlass/arch/barrier.h fence_barrier_init().
-        asm volatile("fence.mbarrier_init.release.cluster;\n" ::: "memory");
         __syncthreads();
 
         // ─── nz_chunk loop (A/B staging identical to SM_90a) ───────────────────
@@ -207,18 +204,21 @@ namespace disco_kernels
 
             // -- Issue tcgen05.mma (thread 0) and commit to mbarrier --
             // scaleC=1: accumulate into the TMEM tile (which was zero-initialised).
+#if TCGEN05_BISECT != 21
             tcgen05_mma_issue(tmem_acc, desc_a, desc_b, 1u, mbar_ptr);
 
             // -- All threads wait for MMA to complete --
             tcgen05_mma_wait(mbar_ptr);
+#endif
             __syncthreads(); // ensure all threads exited wait before mbarrier reinit
 
             // Reinit mbarrier for the next chunk (if any).
+#if TCGEN05_BISECT != 21
             if (nz_chunk_off + NZ_CHUNK < cnt) {
                 if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;\n" ::"r"(mbar_ptr) : "memory"); }
-                asm volatile("fence.mbarrier_init.release.cluster;\n" ::: "memory");
                 __syncthreads(); // reinit visible before next commit
             }
+#endif
         }
 
 #if TCGEN05_BISECT == 2
