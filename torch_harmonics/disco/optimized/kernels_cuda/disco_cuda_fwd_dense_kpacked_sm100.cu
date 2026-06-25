@@ -294,7 +294,7 @@ namespace disco_kernels
         const int bc_blocks = (BC_total + BC_TILE - 1) / BC_TILE;
         const dim3 grid((unsigned)(Ho * (Wo / WO_TILE)), (unsigned)bc_blocks);
 
-        auto fire = [&](auto fn, auto T_tag) {
+        auto launch = [&](auto fn, auto T_tag) {
             using T = decltype(T_tag);
             cudaFuncSetAttribute(reinterpret_cast<const void *>(fn), cudaFuncAttributeMaxDynamicSharedMemorySize,
                                  (int)shmem_bytes);
@@ -306,16 +306,16 @@ namespace disco_kernels
 
         if (inp_dtype == at::ScalarType::BFloat16) {
             if (K_PAD == 8)
-                fire(&disco_fwd_dense_kpacked_tcgen05_blk_k<BC_TILE, WO_TILE, NZ_CHUNK, 8, __nv_bfloat16>,
-                     __nv_bfloat16 {});
+                launch(&disco_fwd_dense_kpacked_tcgen05_blk_k<BC_TILE, WO_TILE, NZ_CHUNK, 8, __nv_bfloat16>,
+                       __nv_bfloat16 {});
             else
-                fire(&disco_fwd_dense_kpacked_tcgen05_blk_k<BC_TILE, WO_TILE, NZ_CHUNK, 16, __nv_bfloat16>,
-                     __nv_bfloat16 {});
+                launch(&disco_fwd_dense_kpacked_tcgen05_blk_k<BC_TILE, WO_TILE, NZ_CHUNK, 16, __nv_bfloat16>,
+                       __nv_bfloat16 {});
         } else {
             if (K_PAD == 8)
-                fire(&disco_fwd_dense_kpacked_tcgen05_blk_k<BC_TILE, WO_TILE, NZ_CHUNK, 8, __half>, __half {});
+                launch(&disco_fwd_dense_kpacked_tcgen05_blk_k<BC_TILE, WO_TILE, NZ_CHUNK, 8, __half>, __half {});
             else
-                fire(&disco_fwd_dense_kpacked_tcgen05_blk_k<BC_TILE, WO_TILE, NZ_CHUNK, 16, __half>, __half {});
+                launch(&disco_fwd_dense_kpacked_tcgen05_blk_k<BC_TILE, WO_TILE, NZ_CHUNK, 16, __half>, __half {});
         }
         return out;
     }
