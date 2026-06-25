@@ -81,8 +81,8 @@ torch-harmonics has been used to implement a variety of differentiable PDE solve
 
 Prebuilt Linux wheels with compiled CUDA extensions are available on [pypi.nvidia.com](https://pypi.nvidia.com). Pick the package matching your CUDA toolkit version:
 
-| CUDA | Package | Min PyTorch | Install command |
-|------|---------|-------------|-----------------|
+| CUDA | Package | Supported PyTorch | Install command |
+|------|---------|-------------------|-----------------|
 | 12.6 | `torch-harmonics-cu126` | 2.6.0 | `pip install torch-harmonics-cu126 --extra-index-url https://pypi.nvidia.com` |
 | 12.8 | `torch-harmonics-cu128` | 2.7.0 | `pip install torch-harmonics-cu128 --extra-index-url https://pypi.nvidia.com` |
 | 12.9 | `torch-harmonics-cu129` | 2.8.0 | `pip install torch-harmonics-cu129 --extra-index-url https://pypi.nvidia.com` |
