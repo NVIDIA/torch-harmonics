@@ -601,18 +601,21 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         weight_r = self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])
+        kpacked_dtype = x.dtype
+        if x.is_cuda and torch.is_autocast_enabled("cuda"):
+            kpacked_dtype = torch.get_autocast_dtype("cuda")
 
         _kpacked_ok = (
             self.optimized_kernel
             and self.psi_kpacked_K_pad in (8, 16)
-            and x.dtype in (torch.float16, torch.bfloat16)
+            and kpacked_dtype in (torch.float16, torch.bfloat16)
             and x.is_cuda
             and _kpacked_supported_on_device(x.get_device())
         )
 
         if self.fused and _kpacked_ok:
             out = _disco_s2_fused_conv_kpacked(
-                x,
+                x.to(kpacked_dtype),
                 weight_r,
                 self.psi_kpacked_idx,
                 self.psi_kpacked_vals,
@@ -646,7 +649,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         else:
             if _kpacked_ok:
                 x = _disco_s2_contraction_kpacked(
-                    x,
+                    x.to(kpacked_dtype),
                     self.psi_kpacked_idx,
                     self.psi_kpacked_vals,
                     self.psi_kpacked_count,
