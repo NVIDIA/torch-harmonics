@@ -532,12 +532,13 @@ namespace disco_kernels
     }
 
     // -------------------------------------------------------------------------------------
-    // tcgen05_mma_issue — elected-thread-per-warp MMA + mbarrier commit.
+    // tcgen05_mma_issue — one CTA-level MMA issuer + mbarrier commit.
     //
-    // Both tcgen05.mma and tcgen05.commit with cta_group::1 require ONE elected
-    // thread per warp (4 threads total for a 4-warp kernel).  This matches CUTLASS
-    // (cute/arch/mma_sm100_umma.hpp fma() and cutlass/arch/barrier.h umma_arrive()),
-    // both of which gate on elect_one_sync() = elect.sync with mask 0xFFFFFFFF.
+    // CUTLASS models this cta_group::1 atom with ThrID = Layout<_1>, i.e. one
+    // logical issuing thread.  Its low-level wrapper still uses elect_one_sync(),
+    // but elect_one_sync() is warp-scoped; if every warp in this CTA executes it,
+    // four threads issue the same MMA.  Restrict election to the first warp so
+    // exactly one CTA thread issues the MMA and exactly one commit arrives.
     //
     // kind::f16 is correct for BOTH fp16 and bf16 inputs (no kind::bf16 in PTX).
     // Operand 3 is idescE upper-32, i.e. the UMMA instruction descriptor.  Masks
@@ -548,6 +549,8 @@ namespace disco_kernels
     __device__ __forceinline__ void tcgen05_mma_issue(uint32_t tmem_d, uint64_t desc_a, uint64_t desc_b, uint32_t idesc,
                                                       uint32_t scale_c, uint32_t mbar_ptr)
     {
+        if (threadIdx.x >= 32) { return; }
+
         // Verbatim CUTLASS elect_one_sync() pattern from cute/arch/cluster_sm90.hpp.
         // The mask MUST be a register operand (%2) — elect.sync does not accept immediates.
         uint32_t pred = 0, laneid = 0;
