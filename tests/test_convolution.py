@@ -37,7 +37,7 @@ from time import perf_counter_ns
 import torch
 from disco_helpers import preprocess_psi
 from parameterized import parameterized, parameterized_class
-from testutils import compare_tensors, disable_tf32, maybe_autocast, set_seed
+from testutils import _is_sm90, _is_sm100, compare_tensors, disable_tf32, maybe_autocast, set_seed
 from torch.library import opcheck
 
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
@@ -1132,12 +1132,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         self.assertTrue(duration <= _perf_test_thresholds[self.device.type]["bwd_ms"])
 
 
-def _is_sm90():
-    """Return True when the default CUDA device is Hopper (SM 9.0)."""
-    if not torch.cuda.is_available():
-        return False
-    major, _ = torch.cuda.get_device_capability()
-    return major == 9
+def _is_kpacked_supported():
+    """Return True when the device supports the kpacked forward kernel (SM 9.x or SM 10.x)."""
+    return _is_sm90() or _is_sm100()
 
 
 @unittest.skipUnless(
@@ -1179,7 +1176,17 @@ class TestKpackedPath(unittest.TestCase):
         out = conv(inp)
         self.assertEqual(out.dtype, torch.bfloat16)
 
-    @unittest.skipUnless(_is_sm90(), "kpacked forward requires SM_90a (Hopper)")
+    @unittest.skipUnless(_is_sm100(), "kpacked forward on Blackwell requires SM_100a (GB200/B200)")
+    def test_kpacked_forward_activates_on_sm100(self):
+        """tcgen05 kpacked path is chosen for bf16/fp16 on Blackwell."""
+        conv = self._make_conv(1, 8, (16, 32))
+        self.assertIsNotNone(conv.psi_kpacked_K_pad, "psi_kpacked_K_pad should be set for harmonic basis")
+        self.assertIn(conv.psi_kpacked_K_pad, (8, 16), "K_pad must be 8 or 16 for the tcgen05 kernel")
+        inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device)
+        out = conv(inp)
+        self.assertEqual(out.dtype, torch.bfloat16)
+
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
     def test_kpacked_fused_matches_unfused(self):
         """fused=True kpacked path gives the same result as fused=False."""
         set_seed(42)
@@ -1200,7 +1207,7 @@ class TestKpackedPath(unittest.TestCase):
         out_f.backward(grad.clone())
         self.assertTrue(compare_tensors("inp grad", inp.grad, inp2.grad, atol=1e-2, rtol=1e-2))
 
-    @unittest.skipUnless(_is_sm90(), "kpacked forward requires SM_90a (Hopper)")
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
     def test_kpacked_bwd_bc_tile_boundaries(self):
         """BC_TILE selection: exercises BC_TILE=1 (BC=3), BC_TILE=4 (BC=5), BC_TILE=8 (BC=16).
 
@@ -1276,7 +1283,7 @@ class TestKpackedPath(unittest.TestCase):
         out_f.backward(grad.clone())
         self.assertTrue(compare_tensors("inp grad", inp.grad, inp2.grad, atol=1e-3, rtol=1e-3))
 
-    @unittest.skipUnless(_is_sm90(), "kpacked forward requires SM_90a (Hopper)")
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
     def test_kpacked_opcheck(self):
         """forward_kpacked op satisfies the PT2 opcheck contract."""
         conv = self._make_conv(1, 8, (16, 32))
