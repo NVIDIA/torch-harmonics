@@ -125,7 +125,9 @@ namespace disco_kernels
         //   0  = alloc + dealloc + relinquish only (skip st, mma, ld)
         //   1  = + zero-init (tcgen05.st + wait::st)
         //   21 = + mbarrier.init + full loop staging but skip tcgen05.mma/commit/wait
-        //   2  = + full MMA loop (tcgen05.mma + commit + try_wait) — was failing
+        //   22 = + tcgen05.mma only (no commit, no wait) — one iteration, then break
+        //   23 = + tcgen05.mma + tcgen05.commit (no wait) — one iteration, then break
+        //   2  = + full MMA loop (tcgen05.mma + commit + try_wait)
         //   3  = full kernel (default)
 #ifndef TCGEN05_BISECT
 #define TCGEN05_BISECT 3
@@ -149,6 +151,7 @@ namespace disco_kernels
         // ─── Init MMA mbarrier ─────────────────────────────────────────────────
         uint32_t mbar_ptr = __cvta_generic_to_shared(&smem_mma_mbar);
         if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;\n" ::"r"(mbar_ptr) : "memory"); }
+        tcgen05_fence_mbarrier_init(); // makes init visible to the async tracking HW
         __syncthreads();
 
         // ─── nz_chunk loop (A/B staging identical to SM_90a) ───────────────────
@@ -204,7 +207,13 @@ namespace disco_kernels
 
             // -- Issue tcgen05.mma (thread 0) and commit to mbarrier --
             // scaleC=1: accumulate into the TMEM tile (which was zero-initialised).
-#if TCGEN05_BISECT != 21
+#if TCGEN05_BISECT == 22
+            tcgen05_mma_only(tmem_acc, desc_a, desc_b, 1u); // MMA only, no commit/wait
+            break;
+#elif TCGEN05_BISECT == 23
+            tcgen05_mma_issue(tmem_acc, desc_a, desc_b, 1u, mbar_ptr); // MMA + commit, no wait
+            break;
+#elif TCGEN05_BISECT != 21
             tcgen05_mma_issue(tmem_acc, desc_a, desc_b, 1u, mbar_ptr);
 
             // -- All threads wait for MMA to complete --
@@ -213,9 +222,10 @@ namespace disco_kernels
             __syncthreads(); // ensure all threads exited wait before mbarrier reinit
 
             // Reinit mbarrier for the next chunk (if any).
-#if TCGEN05_BISECT != 21
+#if TCGEN05_BISECT != 21 && TCGEN05_BISECT != 22 && TCGEN05_BISECT != 23
             if (nz_chunk_off + NZ_CHUNK < cnt) {
                 if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;\n" ::"r"(mbar_ptr) : "memory"); }
+                tcgen05_fence_mbarrier_init();
                 __syncthreads(); // reinit visible before next commit
             }
 #endif
@@ -230,6 +240,7 @@ namespace disco_kernels
         // ─── Read accumulator from TMEM ────────────────────────────────────────
         // 16x256b.x1 → 4 fp32 per thread (N_PAD=8)
         // 16x256b.x2 → 8 fp32 per thread (N_PAD=16)
+        tcgen05_fence_mma_done(); // proxy fence: MMA result in TMEM is now safe to read
         float acc[N_ACC];
         tcgen05_ld<N_ACC>(acc, tmem_acc);
 
