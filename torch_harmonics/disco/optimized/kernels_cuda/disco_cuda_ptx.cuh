@@ -442,6 +442,19 @@ namespace disco_kernels
     }
 
     // -------------------------------------------------------------------------------------
+    // tcgen05.relinquish_alloc_permit — ALL threads release the CTA-level TMEM lock.
+    //
+    // CUTLASS (tmem_allocator_sm100.hpp release_allocation_lock()) calls this after
+    // every dealloc from all threads in the CTA, outside the warp-0 guard. Without it,
+    // the next kernel launch on the same SM may fail to allocate TMEM because the lock
+    // was never cleared.
+    // -------------------------------------------------------------------------------------
+    __device__ __forceinline__ void tcgen05_relinquish_alloc_permit()
+    {
+        asm volatile("tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;\n" ::: "memory");
+    }
+
+    // -------------------------------------------------------------------------------------
     // tcgen05_zero — warpgroup-collective zero-init of the TMEM accumulator tile.
     //
     // Shape 16x256b.x1 covers M=64, N=8  (512 fp32 total, 4 per thread).
@@ -453,14 +466,13 @@ namespace disco_kernels
     {
         static_assert(N_ACC == 4 || N_ACC == 8, "tcgen05_zero: N_ACC must be 4 or 8");
         if constexpr (N_ACC == 4) {
-            asm volatile("tcgen05.st.cta_group::1.sync.aligned.16x256b.x1.b32 [%0], {%1,%2,%3,%4};\n" ::"r"(tmem_addr),
-                         "r"(0u), "r"(0u), "r"(0u), "r"(0u));
+            asm volatile("tcgen05.st.sync.aligned.16x256b.x1.b32 [%0], {%1,%2,%3,%4};\n" ::"r"(tmem_addr), "r"(0u),
+                         "r"(0u), "r"(0u), "r"(0u));
         } else {
-            asm volatile("tcgen05.st.cta_group::1.sync.aligned.16x256b.x2.b32 [%0], {%1,%2,%3,%4,%5,%6,%7,%8};\n" ::"r"(
-                             tmem_addr),
+            asm volatile("tcgen05.st.sync.aligned.16x256b.x2.b32 [%0], {%1,%2,%3,%4,%5,%6,%7,%8};\n" ::"r"(tmem_addr),
                          "r"(0u), "r"(0u), "r"(0u), "r"(0u), "r"(0u), "r"(0u), "r"(0u), "r"(0u));
         }
-        asm volatile("tcgen05.wait::st.cta_group::1.sync.aligned;\n" ::: "memory");
+        asm volatile("tcgen05.wait::st.sync.aligned;\n" ::: "memory");
     }
 
     // -------------------------------------------------------------------------------------
@@ -476,15 +488,15 @@ namespace disco_kernels
         static_assert(N_ACC == 4 || N_ACC == 8, "tcgen05_ld: N_ACC must be 4 or 8");
         uint32_t(&r)[N_ACC] = reinterpret_cast<uint32_t(&)[N_ACC]>(regs);
         if constexpr (N_ACC == 4) {
-            asm volatile("tcgen05.ld.cta_group::1.sync.aligned.16x256b.x1.b32 {%0,%1,%2,%3}, [%4];\n"
+            asm volatile("tcgen05.ld.sync.aligned.16x256b.x1.b32 {%0,%1,%2,%3}, [%4];\n"
                          : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
                          : "r"(tmem_addr));
         } else {
-            asm volatile("tcgen05.ld.cta_group::1.sync.aligned.16x256b.x2.b32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];\n"
+            asm volatile("tcgen05.ld.sync.aligned.16x256b.x2.b32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];\n"
                          : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]), "=r"(r[4]), "=r"(r[5]), "=r"(r[6]), "=r"(r[7])
                          : "r"(tmem_addr));
         }
-        asm volatile("tcgen05.wait::ld.cta_group::1.sync.aligned;\n" ::: "memory");
+        asm volatile("tcgen05.wait::ld.sync.aligned;\n" ::: "memory");
     }
 
     // -------------------------------------------------------------------------------------
@@ -505,18 +517,29 @@ namespace disco_kernels
     __device__ __forceinline__ void tcgen05_mma_issue(uint32_t tmem_d, uint64_t desc_a, uint64_t desc_b,
                                                       uint32_t scale_c, uint32_t mbar_ptr)
     {
-        // tcgen05.mma is CTA-collective: ALL threads must execute it.
-        // tcgen05.commit is single-thread: only one thread signals the mbarrier.
-        uint32_t mask0 = 0, mask1 = 0, mask2 = 0, mask3 = 0;
+        // tcgen05.mma requires exactly ONE elected thread per warp (4 total for 4-warp kernel).
+        // Use elect.sync to select the elected lane in each warp — matches CUTLASS elect_one_sync().
+        // tcgen05.commit is single-thread: only thread 0 signals the mbarrier.
+        uint32_t elected = 0;
         asm volatile("{\n\t"
-                     ".reg .pred p;\n\t"
-                     "setp.ne.b32 p, %4, 0;\n\t"
-                     "tcgen05.mma.cta_group::1.kind::f16 [%0], %1, %2, %3, {%5,%6,%7,%8}, p;\n\t"
-                     "}\n" ::"r"(tmem_d),
-                     "l"(desc_a), "l"(desc_b),
-                     "r"(0u),      // idescE upper-32 (dense A → 0)
-                     "r"(scale_c), // controls predicate p
-                     "r"(mask0), "r"(mask1), "r"(mask2), "r"(mask3));
+                     ".reg .b32 %rx;\n\t"
+                     ".reg .pred %px;\n\t"
+                     "elect.sync %rx|%px, 0xFFFFFFFF;\n\t"
+                     "@%px mov.s32 %0, 1;\n\t"
+                     "}\n\t"
+                     : "=r"(elected));
+        if (elected) {
+            uint32_t mask0 = 0, mask1 = 0, mask2 = 0, mask3 = 0;
+            asm volatile("{\n\t"
+                         ".reg .pred p;\n\t"
+                         "setp.ne.b32 p, %4, 0;\n\t"
+                         "tcgen05.mma.cta_group::1.kind::f16 [%0], %1, %2, %3, {%5,%6,%7,%8}, p;\n\t"
+                         "}\n" ::"r"(tmem_d),
+                         "l"(desc_a), "l"(desc_b),
+                         "r"(0u),      // idescE upper-32 (dense A → 0)
+                         "r"(scale_c), // controls predicate p
+                         "r"(mask0), "r"(mask1), "r"(mask2), "r"(mask3));
+        }
         if (threadIdx.x == 0) {
             asm volatile("tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%0];\n" ::"r"(mbar_ptr)
                          : "memory");
