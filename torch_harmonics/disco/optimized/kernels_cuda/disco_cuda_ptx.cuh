@@ -516,32 +516,35 @@ namespace disco_kernels
     __device__ __forceinline__ void tcgen05_mma_issue(uint32_t tmem_d, uint64_t desc_a, uint64_t desc_b,
                                                       uint32_t scale_c, uint32_t mbar_ptr)
     {
-        // Both mma and commit require ONE elected thread per warp (4 total for a 4-warp kernel).
-        // elect.sync with mask 0xFFFFFFFF matches CUTLASS's elect_one_sync() — elects lane 0
-        // of each active warp, so threads 0, 32, 64, 96 each get elected = 1.
-        // %%rx / %%px: CUDA PTX inline asm requires %% to produce a literal % PTX register
-        // prefix; a single % would be misinterpreted as an operand reference.
-        uint32_t elected = 0;
-        asm volatile("{\n\t"
-                     ".reg .b32 %%rx;\n\t"
-                     ".reg .pred %%px;\n\t"
-                     "elect.sync %%rx|%%px, 0xFFFFFFFF;\n\t"
-                     "@%%px mov.s32 %0, 1;\n\t"
-                     "}\n\t"
-                     : "=r"(elected));
-        if (elected) {
-            uint32_t mask0 = 0, mask1 = 0, mask2 = 0, mask3 = 0;
+        // Verbatim CUTLASS elect_one_sync() pattern from cute/arch/cluster_sm90.hpp.
+        // The mask MUST be a register operand (%2) — elect.sync does not accept immediates.
+        uint32_t pred = 0, laneid = 0;
+        asm volatile("{\n"
+                     ".reg .b32 %%rx;\n"
+                     ".reg .pred %%px;\n"
+                     "     elect.sync %%rx|%%px, %2;\n"
+                     "@%%px mov.s32 %1, 1;\n"
+                     "     mov.s32 %0, %%rx;\n"
+                     "}"
+                     : "+r"(laneid), "+r"(pred)
+                     : "r"(0xFFFFFFFF));
+        if (pred) {
+            // Verbatim CUTLASS fma() from cute/arch/mma_sm100_umma.hpp (kind::f16, SS variant).
+            uint32_t mask[4] = {0, 0, 0, 0};
             asm volatile("{\n\t"
                          ".reg .pred p;\n\t"
                          "setp.ne.b32 p, %4, 0;\n\t"
-                         "tcgen05.mma.cta_group::1.kind::f16 [%0], %1, %2, %3, {%5,%6,%7,%8}, p;\n\t"
-                         "}\n" ::"r"(tmem_d),
-                         "l"(desc_a), "l"(desc_b),
-                         "r"(0u),      // idescE upper-32 (dense A → 0)
-                         "r"(scale_c), // controls predicate p
-                         "r"(mask0), "r"(mask1), "r"(mask2), "r"(mask3));
-            // commit is also cta_group::1 collective — same elected-thread-per-warp pattern.
-            asm volatile("tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%0];\n" ::"r"(mbar_ptr)
+                         "tcgen05.mma.cta_group::1.kind::f16 [%0], %1, %2, %3, {%5, %6, %7, %8}, p; \n\t"
+                         "}\n"
+                         :
+                         : "r"(tmem_d), "l"(desc_a), "l"(desc_b),
+                           "r"(0u),      // idescE upper-32 (dense A → 0)
+                           "r"(scale_c), // controls predicate p
+                           "r"(mask[0]), "r"(mask[1]), "r"(mask[2]), "r"(mask[3]));
+            // Verbatim CUTLASS umma_arrive() from cutlass/arch/barrier.h.
+            asm volatile("tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%0];"
+                         :
+                         : "r"(mbar_ptr)
                          : "memory");
         }
     }
