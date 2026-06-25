@@ -38,7 +38,7 @@
 //
 //   SM_90a (Hopper)         SM_100a (Blackwell)
 //   ──────────────────────  ──────────────────────────────────────────────────
-//   wgmma.mma_async         tcgen05.mma (issued by ONE thread per warpgroup)
+//   wgmma.mma_async         tcgen05.mma (issued by one elected CTA thread)
 //   accumulator: registers  accumulator: TMEM (Tensor Memory, 32 cols minimum)
 //   wgmma fence/commit/wait tcgen05.commit → mbarrier → mbarrier.try_wait
 //   (no alloc/dealloc)      tcgen05.alloc / tcgen05.dealloc
@@ -47,8 +47,8 @@
 //   tcgen05.alloc   — first warp allocates 32 TMEM columns; result written to shmem.
 //   tcgen05.st      — zero-initialise the tile (scaleC=1 is used throughout,
 //                     so we need explicit zero-init for cnt==0 correctness).
-//   tcgen05.mma     — ONE elected thread per warp (4 total); scaleC=1 (accumulate into zeros).
-//   tcgen05.commit  — same elected threads (elect_one_sync pattern); signals mbarrier.
+//   tcgen05.mma     — one elected thread from the first warp; scaleC=1 (accumulate into zeros).
+//   tcgen05.commit  — same elected thread signals the mbarrier.
 //   mbarrier.try_wait — all 128 threads spin-poll; safe to read TMEM when done.
 //   tcgen05.ld      — warpgroup-collective TMEM read back to registers.
 //   tcgen05.dealloc — first warp releases allocation after writeback.
@@ -130,7 +130,7 @@ namespace disco_kernels
 
         // ─── Init MMA mbarrier ─────────────────────────────────────────────────
         uint32_t mbar_ptr = __cvta_generic_to_shared(smem_mma_mbar_ptr);
-        if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 4;\n" ::"r"(mbar_ptr) : "memory"); }
+        if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;\n" ::"r"(mbar_ptr) : "memory"); }
         tcgen05_fence_mbarrier_init(); // makes init visible to the async tracking HW
         __syncthreads();
 
@@ -196,7 +196,7 @@ namespace disco_kernels
 
             // Reinit mbarrier for the next chunk (if any).
             if (nz_chunk_off + NZ_CHUNK < cnt) {
-                if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 4;\n" ::"r"(mbar_ptr) : "memory"); }
+                if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;\n" ::"r"(mbar_ptr) : "memory"); }
                 tcgen05_fence_mbarrier_init();
                 __syncthreads(); // reinit visible before next commit
             }
