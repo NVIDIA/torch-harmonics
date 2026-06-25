@@ -476,20 +476,6 @@ namespace disco_kernels
     }
 
     // -------------------------------------------------------------------------------------
-    // tcgen05_fence_mma_done — fence after mbarrier.try_wait confirms MMA completion.
-    //
-    // After mbarrier.try_wait returns (mbarrier complete), a proxy fence is needed
-    // before reading the TMEM accumulator via tcgen05.ld.  This is the tcgen05
-    // analogue of wgmma.wait_group and mirrors CUTLASS's fence_view_async_tmem_load().
-    //
-    // See CUTLASS cutlass/arch/barrier.h fence_view_async_tmem_load().
-    // -------------------------------------------------------------------------------------
-    __device__ __forceinline__ void tcgen05_fence_mma_done()
-    {
-        asm volatile("tcgen05.wait::mma.sync.aligned;\n" ::: "memory");
-    }
-
-    // -------------------------------------------------------------------------------------
     // tcgen05_zero — warpgroup-collective zero-init of the TMEM accumulator tile.
     //
     // Shape 16x256b.x1 covers M=64, N=8  (512 fp32 total, 4 per thread).
