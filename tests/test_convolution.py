@@ -1187,6 +1187,33 @@ class TestKpackedPath(unittest.TestCase):
         self.assertEqual(out.dtype, torch.bfloat16)
 
     @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
+    def test_kpacked_matches_csr_reference(self):
+        """Kpacked MMA forward path matches the optimized CSR fallback numerically."""
+        set_seed(123)
+        in_shape = (16, 32)
+        conv_kpacked = self._make_conv(1, 8, in_shape)
+        conv_csr = self._make_conv(1, 8, in_shape)
+        self.assertIsNotNone(conv_kpacked.psi_kpacked_K_pad, "kpacked reference test requires kpacked buffers")
+        self.assertIn(conv_kpacked.psi_kpacked_K_pad, (8, 16), "K_pad must be 8 or 16 for the kpacked kernel")
+
+        conv_csr.weight.data.copy_(conv_kpacked.weight.data)
+        conv_csr.psi_kpacked_K_pad = 24  # force optimized CSR fallback through normal forward dispatch
+
+        inp = torch.randn(1, 8, *in_shape, dtype=torch.bfloat16, device=self.device, requires_grad=True)
+        inp_ref = inp.detach().clone().requires_grad_(True)
+
+        out_kpacked = conv_kpacked(inp)
+        out_csr = conv_csr(inp_ref)
+        self.assertTrue(compare_tensors("output", out_kpacked.float(), out_csr.float(), atol=5e-2, rtol=5e-2))
+
+        grad = torch.randn_like(out_kpacked)
+        out_kpacked.backward(grad)
+        out_csr.backward(grad.clone())
+
+        self.assertTrue(compare_tensors("inp grad", inp.grad.float(), inp_ref.grad.float(), atol=5e-2, rtol=5e-2))
+        self.assertTrue(compare_tensors("weight grad", conv_kpacked.weight.grad.float(), conv_csr.weight.grad.float(), atol=5e-2, rtol=5e-2))
+
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
     def test_kpacked_fused_matches_unfused(self):
         """fused=True kpacked path gives the same result as fused=False."""
         set_seed(42)
