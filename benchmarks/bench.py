@@ -27,6 +27,7 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import contextlib
 import dataclasses
 import platform
 import re
@@ -35,6 +36,21 @@ from typing import Any, Callable, Optional
 
 import torch
 import torch.nn as nn
+
+# ------------------------------------------------------------------------------
+# Precision contexts
+# ------------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def maybe_autocast(device_type, dtype):
+    """Use autocast for fp16/bf16 benchmark entries; no-op for fp32/fp64."""
+    if dtype in (torch.float16, torch.bfloat16):
+        with torch.autocast(device_type=device_type, dtype=dtype):
+            yield
+    else:
+        yield
+
 
 # ------------------------------------------------------------------------------
 # Timer
