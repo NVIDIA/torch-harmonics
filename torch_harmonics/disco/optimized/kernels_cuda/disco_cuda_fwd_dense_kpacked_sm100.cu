@@ -47,7 +47,7 @@
 //   tcgen05.alloc   — first warp allocates 32 TMEM columns; result written to shmem.
 //   tcgen05.st      — zero-initialise the tile (scaleC=1 is used throughout,
 //                     so we need explicit zero-init for cnt==0 correctness).
-//   tcgen05.mma     — issued by threadIdx.x == 0; scaleC=1 (accumulate into zeros).
+//   tcgen05.mma     — CTA-collective; all 128 threads execute it; scaleC=1 (accumulate into zeros).
 //   tcgen05.commit  — also issued by threadIdx.x == 0; signals mbarrier.
 //   mbarrier.try_wait — all 128 threads spin-poll; safe to read TMEM when done.
 //   tcgen05.ld      — warpgroup-collective TMEM read back to registers.
