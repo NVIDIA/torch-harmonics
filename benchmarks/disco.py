@@ -28,7 +28,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import torch
-from bench import BenchmarkEntry, register
+from bench import BenchmarkEntry, maybe_autocast, register
 
 from torch_harmonics import DiscreteContinuousConvS2
 
@@ -39,6 +39,8 @@ from torch_harmonics import DiscreteContinuousConvS2
 
 def _disco_setup(batch, in_ch, out_ch, nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, basis_type, basis_norm_mode, theta_cutoff, optimized):
     def setup(device, dtype):
+        use_autocast = dtype in (torch.float16, torch.bfloat16)
+        module_dtype = torch.float32 if use_autocast else dtype
         conv = DiscreteContinuousConvS2(
             in_channels=in_ch,
             out_channels=out_ch,
@@ -49,11 +51,13 @@ def _disco_setup(batch, in_ch, out_ch, nlat_in, nlon_in, nlat_out, nlon_out, ker
             basis_norm_mode=basis_norm_mode,
             theta_cutoff=theta_cutoff,
             optimized_kernel=optimized,
-        ).to(device=device, dtype=dtype)
-        x = torch.randn(batch, in_ch, nlat_in, nlon_in, dtype=dtype, device=device, requires_grad=True)
+        ).to(device=device, dtype=module_dtype)
+        x = torch.randn(batch, in_ch, nlat_in, nlon_in, dtype=module_dtype, device=device, requires_grad=True)
         return {
             "conv": conv,
             "x": x,
+            "dtype": dtype,
+            "device": device,
             "in_ch": in_ch,
             "out_ch": out_ch,
             "nlat_in": nlat_in,
@@ -70,7 +74,8 @@ def _disco_setup(batch, in_ch, out_ch, nlat_in, nlon_in, nlat_out, nlon_out, ker
 
 
 def _disco_forward(state):
-    return state["conv"](state["x"])
+    with maybe_autocast(state["device"].type, state["dtype"]):
+        return state["conv"](state["x"])
 
 
 def _disco_backward(state, out):
