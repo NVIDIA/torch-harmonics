@@ -155,7 +155,7 @@ namespace disco_kernels
 
         // ─── Init MMA mbarrier ─────────────────────────────────────────────────
         uint32_t mbar_ptr = __cvta_generic_to_shared(smem_mma_mbar_ptr);
-        if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;\n" ::"r"(mbar_ptr) : "memory"); }
+        if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 4;\n" ::"r"(mbar_ptr) : "memory"); }
         tcgen05_fence_mbarrier_init(); // makes init visible to the async tracking HW
         __syncthreads();
 
@@ -207,19 +207,20 @@ namespace disco_kernels
             constexpr uint32_t A_STRIDE_FIELD = 16;
             constexpr uint32_t B_LEADING_FIELD = 8;
             constexpr uint32_t B_STRIDE_FIELD = (N_PAD == 8) ? 0 : 16;
-            uint64_t desc_a = make_wgmma_desc(A_tile, A_LEADING_FIELD * 16, A_STRIDE_FIELD * 16);
-            uint64_t desc_b = make_wgmma_desc(B_tile, B_LEADING_FIELD * 16, B_STRIDE_FIELD * 16);
+            uint64_t desc_a = make_umma_desc(A_tile, A_LEADING_FIELD * 16, A_STRIDE_FIELD * 16);
+            uint64_t desc_b = make_umma_desc(B_tile, B_LEADING_FIELD * 16, B_STRIDE_FIELD * 16);
+            constexpr uint32_t mma_idesc = make_tcgen05_f16bf16_instr_desc<N_PAD, std::is_same_v<T, __nv_bfloat16>>();
 
             // -- Issue tcgen05.mma (thread 0) and commit to mbarrier --
             // scaleC=1: accumulate into the TMEM tile (which was zero-initialised).
 #if TCGEN05_BISECT == 22
-            tcgen05_mma_only(tmem_acc, desc_a, desc_b, 1u); // MMA only, no commit/wait
+            tcgen05_mma_only(tmem_acc, desc_a, desc_b, mma_idesc, 1u); // MMA only, no commit/wait
             break;
 #elif TCGEN05_BISECT == 23
-            tcgen05_mma_issue(tmem_acc, desc_a, desc_b, 1u, mbar_ptr); // MMA + commit, no wait
+            tcgen05_mma_issue(tmem_acc, desc_a, desc_b, mma_idesc, 1u, mbar_ptr); // MMA + commit, no wait
             break;
 #elif TCGEN05_BISECT != 21
-            tcgen05_mma_issue(tmem_acc, desc_a, desc_b, 1u, mbar_ptr);
+            tcgen05_mma_issue(tmem_acc, desc_a, desc_b, mma_idesc, 1u, mbar_ptr);
 
             // -- All threads wait for MMA to complete --
             tcgen05_mma_wait(mbar_ptr);
@@ -229,7 +230,7 @@ namespace disco_kernels
             // Reinit mbarrier for the next chunk (if any).
 #if TCGEN05_BISECT != 21 && TCGEN05_BISECT != 22 && TCGEN05_BISECT != 23
             if (nz_chunk_off + NZ_CHUNK < cnt) {
-                if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;\n" ::"r"(mbar_ptr) : "memory"); }
+                if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 4;\n" ::"r"(mbar_ptr) : "memory"); }
                 tcgen05_fence_mbarrier_init();
                 __syncthreads(); // reinit visible before next commit
             }

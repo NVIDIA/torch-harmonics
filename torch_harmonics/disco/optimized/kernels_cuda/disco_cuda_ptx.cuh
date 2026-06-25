@@ -130,38 +130,13 @@ namespace disco_kernels
     //
     // PTX ISA §9.7.16.
     // =====================================================================================
+#if defined(__CUDA_ARCH_FEAT_SM90_ALL)
+
     // -------------------------------------------------------------------------------------
     // Matrix descriptor (PTX ISA §9.7.16.5.1).
     //
-    // The descriptor is a 64-bit value laid out as:
-    //
-    //   bit  0:13  start_address       (bits 4..17 of the shmem byte offset)
-    //   bit 14:15  unused (must be 0)
-    //   bit 16:29  leading_byte_offset (LBO, in 16-byte units)
-    //   bit 30:31  unused (must be 0)
-    //   bit 32:45  stride_byte_offset  (SBO, in 16-byte units)
-    //   bit 46:48  unused (must be 0)
-    //   bit 49:51  matrix_base_offset  (3-bit, only used with swizzle)
-    //   bit 52:61  unused (must be 0)
-    //   bit 62:63  swizzle             (0 = none, 1 = 128B, 2 = 64B, 3 = 32B)
-    //
-    // LBO: byte offset between adjacent "core matrices" along the leading dim.
-    // SBO: byte offset between adjacent core matrices along the stride dim.
-    // "Core matrix" for bf16/fp16 with K=16 is 8×16 elements (256 bytes); for our
-    // purposes both LBO and SBO are simply the byte stride between consecutive
-    // 8×16 core-matrix tiles in shmem along the M (or N) and K axes respectively.
-    //
-    // For the simple case (no swizzle, contiguous shmem region):
-    //   A 64×16 bf16 row-major (M outer, K inner) as 8 stacked 8×16 core matrices:
-    //     LBO = 256 bytes  (next 8-row block along M is 256 bytes after the prior)
-    //     SBO = 16  bytes  (within a row, K direction is 16 elements = 32 bytes; here
-    //                       there's only one 8×16 core in K so SBO is unused —
-    //                       but the descriptor still requires a value; use the
-    //                       byte-stride between consecutive K-segments if any.)
-    //
-    // This builder is shared by SM_90a (WGMMA) and SM_100a (tcgen05.mma) —
-    // the descriptor format is identical across both architectures.
-    // IMPORTANT: this builder assumes no swizzle and base_offset=0.
+    // SM90 WGMMA uses a 64-bit shared-memory descriptor.  This builder assumes
+    // no swizzle and base_offset=0.
     // -------------------------------------------------------------------------------------
     __device__ __forceinline__ uint64_t make_wgmma_desc(const void *smem_ptr, uint32_t leading_byte_offset,
                                                         uint32_t stride_byte_offset, uint32_t swizzle = 0)
@@ -174,8 +149,6 @@ namespace disco_kernels
         desc |= ((uint64_t)(swizzle & 0x3u)) << 62;                       // swizzle mode
         return desc;
     }
-
-#if defined(__CUDA_ARCH_FEAT_SM90_ALL)
 
     // -------------------------------------------------------------------------------------
     // WGMMA fence / commit / wait (PTX ISA §9.7.16.4.1 — §9.7.16.4.4).
@@ -393,14 +366,12 @@ namespace disco_kernels
 //  tcgen05.st/ld  use the 16x256b shape (not 32x32b).  One warpgroup-collective
 //                 call covers the full M=64, N=8 (x1) or N=16 (x2) tile.
 //
-//  tcgen05.mma    is a CTA-collective — ALL threads must execute it.  It uses
-//                 kind::f16 for BOTH
-//                 fp16 and bf16 inputs (no kind::bf16 exists).  The fourth
-//                 operand is the E-descriptor upper 32 bits (0 for dense A),
-//                 followed by four mask registers (all 0 for full M), and a
-//                 predicate that controls scale_C (0 = overwrite, 1 = add).
-//                 No .sync / shape suffix in the PTX; shape is inferred from
-//                 the SMEM descriptors.
+//  tcgen05.mma    uses kind::f16 for BOTH fp16 and bf16 inputs (no kind::bf16
+//                 opcode exists).  One elected thread per warp issues it.  The
+//                 fourth operand is the upper 32 bits of idescE, i.e. the UMMA
+//                 instruction descriptor.  It encodes M/N, input formats, C
+//                 format, and A/B major modes; passing 0 encodes an invalid
+//                 shape and can trap as cudaErrorIllegalInstruction.
 //
 //  Synchronisation: tcgen05.mma is asynchronous; results appear in TMEM only
 //                 after tcgen05.commit signals an mbarrier.  Use
@@ -410,6 +381,41 @@ namespace disco_kernels
 // Gate: __CUDA_ARCH_FEAT_SM100_ALL.  Build with TORCH_CUDA_ARCH_LIST="10.0a+PTX".
 // =====================================================================================
 #if defined(__CUDA_ARCH_FEAT_SM100_ALL)
+
+    // -------------------------------------------------------------------------------------
+    // UMMA descriptor helpers (SM_100a).
+    //
+    // The SM100 shared-memory descriptor is close to the SM90 WGMMA descriptor,
+    // but it has Blackwell-specific version bits [46:47].  Keep this separate
+    // from make_wgmma_desc so the Hopper path remains unchanged.
+    //
+    // Instruction descriptor fields mirror CUTLASS cute/arch/mma_sm100_desc.hpp
+    // UMMA::make_instr_desc<> for dense .kind::f16, C=f32, M=64, K=16.
+    // -------------------------------------------------------------------------------------
+    __device__ __forceinline__ uint64_t make_umma_desc(const void *smem_ptr, uint32_t leading_byte_offset,
+                                                       uint32_t stride_byte_offset)
+    {
+        unsigned smem_addr = __cvta_generic_to_shared(smem_ptr);
+        uint64_t desc = 0;
+        desc |= ((uint64_t)((smem_addr >> 4) & 0x3fffu)) << 0;            // start address
+        desc |= ((uint64_t)((leading_byte_offset >> 4) & 0x3fffu)) << 16; // LBO
+        desc |= ((uint64_t)((stride_byte_offset >> 4) & 0x3fffu)) << 32;  // SBO
+        desc |= ((uint64_t)1u) << 46;                                     // Blackwell descriptor version
+        return desc;                                                      // no base offset, legacy LBO, no swizzle
+    }
+
+    template <int N_PAD, bool BF16> __device__ __forceinline__ constexpr uint32_t make_tcgen05_f16bf16_instr_desc()
+    {
+        static_assert(N_PAD == 8 || N_PAD == 16, "tcgen05 idesc: N_PAD must be 8 or 16");
+        constexpr uint32_t AB_FORMAT = BF16 ? 1u : 0u; // UMMA::F16F32Format::{F16=0,BF16=1}
+        return (1u << 4)                               // c_format = f32
+            | (AB_FORMAT << 7)                         // a_format
+            | (AB_FORMAT << 10)                        // b_format
+            | (1u << 15)                               // A MN-major
+            | (1u << 16)                               // B MN-major
+            | ((N_PAD >> 3) << 17)                     // N dimension, 3 LSBs omitted
+            | (4u << 24);                              // M=64, 4 LSBs omitted
+    }
 
     // -------------------------------------------------------------------------------------
     // tcgen05.alloc — first warp writes TMEM base address to a shmem slot.
@@ -475,6 +481,11 @@ namespace disco_kernels
         asm volatile("fence.mbarrier_init.release.cluster;\n" ::: "memory");
     }
 
+    __device__ __forceinline__ void tcgen05_fence_after_thread_sync()
+    {
+        asm volatile("tcgen05.fence::after_thread_sync;\n" ::: "memory");
+    }
+
     // -------------------------------------------------------------------------------------
     // tcgen05_zero — warpgroup-collective zero-init of the TMEM accumulator tile.
     //
@@ -526,7 +537,8 @@ namespace disco_kernels
     // Used for bisection testing only (TCGEN05_BISECT=22) to isolate whether
     // tcgen05.mma itself causes the illegal instruction, independent of commit.
     // -------------------------------------------------------------------------------------
-    __device__ __forceinline__ void tcgen05_mma_only(uint32_t tmem_d, uint64_t desc_a, uint64_t desc_b, uint32_t scale_c)
+    __device__ __forceinline__ void tcgen05_mma_only(uint32_t tmem_d, uint64_t desc_a, uint64_t desc_b, uint32_t idesc,
+                                                     uint32_t scale_c)
     {
         uint32_t pred = 0, laneid = 0;
         asm volatile("{\n"
@@ -546,7 +558,7 @@ namespace disco_kernels
                          "tcgen05.mma.cta_group::1.kind::f16 [%0], %1, %2, %3, {%5, %6, %7, %8}, p; \n\t"
                          "}\n"
                          :
-                         : "r"(tmem_d), "l"(desc_a), "l"(desc_b), "r"(0u), "r"(scale_c), "r"(mask[0]), "r"(mask[1]),
+                         : "r"(tmem_d), "l"(desc_a), "l"(desc_b), "r"(idesc), "r"(scale_c), "r"(mask[0]), "r"(mask[1]),
                            "r"(mask[2]), "r"(mask[3]));
         }
     }
@@ -560,12 +572,12 @@ namespace disco_kernels
     // both of which gate on elect_one_sync() = elect.sync with mask 0xFFFFFFFF.
     //
     // kind::f16 is correct for BOTH fp16 and bf16 inputs (no kind::bf16 in PTX).
-    // Operand 3 is idescE upper-32 (0 for dense A).  Masks are {0,0,0,0} for
-    // full M=64 participation.  The predicate p controls scaleC:
+    // Operand 3 is idescE upper-32, i.e. the UMMA instruction descriptor.  Masks
+    // are {0,0,0,0} for full M=64 participation.  The predicate p controls scaleC:
     //   p = false (scale_c == 0) → D  = A*B      (overwrite)
     //   p = true  (scale_c != 0) → D += A*B      (accumulate)
     // -------------------------------------------------------------------------------------
-    __device__ __forceinline__ void tcgen05_mma_issue(uint32_t tmem_d, uint64_t desc_a, uint64_t desc_b,
+    __device__ __forceinline__ void tcgen05_mma_issue(uint32_t tmem_d, uint64_t desc_a, uint64_t desc_b, uint32_t idesc,
                                                       uint32_t scale_c, uint32_t mbar_ptr)
     {
         // Verbatim CUTLASS elect_one_sync() pattern from cute/arch/cluster_sm90.hpp.
@@ -590,7 +602,7 @@ namespace disco_kernels
                          "}\n"
                          :
                          : "r"(tmem_d), "l"(desc_a), "l"(desc_b),
-                           "r"(0u),      // idescE upper-32 (dense A → 0)
+                           "r"(idesc),   // idescE upper-32: instruction descriptor
                            "r"(scale_c), // controls predicate p
                            "r"(mask[0]), "r"(mask[1]), "r"(mask[2]), "r"(mask[3]));
             // Verbatim CUTLASS umma_arrive() from cutlass/arch/barrier.h.
@@ -623,6 +635,7 @@ namespace disco_kernels
                          : "r"(mbar_ptr), "r"(0u)
                          : "memory");
         } while (!done);
+        tcgen05_fence_after_thread_sync();
     }
 
 #endif // __CUDA_ARCH_FEAT_SM100_ALL
