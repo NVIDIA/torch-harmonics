@@ -455,6 +455,41 @@ namespace disco_kernels
     }
 
     // -------------------------------------------------------------------------------------
+    // tcgen05_fence_mbarrier_init — required fence after mbarrier.init.
+    //
+    // Makes the barrier initialisation visible to the asynchronous completion-
+    // tracking hardware before any thread issues a commit or arrive.  Without it,
+    // tcgen05.commit may target a barrier the hardware does not yet recognise as
+    // initialised, causing an illegal-instruction trap.
+    //
+    // Must be called by ALL threads after mbarrier.init and before the first
+    // mbarrier arrive/commit in the same scope.  The caller must follow up with
+    // __syncthreads() (or an equivalent CTA-level barrier) to ensure the fence is
+    // observed before threads proceed to issue commits.
+    //
+    // See CUTLASS cutlass/arch/barrier.h fence_barrier_init() /
+    //          cutlass/pipeline/sm100_pipeline.hpp.
+    // -------------------------------------------------------------------------------------
+    __device__ __forceinline__ void tcgen05_fence_mbarrier_init()
+    {
+        asm volatile("fence.mbarrier_init.release.cluster;\n" ::: "memory");
+    }
+
+    // -------------------------------------------------------------------------------------
+    // tcgen05_fence_mma_done — fence after mbarrier.try_wait confirms MMA completion.
+    //
+    // After mbarrier.try_wait returns (mbarrier complete), a proxy fence is needed
+    // before reading the TMEM accumulator via tcgen05.ld.  This is the tcgen05
+    // analogue of wgmma.wait_group and mirrors CUTLASS's fence_view_async_tmem_load().
+    //
+    // See CUTLASS cutlass/arch/barrier.h fence_view_async_tmem_load().
+    // -------------------------------------------------------------------------------------
+    __device__ __forceinline__ void tcgen05_fence_mma_done()
+    {
+        asm volatile("tcgen05.wait::mma.sync.aligned;\n" ::: "memory");
+    }
+
+    // -------------------------------------------------------------------------------------
     // tcgen05_zero — warpgroup-collective zero-init of the TMEM accumulator tile.
     //
     // Shape 16x256b.x1 covers M=64, N=8  (512 fp32 total, 4 per thread).
@@ -497,6 +532,37 @@ namespace disco_kernels
                          : "r"(tmem_addr));
         }
         asm volatile("tcgen05.wait::ld.sync.aligned;\n" ::: "memory");
+    }
+
+    // -------------------------------------------------------------------------------------
+    // tcgen05_mma_only — elected-thread-per-warp MMA, NO commit.
+    //
+    // Used for bisection testing only (TCGEN05_BISECT=22) to isolate whether
+    // tcgen05.mma itself causes the illegal instruction, independent of commit.
+    // -------------------------------------------------------------------------------------
+    __device__ __forceinline__ void tcgen05_mma_only(uint32_t tmem_d, uint64_t desc_a, uint64_t desc_b, uint32_t scale_c)
+    {
+        uint32_t pred = 0, laneid = 0;
+        asm volatile("{\n"
+                     ".reg .b32 %%rx;\n"
+                     ".reg .pred %%px;\n"
+                     "     elect.sync %%rx|%%px, %2;\n"
+                     "@%%px mov.s32 %1, 1;\n"
+                     "     mov.s32 %0, %%rx;\n"
+                     "}"
+                     : "+r"(laneid), "+r"(pred)
+                     : "r"(0xFFFFFFFF));
+        if (pred) {
+            uint32_t mask[4] = {0, 0, 0, 0};
+            asm volatile("{\n\t"
+                         ".reg .pred p;\n\t"
+                         "setp.ne.b32 p, %4, 0;\n\t"
+                         "tcgen05.mma.cta_group::1.kind::f16 [%0], %1, %2, %3, {%5, %6, %7, %8}, p; \n\t"
+                         "}\n"
+                         :
+                         : "r"(tmem_d), "l"(desc_a), "l"(desc_b), "r"(0u), "r"(scale_c), "r"(mask[0]), "r"(mask[1]),
+                           "r"(mask[2]), "r"(mask[3]));
+        }
     }
 
     // -------------------------------------------------------------------------------------
