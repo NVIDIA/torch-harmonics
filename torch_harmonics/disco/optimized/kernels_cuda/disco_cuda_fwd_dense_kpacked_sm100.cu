@@ -148,6 +148,10 @@ namespace disco_kernels
         // ─── Init MMA mbarrier ─────────────────────────────────────────────────
         uint32_t mbar_ptr = __cvta_generic_to_shared(&smem_mma_mbar);
         if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;\n" ::"r"(mbar_ptr) : "memory"); }
+        // fence.mbarrier_init makes the barrier init visible to the async tracking
+        // hardware before any thread issues tcgen05.commit. __syncthreads alone is
+        // insufficient — see CUTLASS cutlass/arch/barrier.h fence_barrier_init().
+        asm volatile("fence.mbarrier_init.release.cluster;\n" ::: "memory");
         __syncthreads();
 
         // ─── nz_chunk loop (A/B staging identical to SM_90a) ───────────────────
@@ -212,6 +216,7 @@ namespace disco_kernels
             // Reinit mbarrier for the next chunk (if any).
             if (nz_chunk_off + NZ_CHUNK < cnt) {
                 if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;\n" ::"r"(mbar_ptr) : "memory"); }
+                asm volatile("fence.mbarrier_init.release.cluster;\n" ::: "memory");
                 __syncthreads(); // reinit visible before next commit
             }
         }
