@@ -519,12 +519,14 @@ namespace disco_kernels
         // Both mma and commit require ONE elected thread per warp (4 total for a 4-warp kernel).
         // elect.sync with mask 0xFFFFFFFF matches CUTLASS's elect_one_sync() — elects lane 0
         // of each active warp, so threads 0, 32, 64, 96 each get elected = 1.
+        // %%rx / %%px: CUDA PTX inline asm requires %% to produce a literal % PTX register
+        // prefix; a single % would be misinterpreted as an operand reference.
         uint32_t elected = 0;
         asm volatile("{\n\t"
-                     ".reg .b32 %rx;\n\t"
-                     ".reg .pred %px;\n\t"
-                     "elect.sync %rx|%px, 0xFFFFFFFF;\n\t"
-                     "@%px mov.s32 %0, 1;\n\t"
+                     ".reg .b32 %%rx;\n\t"
+                     ".reg .pred %%px;\n\t"
+                     "elect.sync %%rx|%%px, 0xFFFFFFFF;\n\t"
+                     "@%%px mov.s32 %0, 1;\n\t"
                      "}\n\t"
                      : "=r"(elected));
         if (elected) {
