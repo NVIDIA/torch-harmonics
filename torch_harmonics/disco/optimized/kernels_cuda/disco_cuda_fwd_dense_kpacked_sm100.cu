@@ -101,25 +101,28 @@ namespace disco_kernels
         const T *val_ho = pack_val + (int64_t)ho * NBR_PAD * N_PAD;
         const int cnt = (int)pack_count[ho];
 
-        // ─── Shared memory layout (same as SM_90a kernel) ──────────────────────
-        // [  A_tile: BC_TILE×NZ_CHUNK×8 T  |  B_tile: NZ_CHUNK×N_PAD T  ]
-        // A_tile: 8 BC rows × 16 nz_chunk × 8 WO cols = 1024 T elements
-        // B_tile: 16 nz_chunk × N_PAD K cols            =  128 or 256 T elements
-        // tcgen05.mma requires 128-byte aligned SMEM descriptors (unlike wgmma
-        // which only requires 16-byte alignment for no-swizzle mode on SM90).
-        extern __shared__ __align__(128) unsigned char shmem_raw[];
-        T *A_tile = reinterpret_cast<T *>(shmem_raw);
+        // ─── Shared memory layout ──────────────────────────────────────────────
+        // tcgen05.mma requires 128-byte aligned SMEM descriptors on SM100.
+        // We guarantee this by keeping NO static __shared__ variables (so the
+        // CUDA runtime places dynamic SMEM at SMEM offset 0, which is always
+        // 128-byte aligned) and starting A_tile at shmem_raw+128.
+        //
+        // Layout within shmem_raw:
+        //   [  0.. 3]  uint32_t smem_tmem_base
+        //   [  8..15]  uint64_t smem_mma_mbar
+        //   [ 16..127] padding (112 B)
+        //   [128..128 + BC_TILE*NZ_CHUNK*8*sizeof(T) - 1]  A_tile  (128-B aligned)
+        //   [128 + A_bytes .. + NZ_CHUNK*N_PAD*sizeof(T)]  B_tile  (128-B aligned)
+        extern __shared__ unsigned char shmem_raw[];
+        uint32_t *smem_tmem_base_ptr = reinterpret_cast<uint32_t *>(shmem_raw + 0);
+        uint64_t *smem_mma_mbar_ptr = reinterpret_cast<uint64_t *>(shmem_raw + 8);
+        T *A_tile = reinterpret_cast<T *>(shmem_raw + 128);
         T *B_tile = A_tile + (BC_TILE * 8) * NZ_CHUNK; // immediately after A
-
-        // Static shmem for TMEM base address and MMA mbarrier.
-        // Declared static so they don't eat into dynamic shmem budget.
-        __shared__ uint32_t smem_tmem_base;
-        __shared__ __align__(8) uint64_t smem_mma_mbar;
 
         // ─── Allocate TMEM ─────────────────────────────────────────────────────
         // tcgen05_alloc issues the PTX from the first warp and __syncthreads()
         // internally before returning the base address to all threads.
-        uint32_t tmem_acc = tcgen05_alloc(&smem_tmem_base);
+        uint32_t tmem_acc = tcgen05_alloc(smem_tmem_base_ptr);
 
         // ─── Bisection knob ──────────────────────────────────────────────────────
         // Set TCGEN05_BISECT to skip progressively more of the kernel to isolate
@@ -151,7 +154,7 @@ namespace disco_kernels
 #endif
 
         // ─── Init MMA mbarrier ─────────────────────────────────────────────────
-        uint32_t mbar_ptr = __cvta_generic_to_shared(&smem_mma_mbar);
+        uint32_t mbar_ptr = __cvta_generic_to_shared(smem_mma_mbar_ptr);
         if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;\n" ::"r"(mbar_ptr) : "memory"); }
         tcgen05_fence_mbarrier_init(); // makes init visible to the async tracking HW
         __syncthreads();
@@ -330,11 +333,15 @@ namespace disco_kernels
         int64_t out_dims[] = {B, C, K, Ho, Wo};
         auto out = torch::zeros(out_dims, torch::TensorOptions().device(inp.device()).dtype(inp_dtype));
 
-        // Dynamic shmem: A_tile (BC_TILE*NZ_CHUNK*8 elements) + B_tile (NZ_CHUNK*K_PAD elements).
-        // Static shmem (smem_tmem_base + smem_mma_mbar) is not counted here.
-        const size_t shmem_bytes
-            = (size_t)BC_TILE * NZ_CHUNK * 8 * sizeof(__half) + (size_t)NZ_CHUNK * K_PAD * sizeof(__half);
-        // = 8*16*8*2 + 16*K_PAD*2 = 2048 + 32*K_PAD bytes
+        // Dynamic shmem layout: 128-byte header (tmem_base + mma_mbar + pad)
+        //                     + A_tile (BC_TILE*NZ_CHUNK*8 elements)
+        //                     + B_tile (NZ_CHUNK*K_PAD elements).
+        // No static __shared__ variables — dynamic SMEM starts at SMEM offset 0,
+        // guaranteeing 128-byte alignment for A_tile at shmem_raw+128.
+        const size_t shmem_bytes = 128                        // header (tmem_base + mbar + pad)
+            + (size_t)BC_TILE * NZ_CHUNK * 8 * sizeof(__half) // A_tile
+            + (size_t)NZ_CHUNK * K_PAD * sizeof(__half);      // B_tile
+        // = 128 + 2048 + 32*K_PAD bytes
 
         auto stream = at::cuda::getCurrentCUDAStream().stream();
         auto pack_val_cast = (pack_val.scalar_type() == inp_dtype) ? pack_val : pack_val.to(inp_dtype);
