@@ -47,11 +47,12 @@
 //   tcgen05.alloc   — first warp allocates 32 TMEM columns; result written to shmem.
 //   tcgen05.st      — zero-initialise the tile (scaleC=1 is used throughout,
 //                     so we need explicit zero-init for cnt==0 correctness).
-//   tcgen05.mma     — CTA-collective; all 128 threads execute it; scaleC=1 (accumulate into zeros).
-//   tcgen05.commit  — also issued by threadIdx.x == 0; signals mbarrier.
+//   tcgen05.mma     — ONE elected thread per warp (4 total); scaleC=1 (accumulate into zeros).
+//   tcgen05.commit  — threadIdx.x == 0 only; signals mbarrier.
 //   mbarrier.try_wait — all 128 threads spin-poll; safe to read TMEM when done.
 //   tcgen05.ld      — warpgroup-collective TMEM read back to registers.
 //   tcgen05.dealloc — first warp releases allocation after writeback.
+//   tcgen05.relinquish_alloc_permit — all 128 threads clear the CTA TMEM lock.
 //
 // Restrictions (same as SM_90a path):
 //   K_PAD ∈ {8, 16}, BC_TILE = WO_TILE = 8, bf16 or fp16 input.
@@ -201,6 +202,7 @@ namespace disco_kernels
 
         // ─── Release TMEM ──────────────────────────────────────────────────────
         tcgen05_dealloc(tmem_acc);
+        tcgen05_relinquish_alloc_permit(); // all threads; clears the CTA-level TMEM allocation lock
 
         // ─── Writeback (identical layout to SM_90a accumulator) ────────────────
         // Thread mapping for M=64, N=N_PAD, 128 threads:
