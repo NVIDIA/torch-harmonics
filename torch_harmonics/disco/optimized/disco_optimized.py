@@ -32,7 +32,11 @@
 import functools
 
 import torch
-from disco_helpers import optimized_kernels_is_available
+from disco_helpers import (
+    kpacked_sm90_kernels_is_available,
+    kpacked_sm100_kernels_is_available,
+    optimized_kernels_is_available,
+)
 
 from .. import disco_kernels
 from .._disco_utils import _compute_dtype
@@ -46,7 +50,11 @@ def _kpacked_supported_on_device(device_index: int) -> bool:
     SM_100a (Blackwell) — tcgen05 path in disco_cuda_fwd_dense_kpacked_sm100.cu.
     """
     major, _ = torch.cuda.get_device_capability(device_index)
-    return major in (9, 10)
+    if major == 9:
+        return kpacked_sm90_kernels_is_available()
+    if major == 10:
+        return kpacked_sm100_kernels_is_available()
+    return False
 
 
 def _maybe_kpack_psi(psi_packed_idx, psi_packed_vals, psi_packed_count, n_align: int = 8):

@@ -152,11 +152,23 @@ pack_psi_dense(const int64_t K, const int64_t Ho, const int64_t Wi, const int64_
 #define BUILD_CUDA 0
 #endif
 
+#ifndef BUILD_KPACKED_SM90
+#define BUILD_KPACKED_SM90 0
+#endif
+
+#ifndef BUILD_KPACKED_SM100
+#define BUILD_KPACKED_SM100 0
+#endif
+
 bool cpp_kernels_is_available() { return static_cast<bool>(BUILD_CPP); }
 
 bool cuda_kernels_is_available() { return static_cast<bool>(BUILD_CUDA); }
 
 bool optimized_kernels_is_available() { return cuda_kernels_is_available() || cpp_kernels_is_available(); }
+
+bool kpacked_sm90_kernels_is_available() { return static_cast<bool>(BUILD_KPACKED_SM90); }
+
+bool kpacked_sm100_kernels_is_available() { return static_cast<bool>(BUILD_KPACKED_SM100); }
 
 PYBIND11_MODULE(disco_helpers, m)
 {
@@ -171,4 +183,8 @@ PYBIND11_MODULE(disco_helpers, m)
     m.def("cuda_kernels_is_available", &cuda_kernels_is_available, "Check if CUDA kernels are available.");
     m.def("optimized_kernels_is_available", &optimized_kernels_is_available,
           "Check if optimized kernels (CUDA or C++) are available.");
+    m.def("kpacked_sm90_kernels_is_available", &kpacked_sm90_kernels_is_available,
+          "Check if Hopper SM_90a kpacked kernels were requested at build time.");
+    m.def("kpacked_sm100_kernels_is_available", &kpacked_sm100_kernels_is_available,
+          "Check if Blackwell SM_100a kpacked kernels were requested at build time.");
 }

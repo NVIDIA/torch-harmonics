@@ -610,6 +610,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             and self.psi_kpacked_K_pad in (8, 16)
             and kpacked_dtype in (torch.float16, torch.bfloat16)
             and x.is_cuda
+            and self.nlon_out % 8 == 0
+            and self.nlon_in % self.nlon_out == 0
             and _kpacked_supported_on_device(x.get_device())
         )
 

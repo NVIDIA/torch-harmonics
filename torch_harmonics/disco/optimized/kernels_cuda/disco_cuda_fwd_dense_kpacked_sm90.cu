@@ -352,10 +352,8 @@ namespace disco_kernels
         CHECK_CUDA_INPUT_TENSOR(pack_val);
         CHECK_CUDA_INPUT_TENSOR(pack_count);
 
-        int device_id = 0;
-        cudaGetDevice(&device_id);
         cudaDeviceProp props;
-        cudaGetDeviceProperties(&props, device_id);
+        cudaGetDeviceProperties(&props, inp.get_device());
         TORCH_CHECK(props.major == 9 || props.major == 10,
                     "disco_kernels::forward_kpacked requires SM_90a (Hopper) or SM_100a (Blackwell); got SM_",
                     props.major, ".", props.minor);
