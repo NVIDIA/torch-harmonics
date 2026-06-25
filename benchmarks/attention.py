@@ -28,7 +28,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import torch
-from bench import BenchmarkEntry, register
+from bench import BenchmarkEntry, maybe_autocast, register
 
 from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
 
@@ -41,7 +41,6 @@ def _attn_setup(batch, channels, num_heads, nlat, nlon):
     def setup(device, dtype):
         # keep model in fp32; use autocast for fp16/bf16 — matches real usage
         # (casting the full model to fp16 produces NaN from softmax overflow)
-        fp16_types = {torch.float16, torch.bfloat16}
         model_dtype = torch.float32
         attn = AttentionS2(
             in_channels=channels,
@@ -50,16 +49,14 @@ def _attn_setup(batch, channels, num_heads, nlat, nlon):
             out_shape=(nlat, nlon),
         ).to(device=device, dtype=model_dtype)
         x = torch.randn(batch, channels, nlat, nlon, dtype=torch.float32, device=device, requires_grad=True)
-        return {"attn": attn, "x": x, "dtype": dtype, "use_autocast": dtype in fp16_types, "device": device}
+        return {"attn": attn, "x": x, "dtype": dtype, "device": device}
 
     return setup
 
 
 def _attn_forward(state):
-    if state["use_autocast"]:
-        with torch.autocast(state["device"].type, dtype=state["dtype"]):
-            return state["attn"](state["x"])
-    return state["attn"](state["x"])
+    with maybe_autocast(state["device"].type, state["dtype"]):
+        return state["attn"](state["x"])
 
 
 def _attn_backward(state, out):
@@ -73,7 +70,6 @@ def _attn_backward(state, out):
 
 def _nattn_setup(batch, channels, num_heads, nlat_in, nlon_in, nlat_out, nlon_out, theta_cutoff, optimized):
     def setup(device, dtype):
-        fp16_types = {torch.float16, torch.bfloat16}
         attn = NeighborhoodAttentionS2(
             in_channels=channels,
             num_heads=num_heads,
@@ -100,7 +96,6 @@ def _nattn_setup(batch, channels, num_heads, nlat_in, nlon_in, nlat_out, nlon_ou
             "nlon_out": nlon_out,
             "theta_cutoff": theta_cutoff,
             "dtype": dtype,
-            "use_autocast": dtype in fp16_types,
             "device": device,
         }
 
@@ -109,10 +104,8 @@ def _nattn_setup(batch, channels, num_heads, nlat_in, nlon_in, nlat_out, nlon_ou
 
 def _nattn_forward(state):
     q, kv = state["x_q"], state["x_kv"]
-    if state["use_autocast"]:
-        with torch.autocast(state["device"].type, dtype=state["dtype"]):
-            return state["attn"](q, kv, kv)
-    return state["attn"](q, kv, kv)
+    with maybe_autocast(state["device"].type, state["dtype"]):
+        return state["attn"](q, kv, kv)
 
 
 def _nattn_backward(state, out):
