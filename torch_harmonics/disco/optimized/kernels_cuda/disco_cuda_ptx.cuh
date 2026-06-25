@@ -453,13 +453,14 @@ namespace disco_kernels
     {
         static_assert(N_ACC == 4 || N_ACC == 8, "tcgen05_zero: N_ACC must be 4 or 8");
         if constexpr (N_ACC == 4) {
-            asm volatile("tcgen05.st.sync.aligned.16x256b.x1.b32 [%0], {%1,%2,%3,%4};\n" ::"r"(tmem_addr), "r"(0u),
-                         "r"(0u), "r"(0u), "r"(0u));
+            asm volatile("tcgen05.st.cta_group::1.sync.aligned.16x256b.x1.b32 [%0], {%1,%2,%3,%4};\n" ::"r"(tmem_addr),
+                         "r"(0u), "r"(0u), "r"(0u), "r"(0u));
         } else {
-            asm volatile("tcgen05.st.sync.aligned.16x256b.x2.b32 [%0], {%1,%2,%3,%4,%5,%6,%7,%8};\n" ::"r"(tmem_addr),
+            asm volatile("tcgen05.st.cta_group::1.sync.aligned.16x256b.x2.b32 [%0], {%1,%2,%3,%4,%5,%6,%7,%8};\n" ::"r"(
+                             tmem_addr),
                          "r"(0u), "r"(0u), "r"(0u), "r"(0u), "r"(0u), "r"(0u), "r"(0u), "r"(0u));
         }
-        asm volatile("tcgen05.wait::st.sync.aligned;\n" ::: "memory");
+        asm volatile("tcgen05.wait::st.cta_group::1.sync.aligned;\n" ::: "memory");
     }
 
     // -------------------------------------------------------------------------------------
@@ -475,15 +476,15 @@ namespace disco_kernels
         static_assert(N_ACC == 4 || N_ACC == 8, "tcgen05_ld: N_ACC must be 4 or 8");
         uint32_t(&r)[N_ACC] = reinterpret_cast<uint32_t(&)[N_ACC]>(regs);
         if constexpr (N_ACC == 4) {
-            asm volatile("tcgen05.ld.sync.aligned.16x256b.x1.b32 {%0,%1,%2,%3}, [%4];\n"
+            asm volatile("tcgen05.ld.cta_group::1.sync.aligned.16x256b.x1.b32 {%0,%1,%2,%3}, [%4];\n"
                          : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
                          : "r"(tmem_addr));
         } else {
-            asm volatile("tcgen05.ld.sync.aligned.16x256b.x2.b32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];\n"
+            asm volatile("tcgen05.ld.cta_group::1.sync.aligned.16x256b.x2.b32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];\n"
                          : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]), "=r"(r[4]), "=r"(r[5]), "=r"(r[6]), "=r"(r[7])
                          : "r"(tmem_addr));
         }
-        asm volatile("tcgen05.wait::ld.sync.aligned;\n" ::: "memory");
+        asm volatile("tcgen05.wait::ld.cta_group::1.sync.aligned;\n" ::: "memory");
     }
 
     // -------------------------------------------------------------------------------------
