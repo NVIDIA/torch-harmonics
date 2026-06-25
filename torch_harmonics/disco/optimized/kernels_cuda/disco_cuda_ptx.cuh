@@ -393,8 +393,8 @@ namespace disco_kernels
 //  tcgen05.st/ld  use the 16x256b shape (not 32x32b).  One warpgroup-collective
 //                 call covers the full M=64, N=8 (x1) or N=16 (x2) tile.
 //
-//  tcgen05.mma    is issued by exactly ONE thread (threadIdx.x == 0 in our
-//                 flat, single-warpgroup kernel).  It uses kind::f16 for BOTH
+//  tcgen05.mma    is a CTA-collective — ALL threads must execute it.  It uses
+//                 kind::f16 for BOTH
 //                 fp16 and bf16 inputs (no kind::bf16 exists).  The fourth
 //                 operand is the E-descriptor upper 32 bits (0 for dense A),
 //                 followed by four mask registers (all 0 for full M), and a
@@ -487,16 +487,16 @@ namespace disco_kernels
     }
 
     // -------------------------------------------------------------------------------------
-    // tcgen05_mma_issue — issue MMA + mbarrier commit from thread 0.
+    // tcgen05_mma_issue — CTA-collective MMA + single-thread mbarrier commit.
     //
-    // tcgen05.mma is issued by exactly ONE thread.  In our flat 128-thread kernel
-    // (one warpgroup), threadIdx.x == 0 is the elected thread.
+    // tcgen05.mma is a CTA-collective instruction: ALL 128 threads must execute it.
+    // tcgen05.commit must be issued by exactly ONE thread (threadIdx.x == 0 here).
     //
     // kind::f16 is correct for BOTH fp16 and bf16 inputs (no kind::bf16 in PTX).
     // Operand 3 is idescE upper-32 (0 for dense A).  Masks are {0,0,0,0} for
     // full M=64 participation.  The predicate p controls scaleC:
-    //   p = false (scale_c == 0) → D  = A*B      (overwrite; use for first chunk)
-    //   p = true  (scale_c != 0) → D += A*B      (accumulate; use for subsequent chunks)
+    //   p = false (scale_c == 0) → D  = A*B      (overwrite)
+    //   p = true  (scale_c != 0) → D += A*B      (accumulate)
     //
     // After the MMA, tcgen05.commit signals the mbarrier so tcgen05_mma_wait()
     // can unblock all threads.
@@ -504,17 +504,19 @@ namespace disco_kernels
     __device__ __forceinline__ void tcgen05_mma_issue(uint32_t tmem_d, uint64_t desc_a, uint64_t desc_b,
                                                       uint32_t scale_c, uint32_t mbar_ptr)
     {
+        // tcgen05.mma is CTA-collective: ALL threads must execute it.
+        // tcgen05.commit is single-thread: only one thread signals the mbarrier.
+        uint32_t mask0 = 0, mask1 = 0, mask2 = 0, mask3 = 0;
+        asm volatile("{\n\t"
+                     ".reg .pred p;\n\t"
+                     "setp.ne.b32 p, %4, 0;\n\t"
+                     "tcgen05.mma.cta_group::1.kind::f16 [%0], %1, %2, %3, {%5,%6,%7,%8}, p;\n\t"
+                     "}\n" ::"r"(tmem_d),
+                     "l"(desc_a), "l"(desc_b),
+                     "r"(0u),      // idescE upper-32 (dense A → 0)
+                     "r"(scale_c), // controls predicate p
+                     "r"(mask0), "r"(mask1), "r"(mask2), "r"(mask3));
         if (threadIdx.x == 0) {
-            uint32_t mask0 = 0, mask1 = 0, mask2 = 0, mask3 = 0;
-            asm volatile("{\n\t"
-                         ".reg .pred p;\n\t"
-                         "setp.ne.b32 p, %4, 0;\n\t"
-                         "tcgen05.mma.cta_group::1.kind::f16 [%0], %1, %2, %3, {%5,%6,%7,%8}, p;\n\t"
-                         "}\n" ::"r"(tmem_d),
-                         "l"(desc_a), "l"(desc_b),
-                         "r"(0u),      // idescE upper-32 (dense A → 0)
-                         "r"(scale_c), // controls predicate p
-                         "r"(mask0), "r"(mask1), "r"(mask2), "r"(mask3));
             asm volatile("tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%0];\n" ::"r"(mbar_ptr)
                          : "memory");
         }
