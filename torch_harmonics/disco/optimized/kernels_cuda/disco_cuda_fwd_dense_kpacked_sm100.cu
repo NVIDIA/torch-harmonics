@@ -36,26 +36,25 @@
 // disco_cuda_fwd_dense_kpacked_sm90.cu. The SMEM layout, staging loop,
 // descriptor construction, and writeback are unchanged. The only differences:
 //
-//   SM_90a (Hopper)        SM_100a (Blackwell)
-//   ─────────────────────  ──────────────────────────────────────────
-//   wgmma.mma_async        tcgen05.mma
-//   accumulator: registers  accumulator: TMEM (Tensor Memory)
-//   wgmma.fence/commit/wait tcgen05.fence/commit/wait
-//   (no alloc/dealloc)     tcgen05.alloc / tcgen05.dealloc
+//   SM_90a (Hopper)         SM_100a (Blackwell)
+//   ──────────────────────  ──────────────────────────────────────────────────
+//   wgmma.mma_async         tcgen05.mma (issued by ONE thread per warpgroup)
+//   accumulator: registers  accumulator: TMEM (Tensor Memory, 32 cols minimum)
+//   wgmma fence/commit/wait tcgen05.commit → mbarrier → mbarrier.try_wait
+//   (no alloc/dealloc)      tcgen05.alloc / tcgen05.dealloc
 //
-// TMEM lifecycle:
-//   tcgen05.alloc   — allocate N_ACC columns per thread before the chunk loop.
-//   tcgen05.st      — zero-initialise (alloc does NOT clear).
-//   tcgen05.mma     — accumulate; scaleD=1 for all iterations.
-//   tcgen05.ld      — read result back into registers for writeback.
-//   tcgen05.dealloc — release after writeback.
+// TMEM lifecycle (see disco_cuda_ptx.cuh for wrapper implementations):
+//   tcgen05.alloc   — first warp allocates 32 TMEM columns; result written to shmem.
+//   tcgen05.st      — zero-initialise the tile (scaleC=1 is used throughout,
+//                     so we need explicit zero-init for cnt==0 correctness).
+//   tcgen05.mma     — issued by threadIdx.x == 0; scaleC=1 (accumulate into zeros).
+//   tcgen05.commit  — also issued by threadIdx.x == 0; signals mbarrier.
+//   mbarrier.try_wait — all 128 threads spin-poll; safe to read TMEM when done.
+//   tcgen05.ld      — warpgroup-collective TMEM read back to registers.
+//   tcgen05.dealloc — first warp releases allocation after writeback.
 //
 // Restrictions (same as SM_90a path):
 //   K_PAD ∈ {8, 16}, BC_TILE = WO_TILE = 8, bf16 or fp16 input.
-//
-// VERIFY: PTX encodings in disco_cuda_ptx.cuh (tcgen05.alloc immN unit,
-//   tcgen05.ld/st column-step stride, tcgen05.mma scale operand format)
-//   against PTX ISA 8.5 (CUDA 12.8) before shipping.
 //
 // Must be compiled with -arch=sm_100a (TORCH_CUDA_ARCH_LIST="10.0a+PTX").
 // =====================================================================================
@@ -85,7 +84,7 @@ namespace disco_kernels
         static_assert(N_PAD == 8 || N_PAD == 16, "tcgen05 path: only K_PAD ∈ {8, 16} supported");
         static_assert(BC_TILE == 8 && WO_TILE == 8, "tcgen05 path: tile must be 8×8 for M=64");
 
-        constexpr int N_ACC = N_PAD / 2; // fp32 acc cells per thread (4 or 8)
+        constexpr int N_ACC = N_PAD / 2; // fp32 accumulator cells per thread (4 or 8)
 
         const int tid = threadIdx.x;
         const int warp_id = tid / 32;
@@ -101,21 +100,37 @@ namespace disco_kernels
         const T *val_ho = pack_val + (int64_t)ho * NBR_PAD * N_PAD;
         const int cnt = (int)pack_count[ho];
 
-        // Shared memory: same layout as SM_90a kernel.
+        // ─── Shared memory layout (same as SM_90a kernel) ──────────────────────
+        // [  A_tile: BC_TILE×NZ_CHUNK×8 T  |  B_tile: NZ_CHUNK×N_PAD T  ]
+        // A_tile: 8 BC rows × 16 nz_chunk × 8 WO cols = 1024 T elements
+        // B_tile: 16 nz_chunk × N_PAD K cols            =  128 or 256 T elements
         extern __shared__ __align__(16) unsigned char shmem_raw[];
         T *A_tile = reinterpret_cast<T *>(shmem_raw);
-        T *B_tile = A_tile + (BC_TILE * 8) * NZ_CHUNK; // 1024 T elements
+        T *B_tile = A_tile + (BC_TILE * 8) * NZ_CHUNK; // immediately after A
 
-        // Allocate TMEM accumulator and zero-initialise.
-        // tcgen05.alloc gives back a TMEM base address for this warpgroup.
-        uint32_t tmem_acc = tcgen05_alloc<N_ACC>();
+        // Static shmem for TMEM base address and MMA mbarrier.
+        // Declared static so they don't eat into dynamic shmem budget.
+        __shared__ uint32_t smem_tmem_base;
+        __shared__ __align__(8) uint64_t smem_mma_mbar;
+
+        // ─── Allocate TMEM ─────────────────────────────────────────────────────
+        // tcgen05_alloc issues the PTX from the first warp and __syncthreads()
+        // internally before returning the base address to all threads.
+        uint32_t tmem_acc = tcgen05_alloc(&smem_tmem_base);
+
+        // ─── Zero-init TMEM accumulator ────────────────────────────────────────
+        // All threads participate; covers the full M=64, N=N_PAD tile.
         tcgen05_zero<N_ACC>(tmem_acc);
 
-        // ----------------------- nz_chunk loop -----------------------
-        // A/B staging is byte-for-byte identical to the SM_90a kernel.
+        // ─── Init MMA mbarrier ─────────────────────────────────────────────────
+        uint32_t mbar_ptr = __cvta_generic_to_shared(&smem_mma_mbar);
+        if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;\n" ::"r"(mbar_ptr) : "memory"); }
+        __syncthreads();
+
+        // ─── nz_chunk loop (A/B staging identical to SM_90a) ───────────────────
         for (int nz_chunk_off = 0; nz_chunk_off < cnt; nz_chunk_off += NZ_CHUNK) {
 
-            // -- Stage A_tile --
+            // -- Stage A_tile: one row per BC, one col per nz in this chunk --
             const int bc_local = tid / NZ_CHUNK;
             const int nz_local = tid - bc_local * NZ_CHUNK;
             const int nz_global = nz_chunk_off + nz_local;
@@ -137,7 +152,7 @@ namespace disco_kernels
                 *reinterpret_cast<int4 *>(dst) = make_int4(0, 0, 0, 0);
             }
 
-            // -- Stage B_tile --
+            // -- Stage B_tile: nz × K_PAD values --
             constexpr int CHUNKS_PER_ROW = N_PAD / 8;
             constexpr int B_TOTAL_CHUNKS = NZ_CHUNK * CHUNKS_PER_ROW;
             if (tid < B_TOTAL_CHUNKS) {
@@ -153,10 +168,9 @@ namespace disco_kernels
                 }
             }
 
-            __syncthreads();
+            __syncthreads(); // A/B tiles ready
 
-            // -- tcgen05.mma: same descriptor layout as SM_90a --
-            tcgen05_fence_before();
+            // -- Build SMEM descriptors (identical descriptor format to SM_90a) --
             constexpr uint32_t A_LEADING_FIELD = 8;
             constexpr uint32_t A_STRIDE_FIELD = 16;
             constexpr uint32_t B_LEADING_FIELD = 8;
@@ -164,30 +178,33 @@ namespace disco_kernels
             uint64_t desc_a = make_wgmma_desc(A_tile, A_LEADING_FIELD * 16, A_STRIDE_FIELD * 16);
             uint64_t desc_b = make_wgmma_desc(B_tile, B_LEADING_FIELD * 16, B_STRIDE_FIELD * 16);
 
-            if constexpr (std::is_same_v<T, __nv_bfloat16>) {
-                if constexpr (N_PAD == 8)
-                    tcgen05_mma_m64n8k16_acc_bf16(tmem_acc, desc_a, desc_b);
-                else
-                    tcgen05_mma_m64n16k16_acc_bf16(tmem_acc, desc_a, desc_b);
-            } else {
-                if constexpr (N_PAD == 8)
-                    tcgen05_mma_m64n8k16_acc_fp16(tmem_acc, desc_a, desc_b);
-                else
-                    tcgen05_mma_m64n16k16_acc_fp16(tmem_acc, desc_a, desc_b);
-            }
-            tcgen05_commit_group();
-            tcgen05_wait_group<0>();
-            tcgen05_fence_after();
+            // -- Issue tcgen05.mma (thread 0) and commit to mbarrier --
+            // scaleC=1: accumulate into the TMEM tile (which was zero-initialised).
+            tcgen05_mma_issue(tmem_acc, desc_a, desc_b, 1u, mbar_ptr);
 
-            __syncthreads();
+            // -- All threads wait for MMA to complete --
+            tcgen05_mma_wait(mbar_ptr);
+            __syncthreads(); // ensure all threads exited wait before mbarrier reinit
+
+            // Reinit mbarrier for the next chunk (if any).
+            if (nz_chunk_off + NZ_CHUNK < cnt) {
+                if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;\n" ::"r"(mbar_ptr) : "memory"); }
+                __syncthreads(); // reinit visible before next commit
+            }
         }
 
-        // ----------------------- read accumulator from TMEM -----------------------
+        // ─── Read accumulator from TMEM ────────────────────────────────────────
+        // 16x256b.x1 → 4 fp32 per thread (N_PAD=8)
+        // 16x256b.x2 → 8 fp32 per thread (N_PAD=16)
         float acc[N_ACC];
         tcgen05_ld<N_ACC>(acc, tmem_acc);
-        tcgen05_dealloc<N_ACC>(tmem_acc);
 
-        // ----------------------- writeback (identical to SM_90a) -----------------------
+        // ─── Release TMEM ──────────────────────────────────────────────────────
+        tcgen05_dealloc(tmem_acc);
+
+        // ─── Writeback (identical layout to SM_90a accumulator) ────────────────
+        // Thread mapping for M=64, N=N_PAD, 128 threads:
+        //   Each thread covers two M-rows (m01, m23 = m01+8) and two N-cols (n_a, n_b).
         const int m01 = warp_id * 16 + (lane >> 2);
         const int m23 = m01 + 8;
         const int n_a = (lane & 3) * 2;
@@ -219,8 +236,7 @@ namespace disco_kernels
             write_cell(bc23, wo23, n1, acc[ng * 4 + 3]);
         }
 #else
-        // Non-sm_100a target: body intentionally empty. Host wrapper ensures
-        // this kernel is never launched on non-Blackwell devices.
+        // Non-sm_100a target: body intentionally empty.
         (void)Hi;
         (void)Wi;
         (void)K;
@@ -237,7 +253,7 @@ namespace disco_kernels
 #endif
     }
 
-    // Host launcher — called from the dispatcher in disco_cuda_fwd_dense_kpacked_sm90.cu.
+    // Host launcher — called from the dispatcher in disco_interface.cpp.
     torch::Tensor disco_cuda_fwd_kpacked_sm100(torch::Tensor inp, torch::Tensor pack_idx, torch::Tensor pack_val,
                                                torch::Tensor pack_count, int64_t K, int64_t Ho, int64_t Wo)
     {
@@ -264,7 +280,12 @@ namespace disco_kernels
         int64_t out_dims[] = {B, C, K, Ho, Wo};
         auto out = torch::zeros(out_dims, torch::TensorOptions().device(inp.device()).dtype(inp_dtype));
 
-        const size_t shmem_bytes = 2048 + 32 * (size_t)K_PAD;
+        // Dynamic shmem: A_tile (BC_TILE*NZ_CHUNK*8 elements) + B_tile (NZ_CHUNK*K_PAD elements).
+        // Static shmem (smem_tmem_base + smem_mma_mbar) is not counted here.
+        const size_t shmem_bytes
+            = (size_t)BC_TILE * NZ_CHUNK * 8 * sizeof(__half) + (size_t)NZ_CHUNK * K_PAD * sizeof(__half);
+        // = 8*16*8*2 + 16*K_PAD*2 = 2048 + 32*K_PAD bytes
+
         auto stream = at::cuda::getCurrentCUDAStream().stream();
         auto pack_val_cast = (pack_val.scalar_type() == inp_dtype) ? pack_val : pack_val.to(inp_dtype);
 
