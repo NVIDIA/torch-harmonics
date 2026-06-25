@@ -105,7 +105,9 @@ namespace disco_kernels
         // [  A_tile: BC_TILE×NZ_CHUNK×8 T  |  B_tile: NZ_CHUNK×N_PAD T  ]
         // A_tile: 8 BC rows × 16 nz_chunk × 8 WO cols = 1024 T elements
         // B_tile: 16 nz_chunk × N_PAD K cols            =  128 or 256 T elements
-        extern __shared__ __align__(16) unsigned char shmem_raw[];
+        // tcgen05.mma requires 128-byte aligned SMEM descriptors (unlike wgmma
+        // which only requires 16-byte alignment for no-swizzle mode on SM90).
+        extern __shared__ __align__(128) unsigned char shmem_raw[];
         T *A_tile = reinterpret_cast<T *>(shmem_raw);
         T *B_tile = A_tile + (BC_TILE * 8) * NZ_CHUNK; // immediately after A
 
