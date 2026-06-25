@@ -231,7 +231,8 @@ namespace disco_kernels
 #endif
         }
 
-#if TCGEN05_BISECT == 2
+#if TCGEN05_BISECT != 3
+        // All bisect levels except the full kernel exit before the ld + writeback.
         tcgen05_dealloc(tmem_acc);
         tcgen05_relinquish_alloc_permit();
         return;
@@ -240,7 +241,8 @@ namespace disco_kernels
         // ─── Read accumulator from TMEM ────────────────────────────────────────
         // 16x256b.x1 → 4 fp32 per thread (N_PAD=8)
         // 16x256b.x2 → 8 fp32 per thread (N_PAD=16)
-        tcgen05_fence_mma_done(); // proxy fence: MMA result in TMEM is now safe to read
+        // mbarrier.try_wait already guarantees MMA completion; no additional fence
+        // needed here. tcgen05_ld itself issues tcgen05.wait::ld internally.
         float acc[N_ACC];
         tcgen05_ld<N_ACC>(acc, tmem_acc);
 
