@@ -533,8 +533,12 @@ namespace disco_kernels
     {
         uint32_t done = 0;
         do {
-            asm volatile("mbarrier.try_wait.parity.shared::cta.b64 %0, [%1], %2;\n"
-                         : "=b"(done)
+            asm volatile("{\n\t"
+                         ".reg .pred p;\n\t"
+                         "mbarrier.try_wait.parity.shared::cta.b64 p, [%1], %2;\n\t"
+                         "selp.u32 %0, 1, 0, p;\n\t"
+                         "}\n"
+                         : "=r"(done)
                          : "r"(mbar_ptr), "r"(0u)
                          : "memory");
         } while (!done);
