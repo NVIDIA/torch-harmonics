@@ -124,34 +124,9 @@ namespace disco_kernels
         // internally before returning the base address to all threads.
         uint32_t tmem_acc = tcgen05_alloc(smem_tmem_base_ptr);
 
-        // ─── Bisection knob ──────────────────────────────────────────────────────
-        // Set TCGEN05_BISECT to skip progressively more of the kernel to isolate
-        // the instruction that causes cudaErrorIllegalInstruction:
-        //   0  = alloc + dealloc + relinquish only (skip st, mma, ld)
-        //   1  = + zero-init (tcgen05.st + wait::st)
-        //   21 = + mbarrier.init + full loop staging but skip tcgen05.mma/commit/wait
-        //   22 = + tcgen05.mma only (no commit, no wait) — one iteration, then break
-        //   23 = + tcgen05.mma + tcgen05.commit (no wait) — one iteration, then break
-        //   2  = + full MMA loop (tcgen05.mma + commit + try_wait)
-        //   3  = full kernel (default)
-#ifndef TCGEN05_BISECT
-#define TCGEN05_BISECT 3
-#endif
-#if TCGEN05_BISECT == 0
-        tcgen05_dealloc(tmem_acc);
-        tcgen05_relinquish_alloc_permit();
-        return;
-#endif
-
         // ─── Zero-init TMEM accumulator ────────────────────────────────────────
         // All threads participate; covers the full M=64, N=N_PAD tile.
         tcgen05_zero<N_ACC>(tmem_acc);
-
-#if TCGEN05_BISECT == 1
-        tcgen05_dealloc(tmem_acc);
-        tcgen05_relinquish_alloc_permit();
-        return;
-#endif
 
         // ─── Init MMA mbarrier ─────────────────────────────────────────────────
         uint32_t mbar_ptr = __cvta_generic_to_shared(smem_mma_mbar_ptr);
@@ -202,7 +177,7 @@ namespace disco_kernels
 
             __syncthreads(); // A/B tiles ready
 
-            // -- Build SMEM descriptors (identical descriptor format to SM_90a) --
+            // -- Build SM100 UMMA SMEM descriptors --
             constexpr uint32_t A_LEADING_FIELD = 8;
             constexpr uint32_t A_STRIDE_FIELD = 16;
             constexpr uint32_t B_LEADING_FIELD = 8;
@@ -213,36 +188,19 @@ namespace disco_kernels
 
             // -- Issue tcgen05.mma (thread 0) and commit to mbarrier --
             // scaleC=1: accumulate into the TMEM tile (which was zero-initialised).
-#if TCGEN05_BISECT == 22
-            tcgen05_mma_only(tmem_acc, desc_a, desc_b, mma_idesc, 1u); // MMA only, no commit/wait
-            break;
-#elif TCGEN05_BISECT == 23
-            tcgen05_mma_issue(tmem_acc, desc_a, desc_b, mma_idesc, 1u, mbar_ptr); // MMA + commit, no wait
-            break;
-#elif TCGEN05_BISECT != 21
             tcgen05_mma_issue(tmem_acc, desc_a, desc_b, mma_idesc, 1u, mbar_ptr);
 
             // -- All threads wait for MMA to complete --
             tcgen05_mma_wait(mbar_ptr);
-#endif
             __syncthreads(); // ensure all threads exited wait before mbarrier reinit
 
             // Reinit mbarrier for the next chunk (if any).
-#if TCGEN05_BISECT != 21 && TCGEN05_BISECT != 22 && TCGEN05_BISECT != 23
             if (nz_chunk_off + NZ_CHUNK < cnt) {
                 if (tid == 0) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 4;\n" ::"r"(mbar_ptr) : "memory"); }
                 tcgen05_fence_mbarrier_init();
                 __syncthreads(); // reinit visible before next commit
             }
-#endif
         }
-
-#if TCGEN05_BISECT != 3
-        // All bisect levels except the full kernel exit before the ld + writeback.
-        tcgen05_dealloc(tmem_acc);
-        tcgen05_relinquish_alloc_permit();
-        return;
-#endif
 
         // ─── Read accumulator from TMEM ────────────────────────────────────────
         // 16x256b.x1 → 4 fp32 per thread (N_PAD=8)
