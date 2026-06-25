@@ -1187,7 +1187,7 @@ class TestKpackedPath(unittest.TestCase):
         self.assertEqual(out.dtype, torch.bfloat16)
 
     @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
-    def test_kpacked_matches_csr_reference(self):
+    def test_kpacked_matches_csr_reference(self, verbose=True):
         """Kpacked MMA forward path matches the optimized CSR fallback numerically."""
         set_seed(123)
         in_shape = (16, 32)
@@ -1211,8 +1211,8 @@ class TestKpackedPath(unittest.TestCase):
         out_kpacked.backward(grad)
         out_csr.backward(grad.clone())
 
-        self.assertTrue(compare_tensors("inp grad", inp.grad.float(), inp_ref.grad.float(), atol=5e-2, rtol=5e-2))
-        self.assertTrue(compare_tensors("weight grad", conv_kpacked.weight.grad.float(), conv_csr.weight.grad.float(), atol=5e-2, rtol=5e-2))
+        self.assertTrue(compare_tensors("inp grad", inp.grad.float(), inp_ref.grad.float(), atol=5e-2, rtol=5e-2, verbose=verbose))
+        self.assertTrue(compare_tensors("weight grad", conv_kpacked.weight.grad.float(), conv_csr.weight.grad.float(), atol=5e-2, rtol=5e-2, verbose=verbose))
 
     @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
     def test_kpacked_fused_matches_unfused(self):
