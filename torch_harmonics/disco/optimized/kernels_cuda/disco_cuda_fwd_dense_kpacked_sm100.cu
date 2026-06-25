@@ -119,9 +119,31 @@ namespace disco_kernels
         // internally before returning the base address to all threads.
         uint32_t tmem_acc = tcgen05_alloc(&smem_tmem_base);
 
+        // ─── Bisection knob ──────────────────────────────────────────────────────
+        // Set TCGEN05_BISECT to skip progressively more of the kernel to isolate
+        // the instruction that causes cudaErrorIllegalInstruction:
+        //   0 = alloc + dealloc + relinquish only (skip st, mma, ld)
+        //   1 = + zero-init (tcgen05.st + wait::st)
+        //   2 = + MMA + wait (tcgen05.mma + commit + try_wait)
+        //   3 = full kernel (default)
+#ifndef TCGEN05_BISECT
+#define TCGEN05_BISECT 3
+#endif
+#if TCGEN05_BISECT == 0
+        tcgen05_dealloc(tmem_acc);
+        tcgen05_relinquish_alloc_permit();
+        return;
+#endif
+
         // ─── Zero-init TMEM accumulator ────────────────────────────────────────
         // All threads participate; covers the full M=64, N=N_PAD tile.
         tcgen05_zero<N_ACC>(tmem_acc);
+
+#if TCGEN05_BISECT == 1
+        tcgen05_dealloc(tmem_acc);
+        tcgen05_relinquish_alloc_permit();
+        return;
+#endif
 
         // ─── Init MMA mbarrier ─────────────────────────────────────────────────
         uint32_t mbar_ptr = __cvta_generic_to_shared(&smem_mma_mbar);
@@ -193,6 +215,12 @@ namespace disco_kernels
                 __syncthreads(); // reinit visible before next commit
             }
         }
+
+#if TCGEN05_BISECT == 2
+        tcgen05_dealloc(tmem_acc);
+        tcgen05_relinquish_alloc_permit();
+        return;
+#endif
 
         // ─── Read accumulator from TMEM ────────────────────────────────────────
         // 16x256b.x1 → 4 fp32 per thread (N_PAD=8)
