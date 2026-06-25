@@ -500,26 +500,25 @@ namespace disco_kernels
     }
 
     // -------------------------------------------------------------------------------------
-    // tcgen05_mma_issue — CTA-collective MMA + single-thread mbarrier commit.
+    // tcgen05_mma_issue — elected-thread-per-warp MMA + mbarrier commit.
     //
-    // tcgen05.mma is a CTA-collective instruction: ALL 128 threads must execute it.
-    // tcgen05.commit must be issued by exactly ONE thread (threadIdx.x == 0 here).
+    // Both tcgen05.mma and tcgen05.commit with cta_group::1 require ONE elected
+    // thread per warp (4 threads total for a 4-warp kernel).  This matches CUTLASS
+    // (cute/arch/mma_sm100_umma.hpp fma() and cutlass/arch/barrier.h umma_arrive()),
+    // both of which gate on elect_one_sync() = elect.sync with mask 0xFFFFFFFF.
     //
     // kind::f16 is correct for BOTH fp16 and bf16 inputs (no kind::bf16 in PTX).
     // Operand 3 is idescE upper-32 (0 for dense A).  Masks are {0,0,0,0} for
     // full M=64 participation.  The predicate p controls scaleC:
     //   p = false (scale_c == 0) → D  = A*B      (overwrite)
     //   p = true  (scale_c != 0) → D += A*B      (accumulate)
-    //
-    // After the MMA, tcgen05.commit signals the mbarrier so tcgen05_mma_wait()
-    // can unblock all threads.
     // -------------------------------------------------------------------------------------
     __device__ __forceinline__ void tcgen05_mma_issue(uint32_t tmem_d, uint64_t desc_a, uint64_t desc_b,
                                                       uint32_t scale_c, uint32_t mbar_ptr)
     {
-        // tcgen05.mma requires exactly ONE elected thread per warp (4 total for 4-warp kernel).
-        // Use elect.sync to select the elected lane in each warp — matches CUTLASS elect_one_sync().
-        // tcgen05.commit is single-thread: only thread 0 signals the mbarrier.
+        // Both mma and commit require ONE elected thread per warp (4 total for a 4-warp kernel).
+        // elect.sync with mask 0xFFFFFFFF matches CUTLASS's elect_one_sync() — elects lane 0
+        // of each active warp, so threads 0, 32, 64, 96 each get elected = 1.
         uint32_t elected = 0;
         asm volatile("{\n\t"
                      ".reg .b32 %rx;\n\t"
@@ -539,8 +538,7 @@ namespace disco_kernels
                          "r"(0u),      // idescE upper-32 (dense A → 0)
                          "r"(scale_c), // controls predicate p
                          "r"(mask0), "r"(mask1), "r"(mask2), "r"(mask3));
-        }
-        if (threadIdx.x == 0) {
+            // commit is also cta_group::1 collective — same elected-thread-per-warp pattern.
             asm volatile("tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%0];\n" ::"r"(mbar_ptr)
                          : "memory");
         }
