@@ -532,38 +532,6 @@ namespace disco_kernels
     }
 
     // -------------------------------------------------------------------------------------
-    // tcgen05_mma_only — elected-thread-per-warp MMA, NO commit.
-    //
-    // Used for bisection testing only (TCGEN05_BISECT=22) to isolate whether
-    // tcgen05.mma itself causes the illegal instruction, independent of commit.
-    // -------------------------------------------------------------------------------------
-    __device__ __forceinline__ void tcgen05_mma_only(uint32_t tmem_d, uint64_t desc_a, uint64_t desc_b, uint32_t idesc,
-                                                     uint32_t scale_c)
-    {
-        uint32_t pred = 0, laneid = 0;
-        asm volatile("{\n"
-                     ".reg .b32 %%rx;\n"
-                     ".reg .pred %%px;\n"
-                     "     elect.sync %%rx|%%px, %2;\n"
-                     "@%%px mov.s32 %1, 1;\n"
-                     "     mov.s32 %0, %%rx;\n"
-                     "}"
-                     : "+r"(laneid), "+r"(pred)
-                     : "r"(0xFFFFFFFF));
-        if (pred) {
-            uint32_t mask[4] = {0, 0, 0, 0};
-            asm volatile("{\n\t"
-                         ".reg .pred p;\n\t"
-                         "setp.ne.b32 p, %4, 0;\n\t"
-                         "tcgen05.mma.cta_group::1.kind::f16 [%0], %1, %2, %3, {%5, %6, %7, %8}, p; \n\t"
-                         "}\n"
-                         :
-                         : "r"(tmem_d), "l"(desc_a), "l"(desc_b), "r"(idesc), "r"(scale_c), "r"(mask[0]), "r"(mask[1]),
-                           "r"(mask[2]), "r"(mask[3]));
-        }
-    }
-
-    // -------------------------------------------------------------------------------------
     // tcgen05_mma_issue — elected-thread-per-warp MMA + mbarrier commit.
     //
     // Both tcgen05.mma and tcgen05.commit with cta_group::1 require ONE elected
