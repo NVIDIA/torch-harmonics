@@ -1191,19 +1191,20 @@ class TestKpackedPath(unittest.TestCase):
         """Kpacked MMA forward path matches the optimized CSR fallback numerically."""
         set_seed(123)
         in_shape = (16, 32)
-        conv_kpacked = self._make_conv(1, 8, in_shape)
-        conv_csr = self._make_conv(1, 8, in_shape)
+        conv_kpacked = self._make_conv(1, 8, in_shape).float()
+        conv_csr = self._make_conv(1, 8, in_shape).float()
         self.assertIsNotNone(conv_kpacked.psi_kpacked_K_pad, "kpacked reference test requires kpacked buffers")
         self.assertIn(conv_kpacked.psi_kpacked_K_pad, (8, 16), "K_pad must be 8 or 16 for the kpacked kernel")
 
         conv_csr.weight.data.copy_(conv_kpacked.weight.data)
         conv_csr.psi_kpacked_K_pad = 24  # force optimized CSR fallback through normal forward dispatch
 
-        inp = torch.randn(1, 8, *in_shape, dtype=torch.bfloat16, device=self.device, requires_grad=True)
+        inp = torch.randn(1, 8, *in_shape, dtype=torch.float32, device=self.device, requires_grad=True)
         inp_ref = inp.detach().clone().requires_grad_(True)
 
-        out_kpacked = conv_kpacked(inp)
-        out_csr = conv_csr(inp_ref)
+        with torch.autocast(self.device.type, dtype=torch.bfloat16):
+            out_kpacked = conv_kpacked(inp)
+            out_csr = conv_csr(inp_ref)
         self.assertTrue(compare_tensors("output", out_kpacked.float(), out_csr.float(), atol=5e-2, rtol=5e-2))
 
         grad = torch.randn_like(out_kpacked)
