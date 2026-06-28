@@ -175,13 +175,14 @@ namespace disco_kernels
                 }
             }
 
+            fence_proxy_async_shared_cta();
             __syncthreads(); // A/B tiles ready
 
             // -- Build SM100 UMMA SMEM descriptors --
             constexpr uint32_t A_LEADING_FIELD = 8;
             constexpr uint32_t A_STRIDE_FIELD = 16;
             constexpr uint32_t B_LEADING_FIELD = 8;
-            constexpr uint32_t B_STRIDE_FIELD = (N_PAD == 8) ? 0 : 16;
+            constexpr uint32_t B_STRIDE_FIELD = 16;
             uint64_t desc_a = make_umma_desc(A_tile, A_LEADING_FIELD * 16, A_STRIDE_FIELD * 16);
             uint64_t desc_b = make_umma_desc(B_tile, B_LEADING_FIELD * 16, B_STRIDE_FIELD * 16);
             constexpr uint32_t mma_idesc = make_tcgen05_f16bf16_instr_desc<N_PAD, std::is_same_v<T, __nv_bfloat16>>();

@@ -393,6 +393,14 @@ namespace disco_kernels
 // =====================================================================================
 #if defined(__CUDA_ARCH_FEAT_SM100_ALL)
 
+    // Make shared-memory writes issued through the generic proxy visible to
+    // tcgen05.mma's async proxy. Producer threads must execute this before the
+    // synchronization that releases the tcgen05-consuming thread.
+    __device__ __forceinline__ void fence_proxy_async_shared_cta()
+    {
+        asm volatile("fence.proxy.async.shared::cta;\n" ::: "memory");
+    }
+
     // -------------------------------------------------------------------------------------
     // UMMA descriptor helpers (SM_100a).
     //
