@@ -231,11 +231,19 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             # (fused=True there would be an identical duplicate).
             # fp16
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, False, False, 2e-2, 1e-2],
+            # Harmonic AMP rows exercise distributed kpacked tensor-core paths:
+            # (2,2) -> K=4 -> K_PAD=8; (3,3) -> K=9 -> K_PAD=16.
+            [64, 128, 64, 128, 8, 8, (2, 2), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float16, False, False, 5e-2, 1e-2],
+            [64, 128, 64, 128, 8, 8, (3, 3), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float16, False, False, 5e-2, 1e-2],
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, False, True, 2e-2, 1e-2],
+            [64, 128, 64, 128, 8, 8, (2, 2), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float16, False, True, 5e-2, 1e-2],
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, True, False, 2e-2, 1e-2],
             # bf16
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, False, 5e-2, 5e-2],
+            [64, 128, 64, 128, 8, 8, (2, 2), "harmonic", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 5e-2],
+            [64, 128, 64, 128, 8, 8, (3, 3), "harmonic", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 5e-2],
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, True, 5e-2, 5e-2],
+            [64, 128, 64, 128, 8, 8, (2, 2), "harmonic", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, True, 3e-1, 5e-2],
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, True, False, 5e-2, 5e-2],
         ],
         skip_on_empty=True,
