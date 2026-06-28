@@ -626,6 +626,11 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             # regular convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, False, 5e-2, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, False, 5e-2, 1e-2],
+            # SM90 kpacked proxy-fence regression coverage:
+            # large output grid with K=9 -> K_PAD=16.
+            [8, 4, 2, (41, 80), (41, 80), (3, 3), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, False, 5e-2, 1e-2],
+            # BC-heavy large-grid kpacked path; stresses multiple BC CTAs and weight contraction.
+            [8, 32, 32, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, False, 5e-2, 1e-2],
             # transpose convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, True, False, 5e-2, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, True, False, 5e-2, 1e-2],
@@ -633,6 +638,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             # regular convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (3, 3), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 1e-2],
+            [8, 32, 32, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 1e-2],
             # transpose convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, False, 3e-1, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, False, 3e-1, 1e-2],
@@ -643,6 +650,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (41, 80), (21, 40), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, False, True, 1e-4, 1e-4],
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, False, True, 1e-9, 1e-9],
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, True, 1e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, True, 5e-2, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, True, 5e-2, 5e-2],
         ],
         skip_on_empty=True,
@@ -665,7 +673,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         fused,
         atol,
         rtol,
-        verbose=False,
+        verbose=True,
     ):
         # for AMP dtypes, the module and input stay in float32; autocast handles the rest
         is_amp = dtype in (torch.float16, torch.bfloat16)

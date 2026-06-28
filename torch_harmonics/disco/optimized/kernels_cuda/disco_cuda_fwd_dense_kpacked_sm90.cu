@@ -226,6 +226,7 @@ namespace disco_kernels
                 }
             }
 
+            fence_proxy_async_shared_cta();
             __syncthreads();
 
             // -- WGMMA m64nNk16, accumulating --
@@ -246,32 +247,34 @@ namespace disco_kernels
             //
             //   B [K=16, N=N_PAD], byte(k,n) = (n/8)*256 + k*16 + (n%8)*2:
             //     N=8 :  1 N-block, 2 K-blocks (K-stride 128 B within n-group)
-            //              leading=8, stride=0 (N-outer unused)
+            //              leading=8, stride=16 (canonical N-outer stride)
             //     N=16:  2 N-blocks, 2 K-blocks
             //              K-stride 128 B within n-group, N-stride 256 B between
             //              leading=8, stride=16
             wgmma_fence();
             constexpr uint32_t A_LEADING_FIELD = 8;
             constexpr uint32_t A_STRIDE_FIELD = 16;
-            constexpr uint32_t B_LEADING_FIELD = 8;                    // K-outer 128 B
-            constexpr uint32_t B_STRIDE_FIELD = (N_PAD == 8) ? 0 : 16; // N-outer 0 or 256 B
+            constexpr uint32_t B_LEADING_FIELD = 8; // K-outer 128 B
+            constexpr uint32_t B_STRIDE_FIELD = 16; // N-outer 256 B
             uint64_t desc_a = make_wgmma_desc(A_tile, A_LEADING_FIELD * 16, A_STRIDE_FIELD * 16);
             uint64_t desc_b = make_wgmma_desc(B_tile, B_LEADING_FIELD * 16, B_STRIDE_FIELD * 16);
+            const int32_t scale_D = (nz_chunk_off == 0) ? 0 : 1;
             if constexpr (std::is_same_v<T, __nv_bfloat16>) {
                 if constexpr (N_PAD == 8) {
-                    wgmma_m64n8k16_acc_bf16(acc, desc_a, desc_b);
+                    wgmma_m64n8k16_acc_bf16(acc, desc_a, desc_b, scale_D);
                 } else { // N_PAD == 16
-                    wgmma_m64n16k16_acc_bf16(acc, desc_a, desc_b);
+                    wgmma_m64n16k16_acc_bf16(acc, desc_a, desc_b, scale_D);
                 }
             } else { // T == __half
                 if constexpr (N_PAD == 8) {
-                    wgmma_m64n8k16_acc_fp16(acc, desc_a, desc_b);
+                    wgmma_m64n8k16_acc_fp16(acc, desc_a, desc_b, scale_D);
                 } else { // N_PAD == 16
-                    wgmma_m64n16k16_acc_fp16(acc, desc_a, desc_b);
+                    wgmma_m64n16k16_acc_fp16(acc, desc_a, desc_b, scale_D);
                 }
             }
             wgmma_commit_group();
             wgmma_wait_group<0>();
+            wgmma_fence();
 
             __syncthreads();
         }

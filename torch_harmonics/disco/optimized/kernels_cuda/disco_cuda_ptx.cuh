@@ -156,15 +156,26 @@ namespace disco_kernels
 
     // Insert before mma_async to ensure register-residing operands and accumulator
     // are visible to the WGMMA hardware.
-    __device__ __forceinline__ void wgmma_fence() { asm volatile("wgmma.fence.sync.aligned;\n" ::); }
+    __device__ __forceinline__ void wgmma_fence() { asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory"); }
+
+    // Make shared-memory writes issued through the generic proxy visible to WGMMA's
+    // async proxy. Producer threads must execute this before the synchronization
+    // that releases the WGMMA-consuming warpgroup.
+    __device__ __forceinline__ void fence_proxy_async_shared_cta()
+    {
+        asm volatile("fence.proxy.async.shared::cta;\n" ::: "memory");
+    }
 
     // Commit all preceding (uncommitted) wgmma.mma_async into a pending group.
-    __device__ __forceinline__ void wgmma_commit_group() { asm volatile("wgmma.commit_group.sync.aligned;\n" ::); }
+    __device__ __forceinline__ void wgmma_commit_group()
+    {
+        asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
+    }
 
     // Wait until at most N pending wgmma groups remain.
     template <int N> __device__ __forceinline__ void wgmma_wait_group()
     {
-        asm volatile("wgmma.wait_group.sync.aligned %0;\n" ::"n"(N));
+        asm volatile("wgmma.wait_group.sync.aligned %0;\n" ::"n"(N) : "memory");
     }
 
     // -------------------------------------------------------------------------------------
@@ -211,9 +222,9 @@ namespace disco_kernels
 
     // ---- bf16 wrappers (.f32.bf16.bf16) ----
 
-    __device__ __forceinline__ void wgmma_m64n8k16_acc_bf16(float (&d)[4], uint64_t desc_a, uint64_t desc_b)
+    __device__ __forceinline__ void wgmma_m64n8k16_acc_bf16(float (&d)[4], uint64_t desc_a, uint64_t desc_b,
+                                                            int32_t scale_D = 1)
     {
-        int32_t scale_D = 1;
         asm volatile("{\n"
                      ".reg .pred p;\n"
                      "setp.ne.b32 p, %6, 0;\n"
@@ -227,9 +238,9 @@ namespace disco_kernels
                      : "l"(desc_a), "l"(desc_b), "r"(scale_D), "n"(1), "n"(1), "n"(1), "n"(1));
     }
 
-    __device__ __forceinline__ void wgmma_m64n16k16_acc_bf16(float (&d)[8], uint64_t desc_a, uint64_t desc_b)
+    __device__ __forceinline__ void wgmma_m64n16k16_acc_bf16(float (&d)[8], uint64_t desc_a, uint64_t desc_b,
+                                                             int32_t scale_D = 1)
     {
-        int32_t scale_D = 1;
         asm volatile("{\n"
                      ".reg .pred p;\n"
                      "setp.ne.b32 p, %10, 0;\n"
@@ -280,9 +291,9 @@ namespace disco_kernels
 
     // ---- fp16 wrappers (.f32.f16.f16) ----
 
-    __device__ __forceinline__ void wgmma_m64n8k16_acc_fp16(float (&d)[4], uint64_t desc_a, uint64_t desc_b)
+    __device__ __forceinline__ void wgmma_m64n8k16_acc_fp16(float (&d)[4], uint64_t desc_a, uint64_t desc_b,
+                                                            int32_t scale_D = 1)
     {
-        int32_t scale_D = 1;
         asm volatile("{\n"
                      ".reg .pred p;\n"
                      "setp.ne.b32 p, %6, 0;\n"
@@ -296,9 +307,9 @@ namespace disco_kernels
                      : "l"(desc_a), "l"(desc_b), "r"(scale_D), "n"(1), "n"(1), "n"(1), "n"(1));
     }
 
-    __device__ __forceinline__ void wgmma_m64n16k16_acc_fp16(float (&d)[8], uint64_t desc_a, uint64_t desc_b)
+    __device__ __forceinline__ void wgmma_m64n16k16_acc_fp16(float (&d)[8], uint64_t desc_a, uint64_t desc_b,
+                                                             int32_t scale_D = 1)
     {
-        int32_t scale_D = 1;
         asm volatile("{\n"
                      ".reg .pred p;\n"
                      "setp.ne.b32 p, %10, 0;\n"
