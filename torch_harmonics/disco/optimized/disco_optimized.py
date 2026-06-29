@@ -108,6 +108,37 @@ def _maybe_kpack_psi(psi_packed_idx, psi_packed_vals, psi_packed_count, n_align:
     return kpacked_idx, kpacked_vals, kpacked_count, K_pad
 
 
+def _use_spatial_first_dgrad(out_per_group: int, in_per_group: int, kernel_size: int, roff_idx: torch.Tensor, nlat_out: int) -> bool:
+    # Spatial-first dgrad runs the sparse transpose over output channels and
+    # applies the weight contraction afterwards. It wins when output channels
+    # are substantially fewer than input channels; near parity the current
+    # weight-first path is better because it uses one sparse launch.
+    return kernel_size > 1 and out_per_group * 2 <= in_per_group and roff_idx.numel() == kernel_size * nlat_out + 1
+
+
+def _disco_s2_fused_conv_spatial_first_dgrad(grad_output_r, weight, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_in, nlon_in):
+    B, G, Og, H, W = grad_output_r.shape
+    Cg = weight.shape[2]
+    grad_small = grad_output_r.reshape(B, G * Og, 1, H, W).contiguous()
+
+    parts = []
+    for k in range(kernel_size):
+        row_start = k * H
+        row_end = row_start + H
+        mask = ker_idx == k
+        roff_k = (roff_idx[row_start : row_end + 1] - roff_idx[row_start]).contiguous()
+        ker_k = (ker_idx[mask] - k).contiguous()
+        row_k = row_idx[mask].contiguous()
+        col_k = col_idx[mask].contiguous()
+        vals_k = vals[mask].contiguous()
+        part = disco_kernels.backward.default(grad_small, roff_k, ker_k, row_k, col_k, vals_k, 1, nlat_in, nlon_in)
+        parts.append(part.reshape(B, G, Og, nlat_in, nlon_in))
+
+    grad_spatial = torch.stack(parts, dim=3)
+    grad_inp = torch.einsum("bgokxy,gock->bgcxy", grad_spatial, weight).contiguous()
+    return grad_inp.reshape(B, G * Cg, nlat_in, nlon_in)
+
+
 # custom kernels
 if optimized_kernels_is_available():
     # raw forward fake
@@ -380,13 +411,16 @@ def _disco_s2_fused_conv_bwd_optimized(ctx, grad_output):
     grad_weight = None
 
     if ctx.needs_input_grad[0]:
-        # einsum backward: expand grad into K-space
-        # (B, G, Og, H, W) x (G, Og, Cg, K) -> (B, G, Cg, K, H, W)
-        grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
-        grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
+        if _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H):
+            grad_inp = _disco_s2_fused_conv_spatial_first_dgrad(grad_output_r, weight.to(itype), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
+        else:
+            # einsum backward: expand grad into K-space
+            # (B, G, Og, H, W) x (G, Og, Cg, K) -> (B, G, Cg, K, H, W)
+            grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
+            grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
 
-        # transpose contraction back to input space
-        grad_inp = disco_kernels.backward.default(grad_x_expanded.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
+            # transpose contraction back to input space
+            grad_inp = disco_kernels.backward.default(grad_x_expanded.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
         grad_inp = grad_inp.to(itype)
 
     if ctx.needs_input_grad[1]:
@@ -521,9 +555,13 @@ class _DiscoKpackedFusedFn(torch.autograd.Function):
         grad_weight = None
 
         if ctx.needs_input_grad[0]:
-            grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
-            grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
-            grad_inp = disco_kernels.backward.default(grad_x_expanded, roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1]).to(itype)
+            if _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H):
+                grad_inp = _disco_s2_fused_conv_spatial_first_dgrad(grad_output_r, weight.to(itype), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
+            else:
+                grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
+                grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
+                grad_inp = disco_kernels.backward.default(grad_x_expanded, roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
+            grad_inp = grad_inp.to(itype)
 
         if ctx.needs_input_grad[1]:
             x_expanded = disco_kernels.forward.default(inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, H, W).to(itype).reshape(B, G, Cg, K, H, W)
