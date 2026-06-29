@@ -401,7 +401,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             )
 
         if self.bias is not None:
-            out = out + self.bias.reshape(1, -1, 1, 1)
+            out = out + self.bias.reshape(1, self.bias.shape[0], 1, 1)
         return out
 
 
@@ -563,8 +563,9 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
-        x = x.reshape(B, -1, x.shape[-3], H, W)
+        out_per_group = self.weight.shape[0] // self.groups
+        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, out_per_group, self.weight.shape[1], self.weight.shape[2])).contiguous()
+        x = x.reshape(B, self.weight.shape[0], x.shape[-3], H, W)
         num_chans = x.shape[1]
 
         # transpose such that lon is local, channels are split
@@ -590,6 +591,6 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             out = distributed_transpose_azimuth(out, (-1, 1), chan_shapes)
 
         if self.bias is not None:
-            out = out + self.bias.reshape(1, -1, 1, 1)
+            out = out + self.bias.reshape(1, self.bias.shape[0], 1, 1)
 
         return out
