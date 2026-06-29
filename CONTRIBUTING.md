@@ -11,6 +11,7 @@ documentation, or test coverage.
 - [Development setup](#development-setup)
 - [Building C++/CUDA extensions](#building-ccuda-extensions)
 - [Running tests](#running-tests)
+- [Running benchmarks](#running-benchmarks)
 - [Code style and pre-commit](#code-style-and-pre-commit)
 - [Project structure](#project-structure)
 - [Guidelines by area](#guidelines-by-area)
@@ -217,6 +218,41 @@ Tests pick up MASTER_ADDR, MASTER_PORT, WORLD_RANK, WORLD_SIZE from the environm
 modifications to distributed routines, we kindly ask you to run these tests for various combinations of `grid_size_lat` and
 `grid_size_lon`.
 
+## Running benchmarks
+
+The `benchmarks/` directory contains a self-contained benchmark suite covering SHT, DISCO
+convolution, and spherical attention across multiple resolutions, channel counts, and dtypes.
+
+Run the full suite on the current GPU:
+
+```bash
+python benchmarks/run.py
+```
+
+Filter by name substring or tag:
+
+```bash
+python benchmarks/run.py --name disco
+python benchmarks/run.py --tags attention neighborhood
+```
+
+Save a baseline CSV, then compare after your change:
+
+```bash
+python benchmarks/run.py --save-csv baseline.csv
+# ... make your changes and rebuild ...
+python benchmarks/run.py --reference-csv baseline.csv
+```
+
+The comparison table shows per-entry speedup (`fwd_spd`, `bwd_spd`) and flags regressions
+with `!` if throughput drops by more than 5% (adjustable via `--regression-tol`).
+
+Run the float64/CPU reference error check (slower, opt-in):
+
+```bash
+python benchmarks/run.py --check-outputs --name disco_s2_opt_1deg
+```
+
 ## Code style and pre-commit
 
 We use [pre-commit](https://pre-commit.com/) on pull requests (`.github/workflows/style.yml`).
@@ -276,6 +312,7 @@ torch_harmonics/
 └── distributed/                                                     # Multi-GPU primitives and layers
 
 tests/              # Pytest suite (shared helpers in testutils.py)
+benchmarks/         # Performance benchmark suite (run.py entry point)
 examples/           # Training and usage examples (not run in default CI)
 notebooks/          # Exploratory notebooks (not run in CI)
 ```
@@ -312,6 +349,25 @@ notebooks/          # Exploratory notebooks (not run in CI)
  readability and their outputs must agree within test tolerances.
 - Test tolerances can be adjusted, however this needs to be justified and clearly documented.
 - If you change kernel semantics, update both paths (or the shared sparsity / indexing logic) and add or extend tests.
+
+**Performance requirements for kernel rewrites.** Any PR that rewrites or significantly
+modifies a CUDA/C++ kernel must demonstrate a speedup on the relevant benchmark entries
+and must not regress existing ones:
+
+1. Check whether `benchmarks/` already has entries that cover the parameter regime of your
+   change (resolution, channel count, dtype). If not, add benchmark entries for the cases
+   of interest.
+2. Run the benchmark on a representative GPU, save a baseline from `main`, then measure
+   your branch:
+   ```bash
+   git stash   # or checkout main
+   python benchmarks/run.py --name <relevant_prefix> --save-csv before.csv
+   git stash pop   # or checkout your branch + rebuild
+   python benchmarks/run.py --name <relevant_prefix> --reference-csv before.csv
+   ```
+3. Include the comparison table (copy-paste the terminal output) in your PR description.
+   Report both forward and backward speedups. If any existing entry regresses by more than
+   5%, explain why or fix it before requesting review.
 
 ### PT2 / `torch.compile` compatibility
 
@@ -362,12 +418,14 @@ graph break instead of an opaque compile failure. See `torch_harmonics/distribut
 5. **Describe the PR clearly:** what problem it solves, how you tested it (commands,
    CPU/GPU), and any API or numerical behavior changes.
 6. **Ensure CI passes:** style (pre-commit) and tests workflows.
+7. **For kernel rewrites:** include a benchmark comparison table showing speedup on the
+   affected entries and no regression on existing ones. See
+   [Running benchmarks](#running-benchmarks) and
+   [Custom operators](#custom-operators) for the required workflow.
 
 Linking to an open issue when one exists is helpful but not required.
 
-Reviewers may ask for reference-kernel parity checks, justification for tolerance changes,
-or benchmarks for performance-critical kernel changes. Standardized benchmark is in
-preparation.
+Reviewers may ask for reference-kernel parity checks or justification for tolerance changes.
 
 ## Release and packaging
 
