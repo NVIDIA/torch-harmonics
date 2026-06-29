@@ -618,7 +618,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
-        weight_r = self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])
+        out_per_group = self.weight.shape[0] // self.groups
+        weight_r = self.weight.reshape(self.groups, out_per_group, self.weight.shape[1], self.weight.shape[2])
         kpacked_dtype = x.dtype
         if x.is_cuda and torch.is_autocast_enabled("cuda"):
             kpacked_dtype = torch.get_autocast_dtype("cuda")
@@ -695,10 +696,10 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
             # do weight multiplication
             out = torch.einsum("bgckxy,gock->bgoxy", x, weight_r).contiguous()
-            out = out.reshape(B, -1, H, W)
+            out = out.reshape(B, self.weight.shape[0], H, W)
 
         if self.bias is not None:
-            out = out + self.bias.reshape(1, -1, 1, 1)
+            out = out + self.bias.reshape(1, self.bias.shape[0], 1, 1)
 
         return out
 
@@ -828,8 +829,9 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
-        x = x.reshape(B, -1, x.shape[-3], H, W)
+        out_per_group = self.weight.shape[0] // self.groups
+        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, out_per_group, self.weight.shape[1], self.weight.shape[2])).contiguous()
+        x = x.reshape(B, self.weight.shape[0], x.shape[-3], H, W)
 
         if self.optimized_kernel:
             out = _disco_s2_transpose_contraction_optimized(
@@ -839,6 +841,6 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             out = _disco_s2_transpose_contraction_torch(x, self.psi_st.to(x.device), self.nlon_out)
 
         if self.bias is not None:
-            out = out + self.bias.reshape(1, -1, 1, 1)
+            out = out + self.bias.reshape(1, self.bias.shape[0], 1, 1)
 
         return out

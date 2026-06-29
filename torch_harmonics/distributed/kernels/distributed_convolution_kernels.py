@@ -180,13 +180,15 @@ def _distributed_disco_fwd_a2a(
 
     B, C, K, H, W = x.shape
     x = x.reshape(B, groups, groupsize, K, H, W)
+    out_channels = weight.shape[0]
+    out_per_group = out_channels // groups
 
     out = torch.einsum(
         "bgckxy,gock->bgoxy",
         x,
-        weight.reshape(groups, -1, weight.shape[1], weight.shape[2]),
+        weight.reshape(groups, out_per_group, weight.shape[1], weight.shape[2]),
     ).contiguous()
-    out = out.reshape(out.shape[0], -1, H, W)
+    out = out.reshape(out.shape[0], out_channels, H, W)
     return out
 
 
