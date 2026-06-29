@@ -38,6 +38,7 @@ from disco_helpers import optimized_kernels_is_available, pack_psi_dense, prepro
 from torch_harmonics.disco._disco_utils import _get_psi
 from torch_harmonics.disco.convolution import (
     DiscreteContinuousConv,
+    _kpacked_device_supported_for_tensor,
     _precompute_convolution_tensor_s2,
 )
 from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_transpose_contraction_torch
@@ -251,6 +252,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.nlat_out_local = self.nlat_out
         self.nlon_in_local = self.lon_in_shapes[self.comm_rank_azimuth]
         self.nlon_out_local = self.lon_out_shapes[self.comm_rank_azimuth]
+        self.kpacked_device_supported = False
 
         # compute global convolution tensor
         idx, vals, _ = _precompute_convolution_tensor_s2(
@@ -334,6 +336,17 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
+    def _refresh_kpacked_device_supported(self):
+        if not hasattr(self, "psi_vals"):
+            self.kpacked_device_supported = False
+            return
+        self.kpacked_device_supported = _kpacked_device_supported_for_tensor(self.psi_vals)
+
+    def _apply(self, fn):
+        result = super()._apply(fn)
+        self._refresh_kpacked_device_supported()
+        return result
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.fused:
             # reordered a2a: einsum-first on the local channel shard via the
@@ -350,6 +363,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 psi_kpacked_vals=getattr(self, "psi_kpacked_vals", None),
                 psi_kpacked_count=getattr(self, "psi_kpacked_count", None),
                 psi_kpacked_K_pad=self.psi_kpacked_K_pad,
+                kpacked_device_supported=self.kpacked_device_supported,
                 kernel_size=self.kernel_size,
                 nlat_out_local=self.nlat_out_local,
                 nlon_out=self.nlon_out,
@@ -374,6 +388,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 psi_kpacked_vals=getattr(self, "psi_kpacked_vals", None),
                 psi_kpacked_count=getattr(self, "psi_kpacked_count", None),
                 psi_kpacked_K_pad=self.psi_kpacked_K_pad,
+                kpacked_device_supported=self.kpacked_device_supported,
                 psi_torch=getattr(self, "psi", None),
                 optimized_kernel=self.optimized_kernel,
                 kernel_size=self.kernel_size,

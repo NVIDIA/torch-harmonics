@@ -68,7 +68,7 @@ import torch
 from disco_helpers import optimized_kernels_is_available
 
 from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_contraction_torch
-from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_optimized, _kpacked_supported_on_device
+from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_optimized
 
 # The fused and kpacked conv ops are defined inside
 # disco_optimized.py's ``if optimized_kernels_is_available():`` block, so they
@@ -109,6 +109,7 @@ def _distributed_disco_fwd_a2a(
     psi_kpacked_vals: Optional[torch.Tensor] = None,
     psi_kpacked_count: Optional[torch.Tensor] = None,
     psi_kpacked_K_pad: Optional[int] = None,
+    kpacked_device_supported: bool = False,
     psi_torch: Optional[torch.Tensor],
     optimized_kernel: bool,
     kernel_size: int,
@@ -136,7 +137,7 @@ def _distributed_disco_fwd_a2a(
     if comm_size_azimuth > 1:
         x = distributed_transpose_azimuth(x, (1, -1), lon_in_shapes)
 
-    _kpacked_ok = optimized_kernel and psi_kpacked_K_pad in (8, 16) and x.dtype in (torch.float16, torch.bfloat16) and x.is_cuda and _kpacked_supported_on_device(x.get_device())
+    _kpacked_ok = optimized_kernel and psi_kpacked_K_pad in (8, 16) and x.dtype in (torch.float16, torch.bfloat16) and x.is_cuda and kpacked_device_supported
     if _kpacked_ok:
         x = _disco_s2_contraction_kpacked(
             x,
@@ -207,6 +208,7 @@ def _distributed_disco_fwd_a2a_reordered(
     psi_kpacked_vals: Optional[torch.Tensor] = None,
     psi_kpacked_count: Optional[torch.Tensor] = None,
     psi_kpacked_K_pad: Optional[int] = None,
+    kpacked_device_supported: bool = False,
     kernel_size: int,
     nlat_out_local: int,
     nlon_out: int,
@@ -287,7 +289,7 @@ def _distributed_disco_fwd_a2a_reordered(
 
     # 2+3. fused contraction + local weight einsum ->
     #      (B, n_local_groups * out_per_group, H_out_full, W_full).
-    _kpacked_ok = psi_kpacked_K_pad in (8, 16) and x_padded.dtype in (torch.float16, torch.bfloat16) and x_padded.is_cuda and _kpacked_supported_on_device(x_padded.get_device())
+    _kpacked_ok = psi_kpacked_K_pad in (8, 16) and x_padded.dtype in (torch.float16, torch.bfloat16) and x_padded.is_cuda and kpacked_device_supported
     if _kpacked_ok:
         local_out = _disco_s2_fused_conv_kpacked(
             x_padded,
