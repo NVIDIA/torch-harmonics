@@ -55,6 +55,12 @@ from .optimized.disco_optimized import (
 )
 
 
+def _kpacked_device_supported_for_tensor(tensor: torch.Tensor) -> bool:
+    if not tensor.is_cuda:
+        return False
+    return _kpacked_supported_on_device(tensor.get_device())
+
+
 def _normalize_convolution_tensor_s2(
     psi_idx,
     psi_vals,
@@ -521,6 +527,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self.fused = fused and self.optimized_kernel
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
+        self.kpacked_device_supported = False
 
         # make sure the p-shift works by checking that longitudes are divisible
         if self.nlon_in % self.nlon_out != 0:
@@ -598,6 +605,17 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
+    def _refresh_kpacked_device_supported(self):
+        if not hasattr(self, "psi_vals"):
+            self.kpacked_device_supported = False
+            return
+        self.kpacked_device_supported = _kpacked_device_supported_for_tensor(self.psi_vals)
+
+    def _apply(self, fn):
+        result = super()._apply(fn)
+        self._refresh_kpacked_device_supported()
+        return result
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         weight_r = self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])
@@ -612,7 +630,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             and x.is_cuda
             and self.nlon_out % 8 == 0
             and self.nlon_in % self.nlon_out == 0
-            and _kpacked_supported_on_device(x.get_device())
+            and self.kpacked_device_supported
         )
 
         if self.fused and _kpacked_ok:
