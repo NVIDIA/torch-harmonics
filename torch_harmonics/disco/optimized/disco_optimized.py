@@ -330,7 +330,7 @@ if optimized_kernels_is_available():
         B, C, K, H, W = x_expanded.shape
         x_expanded = x_expanded.reshape(B, groups, groupsize, K, H, W)
         out = torch.einsum("bgckxy,gock->bgoxy", x_expanded, weight.to(itype)).contiguous()
-        out = out.reshape(B, -1, H, W)
+        out = out.reshape(B, groups * weight.shape[1], H, W)
         return out
 
     @torch.library.register_fake("disco_kernels::_disco_s2_fused_conv_optimized")
@@ -383,7 +383,7 @@ def _disco_s2_fused_conv_bwd_optimized(ctx, grad_output):
         # einsum backward: expand grad into K-space
         # (B, G, Og, H, W) x (G, Og, Cg, K) -> (B, G, Cg, K, H, W)
         grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
-        grad_x_expanded = grad_x_expanded.reshape(B, -1, K, H, W).contiguous()
+        grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
 
         # transpose contraction back to input space
         grad_inp = disco_kernels.backward.default(grad_x_expanded.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
@@ -499,7 +499,7 @@ class _DiscoKpackedFusedFn(torch.autograd.Function):
         B, C, K, H, W = x_expanded.shape
         x_expanded = x_expanded.reshape(B, groups, groupsize, K, H, W)
         out = torch.einsum("bgckxy,gock->bgoxy", x_expanded, weight.to(itype)).contiguous()
-        return out.reshape(B, -1, H, W)
+        return out.reshape(B, groups * weight.shape[1], H, W)
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -522,7 +522,7 @@ class _DiscoKpackedFusedFn(torch.autograd.Function):
 
         if ctx.needs_input_grad[0]:
             grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
-            grad_x_expanded = grad_x_expanded.reshape(B, -1, K, H, W).contiguous()
+            grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
             grad_inp = disco_kernels.backward.default(grad_x_expanded, roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1]).to(itype)
 
         if ctx.needs_input_grad[1]:
