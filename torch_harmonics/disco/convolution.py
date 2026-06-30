@@ -45,13 +45,17 @@ from torch_harmonics.quadrature import precompute_latitudes, precompute_longitud
 from ._disco_utils import _get_psi
 from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from .optimized.disco_optimized import (
+    _build_kernel_split_csr,
     _disco_s2_contraction_kpacked,
     _disco_s2_contraction_optimized,
+    _disco_s2_conv_save_x_kpacked,
+    _disco_s2_conv_save_x_optimized,
     _disco_s2_fused_conv_kpacked,
     _disco_s2_fused_conv_optimized,
     _disco_s2_transpose_contraction_optimized,
     _kpacked_supported_on_device,
     _maybe_kpack_psi,
+    _use_spatial_first_dgrad,
 )
 
 
@@ -566,6 +570,15 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             # preprocessed data-structure for GPU kernel
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_out, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+            split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals = _build_kernel_split_csr(
+                roff_idx, ker_idx, row_idx, col_idx, vals, self.kernel_size, self.nlat_out
+            )
+            self.register_buffer("psi_split_roff_idx", split_roff_idx, persistent=False)
+            self.register_buffer("psi_split_nnz_off", split_nnz_off, persistent=False)
+            self.register_buffer("psi_split_ker_idx", split_ker_idx, persistent=False)
+            self.register_buffer("psi_split_row_idx", split_row_idx, persistent=False)
+            self.register_buffer("psi_split_col_idx", split_col_idx, persistent=False)
+            self.register_buffer("psi_split_vals", split_vals, persistent=False)
 
             # optional K-packed dense layout for the WGMMA path (Hopper bf16/fp16).
             # precompute here so it's available at forward time.
@@ -633,6 +646,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             and self.nlon_in % self.nlon_out == 0
             and self.kpacked_device_supported
         )
+        _save_x_spatial_first_ok = self.optimized_kernel and _use_spatial_first_dgrad(out_per_group, self.groupsize, self.kernel_size, self.psi_roff_idx, self.nlat_out)
 
         if self.fused and _kpacked_ok:
             out = _disco_s2_fused_conv_kpacked(
@@ -646,6 +660,12 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                 self.psi_row_idx,
                 self.psi_col_idx,
                 self.psi_vals,
+                self.psi_split_roff_idx,
+                self.psi_split_nnz_off,
+                self.psi_split_ker_idx,
+                self.psi_split_row_idx,
+                self.psi_split_col_idx,
+                self.psi_split_vals,
                 self.kernel_size,
                 self.nlat_out,
                 self.nlon_out,
@@ -661,6 +681,12 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                 self.psi_row_idx,
                 self.psi_col_idx,
                 self.psi_vals,
+                self.psi_split_roff_idx,
+                self.psi_split_nnz_off,
+                self.psi_split_ker_idx,
+                self.psi_split_row_idx,
+                self.psi_split_col_idx,
+                self.psi_split_vals,
                 self.kernel_size,
                 self.nlat_out,
                 self.nlon_out,
@@ -668,7 +694,52 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                 self.groupsize,
             )
         else:
-            if _kpacked_ok:
+            if _save_x_spatial_first_ok and _kpacked_ok:
+                out = _disco_s2_conv_save_x_kpacked(
+                    x.to(kpacked_dtype),
+                    weight_r,
+                    self.psi_kpacked_idx,
+                    self.psi_kpacked_vals,
+                    self.psi_kpacked_count,
+                    self.psi_roff_idx,
+                    self.psi_ker_idx,
+                    self.psi_row_idx,
+                    self.psi_col_idx,
+                    self.psi_vals,
+                    self.psi_split_roff_idx,
+                    self.psi_split_nnz_off,
+                    self.psi_split_ker_idx,
+                    self.psi_split_row_idx,
+                    self.psi_split_col_idx,
+                    self.psi_split_vals,
+                    self.kernel_size,
+                    self.nlat_out,
+                    self.nlon_out,
+                    self.groups,
+                    self.groupsize,
+                )
+            elif _save_x_spatial_first_ok:
+                out = _disco_s2_conv_save_x_optimized(
+                    x.to(kpacked_dtype),
+                    weight_r,
+                    self.psi_roff_idx,
+                    self.psi_ker_idx,
+                    self.psi_row_idx,
+                    self.psi_col_idx,
+                    self.psi_vals,
+                    self.psi_split_roff_idx,
+                    self.psi_split_nnz_off,
+                    self.psi_split_ker_idx,
+                    self.psi_split_row_idx,
+                    self.psi_split_col_idx,
+                    self.psi_split_vals,
+                    self.kernel_size,
+                    self.nlat_out,
+                    self.nlon_out,
+                    self.groups,
+                    self.groupsize,
+                )
+            elif _kpacked_ok:
                 x = _disco_s2_contraction_kpacked(
                     x.to(kpacked_dtype),
                     self.psi_kpacked_idx,
@@ -691,12 +762,13 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                 x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
 
             # extract shape
-            B, C, K, H, W = x.shape
-            x = x.reshape(B, self.groups, self.groupsize, K, H, W)
+            if not _save_x_spatial_first_ok:
+                B, C, K, H, W = x.shape
+                x = x.reshape(B, self.groups, self.groupsize, K, H, W)
 
-            # do weight multiplication
-            out = torch.einsum("bgckxy,gock->bgoxy", x, weight_r).contiguous()
-            out = out.reshape(B, self.weight.shape[0], H, W)
+                # do weight multiplication
+                out = torch.einsum("bgckxy,gock->bgoxy", x, weight_r).contiguous()
+                out = out.reshape(B, self.weight.shape[0], H, W)
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, self.bias.shape[0], 1, 1)
