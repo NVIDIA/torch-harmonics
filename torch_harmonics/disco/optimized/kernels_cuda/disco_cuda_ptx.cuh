@@ -469,10 +469,9 @@ namespace disco_kernels
     // -------------------------------------------------------------------------------------
     // tcgen05.relinquish_alloc_permit — ALL threads release the CTA-level TMEM lock.
     //
-    // CUTLASS (tmem_allocator_sm100.hpp release_allocation_lock()) calls this after
-    // every dealloc from all threads in the CTA, outside the warp-0 guard. Without it,
-    // the next kernel launch on the same SM may fail to allocate TMEM because the lock
-    // was never cleared.
+    // CUTLASS (tmem_allocator_sm100.hpp release_allocation_lock()) calls this
+    // after allocation succeeds and before deallocation. Without it, later CTAs
+    // cannot acquire the TMEM allocation permit while this CTA is doing work.
     // -------------------------------------------------------------------------------------
     __device__ __forceinline__ void tcgen05_relinquish_alloc_permit()
     {
