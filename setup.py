@@ -70,9 +70,30 @@ def get_compile_args(module_name):
         return {"cxx": ["-O3", "-ffast-math", "-funroll-loops", "-DNDEBUG"] + cpp_extra_flags, "nvcc": ["-O3", "-DNDEBUG"] + nvcc_extra_flags}
 
 
+def _torch_cuda_arch_list_has(arch: str) -> bool:
+    """Return True if TORCH_CUDA_ARCH_LIST explicitly requests an arch suffix."""
+    arch_list = os.environ.get("TORCH_CUDA_ARCH_LIST", "").lower()
+    if not arch_list:
+        return False
+
+    normalized = arch_list.replace(";", " ").replace(",", " ")
+    aliases = {
+        "9.0a": ("9.0a", "9a", "sm_90a", "compute_90a"),
+        "10.0a": ("10.0a", "10a", "sm_100a", "compute_100a"),
+    }
+    return any(alias in normalized for alias in aliases[arch])
+
+
 def get_helpers_compile_args(BUILD_CPP, BUILD_CUDA):
+    build_kpacked_sm90 = BUILD_CUDA and _torch_cuda_arch_list_has("9.0a")
+    build_kpacked_sm100 = BUILD_CUDA and _torch_cuda_arch_list_has("10.0a")
     return {
-        "cxx": [f"-DBUILD_CPP={1 if BUILD_CPP else 0}", f"-DBUILD_CUDA={1 if BUILD_CUDA else 0}"],
+        "cxx": [
+            f"-DBUILD_CPP={1 if BUILD_CPP else 0}",
+            f"-DBUILD_CUDA={1 if BUILD_CUDA else 0}",
+            f"-DBUILD_KPACKED_SM90={1 if build_kpacked_sm90 else 0}",
+            f"-DBUILD_KPACKED_SM100={1 if build_kpacked_sm100 else 0}",
+        ],
     }
 
 
@@ -145,6 +166,8 @@ def get_ext_modules():
             [
                 "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd.cu",
                 "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd.cu",
+                "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_dense_kpacked_sm90.cu",
+                "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_dense_kpacked_sm100.cu",
             ]
         )
         ext_modules.append(CUDAExtension("torch_harmonics.disco._C", disco_sources, extra_compile_args=get_compile_args("disco")))

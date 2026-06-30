@@ -37,7 +37,7 @@ from time import perf_counter_ns
 import torch
 from disco_helpers import preprocess_psi
 from parameterized import parameterized, parameterized_class
-from testutils import compare_tensors, disable_tf32, maybe_autocast, set_seed
+from testutils import _is_sm90, _is_sm100, compare_tensors, disable_tf32, maybe_autocast, set_seed
 from torch.library import opcheck
 
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
@@ -626,6 +626,11 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             # regular convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, False, 5e-2, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, False, 5e-2, 1e-2],
+            # SM90 kpacked proxy-fence regression coverage:
+            # large output grid with K=9 -> K_PAD=16.
+            [8, 4, 2, (41, 80), (41, 80), (3, 3), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, False, 5e-2, 1e-2],
+            # BC-heavy large-grid kpacked path; stresses multiple BC CTAs and weight contraction.
+            [8, 32, 32, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, False, 5e-2, 1e-2],
             # transpose convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, True, False, 5e-2, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, True, False, 5e-2, 1e-2],
@@ -633,6 +638,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             # regular convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (3, 3), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 1e-2],
+            [8, 32, 32, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 5e-2],
             # transpose convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, False, 3e-1, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, False, 3e-1, 1e-2],
@@ -643,6 +650,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (41, 80), (21, 40), (3), "zernike", "mean", "equiangular", "equiangular", torch.float32, False, True, 1e-4, 1e-4],
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, False, True, 1e-9, 1e-9],
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, True, 1e-2, 1e-2],
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, True, 5e-2, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, True, 5e-2, 5e-2],
         ],
         skip_on_empty=True,
@@ -665,7 +673,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         fused,
         atol,
         rtol,
-        verbose=False,
+        verbose=True,
     ):
         # for AMP dtypes, the module and input stay in float32; autocast handles the rest
         is_amp = dtype in (torch.float16, torch.bfloat16)
@@ -1130,6 +1138,202 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         if verbose:
             print(f"Backward execution time on device {self.device.type}: {duration:.2f} ms")
         self.assertTrue(duration <= _perf_test_thresholds[self.device.type]["bwd_ms"])
+
+
+def _is_kpacked_supported():
+    """Return True when the device supports the kpacked forward kernel (SM 9.x or SM 10.x)."""
+    return _is_sm90() or _is_sm100()
+
+
+@unittest.skipUnless(
+    optimized_kernels_is_available() and torch.cuda.is_available(),
+    "skipping kpacked tests: optimized kernels or CUDA not available",
+)
+class TestKpackedPath(unittest.TestCase):
+    """Tests specific to the WGMMA kpacked forward + BC-tiled CSR backward path."""
+
+    device = torch.device("cuda")
+
+    def _make_conv(self, batch, channels, in_shape, out_shape=None, theta_cutoff=0.05, grid_in="legendre-gauss", grid_out="legendre-gauss", fused=False):
+        if out_shape is None:
+            out_shape = in_shape
+        conv = DiscreteContinuousConvS2(
+            in_channels=channels,
+            out_channels=channels,
+            in_shape=in_shape,
+            out_shape=out_shape,
+            kernel_shape=(3, 3),
+            basis_type="harmonic",
+            basis_norm_mode="nodal",
+            groups=1,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            bias=False,
+            theta_cutoff=theta_cutoff,
+            fused=fused,
+        ).to(device=self.device, dtype=torch.bfloat16)
+        return conv
+
+    @unittest.skipUnless(_is_sm90(), "kpacked forward requires SM_90a (Hopper)")
+    def test_kpacked_forward_activates_on_sm90(self):
+        """forward_kpacked is chosen for bf16/fp16 on Hopper."""
+        conv = self._make_conv(1, 8, (16, 32))
+        self.assertIsNotNone(conv.psi_kpacked_K_pad, "psi_kpacked_K_pad should be set for harmonic basis")
+        self.assertIn(conv.psi_kpacked_K_pad, (8, 16), "K_pad must be 8 or 16 for the WGMMA kernel")
+        inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device)
+        out = conv(inp)
+        self.assertEqual(out.dtype, torch.bfloat16)
+
+    @unittest.skipUnless(_is_sm100(), "kpacked forward on Blackwell requires SM_100a (GB200/B200)")
+    def test_kpacked_forward_activates_on_sm100(self):
+        """tcgen05 kpacked path is chosen for bf16/fp16 on Blackwell."""
+        conv = self._make_conv(1, 8, (16, 32))
+        self.assertIsNotNone(conv.psi_kpacked_K_pad, "psi_kpacked_K_pad should be set for harmonic basis")
+        self.assertIn(conv.psi_kpacked_K_pad, (8, 16), "K_pad must be 8 or 16 for the tcgen05 kernel")
+        inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device)
+        out = conv(inp)
+        self.assertEqual(out.dtype, torch.bfloat16)
+
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
+    def test_kpacked_matches_csr_reference(self, verbose=True):
+        """Kpacked MMA forward path matches the optimized CSR fallback numerically."""
+        set_seed(123)
+        in_shape = (16, 32)
+        conv_kpacked = self._make_conv(1, 8, in_shape).float()
+        conv_csr = self._make_conv(1, 8, in_shape).float()
+        self.assertIsNotNone(conv_kpacked.psi_kpacked_K_pad, "kpacked reference test requires kpacked buffers")
+        self.assertIn(conv_kpacked.psi_kpacked_K_pad, (8, 16), "K_pad must be 8 or 16 for the kpacked kernel")
+
+        conv_csr.weight.data.copy_(conv_kpacked.weight.data)
+        conv_csr.psi_kpacked_K_pad = 24  # force optimized CSR fallback through normal forward dispatch
+
+        inp = torch.randn(1, 8, *in_shape, dtype=torch.float32, device=self.device, requires_grad=True)
+        inp_ref = inp.detach().clone().requires_grad_(True)
+
+        with torch.autocast(self.device.type, dtype=torch.bfloat16):
+            out_kpacked = conv_kpacked(inp)
+            out_csr = conv_csr(inp_ref)
+        self.assertTrue(compare_tensors("output", out_kpacked.float(), out_csr.float(), atol=5e-2, rtol=5e-2))
+
+        grad = torch.randn_like(out_kpacked)
+        out_kpacked.backward(grad)
+        out_csr.backward(grad.clone())
+
+        self.assertTrue(compare_tensors("inp grad", inp.grad.float(), inp_ref.grad.float(), atol=5e-2, rtol=5e-2, verbose=verbose))
+        self.assertTrue(compare_tensors("weight grad", conv_kpacked.weight.grad.float(), conv_csr.weight.grad.float(), atol=5e-2, rtol=5e-2, verbose=verbose))
+
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
+    def test_kpacked_fused_matches_unfused(self):
+        """fused=True kpacked path gives the same result as fused=False."""
+        set_seed(42)
+        conv_unfused = self._make_conv(1, 8, (16, 32), fused=False)
+        conv_fused = self._make_conv(1, 8, (16, 32), fused=True)
+        # share weights so outputs are identical
+        conv_fused.weight.data.copy_(conv_unfused.weight.data)
+
+        inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device, requires_grad=True)
+        inp2 = inp.detach().clone().requires_grad_(True)
+
+        out_u = conv_unfused(inp)
+        out_f = conv_fused(inp2)
+        self.assertTrue(compare_tensors("output", out_u, out_f, atol=1e-2, rtol=1e-2))
+
+        grad = torch.randn_like(out_u)
+        out_u.backward(grad)
+        out_f.backward(grad.clone())
+        self.assertTrue(compare_tensors("inp grad", inp.grad, inp2.grad, atol=1e-2, rtol=1e-2))
+
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
+    def test_kpacked_bwd_bc_tile_boundaries(self):
+        """BC_TILE selection: exercises BC_TILE=1 (BC=3), BC_TILE=4 (BC=5), BC_TILE=8 (BC=16).
+
+        All three should produce the same gradients as fp32 (within bf16 tolerance),
+        confirming the tail-CTA zero-padding path is correct.
+        """
+        in_shape = (16, 32)
+        for batch, channels, expected_bc_tile in [(3, 1, 1), (1, 5, 4), (2, 8, 8)]:
+            with self.subTest(batch=batch, channels=channels, bc_tile=expected_bc_tile):
+                set_seed(0)
+                conv_bf16 = self._make_conv(batch, channels, in_shape)
+                conv_fp32 = DiscreteContinuousConvS2(
+                    in_channels=channels,
+                    out_channels=channels,
+                    in_shape=in_shape,
+                    out_shape=in_shape,
+                    kernel_shape=(3, 3),
+                    basis_type="harmonic",
+                    basis_norm_mode="nodal",
+                    groups=1,
+                    grid_in="legendre-gauss",
+                    grid_out="legendre-gauss",
+                    bias=False,
+                    theta_cutoff=0.05,
+                ).to(device=self.device, dtype=torch.float32)
+                conv_fp32.weight.data.copy_(conv_bf16.weight.data.float())
+
+                inp_bf16 = torch.randn(batch, channels, *in_shape, dtype=torch.bfloat16, device=self.device, requires_grad=True)
+                inp_fp32 = inp_bf16.detach().float().requires_grad_(True)
+                grad = torch.randn(batch, channels, *in_shape, dtype=torch.bfloat16, device=self.device)
+
+                conv_bf16(inp_bf16).backward(grad)
+                conv_fp32(inp_fp32).backward(grad.float())
+
+                self.assertTrue(compare_tensors("inp grad", inp_bf16.grad.float(), inp_fp32.grad, atol=1e-1, rtol=1e-1))
+
+    def test_kpacked_disabled_for_unsupported_k_pad(self):
+        """K_PAD not in {8,16} must silently fall back to CSR, not crash."""
+        # ZernikeFilterBasis with order 4 gives K=15 → K_pad=16 (fine).
+        # Use basis_type="morlet" which typically has K > 16 depending on parameters,
+        # or just directly verify the guard in _kpacked_ok via a monkeypatched K_pad.
+        conv = self._make_conv(1, 4, (16, 32))
+        original_k_pad = conv.psi_kpacked_K_pad
+        try:
+            conv.psi_kpacked_K_pad = 24  # simulate K=20 → K_pad=24
+            inp = torch.randn(1, 4, 16, 32, dtype=torch.bfloat16, device=self.device)
+            # Should not raise — must fall back to CSR path
+            out = conv(inp)
+            self.assertEqual(out.shape[0], 1)
+        finally:
+            conv.psi_kpacked_K_pad = original_k_pad
+
+    def test_kpacked_disabled_fused_fallback(self):
+        """fused=True + K_PAD=24 must fall back to CSR fused path and match fused=False output."""
+        set_seed(77)
+        conv_unfused = self._make_conv(1, 8, (16, 32), fused=False)
+        conv_fused = self._make_conv(1, 8, (16, 32), fused=True)
+        conv_fused.weight.data.copy_(conv_unfused.weight.data)
+
+        # Disable kpacked on both so both take the CSR path.
+        conv_unfused.psi_kpacked_K_pad = 24
+        conv_fused.psi_kpacked_K_pad = 24
+
+        inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device, requires_grad=True)
+        inp2 = inp.detach().clone().requires_grad_(True)
+
+        out_u = conv_unfused(inp)
+        out_f = conv_fused(inp2)
+        self.assertTrue(compare_tensors("output", out_u, out_f, atol=1e-3, rtol=1e-3))
+
+        grad = torch.randn_like(out_u)
+        out_u.backward(grad)
+        out_f.backward(grad.clone())
+        self.assertTrue(compare_tensors("inp grad", inp.grad, inp2.grad, atol=1e-3, rtol=1e-3))
+
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
+    def test_kpacked_opcheck(self):
+        """forward_kpacked op satisfies the PT2 opcheck contract."""
+        conv = self._make_conv(1, 8, (16, 32))
+        inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device)
+        test_inputs = (
+            inp,
+            conv.psi_kpacked_idx,
+            conv.psi_kpacked_vals,
+            conv.psi_kpacked_count,
+            conv.kernel_size,
+            conv.nlat_out,
+            conv.nlon_out,
+        )
+        opcheck(torch.ops.disco_kernels.forward_kpacked, test_inputs)
 
 
 if __name__ == "__main__":

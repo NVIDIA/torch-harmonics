@@ -70,13 +70,18 @@ from disco_helpers import optimized_kernels_is_available
 from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_contraction_torch
 from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_optimized
 
-# The fused conv op (contraction + weight einsum, with the K-expanded
-# recomputed in backward instead of saved) is defined inside
-# disco_optimized.py's ``if optimized_kernels_is_available():`` block, so it
-# exists iff that helper returns True. The fused a2a forward requires it.
+# The fused and kpacked conv ops are defined inside
+# disco_optimized.py's ``if optimized_kernels_is_available():`` block, so they
+# exist iff that helper returns True. The fused a2a forward requires them.
 if optimized_kernels_is_available():
-    from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_fused_conv_optimized
+    from torch_harmonics.disco.optimized.disco_optimized import (
+        _disco_s2_contraction_kpacked,
+        _disco_s2_fused_conv_kpacked,
+        _disco_s2_fused_conv_optimized,
+    )
 else:
+    _disco_s2_contraction_kpacked = None
+    _disco_s2_fused_conv_kpacked = None
     _disco_s2_fused_conv_optimized = None
 
 from torch_harmonics.distributed.primitives import (
@@ -100,6 +105,11 @@ def _distributed_disco_fwd_a2a(
     psi_row_idx: torch.Tensor,
     psi_col_idx: torch.Tensor,
     psi_vals: torch.Tensor,
+    psi_kpacked_idx: Optional[torch.Tensor] = None,
+    psi_kpacked_vals: Optional[torch.Tensor] = None,
+    psi_kpacked_count: Optional[torch.Tensor] = None,
+    psi_kpacked_K_pad: Optional[int] = None,
+    kpacked_device_supported: bool = False,
     psi_torch: Optional[torch.Tensor],
     optimized_kernel: bool,
     kernel_size: int,
@@ -127,7 +137,23 @@ def _distributed_disco_fwd_a2a(
     if comm_size_azimuth > 1:
         x = distributed_transpose_azimuth(x, (1, -1), lon_in_shapes)
 
-    if optimized_kernel:
+    _kpacked_ok = optimized_kernel and psi_kpacked_K_pad in (8, 16) and x.dtype in (torch.float16, torch.bfloat16) and x.is_cuda and kpacked_device_supported
+    if _kpacked_ok:
+        x = _disco_s2_contraction_kpacked(
+            x,
+            psi_kpacked_idx,
+            psi_kpacked_vals,
+            psi_kpacked_count,
+            psi_roff_idx,
+            psi_ker_idx,
+            psi_row_idx,
+            psi_col_idx,
+            psi_vals,
+            kernel_size,
+            nlat_out_local,
+            nlon_out,
+        )
+    elif optimized_kernel:
         x = _disco_s2_contraction_optimized(
             x,
             psi_roff_idx,
@@ -154,13 +180,15 @@ def _distributed_disco_fwd_a2a(
 
     B, C, K, H, W = x.shape
     x = x.reshape(B, groups, groupsize, K, H, W)
+    out_channels = weight.shape[0]
+    out_per_group = out_channels // groups
 
     out = torch.einsum(
         "bgckxy,gock->bgoxy",
         x,
-        weight.reshape(groups, -1, weight.shape[1], weight.shape[2]),
+        weight.reshape(groups, out_per_group, weight.shape[1], weight.shape[2]),
     ).contiguous()
-    out = out.reshape(out.shape[0], -1, H, W)
+    out = out.reshape(out.shape[0], out_channels, H, W)
     return out
 
 
@@ -178,6 +206,11 @@ def _distributed_disco_fwd_a2a_reordered(
     psi_row_idx: torch.Tensor,
     psi_col_idx: torch.Tensor,
     psi_vals: torch.Tensor,
+    psi_kpacked_idx: Optional[torch.Tensor] = None,
+    psi_kpacked_vals: Optional[torch.Tensor] = None,
+    psi_kpacked_count: Optional[torch.Tensor] = None,
+    psi_kpacked_K_pad: Optional[int] = None,
+    kpacked_device_supported: bool = False,
     kernel_size: int,
     nlat_out_local: int,
     nlon_out: int,
@@ -258,20 +291,40 @@ def _distributed_disco_fwd_a2a_reordered(
 
     # 2+3. fused contraction + local weight einsum ->
     #      (B, n_local_groups * out_per_group, H_out_full, W_full).
-    local_out = _disco_s2_fused_conv_optimized(
-        x_padded,
-        weight_local,
-        psi_roff_idx,
-        psi_ker_idx,
-        psi_row_idx,
-        psi_col_idx,
-        psi_vals,
-        kernel_size,
-        nlat_out_local,
-        nlon_out,
-        n_local_groups,
-        local_groupsize,
-    )
+    _kpacked_ok = psi_kpacked_K_pad in (8, 16) and x_padded.dtype in (torch.float16, torch.bfloat16) and x_padded.is_cuda and kpacked_device_supported
+    if _kpacked_ok:
+        local_out = _disco_s2_fused_conv_kpacked(
+            x_padded,
+            weight_local,
+            psi_kpacked_idx,
+            psi_kpacked_vals,
+            psi_kpacked_count,
+            psi_roff_idx,
+            psi_ker_idx,
+            psi_row_idx,
+            psi_col_idx,
+            psi_vals,
+            kernel_size,
+            nlat_out_local,
+            nlon_out,
+            n_local_groups,
+            local_groupsize,
+        )
+    else:
+        local_out = _disco_s2_fused_conv_optimized(
+            x_padded,
+            weight_local,
+            psi_roff_idx,
+            psi_ker_idx,
+            psi_row_idx,
+            psi_col_idx,
+            psi_vals,
+            kernel_size,
+            nlat_out_local,
+            nlon_out,
+            n_local_groups,
+            local_groupsize,
+        )
 
     # 4. place into a full output-channel tensor (zeros for groups this rank
     #    doesn't touch; a group split across ranks is summed by the azimuth rs).

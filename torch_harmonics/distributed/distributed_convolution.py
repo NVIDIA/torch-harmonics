@@ -33,15 +33,16 @@ from itertools import accumulate
 from typing import Optional, Tuple, Union
 
 import torch
-from disco_helpers import optimized_kernels_is_available, preprocess_psi
+from disco_helpers import optimized_kernels_is_available, pack_psi_dense, preprocess_psi
 
 from torch_harmonics.disco._disco_utils import _get_psi
 from torch_harmonics.disco.convolution import (
     DiscreteContinuousConv,
+    _kpacked_device_supported_for_tensor,
     _precompute_convolution_tensor_s2,
 )
 from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_transpose_contraction_torch
-from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_transpose_contraction_optimized
+from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_transpose_contraction_optimized, _maybe_kpack_psi
 
 # a2a forward orchestration: standard (fused=False) and reordered (fused=True).
 from .kernels import (
@@ -251,6 +252,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.nlat_out_local = self.nlat_out
         self.nlon_in_local = self.lon_in_shapes[self.comm_rank_azimuth]
         self.nlon_out_local = self.lon_out_shapes[self.comm_rank_azimuth]
+        self.kpacked_device_supported = False
 
         # compute global convolution tensor
         idx, vals, _ = _precompute_convolution_tensor_s2(
@@ -276,6 +278,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         col_idx = idx[2, ...].contiguous()
         vals = vals.contiguous()
 
+        self.psi_kpacked_K_pad = None
+
         if self.optimized_kernel:
             roff_idx = preprocess_psi(
                 self.kernel_size,
@@ -286,6 +290,17 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 vals,
             ).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+
+            # optional K-packed dense layout for the WGMMA path (Hopper bf16/fp16).
+            # A2A makes W local before the kernel, so wi_shift=0 like the serial path.
+            psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(self.kernel_size, self.nlat_out_local, self.nlon_in, 0, ker_idx, row_idx, col_idx, vals, roff_idx)
+            kpack = _maybe_kpack_psi(psi_packed_idx.contiguous(), psi_packed_vals.contiguous(), psi_packed_count.contiguous())
+            if kpack is not None:
+                kpacked_idx, kpacked_vals, kpacked_count, K_pad = kpack
+                self.register_buffer("psi_kpacked_idx", kpacked_idx, persistent=False)
+                self.register_buffer("psi_kpacked_vals", kpacked_vals, persistent=False)
+                self.register_buffer("psi_kpacked_count", kpacked_count, persistent=False)
+                self.psi_kpacked_K_pad = K_pad
 
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
@@ -321,6 +336,17 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
+    def _refresh_kpacked_device_supported(self):
+        if not hasattr(self, "psi_vals"):
+            self.kpacked_device_supported = False
+            return
+        self.kpacked_device_supported = _kpacked_device_supported_for_tensor(self.psi_vals)
+
+    def _apply(self, fn):
+        result = super()._apply(fn)
+        self._refresh_kpacked_device_supported()
+        return result
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.fused:
             # reordered a2a: einsum-first on the local channel shard via the
@@ -333,6 +359,11 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 psi_row_idx=self.psi_row_idx,
                 psi_col_idx=self.psi_col_idx,
                 psi_vals=self.psi_vals,
+                psi_kpacked_idx=getattr(self, "psi_kpacked_idx", None),
+                psi_kpacked_vals=getattr(self, "psi_kpacked_vals", None),
+                psi_kpacked_count=getattr(self, "psi_kpacked_count", None),
+                psi_kpacked_K_pad=self.psi_kpacked_K_pad,
+                kpacked_device_supported=self.kpacked_device_supported,
                 kernel_size=self.kernel_size,
                 nlat_out_local=self.nlat_out_local,
                 nlon_out=self.nlon_out,
@@ -353,6 +384,11 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 psi_row_idx=self.psi_row_idx,
                 psi_col_idx=self.psi_col_idx,
                 psi_vals=self.psi_vals,
+                psi_kpacked_idx=getattr(self, "psi_kpacked_idx", None),
+                psi_kpacked_vals=getattr(self, "psi_kpacked_vals", None),
+                psi_kpacked_count=getattr(self, "psi_kpacked_count", None),
+                psi_kpacked_K_pad=self.psi_kpacked_K_pad,
+                kpacked_device_supported=self.kpacked_device_supported,
                 psi_torch=getattr(self, "psi", None),
                 optimized_kernel=self.optimized_kernel,
                 kernel_size=self.kernel_size,
@@ -365,7 +401,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             )
 
         if self.bias is not None:
-            out = out + self.bias.reshape(1, -1, 1, 1)
+            out = out + self.bias.reshape(1, self.bias.shape[0], 1, 1)
         return out
 
 
@@ -527,8 +563,9 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
-        x = x.reshape(B, -1, x.shape[-3], H, W)
+        out_per_group = self.weight.shape[0] // self.groups
+        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, out_per_group, self.weight.shape[1], self.weight.shape[2])).contiguous()
+        x = x.reshape(B, self.weight.shape[0], x.shape[-3], H, W)
         num_chans = x.shape[1]
 
         # transpose such that lon is local, channels are split
@@ -554,6 +591,6 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             out = distributed_transpose_azimuth(out, (-1, 1), chan_shapes)
 
         if self.bias is not None:
-            out = out + self.bias.reshape(1, -1, 1, 1)
+            out = out + self.bias.reshape(1, self.bias.shape[0], 1, 1)
 
         return out

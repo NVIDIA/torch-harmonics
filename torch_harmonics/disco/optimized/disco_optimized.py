@@ -29,11 +29,84 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import functools
+
 import torch
-from disco_helpers import optimized_kernels_is_available
+from disco_helpers import (
+    kpacked_sm90_kernels_is_available,
+    kpacked_sm100_kernels_is_available,
+    optimized_kernels_is_available,
+)
 
 from .. import disco_kernels
 from .._disco_utils import _compute_dtype
+
+
+@functools.lru_cache(maxsize=None)
+def _kpacked_supported_on_device(device_index: int) -> bool:
+    """Return True if the kpacked kernel is supported on this CUDA device.
+
+    SM_90a (Hopper)  — WGMMA path in disco_cuda_fwd_dense_kpacked_sm90.cu.
+    SM_100a (Blackwell) — tcgen05 path in disco_cuda_fwd_dense_kpacked_sm100.cu.
+    """
+    major, _ = torch.cuda.get_device_capability(device_index)
+    if major == 9:
+        return kpacked_sm90_kernels_is_available()
+    if major == 10:
+        return kpacked_sm100_kernels_is_available()
+    return False
+
+
+def _maybe_kpack_psi(psi_packed_idx, psi_packed_vals, psi_packed_count, n_align: int = 8):
+    """Convert pack_psi_dense output [K,Ho,NBR_PAD,*] to [Ho,NBR_PAD,K_PAD] kpacked layout.
+
+    Returns (kpacked_idx, kpacked_vals, kpacked_count, K_pad) or None if the
+    per-k support sets differ across k_kern (layout mismatch).
+
+    Inputs (from pack_psi_dense):
+        psi_packed_idx   : [K, Ho, NBR_PAD, 2]   int64
+        psi_packed_vals  : [K, Ho, NBR_PAD]      fp32
+        psi_packed_count : [K, Ho]               int64
+    Outputs:
+        kpacked_idx      : [Ho, NBR_PAD, 2]      int64   (== psi_packed_idx[0])
+        kpacked_vals     : [Ho, NBR_PAD, K_pad]  fp32    (permute(1,2,0), zero-padded)
+        kpacked_count    : [Ho]                  int64   (== psi_packed_count[0])
+        K_pad            : int  (K rounded up to next multiple of n_align)
+    """
+    K = int(psi_packed_count.shape[0])
+    K_pad = ((K + n_align - 1) // n_align) * n_align
+
+    if psi_packed_count.shape[0] <= 1:
+        kpacked_idx = psi_packed_idx[0].contiguous()
+        kpacked_count = psi_packed_count[0].contiguous()
+        Ho = psi_packed_vals.shape[1]
+        NBR_PAD = psi_packed_vals.shape[2]
+        kpacked_vals = torch.zeros(Ho, NBR_PAD, K_pad, dtype=psi_packed_vals.dtype, device=psi_packed_vals.device)
+        kpacked_vals[:, :, :K] = psi_packed_vals.permute(1, 2, 0)
+        return kpacked_idx, kpacked_vals.contiguous(), kpacked_count, K_pad
+
+    # Verify that all k have the same support indices (required for the
+    # K-packed layout to be valid: one idx/count per ho shared across all k).
+    if not torch.equal(psi_packed_count, psi_packed_count[0:1].expand_as(psi_packed_count)):
+        return None
+    if not torch.equal(psi_packed_idx, psi_packed_idx[0:1].expand_as(psi_packed_idx)):
+        return None
+
+    kpacked_idx = psi_packed_idx[0].contiguous()
+    kpacked_count = psi_packed_count[0].contiguous()
+
+    vals_perm = psi_packed_vals.permute(1, 2, 0)  # [Ho, NBR_PAD, K]
+    if K_pad == K:
+        kpacked_vals = vals_perm.contiguous()
+    else:
+        Ho = psi_packed_vals.shape[1]
+        NBR_PAD = psi_packed_vals.shape[2]
+        kpacked_vals = torch.zeros(Ho, NBR_PAD, K_pad, dtype=psi_packed_vals.dtype, device=psi_packed_vals.device)
+        kpacked_vals[:, :, :K] = vals_perm
+        kpacked_vals = kpacked_vals.contiguous()
+
+    return kpacked_idx, kpacked_vals, kpacked_count, K_pad
+
 
 # custom kernels
 if optimized_kernels_is_available():
@@ -257,7 +330,7 @@ if optimized_kernels_is_available():
         B, C, K, H, W = x_expanded.shape
         x_expanded = x_expanded.reshape(B, groups, groupsize, K, H, W)
         out = torch.einsum("bgckxy,gock->bgoxy", x_expanded, weight.to(itype)).contiguous()
-        out = out.reshape(B, -1, H, W)
+        out = out.reshape(B, groups * weight.shape[1], H, W)
         return out
 
     @torch.library.register_fake("disco_kernels::_disco_s2_fused_conv_optimized")
@@ -310,7 +383,7 @@ def _disco_s2_fused_conv_bwd_optimized(ctx, grad_output):
         # einsum backward: expand grad into K-space
         # (B, G, Og, H, W) x (G, Og, Cg, K) -> (B, G, Cg, K, H, W)
         grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
-        grad_x_expanded = grad_x_expanded.reshape(B, -1, K, H, W).contiguous()
+        grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
 
         # transpose contraction back to input space
         grad_inp = disco_kernels.backward.default(grad_x_expanded.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
@@ -332,4 +405,136 @@ if optimized_kernels_is_available():
         "disco_kernels::_disco_s2_fused_conv_optimized",
         _disco_s2_fused_conv_bwd_optimized,
         setup_context=_setup_context_fused_conv_backward,
+    )
+
+    @torch.library.impl("disco_kernels::_disco_s2_fused_conv_optimized", "AutocastCUDA")
+    def _(inp, weight, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out, groups, groupsize):
+        cast_dtype = torch.get_autocast_dtype("cuda")
+        with torch.amp.autocast("cuda", enabled=False):
+            return _disco_s2_fused_conv_optimized(
+                inp.to(cast_dtype), weight.to(cast_dtype), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out, groups, groupsize
+            )
+
+
+# ---------------------------------------------------------------------------
+# K-packed dense ops (WGMMA forward + CSR backward)
+# ---------------------------------------------------------------------------
+# Forward uses the WGMMA kpacked kernel (disco_kernels::forward_kpacked).
+# Backward uses the CSR kernel (disco_kernels::backward) — the gather
+# formulation is input-pixel-parallel with no cross-CTA atomics, which is
+# the correct algorithm for overlapping support sets (same reason cuDNN uses
+# implicit GEMM instead of col2im scatter for strided convolutions).
+# ---------------------------------------------------------------------------
+
+if optimized_kernels_is_available():
+
+    @torch.library.register_fake("disco_kernels::forward_kpacked")
+    def _(inp: torch.Tensor, pack_idx: torch.Tensor, pack_val: torch.Tensor, pack_count: torch.Tensor, kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        out_shape = (inp.shape[0], inp.shape[1], kernel_size, nlat_out, nlon_out)
+        return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
+
+    @torch.library.impl("disco_kernels::forward_kpacked", "AutocastCUDA")
+    def _(inp, pack_idx, pack_val, pack_count, kernel_size, nlat_out, nlon_out):
+        cast_dtype = torch.get_autocast_dtype("cuda")
+        with torch.amp.autocast("cuda", enabled=False):
+            return disco_kernels.forward_kpacked.default(inp.to(cast_dtype), pack_idx, pack_val, pack_count, kernel_size, nlat_out, nlon_out)
+
+
+class _DiscoKpackedFn(torch.autograd.Function):
+    """WGMMA forward + CSR backward for the K-packed dense contraction."""
+
+    @staticmethod
+    def forward(ctx, inp, pack_idx, pack_val, pack_count, roff_idx, ker_idx, row_idx, col_idx, csr_vals, kernel_size, nlat_out, nlon_out):
+        ctx.save_for_backward(roff_idx, ker_idx, row_idx, col_idx, csr_vals)
+        ctx.kernel_size = kernel_size
+        ctx.nlat_in = inp.shape[-2]
+        ctx.nlon_in = inp.shape[-1]
+        return disco_kernels.forward_kpacked.default(inp.contiguous(), pack_idx, pack_val, pack_count, kernel_size, nlat_out, nlon_out)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        roff_idx, ker_idx, row_idx, col_idx, csr_vals = ctx.saved_tensors
+        grad_input = None
+        if ctx.needs_input_grad[0]:
+            gtype = grad_output.dtype
+            cdtype = _compute_dtype(gtype)
+            grad_input = disco_kernels.backward.default(
+                grad_output.contiguous(),
+                roff_idx,
+                ker_idx,
+                row_idx,
+                col_idx,
+                csr_vals.to(cdtype),
+                ctx.kernel_size,
+                ctx.nlat_in,
+                ctx.nlon_in,
+            ).to(gtype)
+        # inp, pack_idx, pack_val, pack_count, roff_idx, ker_idx, row_idx, col_idx,
+        # csr_vals, kernel_size, nlat_out, nlon_out
+        return (grad_input,) + (None,) * 11
+
+
+def _disco_s2_contraction_kpacked(inp, pack_idx, pack_val, pack_count, roff_idx, ker_idx, row_idx, col_idx, csr_vals, kernel_size, nlat_out, nlon_out):
+    return _DiscoKpackedFn.apply(inp, pack_idx, pack_val, pack_count, roff_idx, ker_idx, row_idx, col_idx, csr_vals, kernel_size, nlat_out, nlon_out)
+
+
+class _DiscoKpackedFusedFn(torch.autograd.Function):
+    """WGMMA forward + CSR backward for the fused (contraction + weight einsum) path.
+
+    Forward: WGMMA kpacked contraction → weight einsum (no (B,C,K,H,W) intermediate saved).
+    Backward: CSR forward recompute to get x_expanded for grad_weight; CSR backward for grad_inp.
+    """
+
+    @staticmethod
+    def forward(ctx, inp, weight, pack_idx, pack_val, pack_count, roff_idx, ker_idx, row_idx, col_idx, csr_vals, kernel_size, nlat_out, nlon_out, groups, groupsize):
+        ctx.save_for_backward(inp, weight, roff_idx, ker_idx, row_idx, col_idx, csr_vals)
+        ctx.kernel_size = kernel_size
+        ctx.nlat_out = nlat_out
+        ctx.nlon_out = nlon_out
+        ctx.groups = groups
+        ctx.groupsize = groupsize
+
+        itype = inp.dtype
+        x_expanded = disco_kernels.forward_kpacked.default(inp.contiguous(), pack_idx, pack_val, pack_count, kernel_size, nlat_out, nlon_out)
+        B, C, K, H, W = x_expanded.shape
+        x_expanded = x_expanded.reshape(B, groups, groupsize, K, H, W)
+        out = torch.einsum("bgckxy,gock->bgoxy", x_expanded, weight.to(itype)).contiguous()
+        return out.reshape(B, groups * weight.shape[1], H, W)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        inp, weight, roff_idx, ker_idx, row_idx, col_idx, csr_vals = ctx.saved_tensors
+
+        itype = grad_output.dtype
+        cdtype = _compute_dtype(itype)
+        vals_c = csr_vals.to(cdtype)
+
+        K = ctx.kernel_size
+        G = ctx.groups
+        Cg = ctx.groupsize
+        H, W = ctx.nlat_out, ctx.nlon_out
+        Og = weight.shape[1]
+        B = grad_output.shape[0]
+        grad_output_r = grad_output.reshape(B, G, Og, H, W)
+
+        grad_inp = None
+        grad_weight = None
+
+        if ctx.needs_input_grad[0]:
+            grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
+            grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
+            grad_inp = disco_kernels.backward.default(grad_x_expanded, roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1]).to(itype)
+
+        if ctx.needs_input_grad[1]:
+            x_expanded = disco_kernels.forward.default(inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, H, W).to(itype).reshape(B, G, Cg, K, H, W)
+            grad_weight = torch.einsum("bgoxy,bgckxy->gock", grad_output_r, x_expanded)
+
+        # inp, weight, pack_idx, pack_val, pack_count, roff_idx, ker_idx, row_idx,
+        # col_idx, csr_vals, kernel_size, nlat_out, nlon_out, groups, groupsize
+        return (grad_inp, grad_weight) + (None,) * 13
+
+
+def _disco_s2_fused_conv_kpacked(inp, weight, pack_idx, pack_val, pack_count, roff_idx, ker_idx, row_idx, col_idx, csr_vals, kernel_size, nlat_out, nlon_out, groups, groupsize):
+    return _DiscoKpackedFusedFn.apply(
+        inp, weight, pack_idx, pack_val, pack_count, roff_idx, ker_idx, row_idx, col_idx, csr_vals, kernel_size, nlat_out, nlon_out, groups, groupsize
     )

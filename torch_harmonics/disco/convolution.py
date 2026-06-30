@@ -36,7 +36,7 @@ from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from disco_helpers import optimized_kernels_is_available, preprocess_psi
+from disco_helpers import optimized_kernels_is_available, pack_psi_dense, preprocess_psi
 
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
@@ -44,7 +44,21 @@ from torch_harmonics.quadrature import precompute_latitudes, precompute_longitud
 
 from ._disco_utils import _get_psi
 from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
-from .optimized.disco_optimized import _disco_s2_contraction_optimized, _disco_s2_fused_conv_optimized, _disco_s2_transpose_contraction_optimized
+from .optimized.disco_optimized import (
+    _disco_s2_contraction_kpacked,
+    _disco_s2_contraction_optimized,
+    _disco_s2_fused_conv_kpacked,
+    _disco_s2_fused_conv_optimized,
+    _disco_s2_transpose_contraction_optimized,
+    _kpacked_supported_on_device,
+    _maybe_kpack_psi,
+)
+
+
+def _kpacked_device_supported_for_tensor(tensor: torch.Tensor) -> bool:
+    if not tensor.is_cuda:
+        return False
+    return _kpacked_supported_on_device(tensor.get_device())
 
 
 def _normalize_convolution_tensor_s2(
@@ -513,6 +527,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self.fused = fused and self.optimized_kernel
         self.nlat_in, self.nlon_in = in_shape
         self.nlat_out, self.nlon_out = out_shape
+        self.kpacked_device_supported = False
 
         # make sure the p-shift works by checking that longitudes are divisible
         if self.nlon_in % self.nlon_out != 0:
@@ -545,10 +560,33 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         col_idx = idx[2, ...].contiguous()
         vals = vals.contiguous()
 
+        self.psi_kpacked_K_pad = None  # set to int if kpacked buffers are available
+
         if self.optimized_kernel:
             # preprocessed data-structure for GPU kernel
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_out, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+
+            # optional K-packed dense layout for the WGMMA path (Hopper bf16/fp16).
+            # precompute here so it's available at forward time.
+            psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(
+                self.kernel_size,
+                self.nlat_out,
+                self.nlon_in,
+                0,
+                ker_idx,
+                row_idx,
+                col_idx,
+                vals,
+                roff_idx,
+            )
+            kpack = _maybe_kpack_psi(psi_packed_idx.contiguous(), psi_packed_vals.contiguous(), psi_packed_count.contiguous())
+            if kpack is not None:
+                kpacked_idx, kpacked_vals, kpacked_count, K_pad = kpack
+                self.register_buffer("psi_kpacked_idx", kpacked_idx, persistent=False)
+                self.register_buffer("psi_kpacked_vals", kpacked_vals, persistent=False)
+                self.register_buffer("psi_kpacked_count", kpacked_count, persistent=False)
+                self.psi_kpacked_K_pad = K_pad
 
         # save all datastructures
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
@@ -567,11 +605,54 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
     def psi_idx(self):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
+    def _refresh_kpacked_device_supported(self):
+        if not hasattr(self, "psi_vals"):
+            self.kpacked_device_supported = False
+            return
+        self.kpacked_device_supported = _kpacked_device_supported_for_tensor(self.psi_vals)
+
+    def _apply(self, fn):
+        result = super()._apply(fn)
+        self._refresh_kpacked_device_supported()
+        return result
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
-        weight_r = self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])
+        out_per_group = self.weight.shape[0] // self.groups
+        weight_r = self.weight.reshape(self.groups, out_per_group, self.weight.shape[1], self.weight.shape[2])
+        kpacked_dtype = x.dtype
+        if x.is_cuda and torch.is_autocast_enabled("cuda"):
+            kpacked_dtype = torch.get_autocast_dtype("cuda")
 
-        if self.fused:
+        _kpacked_ok = (
+            self.optimized_kernel
+            and self.psi_kpacked_K_pad in (8, 16)
+            and kpacked_dtype in (torch.float16, torch.bfloat16)
+            and x.is_cuda
+            and self.nlon_out % 8 == 0
+            and self.nlon_in % self.nlon_out == 0
+            and self.kpacked_device_supported
+        )
+
+        if self.fused and _kpacked_ok:
+            out = _disco_s2_fused_conv_kpacked(
+                x.to(kpacked_dtype),
+                weight_r,
+                self.psi_kpacked_idx,
+                self.psi_kpacked_vals,
+                self.psi_kpacked_count,
+                self.psi_roff_idx,
+                self.psi_ker_idx,
+                self.psi_row_idx,
+                self.psi_col_idx,
+                self.psi_vals,
+                self.kernel_size,
+                self.nlat_out,
+                self.nlon_out,
+                self.groups,
+                self.groupsize,
+            )
+        elif self.fused:
             out = _disco_s2_fused_conv_optimized(
                 x,
                 weight_r,
@@ -587,7 +668,22 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                 self.groupsize,
             )
         else:
-            if self.optimized_kernel:
+            if _kpacked_ok:
+                x = _disco_s2_contraction_kpacked(
+                    x.to(kpacked_dtype),
+                    self.psi_kpacked_idx,
+                    self.psi_kpacked_vals,
+                    self.psi_kpacked_count,
+                    self.psi_roff_idx,
+                    self.psi_ker_idx,
+                    self.psi_row_idx,
+                    self.psi_col_idx,
+                    self.psi_vals,
+                    self.kernel_size,
+                    self.nlat_out,
+                    self.nlon_out,
+                )
+            elif self.optimized_kernel:
                 x = _disco_s2_contraction_optimized(
                     x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
                 )
@@ -600,10 +696,10 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
             # do weight multiplication
             out = torch.einsum("bgckxy,gock->bgoxy", x, weight_r).contiguous()
-            out = out.reshape(B, -1, H, W)
+            out = out.reshape(B, self.weight.shape[0], H, W)
 
         if self.bias is not None:
-            out = out + self.bias.reshape(1, -1, 1, 1)
+            out = out + self.bias.reshape(1, self.bias.shape[0], 1, 1)
 
         return out
 
@@ -733,8 +829,9 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])).contiguous()
-        x = x.reshape(B, -1, x.shape[-3], H, W)
+        out_per_group = self.weight.shape[0] // self.groups
+        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, out_per_group, self.weight.shape[1], self.weight.shape[2])).contiguous()
+        x = x.reshape(B, self.weight.shape[0], x.shape[-3], H, W)
 
         if self.optimized_kernel:
             out = _disco_s2_transpose_contraction_optimized(
@@ -744,6 +841,6 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             out = _disco_s2_transpose_contraction_torch(x, self.psi_st.to(x.device), self.nlon_out)
 
         if self.bias is not None:
-            out = out + self.bias.reshape(1, -1, 1, 1)
+            out = out + self.bias.reshape(1, self.bias.shape[0], 1, 1)
 
         return out
