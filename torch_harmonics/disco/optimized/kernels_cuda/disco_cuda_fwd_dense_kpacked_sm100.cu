@@ -45,6 +45,7 @@
 //
 // TMEM lifecycle (see disco_cuda_ptx.cuh for wrapper implementations):
 //   tcgen05.alloc   — first warp allocates 32 TMEM columns; result written to shmem.
+//   tcgen05.relinquish_alloc_permit — all 128 threads release the allocation permit.
 //   tcgen05.st      — zero-initialise the tile (scaleC=1 is used throughout,
 //                     so we need explicit zero-init for cnt==0 correctness).
 //   tcgen05.mma     — one elected thread from the first warp; scaleC=1 (accumulate into zeros).
@@ -52,7 +53,6 @@
 //   mbarrier.try_wait — all 128 threads spin-poll; safe to read TMEM when done.
 //   tcgen05.ld      — warpgroup-collective TMEM read back to registers.
 //   tcgen05.dealloc — first warp releases allocation after writeback.
-//   tcgen05.relinquish_alloc_permit — all 128 threads clear the CTA TMEM lock.
 //
 // Restrictions (same as SM_90a path):
 //   K_PAD ∈ {8, 16}, BC_TILE = WO_TILE = 8, bf16 or fp16 input.
@@ -123,6 +123,11 @@ namespace disco_kernels
         // tcgen05_alloc issues the PTX from the first warp and __syncthreads()
         // internally before returning the base address to all threads.
         uint32_t tmem_acc = tcgen05_alloc(smem_tmem_base_ptr);
+
+        // Release the allocation permit once the TMEM base is known. Keeping it
+        // until dealloc serializes allocation across CTAs and collapses achieved
+        // occupancy to roughly one CTA per SM.
+        tcgen05_relinquish_alloc_permit();
 
         // ─── Zero-init TMEM accumulator ────────────────────────────────────────
         // All threads participate; covers the full M=64, N=N_PAD tile.
@@ -213,7 +218,6 @@ namespace disco_kernels
 
         // ─── Release TMEM ──────────────────────────────────────────────────────
         tcgen05_dealloc(tmem_acc);
-        tcgen05_relinquish_alloc_permit(); // all threads; clears the CTA-level TMEM allocation lock
 
         // ─── Writeback (identical layout to SM_90a accumulator) ────────────────
         // Thread mapping for M=64, N=N_PAD, 128 threads:
