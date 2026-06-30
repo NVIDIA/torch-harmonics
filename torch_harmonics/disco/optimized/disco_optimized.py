@@ -30,6 +30,7 @@
 #
 
 import functools
+import os
 
 import torch
 from disco_helpers import (
@@ -40,6 +41,31 @@ from disco_helpers import (
 
 from .. import disco_kernels
 from .._disco_utils import _compute_dtype
+
+_DISCO_DEBUG_DGRAD = os.getenv("TORCH_HARMONICS_DISCO_DEBUG_DGRAD", "0") not in ("", "0")
+
+
+def _debug_dgrad(message: str) -> None:
+    if _DISCO_DEBUG_DGRAD:
+        print(f"[torch-harmonics disco dgrad] {message}", flush=True)
+
+
+def _debug_dgrad_branch(label: str, use_spatial_first: bool, B: int, G: int, Og: int, Cg: int, K: int, H: int, W: int, roff_idx: torch.Tensor) -> None:
+    if not _DISCO_DEBUG_DGRAD:
+        return
+    if use_spatial_first:
+        raw_bc = G * Og
+        raw_k = 1
+        launches = K
+    else:
+        raw_bc = G * Cg
+        raw_k = K
+        launches = 1
+    _debug_dgrad(
+        f"{label}: spatial_first={use_spatial_first} B={B} G={G} Og={Og} Cg={Cg} "
+        f"K={K} H={H} W={W} roff={roff_idx.numel()} expected_roff={K * H + 1} "
+        f"raw_backward_launches={launches} raw_BC={raw_bc} raw_K={raw_k}"
+    )
 
 
 @functools.lru_cache(maxsize=None)
@@ -490,7 +516,9 @@ def _disco_s2_fused_conv_bwd_optimized(ctx, grad_output):
     grad_weight = None
 
     if ctx.needs_input_grad[0]:
-        if _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H):
+        spatial_first = _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H)
+        _debug_dgrad_branch("custom-op fused", spatial_first, B, G, Og, Cg, K, H, W, roff_idx)
+        if spatial_first:
             grad_inp = _disco_s2_fused_conv_spatial_first_dgrad(
                 grad_output_r,
                 weight.to(itype),
@@ -647,7 +675,9 @@ class _DiscoSaveXConvFn(torch.autograd.Function):
         grad_weight = None
 
         if ctx.needs_input_grad[0]:
-            if _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H):
+            spatial_first = _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H)
+            _debug_dgrad_branch("save-x fused", spatial_first, B, G, Og, Cg, K, H, W, roff_idx)
+            if spatial_first:
                 grad_inp = _disco_s2_fused_conv_spatial_first_dgrad(
                     grad_output_r,
                     weight.to(itype),
@@ -848,7 +878,9 @@ class _DiscoKpackedSaveXConvFn(torch.autograd.Function):
         grad_weight = None
 
         if ctx.needs_input_grad[0]:
-            if _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H):
+            spatial_first = _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H)
+            _debug_dgrad_branch("kpacked save-x fused", spatial_first, B, G, Og, Cg, K, H, W, roff_idx)
+            if spatial_first:
                 grad_inp = _disco_s2_fused_conv_spatial_first_dgrad(
                     grad_output_r,
                     weight.to(itype),
@@ -990,7 +1022,9 @@ class _DiscoKpackedFusedFn(torch.autograd.Function):
         grad_weight = None
 
         if ctx.needs_input_grad[0]:
-            if _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H):
+            spatial_first = _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H)
+            _debug_dgrad_branch("kpacked fused", spatial_first, B, G, Og, Cg, K, H, W, roff_idx)
+            if spatial_first:
                 grad_inp = _disco_s2_fused_conv_spatial_first_dgrad(
                     grad_output_r,
                     weight.to(itype),
