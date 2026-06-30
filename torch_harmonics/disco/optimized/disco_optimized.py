@@ -50,7 +50,20 @@ def _debug_dgrad(message: str) -> None:
         print(f"[torch-harmonics disco dgrad] {message}", flush=True)
 
 
-def _debug_dgrad_branch(label: str, use_spatial_first: bool, B: int, G: int, Og: int, Cg: int, K: int, H: int, W: int, roff_idx: torch.Tensor) -> None:
+def _debug_dgrad_branch(
+    label: str,
+    use_spatial_first: bool,
+    B: int,
+    G: int,
+    Og: int,
+    Cg: int,
+    K: int,
+    H: int,
+    W: int,
+    roff_idx: torch.Tensor,
+    split_roff_idx: torch.Tensor,
+    split_nnz_off: torch.Tensor,
+) -> None:
     if not _DISCO_DEBUG_DGRAD:
         return
     if use_spatial_first:
@@ -61,10 +74,16 @@ def _debug_dgrad_branch(label: str, use_spatial_first: bool, B: int, G: int, Og:
         raw_bc = G * Cg
         raw_k = K
         launches = 1
+    if split_nnz_off.dim() == 2 and split_nnz_off.shape[0] >= 2:
+        split_rows = [int(split_nnz_off[0, k + 1].item() - split_nnz_off[0, k].item() - 1) for k in range(K)]
+    elif split_roff_idx.dim() == 2:
+        split_rows = [int(split_roff_idx.shape[1] - 1)] * K
+    else:
+        split_rows = []
     _debug_dgrad(
         f"{label}: spatial_first={use_spatial_first} B={B} G={G} Og={Og} Cg={Cg} "
         f"K={K} H={H} W={W} roff={roff_idx.numel()} expected_roff={K * H + 1} "
-        f"raw_backward_launches={launches} raw_BC={raw_bc} raw_K={raw_k}"
+        f"split_rows={split_rows} raw_backward_launches={launches} raw_BC={raw_bc} raw_K={raw_k}"
     )
 
 
@@ -134,47 +153,89 @@ def _maybe_kpack_psi(psi_packed_idx, psi_packed_vals, psi_packed_count, n_align:
     return kpacked_idx, kpacked_vals, kpacked_count, K_pad
 
 
-def _use_spatial_first_dgrad(out_per_group: int, in_per_group: int, kernel_size: int, roff_idx: torch.Tensor, nlat_out: int) -> bool:
+def _split_csr_available(split_roff_idx: torch.Tensor, split_nnz_off: torch.Tensor, kernel_size: int) -> bool:
+    if split_roff_idx.numel() == 0 or split_nnz_off.numel() == 0:
+        return False
+    if split_nnz_off.dim() == 2:
+        return split_nnz_off.shape[0] >= 2 and split_nnz_off.shape[1] == kernel_size + 1
+    return split_roff_idx.dim() == 2 and split_roff_idx.shape[0] == kernel_size and split_nnz_off.shape[0] == kernel_size + 1
+
+
+def _use_spatial_first_dgrad(
+    out_per_group: int,
+    in_per_group: int,
+    kernel_size: int,
+    roff_idx: torch.Tensor,
+    nlat_out: int,
+    split_roff_idx: torch.Tensor = None,
+    split_nnz_off: torch.Tensor = None,
+) -> bool:
     # Spatial-first dgrad runs the sparse transpose over output channels and
     # applies the weight contraction afterwards. It wins when output channels
     # are substantially fewer than input channels; near parity the current
     # weight-first path is better because it uses one sparse launch.
-    return kernel_size > 1 and out_per_group * 2 <= in_per_group and roff_idx.numel() == kernel_size * nlat_out + 1
+    if kernel_size <= 1 or out_per_group * 2 > in_per_group:
+        return False
+    dense_layout = roff_idx.numel() == kernel_size * nlat_out + 1
+    split_layout = split_roff_idx is not None and split_nnz_off is not None and _split_csr_available(split_roff_idx, split_nnz_off, kernel_size)
+    return dense_layout or split_layout
 
 
 def _build_kernel_split_csr(roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size: int, nlat_out: int):
-    if roff_idx.numel() != kernel_size * nlat_out + 1:
-        empty_i = roff_idx.new_empty((0,))
-        empty_v = vals.new_empty((0,))
-        return roff_idx.new_empty((0, 0)), empty_i, empty_i, empty_i, empty_i, empty_v
-
     roff_parts = []
+    row_offsets = [0]
     nnz_offsets = [0]
     ker_parts = []
     row_parts = []
     col_parts = []
     val_parts = []
+    nrows = int(roff_idx.numel() - 1)
     for k in range(kernel_size):
-        row_start = k * nlat_out
-        row_end = row_start + nlat_out
-        start = int(roff_idx[row_start].item())
-        end = int(roff_idx[row_end].item())
-        roff_parts.append((roff_idx[row_start : row_end + 1] - start).contiguous())
-        nnz_offsets.append(nnz_offsets[-1] + end - start)
-        ker_parts.append((ker_idx[start:end] - k).contiguous())
-        row_parts.append(row_idx[start:end].contiguous())
-        col_parts.append(col_idx[start:end].contiguous())
-        val_parts.append(vals[start:end].contiguous())
+        roff_k = [0]
+        nnz_k = 0
+        for row in range(nrows):
+            start = int(roff_idx[row].item())
+            end = int(roff_idx[row + 1].item())
+            if start == end:
+                continue
+            if int(ker_idx[start].item()) != k:
+                continue
+            nnz = end - start
+            nnz_k += nnz
+            roff_k.append(nnz_k)
+            ker_parts.append(torch.zeros((nnz,), dtype=ker_idx.dtype, device=ker_idx.device))
+            row_parts.append(row_idx[start:end].contiguous())
+            col_parts.append(col_idx[start:end].contiguous())
+            val_parts.append(vals[start:end].contiguous())
+        roff_parts.append(torch.tensor(roff_k, dtype=roff_idx.dtype, device=roff_idx.device))
+        row_offsets.append(row_offsets[-1] + len(roff_k))
+        nnz_offsets.append(nnz_offsets[-1] + nnz_k)
 
-    split_roff_idx = torch.stack(roff_parts, dim=0).contiguous()
-    split_nnz_off = torch.tensor(nnz_offsets, dtype=roff_idx.dtype, device=roff_idx.device)
+    split_roff_idx = torch.cat(roff_parts, dim=0).contiguous()
+    split_nnz_off = torch.stack(
+        (
+            torch.tensor(row_offsets, dtype=roff_idx.dtype, device=roff_idx.device),
+            torch.tensor(nnz_offsets, dtype=roff_idx.dtype, device=roff_idx.device),
+        ),
+        dim=0,
+    ).contiguous()
+    if ker_parts:
+        split_ker_idx = torch.cat(ker_parts, dim=0).contiguous()
+        split_row_idx = torch.cat(row_parts, dim=0).contiguous()
+        split_col_idx = torch.cat(col_parts, dim=0).contiguous()
+        split_vals = torch.cat(val_parts, dim=0).contiguous()
+    else:
+        split_ker_idx = ker_idx.new_empty((0,))
+        split_row_idx = row_idx.new_empty((0,))
+        split_col_idx = col_idx.new_empty((0,))
+        split_vals = vals.new_empty((0,))
     return (
         split_roff_idx,
         split_nnz_off,
-        torch.cat(ker_parts, dim=0).contiguous(),
-        torch.cat(row_parts, dim=0).contiguous(),
-        torch.cat(col_parts, dim=0).contiguous(),
-        torch.cat(val_parts, dim=0).contiguous(),
+        split_ker_idx,
+        split_row_idx,
+        split_col_idx,
+        split_vals,
     )
 
 
@@ -197,9 +258,19 @@ def _disco_s2_fused_conv_spatial_first_dgrad(
 
     parts = []
     for k in range(kernel_size):
-        start = int(split_nnz_off[k].item())
-        end = int(split_nnz_off[k + 1].item())
-        roff_k = split_roff_idx[k]
+        if split_nnz_off.dim() == 2:
+            row_start = int(split_nnz_off[0, k].item())
+            row_end = int(split_nnz_off[0, k + 1].item())
+            start = int(split_nnz_off[1, k].item())
+            end = int(split_nnz_off[1, k + 1].item())
+            roff_k = split_roff_idx[row_start:row_end]
+        else:
+            start = int(split_nnz_off[k].item())
+            end = int(split_nnz_off[k + 1].item())
+            roff_k = split_roff_idx[k]
+        if roff_k.numel() <= 1:
+            parts.append(grad_output_r.new_zeros((B, G, Og, nlat_in, nlon_in)))
+            continue
         ker_k = split_ker_idx[start:end]
         row_k = split_row_idx[start:end]
         col_k = split_col_idx[start:end]
@@ -516,8 +587,8 @@ def _disco_s2_fused_conv_bwd_optimized(ctx, grad_output):
     grad_weight = None
 
     if ctx.needs_input_grad[0]:
-        spatial_first = _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H)
-        _debug_dgrad_branch("custom-op fused", spatial_first, B, G, Og, Cg, K, H, W, roff_idx)
+        spatial_first = _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H, split_roff_idx, split_nnz_off)
+        _debug_dgrad_branch("custom-op fused", spatial_first, B, G, Og, Cg, K, H, W, roff_idx, split_roff_idx, split_nnz_off)
         if spatial_first:
             grad_inp = _disco_s2_fused_conv_spatial_first_dgrad(
                 grad_output_r,
@@ -675,8 +746,8 @@ class _DiscoSaveXConvFn(torch.autograd.Function):
         grad_weight = None
 
         if ctx.needs_input_grad[0]:
-            spatial_first = _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H)
-            _debug_dgrad_branch("save-x fused", spatial_first, B, G, Og, Cg, K, H, W, roff_idx)
+            spatial_first = _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H, split_roff_idx, split_nnz_off)
+            _debug_dgrad_branch("save-x fused", spatial_first, B, G, Og, Cg, K, H, W, roff_idx, split_roff_idx, split_nnz_off)
             if spatial_first:
                 grad_inp = _disco_s2_fused_conv_spatial_first_dgrad(
                     grad_output_r,
@@ -878,8 +949,8 @@ class _DiscoKpackedSaveXConvFn(torch.autograd.Function):
         grad_weight = None
 
         if ctx.needs_input_grad[0]:
-            spatial_first = _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H)
-            _debug_dgrad_branch("kpacked save-x fused", spatial_first, B, G, Og, Cg, K, H, W, roff_idx)
+            spatial_first = _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H, split_roff_idx, split_nnz_off)
+            _debug_dgrad_branch("kpacked save-x fused", spatial_first, B, G, Og, Cg, K, H, W, roff_idx, split_roff_idx, split_nnz_off)
             if spatial_first:
                 grad_inp = _disco_s2_fused_conv_spatial_first_dgrad(
                     grad_output_r,
@@ -1022,8 +1093,8 @@ class _DiscoKpackedFusedFn(torch.autograd.Function):
         grad_weight = None
 
         if ctx.needs_input_grad[0]:
-            spatial_first = _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H)
-            _debug_dgrad_branch("kpacked fused", spatial_first, B, G, Og, Cg, K, H, W, roff_idx)
+            spatial_first = _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H, split_roff_idx, split_nnz_off)
+            _debug_dgrad_branch("kpacked fused", spatial_first, B, G, Og, Cg, K, H, W, roff_idx, split_roff_idx, split_nnz_off)
             if spatial_first:
                 grad_inp = _disco_s2_fused_conv_spatial_first_dgrad(
                     grad_output_r,
