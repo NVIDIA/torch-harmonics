@@ -212,6 +212,8 @@ def _distributed_disco_fwd_a2a_reordered(
     psi_split_row_idx: torch.Tensor,
     psi_split_col_idx: torch.Tensor,
     psi_split_vals: torch.Tensor,
+    psi_split_row_offsets=(),
+    psi_split_nnz_offsets=(),
     psi_kpacked_idx: Optional[torch.Tensor] = None,
     psi_kpacked_vals: Optional[torch.Tensor] = None,
     psi_kpacked_count: Optional[torch.Tensor] = None,
@@ -321,6 +323,8 @@ def _distributed_disco_fwd_a2a_reordered(
             nlon_out,
             n_local_groups,
             local_groupsize,
+            psi_split_row_offsets,
+            psi_split_nnz_offsets,
         )
     else:
         local_out = _disco_s2_fused_conv_optimized(

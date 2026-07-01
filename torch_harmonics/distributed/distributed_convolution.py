@@ -42,7 +42,7 @@ from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
 )
 from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_transpose_contraction_torch
-from torch_harmonics.disco.optimized.disco_optimized import _build_kernel_split_csr, _disco_s2_transpose_contraction_optimized, _maybe_kpack_psi
+from torch_harmonics.disco.optimized.disco_optimized import _build_kernel_split_csr, _disco_s2_transpose_contraction_optimized, _maybe_kpack_psi, _split_csr_python_offsets
 
 # a2a forward orchestration: standard (fused=False) and reordered (fused=True).
 from .kernels import (
@@ -293,6 +293,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals = _build_kernel_split_csr(
                 roff_idx, ker_idx, row_idx, col_idx, vals, self.kernel_size, self.nlat_out_local
             )
+            self.psi_split_row_offsets, self.psi_split_nnz_offsets = _split_csr_python_offsets(split_nnz_off)
             self.register_buffer("psi_split_roff_idx", split_roff_idx, persistent=False)
             self.register_buffer("psi_split_nnz_off", split_nnz_off, persistent=False)
             self.register_buffer("psi_split_ker_idx", split_ker_idx, persistent=False)
@@ -374,6 +375,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 psi_split_row_idx=self.psi_split_row_idx,
                 psi_split_col_idx=self.psi_split_col_idx,
                 psi_split_vals=self.psi_split_vals,
+                psi_split_row_offsets=self.psi_split_row_offsets,
+                psi_split_nnz_offsets=self.psi_split_nnz_offsets,
                 psi_kpacked_idx=getattr(self, "psi_kpacked_idx", None),
                 psi_kpacked_vals=getattr(self, "psi_kpacked_vals", None),
                 psi_kpacked_count=getattr(self, "psi_kpacked_count", None),
