@@ -55,6 +55,7 @@ from .optimized.disco_optimized import (
     _disco_s2_transpose_contraction_optimized,
     _kpacked_supported_on_device,
     _maybe_kpack_psi,
+    _split_csr_python_offsets,
     _use_spatial_first_dgrad,
 )
 
@@ -573,6 +574,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals = _build_kernel_split_csr(
                 roff_idx, ker_idx, row_idx, col_idx, vals, self.kernel_size, self.nlat_out
             )
+            self.psi_split_row_offsets, self.psi_split_nnz_offsets = _split_csr_python_offsets(split_nnz_off)
             self.register_buffer("psi_split_roff_idx", split_roff_idx, persistent=False)
             self.register_buffer("psi_split_nnz_off", split_nnz_off, persistent=False)
             self.register_buffer("psi_split_ker_idx", split_ker_idx, persistent=False)
@@ -671,6 +673,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                 self.nlon_out,
                 self.groups,
                 self.groupsize,
+                self.psi_split_row_offsets,
+                self.psi_split_nnz_offsets,
             )
         elif self.fused:
             out = _disco_s2_fused_conv_optimized(
