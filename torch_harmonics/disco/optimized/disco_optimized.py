@@ -30,6 +30,7 @@
 #
 
 import functools
+from typing import List, Optional
 
 import torch
 from disco_helpers import (
@@ -470,6 +471,8 @@ if optimized_kernels_is_available():
         nlon_out: int,
         groups: int,
         groupsize: int,
+        split_row_offsets: Optional[List[int]] = None,
+        split_nnz_offsets: Optional[List[int]] = None,
     ) -> torch.Tensor:
 
         # sparse contraction: (B, C, H_in, W_in) -> (B, C, K, H_out, W_out)
@@ -505,6 +508,8 @@ if optimized_kernels_is_available():
         nlon_out: int,
         groups: int,
         groupsize: int,
+        split_row_offsets: Optional[List[int]] = None,
+        split_nnz_offsets: Optional[List[int]] = None,
     ) -> torch.Tensor:
         out_channels = groups * weight.shape[1]
         return torch.empty(inp.shape[0], out_channels, nlat_out, nlon_out, dtype=inp.dtype, device=inp.device)
@@ -530,6 +535,8 @@ def _setup_context_fused_conv_backward(ctx, inputs, output):
         nlon_out,
         groups,
         groupsize,
+        split_row_offsets,
+        split_nnz_offsets,
     ) = inputs
     ctx.save_for_backward(inp, weight, roff_idx, ker_idx, row_idx, col_idx, vals, split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals)
     ctx.kernel_size = kernel_size
@@ -537,6 +544,8 @@ def _setup_context_fused_conv_backward(ctx, inputs, output):
     ctx.nlon_out = nlon_out
     ctx.groups = groups
     ctx.groupsize = groupsize
+    ctx.split_row_offsets = split_row_offsets
+    ctx.split_nnz_offsets = split_nnz_offsets
 
 
 def _disco_s2_fused_conv_bwd_optimized(ctx, grad_output):
@@ -572,6 +581,8 @@ def _disco_s2_fused_conv_bwd_optimized(ctx, grad_output):
                 K,
                 inp.shape[-2],
                 inp.shape[-1],
+                ctx.split_row_offsets,
+                ctx.split_nnz_offsets,
             )
         else:
             # einsum backward: expand grad into K-space
@@ -591,7 +602,7 @@ def _disco_s2_fused_conv_bwd_optimized(ctx, grad_output):
         # weight gradient: (B, G, Og, H, W) x (B, G, Cg, K, H, W) -> (G, Og, Cg, K)
         grad_weight = torch.einsum("bgoxy,bgckxy->gock", grad_output_r, x_expanded)
 
-    return (grad_inp, grad_weight) + (None,) * 16
+    return (grad_inp, grad_weight) + (None,) * 18
 
 
 if optimized_kernels_is_available():
@@ -621,6 +632,8 @@ if optimized_kernels_is_available():
         nlon_out,
         groups,
         groupsize,
+        split_row_offsets=None,
+        split_nnz_offsets=None,
     ):
         cast_dtype = torch.get_autocast_dtype("cuda")
         with torch.amp.autocast("cuda", enabled=False):
@@ -643,6 +656,8 @@ if optimized_kernels_is_available():
                 nlon_out,
                 groups,
                 groupsize,
+                split_row_offsets,
+                split_nnz_offsets,
             )
 
 
@@ -675,6 +690,8 @@ class _DiscoSaveXConvFn(torch.autograd.Function):
         nlon_out,
         groups,
         groupsize,
+        split_row_offsets=(),
+        split_nnz_offsets=(),
     ):
         itype = inp.dtype
         cdtype = _compute_dtype(itype)
@@ -689,6 +706,8 @@ class _DiscoSaveXConvFn(torch.autograd.Function):
         ctx.nlon_out = nlon_out
         ctx.groups = groups
         ctx.groupsize = groupsize
+        ctx.split_row_offsets = split_row_offsets
+        ctx.split_nnz_offsets = split_nnz_offsets
 
         B, C, K, H, W = x_expanded.shape
         x_expanded_r = x_expanded.reshape(B, groups, groupsize, K, H, W)
@@ -730,6 +749,8 @@ class _DiscoSaveXConvFn(torch.autograd.Function):
                     K,
                     ctx.nlat_in,
                     ctx.nlon_in,
+                    ctx.split_row_offsets,
+                    ctx.split_nnz_offsets,
                 )
             else:
                 grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
@@ -741,7 +762,7 @@ class _DiscoSaveXConvFn(torch.autograd.Function):
             x_expanded_r = x_expanded.to(itype).reshape(B, G, Cg, K, H, W)
             grad_weight = torch.einsum("bgoxy,bgckxy->gock", grad_output_r, x_expanded_r)
 
-        return (grad_inp, grad_weight) + (None,) * 16
+        return (grad_inp, grad_weight) + (None,) * 18
 
 
 def _disco_s2_conv_save_x_optimized(
@@ -763,6 +784,8 @@ def _disco_s2_conv_save_x_optimized(
     nlon_out,
     groups,
     groupsize,
+    split_row_offsets=(),
+    split_nnz_offsets=(),
 ):
     return _DiscoSaveXConvFn.apply(
         inp,
@@ -783,6 +806,8 @@ def _disco_s2_conv_save_x_optimized(
         nlon_out,
         groups,
         groupsize,
+        split_row_offsets,
+        split_nnz_offsets,
     )
 
 
@@ -875,6 +900,8 @@ class _DiscoKpackedSaveXConvFn(torch.autograd.Function):
         nlon_out,
         groups,
         groupsize,
+        split_row_offsets=(),
+        split_nnz_offsets=(),
     ):
         itype = inp.dtype
         x_expanded = disco_kernels.forward_kpacked.default(inp.contiguous(), pack_idx, pack_val, pack_count, kernel_size, nlat_out, nlon_out)
@@ -889,6 +916,8 @@ class _DiscoKpackedSaveXConvFn(torch.autograd.Function):
         ctx.nlon_out = nlon_out
         ctx.groups = groups
         ctx.groupsize = groupsize
+        ctx.split_row_offsets = split_row_offsets
+        ctx.split_nnz_offsets = split_nnz_offsets
 
         B, C, K, H, W = x_expanded.shape
         x_expanded_r = x_expanded.reshape(B, groups, groupsize, K, H, W)
@@ -932,6 +961,8 @@ class _DiscoKpackedSaveXConvFn(torch.autograd.Function):
                     K,
                     ctx.nlat_in,
                     ctx.nlon_in,
+                    ctx.split_row_offsets,
+                    ctx.split_nnz_offsets,
                 )
             else:
                 grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
@@ -943,7 +974,7 @@ class _DiscoKpackedSaveXConvFn(torch.autograd.Function):
             x_expanded_r = x_expanded.to(itype).reshape(B, G, Cg, K, H, W)
             grad_weight = torch.einsum("bgoxy,bgckxy->gock", grad_output_r, x_expanded_r)
 
-        return (grad_inp, grad_weight) + (None,) * 19
+        return (grad_inp, grad_weight) + (None,) * 21
 
 
 def _disco_s2_conv_save_x_kpacked(
@@ -968,6 +999,8 @@ def _disco_s2_conv_save_x_kpacked(
     nlon_out,
     groups,
     groupsize,
+    split_row_offsets=(),
+    split_nnz_offsets=(),
 ):
     return _DiscoKpackedSaveXConvFn.apply(
         inp,
@@ -991,6 +1024,8 @@ def _disco_s2_conv_save_x_kpacked(
         nlon_out,
         groups,
         groupsize,
+        split_row_offsets,
+        split_nnz_offsets,
     )
 
 

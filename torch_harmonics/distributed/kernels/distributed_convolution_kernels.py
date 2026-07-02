@@ -346,6 +346,8 @@ def _distributed_disco_fwd_a2a_reordered(
             nlon_out,
             n_local_groups,
             local_groupsize,
+            psi_split_row_offsets,
+            psi_split_nnz_offsets,
         )
 
     # 4. place into a full output-channel tensor (zeros for groups this rank
