@@ -581,8 +581,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
-        out_per_group = self.weight.shape[0] // self.groups
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, out_per_group, self.weight.shape[1], self.weight.shape[2])).contiguous()
+        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, self.out_per_group, self.weight.shape[1], self.weight.shape[2])).contiguous()
         x = x.reshape(B, self.weight.shape[0], x.shape[-3], H, W)
         num_chans = x.shape[1]
 
