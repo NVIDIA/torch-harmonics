@@ -700,6 +700,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                 self.nlon_out,
                 self.groups,
                 self.groupsize,
+                self.psi_split_row_offsets,
+                self.psi_split_nnz_offsets,
             )
         else:
             if _save_x_spatial_first_ok and _kpacked_ok:
@@ -725,6 +727,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                     self.nlon_out,
                     self.groups,
                     self.groupsize,
+                    self.psi_split_row_offsets,
+                    self.psi_split_nnz_offsets,
                 )
             elif _save_x_spatial_first_ok:
                 out = _disco_s2_conv_save_x_optimized(
@@ -746,6 +750,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                     self.nlon_out,
                     self.groups,
                     self.groupsize,
+                    self.psi_split_row_offsets,
+                    self.psi_split_nnz_offsets,
                 )
             elif _kpacked_ok:
                 x = _disco_s2_contraction_kpacked(
