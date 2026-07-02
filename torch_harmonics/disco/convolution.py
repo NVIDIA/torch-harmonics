@@ -445,6 +445,7 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
         if out_channels % self.groups != 0:
             raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
         self.groupsize = in_channels // self.groups
+        self.out_per_group = out_channels // self.groups
         scale = math.sqrt(1.0 / self.groupsize) * self.filter_basis.get_init_factors().reshape(1, 1, -1)
         self.weight = nn.Parameter(scale * torch.randn(out_channels, self.groupsize, self.kernel_size))
 
@@ -613,6 +614,10 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         if not self.optimized_kernel:
             self.psi = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out)
 
+        # cache static forward-path decisions so the forward sees plain Python bools/ints,
+        # not symbolic expressions that confuse torch.compile's value-range analysis
+        self._save_x_spatial_first_ok = self.optimized_kernel and _use_spatial_first_dgrad(self.out_per_group, self.groupsize, self.kernel_size, self.psi_roff_idx, self.nlat_out)
+
     def extra_repr(self):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
 
@@ -633,8 +638,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
-        out_per_group = self.weight.shape[0] // self.groups
-        weight_r = self.weight.reshape(self.groups, out_per_group, self.weight.shape[1], self.weight.shape[2])
+        weight_r = self.weight.reshape(self.groups, self.out_per_group, self.weight.shape[1], self.weight.shape[2])
         kpacked_dtype = x.dtype
         if x.is_cuda and torch.is_autocast_enabled("cuda"):
             kpacked_dtype = torch.get_autocast_dtype("cuda")
@@ -648,7 +652,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             and self.nlon_in % self.nlon_out == 0
             and self.kpacked_device_supported
         )
-        _save_x_spatial_first_ok = self.optimized_kernel and _use_spatial_first_dgrad(out_per_group, self.groupsize, self.kernel_size, self.psi_roff_idx, self.nlat_out)
+        _save_x_spatial_first_ok = self._save_x_spatial_first_ok
 
         if self.fused and _kpacked_ok:
             out = _disco_s2_fused_conv_kpacked(
@@ -905,8 +909,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
-        out_per_group = self.weight.shape[0] // self.groups
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, out_per_group, self.weight.shape[1], self.weight.shape[2])).contiguous()
+        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, self.out_per_group, self.weight.shape[1], self.weight.shape[2])).contiguous()
         x = x.reshape(B, self.weight.shape[0], x.shape[-3], H, W)
 
         if self.optimized_kernel:
