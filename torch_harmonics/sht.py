@@ -129,7 +129,10 @@ class RealSHT(nn.Module):
         out_re = torch.einsum("...mk,mlk->...lm", x_re, w)
         out_im = torch.einsum("...mk,mlk->...lm", x_im, w)
 
-        return torch.complex(out_re, out_im)
+        # the ...lm einsum output is non-contiguous (l ends up stride-1, m slow); torch.complex
+        # preserves those strides, but inductor's meta kernel for aten.complex predicts a contiguous
+        # layout, tripping assert_size_stride under torch.compile(dynamic=False). Force contiguous.
+        return torch.complex(out_re.contiguous(), out_im.contiguous())
 
 
 class InverseRealSHT(nn.Module):
@@ -222,7 +225,9 @@ class InverseRealSHT(nn.Module):
         w = self.pct.to(x_re.dtype)
         out_re = torch.einsum("...ml,mkl->...km", x_re, w)
         out_im = torch.einsum("...ml,mkl->...km", x_im, w)
-        x = torch.complex(out_re, out_im)
+        # force contiguous: the einsum output is non-contiguous and inductor's aten.complex meta
+        # predicts a contiguous layout, tripping assert_size_stride under torch.compile (see fwd SHT).
+        x = torch.complex(out_re.contiguous(), out_im.contiguous())
 
         # apply the inverse (real) FFT
         x = irfft(x, n=self.nlon, dim=-1, norm="forward")

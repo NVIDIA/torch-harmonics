@@ -179,7 +179,9 @@ class DistributedRealSHT(nn.Module):
         w = self.weights.to(x_re.dtype)
         out_re = torch.einsum("...mk,mlk->...lm", x_re, w)
         out_im = torch.einsum("...mk,mlk->...lm", x_im, w)
-        x = torch.complex(out_re, out_im)
+        # force contiguous: the ...lm einsum output is non-contiguous and inductor's aten.complex
+        # meta predicts a contiguous layout, tripping assert_size_stride under torch.compile.
+        x = torch.complex(out_re.contiguous(), out_im.contiguous())
 
         # transpose: after this, l is split and c is local
         if self.comm_size_polar > 1:
@@ -309,7 +311,9 @@ class DistributedInverseRealSHT(nn.Module):
         w = self.pct.to(x_re.dtype)
         out_re = torch.einsum("...ml,mkl->...km", x_re, w)
         out_im = torch.einsum("...ml,mkl->...km", x_im, w)
-        x = torch.complex(out_re, out_im)
+        # force contiguous: the einsum output is non-contiguous and inductor's aten.complex meta
+        # predicts a contiguous layout, tripping assert_size_stride under torch.compile.
+        x = torch.complex(out_re.contiguous(), out_im.contiguous())
 
         if self.comm_size_polar > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
