@@ -50,8 +50,11 @@ jobs:
         python3 -m pip install --no-build-isolation -e ".[docs]"
 
     - name: Build HTML documentation
+      # -W turns Sphinx warnings (broken cross-references, malformed
+      # directives, etc.) into errors; --keep-going reports them all in one
+      # run instead of stopping at the first.
       run: |
-        make -C docs html
+        make -C docs html SPHINXOPTS="-W --keep-going"
 
     # Plain downloadable artifact for offline inspection (a zip of the raw
     # HTML). Produced on every run, including test builds that don't deploy.

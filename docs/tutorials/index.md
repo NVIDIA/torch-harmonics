@@ -5,8 +5,9 @@ These tutorials are rendered from the notebooks in the repository's
 not re-executed at documentation build time (they require CUDA and datasets).
 
 ```{toctree}
-:maxdepth: 1
-
+---
+maxdepth: 1
+---
 getting_started
 plot_spherical_harmonics
 quadrature

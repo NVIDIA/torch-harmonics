@@ -9,17 +9,19 @@ CPU and GPU, with optional custom CUDA kernels for the performance-critical
 paths.
 
 ```{toctree}
-:maxdepth: 1
-:caption: Getting started
-
+---
+maxdepth: 1
+caption: Getting started
+---
 install
 tutorials/index
 ```
 
 ```{toctree}
-:maxdepth: 2
-:caption: Reference
-
+---
+maxdepth: 2
+caption: Reference
+---
 api/index
 ```
 
