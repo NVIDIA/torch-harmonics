@@ -1,0 +1,34 @@
+/* NVIDIA-green + white color scheme for the torch-harmonics documentation.
+   Recolors the pydata-sphinx-theme accents via its CSS variables. */
+
+:root {
+    --th-green: #76b900;       /* NVIDIA brand green */
+    --th-green-dark: #5a8f00;  /* darker shade for hover / contrast on white */
+    --th-green-darker: #4c7a00;
+}
+
+/* Light mode: white background, green accents */
+html[data-theme="light"] {
+    --pst-color-primary: var(--th-green-dark);
+    --pst-color-primary-highlight: var(--th-green-darker);
+    --pst-color-secondary: var(--th-green);
+    --pst-color-secondary-highlight: var(--th-green-dark);
+    --pst-color-link: var(--th-green-dark);
+    --pst-color-link-hover: var(--th-green-darker);
+    --pst-color-inline-code: var(--th-green-darker);
+}
+
+/* Dark mode: keep green accents, brighter for contrast */
+html[data-theme="dark"] {
+    --pst-color-primary: var(--th-green);
+    --pst-color-primary-highlight: var(--th-green-dark);
+    --pst-color-secondary: var(--th-green);
+    --pst-color-secondary-highlight: var(--th-green-dark);
+    --pst-color-link: var(--th-green);
+    --pst-color-link-hover: var(--th-green-dark);
+}
+
+/* Green accent bar across the top of the header */
+.bd-header {
+    border-top: 3px solid var(--th-green);
+}
