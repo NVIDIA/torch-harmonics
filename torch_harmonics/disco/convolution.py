@@ -444,8 +444,27 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
 
 
 class DiscreteContinuousConvS2(DiscreteContinuousConv):
-    """
-    Discrete-continuous (DISCO) convolutions on the 2-Sphere as described in [1].
+    r"""
+    Discrete-continuous (DISCO) convolution on the 2-sphere, as described in [1].
+
+    A DISCO convolution splits the spherical convolution integral into a
+    *continuous* filter and a *discrete* quadrature. The filter is defined
+    continuously as a learnable linear combination of localized basis functions
+    with compact support (of angular radius ``theta_cutoff``), while the
+    convolution integral is evaluated by numerical quadrature over the sampling
+    points of the input grid. Because the filter has compact support, only a
+    small, fixed number of input points contribute to each output location, so
+    the operation is realized as a sparse tensor contraction whose cost and
+    memory scale *linearly* in the number of grid points.
+
+    Keeping the filter continuous makes the convolution approximately
+    :math:`SO(3)`-equivariant (rotations of the filter are restricted to the
+    quotient :math:`SO(3)/SO(2)`), while the discrete quadrature makes it
+    scalable to high resolution -- reconciling the equivariance-versus-
+    scalability trade-off of earlier spherical CNNs [1]. Since the filter is
+    continuous, the layer is also resolution-agnostic: the same learned weights
+    can be evaluated on different input/output grids (``grid_in``/``grid_out``),
+    though the learned features themselves remain resolution dependent.
 
     Parameters
     -----------
@@ -617,8 +636,15 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
 
 class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
-    """
-    Discrete-continuous (DISCO) transpose convolutions on the 2-Sphere as described in [1].
+    r"""
+    Discrete-continuous (DISCO) transpose convolution on the 2-sphere, as described in [1].
+
+    This is the transpose (adjoint) of :class:`~torch_harmonics.DiscreteContinuousConvS2`,
+    built from the same continuous-filter and quadrature construction but applied
+    in the reverse direction -- typically to map a coarser grid to a finer one
+    (upsampling), analogous to a transposed/strided convolution in the planar
+    case. It shares the compact-support filter and sparse, linearly scaling
+    evaluation, and the same approximate :math:`SO(3)` equivariance.
 
     Parameters
     -----------

@@ -45,8 +45,26 @@ from torch_harmonics.quadrature import precompute_latitudes
 
 
 class AttentionS2(nn.Module):
-    """
+    r"""
     (Global) attention on the 2-sphere.
+
+    This is ordinary (global) scaled dot-product attention, made geometrically
+    faithful on the sphere by folding the numerical quadrature weights of the
+    grid into the attention. Following [1], the softmax over keys becomes a
+    quadrature approximation of a continuous attention integral over the sphere:
+    the *logarithms* of the spherical quadrature weights are added to the
+    pre-softmax attention scores as an additive mask, so that after the softmax
+    exponential they act as multiplicative quadrature weights in the
+    normalization. Using log-weights lets them be passed directly as the
+    ``attn_mask`` of :func:`torch.nn.functional.scaled_dot_product_attention`.
+
+    Incorporating the quadrature weights this way makes the layer a
+    resolution-agnostic neural operator (evaluable on arbitrary grids, though the
+    learned features remain resolution dependent) and approximately
+    :math:`SO(3)`-equivariant, since the underlying integral is invariant under
+    rotations (the Haar measure). For the local variant that confines attention
+    to a geodesic neighborhood, see
+    :class:`~torch_harmonics.NeighborhoodAttentionS2`.
 
     Parameters
     -----------
@@ -69,12 +87,11 @@ class AttentionS2(nn.Module):
     out_channels: int, optional
         number of dimensions for interior inner product in the attention matrix (corresponds to vdim in MHA in PyTorch)
 
-    Reference
-    ---------
-    Bonev, B., Rietmann, M., Paris, A., Carpentieri, A., & Kurth, T. (2025).
-    "Attention on the Sphere."
-    Advances in Neural Information Processing Systems (NeurIPS).
-    https://arxiv.org/abs/2505.11157
+    References
+    ----------
+    [1] Bonev, B., Rietmann, M., Paris, A., Carpentieri, A., & Kurth, T. (2025).
+        "Attention on the Sphere." Advances in Neural Information Processing
+        Systems (NeurIPS). https://arxiv.org/abs/2505.11157
     """
 
     def __init__(
@@ -233,8 +250,34 @@ class AttentionS2(nn.Module):
 
 
 class NeighborhoodAttentionS2(nn.Module):
-    """
+    r"""
     Neighborhood attention on the 2-sphere.
+
+    This is the local counterpart of :class:`~torch_harmonics.AttentionS2`.
+    Instead of attending globally, every output location attends only to the
+    input points inside a geodesic neighborhood around it -- the spherical disk
+    :math:`D(x) = \{x' \in S^2 : d(x, x') \le \theta_\mathrm{cutoff}\}`, where
+    :math:`d(\cdot, \cdot)` is the great-circle (Haversine) distance and
+    :math:`\theta_\mathrm{cutoff}` the cutoff radius. Restricting attention to
+    this disk adds an inductive bias for locality and lowers the cost from
+    :math:`\mathcal{O}(N^2)` to :math:`\mathcal{O}(k N)`, where :math:`k` is the
+    number of points in a neighborhood.
+
+    Following [1], the attention softmax integrates over the neighborhood
+    against the sphere's numerical quadrature weights. This makes the layer a
+    resolution-agnostic neural operator -- it can be evaluated on arbitrary grid
+    resolutions (though the learned features themselves remain resolution
+    dependent) -- and approximately :math:`SO(3)`-equivariant, since the
+    underlying integrals are invariant under rotations (the Haar measure).
+
+    The sparse neighborhood structure is precomputed with the same
+    discrete-continuous construction used for the DISCO convolutions
+    (:class:`~torch_harmonics.DiscreteContinuousConvS2`); as the paper puts it,
+    the "implementation for spherical neighborhood attention follows the ideas
+    used to derive discrete-continuous convolutions on the sphere (DISCO)." Here
+    the DISCO filter reduces to the indicator function of the cutoff disk, so an
+    input point contributes to an output location exactly when it lies within
+    :math:`\theta_\mathrm{cutoff}` of it.
 
     Parameters
     -----------
@@ -251,7 +294,10 @@ class NeighborhoodAttentionS2(nn.Module):
     bias: bool, optional
         if specified, adds bias to input / output projection layers
     theta_cutoff: float, optional
-        neighborhood size
+        Angular radius of the geodesic neighborhood disk, in radians. Input points
+        farther than this from an output location are excluded from its attention.
+        If None (default), it is set to one latitudinal grid spacing of the coarser
+        of the input and output grids, i.e. ``pi / (nlat - 1)``. Must be positive.
     k_channels: int
         number of dimensions for interior inner product in the attention matrix (corresponds to kdim in MHA in PyTorch)
     out_channels: int, optional
@@ -259,12 +305,11 @@ class NeighborhoodAttentionS2(nn.Module):
     optimized_kernel: Optional[bool]
         Whether to use the optimized kernel (if available)
 
-    Reference
-    ---------
-    Bonev, B., Rietmann, M., Paris, A., Carpentieri, A., & Kurth, T. (2025).
-    "Attention on the Sphere."
-    Advances in Neural Information Processing Systems (NeurIPS).
-    https://arxiv.org/abs/2505.11157
+    References
+    ----------
+    [1] Bonev, B., Rietmann, M., Paris, A., Carpentieri, A., & Kurth, T. (2025).
+        "Attention on the Sphere." Advances in Neural Information Processing
+        Systems (NeurIPS). https://arxiv.org/abs/2505.11157
     """
 
     def __init__(
