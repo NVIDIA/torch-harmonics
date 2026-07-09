@@ -1,11 +1,14 @@
 name: Build and deploy documentation
 
-# Rebuild and publish the documentation when a new release is published,
-# or on demand from the Actions tab (`gh workflow run docs.yaml`). Regular
-# pushes and pull requests do NOT touch the published documentation.
+# Publishing happens only on a published release or a manual dispatch with
+# "deploy" checked (see the deploy job's `if:` guard). Pull requests targeting
+# main run the BUILD job only: they produce a downloadable `html-docs` artifact
+# for preview and never touch the published documentation.
 on:
   release:
     types: [published]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       deploy:
