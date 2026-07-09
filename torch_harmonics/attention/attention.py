@@ -155,6 +155,23 @@ class AttentionS2(nn.Module):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}"
 
     def forward(self, query: torch.Tensor, key: Optional[torch.Tensor] = None, value: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Apply global attention on the sphere.
+
+        Parameters
+        ----------
+        query: torch.Tensor
+            Query signal of shape ``(batch, in_channels, nlat_out, nlon_out)`` (sampled on the output grid).
+        key: torch.Tensor, optional
+            Key signal of shape ``(batch, in_channels, nlat_in, nlon_in)``. Defaults to ``query`` (self-attention).
+        value: torch.Tensor, optional
+            Value signal of shape ``(batch, in_channels, nlat_in, nlon_in)``. Defaults to ``query`` (self-attention).
+
+        Returns
+        -------
+        torch.Tensor
+            Attention output of shape ``(batch, out_channels, nlat_out, nlon_out)``.
+        """
 
         # self attention simplification
         if key is None:
@@ -393,6 +410,25 @@ class NeighborhoodAttentionS2(nn.Module):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}, theta_cutoff={self.theta_cutoff}"
 
     def forward(self, query: torch.Tensor, key: Optional[torch.Tensor] = None, value: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Apply neighborhood attention on the sphere.
+
+        Parameters
+        ----------
+        query: torch.Tensor
+            Query signal of shape ``(batch, in_channels, nlat_out, nlon_out)`` (sampled on the output grid).
+        key: torch.Tensor, optional
+            Key signal of shape ``(batch, in_channels, nlat_in, nlon_in)`` (sampled on the input grid).
+            Defaults to ``query`` (self-attention, which requires matching input and output grids).
+        value: torch.Tensor, optional
+            Value signal of shape ``(batch, in_channels, nlat_in, nlon_in)`` (sampled on the input grid).
+            Defaults to ``query`` (self-attention, which requires matching input and output grids).
+
+        Returns
+        -------
+        torch.Tensor
+            Attention output of shape ``(batch, out_channels, nlat_out, nlon_out)``.
+        """
 
         # self attention simplification
         if key is None:

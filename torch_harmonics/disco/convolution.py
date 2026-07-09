@@ -481,11 +481,6 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         Trades one extra contraction recompute in backward for K× memory savings.
         Only effective when optimized_kernel is True.
 
-    Returns
-    -------
-    out: torch.Tensor
-        Output tensor
-
     References
     ----------
     [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
@@ -568,6 +563,19 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Apply the discrete-continuous convolution.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            Input signal of shape ``(batch, in_channels, nlat_in, nlon_in)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Convolved signal of shape ``(batch, out_channels, nlat_out, nlon_out)``.
+        """
 
         weight_r = self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])
 
@@ -640,11 +648,6 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         Theta cutoff for the filter basis functions
     optimized_kernel: Optional[bool]
         Whether to use the optimized kernel (if available)
-
-    Returns
-    --------
-    out: torch.Tensor
-        Output tensor
 
     References
     ----------
@@ -727,6 +730,19 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Apply the transpose discrete-continuous convolution.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            Input signal of shape ``(batch, in_channels, nlat_in, nlon_in)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Convolved signal of shape ``(batch, out_channels, nlat_out, nlon_out)``.
+        """
 
         # extract shape
         B, C, H, W = x.shape

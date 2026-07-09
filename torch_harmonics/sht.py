@@ -61,11 +61,6 @@ class RealSHT(nn.Module):
     csphase: bool
         Whether to apply the Condon-Shortley phase factor, by default True
 
-    Returns
-    -------
-    x: torch.Tensor
-        Tensor of shape (..., lmax, mmax)
-
     References
     ----------
     [1] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
@@ -111,6 +106,19 @@ class RealSHT(nn.Module):
         return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
+        """
+        Compute the forward (real) spherical harmonic transform.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            Real-valued signal on the sphere of shape ``(..., nlat, nlon)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex spherical harmonic coefficients of shape ``(..., lmax, mmax)``.
+        """
 
         torch._check(x.dim() >= 2, lambda: f"Expected tensor with at least 2 dimensions but got {x.dim()} instead")
         torch._check(x.shape[-2] == self.nlat, lambda: f"Expected latitudes shape[-2]=={self.nlat}, got {x.shape[-2]}")
@@ -161,11 +169,6 @@ class InverseRealSHT(nn.Module):
     ------
     ValueError: If the grid type is unknown
 
-    Returns
-    -------
-    x: torch.Tensor
-        Tensor of shape (..., lmax, mmax)
-
     References
     ----------
     [1] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
@@ -210,6 +213,19 @@ class InverseRealSHT(nn.Module):
         return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
+        """
+        Compute the inverse (real) spherical harmonic transform.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            Complex spherical harmonic coefficients of shape ``(..., lmax, mmax)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Real-valued signal on the sphere of shape ``(..., nlat, nlon)``.
+        """
 
         torch._check(x.dim() >= 2, lambda: f"Expected tensor with at least 2 dimensions but got {x.dim()} instead")
         torch._check(x.shape[-2] == self.lmax, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax}, got {x.shape[-2]}")
@@ -257,11 +273,6 @@ class RealVectorSHT(nn.Module):
         Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
     csphase: bool
         Whether to apply the Condon-Shortley phase factor, by default True
-
-    Returns
-    -------
-    x: torch.Tensor
-        Tensor of shape (..., lmax, mmax)
 
     References
     ----------
@@ -313,6 +324,21 @@ class RealVectorSHT(nn.Module):
         return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
+        """
+        Compute the forward (real) vector spherical harmonic transform.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            Real-valued tangential vector field of shape ``(..., 2, nlat, nlon)``, where the
+            size-2 dimension holds the two tangential (colatitude, longitude) components.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex vector harmonic coefficients of shape ``(..., 2, lmax, mmax)``, where the
+            size-2 dimension holds the spheroidal and toroidal components.
+        """
 
         torch._check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
         torch._check(x.shape[-3] == 2, lambda: f"Expected vector field shape[-3]==2, got {x.shape[-3]}")
@@ -363,11 +389,6 @@ class InverseRealVectorSHT(nn.Module):
     csphase: bool
         Whether to apply the Condon-Shortley phase factor, by default True
 
-    Returns
-    -------
-    x: torch.Tensor
-        Tensor of shape (..., lmax, mmax)
-
     References
     ----------
     [1] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
@@ -412,6 +433,21 @@ class InverseRealVectorSHT(nn.Module):
         return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
+        """
+        Compute the inverse (real) vector spherical harmonic transform.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            Complex vector harmonic coefficients of shape ``(..., 2, lmax, mmax)``, where the
+            size-2 dimension holds the spheroidal and toroidal components.
+
+        Returns
+        -------
+        torch.Tensor
+            Real-valued tangential vector field of shape ``(..., 2, nlat, nlon)``, where the
+            size-2 dimension holds the two tangential (colatitude, longitude) components.
+        """
 
         torch._check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
         torch._check(x.shape[-3] == 2, lambda: f"Expected vector field shape[-3]==2, got {x.shape[-3]}")

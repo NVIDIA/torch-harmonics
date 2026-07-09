@@ -309,12 +309,6 @@ class QuadratureS2(torch.nn.Module):
         If ``True``, divides weights by ``4π`` to return an average instead of
         an integral, by default ``False``.
 
-    Returns
-    -------
-    torch.Tensor
-        Tensor of shape ``(..., channels)`` containing the integral over the
-        last two spatial dimensions.
-
     Raises
     ------
     ValueError
@@ -364,6 +358,20 @@ class QuadratureS2(torch.nn.Module):
         self.register_buffer("quad_weight", quad_weight, persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Integrate a signal over the sphere using the precomputed quadrature.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            Input signal of shape ``(..., nlat, nlon)``. Integration is over the last two
+            (spatial) dimensions.
+
+        Returns
+        -------
+        torch.Tensor
+            Integral of shape ``(...)`` (the input with its last two dimensions reduced).
+        """
         # integrate over last two axes only:
         quad = torch.sum(x * self.quad_weight, dim=(-2, -1))
 

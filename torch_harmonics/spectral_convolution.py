@@ -72,11 +72,6 @@ class SpectralConvS2(nn.Module):
         If ``in_channels`` or ``out_channels`` is not divisible by
         ``num_groups``.
 
-    Returns
-    -------
-    x: torch.Tensor
-        Tensor of shape ``(..., out_channels, out_shape[0], out_shape[1])``.
-
     Notes
     -----
     The SHT truncation ``lmax``/``mmax`` is the minimum of the input and output
@@ -140,6 +135,19 @@ class SpectralConvS2(nn.Module):
         return resc
 
     def forward(self, x):
+        """
+        Apply the spectral convolution.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            Input signal of shape ``(batch, in_channels, nlat_in, nlon_in)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Convolved signal of shape ``(batch, out_channels, nlat_out, nlon_out)``.
+        """
         dtype = x.dtype
 
         with torch.amp.autocast(device_type=x.device.type, enabled=False):

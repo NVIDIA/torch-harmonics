@@ -176,6 +176,21 @@ class ResampleS2(nn.Module):
         return x
 
     def forward(self, x: torch.Tensor):
+        """
+        Resample a spherical signal onto the output grid.
+
+        Parameters
+        ----------
+        x: torch.Tensor
+            Input signal of shape ``(..., nlat_in, nlon_in)``. Resampling acts on the
+            last two (spatial) dimensions; any leading batch/channel dimensions are
+            preserved.
+
+        Returns
+        -------
+        torch.Tensor
+            Resampled signal of shape ``(..., nlat_out, nlon_out)``.
+        """
         if self.skip_resampling:
             return x
 
