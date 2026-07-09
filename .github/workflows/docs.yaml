@@ -1,0 +1,86 @@
+name: Build and deploy documentation
+
+# Rebuild and publish the documentation when a new release is published,
+# or on demand from the Actions tab (`gh workflow run docs.yaml`). Regular
+# pushes and pull requests do NOT touch the published documentation.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Publish to GitHub Pages (leave unchecked for a test build you can download and inspect offline)"
+        type: boolean
+        default: false
+
+# Allow the deploy job to publish to GitHub Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; do not cancel an in-progress deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-documentation:
+    name: Build documentation
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    # Same install logic as tests.yml: CPU-only torch, then an editable
+    # build of the package. autodoc imports torch_harmonics, so the compiled
+    # C++ extensions must be built (CPU-only needs no CUDA toolkit).
+    - name: Install dependencies
+      run: |
+        python3 -m pip install --upgrade pip setuptools wheel
+        python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
+
+    - name: Install package with docs dependencies
+      run: |
+        python3 -m pip install --no-build-isolation -e ".[docs]"
+
+    - name: Build HTML documentation
+      run: |
+        make -C docs html
+
+    # Plain downloadable artifact for offline inspection (a zip of the raw
+    # HTML). Produced on every run, including test builds that don't deploy.
+    - name: Upload HTML for download
+      uses: actions/upload-artifact@v4
+      with:
+        name: html-docs
+        path: docs/_build/html
+
+    # Special artifact consumed by the deploy job below (only used when the
+    # deploy job actually runs).
+    - name: Upload Pages artifact
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: docs/_build/html
+
+  deploy-documentation:
+    name: Deploy documentation
+    needs: build-documentation
+    # Publish on a release, or on a manual run only when "deploy" is checked.
+    # A manual run with deploy unchecked just builds the downloadable artifact.
+    if: github.event_name == 'release' || inputs.deploy
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
