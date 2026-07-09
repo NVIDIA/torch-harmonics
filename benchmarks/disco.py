@@ -37,7 +37,7 @@ from torch_harmonics import DiscreteContinuousConvS2
 # ------------------------------------------------------------------------------
 
 
-def _disco_setup(batch, in_ch, out_ch, nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, basis_type, basis_norm_mode, theta_cutoff, optimized):
+def _disco_setup(batch, in_ch, out_ch, nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, basis_type, basis_norm_mode, theta_cutoff, optimized, groups, fused):
     def setup(device, dtype):
         use_autocast = dtype in (torch.float16, torch.bfloat16)
         module_dtype = torch.float32 if use_autocast else dtype
@@ -51,6 +51,8 @@ def _disco_setup(batch, in_ch, out_ch, nlat_in, nlon_in, nlat_out, nlon_out, ker
             basis_norm_mode=basis_norm_mode,
             theta_cutoff=theta_cutoff,
             optimized_kernel=optimized,
+            groups=groups,
+            fused=fused,
         ).to(device=device, dtype=module_dtype)
         x = torch.randn(batch, in_ch, nlat_in, nlon_in, dtype=module_dtype, device=device, requires_grad=True)
         return {
@@ -68,6 +70,7 @@ def _disco_setup(batch, in_ch, out_ch, nlat_in, nlon_in, nlat_out, nlon_out, ker
             "basis_type": basis_type,
             "basis_norm_mode": basis_norm_mode,
             "theta_cutoff": theta_cutoff,
+            "groups": groups,
         }
 
     return setup
@@ -92,6 +95,7 @@ def _disco_reference(state):
         basis_type=state["basis_type"],
         basis_norm_mode=state["basis_norm_mode"],
         theta_cutoff=state["theta_cutoff"],
+        groups=state["groups"],
         optimized_kernel=False,
     ).to(dtype=torch.float64)
     conv_ref.load_state_dict({k: v.cpu().double() for k, v in state["conv"].state_dict().items()})
@@ -798,9 +802,108 @@ _DISCO_CONFIGS = [
         skip_correctness=True,
         tags=["disco", "downsample", "large_channels"],
     ),
+    # Production-shape fused backward coverage. These are the layer shapes from
+    # the distributed model, benchmarked as serial DISCO kernels to isolate local
+    # compute. The decoder case exercises the spatial-first dgrad heuristic.
+    dict(
+        name="disco_s2_prod_encoder_b1_c65_o780_g65_fp16_cuda",
+        device="cuda",
+        dtype=torch.float16,
+        batch=1,
+        in_ch=65,
+        out_ch=780,
+        nlat_in=721,
+        nlon_in=1440,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        basis_type="harmonic",
+        basis_norm_mode="mean",
+        theta_cutoff=0.02771993517873347,
+        optimized=True,
+        groups=65,
+        skip_correctness=True,
+        tags=["disco", "production", "encoder", "grouped", "fp16"],
+    ),
+    dict(
+        name="disco_s2_prod_aux_encoder_b1_c12_o48_g12_fp16_cuda",
+        device="cuda",
+        dtype=torch.float16,
+        batch=1,
+        in_ch=12,
+        out_ch=48,
+        nlat_in=721,
+        nlon_in=1440,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        basis_type="harmonic",
+        basis_norm_mode="mean",
+        theta_cutoff=0.02771993517873347,
+        optimized=True,
+        groups=12,
+        skip_correctness=True,
+        tags=["disco", "production", "aux_encoder", "grouped", "fp16"],
+    ),
+    dict(
+        name="disco_s2_prod_decoder_b1_c780_o65_g65_fp16_cuda",
+        device="cuda",
+        dtype=torch.float16,
+        batch=1,
+        in_ch=780,
+        out_ch=65,
+        nlat_in=721,
+        nlon_in=1440,
+        nlat_out=721,
+        nlon_out=1440,
+        kernel_shape=(3, 3),
+        basis_type="harmonic",
+        basis_norm_mode="mean",
+        theta_cutoff=0.02771993517873347,
+        optimized=True,
+        groups=65,
+        skip_correctness=True,
+        tags=["disco", "production", "decoder", "grouped", "spatial_first_dgrad", "fp16"],
+    ),
+    dict(
+        name="disco_s2_prod_local_conv_b1_c828_o828_g1_fp16_cuda",
+        device="cuda",
+        dtype=torch.float16,
+        batch=1,
+        in_ch=828,
+        out_ch=828,
+        nlat_in=360,
+        nlon_in=720,
+        nlat_out=360,
+        nlon_out=720,
+        kernel_shape=(3, 3),
+        basis_type="harmonic",
+        basis_norm_mode="mean",
+        theta_cutoff=0.02771993517873347,
+        optimized=True,
+        groups=1,
+        skip_correctness=True,
+        tags=["disco", "production", "local_conv", "large_channels", "fp16"],
+    ),
 ]
 
-for cfg in _DISCO_CONFIGS:
+
+def _expanded_disco_configs(configs):
+    for cfg in configs:
+        base = dict(cfg)
+        base.setdefault("groups", 1)
+        base["fused"] = False
+        yield base
+
+        if cfg.get("optimized", False):
+            fused = dict(base)
+            fused["name"] = f"{base['name']}_fused"
+            fused["fused"] = True
+            fused["tags"] = list(base["tags"]) + ["fused"]
+            yield fused
+
+
+for cfg in _expanded_disco_configs(_DISCO_CONFIGS):
     register(
         BenchmarkEntry(
             name=cfg["name"],
@@ -819,6 +922,8 @@ for cfg in _DISCO_CONFIGS:
                 basis_norm_mode=cfg["basis_norm_mode"],
                 theta_cutoff=cfg["theta_cutoff"],
                 optimized=cfg["optimized"],
+                groups=cfg["groups"],
+                fused=cfg["fused"],
             ),
             forward=_disco_forward,
             backward=_disco_backward,
