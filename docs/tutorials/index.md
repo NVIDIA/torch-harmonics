@@ -11,4 +11,5 @@ maxdepth: 1
 getting_started
 plot_spherical_harmonics
 quadrature
+distributed
 ```

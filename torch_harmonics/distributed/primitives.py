@@ -57,7 +57,44 @@ def _check_shapes(msg, shapes_gather, shapes_expected):
 
 # helper routine to compute uneven splitting in balanced way:
 def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
-    """Compute the split shapes for a given size and number of chunks."""
+    r"""
+    Compute balanced chunk sizes for distributing a dimension across ranks.
+
+    Divides ``size`` elements into ``num_chunks`` pieces that differ by at most
+    one element.  The first ``size % num_chunks`` chunks receive one extra
+    element; the remaining chunks get the base size ``size // num_chunks``.
+
+    This is used internally by every distributed module to determine how
+    latitudes, longitudes, and spectral modes are partitioned across process
+    groups.
+
+    Parameters
+    ----------
+    size : int
+        Total number of elements to split (e.g.\ ``nlat`` or ``nlon``).
+    num_chunks : int
+        Number of chunks (typically the process-group size).
+
+    Returns
+    -------
+    List[int]
+        Per-rank chunk sizes, ordered by rank.
+
+    Raises
+    ------
+    RuntimeError
+        If ``size < num_chunks`` (every chunk must be non-empty).
+
+    Examples
+    --------
+    >>> from torch_harmonics.distributed import compute_split_shapes
+    >>> compute_split_shapes(256, 4)
+    [64, 64, 64, 64]
+    >>> compute_split_shapes(128, 3)
+    [43, 43, 42]
+    >>> compute_split_shapes(10, 4)
+    [3, 3, 2, 2]
+    """
 
     torch._check(size >= num_chunks, lambda: f"Cannot split {size} elements into {num_chunks} chunks; every chunk must be non-empty.")
 

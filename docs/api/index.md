@@ -94,6 +94,21 @@ in the `torch_harmonics.distributed` subpackage.
    DistributedQuadratureS2
 ```
 
+### Distributed setup and helpers
+
+```{eval-rst}
+.. currentmodule:: torch_harmonics.distributed
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   init
+   finalize
+   is_initialized
+   compute_split_shapes
+```
+
 ```{note}
 The custom C++/CUDA kernels are an implementation detail invoked from these
 Python modules; they have no separately documented API.
