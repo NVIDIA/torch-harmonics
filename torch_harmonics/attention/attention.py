@@ -90,8 +90,8 @@ class AttentionS2(nn.Module):
     References
     ----------
     [1] Bonev, B., Rietmann, M., Paris, A., Carpentieri, A., & Kurth, T. (2025).
-        "Attention on the Sphere." Advances in Neural Information Processing
-        Systems (NeurIPS). https://arxiv.org/abs/2505.11157
+    "Attention on the Sphere." Advances in Neural Information Processing Systems
+    (NeurIPS). https://arxiv.org/abs/2505.11157
     """
 
     def __init__(
@@ -308,8 +308,8 @@ class NeighborhoodAttentionS2(nn.Module):
     References
     ----------
     [1] Bonev, B., Rietmann, M., Paris, A., Carpentieri, A., & Kurth, T. (2025).
-        "Attention on the Sphere." Advances in Neural Information Processing
-        Systems (NeurIPS). https://arxiv.org/abs/2505.11157
+    "Attention on the Sphere." Advances in Neural Information Processing Systems
+    (NeurIPS). https://arxiv.org/abs/2505.11157
     """
 
     def __init__(
