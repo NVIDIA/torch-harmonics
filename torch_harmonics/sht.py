@@ -83,9 +83,28 @@ class RealSHT(nn.Module):
         Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
         ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm: str
-        Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
+        Normalization convention applied to the associated Legendre polynomials
+        and, by extension, the spherical harmonics basis.  Must be one of:
+
+        * ``"ortho"`` (default) -- **Orthonormal**.  The spherical harmonics
+          satisfy :math:`\langle Y_l^m, Y_{l'}^{m'}\rangle = \delta_{ll'}\delta_{mm'}`,
+          where the inner product is :math:`\int_0^{2\pi}\!\int_0^{\pi} \cdot\;\sin\theta\,d\theta\,d\lambda`.
+          This is the standard 4\ :math:`\pi`-normalized convention.
+        * ``"schmidt"`` -- **Schmidt semi-normalized**.  The associated Legendre
+          functions carry the factor :math:`\sqrt{(l-m)!/(l+m)!}` but omit the
+          :math:`\sqrt{2l+1}` term present in the orthonormal convention.  Commonly
+          used in geomagnetism and gravity-field modelling.
+        * ``"unnorm"`` -- **Unnormalized**.  No normalization beyond the bare
+          three-term recurrence.  Provided for special-purpose work; not
+          recommended for general use because coefficient magnitudes grow with
+          degree.
     csphase: bool
-        Whether to apply the Condon-Shortley phase factor, by default True
+        Whether to include the Condon--Shortley phase factor :math:`(-1)^m` in
+        the associated Legendre polynomials, by default ``True``.  This phase is
+        part of the standard physics convention for spherical harmonics and
+        ensures that raising/lowering operators have real, positive matrix
+        elements.  Set to ``False`` to use the geodesy / geomagnetism convention
+        which omits this factor.
 
     Examples
     --------
@@ -234,9 +253,28 @@ class InverseRealSHT(nn.Module):
         Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
         ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm: str
-        Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
+        Normalization convention applied to the associated Legendre polynomials
+        and, by extension, the spherical harmonics basis.  Must be one of:
+
+        * ``"ortho"`` (default) -- **Orthonormal**.  The spherical harmonics
+          satisfy :math:`\langle Y_l^m, Y_{l'}^{m'}\rangle = \delta_{ll'}\delta_{mm'}`,
+          where the inner product is :math:`\int_0^{2\pi}\!\int_0^{\pi} \cdot\;\sin\theta\,d\theta\,d\lambda`.
+          This is the standard 4\ :math:`\pi`-normalized convention.
+        * ``"schmidt"`` -- **Schmidt semi-normalized**.  The associated Legendre
+          functions carry the factor :math:`\sqrt{(l-m)!/(l+m)!}` but omit the
+          :math:`\sqrt{2l+1}` term present in the orthonormal convention.  Commonly
+          used in geomagnetism and gravity-field modelling.
+        * ``"unnorm"`` -- **Unnormalized**.  No normalization beyond the bare
+          three-term recurrence.  Provided for special-purpose work; not
+          recommended for general use because coefficient magnitudes grow with
+          degree.
     csphase: bool
-        Whether to apply the Condon-Shortley phase factor, by default True
+        Whether to include the Condon--Shortley phase factor :math:`(-1)^m` in
+        the associated Legendre polynomials, by default ``True``.  This phase is
+        part of the standard physics convention for spherical harmonics and
+        ensures that raising/lowering operators have real, positive matrix
+        elements.  Set to ``False`` to use the geodesy / geomagnetism convention
+        which omits this factor.
 
     Examples
     --------
@@ -403,9 +441,28 @@ class RealVectorSHT(nn.Module):
         Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
         ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm: str
-        Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
+        Normalization convention applied to the associated Legendre polynomials
+        and, by extension, the spherical harmonics basis.  Must be one of:
+
+        * ``"ortho"`` (default) -- **Orthonormal**.  The spherical harmonics
+          satisfy :math:`\langle Y_l^m, Y_{l'}^{m'}\rangle = \delta_{ll'}\delta_{mm'}`,
+          where the inner product is :math:`\int_0^{2\pi}\!\int_0^{\pi} \cdot\;\sin\theta\,d\theta\,d\lambda`.
+          This is the standard 4\ :math:`\pi`-normalized convention.
+        * ``"schmidt"`` -- **Schmidt semi-normalized**.  The associated Legendre
+          functions carry the factor :math:`\sqrt{(l-m)!/(l+m)!}` but omit the
+          :math:`\sqrt{2l+1}` term present in the orthonormal convention.  Commonly
+          used in geomagnetism and gravity-field modelling.
+        * ``"unnorm"`` -- **Unnormalized**.  No normalization beyond the bare
+          three-term recurrence.  Provided for special-purpose work; not
+          recommended for general use because coefficient magnitudes grow with
+          degree.
     csphase: bool
-        Whether to apply the Condon-Shortley phase factor, by default True
+        Whether to include the Condon--Shortley phase factor :math:`(-1)^m` in
+        the associated Legendre polynomials, by default ``True``.  This phase is
+        part of the standard physics convention for spherical harmonics and
+        ensures that raising/lowering operators have real, positive matrix
+        elements.  Set to ``False`` to use the geodesy / geomagnetism convention
+        which omits this factor.
 
     Examples
     --------
@@ -569,9 +626,28 @@ class InverseRealVectorSHT(nn.Module):
         Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
         ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm: str
-        Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
+        Normalization convention applied to the associated Legendre polynomials
+        and, by extension, the spherical harmonics basis.  Must be one of:
+
+        * ``"ortho"`` (default) -- **Orthonormal**.  The spherical harmonics
+          satisfy :math:`\langle Y_l^m, Y_{l'}^{m'}\rangle = \delta_{ll'}\delta_{mm'}`,
+          where the inner product is :math:`\int_0^{2\pi}\!\int_0^{\pi} \cdot\;\sin\theta\,d\theta\,d\lambda`.
+          This is the standard 4\ :math:`\pi`-normalized convention.
+        * ``"schmidt"`` -- **Schmidt semi-normalized**.  The associated Legendre
+          functions carry the factor :math:`\sqrt{(l-m)!/(l+m)!}` but omit the
+          :math:`\sqrt{2l+1}` term present in the orthonormal convention.  Commonly
+          used in geomagnetism and gravity-field modelling.
+        * ``"unnorm"`` -- **Unnormalized**.  No normalization beyond the bare
+          three-term recurrence.  Provided for special-purpose work; not
+          recommended for general use because coefficient magnitudes grow with
+          degree.
     csphase: bool
-        Whether to apply the Condon-Shortley phase factor, by default True
+        Whether to include the Condon--Shortley phase factor :math:`(-1)^m` in
+        the associated Legendre polynomials, by default ``True``.  This phase is
+        part of the standard physics convention for spherical harmonics and
+        ensures that raising/lowering operators have real, positive matrix
+        elements.  Set to ``False`` to use the geodesy / geomagnetism convention
+        which omits this factor.
 
     Examples
     --------

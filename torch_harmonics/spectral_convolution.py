@@ -41,9 +41,42 @@ from torch_harmonics.truncation import truncate_sht
 
 
 class SpectralConvS2(nn.Module):
-    """
+    r"""
     Spectral convolution layer on :math:`S^2` implemented via real SHT
-    (Driscoll-Healy formulation, see https://api.semanticscholar.org/CorpusID:122817218).
+    (Driscoll--Healy formulation, see https://api.semanticscholar.org/CorpusID:122817218).
+
+    Given a multi-channel input signal :math:`u^{c_i}(\theta, \lambda)` on the
+    sphere, the layer computes the output channels :math:`v^{c_o}(\theta, \lambda)`
+    in three steps:
+
+    1. **Forward SHT** -- transform each input channel to spectral space:
+
+    .. math::
+
+        \hat{u}_l^{m,\,c_i} = \text{SHT}\!\left[\, u^{c_i}(\theta, \lambda) \,\right]
+
+    2. **Spectral contraction** -- mix channels with learnable weights
+       :math:`K_l^{c_o,\,c_i}` that are diagonal in :math:`(l, m)` (i.e.\ the
+       same weight is applied to every order :math:`m` at a given degree
+       :math:`l`):
+
+    .. math::
+
+        \hat{v}_l^{m,\,c_o}
+            = \sum_{c_i} K_l^{c_o,\,c_i}\; \hat{u}_l^{m,\,c_i}
+
+    3. **Inverse SHT** -- transform back to the spatial domain:
+
+    .. math::
+
+        v^{c_o}(\theta, \lambda)
+            = \text{ISHT}\!\left[\, \hat{v}_l^{m,\,c_o} \,\right]
+
+    Because the spectral weights depend only on degree :math:`l` and not on order
+    :math:`m`, this corresponds to an **isotropic** (azimuthally symmetric)
+    convolution kernel on the sphere.  When ``num_groups > 1``, the channel
+    contraction is performed independently within each group (grouped
+    convolution).
 
     Parameters
     -----------
@@ -65,6 +98,19 @@ class SpectralConvS2(nn.Module):
     bias: bool, optional
         If ``True``, adds a learnable spectral bias computed from the spatial
         integral, by default ``False``.
+
+    Examples
+    --------
+    >>> import torch
+    >>> import torch_harmonics as th
+    >>> conv = th.SpectralConvS2(
+    ...     in_shape=(128, 256), out_shape=(128, 256),
+    ...     in_channels=16, out_channels=32,
+    ... ).cuda()
+    >>> x = torch.randn(4, 16, 128, 256, device="cuda")
+    >>> y = conv(x)
+    >>> y.shape
+    torch.Size([4, 32, 128, 256])
 
     Raises
     ------
