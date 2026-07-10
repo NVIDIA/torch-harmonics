@@ -29,9 +29,12 @@ html[data-theme="dark"] {
     --pst-color-secondary-highlight: var(--th-green-dark);
     --pst-color-link: var(--th-green);
     --pst-color-link-hover: var(--th-green-dark);
-    --pst-color-target: #38460f;  /* dark green anchor highlight (was dark yellow) */
+    --pst-color-inline-code: var(--th-green);  /* inline code + API signature names (was pink) */
+    /* semi-transparent green tints the dark background instead of painting a
+       flat olive block, which reads cleaner than a solid dark-green hex */
+    --pst-color-target: rgba(118, 185, 0, 0.18);  /* green anchor highlight (was dark yellow) */
     --pst-color-info: var(--th-green);  /* 'note' admonition accent (was blue) */
-    --pst-color-info-bg: #33420a;       /* 'note' title strip background */
+    --pst-color-info-bg: rgba(118, 185, 0, 0.12);  /* 'note' title strip background */
 }
 
 /* Green accent bar across the top of the header */
