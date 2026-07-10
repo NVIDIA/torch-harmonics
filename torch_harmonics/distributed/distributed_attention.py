@@ -455,6 +455,10 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
     attend to its full spherical neighborhood.
 
     Inherits learnable parameters from :class:`NeighborhoodAttentionS2`.
+
+    .. seealso::
+        :class:`torch_harmonics.NeighborhoodAttentionS2`
+            Serial counterpart with full parameter documentation.
     """
 
     def __init__(

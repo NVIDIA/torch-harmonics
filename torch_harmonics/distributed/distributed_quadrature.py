@@ -45,6 +45,11 @@ class DistributedQuadratureS2(torch.nn.Module):
     latitude/longitude grid, with data and weights split across polar and
     azimuth communicator groups.
 
+    .. seealso::
+        :class:`torch_harmonics.QuadratureS2`
+            Serial counterpart with full mathematical description and parameter
+            documentation.
+
     Parameters
     -----------
     img_shape: Tuple[int]

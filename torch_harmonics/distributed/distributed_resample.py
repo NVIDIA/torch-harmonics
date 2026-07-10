@@ -50,6 +50,11 @@ class DistributedResampleS2(nn.Module):
     polar and azimuthal directions, and the module handles the necessary communication
     and interpolation operations.
 
+    .. seealso::
+        :class:`torch_harmonics.ResampleS2`
+            Serial counterpart with full mathematical description and parameter
+            documentation.
+
     Parameters
     -----------
     nlat_in : int

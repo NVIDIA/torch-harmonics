@@ -50,12 +50,17 @@ from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, pol
 
 class DistributedRealSHT(nn.Module):
     """
-    Defines a module for computing the forward (real-valued) SHT.
+    Distributed version of the forward (real-valued) SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
     The SHT is applied to the last two dimensions of the input. Leading (batch/channel)
     dimensions smaller than the process-grid size are zero-padded internally so the
     transform's all-to-all transposes can redistribute them, then sliced back on output;
     since the transform is linear this is exact.
+
+    .. seealso::
+        :class:`torch_harmonics.RealSHT`
+            Serial counterpart with full mathematical description and parameter
+            documentation.
 
     Parameters
     ----------
@@ -196,11 +201,16 @@ class DistributedRealSHT(nn.Module):
 
 class DistributedInverseRealSHT(nn.Module):
     """
-    Defines a module for computing the inverse (real-valued) SHT.
+    Distributed version of the inverse (real-valued) SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
     Leading (batch/channel) dimensions smaller than the process-grid size are zero-padded
     internally so the transform's all-to-all transposes can redistribute them, then sliced
     back on output; since the transform is linear this is exact.
+
+    .. seealso::
+        :class:`torch_harmonics.InverseRealSHT`
+            Serial counterpart with full mathematical description and parameter
+            documentation.
 
     Parameters
     ----------
@@ -339,12 +349,17 @@ class DistributedInverseRealSHT(nn.Module):
 
 class DistributedRealVectorSHT(nn.Module):
     """
-    Defines a module for computing the forward (real) vector SHT.
+    Distributed version of the forward (real) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
     The SHT is applied to the last three dimensions of the input. Leading (batch/channel)
     dimensions smaller than the process-grid size are zero-padded internally so the
     transform's all-to-all transposes can redistribute them, then sliced back on output;
     since the transform is linear this is exact.
+
+    .. seealso::
+        :class:`torch_harmonics.RealVectorSHT`
+            Serial counterpart with full mathematical description and parameter
+            documentation.
 
     Parameters
     ----------
@@ -497,11 +512,16 @@ class DistributedRealVectorSHT(nn.Module):
 
 class DistributedInverseRealVectorSHT(nn.Module):
     """
-    Defines a module for computing the inverse (real-valued) vector SHT.
+    Distributed version of the inverse (real-valued) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
     Leading (batch/channel) dimensions smaller than the process-grid size are zero-padded
     internally so the transform's all-to-all transposes can redistribute them, then sliced
     back on output; since the transform is linear this is exact.
+
+    .. seealso::
+        :class:`torch_harmonics.InverseRealVectorSHT`
+            Serial counterpart with full mathematical description and parameter
+            documentation.
 
     Parameters
     ----------

@@ -49,6 +49,11 @@ class DistributedSpectralConvS2(nn.Module):
     distributed real SHT (Driscoll-Healy formulation, see https://api.semanticscholar.org/CorpusID:122817218).
     Computation is split across polar and azimuth communicator groups.
 
+    .. seealso::
+        :class:`torch_harmonics.SpectralConvS2`
+            Serial counterpart with full mathematical description and parameter
+            documentation.
+
     Parameters
     -----------
     in_shape: Tuple[int]
