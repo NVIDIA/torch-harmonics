@@ -16,6 +16,9 @@ html[data-theme="light"] {
     --pst-color-link: var(--th-green-dark);
     --pst-color-link-hover: var(--th-green-darker);
     --pst-color-inline-code: var(--th-green-darker);
+    --pst-color-target: #e6f3cc;  /* pale green highlight when jumping to an anchor (was pale yellow) */
+    --pst-color-info: var(--th-green-dark);  /* 'note' admonition accent (was blue) */
+    --pst-color-info-bg: #e6f3cc;            /* 'note' title strip background */
 }
 
 /* Dark mode: keep green accents, brighter for contrast */
@@ -26,9 +29,25 @@ html[data-theme="dark"] {
     --pst-color-secondary-highlight: var(--th-green-dark);
     --pst-color-link: var(--th-green);
     --pst-color-link-hover: var(--th-green-dark);
+    --pst-color-target: #38460f;  /* dark green anchor highlight (was dark yellow) */
+    --pst-color-info: var(--th-green);  /* 'note' admonition accent (was blue) */
+    --pst-color-info-bg: #33420a;       /* 'note' title strip background */
 }
 
 /* Green accent bar across the top of the header */
 .bd-header {
     border-top: 3px solid var(--th-green);
+}
+
+/* Body/content links: muted grey (matching the inactive sidebar links),
+   turning dark green on hover. Scoped to the article so the navbar and
+   sidebars keep their green accents, and written as explicit color rules so
+   they reliably win over the theme's default (blue) link color. */
+.bd-content a:not(.headerlink),
+.bd-content a:not(.headerlink):visited {
+    color: var(--pst-color-text-muted, #4d5761);
+}
+.bd-content a:not(.headerlink):hover,
+.bd-content a:not(.headerlink):focus {
+    color: var(--th-green-dark);
 }

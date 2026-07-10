@@ -15,7 +15,9 @@ from importlib.metadata import version as _pkg_version
 # -- Project information -----------------------------------------------------
 
 project = "torch-harmonics"
-copyright = "2022, The torch-harmonics Authors"
+# %Y is substituted by Sphinx with the current year (honoring SOURCE_DATE_EPOCH
+# for reproducible builds), so the range always ends at the build year.
+copyright = "2022-%Y, The torch-harmonics Authors"
 author = "The torch-harmonics Authors"
 
 try:
