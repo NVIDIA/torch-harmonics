@@ -49,7 +49,7 @@ def _precompute_quadrature_weights(
     n : int
         Number of grid points
     grid : str, optional
-        Grid type ("equiangular-trapezoidal", "legendre-gauss", "lobatto", "equiangular"), by default "equiangular"
+        Grid type (``"equiangular-trapezoidal"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular"``), by default ``"equiangular"``
     a : float, optional
         Lower bound of interval, by default 0.0
     b : float, optional

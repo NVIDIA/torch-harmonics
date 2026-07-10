@@ -61,11 +61,11 @@ class DistributedResampleS2(nn.Module):
     nlon_out : int
         Number of output longitude points
     grid_in : str, optional
-        Input grid type, by default "equiangular"
+        Input grid type, by default ``"equiangular"``
     grid_out : str, optional
-        Output grid type, by default "equiangular"
+        Output grid type, by default ``"equiangular"``
     mode : str, optional
-        Interpolation mode ("bilinear" or "bilinear-spherical"), by default "bilinear"
+        Interpolation mode (``"bilinear"`` or ``"bilinear-spherical"``), by default ``"bilinear"``
     """
 
     def __init__(

@@ -40,11 +40,40 @@ from torch_harmonics.quadrature import precompute_latitudes, precompute_longitud
 
 
 class ResampleS2(nn.Module):
-    """
-    Resampling module for signals on the 2-sphere.
+    r"""
+    Resampling module for signals on the 2-sphere :math:`S^2`.
 
-    This module provides functionality to resample spherical signals between different
-    grid resolutions and grid types using bilinear interpolation.
+    This module resamples a spherical signal from one grid resolution (and type)
+    to another.  Interpolation is performed independently along latitudes and
+    longitudes, with proper handling of periodicity in :math:`\lambda` and pole
+    expansion when the output grid extends beyond the input latitude range.
+
+    Two interpolation modes are available:
+
+    * ``"bilinear"`` -- Standard bilinear (linear-linear) interpolation.  For
+      two neighbouring grid values :math:`f_0` and :math:`f_1` with interpolation
+      weight :math:`t \in [0, 1]`, the interpolated value is
+
+      .. math::
+
+          f(t) = (1 - t)\, f_0 + t\, f_1
+
+      This is applied first along the latitudinal (:math:`\theta`) and then
+      along the longitudinal (:math:`\lambda`) direction.
+
+    * ``"bilinear-spherical"`` -- Spherical linear interpolation (slerp).
+      Instead of a straight line in value space, neighbouring samples are
+      interpolated along a great-circle arc:
+
+      .. math::
+
+          f(t) = \frac{\sin\!\bigl((1-t)\,\omega\bigr)}{\sin\omega}\, f_0
+               + \frac{\sin(t\,\omega)}{\sin\omega}\, f_1
+
+      where :math:`\omega = f_1 - f_0` is the angular difference.  This mode is
+      better suited for fields that represent angular quantities (e.g.\
+      directions or phases) and falls back to linear interpolation when
+      :math:`\omega \approx 0`.
 
     Parameters
     -----------
@@ -57,11 +86,24 @@ class ResampleS2(nn.Module):
     nlon_out : int
         Number of longitude points in the output grid
     grid_in : str, optional
-        Input grid type ("equiangular", "legendre-gauss", "lobatto"), by default "equiangular"
+        Input grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``),
+        by default ``"equiangular"``
     grid_out : str, optional
-        Output grid type ("equiangular", "legendre-gauss", "lobatto"), by default "equiangular"
+        Output grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``),
+        by default ``"equiangular"``
     mode : str, optional
-        Interpolation mode ("bilinear", "bilinear-spherical"), by default "bilinear"
+        Interpolation mode (``"bilinear"``, ``"bilinear-spherical"``), by default
+        ``"bilinear"``.  See above for a description of each mode.
+
+    Examples
+    --------
+    >>> import torch
+    >>> import torch_harmonics as th
+    >>> resample = th.ResampleS2(64, 128, 128, 256).cuda()
+    >>> x = torch.randn(1, 64, 128, device="cuda")
+    >>> y = resample(x)
+    >>> y.shape
+    torch.Size([1, 128, 256])
     """
 
     def __init__(

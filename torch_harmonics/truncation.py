@@ -50,7 +50,7 @@ def _truncate_lmax(nlat: int, grid: Optional[str] = "equiangular") -> int:
     nlat : int
         Number of latitude points
     grid : str, optional
-        Grid type ("legendre-gauss", "lobatto", "equiangular", "equiangular-trapezoidal"), by default "equiangular"
+        Grid type (``"legendre-gauss"``, ``"lobatto"``, ``"equiangular"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
 
     Returns
     -------
@@ -107,7 +107,7 @@ def truncate_sht(nlat: int, nlon: int, lmax: Optional[int] = None, mmax: Optiona
         User-defined maximum azimuthal harmonic degree (non-inclusive)
         If not provided, the maximum degree is determined based on the longitude grid.
     grid : str, optional
-        Grid type ("legendre-gauss", "lobatto", "equiangular", "equiangular-trapezoidal"), by default "equiangular"
+        Grid type (``"legendre-gauss"``, ``"lobatto"``, ``"equiangular"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
 
     Returns
     -------

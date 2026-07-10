@@ -68,9 +68,9 @@ class DistributedRealSHT(nn.Module):
     mmax: int
         Maximum spherical harmonic order
     grid: str
-        Grid type ("equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"), by default "equiangular"
+        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm: str
-        Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
+        Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase: bool
         Whether to apply the Condon-Shortley phase factor, by default True
 
@@ -213,9 +213,9 @@ class DistributedInverseRealSHT(nn.Module):
     mmax: int
         Maximum spherical harmonic order
     grid: str
-        Grid type ("equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"), by default "equiangular"
+        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm: str
-        Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
+        Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase: bool
         Whether to apply the Condon-Shortley phase factor, by default True
 
@@ -357,9 +357,9 @@ class DistributedRealVectorSHT(nn.Module):
     mmax: int
         Maximum spherical harmonic order
     grid: str
-        Grid type ("equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"), by default "equiangular"
+        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm: str
-        Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
+        Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase: bool
         Whether to apply the Condon-Shortley phase factor, by default True
 
@@ -514,9 +514,9 @@ class DistributedInverseRealVectorSHT(nn.Module):
     mmax: int
         Maximum spherical harmonic order
     grid: str
-        Grid type ("equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"), by default "equiangular"
+        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm: str
-        Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
+        Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase: bool
         Whether to apply the Condon-Shortley phase factor, by default True
 

@@ -77,9 +77,9 @@ class AttentionS2(nn.Module):
     out_shape: tuple
         shape of the output grid
     grid_in: str, optional
-        input grid type, "equiangular" by default
+        input grid type, ``"equiangular"`` by default
     grid_out: str, optional
-        output grid type, "equiangular" by default
+        output grid type, ``"equiangular"`` by default
     bias: bool, optional
         if specified, adds bias to input / output projection layers
     k_channels: int
@@ -288,9 +288,9 @@ class NeighborhoodAttentionS2(nn.Module):
     out_shape: tuple
         shape of the output grid
     grid_in: str, optional
-        input grid type, "equiangular" by default
+        input grid type, ``"equiangular"`` by default
     grid_out: str, optional
-        output grid type, "equiangular" by default
+        output grid type, ``"equiangular"`` by default
     bias: bool, optional
         if specified, adds bias to input / output projection layers
     theta_cutoff: float, optional
