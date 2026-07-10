@@ -78,6 +78,25 @@ class SpectralConvS2(nn.Module):
     contraction is performed independently within each group (grouped
     convolution).
 
+    **Spectral bias.**
+    When ``bias=True``, a learnable spectral bias :math:`b_l^{m,\,c_i}` is
+    added to the SHT coefficients before the channel contraction.  The bias is
+    modulated by the spatial integral (zeroth moment) of each input channel:
+
+    .. math::
+
+        I^{c_i} = \int_0^{2\pi}\!\int_0^{\pi}
+            u^{c_i}(\theta,\lambda)\,\sin\theta\;d\theta\;d\lambda
+
+    .. math::
+
+        \hat{u}_l^{m,\,c_i} \;\leftarrow\;
+            \hat{u}_l^{m,\,c_i} + I^{c_i}\, b_l^{m,\,c_i}
+
+    This allows the layer to learn a spectral response that depends on the
+    global mean of each input channel, effectively coupling the zero-frequency
+    content into all spectral modes.
+
     Parameters
     -----------
     in_shape: Tuple[int]

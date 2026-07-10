@@ -294,9 +294,44 @@ def clenshaw_curtiss_weights(n: int, a: Optional[float] = -1.0, b: Optional[floa
 
 
 class QuadratureS2(torch.nn.Module):
-    """
+    r"""
     Scalar quadrature on :math:`S^2` for integrating spherical fields defined on a
     latitude/longitude grid.
+
+    Given a signal :math:`f(\theta, \lambda)` sampled on a latitude--longitude
+    grid, this module approximates the surface integral over the sphere:
+
+    .. math::
+
+        I[f] = \int_0^{2\pi}\!\int_0^{\pi}
+            f(\theta, \lambda)\,\sin\theta\; d\theta\; d\lambda
+        \;\approx\; \sum_{k=0}^{N_\theta - 1} \sum_{j=0}^{N_\lambda - 1}
+            f(\theta_k, \lambda_j)\, w_k\, \Delta\lambda
+
+    where :math:`w_k` are the latitudinal quadrature weights (which absorb the
+    :math:`\sin\theta` Jacobian via the change of variable to
+    :math:`\cos\theta`) and :math:`\Delta\lambda = 2\pi / N_\lambda` is the
+    uniform longitudinal spacing.
+
+    The choice of ``grid`` determines how the nodes :math:`\theta_k` and weights
+    :math:`w_k` are computed:
+
+    * ``"legendre-gauss"`` -- Gauss--Legendre quadrature.  Nodes are the roots
+      of the Legendre polynomial :math:`P_N(\cos\theta)`.  Exact for
+      polynomials of degree up to :math:`2N - 1`.
+    * ``"lobatto"`` -- Gauss--Lobatto quadrature.  Nodes include both endpoints
+      (poles).  Exact for polynomials of degree up to :math:`2N - 3`.
+    * ``"equiangular"`` -- Clenshaw--Curtis quadrature on equiangular nodes.
+      Nodes are equally spaced in :math:`\theta`.  Exact for polynomials of
+      degree up to approximately :math:`N - 1`.
+    * ``"equiangular-trapezoidal"`` -- Trapezoidal rule on equiangular nodes.
+
+    When ``normalize=True``, the weights are divided by :math:`4\pi` so that
+    the output represents the spherical mean rather than the integral:
+
+    .. math::
+
+        \bar{f} = \frac{1}{4\pi} \int_{S^2} f\; dA
 
     Parameters
     -----------
@@ -306,8 +341,26 @@ class QuadratureS2(torch.nn.Module):
         Quadrature grid type (``"equiangular"``, ``"legendre-gauss"``,
         ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``.
     normalize: bool, optional
-        If ``True``, divides weights by ``4π`` to return an average instead of
-        an integral, by default ``False``.
+        If ``True``, divides weights by :math:`4\pi` to return a spherical mean
+        instead of an integral, by default ``False``.
+
+    Examples
+    --------
+    Compute the surface area of the unit sphere (:math:`\int_{S^2} 1\,dA = 4\pi`):
+
+    >>> import torch
+    >>> import torch_harmonics as th
+    >>> nlat, nlon = 128, 256
+    >>> quad = th.QuadratureS2(img_shape=(nlat, nlon), grid="legendre-gauss")
+    >>> ones = torch.ones(1, 1, nlat, nlon)
+    >>> quad(ones).item()  # ≈ 4π
+    12.566370614359172
+
+    Compute the spherical mean of a field:
+
+    >>> quad_norm = th.QuadratureS2(img_shape=(nlat, nlon), grid="legendre-gauss", normalize=True)
+    >>> quad_norm(ones).item()  # ≈ 1.0
+    1.0
 
     Raises
     ------
