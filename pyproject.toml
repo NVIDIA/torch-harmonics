@@ -64,7 +64,7 @@ filter_basis = [
 ]
 docs = [
     "sphinx>=7.1",
-    "pydata-sphinx-theme>=0.15",
+    "nvidia-sphinx-theme>=0.0.9",  # official NVIDIA theme (pulls in pydata-sphinx-theme)
     "myst-nb>=1.0",
     "sphinx-copybutton>=0.5",
 ]

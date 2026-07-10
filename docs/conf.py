@@ -87,9 +87,9 @@ intersphinx_mapping = {
 
 # -- HTML output -------------------------------------------------------------
 
-html_theme = "pydata_sphinx_theme"
+html_theme = "nvidia_sphinx_theme"  # official NVIDIA theme (extends pydata-sphinx-theme)
 html_static_path = ["_static"]
-html_css_files = ["custom.css"]  # NVIDIA-green + white color scheme
+html_css_files = ["custom.css"]  # project-specific tweaks on top of the theme
 html_title = f"torch-harmonics {version}"
 
 html_theme_options = {
