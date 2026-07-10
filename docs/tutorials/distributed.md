@@ -141,25 +141,54 @@ x_local = x_global[
 ## 5. Calling distributed modules
 
 Once the communicator grid is set up and each rank holds its local tile, the
-distributed modules are drop-in replacements for their serial counterparts:
+distributed modules are drop-in replacements for their serial counterparts.
+Note that the input must have at least three dimensions `(N, nlat_local, nlon_local)` where `N = B * C` is the product of all leading (batch and
+channel) dimensions:
 
 ```python
 import torch_harmonics.distributed as thd
 
-# create the distributed forward / inverse SHT with global grid sizes
+batch, channels = 4, 16
+x_local = torch.randn(batch, channels, nlat_local, nlon_local, device="cuda")
+
+# create the distributed forward / inverse SHT with *global* grid sizes
 sht  = thd.DistributedRealSHT(nlat, nlon, grid="equiangular").cuda()
 isht = thd.DistributedInverseRealSHT(nlat, nlon, grid="equiangular").cuda()
 
 # each rank passes only its local tile
-coeffs = sht(x_local)            # local spectral coefficients
-x_recon = isht(coeffs)           # back to the local spatial tile
+coeffs  = sht(x_local)           # (4, 16, lmax_local, mmax_local), complex
+x_recon = isht(coeffs)           # (4, 16, nlat_local, nlon_local), real
 ```
 
-The modules handle all internal communication (distributed transposes,
-reductions, halo exchanges) transparently. The local output shapes are
-determined by the same splitting logic.
+## 6. How the distributed SHT works internally
 
-## 6. Clean-up
+The distributed SHT uses **all-to-all transposes** that trade spatial
+dimensions for slices of the flattened leading axis `N = B * C`. This is why
+`N` must be at least as large as the process-group size (if it is smaller, the
+module zero-pads it automatically and strips the padding on output).
+
+For the **forward** SHT (`DistributedRealSHT`), the sequence is:
+
+| Step | Operation            | What becomes local | What gets split          |
+| ---- | -------------------- | ------------------ | ------------------------ |
+| 1    | Azimuth a2a          | `nlon` (full)      | `N` across azimuth ranks |
+| 2    | Real FFT             | —                  | —                        |
+| 3    | Azimuth a2a          | `N` (full)         | `m` across azimuth ranks |
+| 4    | Polar a2a            | `nlat` (full)      | `N` across polar ranks   |
+| 5    | Legendre contraction | —                  | —                        |
+| 6    | Polar a2a            | `N` (full)         | `l` across polar ranks   |
+
+The **inverse** SHT (`DistributedInverseRealSHT`) reverses this sequence:
+degrees `l` are gathered via a polar transpose, the Legendre synthesis runs
+locally, then latitudes are redistributed; orders `m` are gathered via an
+azimuth transpose, the inverse FFT runs locally, and longitudes are
+redistributed.
+
+The **vector** variants (`DistributedRealVectorSHT`,
+`DistributedInverseRealVectorSHT`) follow the same scheme; the additional
+size-2 component dimension is preserved throughout.
+
+## 7. Clean-up
 
 When done, tear down the torch-harmonics state and the PyTorch process group:
 
@@ -216,14 +245,15 @@ def main():
     nlat_local = lat_shapes[thd.polar_group_rank()]
     nlon_local = lon_shapes[thd.azimuth_group_rank()]
 
-    x_local = torch.randn(1, 1, nlat_local, nlon_local, device="cuda")
+    batch, channels = 4, 16
+    x_local = torch.randn(batch, channels, nlat_local, nlon_local, device="cuda")
 
     # --- 3. Distributed SHT round-trip ---
     sht  = thd.DistributedRealSHT(nlat, nlon, grid="equiangular").cuda()
     isht = thd.DistributedInverseRealSHT(nlat, nlon, grid="equiangular").cuda()
 
-    coeffs  = sht(x_local)
-    x_recon = isht(coeffs)
+    coeffs  = sht(x_local)    # (4, 16, lmax_local, mmax_local)
+    x_recon = isht(coeffs)    # (4, 16, nlat_local, nlon_local)
 
     # --- 4. Check reconstruction error ---
     err = (x_local - x_recon).abs().max().item()

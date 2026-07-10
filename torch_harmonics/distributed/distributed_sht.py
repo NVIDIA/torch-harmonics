@@ -52,9 +52,33 @@ class DistributedRealSHT(nn.Module):
     """
     Distributed version of the forward (real-valued) SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
-    The SHT is applied to the last two dimensions of the input. Leading (batch/channel)
-    dimensions smaller than the process-grid size are zero-padded internally so the
-    transform's all-to-all transposes can redistribute them, then sliced back on output;
+    The SHT is applied to the last two dimensions of the input.
+
+    **Distribution scheme.**
+    The input tensor has shape ``(B, C, nlat_local, nlon_local)`` where latitudes
+    and longitudes are split across the polar and azimuth process groups
+    respectively.  All leading dimensions are flattened into a single axis
+    ``N = B * C`` which is used as the redistribution currency during the
+    all-to-all transposes.  The forward pass proceeds as follows:
+
+    1. **Azimuth transpose** (``nlon`` ↔ ``N``) — each rank trades its local
+       longitude chunk for a slice of the channel axis, making ``nlon`` fully
+       local so the real FFT can be applied.
+    2. **Real FFT** along the (now local) longitude dimension.
+    3. **Azimuth transpose** (``N`` ↔ ``mmax``) — redistribute so that spectral
+       orders ``m`` are split across azimuth ranks and channels are local again.
+    4. **Polar transpose** (``N`` ↔ ``nlat``) — trade channel slices for the
+       full latitude axis, making ``nlat`` local for the Legendre contraction.
+    5. **Legendre contraction** — local matrix multiply with the quadrature
+       weights, producing spectral degrees ``l``.
+    6. **Polar transpose** (``l`` ↔ ``N``) — redistribute so that degrees ``l``
+       are split across polar ranks.
+
+    The output has shape ``(B, C, lmax_local, mmax_local)`` with spectral modes
+    partitioned in the same way as the spatial grid.
+
+    If ``N < max(polar_group_size, azimuth_group_size)``, the leading axis is
+    zero-padded before the transposes and the padding is removed afterwards;
     since the transform is linear this is exact.
 
     .. seealso::
@@ -203,9 +227,31 @@ class DistributedInverseRealSHT(nn.Module):
     """
     Distributed version of the inverse (real-valued) SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
-    Leading (batch/channel) dimensions smaller than the process-grid size are zero-padded
-    internally so the transform's all-to-all transposes can redistribute them, then sliced
-    back on output; since the transform is linear this is exact.
+
+    **Distribution scheme.**
+    The input tensor has shape ``(B, C, lmax_local, mmax_local)`` where spectral
+    degrees and orders are split across the polar and azimuth process groups.
+    All leading dimensions are flattened into ``N = B * C`` for redistribution.
+    The forward pass proceeds as follows:
+
+    1. **Polar transpose** (``N`` ↔ ``lmax``) — trade channel slices for the
+       full degree axis, making ``l`` local for the Legendre synthesis.
+    2. **Legendre synthesis** — local matrix multiply with the associated
+       Legendre polynomials, producing latitude points.
+    3. **Polar transpose** (``nlat`` ↔ ``N``) — redistribute so that latitudes
+       are split across polar ranks and channels are local.
+    4. **Azimuth transpose** (``N`` ↔ ``mmax``) — make spectral orders ``m``
+       fully local for the inverse FFT.
+    5. **Inverse real FFT** along the (now local) ``m`` / longitude dimension.
+    6. **Azimuth transpose** (``nlon`` ↔ ``N``) — redistribute so that
+       longitudes are split across azimuth ranks.
+
+    The output has shape ``(B, C, nlat_local, nlon_local)`` with the spatial
+    grid partitioned in the same way as the input spectral modes.
+
+    If ``N < max(polar_group_size, azimuth_group_size)``, the leading axis is
+    zero-padded before the transposes and the padding is removed afterwards;
+    since the transform is linear this is exact.
 
     .. seealso::
         :class:`torch_harmonics.InverseRealSHT`
@@ -351,10 +397,12 @@ class DistributedRealVectorSHT(nn.Module):
     """
     Distributed version of the forward (real) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
-    The SHT is applied to the last three dimensions of the input. Leading (batch/channel)
-    dimensions smaller than the process-grid size are zero-padded internally so the
-    transform's all-to-all transposes can redistribute them, then sliced back on output;
-    since the transform is linear this is exact.
+    The SHT is applied to the last three dimensions of the input.
+
+    The distribution scheme is the same as for
+    :class:`DistributedRealSHT` (see its docstring for a step-by-step
+    description of the all-to-all transposes over the ``N = B * C`` axis).
+    The additional size-2 vector component dimension is preserved throughout.
 
     .. seealso::
         :class:`torch_harmonics.RealVectorSHT`
@@ -514,9 +562,11 @@ class DistributedInverseRealVectorSHT(nn.Module):
     """
     Distributed version of the inverse (real-valued) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
-    Leading (batch/channel) dimensions smaller than the process-grid size are zero-padded
-    internally so the transform's all-to-all transposes can redistribute them, then sliced
-    back on output; since the transform is linear this is exact.
+
+    The distribution scheme is the same as for
+    :class:`DistributedInverseRealSHT` (see its docstring for a step-by-step
+    description of the all-to-all transposes over the ``N = B * C`` axis).
+    The additional size-2 vector component dimension is preserved throughout.
 
     .. seealso::
         :class:`torch_harmonics.InverseRealVectorSHT`
