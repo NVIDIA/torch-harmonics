@@ -39,10 +39,35 @@ from torch_harmonics.truncation import truncate_sht
 
 
 class RealSHT(nn.Module):
-    """
+    r"""
     Defines a module for computing the forward (real-valued) SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
-    The SHT is applied to the last two dimensions of the input
+    The SHT is applied to the last two dimensions of the input.
+
+    Given a real-valued signal :math:`f(\theta, \lambda)` sampled on the sphere, the forward
+    scalar SHT computes the spherical harmonic coefficients
+
+    .. math::
+
+        \hat{f}_l^m = \int_0^{2\pi} \int_0^{\pi}
+            f(\theta, \lambda)\, \overline{Y_l^m(\theta, \lambda)}\,
+            \sin\theta\; d\theta\; d\lambda
+
+    where :math:`Y_l^m` are the (real or complex) spherical harmonics of degree
+    :math:`l` and order :math:`m`.  In practice the integral is evaluated in two
+    stages:
+
+    1. A real FFT along the longitudinal (:math:`\lambda`) direction extracts the
+       Fourier modes :math:`\tilde{f}_m(\theta_k)` at each quadrature node
+       :math:`\theta_k`.
+    2. A Legendre--Gauss (or Clenshaw--Curtis / Lobatto) quadrature contracts the
+       Fourier modes with the associated Legendre polynomials
+       :math:`P_l^m(\cos\theta_k)` and the quadrature weights :math:`w_k`:
+
+    .. math::
+
+        \hat{f}_l^m = 2\pi \sum_{k=0}^{N_\theta - 1}
+            \tilde{f}_m(\theta_k)\, P_l^m(\cos\theta_k)\, w_k
 
     Parameters
     -----------
@@ -55,11 +80,36 @@ class RealSHT(nn.Module):
     mmax: int
         Maximum spherical harmonic order
     grid: str
-        Grid type ("equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"), by default "equiangular"
+        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
+        ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm: str
-        Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
+        Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase: bool
         Whether to apply the Condon-Shortley phase factor, by default True
+
+    Examples
+    --------
+    >>> import torch
+    >>> import torch_harmonics as th
+    >>> nlat, nlon = 128, 256
+    >>> sht = th.RealSHT(nlat, nlon).cuda()
+    >>> signal = torch.randn(1, nlat, nlon, device="cuda")
+    >>> coeffs = sht(signal)   # shape (1, lmax, mmax), complex
+    >>> coeffs.shape
+    torch.Size([1, 128, 129])
+
+    .. note::
+        This module uses **cuFFT** (via :func:`torch.fft.rfft`) to compute the
+        longitudinal Fourier transform efficiently.  When running in **float16** or
+        **bfloat16** precision, cuFFT requires the transformed dimension (``nlon``)
+        to be a **power of two**.  If your grid does not satisfy this constraint and
+        the module is called inside a :class:`torch.autocast` context, guard it with
+        ``torch.autocast(device_type="cuda", enabled=False)``::
+
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                # ... other half-precision work ...
+                with torch.autocast(device_type="cuda", enabled=False):
+                    coeffs = sht(signal.float())
 
     References
     ----------
@@ -144,9 +194,31 @@ class RealSHT(nn.Module):
 
 
 class InverseRealSHT(nn.Module):
-    """
+    r"""
     Defines a module for computing the inverse (real-valued) SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+
+    Given complex spherical harmonic coefficients :math:`\hat{f}_l^m`, the inverse
+    scalar SHT reconstructs the real-valued signal on the sphere:
+
+    .. math::
+
+        f(\theta, \lambda) = \sum_{l=0}^{l_{\max}-1} \sum_{m=0}^{m_{\max}-1}
+            \hat{f}_l^m\, Y_l^m(\theta, \lambda)
+
+    In practice the synthesis is carried out in two stages:
+
+    1. A Legendre synthesis contracts the coefficients with the associated Legendre
+       polynomials :math:`P_l^m(\cos\theta_k)` to produce Fourier modes at each
+       grid latitude:
+
+    .. math::
+
+        \tilde{f}_m(\theta_k) = \sum_{l=m}^{l_{\max}-1}
+            \hat{f}_l^m\, P_l^m(\cos\theta_k)
+
+    2. An inverse real FFT along the longitudinal direction reconstructs the
+       spatial signal :math:`f(\theta_k, \lambda_j)`.
 
     Parameters
     -----------
@@ -159,11 +231,43 @@ class InverseRealSHT(nn.Module):
     mmax: int
         Maximum spherical harmonic order
     grid: str
-        Grid type ("equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"), by default "equiangular"
+        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
+        ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm: str
-        Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
+        Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase: bool
         Whether to apply the Condon-Shortley phase factor, by default True
+
+    Examples
+    --------
+    >>> import torch
+    >>> import torch_harmonics as th
+    >>> nlat, nlon = 128, 256
+    >>> isht = th.InverseRealSHT(nlat, nlon).cuda()
+    >>> coeffs = torch.randn(1, 128, 129, dtype=torch.cfloat, device="cuda")
+    >>> signal = isht(coeffs)   # shape (1, 128, 256), real
+    >>> signal.shape
+    torch.Size([1, 128, 256])
+
+    .. note::
+        This module uses **cuFFT** (via :func:`torch.fft.irfft`) to compute the
+        longitudinal inverse Fourier transform efficiently.  When running in
+        **float16** or **bfloat16** precision, cuFFT requires the transformed
+        dimension (``nlon``) to be a **power of two**.  If your grid does not
+        satisfy this constraint and the module is called inside a
+        :class:`torch.autocast` context, guard it with
+        ``torch.autocast(device_type="cuda", enabled=False)``::
+
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                # ... other half-precision work ...
+                with torch.autocast(device_type="cuda", enabled=False):
+                    signal = isht(coeffs.to(torch.cfloat))
+
+    .. note::
+        The inverse real FFT (C2R transform) expects the DC component (:math:`m = 0`)
+        and, when ``nlon`` is even, the Nyquist component (:math:`m = N_\lambda / 2`)
+        to be purely real.  This routine zeros out the imaginary parts of these
+        components before calling the transform.
 
     Raises
     ------
@@ -252,10 +356,38 @@ class InverseRealSHT(nn.Module):
 
 
 class RealVectorSHT(nn.Module):
-    """
+    r"""
     Defines a module for computing the forward (real) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
     The SHT is applied to the last three dimensions of the input.
+
+    A tangential vector field on the sphere can be written in terms of its
+    colatitudinal and longitudinal components
+    :math:`\mathbf{v}(\theta,\lambda) = v_\theta\,\hat{e}_\theta + v_\lambda\,\hat{e}_\lambda`.
+    The vector SHT decomposes this field into **spheroidal** and **toroidal**
+    spectral coefficients :math:`\hat{s}_l^m` and :math:`\hat{t}_l^m` via
+
+    .. math::
+
+        \hat{s}_l^m = \frac{1}{l(l+1)} \int_0^{2\pi} \int_0^{\pi}
+            \left[
+                v_\theta\, \frac{\partial \overline{Y_l^m}}{\partial \theta}
+              + v_\lambda\, \frac{1}{\sin\theta}
+                            \frac{\partial \overline{Y_l^m}}{\partial \lambda}
+            \right] \sin\theta\; d\theta\; d\lambda
+
+    .. math::
+
+        \hat{t}_l^m = \frac{1}{l(l+1)} \int_0^{2\pi} \int_0^{\pi}
+            \left[
+              - v_\theta\, \frac{1}{\sin\theta}
+                            \frac{\partial \overline{Y_l^m}}{\partial \lambda}
+              + v_\lambda\, \frac{\partial \overline{Y_l^m}}{\partial \theta}
+            \right] \sin\theta\; d\theta\; d\lambda
+
+    As with the scalar SHT, the longitudinal integrals are evaluated with a real
+    FFT and the latitudinal integrals via Gauss-type quadrature using the
+    derivatives of the associated Legendre polynomials.
 
     Parameters
     -----------
@@ -268,11 +400,36 @@ class RealVectorSHT(nn.Module):
     mmax: int
         Maximum spherical harmonic order
     grid: str
-        Grid type ("equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"), by default "equiangular"
+        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
+        ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm: str
-        Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
+        Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase: bool
         Whether to apply the Condon-Shortley phase factor, by default True
+
+    Examples
+    --------
+    >>> import torch
+    >>> import torch_harmonics as th
+    >>> nlat, nlon = 128, 256
+    >>> vsht = th.RealVectorSHT(nlat, nlon).cuda()
+    >>> vector_field = torch.randn(1, 2, nlat, nlon, device="cuda")
+    >>> coeffs = vsht(vector_field)   # shape (1, 2, lmax, mmax), complex
+    >>> coeffs.shape
+    torch.Size([1, 2, 128, 129])
+
+    .. note::
+        This module uses **cuFFT** (via :func:`torch.fft.rfft`) to compute the
+        longitudinal Fourier transform efficiently.  When running in **float16** or
+        **bfloat16** precision, cuFFT requires the transformed dimension (``nlon``)
+        to be a **power of two**.  If your grid does not satisfy this constraint and
+        the module is called inside a :class:`torch.autocast` context, guard it with
+        ``torch.autocast(device_type="cuda", enabled=False)``::
+
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                # ... other half-precision work ...
+                with torch.autocast(device_type="cuda", enabled=False):
+                    coeffs = vsht(vector_field.float())
 
     References
     ----------
@@ -368,9 +525,35 @@ class RealVectorSHT(nn.Module):
 
 
 class InverseRealVectorSHT(nn.Module):
-    """
+    r"""
     Defines a module for computing the inverse (real-valued) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+
+    Given spheroidal and toroidal spectral coefficients :math:`\hat{s}_l^m` and
+    :math:`\hat{t}_l^m`, the inverse vector SHT reconstructs the tangential
+    vector field on the sphere:
+
+    .. math::
+
+        v_\theta(\theta,\lambda) = \sum_{l=0}^{l_{\max}-1} \sum_{m=0}^{m_{\max}-1}
+            \left[
+                \hat{s}_l^m\, \frac{\partial Y_l^m}{\partial \theta}
+              - \hat{t}_l^m\, \frac{1}{\sin\theta}
+                              \frac{\partial Y_l^m}{\partial \lambda}
+            \right]
+
+    .. math::
+
+        v_\lambda(\theta,\lambda) = \sum_{l=0}^{l_{\max}-1} \sum_{m=0}^{m_{\max}-1}
+            \left[
+                \hat{s}_l^m\, \frac{1}{\sin\theta}
+                              \frac{\partial Y_l^m}{\partial \lambda}
+              + \hat{t}_l^m\, \frac{\partial Y_l^m}{\partial \theta}
+            \right]
+
+    As with the scalar inverse SHT, a Legendre synthesis contracts the
+    coefficients with the derivatives of the associated Legendre polynomials,
+    followed by an inverse real FFT to recover the spatial components.
 
     Parameters
     -----------
@@ -383,11 +566,43 @@ class InverseRealVectorSHT(nn.Module):
     mmax: int
         Maximum spherical harmonic order
     grid: str
-        Grid type ("equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"), by default "equiangular"
+        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
+        ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm: str
-        Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
+        Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase: bool
         Whether to apply the Condon-Shortley phase factor, by default True
+
+    Examples
+    --------
+    >>> import torch
+    >>> import torch_harmonics as th
+    >>> nlat, nlon = 128, 256
+    >>> ivsht = th.InverseRealVectorSHT(nlat, nlon).cuda()
+    >>> coeffs = torch.randn(1, 2, 128, 129, dtype=torch.cfloat, device="cuda")
+    >>> vector_field = ivsht(coeffs)   # shape (1, 2, 128, 256), real
+    >>> vector_field.shape
+    torch.Size([1, 2, 128, 256])
+
+    .. note::
+        This module uses **cuFFT** (via :func:`torch.fft.irfft`) to compute the
+        longitudinal inverse Fourier transform efficiently.  When running in
+        **float16** or **bfloat16** precision, cuFFT requires the transformed
+        dimension (``nlon``) to be a **power of two**.  If your grid does not
+        satisfy this constraint and the module is called inside a
+        :class:`torch.autocast` context, guard it with
+        ``torch.autocast(device_type="cuda", enabled=False)``::
+
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                # ... other half-precision work ...
+                with torch.autocast(device_type="cuda", enabled=False):
+                    vector_field = ivsht(coeffs.to(torch.cfloat))
+
+    .. note::
+        The inverse real FFT (C2R transform) expects the DC component (:math:`m = 0`)
+        and, when ``nlon`` is even, the Nyquist component (:math:`m = N_\lambda / 2`)
+        to be purely real.  This routine zeros out the imaginary parts of these
+        components before calling the transform.
 
     References
     ----------
