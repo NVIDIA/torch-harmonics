@@ -23,19 +23,16 @@ rank `r` maps to polar index `r // num_azimuth` and azimuth index
 `r % num_azimuth`.
 
 ```
-          azimuth index
-          0       1       2       3
-       ┌───────┬───────┬───────┬───────┐
-  p  0 │ GPU 0 │ GPU 1 │ GPU 2 │ GPU 3 │   ← azimuth group (row)
-  o    ├───────┼───────┼───────┼───────┤
-  l  1 │ GPU 4 │ GPU 5 │ GPU 6 │ GPU 7 │   ← azimuth group (row)
-  a    └───────┴───────┴───────┴───────┘
-  r        │               │
-  i    polar group      polar group
-  n    (column)         (column)
-  d
-  e
-  x
+              azimuth index
+              0       1       2       3
+           ┌───────┬───────┬───────┬───────┐
+polar    0 │ GPU 0 │ GPU 1 │ GPU 2 │ GPU 3 │  ← azimuth group (row)
+index      ├───────┼───────┼───────┼───────┤
+         1 │ GPU 4 │ GPU 5 │ GPU 6 │ GPU 7 │
+           └───────┴───────┴───────┴───────┘
+               │
+           polar group
+           (column)
 ```
 
 ## 2. Creating the communicator grid

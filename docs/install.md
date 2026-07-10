@@ -68,6 +68,15 @@ pip install --no-build-isolation -e .
 The custom CUDA extensions require compute capability >= 7.0.
 ```
 
+```{warning}
+The custom C++/CUDA extensions are compiled against the PyTorch C++ ABI at
+build time.  If you upgrade PyTorch after installing torch-harmonics, the
+compiled extensions may become incompatible and cause crashes or undefined
+behaviour at runtime.  **After upgrading PyTorch, always rebuild
+torch-harmonics** (``pip install --no-build-isolation -e .`` for source
+installs, or reinstall the matching prebuilt wheel).
+```
+
 ## Docker
 
 Alternatively, build and run a Docker container:
