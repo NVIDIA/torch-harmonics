@@ -49,6 +49,36 @@ class DistributedSpectralConvS2(nn.Module):
     distributed real SHT (Driscoll-Healy formulation, see https://api.semanticscholar.org/CorpusID:122817218).
     Computation is split across polar and azimuth communicator groups.
 
+    **Distribution scheme.**
+    The forward and inverse SHTs are performed by
+    :class:`DistributedRealSHT` and :class:`DistributedInverseRealSHT`
+    respectively — see their docstrings for the all-to-all transpose
+    sequence.  After the forward SHT, the spectral coefficients are split so
+    that degrees ``l`` are distributed across polar ranks and orders ``m``
+    across azimuth ranks.  The learnable spectral weight
+    ``K[groups, c_in, c_out, l]`` is stored with its ``l`` dimension sharded
+    across polar ranks (each rank holds only its local ``lmax_local`` slice).
+    The spectral contraction is therefore fully local — no communication is
+    needed for the channel mixing.
+
+    .. note::
+        When saving a checkpoint to a single file, the weight tensor must be
+        gathered across polar ranks along the ``l`` dimension to recover the
+        full ``(groups, c_in, c_out, lmax)`` shape.  Likewise, when loading a
+        serial checkpoint into the distributed module, the ``l`` dimension must
+        be split according to
+        :func:`~torch_harmonics.distributed.compute_split_shapes`.
+
+    .. note::
+        The spectral weight ``K[g, c_in, c_out, l]`` has no ``m`` dimension —
+        it is broadcast over the spectral orders during the contraction.
+        Because orders are split across azimuth ranks, each rank computes only
+        a partial sum of the weight gradient (over its local ``m`` modes).
+        For correct gradients the user must **all-reduce (sum) the weight
+        gradients across azimuth ranks**.  This can be implemented via
+        :class:`torch.nn.parallel.DistributedDataParallel` communication hooks
+        or :meth:`torch.Tensor.register_post_accumulate_grad_hook`.
+
     .. seealso::
         :class:`torch_harmonics.SpectralConvS2`
             Serial counterpart with full mathematical description and parameter
