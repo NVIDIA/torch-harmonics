@@ -18,6 +18,8 @@ walkthrough.
    init
    finalize
    is_initialized
+   is_distributed_polar
+   is_distributed_azimuth
 ```
 
 ## Process group accessors

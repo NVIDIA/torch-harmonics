@@ -89,4 +89,13 @@
    :nosignatures:
 
    truncate_sht
+
+.. currentmodule:: torch_harmonics.plotting
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   plot_sphere
+   imshow_sphere
 ```

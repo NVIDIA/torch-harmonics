@@ -168,10 +168,12 @@ def is_initialized() -> bool:
 
 
 def is_distributed_polar() -> bool:
+    """Return ``True`` if a polar process group has been registered."""
     return _POLAR_PARALLEL_GROUP is not None
 
 
 def is_distributed_azimuth() -> bool:
+    """Return ``True`` if an azimuth process group has been registered."""
     return _AZIMUTH_PARALLEL_GROUP is not None
 
 
