@@ -31,10 +31,12 @@ guide/distributed
 
 ```{toctree}
 ---
-maxdepth: 1
+maxdepth: 2
 caption: API reference
 ---
-api/index
+api/serial
+api/distributed_helpers
+api/distributed_layers
 ```
 
 ## Quick example
