@@ -88,8 +88,8 @@ def _precompute_quadrature_weights(
 
 @lru_cache(typed=True, copy=True)
 def precompute_longitudes(nlon: int):
-    """
-    Return equispaced longitude nodes in :math:`[0, 2\\pi)`.
+    r"""
+    Return equispaced longitude nodes in :math:`[0, 2\pi)`.
 
     Parameters
     ----------

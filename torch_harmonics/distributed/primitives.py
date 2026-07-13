@@ -39,7 +39,7 @@ from .utils import config as thd_config
 
 
 def get_group_neighbors(group):
-    """Return the ``(prev_rank, next_rank)`` global ranks of the immediate neighbours in *group*.
+    """Return the ``(prev_rank, next_rank)`` global ranks of the immediate neighbours in ``group``.
 
     Ranks wrap around cyclically, so rank 0's predecessor is the last rank in
     the group.
@@ -775,7 +775,7 @@ class _GatherFromCopyToPolarRegion(torch.autograd.Function):
 def distributed_transpose_azimuth(input_, dims_, shapes_):
     """All-to-all transpose across the azimuth process group.
 
-    Redistributes *input_* so that data sharded along ``dims_[0]`` becomes
+    Redistributes ``input_`` so that data sharded along ``dims_[0]`` becomes
     sharded along ``dims_[1]``.  This is the core communication pattern used
     when switching between spatial and spectral partitioning of the longitude
     axis.
@@ -878,7 +878,7 @@ def reduce_from_polar_region(input_):
     Returns
     -------
     torch.Tensor
-        Sum of *input_* across all polar ranks.
+        Sum of ``input_`` across all polar ranks.
     """
     return _ReduceFromPolarRegion.apply(input_)
 
@@ -897,14 +897,14 @@ def reduce_from_azimuth_region(input_):
     Returns
     -------
     torch.Tensor
-        Sum of *input_* across all azimuth ranks.
+        Sum of ``input_`` across all azimuth ranks.
     """
     return _ReduceFromAzimuthRegion.apply(input_)
 
 
 @torch.compiler.disable()
 def scatter_to_polar_region(input_, dim_):
-    """Split *input_* along *dim_* and keep only the local polar rank's chunk.
+    """Split ``input_`` along ``dim_`` and keep only the local polar rank's chunk.
 
     The backward pass is an all-gather that reconstructs the full tensor.
 
@@ -925,7 +925,7 @@ def scatter_to_polar_region(input_, dim_):
 
 @torch.compiler.disable()
 def gather_from_polar_region(input_, dim_, shapes_):
-    """All-gather along *dim_* across polar ranks to reconstruct the full tensor.
+    """All-gather along ``dim_`` across polar ranks to reconstruct the full tensor.
 
     The backward pass is a split (scatter) that distributes gradients back to
     owning ranks.
@@ -937,7 +937,7 @@ def gather_from_polar_region(input_, dim_, shapes_):
     dim_ : int
         Dimension along which to gather.
     shapes_ : list[int]
-        Per-rank sizes along *dim_*.
+        Per-rank sizes along ``dim_``.
 
     Returns
     -------
@@ -949,7 +949,7 @@ def gather_from_polar_region(input_, dim_, shapes_):
 
 @torch.compiler.disable()
 def reduce_from_scatter_to_polar_region(input_, dim_):
-    """Fused reduce-scatter across polar ranks along *dim_*.
+    """Fused reduce-scatter across polar ranks along ``dim_``.
 
     Equivalent to an all-reduce followed by keeping only the local rank's
     chunk, but performed in a single collective for efficiency.  The backward
@@ -972,7 +972,7 @@ def reduce_from_scatter_to_polar_region(input_, dim_):
 
 @torch.compiler.disable()
 def reduce_from_scatter_to_azimuth_region(input_, dim_):
-    """Fused reduce-scatter across azimuth ranks along *dim_*.
+    """Fused reduce-scatter across azimuth ranks along ``dim_``.
 
     Azimuth counterpart of :func:`reduce_from_scatter_to_polar_region`.
 
@@ -993,7 +993,7 @@ def reduce_from_scatter_to_azimuth_region(input_, dim_):
 
 @torch.compiler.disable()
 def gather_from_copy_to_polar_region(input_, dim_, shapes_):
-    """All-gather along *dim_* across polar ranks; reduce-scatter in the backward pass.
+    """All-gather along ``dim_`` across polar ranks; reduce-scatter in the backward pass.
 
     Similar to :func:`gather_from_polar_region`, but the backward pass uses
     reduce-scatter instead of split, making it the adjoint of a copy-then-gather
@@ -1006,7 +1006,7 @@ def gather_from_copy_to_polar_region(input_, dim_, shapes_):
     dim_ : int
         Dimension along which to gather.
     shapes_ : list[int]
-        Per-rank sizes along *dim_*.
+        Per-rank sizes along ``dim_``.
 
     Returns
     -------
@@ -1141,7 +1141,7 @@ class _PolarHaloExchangeFn(torch.autograd.Function):
 
 @torch.compiler.disable()
 def polar_halo_exchange(x, r_lat):
-    """Exchange *r_lat* halo rows with neighbouring polar ranks.
+    """Exchange ``r_lat`` halo rows with neighbouring polar ranks.
 
     Gathers ``r_lat`` latitude rows from each polar neighbour and returns a
     halo-padded tensor.  Boundary ranks receive zero-padding on the missing
