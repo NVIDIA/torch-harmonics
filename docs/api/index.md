@@ -107,6 +107,7 @@ in the `torch_harmonics.distributed` subpackage.
    finalize
    is_initialized
    compute_split_shapes
+   split_tensor_along_dim
 ```
 
 ```{note}

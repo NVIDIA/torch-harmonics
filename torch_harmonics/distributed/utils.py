@@ -91,7 +91,7 @@ def init(polar_process_group, azimuth_process_group):
     The two groups are typically created from a single
     :func:`torch.distributed.new_subgroups_by_enumeration` (or equivalent) call
     so that every global rank belongs to exactly one polar group and one azimuth
-    group.  See the :doc:`distributed tutorial </tutorials/distributed>` for a
+    group.  See the :doc:`distributed guide </guide/distributed>` for a
     complete example of how to build the orthogonal communicator grid.
 
     Parameters
