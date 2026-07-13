@@ -447,21 +447,81 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
     r"""
     Discrete-continuous (DISCO) convolution on the 2-sphere, as described in [1].
 
-    A DISCO convolution splits the spherical convolution integral into a
-    *continuous* filter and a *discrete* quadrature. The filter is defined
-    continuously as a learnable linear combination of localized basis functions
-    with compact support (of angular radius ``theta_cutoff``), while the
-    convolution integral is evaluated by numerical quadrature over the sampling
-    points of the input grid. Because the filter has compact support, only a
-    small, fixed number of input points contribute to each output location, so
-    the operation is realized as a sparse tensor contraction whose cost and
-    memory scale *linearly* in the number of grid points.
+    **Mathematical formulation.**
+    A convolution on the sphere maps a multi-channel input signal
+    :math:`f^{c_i}(\omega)` to output channels :math:`g^{c_o}(\omega')` via
 
+    .. math::
+
+        g^{c_o}(\omega')
+            = \sum_{c_i} \int_{S^2}
+              \kappa^{c_o,c_i}\!\bigl(R_{\omega'}^{-1}\,\omega\bigr)\;
+              f^{c_i}(\omega)\;d\omega
+
+    where :math:`\omega = (\theta, \lambda)` are coordinates on the sphere,
+    :math:`R_{\omega'}` is the rotation that maps the north pole to the output
+    point :math:`\omega'`, and :math:`\kappa` is a compactly supported filter
+    centred at the north pole.
+
+    **Filter parameterisation.**
+    The filter is expressed as a learnable linear combination of :math:`K`
+    fixed basis functions :math:`\{\phi_k\}`:
+
+    .. math::
+
+        \kappa^{c_o,c_i}(\vartheta, \varphi)
+            = \sum_{k=0}^{K-1} w_k^{c_o,c_i}\;\phi_k(\vartheta, \varphi)
+
+    where :math:`\vartheta` is the angular distance from the north pole
+    (filter centre) and :math:`\varphi` is the azimuthal angle around it.
+    The choice of basis is controlled by ``basis_type`` (e.g. piecewise linear,
+    spherical harmonics, Fourier--Bessel); all have compact support within
+    ``theta_cutoff``.
+
+    **Discrete evaluation and the** :math:`\Psi` **tensor.**
+    The integral is evaluated by numerical quadrature over the input grid.
+    For each output latitude :math:`\theta'_j`, the rotation
+    :math:`R_{\omega'_j}^{-1}` maps input grid points
+    :math:`(\theta_i, \lambda_p)` into the filter's local frame, yielding
+    angular coordinates :math:`(\vartheta, \varphi)` at which the basis
+    functions are evaluated.  Only input points within the filter support
+    contribute, giving a sparse **convolution tensor**
+
+    .. math::
+
+        \Psi_{k,\,j,\,(i,p)}
+            = \phi_k\!\bigl(\vartheta(\theta'_j, \theta_i, \lambda_p),\;
+                            \varphi(\theta'_j, \theta_i, \lambda_p)\bigr)
+              \; w_i
+
+    where :math:`w_i` are the quadrature weights and the composite index
+    :math:`(i, p)` runs over input latitude :math:`i` and *relative*
+    longitude offset :math:`p`.  Because the grid is equispaced in longitude,
+    :math:`\Psi` does **not** depend on the output longitude :math:`\lambda'`:
+    shifting :math:`\lambda'` simply shifts which input longitudes fall inside
+    the support.  This *p-shift* symmetry reduces the precomputation and
+    storage of :math:`\Psi` by a factor of :math:`N_{\lambda,\text{out}}`.
+
+    The full forward pass is then a sparse contraction followed by a
+    channel-mixing matrix multiply:
+
+    .. math::
+
+        g^{c_o}(\theta'_j, \lambda'_q)
+            = \sum_{c_i} \sum_k w_k^{c_o,c_i}
+              \sum_{i,\,p} \Psi_{k,\,j,\,(i,p)}\;
+              f^{c_i}(\theta_i, \lambda'_q + \lambda_p)
+
+    Because :math:`\Psi` is sparse (compact support) and independent of
+    :math:`\lambda'`, cost and memory scale **linearly** in the number of
+    grid points.
+
+    **Equivariance.**
     Keeping the filter continuous makes the convolution approximately
     :math:`SO(3)`-equivariant (rotations of the filter are restricted to the
     quotient :math:`SO(3)/SO(2)`), while the discrete quadrature makes it
     scalable to high resolution -- reconciling the equivariance-versus-
-    scalability trade-off of earlier spherical CNNs [1]. Since the filter is
+    scalability trade-off of earlier spherical CNNs [1].  Since the filter is
     continuous, the layer is also resolution-agnostic: the same learned weights
     can be evaluated on different input/output grids (``grid_in``/``grid_out``),
     though the learned features themselves remain resolution dependent.
@@ -639,12 +699,14 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     r"""
     Discrete-continuous (DISCO) transpose convolution on the 2-sphere, as described in [1].
 
-    This is the transpose (adjoint) of :class:`~torch_harmonics.DiscreteContinuousConvS2`,
-    built from the same continuous-filter and quadrature construction but applied
-    in the reverse direction -- typically to map a coarser grid to a finer one
-    (upsampling), analogous to a transposed/strided convolution in the planar
-    case. It shares the compact-support filter and sparse, linearly scaling
-    evaluation, and the same approximate :math:`SO(3)` equivariance.
+    This is the transpose (adjoint) of
+    :class:`~torch_harmonics.DiscreteContinuousConvS2` (cf. its docstring for
+    the full mathematical formulation).  It uses the same continuous-filter and
+    quadrature construction but applies the :math:`\Psi` tensor in the reverse
+    direction -- typically to map a coarser grid to a finer one (upsampling),
+    analogous to a transposed/strided convolution in the planar case.  It
+    shares the compact-support filter and sparse, linearly scaling evaluation,
+    and the same approximate :math:`SO(3)` equivariance.
 
     Parameters
     -----------
