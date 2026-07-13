@@ -108,6 +108,30 @@ slice sizes, so the user normally does not need to call it directly. It is
 useful however when preparing input data: each rank must hold only its local
 tile.
 
+### The `split_tensor_along_dim` helper
+
+For convenience, {func}`~torch_harmonics.distributed.split_tensor_along_dim`
+wraps the pattern of computing split shapes and calling `torch.split` in a
+single call. It splits a tensor along the given dimension into `num_chunks`
+pieces using exactly the same balanced partition as `compute_split_shapes`:
+
+```python
+from torch_harmonics.distributed import split_tensor_along_dim
+
+# split a (batch, channels, nlat, nlon) tensor along the latitude axis
+chunks = split_tensor_along_dim(x_global, dim=-2, num_chunks=num_polar)
+x_local_lat = chunks[thd.polar_group_rank()]
+
+# split along the longitude axis
+chunks = split_tensor_along_dim(x_local_lat, dim=-1, num_chunks=num_azimuth)
+x_local = chunks[thd.azimuth_group_rank()]
+```
+
+This is equivalent to manually calling `compute_split_shapes` and
+`torch.split`, but is less error-prone. Internally, all distributed modules
+in torch-harmonics use `split_tensor_along_dim` to partition data before
+communication.
+
 ## 4. Preparing local input data
 
 Given a global signal of shape `(batch, channels, nlat, nlon)`, each rank

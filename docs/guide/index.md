@@ -12,4 +12,5 @@ maxdepth: 1
 spherical_harmonic_transforms
 disco_convolutions
 spherical_attention
+distributed
 ```
