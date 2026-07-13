@@ -35,25 +35,54 @@ from .sht import InverseRealSHT
 
 
 class GaussianRandomFieldS2(torch.nn.Module):
-    """
-    Gaussian random field on the sphere.
+    r"""
+    Gaussian random field on the sphere via Karhunen--Loève expansion.
+
+    Samples realisations of a centred Gaussian random field on :math:`S^2`
+    whose covariance operator has the Matérn-like power spectrum
+
+    .. math::
+
+        C_l = \sigma^2
+              \left(\frac{l(l+1)}{R^2} + \tau^2\right)^{-\alpha}
+
+    where :math:`l` is the spherical harmonic degree.  The field is generated
+    by drawing i.i.d. standard-normal spectral coefficients, scaling them by
+    :math:`\sqrt{C_l}`, and transforming to the spatial domain with an inverse
+    SHT.
+
+    Larger ``alpha`` produces smoother fields (steeper spectral roll-off);
+    ``tau`` controls the transition scale between the flat low-:math:`l`
+    plateau and the power-law decay.
 
     Parameters
     ----------
     nlat : int
-        Number of latitudinal modes.
+        Number of latitudinal grid points (``nlon`` is set to ``2 * nlat``).
     alpha : float, optional
-        Exponent of the power spectrum.
+        Spectral exponent (smoothness).  Must be > 1 when ``sigma`` is not
+        given.  Default ``2.0``.
     tau : float, optional
-        Cutoff scale of the power spectrum.
+        Inverse correlation length scale.  Default ``3.0``.
     sigma : float, optional
-        Standard deviation of the power spectrum.
+        Overall amplitude.  If ``None`` (default), computed from ``alpha``
+        and ``tau`` so that the field variance is :math:`\mathcal{O}(1)`.
     radius : float, optional
-        Radius of the sphere.
+        Radius of the sphere.  Default ``1.0``.
     grid : str, optional
-        Grid type.
+        Grid type for the inverse SHT (``"equiangular"``,
+        ``"legendre-gauss"``, etc.).  Default ``"equiangular"``.
     dtype : torch.dtype, optional
-        Data type.
+        Floating-point dtype.  Default ``torch.float32``.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from torch_harmonics.random_fields import GaussianRandomFieldS2
+    >>> grf = GaussianRandomFieldS2(nlat=128, alpha=2.5, tau=5.0)
+    >>> samples = grf(4)          # 4 independent realisations
+    >>> samples.shape
+    torch.Size([4, 128, 256])
     """
 
     def __init__(self, nlat, alpha=2.0, tau=3.0, sigma=None, radius=1.0, grid="equiangular", dtype=torch.float32):

@@ -71,10 +71,12 @@ config = _DistributedConfig()
 
 
 def polar_group():
+    """Return the polar (latitudinal) process group registered by :func:`init`, or ``None``."""
     return _POLAR_PARALLEL_GROUP
 
 
 def azimuth_group():
+    """Return the azimuth (longitudinal) process group registered by :func:`init`, or ``None``."""
     return _AZIMUTH_PARALLEL_GROUP
 
 
@@ -174,6 +176,7 @@ def is_distributed_azimuth() -> bool:
 
 
 def polar_group_size() -> int:
+    """Return the number of ranks in the polar group (1 if not distributed)."""
     if not is_distributed_polar():
         return 1
     else:
@@ -181,6 +184,7 @@ def polar_group_size() -> int:
 
 
 def azimuth_group_size() -> int:
+    """Return the number of ranks in the azimuth group (1 if not distributed)."""
     if not is_distributed_azimuth():
         return 1
     else:
@@ -188,6 +192,7 @@ def azimuth_group_size() -> int:
 
 
 def polar_group_rank() -> int:
+    """Return this rank's index within the polar group (0 if not distributed)."""
     if not is_distributed_polar():
         return 0
     else:
@@ -195,6 +200,7 @@ def polar_group_rank() -> int:
 
 
 def azimuth_group_rank() -> int:
+    """Return this rank's index within the azimuth group (0 if not distributed)."""
     if not is_distributed_azimuth():
         return 0
     else:

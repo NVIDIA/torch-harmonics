@@ -32,6 +32,18 @@ below is generated automatically from the module docstrings.
    SpectralConvS2
 ```
 
+## Filter basis
+
+```{eval-rst}
+.. currentmodule:: torch_harmonics.filter_basis
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   get_filter_basis
+```
+
 ## Attention
 
 ```{eval-rst}
@@ -58,6 +70,18 @@ below is generated automatically from the module docstrings.
    QuadratureS2
 ```
 
+## Random fields
+
+```{eval-rst}
+.. currentmodule:: torch_harmonics.random_fields
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   GaussianRandomFieldS2
+```
+
 ## Utilities
 
 ```{eval-rst}
@@ -73,7 +97,54 @@ below is generated automatically from the module docstrings.
 ## Distributed
 
 Distributed (multi-GPU) counterparts of the modules above. These are available
-in the `torch_harmonics.distributed` subpackage.
+in the `torch_harmonics.distributed` subpackage. See the
+{doc}`distributed guide </guide/distributed>` for a complete walkthrough.
+
+### Setup and teardown
+
+```{eval-rst}
+.. currentmodule:: torch_harmonics.distributed
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   init
+   finalize
+   is_initialized
+```
+
+### Process group accessors
+
+```{eval-rst}
+.. currentmodule:: torch_harmonics.distributed
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   polar_group
+   polar_group_rank
+   polar_group_size
+   azimuth_group
+   azimuth_group_rank
+   azimuth_group_size
+```
+
+### Data partitioning helpers
+
+```{eval-rst}
+.. currentmodule:: torch_harmonics.distributed
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   compute_split_shapes
+   split_tensor_along_dim
+```
+
+### Distributed modules
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics.distributed
@@ -92,22 +163,6 @@ in the `torch_harmonics.distributed` subpackage.
    DistributedNeighborhoodAttentionS2
    DistributedResampleS2
    DistributedQuadratureS2
-```
-
-### Distributed setup and helpers
-
-```{eval-rst}
-.. currentmodule:: torch_harmonics.distributed
-
-.. autosummary::
-   :toctree: generated
-   :nosignatures:
-
-   init
-   finalize
-   is_initialized
-   compute_split_shapes
-   split_tensor_along_dim
 ```
 
 ```{note}

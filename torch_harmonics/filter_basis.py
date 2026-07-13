@@ -148,7 +148,39 @@ class FilterBasis(metaclass=abc.ABCMeta):
 
 @lru_cache(typed=True, copy=False)
 def get_filter_basis(kernel_shape: Union[int, Tuple[int], Tuple[int, int]], basis_type: str) -> FilterBasis:
-    """Factory function to generate the appropriate filter basis"""
+    r"""
+    Create a filter basis for DISCO convolutions.
+
+    Returns the appropriate :class:`FilterBasis` subclass for the given
+    ``basis_type``.  The result is cached so that repeated calls with the
+    same arguments return the same object.
+
+    See the :ref:`disco-filter-basis` section of the user guide for
+    visualisations of each basis type.
+
+    Parameters
+    ----------
+    kernel_shape : int or tuple of int
+        Shape parameter controlling the number of basis functions.
+        For ``"piecewise linear"``, ``"harmonic"``, and ``"fourier-bessel"``
+        this is ``(n_radial, n_angular)``; for ``"zernike"`` it is a single
+        integer ``n_max``.
+    basis_type : str
+        One of ``"piecewise linear"``, ``"harmonic"``, ``"zernike"``, or
+        ``"fourier-bessel"``.
+
+    Returns
+    -------
+    FilterBasis
+        The instantiated filter basis.
+
+    Examples
+    --------
+    >>> from torch_harmonics.filter_basis import get_filter_basis
+    >>> fb = get_filter_basis((5, 4), "piecewise linear")
+    >>> fb.kernel_size
+    16
+    """
 
     if basis_type == "piecewise linear":
         return PiecewiseLinearFilterBasis(kernel_shape=kernel_shape)
