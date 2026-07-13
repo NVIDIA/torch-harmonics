@@ -19,10 +19,14 @@ tutorials/index
 
 ```{toctree}
 ---
-maxdepth: 2
+maxdepth: 1
 caption: User guide
 ---
-guide/index
+guide/spherical_harmonic_transforms
+guide/spectral_convolutions
+guide/disco_convolutions
+guide/spherical_attention
+guide/distributed
 ```
 
 ```{toctree}
