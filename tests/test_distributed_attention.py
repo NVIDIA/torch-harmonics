@@ -234,7 +234,28 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             # # BDIM_X=1024 (per-head 8193..16384). This also stresses the dynamic-shmem opt-in
             # # (ensure_dyn_shmem) on the TMA path: ~5*nchans*4 B exceeds the default 48 KiB limit.
             # [8, 16, 8, 16, 2, 8704, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
-            # upsampling is not supported by the kernel yet (serial layer asserts nlon_in % nlon_out == 0)
+            # upsampling tests (scatter ring kernels), pscale_out=2 (lat+lon)
+            [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            [33, 64, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # pscale_out=3 upsampling (exercises pscale_out*wi kernel arithmetic)
+            [32, 32, 64, 96, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # pscale_out=4 upsampling
+            [32, 32, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # lon-only upsampling (same nlat; isolates the azimuth ring scatter, no lat halo)
+            [64, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # odd nlat_in -> even nlat_out, pscale_out=2
+            [33, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # legendre-gauss / mixed grid upsampling
+            [32, 64, 64, 128, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", False, torch.float32, 1e-5, 1e-4],
+            [32, 64, 64, 128, 2, 16, 1, None, None, "legendre-gauss", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # heads=4 with asymmetric channels (k=32, out=16; in=16), upsampling
+            [32, 64, 64, 128, 2, 16, 4, 32, 16, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # upsampling with QK norm
+            [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-4],
+            [32, 64, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-4],
+            # upsampling AMP coverage (see AMP tolerance note below)
+            [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float16, 5e-2, 1e-2],
+            [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.bfloat16, 3e-1, 5e-2],
             # AMP coverage — one row per dtype on a downsample config. Tolerances
             # are looser than the fp32 rows because bf16/fp16 cuBLAS rounding at
             # the einsum output dominates the abs error, and the distributed path
@@ -380,6 +401,10 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", "k"],
             [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", "v"],
             [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", "q"],
+            # upsample config (pscale_out=2), each branch frozen in turn
+            [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", "k"],
+            [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", "v"],
+            [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", "q"],
         ],
         skip_on_empty=True,
     )

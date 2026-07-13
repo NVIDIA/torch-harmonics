@@ -33,6 +33,7 @@
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/cuda/detail/KernelUtils.h>
 #include <ATen/cuda/detail/IndexUtils.cuh>
+#include <c10/cuda/CUDAException.h>
 
 #include <cuda_runtime.h>
 
@@ -103,6 +104,8 @@ namespace attention_kernels
         CHECK_CUDA(cub::DeviceRadixSort::SortPairsDescending(_temp_storage_d, temp_storage_bytes, _rlen_d, _rlen_sort_d,
                                                              _rids_d, _rids_sort_d, nlat_out, 0, sizeof(*_rlen_d) * 8,
                                                              stream));
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+
         return rids_sort_d;
     }
     // END - CSR rows sorting kernels and functions
@@ -137,6 +140,7 @@ namespace attention_kernels
                 ([&] { launch_permute_to0231<TRANSP_WARPS_X_TILE_SM100, scalar_t>(src, dst); }));
             CHECK_ERROR("permute_to0231_k_tile_sm100");
         }
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
 
         return dst;
     }
@@ -161,6 +165,7 @@ namespace attention_kernels
                 ([&] { launch_permute_to0312<TRANSP_WARPS_X_TILE_SM100, scalar_t>(src, dst); }));
             CHECK_ERROR("permute_to0312_k_tile_sm100");
         }
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
 
         return dst;
     }
@@ -244,6 +249,7 @@ namespace attention_kernels
         auto stream = at::cuda::getCurrentCUDAStream().stream();
 
         get_rlen_boundary_k<<<1, 1024, 0, stream>>>(thres, split_len, nrows, row_idx, row_off, num_lr, max_rl0, max_rl1);
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
 
         at::Tensor tmp_h = tmp_d.cpu();
         int64_t *tmp_ptr_h = tmp_h.data_ptr<int64_t>();

@@ -32,6 +32,7 @@
 #include "disco_cuda.cuh"
 
 #include <ATen/Dispatch.h>
+#include <c10/cuda/CUDAException.h>
 #include <ATen/OpMathType.h>
 
 namespace disco_kernels
@@ -303,6 +304,8 @@ namespace disco_kernels
                     1024 * ELXTH_MAX);
             exit(EXIT_FAILURE);
         }
+
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
 
         return out;
     }

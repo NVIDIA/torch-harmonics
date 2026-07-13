@@ -65,6 +65,7 @@
 #include "disco_cuda_ptx.cuh"
 
 #include <ATen/Dispatch.h>
+#include <c10/cuda/CUDAException.h>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <type_traits>
@@ -338,6 +339,9 @@ namespace disco_kernels
             else
                 launch(&disco_fwd_dense_kpacked_tcgen05_blk_k<BC_TILE, WO_TILE, NZ_CHUNK, 16, __half>, __half {});
         }
+
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+
         return out;
     }
 

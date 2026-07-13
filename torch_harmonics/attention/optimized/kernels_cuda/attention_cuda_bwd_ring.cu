@@ -35,6 +35,7 @@
 #include <ATen/cuda/detail/KernelUtils.h>
 #include <ATen/cuda/detail/IndexUtils.cuh>
 #include <ATen/cuda/CUDAUtils.h>
+#include <c10/cuda/CUDAException.h>
 
 #include <cuda_runtime.h>
 
