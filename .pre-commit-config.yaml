@@ -10,7 +10,7 @@ repos:
       - id: end-of-file-fixer
       - id: check-yaml
       - id: check-added-large-files
-        args: ['--maxkb=500']
+        args: ['--maxkb=2500']
       - id: check-merge-conflict
 
   - repo: https://github.com/psf/black

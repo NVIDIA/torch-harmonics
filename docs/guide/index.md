@@ -10,6 +10,7 @@ usage patterns.
 maxdepth: 1
 ---
 spherical_harmonic_transforms
+spectral_convolutions
 disco_convolutions
 spherical_attention
 distributed
