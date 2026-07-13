@@ -312,6 +312,17 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 self.register_buffer("psi_kpacked_count", kpacked_count, persistent=False)
                 self.psi_kpacked_K_pad = K_pad
 
+            # optional K-packed dense layout for the WGMMA path (Hopper bf16/fp16).
+            # A2A makes W local before the kernel, so wi_shift=0 like the serial path.
+            psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(self.kernel_size, self.nlat_out_local, self.nlon_in, 0, ker_idx, row_idx, col_idx, vals, roff_idx)
+            kpack = _maybe_kpack_psi(psi_packed_idx.contiguous(), psi_packed_vals.contiguous(), psi_packed_count.contiguous())
+            if kpack is not None:
+                kpacked_idx, kpacked_vals, kpacked_count, K_pad = kpack
+                self.register_buffer("psi_kpacked_idx", kpacked_idx, persistent=False)
+                self.register_buffer("psi_kpacked_vals", kpacked_vals, persistent=False)
+                self.register_buffer("psi_kpacked_count", kpacked_count, persistent=False)
+                self.psi_kpacked_K_pad = K_pad
+
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
