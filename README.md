@@ -245,6 +245,27 @@ Detailed usage of torch-harmonics, alongside helpful analysis provided in a seri
 9. [Resampling signals on the sphere](./notebooks/resample_sphere.ipynb)
 10. [Computing partial derivatives with the SHT](./notebooks/partial_derivatives.ipynb)
 
+## Benchmarks
+
+The `benchmarks/` directory contains a performance benchmark suite covering SHT, DISCO
+convolution, and spherical attention across resolutions, dtypes, and channel counts.
+
+```bash
+# run full suite on current GPU
+python benchmarks/run.py
+
+# filter by name or tag
+python benchmarks/run.py --name disco
+python benchmarks/run.py --tags attention neighborhood
+
+# save a baseline, then compare after a change
+python benchmarks/run.py --save-csv before.csv
+python benchmarks/run.py --reference-csv before.csv
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md#running-benchmarks) for the full workflow expected
+in performance-related PRs.
+
 ## Examples and reproducibility
 
 The `examples` folder contains training scripts for three distinct tasks:
