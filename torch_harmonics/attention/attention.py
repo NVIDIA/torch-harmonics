@@ -273,9 +273,11 @@ class NeighborhoodAttentionS2(nn.Module):
     The sparse neighborhood structure is precomputed with the same
     discrete-continuous construction used for the DISCO convolutions
     (:class:`~torch_harmonics.DiscreteContinuousConvS2`):
-    Here, only the suppot (index information) of the zero order DISCO kernel is used to define an indicator function of the cutoff disk, so an
+    Here, only the suppot (index information) of the zero order DISCO kernel is
+    used to define an indicator function of the cutoff disk, so that any
     input point contributes to an output location exactly when it lies within
-    :math:`\theta_\mathrm{cutoff}` of it. The relative weight of each input point depends on their contribution to the softmax as well as their quadrature weights.
+    :math:`\theta_\mathrm{cutoff}` of it. The relative weight of each input point
+    depends on their contribution to the softmax as well as their quadrature weights.
 
     Parameters
     -----------
