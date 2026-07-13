@@ -44,30 +44,22 @@ class RealSHT(nn.Module):
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
     The SHT is applied to the last two dimensions of the input.
 
-    Given a real-valued signal :math:`f(\theta, \lambda)` sampled on the sphere, the forward
-    scalar SHT computes the spherical harmonic coefficients
-
-    .. math::
-
-        \hat{f}_l^m = \int_0^{2\pi} \int_0^{\pi}
-            f(\theta, \lambda)\, \overline{Y_l^m(\theta, \lambda)}\,
-            \sin\theta\; d\theta\; d\lambda
-
-    where :math:`Y_l^m` are the (real or complex) spherical harmonics of degree
-    :math:`l` and order :math:`m`.  In practice the integral is evaluated in two
-    stages:
-
-    1. A real FFT along the longitudinal (:math:`\lambda`) direction extracts the
-       Fourier modes :math:`\tilde{f}_m(\theta_k)` at each quadrature node
-       :math:`\theta_k`.
-    2. A Legendre--Gauss (or Clenshaw--Curtis / Lobatto) quadrature contracts the
-       Fourier modes with the associated Legendre polynomials
-       :math:`P_l^m(\cos\theta_k)` and the quadrature weights :math:`q_k`:
+    Given a real-valued signal :math:`f(\theta, \lambda)` sampled on the sphere,
+    the forward scalar SHT computes the spherical harmonic coefficients via a
+    longitudinal FFT followed by Legendre quadrature:
 
     .. math::
 
         \hat{f}_l^m = 2\pi \sum_{k=0}^{N_\theta - 1}
             \tilde{f}_m(\theta_k)\, P_l^m(\cos\theta_k)\, q_k
+
+    where :math:`\tilde{f}_m` are the Fourier modes and :math:`q_k` are the
+    quadrature weights.
+
+    .. seealso::
+        :doc:`/guide/spherical_harmonic_transforms`
+            User guide with the full mathematical derivation, normalization
+            conventions, grid types, and worked examples.
 
     Parameters
     -----------
@@ -83,28 +75,11 @@ class RealSHT(nn.Module):
         Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
         ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm: str
-        Normalization convention applied to the associated Legendre polynomials
-        and, by extension, the spherical harmonics basis.  Must be one of:
-
-        * ``"ortho"`` (default) -- **Orthonormal**.  The spherical harmonics
-          satisfy :math:`\langle Y_l^m, Y_{l'}^{m'}\rangle = \delta_{ll'}\delta_{mm'}`,
-          where the inner product is :math:`\int_0^{2\pi}\!\int_0^{\pi} \cdot\;\sin\theta\,d\theta\,d\lambda`.
-          This is the standard 4\ :math:`\pi`-normalized convention.
-        * ``"schmidt"`` -- **Schmidt semi-normalized**.  The associated Legendre
-          functions carry the factor :math:`\sqrt{(l-m)!/(l+m)!}` but omit the
-          :math:`\sqrt{2l+1}` term present in the orthonormal convention.  Commonly
-          used in geomagnetism and gravity-field modelling.
-        * ``"unnorm"`` -- **Unnormalized**.  No normalization beyond the bare
-          three-term recurrence.  Provided for special-purpose work; not
-          recommended for general use because coefficient magnitudes grow with
-          degree.
+        Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
+        by default ``"ortho"``.
     csphase: bool
-        Whether to include the Condon--Shortley phase factor :math:`(-1)^m` in
-        the associated Legendre polynomials, by default ``True``.  This phase is
-        part of the standard physics convention for spherical harmonics and
-        ensures that raising/lowering operators have real, positive matrix
-        elements.  Set to ``False`` to use the geodesy / geomagnetism convention
-        which omits this factor.
+        Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
+        by default ``True``.
 
     Examples
     --------
@@ -218,26 +193,18 @@ class InverseRealSHT(nn.Module):
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
 
     Given complex spherical harmonic coefficients :math:`\hat{f}_l^m`, the inverse
-    scalar SHT reconstructs the real-valued signal on the sphere:
+    scalar SHT reconstructs the real-valued signal on the sphere via Legendre
+    synthesis followed by an inverse FFT:
 
     .. math::
 
         f(\theta, \lambda) = \sum_{l=0}^{l_{\max}-1} \sum_{m=0}^{m_{\max}-1}
             \hat{f}_l^m\, Y_l^m(\theta, \lambda)
 
-    In practice the synthesis is carried out in two stages:
-
-    1. A Legendre synthesis contracts the coefficients with the associated Legendre
-       polynomials :math:`P_l^m(\cos\theta_k)` to produce Fourier modes at each
-       grid latitude:
-
-    .. math::
-
-        \tilde{f}_m(\theta_k) = \sum_{l=m}^{l_{\max}-1}
-            \hat{f}_l^m\, P_l^m(\cos\theta_k)
-
-    2. An inverse real FFT along the longitudinal direction reconstructs the
-       spatial signal :math:`f(\theta_k, \lambda_j)`.
+    .. seealso::
+        :doc:`/guide/spherical_harmonic_transforms`
+            User guide with the full mathematical derivation, normalization
+            conventions, grid types, and worked examples.
 
     Parameters
     -----------
@@ -253,28 +220,11 @@ class InverseRealSHT(nn.Module):
         Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
         ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm: str
-        Normalization convention applied to the associated Legendre polynomials
-        and, by extension, the spherical harmonics basis.  Must be one of:
-
-        * ``"ortho"`` (default) -- **Orthonormal**.  The spherical harmonics
-          satisfy :math:`\langle Y_l^m, Y_{l'}^{m'}\rangle = \delta_{ll'}\delta_{mm'}`,
-          where the inner product is :math:`\int_0^{2\pi}\!\int_0^{\pi} \cdot\;\sin\theta\,d\theta\,d\lambda`.
-          This is the standard 4\ :math:`\pi`-normalized convention.
-        * ``"schmidt"`` -- **Schmidt semi-normalized**.  The associated Legendre
-          functions carry the factor :math:`\sqrt{(l-m)!/(l+m)!}` but omit the
-          :math:`\sqrt{2l+1}` term present in the orthonormal convention.  Commonly
-          used in geomagnetism and gravity-field modelling.
-        * ``"unnorm"`` -- **Unnormalized**.  No normalization beyond the bare
-          three-term recurrence.  Provided for special-purpose work; not
-          recommended for general use because coefficient magnitudes grow with
-          degree.
+        Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
+        by default ``"ortho"``.
     csphase: bool
-        Whether to include the Condon--Shortley phase factor :math:`(-1)^m` in
-        the associated Legendre polynomials, by default ``True``.  This phase is
-        part of the standard physics convention for spherical harmonics and
-        ensures that raising/lowering operators have real, positive matrix
-        elements.  Set to ``False`` to use the geodesy / geomagnetism convention
-        which omits this factor.
+        Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
+        by default ``True``.
 
     Examples
     --------
@@ -399,33 +349,16 @@ class RealVectorSHT(nn.Module):
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
     The SHT is applied to the last three dimensions of the input.
 
-    A tangential vector field on the sphere can be written in terms of its
-    colatitudinal and longitudinal components
-    :math:`\mathbf{v}(\theta,\lambda) = v_\theta\,\hat{e}_\theta + v_\lambda\,\hat{e}_\lambda`.
-    The vector SHT decomposes this field into **spheroidal** and **toroidal**
-    spectral coefficients :math:`\hat{s}_l^m` and :math:`\hat{t}_l^m` via
+    Decomposes a tangential vector field
+    :math:`\mathbf{v} = v_\theta\,\hat{e}_\theta + v_\lambda\,\hat{e}_\lambda`
+    into **spheroidal** and **toroidal** spectral coefficients
+    :math:`\hat{s}_l^m` and :math:`\hat{t}_l^m` using the derivatives of the
+    associated Legendre polynomials.
 
-    .. math::
-
-        \hat{s}_l^m = \frac{1}{l(l+1)} \int_0^{2\pi} \int_0^{\pi}
-            \left[
-                v_\theta\, \frac{\partial \overline{Y_l^m}}{\partial \theta}
-              + v_\lambda\, \frac{1}{\sin\theta}
-                            \frac{\partial \overline{Y_l^m}}{\partial \lambda}
-            \right] \sin\theta\; d\theta\; d\lambda
-
-    .. math::
-
-        \hat{t}_l^m = \frac{1}{l(l+1)} \int_0^{2\pi} \int_0^{\pi}
-            \left[
-                v_\theta\, \frac{1}{\sin\theta}
-                            \frac{\partial \overline{Y_l^m}}{\partial \lambda}
-              - v_\lambda\, \frac{\partial \overline{Y_l^m}}{\partial \theta}
-            \right] \sin\theta\; d\theta\; d\lambda
-
-    As with the scalar SHT, the longitudinal integrals are evaluated with a real
-    FFT and the latitudinal integrals via Gauss-type quadrature using the
-    derivatives of the associated Legendre polynomials.
+    .. seealso::
+        :doc:`/guide/spherical_harmonic_transforms`
+            User guide with the full mathematical derivation of the vector SHT
+            formulas, normalization conventions, and worked examples.
 
     Parameters
     -----------
@@ -441,28 +374,11 @@ class RealVectorSHT(nn.Module):
         Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
         ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm: str
-        Normalization convention applied to the associated Legendre polynomials
-        and, by extension, the spherical harmonics basis.  Must be one of:
-
-        * ``"ortho"`` (default) -- **Orthonormal**.  The spherical harmonics
-          satisfy :math:`\langle Y_l^m, Y_{l'}^{m'}\rangle = \delta_{ll'}\delta_{mm'}`,
-          where the inner product is :math:`\int_0^{2\pi}\!\int_0^{\pi} \cdot\;\sin\theta\,d\theta\,d\lambda`.
-          This is the standard 4\ :math:`\pi`-normalized convention.
-        * ``"schmidt"`` -- **Schmidt semi-normalized**.  The associated Legendre
-          functions carry the factor :math:`\sqrt{(l-m)!/(l+m)!}` but omit the
-          :math:`\sqrt{2l+1}` term present in the orthonormal convention.  Commonly
-          used in geomagnetism and gravity-field modelling.
-        * ``"unnorm"`` -- **Unnormalized**.  No normalization beyond the bare
-          three-term recurrence.  Provided for special-purpose work; not
-          recommended for general use because coefficient magnitudes grow with
-          degree.
+        Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
+        by default ``"ortho"``.
     csphase: bool
-        Whether to include the Condon--Shortley phase factor :math:`(-1)^m` in
-        the associated Legendre polynomials, by default ``True``.  This phase is
-        part of the standard physics convention for spherical harmonics and
-        ensures that raising/lowering operators have real, positive matrix
-        elements.  Set to ``False`` to use the geodesy / geomagnetism convention
-        which omits this factor.
+        Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
+        by default ``True``.
 
     Examples
     --------
@@ -587,30 +503,14 @@ class InverseRealVectorSHT(nn.Module):
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
 
     Given spheroidal and toroidal spectral coefficients :math:`\hat{s}_l^m` and
-    :math:`\hat{t}_l^m`, the inverse vector SHT reconstructs the tangential
-    vector field on the sphere:
+    :math:`\hat{t}_l^m`, reconstructs the tangential vector field on the sphere
+    via Legendre synthesis with the derivatives of the associated Legendre
+    polynomials, followed by an inverse real FFT.
 
-    .. math::
-
-        v_\theta(\theta,\lambda) = \sum_{l=0}^{l_{\max}-1} \sum_{m=0}^{m_{\max}-1}
-            \left[
-                \hat{s}_l^m\, \frac{\partial Y_l^m}{\partial \theta}
-              + \hat{t}_l^m\, \frac{1}{\sin\theta}
-                              \frac{\partial Y_l^m}{\partial \lambda}
-            \right]
-
-    .. math::
-
-        v_\lambda(\theta,\lambda) = \sum_{l=0}^{l_{\max}-1} \sum_{m=0}^{m_{\max}-1}
-            \left[
-                \hat{s}_l^m\, \frac{1}{\sin\theta}
-                              \frac{\partial Y_l^m}{\partial \lambda}
-              - \hat{t}_l^m\, \frac{\partial Y_l^m}{\partial \theta}
-            \right]
-
-    As with the scalar inverse SHT, a Legendre synthesis contracts the
-    coefficients with the derivatives of the associated Legendre polynomials,
-    followed by an inverse real FFT to recover the spatial components.
+    .. seealso::
+        :doc:`/guide/spherical_harmonic_transforms`
+            User guide with the full mathematical derivation of the inverse
+            vector SHT formulas, normalization conventions, and worked examples.
 
     Parameters
     -----------
@@ -626,28 +526,11 @@ class InverseRealVectorSHT(nn.Module):
         Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
         ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm: str
-        Normalization convention applied to the associated Legendre polynomials
-        and, by extension, the spherical harmonics basis.  Must be one of:
-
-        * ``"ortho"`` (default) -- **Orthonormal**.  The spherical harmonics
-          satisfy :math:`\langle Y_l^m, Y_{l'}^{m'}\rangle = \delta_{ll'}\delta_{mm'}`,
-          where the inner product is :math:`\int_0^{2\pi}\!\int_0^{\pi} \cdot\;\sin\theta\,d\theta\,d\lambda`.
-          This is the standard 4\ :math:`\pi`-normalized convention.
-        * ``"schmidt"`` -- **Schmidt semi-normalized**.  The associated Legendre
-          functions carry the factor :math:`\sqrt{(l-m)!/(l+m)!}` but omit the
-          :math:`\sqrt{2l+1}` term present in the orthonormal convention.  Commonly
-          used in geomagnetism and gravity-field modelling.
-        * ``"unnorm"`` -- **Unnormalized**.  No normalization beyond the bare
-          three-term recurrence.  Provided for special-purpose work; not
-          recommended for general use because coefficient magnitudes grow with
-          degree.
+        Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
+        by default ``"ortho"``.
     csphase: bool
-        Whether to include the Condon--Shortley phase factor :math:`(-1)^m` in
-        the associated Legendre polynomials, by default ``True``.  This phase is
-        part of the standard physics convention for spherical harmonics and
-        ensures that raising/lowering operators have real, positive matrix
-        elements.  Set to ``False`` to use the geodesy / geomagnetism convention
-        which omits this factor.
+        Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
+        by default ``True``.
 
     Examples
     --------

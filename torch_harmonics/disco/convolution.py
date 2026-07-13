@@ -447,63 +447,12 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
     r"""
     Discrete-continuous (DISCO) convolution on the 2-sphere, as described in [1].
 
-    **Mathematical formulation.**
-    A convolution on the sphere maps a multi-channel input signal
-    :math:`f^{c_i}(\omega)` to output channels :math:`g^{c_o}(\omega')` via
-
-    .. math::
-
-        g^{c_o}(\omega')
-            = \sum_{c_i} \int_{S^2}
-              \kappa^{c_o,c_i}\!\bigl(R_{\omega'}^{-1}\,\omega\bigr)\;
-              f^{c_i}(\omega)\;d\omega
-
-    where :math:`\omega = (\theta, \lambda)` are coordinates on the sphere,
-    :math:`R_{\omega'}` is the rotation that maps the north pole to the output
-    point :math:`\omega'`, and :math:`\kappa` is a compactly supported filter
-    centred at the north pole.
-
-    **Filter parameterisation.**
-    The filter is expressed as a learnable linear combination of :math:`K`
-    fixed basis functions :math:`\{\phi_k\}`:
-
-    .. math::
-
-        \kappa^{c_o,c_i}(\vartheta, \varphi)
-            = \sum_{k=0}^{K-1} w_k^{c_o,c_i}\;\phi_k(\vartheta, \varphi)
-
-    where :math:`\vartheta` is the angular distance from the north pole
-    (filter centre) and :math:`\varphi` is the azimuthal angle around it.
-    The choice of basis is controlled by ``basis_type`` (e.g. piecewise linear,
-    spherical harmonics, Fourier--Bessel); all have compact support within
-    ``theta_cutoff``.
-
-    **Discrete evaluation and the** :math:`\Psi` **tensor.**
-    The integral is evaluated by numerical quadrature over the input grid.
-    For each output latitude :math:`\theta'_j`, the rotation
-    :math:`R_{\omega'_j}^{-1}` maps input grid points
-    :math:`(\theta_i, \lambda_p)` into the filter's local frame, yielding
-    angular coordinates :math:`(\vartheta, \varphi)` at which the basis
-    functions are evaluated.  Only input points within the filter support
-    contribute, giving a sparse **convolution tensor**
-
-    .. math::
-
-        \Psi_{k,\,j,\,(i,p)}
-            = \phi_k\!\bigl(\vartheta(\theta'_j, \theta_i, \lambda_p),\;
-                            \varphi(\theta'_j, \theta_i, \lambda_p)\bigr)
-              \; q_i
-
-    where :math:`q_i` are the quadrature weights and the composite index
-    :math:`(i, p)` runs over input latitude :math:`i` and *relative*
-    longitude offset :math:`p`.  Because the grid is equispaced in longitude,
-    :math:`\Psi` does **not** depend on the output longitude :math:`\lambda'`:
-    shifting :math:`\lambda'` simply shifts which input longitudes fall inside
-    the support.  This *p-shift* symmetry reduces the precomputation and
-    storage of :math:`\Psi` by a factor of :math:`N_{\lambda,\text{out}}`.
-
-    The full forward pass is then a sparse contraction followed by a
-    channel-mixing matrix multiply:
+    The layer evaluates a spherical convolution with a compactly supported
+    filter of angular radius ``theta_cutoff``.  The filter is parameterised as
+    a learnable linear combination of fixed basis functions
+    :math:`\{\phi_k\}`, and the integral is computed by sparse quadrature over
+    the input grid, giving :math:`O(N)` cost in the number of grid points.
+    The forward pass is
 
     .. math::
 
@@ -512,19 +461,16 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
               \sum_{i,\,p} \Psi_{k,\,j,\,(i,p)}\;
               f^{c_i}(\theta_i, \lambda'_q + \lambda_p)
 
-    Because :math:`\Psi` is sparse (compact support) and independent of
-    :math:`\lambda'`, cost and memory scale **linearly** in the number of
-    grid points.
+    where :math:`\Psi` is a precomputed sparse convolution tensor that
+    encodes the basis function values at rotated input grid positions,
+    weighted by the quadrature weights.  Because the grid is equispaced in
+    longitude, :math:`\Psi` is independent of the output longitude
+    (p-shift symmetry).
 
-    **Equivariance.**
-    Keeping the filter continuous makes the convolution approximately
-    :math:`SO(3)`-equivariant (rotations of the filter are restricted to the
-    quotient :math:`SO(3)/SO(2)`), while the discrete quadrature makes it
-    scalable to high resolution -- reconciling the equivariance-versus-
-    scalability trade-off of earlier spherical CNNs [1].  Since the filter is
-    continuous, the layer is also resolution-agnostic: the same learned weights
-    can be evaluated on different input/output grids (``grid_in``/``grid_out``),
-    though the learned features themselves remain resolution dependent.
+    .. seealso::
+        :doc:`/guide/disco_convolutions`
+            User guide with the full mathematical derivation, filter basis
+            visualisations, and worked examples.
 
     Parameters
     -----------
@@ -700,13 +646,18 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     Discrete-continuous (DISCO) transpose convolution on the 2-sphere, as described in [1].
 
     This is the transpose (adjoint) of
-    :class:`~torch_harmonics.DiscreteContinuousConvS2` (cf. its docstring for
-    the full mathematical formulation).  It uses the same continuous-filter and
-    quadrature construction but applies the :math:`\Psi` tensor in the reverse
-    direction -- typically to map a coarser grid to a finer one (upsampling),
-    analogous to a transposed/strided convolution in the planar case.  It
-    shares the compact-support filter and sparse, linearly scaling evaluation,
-    and the same approximate :math:`SO(3)` equivariance.
+    :class:`~torch_harmonics.DiscreteContinuousConvS2`.  It uses the same
+    continuous-filter and quadrature construction but applies the
+    :math:`\Psi` tensor in the reverse direction -- typically to map a coarser
+    grid to a finer one (upsampling), analogous to a transposed/strided
+    convolution in the planar case.  It shares the compact-support filter and
+    sparse, linearly scaling evaluation, and the same approximate
+    :math:`SO(3)` equivariance.
+
+    .. seealso::
+        :doc:`/guide/disco_convolutions`
+            User guide with the full mathematical derivation, filter basis
+            visualisations, and worked examples.
 
     Parameters
     -----------
