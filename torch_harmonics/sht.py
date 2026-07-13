@@ -418,9 +418,9 @@ class RealVectorSHT(nn.Module):
 
         \hat{t}_l^m = \frac{1}{l(l+1)} \int_0^{2\pi} \int_0^{\pi}
             \left[
-              - v_\theta\, \frac{1}{\sin\theta}
+                v_\theta\, \frac{1}{\sin\theta}
                             \frac{\partial \overline{Y_l^m}}{\partial \lambda}
-              + v_\lambda\, \frac{\partial \overline{Y_l^m}}{\partial \theta}
+              - v_\lambda\, \frac{\partial \overline{Y_l^m}}{\partial \theta}
             \right] \sin\theta\; d\theta\; d\lambda
 
     As with the scalar SHT, the longitudinal integrals are evaluated with a real
@@ -595,7 +595,7 @@ class InverseRealVectorSHT(nn.Module):
         v_\theta(\theta,\lambda) = \sum_{l=0}^{l_{\max}-1} \sum_{m=0}^{m_{\max}-1}
             \left[
                 \hat{s}_l^m\, \frac{\partial Y_l^m}{\partial \theta}
-              - \hat{t}_l^m\, \frac{1}{\sin\theta}
+              + \hat{t}_l^m\, \frac{1}{\sin\theta}
                               \frac{\partial Y_l^m}{\partial \lambda}
             \right]
 
@@ -605,7 +605,7 @@ class InverseRealVectorSHT(nn.Module):
             \left[
                 \hat{s}_l^m\, \frac{1}{\sin\theta}
                               \frac{\partial Y_l^m}{\partial \lambda}
-              + \hat{t}_l^m\, \frac{\partial Y_l^m}{\partial \theta}
+              - \hat{t}_l^m\, \frac{\partial Y_l^m}{\partial \theta}
             \right]
 
     As with the scalar inverse SHT, a Legendre synthesis contracts the

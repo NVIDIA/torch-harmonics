@@ -66,6 +66,13 @@ autodoc_member_order = "bysource"
 # CPU-only build is sufficient — no CUDA toolkit required. We therefore import
 # the real package (better signatures) rather than mocking it.
 
+
+def autodoc_skip_member_handler(app, what, name, obj, skip, options):
+    if name == "extra_repr":
+        return True
+    return skip
+
+
 napoleon_google_docstring = False
 napoleon_numpy_docstring = True
 napoleon_use_param = True
@@ -97,3 +104,7 @@ html_theme_options = {
     "show_prev_next": False,
     "navigation_with_keys": True,
 }
+
+
+def setup(app):
+    app.connect("autodoc-skip-member", autodoc_skip_member_handler)
