@@ -14,6 +14,7 @@ maxdepth: 1
 caption: Getting started
 ---
 install
+benchmarking
 tutorials/index
 ```
 
