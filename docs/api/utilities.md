@@ -57,3 +57,27 @@ The longitudinal direction always uses equispaced nodes (see
 
    truncate_sht
 ```
+
+## Debugging
+
+```{eval-rst}
+.. currentmodule:: torch_harmonics.distributed
+
+.. autodata:: config
+   :no-value:
+```
+
+The `config` object exposes a single boolean property, `debug`.
+When enabled, the distributed primitives perform extra shape-verification
+checks on every collective call, which is useful for diagnosing partitioning
+mismatches.
+
+```python
+from torch_harmonics.distributed import config
+
+# enable programmatically
+config.debug = True
+
+# or via environment variable (before importing)
+# TORCH_HARMONICS_DISTRIBUTED_DEBUG=1
+```

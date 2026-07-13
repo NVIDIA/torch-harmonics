@@ -46,7 +46,7 @@ except ImportError:
     ccrs = None
 
 
-def check_plotting_dependencies():
+def _check_plotting_dependencies():
     if plt is None:
         raise ImportError("matplotlib is required for plotting functions. Install it with 'pip install matplotlib'")
     if cartopy is None:
@@ -148,7 +148,7 @@ def plot_sphere(
     """
 
     # make sure cartopy exist
-    check_plotting_dependencies()
+    _check_plotting_dependencies()
 
     if fig is None:
         fig = plt.figure()
@@ -219,7 +219,7 @@ def imshow_sphere(data, fig=None, projection="robinson", title=None, central_lat
     """
 
     # make sure cartopy exist
-    check_plotting_dependencies()
+    _check_plotting_dependencies()
 
     if fig is None:
         fig = plt.figure()
