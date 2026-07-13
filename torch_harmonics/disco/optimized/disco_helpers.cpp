@@ -30,6 +30,7 @@
 
 #include "disco_helpers.h"
 #include <torch/extension.h>
+#include <algorithm>
 
 torch::Tensor preprocess_psi(const int64_t K, const int64_t Ho, torch::Tensor ker_idx, torch::Tensor row_idx,
                              torch::Tensor col_idx, torch::Tensor val)
@@ -80,6 +81,68 @@ torch::Tensor preprocess_psi(const int64_t K, const int64_t Ho, torch::Tensor ke
     return roff_idx;
 }
 
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
+pack_psi_dense(const int64_t K, const int64_t Ho, const int64_t Wi, const int64_t nbr_pad, torch::Tensor ker_idx,
+               torch::Tensor row_idx, torch::Tensor col_idx, torch::Tensor val, torch::Tensor roff_idx)
+{
+    CHECK_CONTIGUOUS_TENSOR(ker_idx);
+    CHECK_CONTIGUOUS_TENSOR(row_idx);
+    CHECK_CONTIGUOUS_TENSOR(col_idx);
+    CHECK_CONTIGUOUS_TENSOR(val);
+    CHECK_CONTIGUOUS_TENSOR(roff_idx);
+
+    TORCH_CHECK(ker_idx.dtype() == torch::kInt64, "ker_idx must be int64");
+    TORCH_CHECK(row_idx.dtype() == torch::kInt64, "row_idx must be int64");
+    TORCH_CHECK(col_idx.dtype() == torch::kInt64, "col_idx must be int64");
+    TORCH_CHECK(roff_idx.dtype() == torch::kInt64, "roff_idx must be int64");
+    TORCH_CHECK(K > 0 && Ho > 0 && Wi > 0, "K, Ho, Wi must be positive");
+
+    auto device = ker_idx.device();
+    TORCH_INTERNAL_ASSERT(device.type() == row_idx.device().type() && device.type() == col_idx.device().type()
+                          && device.type() == val.device().type() && device.type() == roff_idx.device().type());
+
+    auto ker_cpu = ker_idx.to(torch::kCPU);
+    auto row_cpu = row_idx.to(torch::kCPU);
+    auto col_cpu = col_idx.to(torch::kCPU);
+    auto val_cpu = val.to(torch::kCPU);
+    auto roff_cpu = roff_idx.to(torch::kCPU);
+
+    const int64_t nrows = roff_cpu.size(0) - 1;
+    TORCH_CHECK(nrows <= K * Ho, "pack_psi_dense expects roff_idx.size(0)-1 <= K*Ho (got nrows=", nrows, ", K=", K,
+                ", Ho=", Ho, "); make sure preprocess_psi was run first");
+
+    int64_t resolved_nbr_pad = nbr_pad;
+    {
+        const int64_t *roff_h = roff_cpu.data_ptr<int64_t>();
+        int64_t max_nbr = 0;
+        for (int64_t i = 0; i < nrows; i++) { max_nbr = std::max(max_nbr, roff_h[i + 1] - roff_h[i]); }
+        if (resolved_nbr_pad <= 0) {
+            resolved_nbr_pad = max_nbr;
+        } else {
+            TORCH_CHECK(resolved_nbr_pad >= max_nbr, "nbr_pad (", resolved_nbr_pad,
+                        ") is smaller than the maximum number of entries in any row (", max_nbr, ")");
+        }
+    }
+
+    auto idx_out = torch::zeros({K, Ho, resolved_nbr_pad, 2}, ker_idx.options().dtype(torch::kInt64).device(torch::kCPU));
+    auto val_out = torch::zeros({K, Ho, resolved_nbr_pad}, val.options().device(torch::kCPU));
+    auto count_out = torch::zeros({K, Ho}, ker_idx.options().dtype(torch::kInt64).device(torch::kCPU));
+
+    AT_DISPATCH_FLOATING_TYPES(
+        val.scalar_type(), "pack_psi_dense", ([&] {
+            pack_psi_dense_kernel<scalar_t>(
+                K, Ho, Wi, resolved_nbr_pad, nrows, ker_cpu.data_ptr<int64_t>(), row_cpu.data_ptr<int64_t>(),
+                col_cpu.data_ptr<int64_t>(), val_cpu.data_ptr<scalar_t>(), roff_cpu.data_ptr<int64_t>(),
+                idx_out.data_ptr<int64_t>(), val_out.data_ptr<scalar_t>(), count_out.data_ptr<int64_t>());
+        }));
+
+    idx_out = idx_out.to(device);
+    val_out = val_out.to(device);
+    count_out = count_out.to(device);
+
+    return std::make_tuple(idx_out, val_out, count_out);
+}
+
 // set default values for BUILD_CPP and BUILD_CUDA
 #ifndef BUILD_CPP
 #define BUILD_CPP 0
@@ -89,16 +152,39 @@ torch::Tensor preprocess_psi(const int64_t K, const int64_t Ho, torch::Tensor ke
 #define BUILD_CUDA 0
 #endif
 
+#ifndef BUILD_KPACKED_SM90
+#define BUILD_KPACKED_SM90 0
+#endif
+
+#ifndef BUILD_KPACKED_SM100
+#define BUILD_KPACKED_SM100 0
+#endif
+
 bool cpp_kernels_is_available() { return static_cast<bool>(BUILD_CPP); }
 
 bool cuda_kernels_is_available() { return static_cast<bool>(BUILD_CUDA); }
 
 bool optimized_kernels_is_available() { return cuda_kernels_is_available() || cpp_kernels_is_available(); }
 
+bool kpacked_sm90_kernels_is_available() { return static_cast<bool>(BUILD_KPACKED_SM90); }
+
+bool kpacked_sm100_kernels_is_available() { return static_cast<bool>(BUILD_KPACKED_SM100); }
+
 PYBIND11_MODULE(disco_helpers, m)
 {
     m.def("preprocess_psi", &preprocess_psi, "Sort psi matrix, required for using CUDA kernels.");
+    m.def("pack_psi_dense", &pack_psi_dense,
+          "Repack a CSR-preprocessed psi into a dense (K, Ho, NBR_PAD, ...) layout. "
+          "Returns (idx [K,Ho,NBR_PAD,2] of (hi, wi_base), val [K,Ho,NBR_PAD], count [K,Ho]). "
+          "Pass nbr_pad <= 0 to auto-pad to the row maximum.",
+          pybind11::arg("K"), pybind11::arg("Ho"), pybind11::arg("Wi"), pybind11::arg("nbr_pad"),
+          pybind11::arg("ker_idx"), pybind11::arg("row_idx"), pybind11::arg("col_idx"), pybind11::arg("val"),
+          pybind11::arg("roff_idx"));
     m.def("cuda_kernels_is_available", &cuda_kernels_is_available, "Check if CUDA kernels are available.");
     m.def("optimized_kernels_is_available", &optimized_kernels_is_available,
           "Check if optimized kernels (CUDA or C++) are available.");
+    m.def("kpacked_sm90_kernels_is_available", &kpacked_sm90_kernels_is_available,
+          "Check if Hopper SM_90a kpacked kernels were requested at build time.");
+    m.def("kpacked_sm100_kernels_is_available", &kpacked_sm100_kernels_is_available,
+          "Check if Blackwell SM_100a kpacked kernels were requested at build time.");
 }

@@ -39,6 +39,22 @@ from packaging import version
 import torch_harmonics.distributed as thd
 
 
+def _is_sm90():
+    """Return True when the default CUDA device is Hopper (SM 9.0)."""
+    if not torch.cuda.is_available():
+        return False
+    major, _ = torch.cuda.get_device_capability()
+    return major == 9
+
+
+def _is_sm100():
+    """Return True when the default CUDA device is Blackwell (SM 10.0)."""
+    if not torch.cuda.is_available():
+        return False
+    major, _ = torch.cuda.get_device_capability()
+    return major == 10
+
+
 def set_seed(seed=333):
     """Set the torch + CUDA random seed.
 
@@ -112,12 +128,15 @@ def setup_distributed_context(ctx):
         ctx.device = torch.device("cpu")
         proc_backend = "gloo"
 
-    dist.init_process_group(
+    init_kwargs = dict(
         backend=proc_backend,
         init_method=f"tcp://{master_address}:{port}",
         rank=ctx.world_rank,
         world_size=ctx.world_size,
     )
+    if torch.cuda.is_available():
+        init_kwargs["device_id"] = ctx.device
+    dist.init_process_group(**init_kwargs)
 
     ctx.wrank = ctx.world_rank % ctx.grid_size_w
     ctx.hrank = ctx.world_rank // ctx.grid_size_w
