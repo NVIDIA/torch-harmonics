@@ -88,14 +88,44 @@ def _precompute_quadrature_weights(
 
 @lru_cache(typed=True, copy=True)
 def precompute_longitudes(nlon: int):
-    """Return *nlon* equispaced longitude nodes in :math:`[0, 2\\pi)`."""
+    """
+    Return equispaced longitude nodes in :math:`[0, 2\\pi)`.
+
+    Parameters
+    ----------
+    nlon : int
+        Number of longitudinal nodes.
+
+    Returns
+    -------
+    lons : torch.Tensor
+        Tensor of longitude values in radians, shape ``(nlon,)``.
+    """
     lons = torch.linspace(0, 2 * math.pi, nlon + 1, dtype=torch.float64, requires_grad=False)[:-1]
     return lons
 
 
 @lru_cache(typed=True, copy=True)
 def precompute_latitudes(nlat: int, grid: Optional[str] = "equiangular") -> Tuple[torch.Tensor, torch.Tensor]:
-    """Return latitude nodes and quadrature weights for the given *grid* type."""
+    """
+    Return latitude nodes and quadrature weights for the given grid type.
+
+    Parameters
+    ----------
+    nlat : int
+        Number of latitudinal nodes.
+    grid : str, optional
+        Quadrature grid type. One of ``"equiangular"`` (Clenshaw–Curtis),
+        ``"legendre-gauss"``, ``"lobatto"``, or ``"equiangular-trapezoidal"``.
+        Default is ``"equiangular"``.
+
+    Returns
+    -------
+    lats : torch.Tensor
+        Tensor of co-latitude values in radians, shape ``(nlat,)``.
+    wlg : torch.Tensor
+        Corresponding quadrature weights, shape ``(nlat,)``.
+    """
     # compute coordinates in the cosine theta domain
     xlg, wlg = _precompute_quadrature_weights(nlat, grid=grid, a=-1.0, b=1.0, periodic=False)
 
