@@ -3,7 +3,11 @@
 The public API mirrors the top-level `torch_harmonics` namespace. Each entry
 below is generated automatically from the module docstrings.
 
-## Spherical harmonic transforms
+______________________________________________________________________
+
+## Serial layers
+
+### Spherical harmonic transforms
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics
@@ -18,7 +22,7 @@ below is generated automatically from the module docstrings.
    InverseRealVectorSHT
 ```
 
-## Convolutions
+### Convolutions
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics
@@ -27,12 +31,12 @@ below is generated automatically from the module docstrings.
    :toctree: generated
    :nosignatures:
 
+   SpectralConvS2
    DiscreteContinuousConvS2
    DiscreteContinuousConvTransposeS2
-   SpectralConvS2
 ```
 
-## Filter basis
+### Filter basis
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics.filter_basis
@@ -44,7 +48,7 @@ below is generated automatically from the module docstrings.
    get_filter_basis
 ```
 
-## Attention
+### Attention
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics
@@ -57,7 +61,7 @@ below is generated automatically from the module docstrings.
    NeighborhoodAttentionS2
 ```
 
-## Resampling and quadrature
+### Resampling and quadrature
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics
@@ -70,7 +74,7 @@ below is generated automatically from the module docstrings.
    QuadratureS2
 ```
 
-## Random fields
+### Random fields
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics.random_fields
@@ -82,7 +86,7 @@ below is generated automatically from the module docstrings.
    GaussianRandomFieldS2
 ```
 
-## Utilities
+### Utilities
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics
@@ -94,11 +98,15 @@ below is generated automatically from the module docstrings.
    truncate_sht
 ```
 
-## Distributed
+______________________________________________________________________
 
-Distributed (multi-GPU) counterparts of the modules above. These are available
-in the `torch_harmonics.distributed` subpackage. See the
-{doc}`distributed guide </guide/distributed>` for a complete walkthrough.
+## Distributed helpers
+
+Distributed (multi-GPU) setup, process group accessors, and data
+partitioning utilities. These are available in the
+`torch_harmonics.distributed` subpackage.
+See the {doc}`distributed guide </guide/distributed>` for a complete
+walkthrough.
 
 ### Setup and teardown
 
@@ -131,7 +139,7 @@ in the `torch_harmonics.distributed` subpackage. See the
    azimuth_group_size
 ```
 
-### Data partitioning helpers
+### Data partitioning
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics.distributed
@@ -144,7 +152,11 @@ in the `torch_harmonics.distributed` subpackage. See the
    split_tensor_along_dim
 ```
 
-### Distributed modules
+______________________________________________________________________
+
+## Distributed layers
+
+Distributed (multi-GPU) counterparts of the serial layers above.
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics.distributed
@@ -157,9 +169,9 @@ in the `torch_harmonics.distributed` subpackage. See the
    DistributedInverseRealSHT
    DistributedRealVectorSHT
    DistributedInverseRealVectorSHT
+   DistributedSpectralConvS2
    DistributedDiscreteContinuousConvS2
    DistributedDiscreteContinuousConvTransposeS2
-   DistributedSpectralConvS2
    DistributedNeighborhoodAttentionS2
    DistributedResampleS2
    DistributedQuadratureS2
