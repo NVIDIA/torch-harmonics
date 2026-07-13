@@ -36,7 +36,7 @@ FROM nvcr.io/nvidia/pytorch:25.12-py3
 RUN pip install parameterized
 
 # The custom CUDA extension does not suppport architerctures < 7.0
-ENV FORCE_CUDA_EXTENSION=1
+ENV TORCH_HARMONICS_BUILD_CUDA_EXTENSION=1
 ENV TORCH_HARMONICS_ENABLE_OPENMP=1
 ENV TORCH_CUDA_ARCH_LIST="8.0 8.6 8.7 9.0 10.0+PTX"
 COPY . /workspace/torch_harmonics

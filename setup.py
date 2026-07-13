@@ -79,11 +79,10 @@ def get_helpers_compile_args(BUILD_CPP, BUILD_CUDA):
 def get_ext_modules():
     """Get list of extension modules to compile."""
 
-    # some code to handle the building of custom modules
-    FORCE_CUDA_EXTENSION = os.getenv("FORCE_CUDA_EXTENSION", "0") == "1"
+    TORCH_HARMONICS_BUILD_CPP_EXTENSION = os.getenv("TORCH_HARMONICS_BUILD_CPP_EXTENSION", "0") == "1"
+    TORCH_HARMONICS_BUILD_CUDA_EXTENSION = os.getenv("TORCH_HARMONICS_BUILD_CUDA_EXTENSION", "0") == "1"
     BUILD_CPP = BUILD_CUDA = False
 
-    # PyTorch is required for building this package
     try:
         import torch
 
@@ -93,12 +92,12 @@ def get_ext_modules():
         print(f"Building with C++11 ABI = {torch._C._GLIBCXX_USE_CXX11_ABI}")
         print(f"Compile flag will be -D_GLIBCXX_USE_CXX11_ABI={int(torch._C._GLIBCXX_USE_CXX11_ABI)}")
 
-        BUILD_CPP = True
-        BUILD_CUDA = FORCE_CUDA_EXTENSION or (torch.cuda.is_available() and (CUDA_HOME is not None))
+        BUILD_CPP = TORCH_HARMONICS_BUILD_CPP_EXTENSION or True
+        BUILD_CUDA = TORCH_HARMONICS_BUILD_CUDA_EXTENSION or (torch.cuda.is_available() and (CUDA_HOME is not None))
 
         if BUILD_CUDA:
             print("CUDA extensions will be built")
-        else:
+        elif BUILD_CPP:
             print("CPU-only extensions will be built")
 
     except (ImportError, TypeError, AssertionError, AttributeError) as e:

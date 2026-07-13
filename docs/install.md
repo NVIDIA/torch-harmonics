@@ -1,6 +1,6 @@
 # Installation
 
-## Prebuilt wheels (GPU)
+## Prebuilt wheels (GPU and CPU)
 
 Prebuilt Linux wheels with compiled CUDA extensions are published on
 [pypi.nvidia.com](https://pypi.nvidia.com), one per CUDA toolkit version. The
@@ -29,7 +29,7 @@ pip install torch-harmonics-cpu-latest --extra-index-url https://pypi.nvidia.com
 Run `nvidia-smi` to check the CUDA version supported by your driver.
 ```
 
-## PyPI (CPU)
+## PyPI (CPU only)
 
 The vanilla [`torch-harmonics`](https://pypi.org/project/torch_harmonics/)
 package on PyPI ships a CPU-only prebuilt wheel, built for the newest PyTorch
@@ -54,12 +54,12 @@ pip install --no-build-isolation -e .
 
 The custom CUDA kernels are built automatically when a CUDA toolkit is detected;
 otherwise the pure-PyTorch fallbacks are used. If CUDA devices are not detected
-automatically (e.g. inside a container), set `FORCE_CUDA_EXTENSION`. Set
+automatically (e.g. inside a container), set `TORCH_HARMONICS_BUILD_CUDA_EXTENSION`. Set
 `TORCH_CUDA_ARCH_LIST` to only the architectures you need to reduce compilation
 time:
 
 ```bash
-export FORCE_CUDA_EXTENSION=1
+export TORCH_HARMONICS_BUILD_CUDA_EXTENSION=1
 export TORCH_CUDA_ARCH_LIST="8.0 8.6 9.0 10.0+PTX"
 pip install --no-build-isolation -e .
 ```
