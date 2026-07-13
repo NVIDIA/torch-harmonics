@@ -40,7 +40,7 @@ from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, pol
 
 
 class DistributedQuadratureS2(torch.nn.Module):
-    """
+    r"""
     Distributed scalar quadrature on :math:`S^2` for integrating spherical fields on a
     latitude/longitude grid, with data and weights split across polar and
     azimuth communicator groups.

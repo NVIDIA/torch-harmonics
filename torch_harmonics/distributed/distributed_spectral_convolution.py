@@ -44,7 +44,7 @@ from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, pol
 
 
 class DistributedSpectralConvS2(nn.Module):
-    """
+    r"""
     Distributed spectral convolution layer on :math:`S^2` implemented with
     distributed real SHT (Driscoll-Healy formulation, see https://api.semanticscholar.org/CorpusID:122817218).
     Computation is split across polar and azimuth communicator groups.
