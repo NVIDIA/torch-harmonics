@@ -73,7 +73,8 @@ class ResampleS2(nn.Module):
       where :math:`\omega = f_1 - f_0` is the angular difference.  This mode is
       better suited for fields that represent angular quantities (e.g.\
       directions or phases) and falls back to linear interpolation when
-      :math:`\omega \approx 0`.
+      :math:`\omega \approx 0` by applying the approximation
+      :math:`\sin(x) \approx x` for small :math:`x` to the above expression.
 
     Parameters
     -----------
