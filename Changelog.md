@@ -2,6 +2,11 @@
 
 ## Versioning
 
+### v0.9.2c
+
+* Added upsampling support to `DistributedNeighborhoodAttentionS2` (`nlon_out % nlon_in == 0`): new upsample (scatter) ring-step CUDA kernels for forward and backward, matching the serial upsample attention. K/V rotate around the azimuth ring while queries and the softmax state stay local; all three directions (self-attention, downsampling, upsampling) are now supported by the distributed layer.
+* Consistent CUDA kernel launch error checking: all attention and DISCO CUDA host wrappers now call `C10_CUDA_KERNEL_LAUNCH_CHECK()` and explicitly include `<c10/cuda/CUDAException.h>` instead of relying on transitive includes.
+
 ### v0.9.2b
 
 * Added `benchmarks/` suite covering SHT, DISCO convolution (self and downsampling), and spherical attention (global, neighborhood self, neighborhood cross-resolution) across resolutions, dtypes, and channel counts. Entry point: `python benchmarks/run.py`. Supports baseline CSV comparison for regression tracking in performance PRs.
