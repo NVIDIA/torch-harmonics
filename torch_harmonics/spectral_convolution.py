@@ -49,7 +49,8 @@ class SpectralConvS2(nn.Module):
     sphere, the layer computes the output channels :math:`v^{c_o}(\theta, \lambda)`
     in three steps:
 
-    1. **Forward SHT** -- transform each input channel to spectral space:
+    1. **Forward SHT** (cf. :class:`~torch_harmonics.RealSHT`) -- transform
+       each input channel to spectral space:
 
     .. math::
 
@@ -65,7 +66,8 @@ class SpectralConvS2(nn.Module):
         \hat{v}_l^{m,\,c_o}
             = \sum_{c_i} K_l^{c_o,\,c_i}\; \hat{u}_l^{m,\,c_i}
 
-    3. **Inverse SHT** -- transform back to the spatial domain:
+    3. **Inverse SHT** (cf. :class:`~torch_harmonics.InverseRealSHT`) --
+       transform back to the spatial domain:
 
     .. math::
 
@@ -140,8 +142,7 @@ class SpectralConvS2(nn.Module):
     Notes
     -----
     The SHT truncation ``lmax``/``mmax`` is the minimum of the input and output
-    truncations, and the grouped contraction is performed with
-    ``_contract_lwise``.
+    truncations.
     """
 
     def __init__(
