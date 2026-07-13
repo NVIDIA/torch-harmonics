@@ -51,4 +51,17 @@ from .primitives import (
     scatter_to_polar_region,
     split_tensor_along_dim,
 )
-from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, config, finalize, init, is_initialized, polar_group, polar_group_rank, polar_group_size
+from .utils import (
+    azimuth_group,
+    azimuth_group_rank,
+    azimuth_group_size,
+    config,
+    finalize,
+    init,
+    is_distributed_azimuth,
+    is_distributed_polar,
+    is_initialized,
+    polar_group,
+    polar_group_rank,
+    polar_group_size,
+)
