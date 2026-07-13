@@ -38,6 +38,7 @@ caption: API reference
 api/serial
 api/distributed_helpers
 api/distributed_layers
+api/distributed_primitives
 api/utilities
 ```
 

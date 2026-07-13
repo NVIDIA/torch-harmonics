@@ -42,14 +42,18 @@ from .primitives import (
     copy_to_polar_region,
     distributed_transpose_azimuth,
     distributed_transpose_polar,
+    flatten_and_pad_leading_dims,
     gather_from_copy_to_polar_region,
     gather_from_polar_region,
+    get_group_neighbors,
+    polar_halo_exchange,
     reduce_from_azimuth_region,
     reduce_from_polar_region,
     reduce_from_scatter_to_azimuth_region,
     reduce_from_scatter_to_polar_region,
     scatter_to_polar_region,
     split_tensor_along_dim,
+    unpad_and_unflatten_leading_dims,
 )
 from .utils import (
     azimuth_group,
