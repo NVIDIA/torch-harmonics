@@ -78,24 +78,3 @@
 
    GaussianRandomFieldS2
 ```
-
-## Utilities
-
-```{eval-rst}
-.. currentmodule:: torch_harmonics
-
-.. autosummary::
-   :toctree: generated
-   :nosignatures:
-
-   truncate_sht
-
-.. currentmodule:: torch_harmonics.plotting
-
-.. autosummary::
-   :toctree: generated
-   :nosignatures:
-
-   plot_sphere
-   imshow_sphere
-```
