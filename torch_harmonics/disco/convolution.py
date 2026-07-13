@@ -492,9 +492,9 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         \Psi_{k,\,j,\,(i,p)}
             = \phi_k\!\bigl(\vartheta(\theta'_j, \theta_i, \lambda_p),\;
                             \varphi(\theta'_j, \theta_i, \lambda_p)\bigr)
-              \; w_i
+              \; q_i
 
-    where :math:`w_i` are the quadrature weights and the composite index
+    where :math:`q_i` are the quadrature weights and the composite index
     :math:`(i, p)` runs over input latitude :math:`i` and *relative*
     longitude offset :math:`p`.  Because the grid is equispaced in longitude,
     :math:`\Psi` does **not** depend on the output longitude :math:`\lambda'`:

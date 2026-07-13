@@ -306,15 +306,15 @@ class QuadratureS2(torch.nn.Module):
         I[f] = \int_0^{2\pi}\!\int_0^{\pi}
             f(\theta, \lambda)\,\sin\theta\; d\theta\; d\lambda
         \;\approx\; \sum_{k=0}^{N_\theta - 1} \sum_{j=0}^{N_\lambda - 1}
-            f(\theta_k, \lambda_j)\, w_k\, \Delta\lambda
+            f(\theta_k, \lambda_j)\, q_k\, \Delta\lambda
 
-    where :math:`w_k` are the latitudinal quadrature weights (which absorb the
+    where :math:`q_k` are the latitudinal quadrature weights (which absorb the
     :math:`\sin\theta` Jacobian via the change of variable to
     :math:`\cos\theta`) and :math:`\Delta\lambda = 2\pi / N_\lambda` is the
     uniform longitudinal spacing.
 
     The choice of ``grid`` determines how the nodes :math:`\theta_k` and weights
-    :math:`w_k` are computed:
+    :math:`q_k` are computed:
 
     * ``"legendre-gauss"`` -- Gauss--Legendre quadrature.  Nodes are the roots
       of the Legendre polynomial :math:`P_N(\cos\theta)`.  Exact for

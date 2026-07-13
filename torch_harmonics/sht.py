@@ -62,12 +62,12 @@ class RealSHT(nn.Module):
        :math:`\theta_k`.
     2. A Legendre--Gauss (or Clenshaw--Curtis / Lobatto) quadrature contracts the
        Fourier modes with the associated Legendre polynomials
-       :math:`P_l^m(\cos\theta_k)` and the quadrature weights :math:`w_k`:
+       :math:`P_l^m(\cos\theta_k)` and the quadrature weights :math:`q_k`:
 
     .. math::
 
         \hat{f}_l^m = 2\pi \sum_{k=0}^{N_\theta - 1}
-            \tilde{f}_m(\theta_k)\, P_l^m(\cos\theta_k)\, w_k
+            \tilde{f}_m(\theta_k)\, P_l^m(\cos\theta_k)\, q_k
 
     Parameters
     -----------
