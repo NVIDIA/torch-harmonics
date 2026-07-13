@@ -77,6 +77,28 @@ torch-harmonics** (``pip install --no-build-isolation -e .`` for source
 installs, or reinstall the matching prebuilt wheel).
 ```
 
+### Build environment variables
+
+The following environment variables can be set before building to control
+compilation:
+
+| Variable                               | Default | Description                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TORCH_HARMONICS_BUILD_CUDA_EXTENSION` | `0`     | Force-enable CUDA extension build even when CUDA devices are not auto-detected.                                                                                                                                                                                                                                  |
+| `TORCH_HARMONICS_BUILD_CPP_EXTENSION`  | `0`     | Force-enable C++ extension build (normally enabled automatically when PyTorch is available).                                                                                                                                                                                                                     |
+| `TORCH_HARMONICS_NATIVE_CPU_ARCH`      | `0`     | Compile C++ extensions with `-march=native -mtune=native`, enabling AVX2/AVX-512 on the build host. Produces faster CPU kernels but the resulting binary is **not portable** to other CPU architectures. Do not use for wheel builds.                                                                            |
+| `TORCH_HARMONICS_ENABLE_OPENMP`        | `0`     | Link the C++ extensions against OpenMP (`-fopenmp`). Enables multi-threaded CPU kernels.                                                                                                                                                                                                                         |
+| `TORCH_HARMONICS_DEBUG`                | `0`     | Build with debug flags (`-g -O0`) instead of release optimizations. Useful for debugging the C++/CUDA extensions.                                                                                                                                                                                                |
+| `TORCH_HARMONICS_PROFILE`              | `0`     | Add CUDA profiling flags (`-lineinfo`) to aid tools like Nsight Compute.                                                                                                                                                                                                                                         |
+| `TORCH_CUDA_ARCH_LIST`                 | auto    | *(PyTorch setting, not torch-harmonics specific.)* Space-separated list of CUDA architectures to target (e.g. `"8.0 9.0 10.0+PTX"`). When building torch-harmonics, this can be set to a subset of the architectures your PyTorch was built for, reducing compile time by skipping architectures you don't need. |
+
+For example, to build with host-optimized CPU kernels and OpenMP support:
+
+```bash
+TORCH_HARMONICS_NATIVE_CPU_ARCH=1 TORCH_HARMONICS_ENABLE_OPENMP=1 \
+    pip install --no-build-isolation -e .
+```
+
 ## Docker
 
 Alternatively, build and run a Docker container:
