@@ -30,6 +30,7 @@
 #
 
 import functools
+from typing import List, Optional
 
 import torch
 from disco_helpers import (
@@ -106,6 +107,152 @@ def _maybe_kpack_psi(psi_packed_idx, psi_packed_vals, psi_packed_count, n_align:
         kpacked_vals = kpacked_vals.contiguous()
 
     return kpacked_idx, kpacked_vals, kpacked_count, K_pad
+
+
+def _split_csr_available(split_roff_idx: torch.Tensor, split_nnz_off: torch.Tensor, kernel_size: int) -> bool:
+    if split_roff_idx.numel() == 0 or split_nnz_off.numel() == 0:
+        return False
+    if split_nnz_off.dim() == 2:
+        return split_nnz_off.shape[0] >= 2 and split_nnz_off.shape[1] == kernel_size + 1
+    return split_roff_idx.dim() == 2 and split_roff_idx.shape[0] == kernel_size and split_nnz_off.shape[0] == kernel_size + 1
+
+
+def _split_csr_python_offsets(split_nnz_off: torch.Tensor):
+    if split_nnz_off.dim() != 2 or split_nnz_off.shape[0] < 2:
+        return (), ()
+    row_offsets = tuple(int(x) for x in split_nnz_off[0].detach().cpu().tolist())
+    nnz_offsets = tuple(int(x) for x in split_nnz_off[1].detach().cpu().tolist())
+    return row_offsets, nnz_offsets
+
+
+def _use_spatial_first_dgrad(
+    out_per_group: int,
+    in_per_group: int,
+    kernel_size: int,
+    roff_idx: torch.Tensor,
+    nlat_out: int,
+    split_roff_idx: torch.Tensor = None,
+    split_nnz_off: torch.Tensor = None,
+) -> bool:
+    # Spatial-first dgrad runs the sparse transpose over output channels and
+    # applies the weight contraction afterwards. It wins when output channels
+    # are substantially fewer than input channels; near parity the current
+    # weight-first path is better because it uses one sparse launch.
+    if kernel_size <= 1 or out_per_group * 2 > in_per_group:
+        return False
+    dense_layout = roff_idx.numel() == kernel_size * nlat_out + 1
+    split_layout = split_roff_idx is not None and split_nnz_off is not None and _split_csr_available(split_roff_idx, split_nnz_off, kernel_size)
+    return dense_layout or split_layout
+
+
+def _build_kernel_split_csr(roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size: int, nlat_out: int):
+    roff_parts = []
+    row_offsets = [0]
+    nnz_offsets = [0]
+    ker_parts = []
+    row_parts = []
+    col_parts = []
+    val_parts = []
+    nrows = int(roff_idx.numel() - 1)
+    for k in range(kernel_size):
+        roff_k = [0]
+        nnz_k = 0
+        for row in range(nrows):
+            start = int(roff_idx[row].item())
+            end = int(roff_idx[row + 1].item())
+            if start == end:
+                continue
+            if int(ker_idx[start].item()) != k:
+                continue
+            nnz = end - start
+            nnz_k += nnz
+            roff_k.append(nnz_k)
+            ker_parts.append(torch.zeros((nnz,), dtype=ker_idx.dtype, device=ker_idx.device))
+            row_parts.append(row_idx[start:end].contiguous())
+            col_parts.append(col_idx[start:end].contiguous())
+            val_parts.append(vals[start:end].contiguous())
+        roff_parts.append(torch.tensor(roff_k, dtype=roff_idx.dtype, device=roff_idx.device))
+        row_offsets.append(row_offsets[-1] + len(roff_k))
+        nnz_offsets.append(nnz_offsets[-1] + nnz_k)
+
+    split_roff_idx = torch.cat(roff_parts, dim=0).contiguous()
+    split_nnz_off = torch.stack(
+        (
+            torch.tensor(row_offsets, dtype=roff_idx.dtype, device=roff_idx.device),
+            torch.tensor(nnz_offsets, dtype=roff_idx.dtype, device=roff_idx.device),
+        ),
+        dim=0,
+    ).contiguous()
+    if ker_parts:
+        split_ker_idx = torch.cat(ker_parts, dim=0).contiguous()
+        split_row_idx = torch.cat(row_parts, dim=0).contiguous()
+        split_col_idx = torch.cat(col_parts, dim=0).contiguous()
+        split_vals = torch.cat(val_parts, dim=0).contiguous()
+    else:
+        split_ker_idx = ker_idx.new_empty((0,))
+        split_row_idx = row_idx.new_empty((0,))
+        split_col_idx = col_idx.new_empty((0,))
+        split_vals = vals.new_empty((0,))
+    return (
+        split_roff_idx,
+        split_nnz_off,
+        split_ker_idx,
+        split_row_idx,
+        split_col_idx,
+        split_vals,
+    )
+
+
+def _disco_s2_fused_conv_spatial_first_dgrad(
+    grad_output_r,
+    weight,
+    split_roff_idx,
+    split_nnz_off,
+    split_ker_idx,
+    split_row_idx,
+    split_col_idx,
+    split_vals,
+    kernel_size,
+    nlat_in,
+    nlon_in,
+    split_row_offsets=(),
+    split_nnz_offsets=(),
+):
+    B, G, Og, H, W = grad_output_r.shape
+    Cg = weight.shape[2]
+    grad_small = grad_output_r.reshape(B, G * Og, 1, H, W).contiguous()
+
+    parts = []
+    for k in range(kernel_size):
+        if split_row_offsets and split_nnz_offsets:
+            row_start = split_row_offsets[k]
+            row_end = split_row_offsets[k + 1]
+            start = split_nnz_offsets[k]
+            end = split_nnz_offsets[k + 1]
+            roff_k = split_roff_idx[row_start:row_end]
+        elif split_nnz_off.dim() == 2:
+            row_start = int(split_nnz_off[0, k].item())
+            row_end = int(split_nnz_off[0, k + 1].item())
+            start = int(split_nnz_off[1, k].item())
+            end = int(split_nnz_off[1, k + 1].item())
+            roff_k = split_roff_idx[row_start:row_end]
+        else:
+            start = int(split_nnz_off[k].item())
+            end = int(split_nnz_off[k + 1].item())
+            roff_k = split_roff_idx[k]
+        if roff_k.numel() <= 1:
+            parts.append(grad_output_r.new_zeros((B, G, Og, nlat_in, nlon_in)))
+            continue
+        ker_k = split_ker_idx[start:end]
+        row_k = split_row_idx[start:end]
+        col_k = split_col_idx[start:end]
+        vals_k = split_vals[start:end]
+        part = disco_kernels.backward.default(grad_small, roff_k, ker_k, row_k, col_k, vals_k, 1, nlat_in, nlon_in)
+        parts.append(part.reshape(B, G, Og, nlat_in, nlon_in))
+
+    grad_spatial = torch.stack(parts, dim=3)
+    grad_inp = torch.einsum("bgokxy,gock->bgcxy", grad_spatial, weight).contiguous()
+    return grad_inp.reshape(B, G * Cg, nlat_in, nlon_in)
 
 
 # custom kernels
@@ -313,11 +460,19 @@ if optimized_kernels_is_available():
         row_idx: torch.Tensor,
         col_idx: torch.Tensor,
         vals: torch.Tensor,
+        split_roff_idx: torch.Tensor,
+        split_nnz_off: torch.Tensor,
+        split_ker_idx: torch.Tensor,
+        split_row_idx: torch.Tensor,
+        split_col_idx: torch.Tensor,
+        split_vals: torch.Tensor,
         kernel_size: int,
         nlat_out: int,
         nlon_out: int,
         groups: int,
         groupsize: int,
+        split_row_offsets: Optional[List[int]] = None,
+        split_nnz_offsets: Optional[List[int]] = None,
     ) -> torch.Tensor:
 
         # sparse contraction: (B, C, H_in, W_in) -> (B, C, K, H_out, W_out)
@@ -342,32 +497,64 @@ if optimized_kernels_is_available():
         row_idx: torch.Tensor,
         col_idx: torch.Tensor,
         vals: torch.Tensor,
+        split_roff_idx: torch.Tensor,
+        split_nnz_off: torch.Tensor,
+        split_ker_idx: torch.Tensor,
+        split_row_idx: torch.Tensor,
+        split_col_idx: torch.Tensor,
+        split_vals: torch.Tensor,
         kernel_size: int,
         nlat_out: int,
         nlon_out: int,
         groups: int,
         groupsize: int,
+        split_row_offsets: Optional[List[int]] = None,
+        split_nnz_offsets: Optional[List[int]] = None,
     ) -> torch.Tensor:
         out_channels = groups * weight.shape[1]
         return torch.empty(inp.shape[0], out_channels, nlat_out, nlon_out, dtype=inp.dtype, device=inp.device)
 
 
 def _setup_context_fused_conv_backward(ctx, inputs, output):
-    inp, weight, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out, groups, groupsize = inputs
-    ctx.save_for_backward(inp, weight, roff_idx, ker_idx, row_idx, col_idx, vals)
+    (
+        inp,
+        weight,
+        roff_idx,
+        ker_idx,
+        row_idx,
+        col_idx,
+        vals,
+        split_roff_idx,
+        split_nnz_off,
+        split_ker_idx,
+        split_row_idx,
+        split_col_idx,
+        split_vals,
+        kernel_size,
+        nlat_out,
+        nlon_out,
+        groups,
+        groupsize,
+        split_row_offsets,
+        split_nnz_offsets,
+    ) = inputs
+    ctx.save_for_backward(inp, weight, roff_idx, ker_idx, row_idx, col_idx, vals, split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals)
     ctx.kernel_size = kernel_size
     ctx.nlat_out = nlat_out
     ctx.nlon_out = nlon_out
     ctx.groups = groups
     ctx.groupsize = groupsize
+    ctx.split_row_offsets = split_row_offsets
+    ctx.split_nnz_offsets = split_nnz_offsets
 
 
 def _disco_s2_fused_conv_bwd_optimized(ctx, grad_output):
-    inp, weight, roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
+    inp, weight, roff_idx, ker_idx, row_idx, col_idx, vals, split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals = ctx.saved_tensors
 
     itype = grad_output.dtype
     cdtype = _compute_dtype(itype)
     vals_c = vals.to(cdtype)
+    split_vals_c = split_vals.to(cdtype)
 
     K = ctx.kernel_size
     G, Cg = ctx.groups, ctx.groupsize
@@ -380,13 +567,31 @@ def _disco_s2_fused_conv_bwd_optimized(ctx, grad_output):
     grad_weight = None
 
     if ctx.needs_input_grad[0]:
-        # einsum backward: expand grad into K-space
-        # (B, G, Og, H, W) x (G, Og, Cg, K) -> (B, G, Cg, K, H, W)
-        grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
-        grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
+        spatial_first = _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H, split_roff_idx, split_nnz_off)
+        if spatial_first:
+            grad_inp = _disco_s2_fused_conv_spatial_first_dgrad(
+                grad_output_r,
+                weight.to(itype),
+                split_roff_idx,
+                split_nnz_off,
+                split_ker_idx,
+                split_row_idx,
+                split_col_idx,
+                split_vals_c,
+                K,
+                inp.shape[-2],
+                inp.shape[-1],
+                ctx.split_row_offsets,
+                ctx.split_nnz_offsets,
+            )
+        else:
+            # einsum backward: expand grad into K-space
+            # (B, G, Og, H, W) x (G, Og, Cg, K) -> (B, G, Cg, K, H, W)
+            grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
+            grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
 
-        # transpose contraction back to input space
-        grad_inp = disco_kernels.backward.default(grad_x_expanded.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
+            # transpose contraction back to input space
+            grad_inp = disco_kernels.backward.default(grad_x_expanded.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
         grad_inp = grad_inp.to(itype)
 
     if ctx.needs_input_grad[1]:
@@ -397,7 +602,7 @@ def _disco_s2_fused_conv_bwd_optimized(ctx, grad_output):
         # weight gradient: (B, G, Og, H, W) x (B, G, Cg, K, H, W) -> (G, Og, Cg, K)
         grad_weight = torch.einsum("bgoxy,bgckxy->gock", grad_output_r, x_expanded)
 
-    return (grad_inp, grad_weight, None, None, None, None, None, None, None, None, None, None)
+    return (grad_inp, grad_weight) + (None,) * 18
 
 
 if optimized_kernels_is_available():
@@ -408,12 +613,202 @@ if optimized_kernels_is_available():
     )
 
     @torch.library.impl("disco_kernels::_disco_s2_fused_conv_optimized", "AutocastCUDA")
-    def _(inp, weight, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out, groups, groupsize):
+    def _(
+        inp,
+        weight,
+        roff_idx,
+        ker_idx,
+        row_idx,
+        col_idx,
+        vals,
+        split_roff_idx,
+        split_nnz_off,
+        split_ker_idx,
+        split_row_idx,
+        split_col_idx,
+        split_vals,
+        kernel_size,
+        nlat_out,
+        nlon_out,
+        groups,
+        groupsize,
+        split_row_offsets=None,
+        split_nnz_offsets=None,
+    ):
         cast_dtype = torch.get_autocast_dtype("cuda")
         with torch.amp.autocast("cuda", enabled=False):
             return _disco_s2_fused_conv_optimized(
-                inp.to(cast_dtype), weight.to(cast_dtype), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out, groups, groupsize
+                inp.to(cast_dtype),
+                weight.to(cast_dtype),
+                roff_idx,
+                ker_idx,
+                row_idx,
+                col_idx,
+                vals,
+                split_roff_idx,
+                split_nnz_off,
+                split_ker_idx,
+                split_row_idx,
+                split_col_idx,
+                split_vals,
+                kernel_size,
+                nlat_out,
+                nlon_out,
+                groups,
+                groupsize,
+                split_row_offsets,
+                split_nnz_offsets,
             )
+
+
+class _DiscoSaveXConvFn(torch.autograd.Function):
+    """CSR forward + saved K-expanded tensor with combined backward.
+
+    This is the unfused-memory variant of the fused conv op: forward stores the
+    K-expanded contraction for grad_weight, but backward can still choose the
+    spatial-first dgrad order because it sees both grad_output and weight.
+    """
+
+    @staticmethod
+    def forward(
+        ctx,
+        inp,
+        weight,
+        roff_idx,
+        ker_idx,
+        row_idx,
+        col_idx,
+        vals,
+        split_roff_idx,
+        split_nnz_off,
+        split_ker_idx,
+        split_row_idx,
+        split_col_idx,
+        split_vals,
+        kernel_size,
+        nlat_out,
+        nlon_out,
+        groups,
+        groupsize,
+        split_row_offsets=(),
+        split_nnz_offsets=(),
+    ):
+        itype = inp.dtype
+        cdtype = _compute_dtype(itype)
+        x_expanded = disco_kernels.forward.default(inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals.to(cdtype), kernel_size, nlat_out, nlon_out)
+        x_expanded = x_expanded.to(itype)
+
+        ctx.save_for_backward(x_expanded, weight, roff_idx, ker_idx, row_idx, col_idx, vals, split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals)
+        ctx.kernel_size = kernel_size
+        ctx.nlat_in = inp.shape[-2]
+        ctx.nlon_in = inp.shape[-1]
+        ctx.nlat_out = nlat_out
+        ctx.nlon_out = nlon_out
+        ctx.groups = groups
+        ctx.groupsize = groupsize
+        ctx.split_row_offsets = split_row_offsets
+        ctx.split_nnz_offsets = split_nnz_offsets
+
+        B, C, K, H, W = x_expanded.shape
+        x_expanded_r = x_expanded.reshape(B, groups, groupsize, K, H, W)
+        out = torch.einsum("bgckxy,gock->bgoxy", x_expanded_r, weight.to(itype)).contiguous()
+        return out.reshape(B, groups * weight.shape[1], H, W)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        x_expanded, weight, roff_idx, ker_idx, row_idx, col_idx, vals, split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals = ctx.saved_tensors
+
+        itype = grad_output.dtype
+        cdtype = _compute_dtype(itype)
+        vals_c = vals.to(cdtype)
+        split_vals_c = split_vals.to(cdtype)
+
+        K = ctx.kernel_size
+        G = ctx.groups
+        Cg = ctx.groupsize
+        H, W = ctx.nlat_out, ctx.nlon_out
+        Og = weight.shape[1]
+        B = grad_output.shape[0]
+        grad_output_r = grad_output.reshape(B, G, Og, H, W)
+
+        grad_inp = None
+        grad_weight = None
+
+        if ctx.needs_input_grad[0]:
+            spatial_first = _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H, split_roff_idx, split_nnz_off)
+            if spatial_first:
+                grad_inp = _disco_s2_fused_conv_spatial_first_dgrad(
+                    grad_output_r,
+                    weight.to(itype),
+                    split_roff_idx,
+                    split_nnz_off,
+                    split_ker_idx,
+                    split_row_idx,
+                    split_col_idx,
+                    split_vals_c,
+                    K,
+                    ctx.nlat_in,
+                    ctx.nlon_in,
+                    ctx.split_row_offsets,
+                    ctx.split_nnz_offsets,
+                )
+            else:
+                grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
+                grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
+                grad_inp = disco_kernels.backward.default(grad_x_expanded, roff_idx, ker_idx, row_idx, col_idx, vals_c, K, ctx.nlat_in, ctx.nlon_in)
+            grad_inp = grad_inp.to(itype)
+
+        if ctx.needs_input_grad[1]:
+            x_expanded_r = x_expanded.to(itype).reshape(B, G, Cg, K, H, W)
+            grad_weight = torch.einsum("bgoxy,bgckxy->gock", grad_output_r, x_expanded_r)
+
+        return (grad_inp, grad_weight) + (None,) * 18
+
+
+def _disco_s2_conv_save_x_optimized(
+    inp,
+    weight,
+    roff_idx,
+    ker_idx,
+    row_idx,
+    col_idx,
+    vals,
+    split_roff_idx,
+    split_nnz_off,
+    split_ker_idx,
+    split_row_idx,
+    split_col_idx,
+    split_vals,
+    kernel_size,
+    nlat_out,
+    nlon_out,
+    groups,
+    groupsize,
+    split_row_offsets=(),
+    split_nnz_offsets=(),
+):
+    return _DiscoSaveXConvFn.apply(
+        inp,
+        weight,
+        roff_idx,
+        ker_idx,
+        row_idx,
+        col_idx,
+        vals,
+        split_roff_idx,
+        split_nnz_off,
+        split_ker_idx,
+        split_row_idx,
+        split_col_idx,
+        split_vals,
+        kernel_size,
+        nlat_out,
+        nlon_out,
+        groups,
+        groupsize,
+        split_row_offsets,
+        split_nnz_offsets,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -478,36 +873,67 @@ def _disco_s2_contraction_kpacked(inp, pack_idx, pack_val, pack_count, roff_idx,
     return _DiscoKpackedFn.apply(inp, pack_idx, pack_val, pack_count, roff_idx, ker_idx, row_idx, col_idx, csr_vals, kernel_size, nlat_out, nlon_out)
 
 
-class _DiscoKpackedFusedFn(torch.autograd.Function):
-    """WGMMA forward + CSR backward for the fused (contraction + weight einsum) path.
-
-    Forward: WGMMA kpacked contraction → weight einsum (no (B,C,K,H,W) intermediate saved).
-    Backward: CSR forward recompute to get x_expanded for grad_weight; CSR backward for grad_inp.
-    """
+class _DiscoKpackedSaveXConvFn(torch.autograd.Function):
+    """K-packed forward + saved K-expanded tensor with combined backward."""
 
     @staticmethod
-    def forward(ctx, inp, weight, pack_idx, pack_val, pack_count, roff_idx, ker_idx, row_idx, col_idx, csr_vals, kernel_size, nlat_out, nlon_out, groups, groupsize):
-        ctx.save_for_backward(inp, weight, roff_idx, ker_idx, row_idx, col_idx, csr_vals)
+    def forward(
+        ctx,
+        inp,
+        weight,
+        pack_idx,
+        pack_val,
+        pack_count,
+        roff_idx,
+        ker_idx,
+        row_idx,
+        col_idx,
+        csr_vals,
+        split_roff_idx,
+        split_nnz_off,
+        split_ker_idx,
+        split_row_idx,
+        split_col_idx,
+        split_vals,
+        kernel_size,
+        nlat_out,
+        nlon_out,
+        groups,
+        groupsize,
+        split_row_offsets=(),
+        split_nnz_offsets=(),
+    ):
+        itype = inp.dtype
+        x_expanded = disco_kernels.forward_kpacked.default(inp.contiguous(), pack_idx, pack_val, pack_count, kernel_size, nlat_out, nlon_out)
+
+        ctx.save_for_backward(
+            x_expanded, weight, roff_idx, ker_idx, row_idx, col_idx, csr_vals, split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals
+        )
         ctx.kernel_size = kernel_size
+        ctx.nlat_in = inp.shape[-2]
+        ctx.nlon_in = inp.shape[-1]
         ctx.nlat_out = nlat_out
         ctx.nlon_out = nlon_out
         ctx.groups = groups
         ctx.groupsize = groupsize
+        ctx.split_row_offsets = split_row_offsets
+        ctx.split_nnz_offsets = split_nnz_offsets
 
-        itype = inp.dtype
-        x_expanded = disco_kernels.forward_kpacked.default(inp.contiguous(), pack_idx, pack_val, pack_count, kernel_size, nlat_out, nlon_out)
         B, C, K, H, W = x_expanded.shape
-        x_expanded = x_expanded.reshape(B, groups, groupsize, K, H, W)
-        out = torch.einsum("bgckxy,gock->bgoxy", x_expanded, weight.to(itype)).contiguous()
+        x_expanded_r = x_expanded.reshape(B, groups, groupsize, K, H, W)
+        out = torch.einsum("bgckxy,gock->bgoxy", x_expanded_r, weight.to(itype)).contiguous()
         return out.reshape(B, groups * weight.shape[1], H, W)
 
     @staticmethod
     def backward(ctx, grad_output):
-        inp, weight, roff_idx, ker_idx, row_idx, col_idx, csr_vals = ctx.saved_tensors
+        x_expanded, weight, roff_idx, ker_idx, row_idx, col_idx, csr_vals, split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals = (
+            ctx.saved_tensors
+        )
 
         itype = grad_output.dtype
         cdtype = _compute_dtype(itype)
         vals_c = csr_vals.to(cdtype)
+        split_vals_c = split_vals.to(cdtype)
 
         K = ctx.kernel_size
         G = ctx.groups
@@ -521,20 +947,236 @@ class _DiscoKpackedFusedFn(torch.autograd.Function):
         grad_weight = None
 
         if ctx.needs_input_grad[0]:
-            grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
-            grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
-            grad_inp = disco_kernels.backward.default(grad_x_expanded, roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1]).to(itype)
+            spatial_first = _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H, split_roff_idx, split_nnz_off)
+            if spatial_first:
+                grad_inp = _disco_s2_fused_conv_spatial_first_dgrad(
+                    grad_output_r,
+                    weight.to(itype),
+                    split_roff_idx,
+                    split_nnz_off,
+                    split_ker_idx,
+                    split_row_idx,
+                    split_col_idx,
+                    split_vals_c,
+                    K,
+                    ctx.nlat_in,
+                    ctx.nlon_in,
+                    ctx.split_row_offsets,
+                    ctx.split_nnz_offsets,
+                )
+            else:
+                grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
+                grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
+                grad_inp = disco_kernels.backward.default(grad_x_expanded, roff_idx, ker_idx, row_idx, col_idx, vals_c, K, ctx.nlat_in, ctx.nlon_in)
+            grad_inp = grad_inp.to(itype)
+
+        if ctx.needs_input_grad[1]:
+            x_expanded_r = x_expanded.to(itype).reshape(B, G, Cg, K, H, W)
+            grad_weight = torch.einsum("bgoxy,bgckxy->gock", grad_output_r, x_expanded_r)
+
+        return (grad_inp, grad_weight) + (None,) * 21
+
+
+def _disco_s2_conv_save_x_kpacked(
+    inp,
+    weight,
+    pack_idx,
+    pack_val,
+    pack_count,
+    roff_idx,
+    ker_idx,
+    row_idx,
+    col_idx,
+    csr_vals,
+    split_roff_idx,
+    split_nnz_off,
+    split_ker_idx,
+    split_row_idx,
+    split_col_idx,
+    split_vals,
+    kernel_size,
+    nlat_out,
+    nlon_out,
+    groups,
+    groupsize,
+    split_row_offsets=(),
+    split_nnz_offsets=(),
+):
+    return _DiscoKpackedSaveXConvFn.apply(
+        inp,
+        weight,
+        pack_idx,
+        pack_val,
+        pack_count,
+        roff_idx,
+        ker_idx,
+        row_idx,
+        col_idx,
+        csr_vals,
+        split_roff_idx,
+        split_nnz_off,
+        split_ker_idx,
+        split_row_idx,
+        split_col_idx,
+        split_vals,
+        kernel_size,
+        nlat_out,
+        nlon_out,
+        groups,
+        groupsize,
+        split_row_offsets,
+        split_nnz_offsets,
+    )
+
+
+class _DiscoKpackedFusedFn(torch.autograd.Function):
+    """WGMMA forward + CSR backward for the fused (contraction + weight einsum) path.
+
+    Forward: WGMMA kpacked contraction → weight einsum (no (B,C,K,H,W) intermediate saved).
+    Backward: CSR forward recompute to get x_expanded for grad_weight; CSR backward for grad_inp.
+    """
+
+    @staticmethod
+    def forward(
+        ctx,
+        inp,
+        weight,
+        pack_idx,
+        pack_val,
+        pack_count,
+        roff_idx,
+        ker_idx,
+        row_idx,
+        col_idx,
+        csr_vals,
+        split_roff_idx,
+        split_nnz_off,
+        split_ker_idx,
+        split_row_idx,
+        split_col_idx,
+        split_vals,
+        kernel_size,
+        nlat_out,
+        nlon_out,
+        groups,
+        groupsize,
+        split_row_offsets=(),
+        split_nnz_offsets=(),
+    ):
+        ctx.save_for_backward(inp, weight, roff_idx, ker_idx, row_idx, col_idx, csr_vals, split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals)
+        ctx.kernel_size = kernel_size
+        ctx.nlat_out = nlat_out
+        ctx.nlon_out = nlon_out
+        ctx.groups = groups
+        ctx.groupsize = groupsize
+        ctx.split_row_offsets = split_row_offsets
+        ctx.split_nnz_offsets = split_nnz_offsets
+
+        itype = inp.dtype
+        x_expanded = disco_kernels.forward_kpacked.default(inp.contiguous(), pack_idx, pack_val, pack_count, kernel_size, nlat_out, nlon_out)
+        B, C, K, H, W = x_expanded.shape
+        x_expanded = x_expanded.reshape(B, groups, groupsize, K, H, W)
+        out = torch.einsum("bgckxy,gock->bgoxy", x_expanded, weight.to(itype)).contiguous()
+        return out.reshape(B, groups * weight.shape[1], H, W)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        inp, weight, roff_idx, ker_idx, row_idx, col_idx, csr_vals, split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals = ctx.saved_tensors
+
+        itype = grad_output.dtype
+        cdtype = _compute_dtype(itype)
+        vals_c = csr_vals.to(cdtype)
+        split_vals_c = split_vals.to(cdtype)
+
+        K = ctx.kernel_size
+        G = ctx.groups
+        Cg = ctx.groupsize
+        H, W = ctx.nlat_out, ctx.nlon_out
+        Og = weight.shape[1]
+        B = grad_output.shape[0]
+        grad_output_r = grad_output.reshape(B, G, Og, H, W)
+
+        grad_inp = None
+        grad_weight = None
+
+        if ctx.needs_input_grad[0]:
+            spatial_first = _use_spatial_first_dgrad(Og, Cg, K, roff_idx, H, split_roff_idx, split_nnz_off)
+            if spatial_first:
+                grad_inp = _disco_s2_fused_conv_spatial_first_dgrad(
+                    grad_output_r,
+                    weight.to(itype),
+                    split_roff_idx,
+                    split_nnz_off,
+                    split_ker_idx,
+                    split_row_idx,
+                    split_col_idx,
+                    split_vals_c,
+                    K,
+                    inp.shape[-2],
+                    inp.shape[-1],
+                    ctx.split_row_offsets,
+                    ctx.split_nnz_offsets,
+                )
+            else:
+                grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
+                grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
+                grad_inp = disco_kernels.backward.default(grad_x_expanded, roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
+            grad_inp = grad_inp.to(itype)
 
         if ctx.needs_input_grad[1]:
             x_expanded = disco_kernels.forward.default(inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, H, W).to(itype).reshape(B, G, Cg, K, H, W)
             grad_weight = torch.einsum("bgoxy,bgckxy->gock", grad_output_r, x_expanded)
 
-        # inp, weight, pack_idx, pack_val, pack_count, roff_idx, ker_idx, row_idx,
-        # col_idx, csr_vals, kernel_size, nlat_out, nlon_out, groups, groupsize
-        return (grad_inp, grad_weight) + (None,) * 13
+        return (grad_inp, grad_weight) + (None,) * 21
 
 
-def _disco_s2_fused_conv_kpacked(inp, weight, pack_idx, pack_val, pack_count, roff_idx, ker_idx, row_idx, col_idx, csr_vals, kernel_size, nlat_out, nlon_out, groups, groupsize):
+def _disco_s2_fused_conv_kpacked(
+    inp,
+    weight,
+    pack_idx,
+    pack_val,
+    pack_count,
+    roff_idx,
+    ker_idx,
+    row_idx,
+    col_idx,
+    csr_vals,
+    split_roff_idx,
+    split_nnz_off,
+    split_ker_idx,
+    split_row_idx,
+    split_col_idx,
+    split_vals,
+    kernel_size,
+    nlat_out,
+    nlon_out,
+    groups,
+    groupsize,
+    split_row_offsets=(),
+    split_nnz_offsets=(),
+):
     return _DiscoKpackedFusedFn.apply(
-        inp, weight, pack_idx, pack_val, pack_count, roff_idx, ker_idx, row_idx, col_idx, csr_vals, kernel_size, nlat_out, nlon_out, groups, groupsize
+        inp,
+        weight,
+        pack_idx,
+        pack_val,
+        pack_count,
+        roff_idx,
+        ker_idx,
+        row_idx,
+        col_idx,
+        csr_vals,
+        split_roff_idx,
+        split_nnz_off,
+        split_ker_idx,
+        split_row_idx,
+        split_col_idx,
+        split_vals,
+        kernel_size,
+        nlat_out,
+        nlon_out,
+        groups,
+        groupsize,
+        split_row_offsets,
+        split_nnz_offsets,
     )

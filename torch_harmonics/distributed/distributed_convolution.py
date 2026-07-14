@@ -42,7 +42,7 @@ from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
 )
 from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_transpose_contraction_torch
-from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_transpose_contraction_optimized, _maybe_kpack_psi
+from torch_harmonics.disco.optimized.disco_optimized import _build_kernel_split_csr, _disco_s2_transpose_contraction_optimized, _maybe_kpack_psi, _split_csr_python_offsets
 
 # a2a forward orchestration: standard (fused=False) and reordered (fused=True).
 from .kernels import (
@@ -295,6 +295,27 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 vals,
             ).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+            split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals = _build_kernel_split_csr(
+                roff_idx, ker_idx, row_idx, col_idx, vals, self.kernel_size, self.nlat_out_local
+            )
+            self.psi_split_row_offsets, self.psi_split_nnz_offsets = _split_csr_python_offsets(split_nnz_off)
+            self.register_buffer("psi_split_roff_idx", split_roff_idx, persistent=False)
+            self.register_buffer("psi_split_nnz_off", split_nnz_off, persistent=False)
+            self.register_buffer("psi_split_ker_idx", split_ker_idx, persistent=False)
+            self.register_buffer("psi_split_row_idx", split_row_idx, persistent=False)
+            self.register_buffer("psi_split_col_idx", split_col_idx, persistent=False)
+            self.register_buffer("psi_split_vals", split_vals, persistent=False)
+
+            # optional K-packed dense layout for the WGMMA path (Hopper bf16/fp16).
+            # A2A makes W local before the kernel, so wi_shift=0 like the serial path.
+            psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(self.kernel_size, self.nlat_out_local, self.nlon_in, 0, ker_idx, row_idx, col_idx, vals, roff_idx)
+            kpack = _maybe_kpack_psi(psi_packed_idx.contiguous(), psi_packed_vals.contiguous(), psi_packed_count.contiguous())
+            if kpack is not None:
+                kpacked_idx, kpacked_vals, kpacked_count, K_pad = kpack
+                self.register_buffer("psi_kpacked_idx", kpacked_idx, persistent=False)
+                self.register_buffer("psi_kpacked_vals", kpacked_vals, persistent=False)
+                self.register_buffer("psi_kpacked_count", kpacked_count, persistent=False)
+                self.psi_kpacked_K_pad = K_pad
 
             # optional K-packed dense layout for the WGMMA path (Hopper bf16/fp16).
             # A2A makes W local before the kernel, so wi_shift=0 like the serial path.
@@ -364,6 +385,14 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 psi_row_idx=self.psi_row_idx,
                 psi_col_idx=self.psi_col_idx,
                 psi_vals=self.psi_vals,
+                psi_split_roff_idx=self.psi_split_roff_idx,
+                psi_split_nnz_off=self.psi_split_nnz_off,
+                psi_split_ker_idx=self.psi_split_ker_idx,
+                psi_split_row_idx=self.psi_split_row_idx,
+                psi_split_col_idx=self.psi_split_col_idx,
+                psi_split_vals=self.psi_split_vals,
+                psi_split_row_offsets=self.psi_split_row_offsets,
+                psi_split_nnz_offsets=self.psi_split_nnz_offsets,
                 psi_kpacked_idx=getattr(self, "psi_kpacked_idx", None),
                 psi_kpacked_vals=getattr(self, "psi_kpacked_vals", None),
                 psi_kpacked_count=getattr(self, "psi_kpacked_count", None),
@@ -573,8 +602,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
-        out_per_group = self.weight.shape[0] // self.groups
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, out_per_group, self.weight.shape[1], self.weight.shape[2])).contiguous()
+        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, self.out_per_group, self.weight.shape[1], self.weight.shape[2])).contiguous()
         x = x.reshape(B, self.weight.shape[0], x.shape[-3], H, W)
         num_chans = x.shape[1]
 
