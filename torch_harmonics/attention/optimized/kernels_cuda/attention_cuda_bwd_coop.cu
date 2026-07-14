@@ -336,7 +336,10 @@ namespace attention_kernels
             const int64_t *__restrict__ col_idx, const float *__restrict__ quad_weights,
             typename vec_traits<STORAGE_T>::compute_t *__restrict__ dkx, // [batch][nlat_in][nlon_in][nchan_in]
             typename vec_traits<STORAGE_T>::compute_t *__restrict__ dvx, // [batch][nlat_in][nlon_in][nchan_out]
-            typename vec_traits<STORAGE_T>::compute_t *__restrict__ dqy)
+            typename vec_traits<STORAGE_T>::compute_t *__restrict__ dqy,
+            // split params: process rows [row_ofs, row_ofs+nrows); cache_on gates the pass-2
+            // recompute elimination (must be 0 when launched with the small no-cache shsize).
+            int64_t row_ofs, int64_t nrows, int cache_on)
         { // [batch][nlat_out][nlon_out][nchan_in]
             using COMPUTE_T = typename vec_traits<STORAGE_T>::compute_t;
 
@@ -350,7 +353,7 @@ namespace attention_kernels
             const int batch = blockIdx.y;
             const uint64_t ctaid = uint64_t(blockIdx.x) * blockDim.y + threadIdx.y;
 
-            if (ctaid >= uint64_t(nlat_out) * nlon_out) { return; }
+            if (ctaid >= uint64_t(nrows) * nlon_out) { return; }
 
             extern __shared__ __align__(sizeof(float4)) float shext[];
 
@@ -370,9 +373,10 @@ namespace attention_kernels
             COMPUTE_T loc_vw_[NLOC];
             COMPUTE_T loc_kvw[NLOC];
 
-            // use permuted rows
-            const int h = ctaid / nlon_out;
-            const int wo = ctaid - (h * nlon_out);
+            // use permuted rows (offset into the sorted row list for the split launch)
+            const int h_local = ctaid / nlon_out;
+            const int wo = ctaid - (h_local * nlon_out);
+            const int h = h_local + int(row_ofs);
             const int ho = row_idx[h];
 
             // one output lon step corresponds to pscale input lon steps (requires nlon_in % nlon_out == 0)
@@ -445,8 +449,8 @@ namespace attention_kernels
             col_idx += rbeg;
 
             const int rlen = rend - rbeg;
-            // cache pass-1 qdotk/gdotv iff the row fits; long rows fall back to recompute.
-            const bool use_cache = (rlen <= CACHE_CAP);
+            // cache pass-1 qdotk/gdotv iff enabled for this launch AND the row fits.
+            const bool use_cache = (cache_on != 0) && (rlen <= CACHE_CAP);
 
             // accumulate alpha_sum, integral, and shared stats,
             // along with a progressively computed qdotk_max.
@@ -710,38 +714,30 @@ namespace attention_kernels
                                  int32_t *_row_idx, int64_t *_row_off, int64_t *_col_idx, float *_quad_weights,
                                  typename vec_traits<STORAGE_T>::compute_t *_dkxp,
                                  typename vec_traits<STORAGE_T>::compute_t *_dvxp,
-                                 typename vec_traits<STORAGE_T>::compute_t *_dqyp, cudaStream_t stream)
+                                 typename vec_traits<STORAGE_T>::compute_t *_dqyp, cudaStream_t stream,
+                                 int64_t row_ofs = 0, int64_t nrows = -1, int cache_on = 1)
         {
 
             if (CUR_LOC_SIZE == nloc) {
 
+                // process rows [row_ofs, row_ofs + grid_rows); nrows<0 means the whole grid.
+                const int64_t grid_rows = (nrows < 0) ? int64_t(nlat_out) : nrows;
                 dim3 block(BDIM_X, BDIM_Y);
-                dim3 grid(DIV_UP(nlat_out * nlon_out, block.y), batch_size);
+                dim3 grid(DIV_UP(grid_rows * nlon_out, block.y), batch_size);
 
                 // shared memory holds compute-type (COMPUTE_T) data, not STORAGE_T.
-                // 2 arrays per cta, block.y > 1 iif block.x==32
                 size_t shsize = sizeof(typename vec_traits<STORAGE_T>::compute_t) * (nchans_in + nchans_out) * block.y;
-                // + per-warp qdotk/gdotv cache (float) for the pass-2 recompute elimination.
-                shsize += size_t(block.y) * (2 * CACHE_CAP) * sizeof(float);
+                // + per-warp qdotk/gdotv cache (float) ONLY when caching is enabled for this launch.
+                if (cache_on) { shsize += size_t(block.y) * (2 * CACHE_CAP) * sizeof(float); }
 
-                // nloc determines the size of local arrays used to store
-                // temporary buffers loc_k__[], loc_vw_[] and loc_kvw[],
-                // of size nchans_in each;
-                // if nchans_out is >= BDIM_X*(nloc-1) and <= BDIM_X*nloc
-                // then we can use the same compile-time known loops used
-                // for input channels, with the exception of testing
-                // whether to execute the last iteration based on "nchans_out"
-                // instead of "nchans_in"; in this way as long as the
-                // difference between the number of input and output channels
-                // is <= BDIM_X we can use the faster path
                 if (nchans_out >= BDIM_X * (CUR_LOC_SIZE - 1) && nchans_out <= BDIM_X * CUR_LOC_SIZE) {
                     s2_attn_bwd_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE><<<grid, block, shsize, stream>>>(
                         nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx,
-                        _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp);
+                        _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, row_ofs, grid_rows, cache_on);
                 } else {
                     s2_attn_bwd_special_vec_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE><<<grid, block, shsize, stream>>>(
                         nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx,
-                        _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp);
+                        _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, row_ofs, grid_rows, cache_on);
                 }
                 CHECK_ERROR("s2_attn_bwd_special_vec_k");
 
@@ -749,8 +745,8 @@ namespace attention_kernels
             }
             if constexpr (CUR_LOC_SIZE < MAX_LOC_SIZE) {
                 launch_spc_attn_bwd<BDIM_X, BDIM_Y, CUR_LOC_SIZE + 1, MAX_LOC_SIZE>(
-                    nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp,
-                    _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, stream);
+                    nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp,
+                    _row_idx, _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, stream, row_ofs, nrows, cache_on);
             }
             return;
         }
@@ -765,35 +761,42 @@ namespace attention_kernels
                                        SV *_vxp, SV *_qyp, SV *_dyp, int32_t *_row_idx, int64_t *_row_off,
                                        int64_t *_col_idx, float *_quad_weights, typename vec_traits<SV>::compute_t *_dkxp,
                                        typename vec_traits<SV>::compute_t *_dvxp,
-                                       typename vec_traits<SV>::compute_t *_dqyp, cudaStream_t stream)
+                                       typename vec_traits<SV>::compute_t *_dqyp, cudaStream_t stream,
+                                       int64_t row_ofs = 0, int64_t nrows = -1, int cache_on = 1)
         {
             switch (bdimx) {
             case 32:
                 launch_spc_attn_bwd<32, 2, 1, MAX_LOC>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in,
                                                        nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off,
-                                                       _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, stream);
+                                                       _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, stream, row_ofs,
+                                                       nrows, cache_on);
                 break;
             case 64:
-                launch_spc_attn_bwd<64, 1, MIN_LOC, MAX_LOC>(
-                    nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp,
-                    _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, stream);
+                launch_spc_attn_bwd<64, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in,
+                                                             nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx,
+                                                             _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp,
+                                                             stream, row_ofs, nrows, cache_on);
                 break;
             case 128:
-                launch_spc_attn_bwd<128, 1, MIN_LOC, MAX_LOC>(
-                    nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp,
-                    _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, stream);
+                launch_spc_attn_bwd<128, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in,
+                                                              nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx,
+                                                              _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp,
+                                                              stream, row_ofs, nrows, cache_on);
                 break;
             case 256:
-                launch_spc_attn_bwd<256, 1, MIN_LOC, MAX_LOC>(
-                    nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp,
-                    _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, stream);
+                launch_spc_attn_bwd<256, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in,
+                                                              nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx,
+                                                              _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp,
+                                                              stream, row_ofs, nrows, cache_on);
                 break;
             case 512:
-                launch_spc_attn_bwd<512, 1, MIN_LOC, MAX_LOC>(
-                    nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp,
-                    _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, stream);
+                launch_spc_attn_bwd<512, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in,
+                                                              nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx,
+                                                              _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp,
+                                                              stream, row_ofs, nrows, cache_on);
                 break;
             default:
+                // generic path: no caching, whole grid (split params ignored).
                 launch_gen_attn_bwd(batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp,
                                     _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, stream);
                 break;
@@ -872,10 +875,32 @@ namespace attention_kernels
                 }
             } else {
                 // fp16/bf16: scalar STORAGE_T inputs, fp32 outputs; fp32 compute/accumulation.
-                bwd_dispatch_bdimx<MAX_LOCAL_ARR_LEN, MIN_LOC_ARR_LEN, scalar_t>(
-                    bdimx, DIV_UP(nchans_in, bdimx), batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out,
-                    nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp,
-                    stream);
+                // ROW SPLIT: long/polar rows get the pass-2 recompute-elimination cache; cheap
+                // short rows run the pristine recompute path at full occupancy (no cache tax).
+                const int nloc_s = DIV_UP(nchans_in, bdimx);
+                const bool special = (bdimx <= 512);
+                int64_t n_long = 0, m0 = 0, m1 = 0;
+                if (special) {
+                    // reuse the ring's relative 0.1*max_rlen threshold but drop the 1024 floor
+                    // (split_len=1) so our polar rows (rlen<1024) are classified "long".
+                    split_csr_rows(SPLIT_ROW_LENGTH_THRES, 1, nlat_out, _row_idx, _row_off, &n_long, &m0, &m1);
+                }
+                if (special && n_long > 0 && n_long < nlat_out) {
+                    bwd_dispatch_bdimx<MAX_LOCAL_ARR_LEN, MIN_LOC_ARR_LEN, scalar_t>(
+                        bdimx, nloc_s, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp,
+                        _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, stream,
+                        /*row_ofs=*/0, /*nrows=*/n_long, /*cache_on=*/1);
+                    bwd_dispatch_bdimx<MAX_LOCAL_ARR_LEN, MIN_LOC_ARR_LEN, scalar_t>(
+                        bdimx, nloc_s, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp,
+                        _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, stream,
+                        /*row_ofs=*/n_long, /*nrows=*/nlat_out - n_long, /*cache_on=*/0);
+                } else {
+                    // no split: whole grid; cache on for the special path, off for generic (bdimx>512).
+                    bwd_dispatch_bdimx<MAX_LOCAL_ARR_LEN, MIN_LOC_ARR_LEN, scalar_t>(
+                        bdimx, nloc_s, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp,
+                        _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, stream, 0,
+                        -1, special ? 1 : 0);
+                }
             }
 
             return;
