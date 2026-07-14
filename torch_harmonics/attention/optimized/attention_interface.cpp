@@ -103,6 +103,9 @@ namespace attention_kernels
         // nchan_in==nchan_out. Same signature as forward; call via forward_coop.
         m.def("forward_coop(Tensor kx, Tensor vx, Tensor qy, Tensor quad_weights, Tensor col_idx, Tensor row_off, int "
               "nlon_in, int nlat_out, int nlon_out) -> Tensor");
+        // Backward with pass-2 recompute elimination (caches qdotk/gdotv in shared).
+        m.def("backward_coop(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor quad_weights, Tensor col_idx, Tensor "
+              "row_off, int nlon_in, int nlat_out, int nlon_out) -> (Tensor, Tensor, Tensor)");
 
         // ---- Ring-step variants for DistributedNeighborhoodAttentionS2 ----
         // K/V are sharded along longitude across an azimuth process group; each

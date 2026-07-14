@@ -201,6 +201,7 @@ def get_ext_modules():
                 "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_fwd_fast.cu",
                 "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_bwd_fast.cu",
                 "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_fwd_coop.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_bwd_coop.cu",
             ]
         )
         ext_modules.append(CUDAExtension("torch_harmonics.attention._C", attention_sources, extra_compile_args=get_compile_args("attention")))
