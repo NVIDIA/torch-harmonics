@@ -107,8 +107,7 @@ class RealSHT(nn.Module):
 
     References
     ----------
-    [Schaeffer2013] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
-    [Wang] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
+    :cite:`Schaeffer2013`, :cite:`Wang`
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
@@ -263,8 +262,7 @@ class InverseRealSHT(nn.Module):
 
     References
     ----------
-    [Schaeffer2013] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
-    [Wang] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
+    :cite:`Schaeffer2013`, :cite:`Wang`
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
@@ -406,8 +404,7 @@ class RealVectorSHT(nn.Module):
 
     References
     ----------
-    [Schaeffer2013] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
-    [Wang] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
+    :cite:`Schaeffer2013`, :cite:`Wang`
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
@@ -565,8 +562,7 @@ class InverseRealVectorSHT(nn.Module):
 
     References
     ----------
-    [Schaeffer2013] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
-    [Wang] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
+    :cite:`Schaeffer2013`, :cite:`Wang`
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):

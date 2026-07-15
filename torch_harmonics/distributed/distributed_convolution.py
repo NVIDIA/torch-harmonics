@@ -124,7 +124,7 @@ def _split_distributed_convolution_tensor_s2(
 
 class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
     """
-    Distributed version of Discrete-continuous convolutions (DISCO) on the 2-Sphere as described in [Ocampo2023]_.
+    Distributed version of Discrete-continuous convolutions (DISCO) on the 2-Sphere as described in :cite:`Ocampo2023`.
     We assume the data can be split in polar and azimuthal directions.
 
     .. seealso::
@@ -190,7 +190,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
     References
     ----------
-    [Ocampo2023] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
+    :cite:`Ocampo2023`
     """
 
     def __init__(
@@ -441,7 +441,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
 class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     """
-    Distributed version of discrete-continuous transpose convolutions (DISCO) on the 2-Sphere as described in [Ocampo2023]_.
+    Distributed version of discrete-continuous transpose convolutions (DISCO) on the 2-Sphere as described in :cite:`Ocampo2023`.
 
     .. seealso::
         :class:`torch_harmonics.DiscreteContinuousConvTransposeS2`
@@ -482,9 +482,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
     References
     ----------
-    [Ocampo2023] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
-
-    We assume the data can be splitted in polar and azimuthal directions.
+    :cite:`Ocampo2023`
     """
 
     def __init__(

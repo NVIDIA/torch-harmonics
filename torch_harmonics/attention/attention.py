@@ -50,7 +50,7 @@ class AttentionS2(nn.Module):
 
     This is ordinary (global) scaled dot-product attention, made geometrically
     faithful on the sphere by folding the numerical quadrature weights of the
-    grid into the attention. Following [Bonev2025]_, the softmax over keys becomes a
+    grid into the attention. Following :cite:`Bonev2025`, the softmax over keys becomes a
     quadrature approximation of a continuous attention integral over the sphere:
     the *logarithms* of the spherical quadrature weights are added to the
     pre-softmax attention scores as an additive mask, so that after the softmax
@@ -89,9 +89,7 @@ class AttentionS2(nn.Module):
 
     References
     ----------
-    [Bonev2025] Bonev, B., Rietmann, M., Paris, A., Carpentieri, A., & Kurth, T. (2025).
-       "Attention on the Sphere." Advances in Neural Information Processing Systems
-       (NeurIPS). https://arxiv.org/abs/2505.11157
+    :cite:`Bonev2025`
     """
 
     def __init__(
@@ -263,7 +261,7 @@ class NeighborhoodAttentionS2(nn.Module):
     :math:`\mathcal{O}(N^2)` to :math:`\mathcal{O}(k N)`, where :math:`k` is the
     number of points in a neighborhood.
 
-    Following [Bonev2025]_, the attention softmax integrates over the neighborhood
+    Following :cite:`Bonev2025`, the attention softmax integrates over the neighborhood
     against the sphere's numerical quadrature weights. This makes the layer a
     resolution-agnostic neural operator -- it can be evaluated on arbitrary grid
     resolutions (though the learned features themselves remain resolution
@@ -307,9 +305,7 @@ class NeighborhoodAttentionS2(nn.Module):
 
     References
     ----------
-    [Bonev2025] Bonev, B., Rietmann, M., Paris, A., Carpentieri, A., & Kurth, T. (2025).
-       "Attention on the Sphere." Advances in Neural Information Processing Systems
-       (NeurIPS). https://arxiv.org/abs/2505.11157
+    :cite:`Bonev2025`
     """
 
     def __init__(

@@ -37,7 +37,14 @@ extensions = [
     "sphinx.ext.mathjax",
     "myst_nb",  # render Markdown pages and .ipynb notebooks
     "sphinx_copybutton",  # copy button on code blocks
+    "sphinxcontrib.bibtex",  # BibTeX bibliography support
 ]
+
+# -- bibliography (sphinxcontrib-bibtex) -------------------------------------
+
+bibtex_bibfiles = ["references.bib"]
+bibtex_default_style = "unsrt"
+bibtex_reference_style = "label"
 
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
