@@ -173,6 +173,18 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             # gather with QK norm enabled
             [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", True, torch.float16, 2e-2, 1e-2],
             [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", True, torch.bfloat16, 5e-2, 5e-2],
+            # ---- large head-dim: exercises the backward pass-2 cache (USE_CACHE=true, gated
+            # at per-head nchan >= 192). C=64 configs above all skip it, so these are the ONLY
+            # coverage of the cached code path. Loose fp16/bf16 tol: the cache is a memory
+            # optimization (bit-identical math to recompute), so any cache bug corrupts grossly.
+            [2, 256, 256, 1, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],  # cache, fp32 float4 path (VECF=4)
+            [2, 256, 256, 1, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float16, 3e-2, 2e-2],  # cache, fp16 scalar path (VECF=1)
+            [2, 256, 256, 1, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.bfloat16, 6e-2, 5e-2],  # cache, bf16 scalar path
+            [2, 192, 192, 1, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float16, 3e-2, 2e-2],  # cache threshold edge (nchan == 192)
+            [2, 256, 256, 1, (12, 24), (6, 12), "equiangular", "equiangular", False, torch.float16, 3e-2, 2e-2],  # cache + downsample (pscale=2)
+            [2, 256, 192, 1, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float16, 3e-2, 2e-2],  # cache + asym channels (CHOUT_AS_IN=0)
+            [2, 512, 512, 2, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float16, 3e-2, 2e-2],  # cache + multi-head (per-head nchan=256)
+            [2, 256, 256, 1, (6, 12), (6, 12), "equiangular", "equiangular", True, torch.float16, 3e-2, 2e-2],  # cache + qk-norm
         ],
         skip_on_empty=True,
     )
