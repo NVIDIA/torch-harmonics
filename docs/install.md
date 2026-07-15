@@ -60,8 +60,16 @@ time:
 
 ```bash
 export TORCH_HARMONICS_BUILD_CUDA_EXTENSION=1
-export TORCH_CUDA_ARCH_LIST="8.0 8.6 9.0 10.0+PTX"
+export TORCH_CUDA_ARCH_LIST="8.0 8.6 9.0a 10.0a+PTX"
 pip install --no-build-isolation -e .
+```
+
+```{tip}
+Use the ``a`` suffix (e.g. ``9.0a``, ``10.0a``) instead of plain ``9.0`` or
+``10.0`` to enable architecture-specific tensor core instructions (e.g.
+``wgmma`` on Hopper).  Some layers such as DISCO benefit significantly from
+this.  The trade-off is that the resulting binary is only compatible with the
+exact GPU generation it was compiled for.
 ```
 
 ```{warning}
@@ -82,14 +90,14 @@ installs, or reinstall the matching prebuilt wheel).
 The following environment variables can be set before building to control
 compilation:
 
-| Variable                               | Default | Description                                                                                                                                                                                                                                                                                                      |
-| -------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TORCH_HARMONICS_BUILD_CUDA_EXTENSION` | `0`     | Force-enable CUDA extension build even when CUDA devices are not auto-detected.                                                                                                                                                                                                                                  |
-| `TORCH_HARMONICS_NATIVE_CPU_ARCH`      | `0`     | Compile C++ extensions with `-march=native -mtune=native`, enabling AVX2/AVX-512 on the build host. Produces faster CPU kernels but the resulting binary is **not portable** to other CPU architectures. Do not use for wheel builds.                                                                            |
-| `TORCH_HARMONICS_ENABLE_OPENMP`        | `0`     | Link the C++ extensions against OpenMP (`-fopenmp`). Enables multi-threaded CPU kernels.                                                                                                                                                                                                                         |
-| `TORCH_HARMONICS_DEBUG`                | `0`     | Build with debug flags (`-g -O0`) instead of release optimizations. Useful for debugging the C++/CUDA extensions.                                                                                                                                                                                                |
-| `TORCH_HARMONICS_PROFILE`              | `0`     | Add CUDA profiling flags (`-lineinfo`) to aid tools like Nsight Compute.                                                                                                                                                                                                                                         |
-| `TORCH_CUDA_ARCH_LIST`                 | auto    | *(PyTorch setting, not torch-harmonics specific.)* Space-separated list of CUDA architectures to target (e.g. `"8.0 9.0 10.0+PTX"`). When building torch-harmonics, this can be set to a subset of the architectures your PyTorch was built for, reducing compile time by skipping architectures you don't need. |
+| Variable                               | Default | Description                                                                                                                                                                                                                                                                                                                                                                               |
+| -------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TORCH_HARMONICS_BUILD_CUDA_EXTENSION` | `0`     | Force-enable CUDA extension build even when CUDA devices are not auto-detected.                                                                                                                                                                                                                                                                                                           |
+| `TORCH_HARMONICS_NATIVE_CPU_ARCH`      | `0`     | Compile C++ extensions with `-march=native -mtune=native`, enabling AVX2/AVX-512 on the build host. Produces faster CPU kernels but the resulting binary is **not portable** to other CPU architectures. Do not use for wheel builds.                                                                                                                                                     |
+| `TORCH_HARMONICS_ENABLE_OPENMP`        | `0`     | Link the C++ extensions against OpenMP (`-fopenmp`). Enables multi-threaded CPU kernels.                                                                                                                                                                                                                                                                                                  |
+| `TORCH_HARMONICS_DEBUG`                | `0`     | Build with debug flags (`-g -O0`) instead of release optimizations. Useful for debugging the C++/CUDA extensions.                                                                                                                                                                                                                                                                         |
+| `TORCH_HARMONICS_PROFILE`              | `0`     | Add CUDA profiling flags (`-lineinfo`) to aid tools like Nsight Compute.                                                                                                                                                                                                                                                                                                                  |
+| `TORCH_CUDA_ARCH_LIST`                 | auto    | *(PyTorch setting, not torch-harmonics specific.)* Space-separated list of CUDA architectures to target (e.g. `"8.0 9.0a 10.0a+PTX"`). Use the `a` suffix to enable tensor core instructions (see tip above). When building torch-harmonics, this can be set to a subset of the architectures your PyTorch was built for, reducing compile time by skipping architectures you don't need. |
 
 For example, to build with host-optimized CPU kernels and OpenMP support:
 

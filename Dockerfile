@@ -38,6 +38,6 @@ RUN pip install parameterized
 # The custom CUDA extension does not suppport architerctures < 7.0
 ENV TORCH_HARMONICS_BUILD_CUDA_EXTENSION=1
 ENV TORCH_HARMONICS_ENABLE_OPENMP=1
-ENV TORCH_CUDA_ARCH_LIST="8.0 8.6 8.7 9.0 10.0+PTX"
+ENV TORCH_CUDA_ARCH_LIST="8.0 8.6 8.7 9.0a 10.0a+PTX"
 COPY . /workspace/torch_harmonics
 RUN cd /workspace/torch_harmonics && NVCC_THREADS=4 MAX_JOBS=8 pip install --no-build-isolation .
