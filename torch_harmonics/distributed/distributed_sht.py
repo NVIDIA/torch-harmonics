@@ -110,7 +110,7 @@ class DistributedRealSHT(nn.Module):
 
     References
     ----------
-    :cite:`Schaeffer2013`, :cite:`Wang`
+    :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
@@ -281,7 +281,7 @@ class DistributedInverseRealSHT(nn.Module):
 
     References
     ----------
-    :cite:`Schaeffer2013`, :cite:`Wang`
+    :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
@@ -431,7 +431,7 @@ class DistributedRealVectorSHT(nn.Module):
 
     References
     ----------
-    :cite:`Schaeffer2013`, :cite:`Wang`
+    :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
@@ -594,7 +594,7 @@ class DistributedInverseRealVectorSHT(nn.Module):
 
     References
     ----------
-    :cite:`Schaeffer2013`, :cite:`Wang`
+    :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):

@@ -76,7 +76,7 @@ def legpoly(mmax: int, lmax: int, x: torch.Tensor, norm: Optional[str] = "ortho"
 
     References
     ----------
-    :cite:`Schaeffer2013`, :cite:`Rapp1982`, :cite:`Schrama`
+    :cite:`Schaeffer2013`, :cite:`Rapp1982`, :cite:`Schrama1984`
     """
 
     nmax = max(mmax, lmax)
@@ -180,7 +180,7 @@ def _precompute_dlegpoly(mmax: int, lmax: int, t: torch.Tensor, norm: Optional[s
 
     References
     ----------
-    :cite:`Wang`
+    :cite:`Wang2018`
     """
 
     pct = _precompute_legpoly(mmax + 1, lmax + 1, t, norm=norm, inverse=inverse, csphase=False)

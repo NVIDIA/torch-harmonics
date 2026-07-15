@@ -107,7 +107,7 @@ class RealSHT(nn.Module):
 
     References
     ----------
-    :cite:`Schaeffer2013`, :cite:`Wang`
+    :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
@@ -262,7 +262,7 @@ class InverseRealSHT(nn.Module):
 
     References
     ----------
-    :cite:`Schaeffer2013`, :cite:`Wang`
+    :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
@@ -404,7 +404,7 @@ class RealVectorSHT(nn.Module):
 
     References
     ----------
-    :cite:`Schaeffer2013`, :cite:`Wang`
+    :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
@@ -562,7 +562,7 @@ class InverseRealVectorSHT(nn.Module):
 
     References
     ----------
-    :cite:`Schaeffer2013`, :cite:`Wang`
+    :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
