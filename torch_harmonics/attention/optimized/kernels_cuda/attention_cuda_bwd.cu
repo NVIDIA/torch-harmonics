@@ -73,6 +73,12 @@ namespace attention_kernels
     // polar rows of ERA5-class grids; ~12 KB/block at BDIM_Y=2, well under the 48 KB default.
     static constexpr int BWD_CACHE_CAP = 768;
 
+    // Minimum ACTUAL channel count for the pass-2 cache to pay off. Below this, the fixed
+    // ~12 KB cache shared costs more occupancy than the (channel-scaled) gather it saves.
+    // Measured H100 break-even ~150 (C=64 regresses ~10%, C=256 wins ~12%); 192 keeps a
+    // safety margin. Tunable — revisit with more (nchan, dtype) data points.
+    static constexpr int BWD_CACHE_MIN_NCHAN = 192;
+
     // BEGIN backward kernels and functions
 
     // called with (blockDim.x=32 and blockDim.y>1, BDIM=blockDim.x*blockDim.y)
@@ -710,11 +716,18 @@ namespace attention_kernels
             // shared memory holds compute-type (COMPUTE_T) data, not STORAGE_T.
             // 2 arrays per cta, block.y > 1 iif block.x==32
             const size_t base_sh = sizeof(typename vec_traits<STORAGE_T>::compute_t) * (nchans_in + nchans_out) * block.y;
-            // pass-2 recompute-elimination cache (qdotk/gdotv, float). Enable only when the
-            // total fits the 48 KB default opt-out shared window; otherwise fall back to the
-            // recompute path (cache_on = 0) so huge-nchan launches never overflow.
             const size_t cache_sh = size_t(block.y) * (2 * BWD_CACHE_CAP) * sizeof(float);
-            const int cache_on = (base_sh + cache_sh <= 48u * 1024u) ? 1 : 0;
+
+            // Enable the pass-2 recompute-elimination cache only when it pays. The benefit
+            // (gather loads removed) scales with the channel count, but the cache's shared
+            // footprint (~12 KB) is FIXED -> at small nchan the occupancy tax outweighs the
+            // saving (measured: H100 C=64 fp16/bf16 ~0.90x regression; C=256 ~1.12x win).
+            // Gate on the ACTUAL channel count (nchans_in is in STORAGE_T units: x4 for the
+            // fp32 float4 path). Also require the total to fit the 48 KB default window so
+            // huge-nchan launches never overflow shared.
+            constexpr int sv_elems = std::is_same<STORAGE_T, float4>::value ? 4 : 1;
+            const int64_t actual_nchan = int64_t(nchans_in) * sv_elems;
+            const int cache_on = (actual_nchan >= BWD_CACHE_MIN_NCHAN && base_sh + cache_sh <= 48u * 1024u) ? 1 : 0;
             const size_t shsize = base_sh + (cache_on ? cache_sh : 0);
 
             // nloc determines the size of local arrays used to store
