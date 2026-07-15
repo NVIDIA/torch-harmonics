@@ -66,6 +66,13 @@ namespace attention_kernels
                                        torch::Tensor psi_row_off, torch::Tensor psi_col_idx, torch::Tensor quad_weights,
                                        torch::Tensor dkxP, torch::Tensor dvxP, torch::Tensor dqyP);
 
+    // Per-warp shared cache capacity (floats each) for the special-kernel pass-2 recompute
+    // elimination: pass 1 caches qdotk/gdotv, pass 2 reads them back instead of re-gathering
+    // K/V (halves the backward gather, the #1 long_scoreboard stall). Rows with rlen > cap
+    // fall back to recompute. Arch-agnostic (plain shared mem + syncwarp). 768 covers the
+    // polar rows of ERA5-class grids; ~12 KB/block at BDIM_Y=2, well under the 48 KB default.
+    static constexpr int BWD_CACHE_CAP = 768;
+
     // BEGIN backward kernels and functions
 
     // called with (blockDim.x=32 and blockDim.y>1, BDIM=blockDim.x*blockDim.y)
@@ -317,8 +324,9 @@ namespace attention_kernels
         const float *__restrict__ quad_weights,
         typename vec_traits<STORAGE_T>::compute_t *__restrict__ dkx, // [batch][nlat_in][nlon_in][nchan_in]
         typename vec_traits<STORAGE_T>::compute_t *__restrict__ dvx, // [batch][nlat_in][nlon_in][nchan_out]
-        typename vec_traits<STORAGE_T>::compute_t *__restrict__ dqy)
-    { // [batch][nlat_out][nlon_out][nchan_in]
+        typename vec_traits<STORAGE_T>::compute_t *__restrict__ dqy,
+        int cache_on) // 1 iff the launcher allocated the qdotk/gdotv cache (fits in shared)
+    {                 // [batch][nlat_out][nlon_out][nchan_in]
         using COMPUTE_T = typename vec_traits<STORAGE_T>::compute_t;
 
         static_assert(0 == (BDIM_X & (BDIM_X - 1)));
@@ -340,6 +348,11 @@ namespace attention_kernels
         COMPUTE_T *sh_qy = sh_dy + nchan_out + tidx;
 
         if constexpr (CHOUT_AS_IN) { sh_dy += tidx; }
+
+        // per-warp qdotk/gdotv cache (float), after all warps' sh_dy/sh_qy region.
+        constexpr int VECF = sizeof(COMPUTE_T) / sizeof(float);
+        float *qdc = shext + BDIM_Y * (nchan_in + nchan_out) * VECF + threadIdx.y * (2 * BWD_CACHE_CAP);
+        float *gdc = qdc + BWD_CACHE_CAP;
 
         // for dqy
         COMPUTE_T loc_k__[NLOC];
@@ -421,6 +434,8 @@ namespace attention_kernels
         col_idx += rbeg;
 
         const int rlen = rend - rbeg;
+        // cache pass-1 qdotk/gdotv iff the launcher allocated the cache AND the row fits.
+        const bool use_cache = (cache_on != 0) && (rlen <= BWD_CACHE_CAP);
 
         // accumulate alpha_sum, integral, and shared stats,
         // along with a progressively computed qdotk_max.
@@ -471,6 +486,12 @@ namespace attention_kernels
                 gdotv = __block_sum<BDIM_X>(gdotv);
             }
 
+            // cache the two per-neighbor scalars so pass 2 need not re-gather K/V.
+            if (use_cache) {
+                qdc[off] = qdotk;
+                gdc[off] = gdotv;
+            }
+
             const float qdotk_max_tmp = max(qdotk_max, qdotk);
             const float alpha_inz = expf(qdotk - qdotk_max_tmp) * quad_weights[hi];
             const float max_correction = expf(qdotk_max - qdotk_max_tmp);
@@ -515,6 +536,15 @@ namespace attention_kernels
                            __vsub(__vscale(alpha_sum, loc_kvw[NLOC_M1]), __vmul(loc_vw_[NLOC_M1], loc_k__[NLOC_M1])));
         }
 
+        // make the pass-1 qdotk/gdotv cache writes visible before pass 2 reads them.
+        if (use_cache) {
+            if constexpr (BDIM_X == 32) {
+                __syncwarp();
+            } else {
+                __syncthreads();
+            }
+        }
+
         // accumulate gradients for k and v
         for (int off = 0; off < rlen; off++) {
 
@@ -525,42 +555,49 @@ namespace attention_kernels
             const int wi_wo = wi + pscale * wo;
             const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
 
-            const STORAGE_T *_kx = kx + int64_t(hi) * nlon_in * nchan_in + int64_t(wip) * nchan_in;
-            const STORAGE_T *_vx = vx + int64_t(hi) * nlon_in * nchan_out + int64_t(wip) * nchan_out;
+            float qdotk, gdotv;
+            if (use_cache) {
+                // pass 2: reuse pass-1 scalars from shared — NO K/V gather.
+                qdotk = qdc[off];
+                gdotv = gdc[off];
+            } else {
+                const STORAGE_T *_kx = kx + int64_t(hi) * nlon_in * nchan_in + int64_t(wip) * nchan_in;
+                const STORAGE_T *_vx = vx + int64_t(hi) * nlon_in * nchan_out + int64_t(wip) * nchan_out;
 
-            COMPUTE_T qdotk_v = __vset<COMPUTE_T>(0.0f);
-            COMPUTE_T gdotv_v = __vset<COMPUTE_T>(0.0f);
+                COMPUTE_T qdotk_v = __vset<COMPUTE_T>(0.0f);
+                COMPUTE_T gdotv_v = __vset<COMPUTE_T>(0.0f);
 
-#pragma unroll
-            for (int i = 0; i < NLOC_M1; i++) {
-                qdotk_v = __vadd(qdotk_v, __vmul(sh_qy[i * BDIM_X], vload(_kx, i * BDIM_X)));
-            }
-            if (NLOC_M1 * BDIM_X + tidx < nchan_in) {
-                qdotk_v = __vadd(qdotk_v, __vmul(sh_qy[NLOC_M1 * BDIM_X], vload(_kx, NLOC_M1 * BDIM_X)));
-            }
-            if constexpr (CHOUT_AS_IN) {
 #pragma unroll
                 for (int i = 0; i < NLOC_M1; i++) {
-                    gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[i * BDIM_X], vload(_vx, i * BDIM_X)));
+                    qdotk_v = __vadd(qdotk_v, __vmul(sh_qy[i * BDIM_X], vload(_kx, i * BDIM_X)));
                 }
-                if (NLOC_M1 * BDIM_X + tidx < nchan_out) {
-                    gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[NLOC_M1 * BDIM_X], vload(_vx, NLOC_M1 * BDIM_X)));
+                if (NLOC_M1 * BDIM_X + tidx < nchan_in) {
+                    qdotk_v = __vadd(qdotk_v, __vmul(sh_qy[NLOC_M1 * BDIM_X], vload(_kx, NLOC_M1 * BDIM_X)));
                 }
-            } else {
-                for (int chan = tidx; chan < nchan_out; chan += BDIM_X) {
-                    gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[chan], vload(_vx, chan)));
+                if constexpr (CHOUT_AS_IN) {
+#pragma unroll
+                    for (int i = 0; i < NLOC_M1; i++) {
+                        gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[i * BDIM_X], vload(_vx, i * BDIM_X)));
+                    }
+                    if (NLOC_M1 * BDIM_X + tidx < nchan_out) {
+                        gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[NLOC_M1 * BDIM_X], vload(_vx, NLOC_M1 * BDIM_X)));
+                    }
+                } else {
+                    for (int chan = tidx; chan < nchan_out; chan += BDIM_X) {
+                        gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[chan], vload(_vx, chan)));
+                    }
                 }
-            }
 
-            float qdotk = __vred(qdotk_v);
-            float gdotv = __vred(gdotv_v);
+                qdotk = __vred(qdotk_v);
+                gdotv = __vred(gdotv_v);
 
-            if constexpr (BDIM_X == 32) {
-                qdotk = __warp_sum(qdotk);
-                gdotv = __warp_sum(gdotv);
-            } else {
-                qdotk = __block_sum<BDIM_X>(qdotk);
-                gdotv = __block_sum<BDIM_X>(gdotv);
+                if constexpr (BDIM_X == 32) {
+                    qdotk = __warp_sum(qdotk);
+                    gdotv = __warp_sum(gdotv);
+                } else {
+                    qdotk = __block_sum<BDIM_X>(qdotk);
+                    gdotv = __block_sum<BDIM_X>(gdotv);
+                }
             }
 
             const float alpha_inz = expf(qdotk - qdotk_max) * quad_weights[hi];
@@ -672,7 +709,13 @@ namespace attention_kernels
 
             // shared memory holds compute-type (COMPUTE_T) data, not STORAGE_T.
             // 2 arrays per cta, block.y > 1 iif block.x==32
-            size_t shsize = sizeof(typename vec_traits<STORAGE_T>::compute_t) * (nchans_in + nchans_out) * block.y;
+            const size_t base_sh = sizeof(typename vec_traits<STORAGE_T>::compute_t) * (nchans_in + nchans_out) * block.y;
+            // pass-2 recompute-elimination cache (qdotk/gdotv, float). Enable only when the
+            // total fits the 48 KB default opt-out shared window; otherwise fall back to the
+            // recompute path (cache_on = 0) so huge-nchan launches never overflow.
+            const size_t cache_sh = size_t(block.y) * (2 * BWD_CACHE_CAP) * sizeof(float);
+            const int cache_on = (base_sh + cache_sh <= 48u * 1024u) ? 1 : 0;
+            const size_t shsize = base_sh + (cache_on ? cache_sh : 0);
 
             // nloc determines the size of local arrays used to store
             // temporary buffers loc_k__[], loc_vw_[] and loc_kvw[],
@@ -687,11 +730,11 @@ namespace attention_kernels
             if (nchans_out >= BDIM_X * (CUR_LOC_SIZE - 1) && nchans_out <= BDIM_X * CUR_LOC_SIZE) {
                 s2_attn_bwd_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE><<<grid, block, shsize, stream>>>(
                     nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx,
-                    _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp);
+                    _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, cache_on);
             } else {
                 s2_attn_bwd_special_vec_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE><<<grid, block, shsize, stream>>>(
                     nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx,
-                    _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp);
+                    _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, cache_on);
             }
             CHECK_ERROR("s2_attn_bwd_special_vec_k");
 

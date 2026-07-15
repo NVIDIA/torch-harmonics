@@ -159,24 +159,6 @@ namespace attention_kernels
         return make_float4(s * v.x, s * v.y, s * v.z, s * v.w);
     }
 
-    // Fused multiply-add helpers (single-rounding fmaf). Explicit fusion for the hot
-    // dot-product and online-softmax accumulate loops (ncu flagged non-fused fp32 pairs).
-    // __vfma(a,b,c)      = a*b + c        (elementwise)
-    // __vfma_scale(s,v,c)= s*v + c        (scalar s broadcast over vector v)
-    __device__ float __forceinline__ __vfma(float a, float b, float c) { return fmaf(a, b, c); }
-
-    __device__ float4 __forceinline__ __vfma(float4 a, float4 b, float4 c)
-    {
-        return make_float4(fmaf(a.x, b.x, c.x), fmaf(a.y, b.y, c.y), fmaf(a.z, b.z, c.z), fmaf(a.w, b.w, c.w));
-    }
-
-    __device__ float __forceinline__ __vfma_scale(float s, float v, float c) { return fmaf(s, v, c); }
-
-    __device__ float4 __forceinline__ __vfma_scale(float s, float4 v, float4 c)
-    {
-        return make_float4(fmaf(s, v.x, c.x), fmaf(s, v.y, c.y), fmaf(s, v.z, c.z), fmaf(s, v.w, c.w));
-    }
-
     __device__ float4 __forceinline__ __vdiv(float s, float4 v)
     {
         return make_float4(s / v.x, s / v.y, s / v.z, s / v.w);

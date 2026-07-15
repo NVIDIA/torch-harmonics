@@ -83,29 +83,9 @@ namespace attention_kernels
         m.def("forward(Tensor kx, Tensor vx, Tensor qy, Tensor quad_weights, Tensor col_idx, Tensor row_off, int "
               "nlon_in, int nlat_out, int nlon_out) -> Tensor",
               {at::Tag::pt2_compliant_tag});
-        // Standalone Hopper WGMMA (sm_90a) forward, for isolated benchmarking of the
-        // tensor-core neighborhood-attention path. Not routed by the module; call it
-        // directly via torch.ops.attention_kernels.forward_wgmma. Drop-in signature
-        // match for `forward` (row_idx is derived internally via sortRows).
-        m.def("forward_wgmma(Tensor kx, Tensor vx, Tensor qy, Tensor quad_weights, Tensor col_idx, Tensor row_off, "
-              "int nlon_in, int nlat_out, int nlon_out) -> Tensor");
         m.def("backward(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor quad_weights, Tensor col_idx, Tensor "
               "row_off, int nlon_in, int nlat_out, int nlon_out) -> (Tensor, Tensor, Tensor)",
               {at::Tag::pt2_compliant_tag});
-        // Optimized (FMA + __expf) gather forward/backward copies for A/B benchmarking
-        // vs the baseline forward/backward. Same signatures; call directly via
-        // torch.ops.attention_kernels.forward_fast / backward_fast.
-        m.def("forward_fast(Tensor kx, Tensor vx, Tensor qy, Tensor quad_weights, Tensor col_idx, Tensor row_off, int "
-              "nlon_in, int nlat_out, int nlon_out) -> Tensor");
-        m.def("backward_fast(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor quad_weights, Tensor col_idx, Tensor "
-              "row_off, int nlon_in, int nlat_out, int nlon_out) -> (Tensor, Tensor, Tensor)");
-        // Cross-wo cooperative-tiling forward (shared K/V arc reuse). Gather/self only,
-        // nchan_in==nchan_out. Same signature as forward; call via forward_coop.
-        m.def("forward_coop(Tensor kx, Tensor vx, Tensor qy, Tensor quad_weights, Tensor col_idx, Tensor row_off, int "
-              "nlon_in, int nlat_out, int nlon_out) -> Tensor");
-        // Backward with pass-2 recompute elimination (caches qdotk/gdotv in shared).
-        m.def("backward_coop(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor quad_weights, Tensor col_idx, Tensor "
-              "row_off, int nlon_in, int nlat_out, int nlon_out) -> (Tensor, Tensor, Tensor)");
 
         // ---- Ring-step variants for DistributedNeighborhoodAttentionS2 ----
         // K/V are sharded along longitude across an azimuth process group; each
