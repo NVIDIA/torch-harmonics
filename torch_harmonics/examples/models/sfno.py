@@ -174,7 +174,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
 class SphericalFourierNeuralOperator(nn.Module):
     """
     SphericalFourierNeuralOperator module. Implements the 'linear' variant of the Spherical Fourier Neural Operator
-    as presented in [1]. Spherical convolutions are applied via spectral transforms to apply a geometrically consistent
+    as presented in [Bonev2023]_. Spherical convolutions are applied via spectral transforms to apply a geometrically consistent
     and approximately equivariant architecture.
 
     Parameters
@@ -233,9 +233,9 @@ class SphericalFourierNeuralOperator(nn.Module):
 
     References
     ----------
-    .. [1] Bonev B., Kurth T., Hundt C., Pathak, J., Baust M., Kashinath K., Anandkumar A.;
-        "Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere" (2023).
-        ICML 2023, https://arxiv.org/abs/2306.03838.
+    [Bonev2023] Bonev B., Kurth T., Hundt C., Pathak, J., Baust M., Kashinath K., Anandkumar A.;
+       "Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere" (2023).
+       ICML 2023, https://arxiv.org/abs/2306.03838.
     """
 
     def __init__(

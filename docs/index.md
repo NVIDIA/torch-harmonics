@@ -57,6 +57,14 @@ coeffs = sht(signal)          # -> spherical harmonic coefficients
 reconstructed = isht(coeffs)  # -> back to grid space
 ```
 
+```{toctree}
+---
+maxdepth: 1
+caption: Bibliography
+---
+references
+```
+
 ## Indices
 
 - {ref}`genindex`

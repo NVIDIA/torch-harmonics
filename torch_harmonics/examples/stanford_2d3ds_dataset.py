@@ -54,7 +54,7 @@ DEFAULT_LABELS_URL = "https://raw.githubusercontent.com/alexsax/2D-3D-Semantics/
 
 class Stanford2D3DSDownloader:
     """
-    Convenience class for downloading the 2d3ds dataset [1].
+    Convenience class for downloading the 2d3ds dataset [Armeni2017]_.
 
     Parameters
     ----------
@@ -72,9 +72,9 @@ class Stanford2D3DSDownloader:
 
     References
     ----------
-    .. [1] Armeni, I.,  Sax, S.,  Zamir, A. R.,  Savarese, S.;
-        "Joint 2D-3D-Semantic Data for Indoor Scene Understanding" (2017).
-        https://arxiv.org/abs/1702.01105.
+    [Armeni2017] Armeni, I.,  Sax, S.,  Zamir, A. R.,  Savarese, S.;
+       "Joint 2D-3D-Semantic Data for Indoor Scene Understanding" (2017).
+       https://arxiv.org/abs/1702.01105.
     """
 
     def __init__(self, base_url: str = DEFAULT_BASE_URL, local_dir: str = "data"):
@@ -444,7 +444,7 @@ class Stanford2D3DSDownloader:
 
 class StanfordSegmentationDataset(Dataset):
     """
-    Spherical segmentation dataset from [1].
+    Spherical segmentation dataset from [Armeni2017]_.
 
     Parameters
     ----------
@@ -464,9 +464,9 @@ class StanfordSegmentationDataset(Dataset):
 
     References
     ----------
-    .. [1] Armeni, I.,  Sax, S.,  Zamir, A. R.,  Savarese, S.;
-        "Joint 2D-3D-Semantic Data for Indoor Scene Understanding" (2017).
-        https://arxiv.org/abs/1702.01105.
+    [Armeni2017] Armeni, I.,  Sax, S.,  Zamir, A. R.,  Savarese, S.;
+       "Joint 2D-3D-Semantic Data for Indoor Scene Understanding" (2017).
+       https://arxiv.org/abs/1702.01105.
     """
 
     def __init__(
@@ -597,7 +597,7 @@ class StanfordDatasetSubset(Subset):
 
 class StanfordDepthDataset(Dataset):
     """
-    Spherical segmentation dataset from [1].
+    Spherical segmentation dataset from [Armeni2017]_.
 
     Parameters
     ----------
@@ -612,9 +612,9 @@ class StanfordDepthDataset(Dataset):
 
     References
     ----------
-    .. [1] Armeni, I.,  Sax, S.,  Zamir, A. R.,  Savarese, S.;
-        "Joint 2D-3D-Semantic Data for Indoor Scene Understanding" (2017).
-        https://arxiv.org/abs/1702.01105.
+    [Armeni2017] Armeni, I.,  Sax, S.,  Zamir, A. R.,  Savarese, S.;
+       "Joint 2D-3D-Semantic Data for Indoor Scene Understanding" (2017).
+       https://arxiv.org/abs/1702.01105.
     """
 
     def __init__(self, dataset_file, ignore_alpha_channel=True, log_depth=False, exclude_polar_fraction=0.0):

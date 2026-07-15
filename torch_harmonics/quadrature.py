@@ -288,7 +288,7 @@ def clenshaw_curtiss_weights(n: int, a: Optional[float] = -1.0, b: Optional[floa
 
     References
     ----------
-    [1] Joerg Waldvogel, Fast Construction of the Fejer and Clenshaw-Curtis Quadrature Rules; BIT Numerical Mathematics, Vol. 43, No. 1, pp. 001–018.
+    [Waldvogel2006] Joerg Waldvogel, Fast Construction of the Fejer and Clenshaw-Curtis Quadrature Rules; BIT Numerical Mathematics, Vol. 43, No. 1, pp. 001–018.
     """
 
     if n <= 1:

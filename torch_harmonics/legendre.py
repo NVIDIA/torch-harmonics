@@ -76,10 +76,10 @@ def legpoly(mmax: int, lmax: int, x: torch.Tensor, norm: Optional[str] = "ortho"
 
     References
     ----------
-    [1] Schaeffer, N.; Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
-    [2] Rapp, R.H.; A Fortran Program for the Computation of Gravimetric Quantities from High Degree Spherical Harmonic Expansions, Ohio State University Columbus; report; 1982;
+    [Schaeffer2013] Schaeffer, N.; Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
+    [Rapp1982] Rapp, R.H.; A Fortran Program for the Computation of Gravimetric Quantities from High Degree Spherical Harmonic Expansions, Ohio State University Columbus; report; 1982;
         https://apps.dtic.mil/sti/citations/ADA123406
-    [3] Schrama, E.; Orbit integration based upon interpolated gravitational gradients
+    [Schrama] Schrama, E.; Orbit integration based upon interpolated gravitational gradients
     """
 
     nmax = max(mmax, lmax)
@@ -183,7 +183,7 @@ def _precompute_dlegpoly(mmax: int, lmax: int, t: torch.Tensor, norm: Optional[s
 
     References
     ----------
-    [1] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
+    [Wang] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
     """
 
     pct = _precompute_legpoly(mmax + 1, lmax + 1, t, norm=norm, inverse=inverse, csphase=False)

@@ -465,7 +465,7 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
 
 class DiscreteContinuousConvS2(DiscreteContinuousConv):
     r"""
-    Discrete-continuous (DISCO) convolution on the 2-sphere, as described in [1].
+    Discrete-continuous (DISCO) convolution on the 2-sphere, as described in [Ocampo2023]_.
 
     The layer evaluates a spherical convolution with a compactly supported
     filter of angular radius ``theta_cutoff``.  The filter is parameterised as
@@ -528,7 +528,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
     References
     ----------
-    [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
+    [Ocampo2023] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
     """
 
     def __init__(
@@ -846,7 +846,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
 class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     r"""
-    Discrete-continuous (DISCO) transpose convolution on the 2-sphere, as described in [1].
+    Discrete-continuous (DISCO) transpose convolution on the 2-sphere, as described in [Ocampo2023]_.
 
     This is the transpose (adjoint) of
     :class:`~torch_harmonics.DiscreteContinuousConvS2`.  It uses the same
@@ -893,7 +893,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
     References
     ----------
-    [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
+    [Ocampo2023] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
     """
 
     def __init__(
