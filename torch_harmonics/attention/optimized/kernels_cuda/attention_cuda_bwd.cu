@@ -317,7 +317,10 @@ namespace attention_kernels
     template <int BDIM_X, int BDIM_Y,
               int CHOUT_AS_IN, // 1 iif "BDIM_X*(NLOC-1) <= nchan_out <= BDIM_X*NLOC" else 0
               int NLOC,        // smallest int such that BDIM_X*NLOC >= nchan_in
-              typename STORAGE_T>
+              typename STORAGE_T,
+              bool USE_CACHE> // compile-time: true iff the launcher allocated the qdotk/gdotv cache.
+                              // When false, ALL caching code is dead-stripped -> byte-identical to
+                              // the pre-cache baseline (no residual register/occupancy cost).
     __global__ __launch_bounds__(BDIM_X *BDIM_Y) void s2_attn_bwd_special_vec_k(
         int nchan_in,  // no. of elements along channel dim
         int nchan_out, // no. of elements along channel dim
@@ -330,9 +333,8 @@ namespace attention_kernels
         const float *__restrict__ quad_weights,
         typename vec_traits<STORAGE_T>::compute_t *__restrict__ dkx, // [batch][nlat_in][nlon_in][nchan_in]
         typename vec_traits<STORAGE_T>::compute_t *__restrict__ dvx, // [batch][nlat_in][nlon_in][nchan_out]
-        typename vec_traits<STORAGE_T>::compute_t *__restrict__ dqy,
-        int cache_on) // 1 iff the launcher allocated the qdotk/gdotv cache (fits in shared)
-    {                 // [batch][nlat_out][nlon_out][nchan_in]
+        typename vec_traits<STORAGE_T>::compute_t *__restrict__ dqy)
+    { // [batch][nlat_out][nlon_out][nchan_in]
         using COMPUTE_T = typename vec_traits<STORAGE_T>::compute_t;
 
         static_assert(0 == (BDIM_X & (BDIM_X - 1)));
@@ -356,9 +358,14 @@ namespace attention_kernels
         if constexpr (CHOUT_AS_IN) { sh_dy += tidx; }
 
         // per-warp qdotk/gdotv cache (float), after all warps' sh_dy/sh_qy region.
-        constexpr int VECF = sizeof(COMPUTE_T) / sizeof(float);
-        float *qdc = shext + BDIM_Y * (nchan_in + nchan_out) * VECF + threadIdx.y * (2 * BWD_CACHE_CAP);
-        float *gdc = qdc + BWD_CACHE_CAP;
+        // Guarded by USE_CACHE so the pointers (and all downstream cache code) vanish
+        // entirely when caching is off — no residual register cost on the baseline path.
+        float *qdc = nullptr, *gdc = nullptr;
+        if constexpr (USE_CACHE) {
+            constexpr int VECF = sizeof(COMPUTE_T) / sizeof(float);
+            qdc = shext + BDIM_Y * (nchan_in + nchan_out) * VECF + threadIdx.y * (2 * BWD_CACHE_CAP);
+            gdc = qdc + BWD_CACHE_CAP;
+        }
 
         // for dqy
         COMPUTE_T loc_k__[NLOC];
@@ -440,8 +447,10 @@ namespace attention_kernels
         col_idx += rbeg;
 
         const int rlen = rend - rbeg;
-        // cache pass-1 qdotk/gdotv iff the launcher allocated the cache AND the row fits.
-        const bool use_cache = (cache_on != 0) && (rlen <= BWD_CACHE_CAP);
+        // cache pass-1 qdotk/gdotv iff enabled at compile time AND the row fits. When
+        // USE_CACHE is false this folds to a compile-time false -> all `if (use_cache)`
+        // blocks below (store, sync, pass-2 read) are dead-stripped.
+        const bool use_cache = USE_CACHE && (rlen <= BWD_CACHE_CAP);
 
         // accumulate alpha_sum, integral, and shared stats,
         // along with a progressively computed qdotk_max.
@@ -740,14 +749,30 @@ namespace attention_kernels
             // instead of "nchans_in"; in this way as long as the
             // difference between the number of input and output channels
             // is <= BDIM_X we can use the faster path
-            if (nchans_out >= BDIM_X * (CUR_LOC_SIZE - 1) && nchans_out <= BDIM_X * CUR_LOC_SIZE) {
-                s2_attn_bwd_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE><<<grid, block, shsize, stream>>>(
-                    nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx,
-                    _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, cache_on);
+            // 4-way instantiation: CHOUT_AS_IN {1,0} x USE_CACHE {true,false}. USE_CACHE is a
+            // COMPILE-TIME param so the false path dead-strips all caching code (byte-identical
+            // to the pre-cache baseline -> no residual cost on the common small-nchan configs).
+            const bool chout = (nchans_out >= BDIM_X * (CUR_LOC_SIZE - 1) && nchans_out <= BDIM_X * CUR_LOC_SIZE);
+            if (chout && cache_on) {
+                s2_attn_bwd_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE, STORAGE_T, true>
+                    <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp,
+                                                      _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
+                                                      _dkxp, _dvxp, _dqyp);
+            } else if (chout) {
+                s2_attn_bwd_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE, STORAGE_T, false>
+                    <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp,
+                                                      _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
+                                                      _dkxp, _dvxp, _dqyp);
+            } else if (cache_on) {
+                s2_attn_bwd_special_vec_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE, STORAGE_T, true>
+                    <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp,
+                                                      _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
+                                                      _dkxp, _dvxp, _dqyp);
             } else {
-                s2_attn_bwd_special_vec_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE><<<grid, block, shsize, stream>>>(
-                    nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx,
-                    _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, cache_on);
+                s2_attn_bwd_special_vec_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE, STORAGE_T, false>
+                    <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp,
+                                                      _vxp, _qyp, _dyp, _row_idx, _row_off, _col_idx, _quad_weights,
+                                                      _dkxp, _dvxp, _dqyp);
             }
             CHECK_ERROR("s2_attn_bwd_special_vec_k");
 
