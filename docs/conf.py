@@ -80,6 +80,16 @@ def autodoc_skip_member_handler(app, what, name, obj, skip, options):
     return skip
 
 
+def autodoc_process_docstring_handler(app, what, name, obj, options, lines):
+    """Unwrap lru_cache wrappers so autodoc can see the original docstring."""
+    import functools
+
+    if hasattr(obj, "__wrapped__") and isinstance(obj, functools._lru_cache_wrapper):
+        wrapped = obj.__wrapped__
+        if wrapped.__doc__ and not lines:
+            lines.extend(wrapped.__doc__.splitlines())
+
+
 napoleon_google_docstring = False
 napoleon_numpy_docstring = True
 napoleon_use_param = True
@@ -115,3 +125,4 @@ html_theme_options = {
 
 def setup(app):
     app.connect("autodoc-skip-member", autodoc_skip_member_handler)
+    app.connect("autodoc-process-docstring", autodoc_process_docstring_handler)
