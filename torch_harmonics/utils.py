@@ -29,7 +29,75 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import os
+import tempfile
+import urllib.request
+from typing import Optional
+
+import numpy as np
 import torch
+import torch.nn.functional as F
+
+_MOLA_URL = (
+    "https://astrogeology.usgs.gov/ckan/dataset/"
+    "83c20dbd-e2b3-4e5b-b019-f13d4fdffa38/resource/"
+    "57f84b24-d56c-42dd-a34d-cf9d61a82d2c/download/"
+    "mars_mgs_mola_dem_mosaic_global_1024.jpg"
+)
+
+
+def load_mola_elevation(
+    nlat: Optional[int] = None,
+    nlon: Optional[int] = None,
+    cache_dir: Optional[str] = None,
+) -> torch.Tensor:
+    """
+    Download the NASA MOLA Mars digital elevation map and return it as a tensor.
+
+    The image is downloaded once and cached locally for subsequent calls.
+
+    Parameters
+    ----------
+    nlat : int, optional
+        Target number of latitude points. If given together with *nlon*,
+        the image is bilinearly interpolated to (nlat, nlon).
+    nlon : int, optional
+        Target number of longitude points.
+    cache_dir : str, optional
+        Directory for the cached download. Defaults to the system temp dir.
+
+    Returns
+    -------
+    torch.Tensor
+        Grayscale elevation map with shape (nlat, nlon), values in [0, 1].
+    """
+    from PIL import Image
+
+    if cache_dir is None:
+        cache_dir = tempfile.gettempdir()
+    path = os.path.join(cache_dir, "mola_topo.jpg")
+
+    if not os.path.exists(path):
+        req = urllib.request.Request(_MOLA_URL, headers={"User-Agent": "torch-harmonics"})
+        with urllib.request.urlopen(req) as resp, open(path, "wb") as f:
+            f.write(resp.read())
+
+    img = np.array(Image.open(path).convert("L"), dtype=np.float32) / 255.0
+    data = torch.from_numpy(img)
+
+    if nlat is not None and nlon is not None:
+        data = (
+            F.interpolate(
+                data.unsqueeze(0).unsqueeze(0),
+                size=(nlat, nlon),
+                mode="bilinear",
+                align_corners=False,
+            )
+            .squeeze(0)
+            .squeeze(0)
+        )
+
+    return data
 
 
 class _EnsureContiguous(torch.autograd.Function):

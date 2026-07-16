@@ -432,6 +432,11 @@ class Stanford2D3DSDownloader:
             )
             return converted_dataset_path
 
+        try:
+            import requests  # noqa: F401
+        except ImportError:
+            raise ImportError("Downloading the Stanford 2D-3D-S dataset requires the '2d3ds' extras. " "Install them with: pip install torch-harmonics[2d3ds]")
+
         data_folders, class_labels = self.download_dataset(file_extracted_directory_pairs=file_extracted_directory_pairs)
         converted_dataset_path = self.convert_dataset(data_folders=data_folders, class_labels=class_labels, dataset_file=dataset_file, downsampling_factor=downsampling_factor)
 
