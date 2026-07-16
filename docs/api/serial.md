@@ -41,7 +41,7 @@
    get_filter_basis
 ```
 
-## Attention
+## Attention mechanism
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics
