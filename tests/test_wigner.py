@@ -65,6 +65,17 @@ def wigner_d_reference(l: int, beta: float, device: torch.device) -> torch.Tenso
     return torch.matrix_exp(-1.0j * beta * jy).real
 
 
+def cs_sign_block(l: int, device: torch.device) -> torch.Tensor:
+    r"""The (2l+1, 2l+1) diagonal-conjugation sign (-1)^{m'-m}.
+
+    The J_y oracle and the textbook closed forms are in the Condon-Shortley
+    convention; multiplying by this block converts them to the non-CS
+    convention that ``wigner_d(..., csphase=False)`` returns.
+    """
+    m = torch.arange(-l, l + 1, dtype=torch.float64, device=device)
+    return (-1.0) ** (m.reshape(-1, 1) - m.reshape(1, -1))
+
+
 @parameterized_class(("device",), _devices)
 class TestWignerD(unittest.TestCase):
     """Correctness of the Wigner d-/D-matrix routines."""
@@ -79,17 +90,20 @@ class TestWignerD(unittest.TestCase):
     # For a set of fixed angles, every block d^l(beta) up to lmax must match the
     # matrix-exponential reference to double-precision tolerance.
     # -----------------------------------------------------------------------
-    def test_oracle_agreement(self, verbose=False):
+    @parameterized.expand([[True], [False]])
+    def test_oracle_agreement(self, csphase, verbose=False):
         lmax = 8
         betas = [0.0, math.pi / 6, math.pi / 3, math.pi / 2, 2.0 * math.pi / 3, math.pi, 1.3, 2.7]
 
         for beta in betas:
-            d = wigner_d(lmax, torch.tensor(beta, device=self.device))
+            d = wigner_d(lmax, torch.tensor(beta, device=self.device), csphase=csphase)
             for l in range(lmax + 1):
-                ref = wigner_d_reference(l, beta, self.device)
+                ref = wigner_d_reference(l, beta, self.device)  # J_y oracle is Condon-Shortley
+                if not csphase:
+                    ref = ref * cs_sign_block(l, self.device)
                 block = d[l, lmax - l : lmax + l + 1, lmax - l : lmax + l + 1]
                 self.assertTrue(
-                    compare_tensors(f"oracle l={l} beta={beta:.4f}", block, ref, atol=1e-12, rtol=1e-10, verbose=verbose),
+                    compare_tensors(f"oracle l={l} beta={beta:.4f} cs={csphase}", block, ref, atol=1e-12, rtol=1e-10, verbose=verbose),
                 )
 
     # -----------------------------------------------------------------------
@@ -100,10 +114,10 @@ class TestWignerD(unittest.TestCase):
     # the Legendre polynomial P_l(cos beta)), diagonal / anti-diagonal entries,
     # and the sign- and normalization-carrying off-diagonal entries.
     # -----------------------------------------------------------------------
-    @parameterized.expand([[math.pi / 3], [math.pi / 5], [0.7]])
-    def test_targeted_values(self, beta, verbose=False):
+    @parameterized.expand([[math.pi / 3, True], [math.pi / 3, False], [math.pi / 5, True], [0.7, False]])
+    def test_targeted_values(self, beta, csphase, verbose=False):
         lmax = 4
-        d = wigner_d(lmax, torch.tensor(beta, device=self.device))
+        d = wigner_d(lmax, torch.tensor(beta, device=self.device), csphase=csphase)
         c = math.cos(beta)
         s = math.sin(beta)
         r2 = math.sqrt(2.0)
@@ -130,10 +144,12 @@ class TestWignerD(unittest.TestCase):
         }
 
         for (l, mp, m), ref in expected.items():
+            if not csphase:
+                ref = ref * (-1.0) ** (mp - m)  # closed forms are Condon-Shortley
             val = self._dval(d, lmax, l, mp, m)
             self.assertTrue(
                 compare_tensors(
-                    f"d^{l}_({mp},{m})",
+                    f"d^{l}_({mp},{m}) cs={csphase}",
                     torch.tensor(val),
                     torch.tensor(ref),
                     atol=1e-12,

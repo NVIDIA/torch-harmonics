@@ -121,7 +121,9 @@ def wigner_d(lmax: int, beta: torch.Tensor, csphase: Optional[bool] = True) -> t
     # Seed d^{l0}_{m'm}(beta) for every (m', m).  Using the symmetry relations
     #   d^l_{m'm} = (-1)^{m'-m} d^l_{m m'}      (transpose)
     #   d^l_{m'm} = (-1)^{m'-m} d^l_{-m'-m}     (joint negation)
-    # any pair reduces to the extremal row a := l0, b in [-l0, l0]:
+    # any pair reduces to the extremal row a := l0, b in [-l0, l0].  We seed the
+    # *non*-Condon-Shortley extremal row (the (-1)^{l0-b} CS sign is folded into
+    # the diag((-1)^m) post-step below, exactly as legpoly does):
     #   d^{l0}_{l0 b}(beta) = sqrt( (2 l0)! / ((l0+b)! (l0-b)!) )
     #                         * cos(beta/2)^{l0+b} * sin(beta/2)^{l0-b}
     # evaluated via lgamma to avoid factorial overflow.
@@ -185,8 +187,11 @@ def wigner_d(lmax: int, beta: torch.Tensor, csphase: Optional[bool] = True) -> t
         write = (l >= l0).reshape(1, dim, dim) & (c1 != 0.0)
         d[:, l + 1] = torch.where(write, dnext, d[:, l + 1])
 
-    if not csphase:
-        # conjugate by diag((-1)^m): d'_{m'm} = (-1)^{m'-m} d_{m'm}
+    # The recurrence above builds d in the convention *without* the Condon-
+    # Shortley phase.  Toggling it on is a diagonal conjugation by diag((-1)^m),
+    # i.e. d^{CS}_{m'm} = (-1)^{m'-m} d_{m'm}, mirroring legpoly which applies the
+    # (-1)^m factor as a final step when csphase=True.
+    if csphase:
         d = d * ((-1.0) ** (mp - mm)).reshape(1, 1, dim, dim)
 
     return d.reshape(*batch_shape, lmax + 1, dim, dim)
