@@ -39,6 +39,11 @@
    :nosignatures:
 
    get_filter_basis
+   FilterBasis
+   PiecewiseLinearFilterBasis
+   HarmonicFilterBasis
+   ZernikeFilterBasis
+   FourierBesselFilterBasis
 ```
 
 ## Attention mechanism
