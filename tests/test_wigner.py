@@ -57,10 +57,11 @@ def wigner_d_reference(l: int, beta: float, device: torch.device) -> torch.Tenso
     a genuine correctness check.  Rows/cols are ordered m = -l, ..., +l.
     """
     m = torch.arange(-l, l + 1, dtype=torch.float64, device=device)
-    # super-diagonal coupling for the raising operator: <m+1| J_+ |m>
+    # <m+1| J_+ |m> sits on the sub-diagonal (row index one above the column);
+    # J_- = J_+^T then lands on the super-diagonal.
     off = torch.sqrt((l - m[:-1]) * (l + m[:-1] + 1.0))
-    jp = torch.diag(off, diagonal=1).to(torch.complex128)
-    jm = torch.diag(off, diagonal=-1).to(torch.complex128)
+    jp = torch.diag(off, diagonal=-1).to(torch.complex128)
+    jm = torch.diag(off, diagonal=1).to(torch.complex128)
     jy = (jp - jm) / (2.0j)
     return torch.matrix_exp(-1.0j * beta * jy).real
 
@@ -84,6 +85,14 @@ class TestWignerD(unittest.TestCase):
         """Extract d^l_{m'm} from the band-packed tensor."""
         return d[l, mp + lmax, m + lmax].item()
 
+    def _ang(self, x) -> torch.Tensor:
+        """Build a float64 angle tensor on the test device.
+
+        torch.tensor(<python float>) defaults to float32, which would cap the
+        accuracy of d(beta) at ~1e-7 and defeat the double-precision tolerances.
+        """
+        return torch.tensor(x, dtype=torch.float64, device=self.device)
+
     # -----------------------------------------------------------------------
     # Test 1: agreement with the exp(-i beta J_y) oracle
     #
@@ -96,7 +105,7 @@ class TestWignerD(unittest.TestCase):
         betas = [0.0, math.pi / 6, math.pi / 3, math.pi / 2, 2.0 * math.pi / 3, math.pi, 1.3, 2.7]
 
         for beta in betas:
-            d = wigner_d(lmax, torch.tensor(beta, device=self.device), csphase=csphase)
+            d = wigner_d(lmax, self._ang(beta), csphase=csphase)
             for l in range(lmax + 1):
                 ref = wigner_d_reference(l, beta, self.device)  # J_y oracle is Condon-Shortley
                 if not csphase:
@@ -117,7 +126,7 @@ class TestWignerD(unittest.TestCase):
     @parameterized.expand([[math.pi / 3, True], [math.pi / 3, False], [math.pi / 5, True], [0.7, False]])
     def test_targeted_values(self, beta, csphase, verbose=False):
         lmax = 4
-        d = wigner_d(lmax, torch.tensor(beta, device=self.device), csphase=csphase)
+        d = wigner_d(lmax, self._ang(beta), csphase=csphase)
         c = math.cos(beta)
         s = math.sin(beta)
         r2 = math.sqrt(2.0)
@@ -163,7 +172,7 @@ class TestWignerD(unittest.TestCase):
     # -----------------------------------------------------------------------
     def test_identity_at_zero(self, verbose=False):
         lmax = 6
-        d = wigner_d(lmax, torch.tensor(0.0, device=self.device))
+        d = wigner_d(lmax, self._ang(0.0))
         for l in range(lmax + 1):
             block = d[l, lmax - l : lmax + l + 1, lmax - l : lmax + l + 1]
             eye = torch.eye(2 * l + 1, dtype=block.dtype, device=self.device)
@@ -176,7 +185,7 @@ class TestWignerD(unittest.TestCase):
     # -----------------------------------------------------------------------
     def test_pi_structure(self, verbose=False):
         lmax = 6
-        d = wigner_d(lmax, torch.tensor(math.pi, device=self.device))
+        d = wigner_d(lmax, self._ang(math.pi))
         for l in range(lmax + 1):
             block = d[l, lmax - l : lmax + l + 1, lmax - l : lmax + l + 1]
             ref = torch.zeros(2 * l + 1, 2 * l + 1, dtype=block.dtype, device=self.device)
@@ -190,7 +199,7 @@ class TestWignerD(unittest.TestCase):
     @parameterized.expand([[0.4], [math.pi / 2], [2.1]])
     def test_orthogonality(self, beta, verbose=False):
         lmax = 8
-        d = wigner_d(lmax, torch.tensor(beta, device=self.device))
+        d = wigner_d(lmax, self._ang(beta))
         for l in range(lmax + 1):
             block = d[l, lmax - l : lmax + l + 1, lmax - l : lmax + l + 1]
             prod = block @ block.transpose(-1, -2)
@@ -205,9 +214,9 @@ class TestWignerD(unittest.TestCase):
     def test_group_law(self, verbose=False):
         lmax = 8
         b1, b2 = 0.6, 1.15
-        d1 = wigner_d(lmax, torch.tensor(b1, device=self.device))
-        d2 = wigner_d(lmax, torch.tensor(b2, device=self.device))
-        dsum = wigner_d(lmax, torch.tensor(b1 + b2, device=self.device))
+        d1 = wigner_d(lmax, self._ang(b1))
+        d2 = wigner_d(lmax, self._ang(b2))
+        dsum = wigner_d(lmax, self._ang(b1 + b2))
         for l in range(lmax + 1):
             sl = slice(lmax - l, lmax + l + 1)
             prod = d1[l, sl, sl] @ d2[l, sl, sl]
@@ -221,7 +230,7 @@ class TestWignerD(unittest.TestCase):
     def test_symmetry_relations(self, verbose=False):
         lmax = 7
         beta = 0.9
-        d = wigner_d(lmax, torch.tensor(beta, device=self.device))
+        d = wigner_d(lmax, self._ang(beta))
         for l in range(lmax + 1):
             for mp in range(-l, l + 1):
                 for m in range(-l, l + 1):
@@ -235,10 +244,10 @@ class TestWignerD(unittest.TestCase):
     # -----------------------------------------------------------------------
     def test_batched_beta(self, verbose=False):
         lmax = 5
-        betas = torch.tensor([0.2, 1.1, 2.5, 3.0], device=self.device)
+        betas = self._ang([0.2, 1.1, 2.5, 3.0])
         d_batched = wigner_d(lmax, betas)
         for i, beta in enumerate(betas.tolist()):
-            d_single = wigner_d(lmax, torch.tensor(beta, device=self.device))
+            d_single = wigner_d(lmax, self._ang(beta))
             self.assertTrue(compare_tensors(f"batched[{i}]", d_batched[i], d_single, atol=1e-12, rtol=0.0, verbose=verbose))
 
     # -----------------------------------------------------------------------
@@ -249,17 +258,17 @@ class TestWignerD(unittest.TestCase):
         alpha, beta, gamma = 0.5, 1.3, 2.2
 
         # alpha = gamma = 0  =>  D = d (real)
-        zero = torch.tensor(0.0, device=self.device)
-        D0 = wigner_D(lmax, zero, torch.tensor(beta, device=self.device), zero)
-        d = wigner_d(lmax, torch.tensor(beta, device=self.device)).to(D0.dtype)
+        zero = self._ang(0.0)
+        D0 = wigner_D(lmax, zero, self._ang(beta), zero)
+        d = wigner_d(lmax, self._ang(beta)).to(D0.dtype)
         self.assertTrue(compare_tensors("D(0,b,0)=d", D0, d, atol=1e-12, rtol=0.0, verbose=verbose))
 
         # unitarity: D D^H = I on each block
         D = wigner_D(
             lmax,
-            torch.tensor(alpha, device=self.device),
-            torch.tensor(beta, device=self.device),
-            torch.tensor(gamma, device=self.device),
+            self._ang(alpha),
+            self._ang(beta),
+            self._ang(gamma),
         )
         for l in range(lmax + 1):
             sl = slice(lmax - l, lmax + l + 1)
