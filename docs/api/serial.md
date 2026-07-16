@@ -34,11 +34,12 @@
 ```{eval-rst}
 .. currentmodule:: torch_harmonics.filter_basis
 
+.. autofunction:: get_filter_basis
+
 .. autosummary::
    :toctree: generated
    :nosignatures:
 
-   get_filter_basis
    FilterBasis
    PiecewiseLinearFilterBasis
    HarmonicFilterBasis
