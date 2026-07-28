@@ -80,13 +80,20 @@ def _torch_cuda_arch_list_has(arch: str) -> bool:
     aliases = {
         "9.0a": ("9.0a", "9a", "sm_90a", "compute_90a"),
         "10.0a": ("10.0a", "10a", "sm_100a", "compute_100a"),
+        # GB300 / Blackwell Ultra. Same tcgen05 kernel as 10.0a, but a separate
+        # arch-conditional target: an sm_100a cubin will not load on sm_103.
+        "10.3a": ("10.3a", "103a", "sm_103a", "compute_103a"),
     }
     return any(alias in normalized for alias in aliases[arch])
 
 
 def get_helpers_compile_args(BUILD_CPP, BUILD_CUDA):
     build_kpacked_sm90 = BUILD_CUDA and _torch_cuda_arch_list_has("9.0a")
-    build_kpacked_sm100 = BUILD_CUDA and _torch_cuda_arch_list_has("10.0a")
+    # One flag for both Blackwell targets: the runtime dispatch keys off
+    # props.major == 10, which covers sm_100 and sm_103 alike.
+    build_kpacked_sm100 = BUILD_CUDA and (
+        _torch_cuda_arch_list_has("10.0a") or _torch_cuda_arch_list_has("10.3a")
+    )
     return {
         "cxx": [
             f"-DBUILD_CPP={1 if BUILD_CPP else 0}",

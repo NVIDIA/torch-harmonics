@@ -389,9 +389,26 @@ namespace disco_kernels
 //                 tcgen05_mma_issue() (which also commits) then
 //                 tcgen05_mma_wait() (which polls the mbarrier).
 //
-// Gate: __CUDA_ARCH_FEAT_SM100_ALL.  Build with TORCH_CUDA_ARCH_LIST="10.0a+PTX".
+// Gate: DISCO_TCGEN05_SUPPORTED, below.  Build with TORCH_CUDA_ARCH_LIST="10.0a"
+// (GB200) or "10.3a" (GB300).
 // =====================================================================================
-#if defined(__CUDA_ARCH_FEAT_SM100_ALL)
+
+// tcgen05 is available on every Blackwell datacenter part, but nvcc's feature
+// macro is per-chip: sm_100a defines __CUDA_ARCH_FEAT_SM100_ALL, sm_103a (GB300 /
+// Blackwell Ultra) defines __CUDA_ARCH_FEAT_SM103_ALL. Gating on the first alone
+// is a trap on GB300 -- the guarded bodies compile away to empty functions, which
+// launch without error and leave the output buffer untouched.
+//
+// The family macro __CUDA_ARCH_FAMILY_SPECIFIC__ covers both and would be less
+// to maintain, but it is also defined for targets like sm_120f that have no
+// tcgen05 at all, so it is too coarse to gate on.
+#if defined(__CUDA_ARCH_FEAT_SM100_ALL) || defined(__CUDA_ARCH_FEAT_SM103_ALL)
+#define DISCO_TCGEN05_SUPPORTED 1
+#else
+#define DISCO_TCGEN05_SUPPORTED 0
+#endif
+
+#if DISCO_TCGEN05_SUPPORTED
 
     // Make shared-memory writes issued through the generic proxy visible to
     // tcgen05.mma's async proxy. Producer threads must execute this before the
@@ -627,6 +644,6 @@ namespace disco_kernels
         tcgen05_fence_after_thread_sync();
     }
 
-#endif // __CUDA_ARCH_FEAT_SM100_ALL
+#endif // DISCO_TCGEN05_SUPPORTED
 
 } // namespace disco_kernels

@@ -57,7 +57,10 @@
 // Restrictions (same as SM_90a path):
 //   K_PAD ∈ {8, 16}, BC_TILE = WO_TILE = 8, bf16 or fp16 input.
 //
-// Must be compiled with -arch=sm_100a (TORCH_CUDA_ARCH_LIST="10.0a+PTX").
+// Must be compiled for an arch-conditional Blackwell target: -arch=sm_100a
+// (TORCH_CUDA_ARCH_LIST="10.0a", GB200) or -arch=sm_103a ("10.3a", GB300).
+// Plain sm_100/sm_103 and the family targets do not define the feature macro
+// the tcgen05 wrappers are gated on.
 // =====================================================================================
 
 #include "../disco.h"
@@ -81,7 +84,7 @@ namespace disco_kernels
         const T *__restrict__ inp,              // [B, C, Hi, Wi]
         T *__restrict__ out)                    // [B, C, K, Ho, Wo]
     {
-#if defined(__CUDA_ARCH_FEAT_SM100_ALL)
+#if DISCO_TCGEN05_SUPPORTED
         static_assert(N_PAD == 8 || N_PAD == 16, "tcgen05 path: only K_PAD ∈ {8, 16} supported");
         static_assert(BC_TILE == 8 && WO_TILE == 8, "tcgen05 path: tile must be 8×8 for M=64");
 
@@ -253,7 +256,12 @@ namespace disco_kernels
             write_cell(bc23, wo23, n1, acc[ng * 4 + 3]);
         }
 #else
-        // Non-sm_100a target: body intentionally empty.
+        // Target without tcgen05: body intentionally empty.
+        //
+        // Nothing downstream catches this. The host launcher below does not check
+        // the feature macro, and it allocates `out` with torch::zeros, so a build
+        // for the wrong arch returns all-zero activations with no error anywhere.
+        // Validate a new arch numerically, not by reading the build flag.
         (void)Hi;
         (void)Wi;
         (void)K;
