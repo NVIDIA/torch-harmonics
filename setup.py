@@ -91,9 +91,7 @@ def get_helpers_compile_args(BUILD_CPP, BUILD_CUDA):
     build_kpacked_sm90 = BUILD_CUDA and _torch_cuda_arch_list_has("9.0a")
     # One flag for both Blackwell targets: the runtime dispatch keys off
     # props.major == 10, which covers sm_100 and sm_103 alike.
-    build_kpacked_sm100 = BUILD_CUDA and (
-        _torch_cuda_arch_list_has("10.0a") or _torch_cuda_arch_list_has("10.3a")
-    )
+    build_kpacked_sm100 = BUILD_CUDA and (_torch_cuda_arch_list_has("10.0a") or _torch_cuda_arch_list_has("10.3a"))
     return {
         "cxx": [
             f"-DBUILD_CPP={1 if BUILD_CPP else 0}",
