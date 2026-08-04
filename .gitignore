@@ -3,6 +3,10 @@ __pycache__
 *.so
 checkpoints
 
+# Build artifacts
+build/
+*.egg-info
+
 # Kitmaker deployment secrets (never commit)
 scripts/kitmaker.env
 *.env
