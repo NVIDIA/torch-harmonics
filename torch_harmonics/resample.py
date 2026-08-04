@@ -77,7 +77,7 @@ class ResampleS2(nn.Module):
       :math:`\sin(x) \approx x` for small :math:`x` to the above expression.
 
     Parameters
-    -----------
+    ----------
     nlat_in : int
         Number of latitude points in the input grid
     nlon_in : int
@@ -224,7 +224,7 @@ class ResampleS2(nn.Module):
 
         Parameters
         ----------
-        x: torch.Tensor
+        x : torch.Tensor
             Input signal of shape ``(..., nlat_in, nlon_in)``. Resampling acts on the
             last two (spatial) dimensions; any leading batch/channel dimensions are
             preserved.

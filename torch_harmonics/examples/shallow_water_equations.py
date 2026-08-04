@@ -48,7 +48,7 @@ class ShallowWaterSolver(nn.Module):
     on a rotating sphere using spectral methods.
 
     Parameters
-    -----------
+    ----------
     nlat : int
         Number of latitude points
     nlon : int

@@ -88,24 +88,24 @@ class DistributedRealSHT(nn.Module):
 
     Parameters
     ----------
-    nlat: int
+    nlat : int
         Number of latitude points
-    nlon: int
+    nlon : int
         Number of longitude points
-    lmax: int
+    lmax : int
         Maximum spherical harmonic degree
-    mmax: int
+    mmax : int
         Maximum spherical harmonic order
-    grid: str
+    grid : str
         Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
-    norm: str
+    norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
-    csphase: bool
+    csphase : bool
         Whether to apply the Condon-Shortley phase factor, by default True
 
     Returns
     -------
-    x: torch.Tensor
+    torch.Tensor
         Tensor of shape (..., lmax, mmax)
 
     References
@@ -259,24 +259,24 @@ class DistributedInverseRealSHT(nn.Module):
 
     Parameters
     ----------
-    nlat: int
+    nlat : int
         Number of latitude points
-    nlon: int
+    nlon : int
         Number of longitude points
-    lmax: int
+    lmax : int
         Maximum spherical harmonic degree
-    mmax: int
+    mmax : int
         Maximum spherical harmonic order
-    grid: str
+    grid : str
         Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
-    norm: str
+    norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
-    csphase: bool
+    csphase : bool
         Whether to apply the Condon-Shortley phase factor, by default True
 
     Returns
     -------
-    x: torch.Tensor
+    torch.Tensor
         Tensor of shape (..., lmax, mmax)
 
     References
@@ -409,24 +409,24 @@ class DistributedRealVectorSHT(nn.Module):
 
     Parameters
     ----------
-    nlat: int
+    nlat : int
         Number of latitude points
-    nlon: int
+    nlon : int
         Number of longitude points
-    lmax: int
+    lmax : int
         Maximum spherical harmonic degree
-    mmax: int
+    mmax : int
         Maximum spherical harmonic order
-    grid: str
+    grid : str
         Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
-    norm: str
+    norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
-    csphase: bool
+    csphase : bool
         Whether to apply the Condon-Shortley phase factor, by default True
 
     Returns
     -------
-    x: torch.Tensor
+    torch.Tensor
         Tensor of shape (..., lmax, mmax)
 
     References
@@ -572,24 +572,24 @@ class DistributedInverseRealVectorSHT(nn.Module):
 
     Parameters
     ----------
-    nlat: int
+    nlat : int
         Number of latitude points
-    nlon: int
+    nlon : int
         Number of longitude points
-    lmax: int
+    lmax : int
         Maximum spherical harmonic degree
-    mmax: int
+    mmax : int
         Maximum spherical harmonic order
-    grid: str
+    grid : str
         Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
-    norm: str
+    norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
-    csphase: bool
+    csphase : bool
         Whether to apply the Condon-Shortley phase factor, by default True
 
     Returns
     -------
-    x: torch.Tensor
+    torch.Tensor
         Tensor of shape (..., lmax, mmax)
 
     References

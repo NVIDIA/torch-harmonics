@@ -100,23 +100,23 @@ class SpectralConvS2(nn.Module):
     content into all spectral modes.
 
     Parameters
-    -----------
-    in_shape: Tuple[int]
+    ----------
+    in_shape : Tuple[int]
         Spatial input grid shape ``(nlat, nlon)``.
-    out_shape: Tuple[int]
+    out_shape : Tuple[int]
         Spatial output grid shape ``(nlat, nlon)``.
-    in_channels: int
+    in_channels : int
         Number of input channels.
-    out_channels: int
+    out_channels : int
         Number of output channels.
-    num_groups: int, optional
+    num_groups : int, optional
         Number of channel groups for grouped spectral weights, by default 1.
-    grid_in: str, optional
+    grid_in : str, optional
         Grid used for the forward SHT (``"equiangular"``, ``"legendre-gauss"``,
         ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``.
-    grid_out: str, optional
+    grid_out : str, optional
         Grid used for the inverse SHT, same options as ``grid_in``.
-    bias: bool, optional
+    bias : bool, optional
         If ``True``, adds a learnable spectral bias computed from the spatial
         integral, by default ``False``.
 
@@ -206,7 +206,7 @@ class SpectralConvS2(nn.Module):
 
         Parameters
         ----------
-        x: torch.Tensor
+        x : torch.Tensor
             Input signal of shape ``(batch, in_channels, nlat_in, nlon_in)``.
 
         Returns

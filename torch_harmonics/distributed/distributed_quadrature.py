@@ -51,13 +51,13 @@ class DistributedQuadratureS2(torch.nn.Module):
             documentation.
 
     Parameters
-    -----------
-    img_shape: Tuple[int]
+    ----------
+    img_shape : Tuple[int]
         Spatial grid shape ``(nlat, nlon)``.
-    grid: str, optional
+    grid : str, optional
         Quadrature grid type (``"equiangular"``, ``"legendre-gauss"``,
         ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``.
-    normalize: bool, optional
+    normalize : bool, optional
         If ``True``, divides weights by ``4π`` to return an average instead of
         an integral, by default ``False``.
 

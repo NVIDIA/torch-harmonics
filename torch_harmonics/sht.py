@@ -62,22 +62,22 @@ class RealSHT(nn.Module):
             conventions, grid types, and worked examples.
 
     Parameters
-    -----------
-    nlat: int
+    ----------
+    nlat : int
         Number of latitude points
-    nlon: int
+    nlon : int
         Number of longitude points
-    lmax: int
+    lmax : int
         Maximum spherical harmonic degree
-    mmax: int
+    mmax : int
         Maximum spherical harmonic order
-    grid: str
+    grid : str
         Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
         ``"equiangular-trapezoidal"``), by default ``"equiangular"``
-    norm: str
+    norm : str
         Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
         by default ``"ortho"``.
-    csphase: bool
+    csphase : bool
         Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
         by default ``True``.
 
@@ -154,7 +154,7 @@ class RealSHT(nn.Module):
 
         Parameters
         ----------
-        x: torch.Tensor
+        x : torch.Tensor
             Real-valued signal on the sphere of shape ``(..., nlat, nlon)``.
 
         Returns
@@ -206,22 +206,22 @@ class InverseRealSHT(nn.Module):
             conventions, grid types, and worked examples.
 
     Parameters
-    -----------
-    nlat: int
+    ----------
+    nlat : int
         Number of latitude points
-    nlon: int
+    nlon : int
         Number of longitude points
-    lmax: int
+    lmax : int
         Maximum spherical harmonic degree
-    mmax: int
+    mmax : int
         Maximum spherical harmonic order
-    grid: str
+    grid : str
         Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
         ``"equiangular-trapezoidal"``), by default ``"equiangular"``
-    norm: str
+    norm : str
         Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
         by default ``"ortho"``.
-    csphase: bool
+    csphase : bool
         Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
         by default ``True``.
 
@@ -308,7 +308,7 @@ class InverseRealSHT(nn.Module):
 
         Parameters
         ----------
-        x: torch.Tensor
+        x : torch.Tensor
             Complex spherical harmonic coefficients of shape ``(..., lmax, mmax)``.
 
         Returns
@@ -359,22 +359,22 @@ class RealVectorSHT(nn.Module):
             formulas, normalization conventions, and worked examples.
 
     Parameters
-    -----------
-    nlat: int
+    ----------
+    nlat : int
         Number of latitude points
-    nlon: int
+    nlon : int
         Number of longitude points
-    lmax: int
+    lmax : int
         Maximum spherical harmonic degree
-    mmax: int
+    mmax : int
         Maximum spherical harmonic order
-    grid: str
+    grid : str
         Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
         ``"equiangular-trapezoidal"``), by default ``"equiangular"``
-    norm: str
+    norm : str
         Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
         by default ``"ortho"``.
-    csphase: bool
+    csphase : bool
         Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
         by default ``True``.
 
@@ -456,7 +456,7 @@ class RealVectorSHT(nn.Module):
 
         Parameters
         ----------
-        x: torch.Tensor
+        x : torch.Tensor
             Real-valued tangential vector field of shape ``(..., 2, nlat, nlon)``, where the
             size-2 dimension holds the two tangential (colatitude, longitude) components.
 
@@ -510,22 +510,22 @@ class InverseRealVectorSHT(nn.Module):
             vector SHT formulas, normalization conventions, and worked examples.
 
     Parameters
-    -----------
-    nlat: int
+    ----------
+    nlat : int
         Number of latitude points
-    nlon: int
+    nlon : int
         Number of longitude points
-    lmax: int
+    lmax : int
         Maximum spherical harmonic degree
-    mmax: int
+    mmax : int
         Maximum spherical harmonic order
-    grid: str
+    grid : str
         Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
         ``"equiangular-trapezoidal"``), by default ``"equiangular"``
-    norm: str
+    norm : str
         Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
         by default ``"ortho"``.
-    csphase: bool
+    csphase : bool
         Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
         by default ``True``.
 
@@ -608,7 +608,7 @@ class InverseRealVectorSHT(nn.Module):
 
         Parameters
         ----------
-        x: torch.Tensor
+        x : torch.Tensor
             Complex vector harmonic coefficients of shape ``(..., 2, lmax, mmax)``, where the
             size-2 dimension holds the spheroidal and toroidal components.
 

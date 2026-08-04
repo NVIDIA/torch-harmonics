@@ -56,7 +56,7 @@ class DistributedResampleS2(nn.Module):
             documentation.
 
     Parameters
-    -----------
+    ----------
     nlat_in : int
         Number of input latitude points
     nlon_in : int

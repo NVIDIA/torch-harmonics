@@ -55,23 +55,23 @@ def legpoly(mmax: int, lmax: int, x: torch.Tensor, norm: Optional[str] = "ortho"
     would be O(nmax^2) kernel launches into O(nmax).
 
     Parameters
-    -----------
-    mmax: int
+    ----------
+    mmax : int
         Maximum order of the spherical harmonics
-    lmax: int
+    lmax : int
         Maximum degree of the spherical harmonics
-    x: torch.Tensor
+    x : torch.Tensor
         Tensor of positions at which to evaluate the Legendre polynomials
-    norm: Optional[str]
+    norm : Optional[str]
         Normalization of the Legendre polynomials
-    inverse: Optional[bool]
+    inverse : Optional[bool]
         Whether to compute the inverse Legendre polynomials
-    csphase: Optional[bool]
+    csphase : Optional[bool]
         Whether to apply the Condon-Shortley phase (-1)^m
 
     Returns
     -------
-    out: torch.Tensor
+    torch.Tensor
         Tensor of Legendre polynomial values
 
     References
@@ -124,23 +124,23 @@ def _precompute_legpoly(mmax: int, lmax: int, t: torch.Tensor, norm: Optional[st
     The resulting tensor has shape (mmax, lmax, len(t)).
 
     Parameters
-    -----------
-    mmax: int
+    ----------
+    mmax : int
         Maximum order of the spherical harmonics
-    lmax: int
+    lmax : int
         Maximum degree of the spherical harmonics
-    t: torch.Tensor
+    t : torch.Tensor
         Tensor of positions at which to evaluate the Legendre polynomials
-    norm: Optional[str]
+    norm : Optional[str]
         Normalization of the Legendre polynomials
-    inverse: Optional[bool]
+    inverse : Optional[bool]
         Whether to compute the inverse Legendre polynomials
-    csphase: Optional[bool]
+    csphase : Optional[bool]
         Whether to apply the Condon-Shortley phase (-1)^m
 
     Returns
     -------
-    out: torch.Tensor
+    torch.Tensor
         Tensor of Legendre polynomial values
     """
     return legpoly(mmax, lmax, torch.cos(t), norm=norm, inverse=inverse, csphase=csphase)
@@ -159,23 +159,23 @@ def _precompute_dlegpoly(mmax: int, lmax: int, t: torch.Tensor, norm: Optional[s
     precomputed associated Legendre table -- so both ``m`` and ``l`` axes are vectorized at once.
 
     Parameters
-    -----------
-    mmax: int
+    ----------
+    mmax : int
         Maximum order of the spherical harmonics
-    lmax: int
+    lmax : int
         Maximum degree of the spherical harmonics
-    t: torch.Tensor
+    t : torch.Tensor
         Tensor of positions at which to evaluate the Legendre polynomials
-    norm: Optional[str]
+    norm : Optional[str]
         Normalization of the Legendre polynomials
-    inverse: Optional[bool]
+    inverse : Optional[bool]
         Whether to compute the inverse Legendre polynomials
-    csphase: Optional[bool]
+    csphase : Optional[bool]
         Whether to apply the Condon-Shortley phase (-1)^m
 
     Returns
     -------
-    out: torch.Tensor
+    torch.Tensor
         Tensor of derivative Legendre polynomial values
 
     References

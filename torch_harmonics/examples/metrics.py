@@ -56,7 +56,7 @@ def _get_stats_multiclass(
     to account for the spherical geometry.
 
     Parameters
-    -----------
+    ----------
     output : torch.LongTensor
         Predicted class labels
     target : torch.LongTensor
@@ -116,7 +116,7 @@ def _predict_classes(logits: torch.Tensor) -> torch.Tensor:
     Convert logits to class predictions using softmax and argmax.
 
     Parameters
-    -----------
+    ----------
     logits : torch.Tensor
         Input logits tensor
 
@@ -137,7 +137,7 @@ class BaseMetricS2(nn.Module):
     on the sphere.
 
     Parameters
-    -----------
+    ----------
     nlat : int
         Number of latitude points
     nlon : int
@@ -206,7 +206,7 @@ class IntersectionOverUnionS2(BaseMetricS2):
     properly weighted by quadrature weights to account for spherical geometry.
 
     Parameters
-    -----------
+    ----------
     nlat : int
         Number of latitude points
     nlon : int
@@ -252,7 +252,7 @@ class AccuracyS2(BaseMetricS2):
     properly weighted by quadrature weights to account for spherical geometry.
 
     Parameters
-    -----------
+    ----------
     nlat : int
         Number of latitude points
     nlon : int
