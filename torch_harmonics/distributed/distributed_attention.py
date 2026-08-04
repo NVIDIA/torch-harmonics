@@ -454,7 +454,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
     of key/value chunks over the azimuth group so that every output point can
     attend to its full spherical neighborhood.
 
-    Inherits learnable parameters from :class:`NeighborhoodAttentionS2`.
+    Inherits learnable parameters from :class:`torch_harmonics.NeighborhoodAttentionS2`.
 
     .. seealso::
         :class:`torch_harmonics.NeighborhoodAttentionS2`

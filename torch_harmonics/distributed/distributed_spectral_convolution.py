@@ -85,24 +85,24 @@ class DistributedSpectralConvS2(nn.Module):
             documentation.
 
     Parameters
-    -----------
-    in_shape: Tuple[int]
+    ----------
+    in_shape : Tuple[int]
         Spatial input grid shape ``(nlat, nlon)``.
-    out_shape: Tuple[int]
+    out_shape : Tuple[int]
         Spatial output grid shape ``(nlat, nlon)``.
-    in_channels: int
+    in_channels : int
         Number of input channels.
-    out_channels: int
+    out_channels : int
         Number of output channels.
-    num_groups: int, optional
+    num_groups : int, optional
         Number of channel groups for grouped spectral weights, by default 1.
-    grid_in: str, optional
+    grid_in : str, optional
         Grid used for the forward distributed SHT (``"equiangular"``,
         ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default
         ``"equiangular"``.
-    grid_out: str, optional
+    grid_out : str, optional
         Grid used for the inverse distributed SHT, same options as ``grid_in``.
-    bias: bool, optional
+    bias : bool, optional
         If ``True``, adds a learnable spectral bias computed from the spatial
         integral (replicated across process groups as needed), by default
         ``False``.
@@ -115,7 +115,7 @@ class DistributedSpectralConvS2(nn.Module):
 
     Returns
     -------
-    x: torch.Tensor
+    torch.Tensor
         Tensor of shape ``(..., out_channels, out_shape[0], out_shape[1])``.
 
     Notes

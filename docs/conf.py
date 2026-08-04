@@ -47,7 +47,10 @@ bibtex_default_style = "unsrt"
 bibtex_reference_style = "label"
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+# "jupyter_execute" holds myst-nb's copies of the rendered notebooks; without it
+# a rebuild picks them up as source documents and warns about duplicate labels
+# and pages missing from the toctree.
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "jupyter_execute"]
 
 # MyST (Markdown) options
 myst_enable_extensions = [
@@ -67,6 +70,11 @@ autodoc_default_options = {
 }
 autodoc_typehints = "description"
 autodoc_member_order = "bysource"
+# Methods we do not document ourselves (e.g. an undocumented ``forward`` or
+# ``to``) would otherwise inherit ``torch.nn.Module``'s docstring, which renders
+# generic PyTorch boilerplate ("Define the computation performed at every call")
+# on our pages and emits cross-references to targets torch does not publish.
+autodoc_inherit_docstrings = False
 # NOTE: torch_harmonics registers custom ops at import time and has no
 # pure-Python fallback for its compiled helper modules, so the package must be
 # *installed* (``pip install -e ".[docs]"``) before building the docs. A
@@ -107,7 +115,28 @@ intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
     "torch": ("https://pytorch.org/docs/stable/", None),
+    "matplotlib": ("https://matplotlib.org/stable/", None),
 }
+
+# -- nitpicky mode -----------------------------------------------------------
+
+# Build with -n so that a typo'd or stale cross-reference is reported. Combined
+# with the CI "-W" flag this turns broken references into build failures.
+nitpicky = True
+
+# References that can never resolve and are not worth rewriting:
+nitpick_ignore = [
+    # Napoleon renders a numpydoc type of "float, optional" as the type field
+    # "float, optional"; the Python domain then tries to resolve the trailing
+    # "optional" as if it were a class.
+    ("py:class", "optional"),
+    # Not published in torch's objects.inv.
+    ("py:class", "torch.distributed.ProcessGroup"),
+    ("py:func", "torch.distributed.new_subgroups_by_enumeration"),
+    # Abstract base shown by "show-inheritance"; intentionally not part of the
+    # public API reference, so there is no page to link to.
+    ("py:class", "torch_harmonics.disco.convolution.DiscreteContinuousConv"),
+]
 
 # -- HTML output -------------------------------------------------------------
 

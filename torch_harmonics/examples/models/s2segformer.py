@@ -54,7 +54,7 @@ class OverlapPatchMerging(nn.Module):
     convolutions on the sphere, followed by layer normalization.
 
     Parameters
-    -----------
+    ----------
     in_shape : tuple, optional
         Input shape (nlat, nlon), by default (721, 1440)
     out_shape : tuple, optional
@@ -139,7 +139,7 @@ class MixFFN(nn.Module):
     with discrete-continuous convolutions on the sphere.
 
     Parameters
-    -----------
+    ----------
     shape : tuple
         Shape (nlat, nlon) of the input
     inout_channels : int
@@ -256,7 +256,7 @@ class AttentionWrapper(nn.Module):
     normalization and drop path regularization.
 
     Parameters
-    -----------
+    ----------
     channels : int
         Number of channels
     shape : tuple
@@ -343,7 +343,7 @@ class TransformerBlock(nn.Module):
     in a hierarchical structure for processing spherical data.
 
     Parameters
-    -----------
+    ----------
     in_shape : tuple
         Input shape (nlat, nlon)
     out_shape : tuple
@@ -491,7 +491,7 @@ class Upsampling(nn.Module):
     or bilinear resampling on spherical data.
 
     Parameters
-    -----------
+    ----------
     in_shape : tuple
         Input shape (nlat, nlon)
     out_shape : tuple
@@ -588,7 +588,7 @@ class SphericalSegformer(nn.Module):
     Spherical segformer model designed to approximate mappings from spherical signals to spherical segmentation masks
 
     Parameters
-    -----------
+    ----------
     img_size : tuple, optional
         Shape of the input channels, by default (128, 256)
     grid : str, optional
@@ -603,9 +603,9 @@ class SphericalSegformer(nn.Module):
         Dimension of the embeddings for each block, has to be the same length as heads
     heads : List[int], optional
         Number of heads for each block in the network, has to be the same length as embed_dims
-    depths: List[int], optional
+    depths : List[int], optional
         Number of repetitions of attentions blocks and ffn mixers per layer. Has to be the same length as embed_dims and heads
-    scale_factor: int, optional
+    scale_factor : int, optional
         Scale factor to use, by default 2
     activation_function : str, optional
         Activation function to use, by default "gelu"
@@ -628,8 +628,8 @@ class SphericalSegformer(nn.Module):
     bias : bool, optional
         Whether to use bias, by default True
 
-    Example
-    -----------
+    Examples
+    --------
     >>> model = SphericalSegformer(
     ...         img_size=(128, 256),
     ...         scale_factor=4,

@@ -131,7 +131,7 @@ class Stanford2D3DSDownloader:
         Download and extract the complete dataset.
 
         Parameters
-        -----------
+        ----------
         file_extracted_directory_pairs : list, optional
             List of (filename, extracted_folder_name) pairs, by default DEFAULT_TAR_FILE_PAIRS
 
@@ -196,7 +196,7 @@ class Stanford2D3DSDownloader:
         Convert the downloaded dataset to HDF5 format for efficient loading.
 
         Parameters
-        -----------
+        ----------
         data_folders : list
             List of extracted data folder names
         class_labels : list

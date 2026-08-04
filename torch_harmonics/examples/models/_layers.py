@@ -86,16 +86,16 @@ def trunc_normal_(tensor, mean=0.0, std=1.0, a=-2.0, b=2.0):
     best when :math:`a \\leq \text{mean} \\leq b`.
 
     Parameters
-    -----------
-    tensor: torch.Tensor
+    ----------
+    tensor : torch.Tensor
         an n-dimensional `torch.Tensor`
-    mean: float
+    mean : float
         the mean of the normal distribution
-    std: float
+    std : float
         the standard deviation of the normal distribution
-    a: float
+    a : float
         the minimum cutoff value, by default -2.0
-    b: float
+    b : float
         the maximum cutoff value
     Examples
     --------
@@ -280,7 +280,7 @@ class RealFFT2(nn.Module):
     the interface of spherical harmonic transforms for consistency.
 
     Parameters
-    -----------
+    ----------
     nlat : int
         Number of latitude points
     nlon : int
@@ -314,7 +314,7 @@ class InverseRealFFT2(nn.Module):
     the interface of inverse spherical harmonic transforms for consistency.
 
     Parameters
-    -----------
+    ----------
     nlat : int
         Number of latitude points
     nlon : int
@@ -527,7 +527,7 @@ class SpectralPositionEmbedding(PositionEmbedding):
     spherical data processing.
 
     Parameters
-    -----------
+    ----------
     img_shape : tuple, optional
         Image shape (height, width), by default (480, 960)
     grid : str, optional

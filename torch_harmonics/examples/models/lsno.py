@@ -432,8 +432,8 @@ class LocalSphericalNeuralOperator(nn.Module):
     bias : bool, optional
         Whether to use a bias, by default False
 
-    Example
-    ----------
+    Examples
+    --------
     >>> model = LocalSphericalNeuralOperator(
     ...         img_shape=(128, 256),
     ...         scale_factor=4,

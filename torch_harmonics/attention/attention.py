@@ -67,24 +67,24 @@ class AttentionS2(nn.Module):
     :class:`~torch_harmonics.NeighborhoodAttentionS2`.
 
     Parameters
-    -----------
-    in_channels: int
+    ----------
+    in_channels : int
         number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
-    num_heads: int
+    num_heads : int
         number of attention heads
-    in_shape: tuple
+    in_shape : tuple
         shape of the input grid
-    out_shape: tuple
+    out_shape : tuple
         shape of the output grid
-    grid_in: str, optional
+    grid_in : str, optional
         input grid type, ``"equiangular"`` by default
-    grid_out: str, optional
+    grid_out : str, optional
         output grid type, ``"equiangular"`` by default
-    bias: bool, optional
+    bias : bool, optional
         if specified, adds bias to input / output projection layers
-    k_channels: int
+    k_channels : int
         number of dimensions for interior inner product in the attention matrix (corresponds to kdim in MHA in PyTorch)
-    out_channels: int, optional
+    out_channels : int, optional
         number of dimensions for interior inner product in the attention matrix (corresponds to vdim in MHA in PyTorch)
 
     References
@@ -175,11 +175,11 @@ class AttentionS2(nn.Module):
 
         Parameters
         ----------
-        query: torch.Tensor
+        query : torch.Tensor
             Query signal of shape ``(batch, in_channels, nlat_out, nlon_out)`` (sampled on the output grid).
-        key: torch.Tensor, optional
+        key : torch.Tensor, optional
             Key signal of shape ``(batch, in_channels, nlat_in, nlon_in)``. Defaults to ``query`` (self-attention).
-        value: torch.Tensor, optional
+        value : torch.Tensor, optional
             Value signal of shape ``(batch, in_channels, nlat_in, nlon_in)``. Defaults to ``query`` (self-attention).
 
         Returns
@@ -278,29 +278,29 @@ class NeighborhoodAttentionS2(nn.Module):
     depends on their contribution to the softmax as well as their quadrature weights.
 
     Parameters
-    -----------
-    in_channels: int
+    ----------
+    in_channels : int
         number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
-    in_shape: tuple
+    in_shape : tuple
         shape of the input grid
-    out_shape: tuple
+    out_shape : tuple
         shape of the output grid
-    grid_in: str, optional
+    grid_in : str, optional
         input grid type, ``"equiangular"`` by default
-    grid_out: str, optional
+    grid_out : str, optional
         output grid type, ``"equiangular"`` by default
-    bias: bool, optional
+    bias : bool, optional
         if specified, adds bias to input / output projection layers
-    theta_cutoff: float, optional
+    theta_cutoff : float, optional
         Angular radius of the geodesic neighborhood disk, in radians. Input points
         farther than this from an output location are excluded from its attention.
         If None (default), it is set to one latitudinal grid spacing of the coarser
         of the input and output grids, i.e. ``pi / (nlat - 1)``. Must be positive.
-    k_channels: int
+    k_channels : int
         number of dimensions for interior inner product in the attention matrix (corresponds to kdim in MHA in PyTorch)
-    out_channels: int, optional
+    out_channels : int, optional
         number of dimensions for interior inner product in the attention matrix (corresponds to vdim in MHA in PyTorch)
-    optimized_kernel: Optional[bool]
+    optimized_kernel : Optional[bool]
         Whether to use the optimized kernel (if available)
 
     References
@@ -456,12 +456,12 @@ class NeighborhoodAttentionS2(nn.Module):
 
         Parameters
         ----------
-        query: torch.Tensor
+        query : torch.Tensor
             Query signal of shape ``(batch, in_channels, nlat_out, nlon_out)`` (sampled on the output grid).
-        key: torch.Tensor, optional
+        key : torch.Tensor, optional
             Key signal of shape ``(batch, in_channels, nlat_in, nlon_in)`` (sampled on the input grid).
             Defaults to ``query`` (self-attention, which requires matching input and output grids).
-        value: torch.Tensor, optional
+        value : torch.Tensor, optional
             Value signal of shape ``(batch, in_channels, nlat_in, nlon_in)`` (sampled on the input grid).
             Defaults to ``query`` (self-attention, which requires matching input and output grids).
 

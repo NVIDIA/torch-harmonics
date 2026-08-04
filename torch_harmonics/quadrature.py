@@ -45,7 +45,7 @@ def _precompute_quadrature_weights(
     Precompute grid points and quadrature weights for various quadrature rules.
 
     Parameters
-    -----------
+    ----------
     n : int
         Number of grid points
     grid : str, optional
@@ -98,7 +98,7 @@ def precompute_longitudes(nlon: int):
 
     Returns
     -------
-    lons : torch.Tensor
+    torch.Tensor
         Tensor of longitude values in radians, shape ``(nlon,)``.
     """
     lons = torch.linspace(0, 2 * math.pi, nlon + 1, dtype=torch.float64, requires_grad=False)[:-1]
@@ -143,21 +143,21 @@ def trapezoidal_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 
     on the interval [a, b]
 
     Parameters
-    -----------
-    n: int
+    ----------
+    n : int
         Number of quadrature nodes
-    a: Optional[float]
+    a : Optional[float]
         Lower bound of the interval
-    b: Optional[float]
+    b : Optional[float]
         Upper bound of the interval
-    periodic: Optional[bool]
+    periodic : Optional[bool]
         Whether the grid is periodic
 
     Returns
     -------
-    xlg: torch.Tensor
+    xlg : torch.Tensor
         Tensor of quadrature nodes
-    wlg: torch.Tensor
+    wlg : torch.Tensor
         Tensor of quadrature weights
     """
 
@@ -177,19 +177,19 @@ def legendre_gauss_weights(n: int, a: Optional[float] = -1.0, b: Optional[float]
     on the interval [a, b]
 
     Parameters
-    -----------
-    n: int
+    ----------
+    n : int
         Number of quadrature nodes
-    a: Optional[float]
+    a : Optional[float]
         Lower bound of the interval
-    b: Optional[float]
+    b : Optional[float]
         Upper bound of the interval
 
     Returns
     -------
-    xlg: torch.Tensor
+    xlg : torch.Tensor
         Tensor of quadrature nodes
-    wlg: torch.Tensor
+    wlg : torch.Tensor
         Tensor of quadrature weights
     """
 
@@ -208,23 +208,23 @@ def lobatto_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 1.0,
     on the interval [a, b]
 
     Parameters
-    -----------
-    n: int
+    ----------
+    n : int
         Number of quadrature nodes
-    a: Optional[float]
+    a : Optional[float]
         Lower bound of the interval
-    b: Optional[float]
+    b : Optional[float]
         Upper bound of the interval
-    tol: Optional[float]
+    tol : Optional[float]
         Tolerance for the iteration
-    maxiter: Optional[int]
+    maxiter : Optional[int]
         Maximum number of iterations
 
     Returns
     -------
-    tlg: torch.Tensor
+    tlg : torch.Tensor
         Tensor of quadrature nodes
-    wlg: torch.Tensor
+    wlg : torch.Tensor
         Tensor of quadrature weights
 
     """
@@ -271,19 +271,19 @@ def clenshaw_curtiss_weights(n: int, a: Optional[float] = -1.0, b: Optional[floa
     This implementation follows
 
     Parameters
-    -----------
-    n: int
+    ----------
+    n : int
         Number of quadrature nodes
-    a: Optional[float]
+    a : Optional[float]
         Lower bound of the interval
-    b: Optional[float]
+    b : Optional[float]
         Upper bound of the interval
 
     Returns
     -------
-    tcc: torch.Tensor
+    tcc : torch.Tensor
         Tensor of quadrature nodes
-    wcc: torch.Tensor
+    wcc : torch.Tensor
         Tensor of quadrature weights
 
     References
@@ -364,13 +364,13 @@ class QuadratureS2(torch.nn.Module):
         \bar{f} = \frac{1}{4\pi} \int_{S^2} f\; dA
 
     Parameters
-    -----------
-    img_shape: Tuple[int]
+    ----------
+    img_shape : Tuple[int]
         Spatial grid shape ``(nlat, nlon)``.
-    grid: str, optional
+    grid : str, optional
         Quadrature grid type (``"equiangular"``, ``"legendre-gauss"``,
         ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``.
-    normalize: bool, optional
+    normalize : bool, optional
         If ``True``, divides weights by :math:`4\pi` to return a spherical mean
         instead of an integral, by default ``False``.
 
@@ -446,7 +446,7 @@ class QuadratureS2(torch.nn.Module):
 
         Parameters
         ----------
-        x: torch.Tensor
+        x : torch.Tensor
             Input signal of shape ``(..., nlat, nlon)``. Integration is over the last two
             (spatial) dimensions.
 

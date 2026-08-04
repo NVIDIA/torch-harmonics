@@ -62,7 +62,7 @@ def get_projection(
     Get a cartopy projection object for map plotting.
 
     Parameters
-    -----------
+    ----------
     projection : str
         Projection type ("orthographic", "robinson", "platecarree", "mollweide")
     central_latitude : float, optional
@@ -113,7 +113,7 @@ def plot_sphere(
     Plots a function defined on the sphere using pcolormesh
 
     Parameters
-    -----------
+    ----------
     data : numpy.ndarray or torch.Tensor
         Data to plot with shape (nlat, nlon)
     fig : matplotlib.figure.Figure, optional
@@ -196,7 +196,7 @@ def imshow_sphere(data, fig=None, projection="robinson", title=None, central_lat
     Displays an image on the sphere
 
     Parameters
-    -----------
+    ----------
     data : numpy.ndarray or torch.Tensor
         Data to display with shape (nlat, nlon)
     fig : matplotlib.figure.Figure, optional

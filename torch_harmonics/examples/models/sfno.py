@@ -218,8 +218,8 @@ class SphericalFourierNeuralOperator(nn.Module):
     bias : bool, optional
         Whether to use a bias, by default False
 
-    Example:
-    ----------
+    Examples
+    --------
     >>> model = SphericalFourierNeuralOperator(
     ...         img_size=(128, 256),
     ...         scale_factor=4,

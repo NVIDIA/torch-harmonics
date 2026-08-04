@@ -54,7 +54,7 @@ class DiscreteContinuousEncoder(nn.Module):
     reducing the spatial resolution while maintaining the spectral properties of the data.
 
     Parameters
-    -----------
+    ----------
     in_shape : tuple, optional
         Input shape (nlat, nlon), by default (721, 1440)
     out_shape : tuple, optional
@@ -127,7 +127,7 @@ class DiscreteContinuousDecoder(nn.Module):
     followed by discrete-continuous convolutions to restore spatial resolution.
 
     Parameters
-    -----------
+    ----------
     in_shape : tuple, optional
         Input shape (nlat, nlon), by default (480, 960)
     out_shape : tuple, optional
@@ -212,7 +212,7 @@ class SphericalAttentionBlock(nn.Module):
     or neighborhood attention on spherical data, followed by an optional MLP.
 
     Parameters
-    -----------
+    ----------
     in_shape : tuple, optional
         Input shape (nlat, nlon), by default (480, 960)
     out_shape : tuple, optional
@@ -367,7 +367,7 @@ class SphericalTransformer(nn.Module):
     Spherical transformer model designed to approximate mappings from spherical signals to spherical signals
 
     Parameters
-    -----------
+    ----------
     img_size : tuple, optional
         Shape of the input channels, by default (128, 256)
     grid : str, optional
@@ -417,8 +417,8 @@ class SphericalTransformer(nn.Module):
     theta_cutoff : float, optional
         Cutoff radius for neighborhood attention, by default None
 
-    Example
-    -----------
+    Examples
+    --------
     >>> model = SphericalTransformer(
     ...         img_size=(128, 256),
     ...         scale_factor=4,

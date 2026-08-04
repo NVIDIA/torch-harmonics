@@ -93,36 +93,36 @@ def _normalize_convolution_tensor_s2(
     quantity, avoiding the per-(ikernel, ilat_out) Python double loop.
 
     Parameters
-    -----------
-    psi_idx: torch.Tensor
+    ----------
+    psi_idx : torch.Tensor
         Index tensor for the sparse convolution tensor.
-    psi_vals: torch.Tensor
+    psi_vals : torch.Tensor
         Value tensor for the sparse convolution tensor.
-    in_shape: Tuple[int]
+    in_shape : Tuple[int]
         Tuple of (nlat_in, nlon_in) representing input grid dimensions.
-    out_shape: Tuple[int]
+    out_shape : Tuple[int]
         Tuple of (nlat_out, nlon_out) representing output grid dimensions.
-    kernel_size: int
+    kernel_size : int
         Number of kernel basis functions.
-    quad_weights: torch.Tensor
+    quad_weights : torch.Tensor
         Quadrature weights for numerical integration.
-    theta_cutoff: float
+    theta_cutoff : float
         Angular cutoff of the filter support (radians). Required by the "geometric" mode,
         which normalizes by the theoretical area measure of the spherical cap of half-angle
         theta_cutoff; unused by other modes.
-    transpose_normalization: bool
+    transpose_normalization : bool
         If True, applies normalization in transpose direction.
-    basis_norm_mode: str
+    basis_norm_mode : str
         Normalization mode, one of ["none", "nodal", "modal", "mean", "support", "geometric"].
         The legacy names "individual" and "area ratio" are accepted as deprecated aliases
         for "nodal" and "geometric" respectively; each emits a DeprecationWarning.
-    merge_quadrature: bool
+    merge_quadrature : bool
         If True, multiplies values by quadrature weights.
-    isotropic_mask: Optional[Sequence[bool]]
+    isotropic_mask : Optional[Sequence[bool]]
         Per-kernel-index boolean mask; True marks an axisymmetric (m=0) basis function.
         Used by the "modal" mode to decide which kernels get a weighted-mean bias
         subtraction (anisotropic only). If None, only kernel index 0 is treated as isotropic.
-    eps: float
+    eps : float
         Small epsilon value to prevent division by zero.
 
     Returns
@@ -261,33 +261,33 @@ def _precompute_convolution_tensor_s2(
     $$
 
     Parameters
-    -----------
-    in_shape: Tuple[int]
+    ----------
+    in_shape : Tuple[int]
         Input shape of the convolution tensor
-    out_shape: Tuple[int]
+    out_shape : Tuple[int]
         Output shape of the convolution tensor
-    filter_basis: FilterBasis
+    filter_basis : FilterBasis
         Filter basis functions
-    grid_in: str
+    grid_in : str
         Input grid type
-    grid_out: str
+    grid_out : str
         Output grid type
-    theta_cutoff: float
+    theta_cutoff : float
         Theta cutoff for the filter basis functions
-    theta_eps: float
+    theta_eps : float
         Epsilon for the theta cutoff
-    transpose_normalization: bool
+    transpose_normalization : bool
         Whether to normalize the convolution tensor in the transpose direction
-    basis_norm_mode: str
+    basis_norm_mode : str
         Mode for basis normalization
-    merge_quadrature: bool
+    merge_quadrature : bool
         Whether to merge the quadrature weights into the convolution tensor
 
     Returns
     -------
-    out_idx: torch.Tensor
+    out_idx : torch.Tensor
         Index tensor of the convolution tensor
-    out_vals: torch.Tensor
+    out_vals : torch.Tensor
         Values tensor of the convolution tensor
 
     """
@@ -398,23 +398,23 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
     Abstract base class for discrete-continuous convolutions
 
     Parameters
-    -----------
-    in_channels: int
+    ----------
+    in_channels : int
         Number of input channels
-    out_channels: int
+    out_channels : int
         Number of output channels
-    kernel_shape: Union[int, Tuple[int], Tuple[int, int]]
+    kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
-    basis_type: Optional[str]
+    basis_type : Optional[str]
         Type of the basis functions
-    groups: Optional[int]
+    groups : Optional[int]
         Number of groups
-    bias: Optional[bool]
+    bias : Optional[bool]
         Whether to use bias
 
     Returns
     -------
-    out: torch.Tensor
+    torch.Tensor
         Output tensor
     """
 
@@ -493,34 +493,34 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             visualisations, and worked examples.
 
     Parameters
-    -----------
-    in_channels: int
+    ----------
+    in_channels : int
         Number of input channels
-    out_channels: int
+    out_channels : int
         Number of output channels
-    in_shape: Tuple[int]
+    in_shape : Tuple[int]
         Input shape of the convolution tensor
-    out_shape: Tuple[int]
+    out_shape : Tuple[int]
         Output shape of the convolution tensor
-    kernel_shape: Union[int, Tuple[int], Tuple[int, int]]
+    kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
-    basis_type: Optional[str]
+    basis_type : Optional[str]
         Type of the basis functions
-    basis_norm_mode: Optional[str]
+    basis_norm_mode : Optional[str]
         Mode for basis normalization
-    groups: Optional[int]
+    groups : Optional[int]
         Number of groups
-    grid_in: Optional[str]
+    grid_in : Optional[str]
         Input grid type
-    grid_out: Optional[str]
+    grid_out : Optional[str]
         Output grid type
-    bias: Optional[bool]
+    bias : Optional[bool]
         Whether to use bias
-    theta_cutoff: Optional[float]
+    theta_cutoff : Optional[float]
         Theta cutoff for the filter basis functions
-    optimized_kernel: Optional[bool]
+    optimized_kernel : Optional[bool]
         Whether to use the optimized kernel (if available)
-    fused: Optional[bool]
+    fused : Optional[bool]
         When True, fuses the sparse contraction and weight multiplication into a single
         autograd region to avoid storing the K-expanded intermediate in the graph.
         Trades one extra contraction recompute in backward for K× memory savings.
@@ -683,7 +683,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         Parameters
         ----------
-        x: torch.Tensor
+        x : torch.Tensor
             Input signal of shape ``(batch, in_channels, nlat_in, nlon_in)``.
 
         Returns
@@ -863,32 +863,32 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             visualisations, and worked examples.
 
     Parameters
-    -----------
-    in_channels: int
+    ----------
+    in_channels : int
         Number of input channels
-    out_channels: int
+    out_channels : int
         Number of output channels
-    in_shape: Tuple[int]
+    in_shape : Tuple[int]
         Input shape of the convolution tensor
-    out_shape: Tuple[int]
+    out_shape : Tuple[int]
         Output shape of the convolution tensor
-    kernel_shape: Union[int, Tuple[int], Tuple[int, int]]
+    kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
-    basis_type: Optional[str]
+    basis_type : Optional[str]
         Type of the basis functions
-    basis_norm_mode: Optional[str]
+    basis_norm_mode : Optional[str]
         Mode for basis normalization
-    groups: Optional[int]
+    groups : Optional[int]
         Number of groups
-    grid_in: Optional[str]
+    grid_in : Optional[str]
         Input grid type
-    grid_out: Optional[str]
+    grid_out : Optional[str]
         Output grid type
-    bias: Optional[bool]
+    bias : Optional[bool]
         Whether to use bias
-    theta_cutoff: Optional[float]
+    theta_cutoff : Optional[float]
         Theta cutoff for the filter basis functions
-    optimized_kernel: Optional[bool]
+    optimized_kernel : Optional[bool]
         Whether to use the optimized kernel (if available)
 
     References
@@ -977,7 +977,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         Parameters
         ----------
-        x: torch.Tensor
+        x : torch.Tensor
             Input signal of shape ``(batch, in_channels, nlat_in, nlon_in)``.
 
         Returns

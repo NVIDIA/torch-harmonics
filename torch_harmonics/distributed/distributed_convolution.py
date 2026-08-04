@@ -80,20 +80,20 @@ def _split_distributed_convolution_tensor_s2(
 
     Parameters
     ----------
-    idx: torch.Tensor
+    idx : torch.Tensor
         Indices of the pre-computed convolution tensor
-    vals: torch.Tensor
+    vals : torch.Tensor
         Values of the pre-computed convolution tensor
-    in_shape: Tuple[int]
+    in_shape : Tuple[int]
         Shape of the input tensor (nlat_in, nlon_in)
-    out_shape: Tuple[int]
+    out_shape : Tuple[int]
         Shape of the output tensor (nlat_out, nlon_out)
 
     Returns
     -------
-    idx: torch.Tensor
+    idx : torch.Tensor
         Filtered indices corresponding to the local latitude slice
-    vals: torch.Tensor
+    vals : torch.Tensor
         Filtered values corresponding to the local latitude slice
     """
 
@@ -149,33 +149,33 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
     Parameters
     ----------
-    in_channels: int
+    in_channels : int
         Number of input channels
-    out_channels: int
+    out_channels : int
         Number of output channels
-    in_shape: Tuple[int]
+    in_shape : Tuple[int]
         Shape of the input tensor
-    out_shape: Tuple[int]
+    out_shape : Tuple[int]
         Shape of the output tensor
-    kernel_shape: Union[int, Tuple[int], Tuple[int, int]]
+    kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
-    basis_type: Optional[str]
+    basis_type : Optional[str]
         Type of basis to use
-    basis_norm_mode: Optional[str]
+    basis_norm_mode : Optional[str]
         Normalization mode for the filter basis
-    groups: Optional[int]
+    groups : Optional[int]
         Number of groups
-    grid_in: Optional[str]
+    grid_in : Optional[str]
         Grid type for the input tensor
-    grid_out: Optional[str]
+    grid_out : Optional[str]
         Grid type for the output tensor
-    bias: Optional[bool]
+    bias : Optional[bool]
         Whether to use bias
-    theta_cutoff: Optional[float]
+    theta_cutoff : Optional[float]
         Theta cutoff for the filter basis
-    optimized_kernel: Optional[bool]
+    optimized_kernel : Optional[bool]
         Use the optimized CUDA contraction kernel. Required when ``fused=True``.
-    fused: bool
+    fused : bool
         Mirrors the serial conv. ``False`` (default): standard all-to-all
         (the K-expanded intermediate is saved for backward). ``True``:
         reordered all-to-all — the weight einsum runs before the collectives
@@ -185,7 +185,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
     Returns
     -------
-    out: torch.Tensor
+    torch.Tensor
         Output tensor
 
     References
@@ -450,34 +450,34 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
     Parameters
     ----------
-    in_channels: int
+    in_channels : int
         Number of input channels
-    out_channels: int
+    out_channels : int
         Number of output channels
-    in_shape: Tuple[int]
+    in_shape : Tuple[int]
         Shape of the input tensor
-    out_shape: Tuple[int]
+    out_shape : Tuple[int]
         Shape of the output tensor
-    kernel_shape: Union[int, Tuple[int], Tuple[int, int]]
+    kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
-    basis_type: Optional[str]
+    basis_type : Optional[str]
         Type of basis to use
-    basis_norm_mode: Optional[str]
+    basis_norm_mode : Optional[str]
         Normalization mode for the filter basis
-    groups: Optional[int]
+    groups : Optional[int]
         Number of groups
-    grid_in: Optional[str]
+    grid_in : Optional[str]
         Grid type for the input tensor
-    grid_out: Optional[str]
+    grid_out : Optional[str]
         Grid type for the output tensor
-    bias: Optional[bool]
+    bias : Optional[bool]
         Whether to use bias
-    theta_cutoff: Optional[float]
+    theta_cutoff : Optional[float]
         Theta cutoff for the filter basis
 
     Returns
     -------
-    out: torch.Tensor
+    torch.Tensor
         Output tensor
 
     References
