@@ -804,7 +804,11 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
     nlon_out % nlon_in == 0). In all cases K/V (which live on the input grid)
     rotate around the azimuth ring while Q and the softmax state stay local.
 
-    Inherits learnable parameters from :class:`NeighborhoodAttentionS2`.
+    Inherits learnable parameters from :class:`torch_harmonics.NeighborhoodAttentionS2`.
+
+    .. seealso::
+        :class:`torch_harmonics.NeighborhoodAttentionS2`
+            Serial counterpart with full parameter documentation.
     """
 
     def __init__(

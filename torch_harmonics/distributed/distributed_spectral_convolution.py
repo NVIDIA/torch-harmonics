@@ -44,30 +44,65 @@ from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, pol
 
 
 class DistributedSpectralConvS2(nn.Module):
-    """
+    r"""
     Distributed spectral convolution layer on :math:`S^2` implemented with
     distributed real SHT (Driscoll-Healy formulation, see https://api.semanticscholar.org/CorpusID:122817218).
     Computation is split across polar and azimuth communicator groups.
 
+    **Distribution scheme.**
+    The forward and inverse SHTs are performed by
+    :class:`DistributedRealSHT` and :class:`DistributedInverseRealSHT`
+    respectively — see their docstrings for the all-to-all transpose
+    sequence.  After the forward SHT, the spectral coefficients are split so
+    that degrees ``l`` are distributed across polar ranks and orders ``m``
+    across azimuth ranks.  The learnable spectral weight
+    ``K[groups, c_in, c_out, l]`` is stored with its ``l`` dimension sharded
+    across polar ranks (each rank holds only its local ``lmax_local`` slice).
+    The spectral contraction is therefore fully local — no communication is
+    needed for the channel mixing.
+
+    .. note::
+        When saving a checkpoint to a single file, the weight tensor must be
+        gathered across polar ranks along the ``l`` dimension to recover the
+        full ``(groups, c_in, c_out, lmax)`` shape.  Likewise, when loading a
+        serial checkpoint into the distributed module, the ``l`` dimension must
+        be split according to
+        :func:`~torch_harmonics.distributed.compute_split_shapes`.
+
+    .. note::
+        The spectral weight ``K[g, c_in, c_out, l]`` has no ``m`` dimension —
+        it is broadcast over the spectral orders during the contraction.
+        Because orders are split across azimuth ranks, each rank computes only
+        a partial sum of the weight gradient (over its local ``m`` modes).
+        For correct gradients the user must **all-reduce (sum) the weight
+        gradients across azimuth ranks**.  This can be implemented via
+        :class:`torch.nn.parallel.DistributedDataParallel` communication hooks
+        or :meth:`torch.Tensor.register_post_accumulate_grad_hook`.
+
+    .. seealso::
+        :class:`torch_harmonics.SpectralConvS2`
+            Serial counterpart with full mathematical description and parameter
+            documentation.
+
     Parameters
-    -----------
-    in_shape: Tuple[int]
+    ----------
+    in_shape : Tuple[int]
         Spatial input grid shape ``(nlat, nlon)``.
-    out_shape: Tuple[int]
+    out_shape : Tuple[int]
         Spatial output grid shape ``(nlat, nlon)``.
-    in_channels: int
+    in_channels : int
         Number of input channels.
-    out_channels: int
+    out_channels : int
         Number of output channels.
-    num_groups: int, optional
+    num_groups : int, optional
         Number of channel groups for grouped spectral weights, by default 1.
-    grid_in: str, optional
+    grid_in : str, optional
         Grid used for the forward distributed SHT (``"equiangular"``,
         ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default
         ``"equiangular"``.
-    grid_out: str, optional
+    grid_out : str, optional
         Grid used for the inverse distributed SHT, same options as ``grid_in``.
-    bias: bool, optional
+    bias : bool, optional
         If ``True``, adds a learnable spectral bias computed from the spatial
         integral (replicated across process groups as needed), by default
         ``False``.
@@ -80,7 +115,7 @@ class DistributedSpectralConvS2(nn.Module):
 
     Returns
     -------
-    x: torch.Tensor
+    torch.Tensor
         Tensor of shape ``(..., out_channels, out_shape[0], out_shape[1])``.
 
     Notes

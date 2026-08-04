@@ -118,13 +118,15 @@ cd torch-harmonics
 pip install --no-build-isolation -e .
 ```
 
-If CUDA devices are not detected automatically (e.g. inside a container), set the `FORCE_CUDA_EXTENSION` flag. Set `TORCH_CUDA_ARCH_LIST` to only the architectures you need to reduce compilation time:
+If CUDA devices are not detected automatically (e.g. inside a container), set the `TORCH_HARMONICS_BUILD_CUDA_EXTENSION` flag. Set `TORCH_CUDA_ARCH_LIST` to only the architectures you need to reduce compilation time:
 
 ```bash
-export FORCE_CUDA_EXTENSION=1
-export TORCH_CUDA_ARCH_LIST="8.0 8.6 9.0 10.0+PTX"
+export TORCH_HARMONICS_BUILD_CUDA_EXTENSION=1
+export TORCH_CUDA_ARCH_LIST="8.0 8.6 9.0a 10.0a+PTX"
 pip install --no-build-isolation -e .
 ```
+
+> **Tip:** Use the `a` suffix (e.g. `9.0a`, `10.0a`) instead of plain `9.0` or `10.0` to enable architecture-specific tensor core instructions (e.g. `wgmma` on Hopper). Some layers such as DISCO benefit significantly from this. The trade-off is that the resulting binary is only compatible with the exact GPU generation it was compiled for.
 
 :warning: Custom CUDA extensions require architectures >= 7.0.
 

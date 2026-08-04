@@ -50,8 +50,13 @@ class DistributedResampleS2(nn.Module):
     polar and azimuthal directions, and the module handles the necessary communication
     and interpolation operations.
 
+    .. seealso::
+        :class:`torch_harmonics.ResampleS2`
+            Serial counterpart with full mathematical description and parameter
+            documentation.
+
     Parameters
-    -----------
+    ----------
     nlat_in : int
         Number of input latitude points
     nlon_in : int
@@ -61,11 +66,11 @@ class DistributedResampleS2(nn.Module):
     nlon_out : int
         Number of output longitude points
     grid_in : str, optional
-        Input grid type, by default "equiangular"
+        Input grid type, by default ``"equiangular"``
     grid_out : str, optional
-        Output grid type, by default "equiangular"
+        Output grid type, by default ``"equiangular"``
     mode : str, optional
-        Interpolation mode ("bilinear" or "bilinear-spherical"), by default "bilinear"
+        Interpolation mode (``"bilinear"`` or ``"bilinear-spherical"``), by default ``"bilinear"``
     """
 
     def __init__(

@@ -39,6 +39,21 @@ from .utils import config as thd_config
 
 
 def get_group_neighbors(group):
+    """Return the ``(prev_rank, next_rank)`` global ranks of the immediate neighbours in ``group``.
+
+    Ranks wrap around cyclically, so rank 0's predecessor is the last rank in
+    the group.
+
+    Parameters
+    ----------
+    group : torch.distributed.ProcessGroup
+        The process group to query.
+
+    Returns
+    -------
+    tuple[int, int]
+        ``(prev_rank, next_rank)`` as global ranks.
+    """
     group_size = dist.get_world_size(group)
     global_rank = dist.get_rank()
     group_ranks = dist.get_process_group_ranks(group)
@@ -57,7 +72,44 @@ def _check_shapes(msg, shapes_gather, shapes_expected):
 
 # helper routine to compute uneven splitting in balanced way:
 def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
-    """Compute the split shapes for a given size and number of chunks."""
+    r"""
+    Compute balanced chunk sizes for distributing a dimension across ranks.
+
+    Divides ``size`` elements into ``num_chunks`` pieces that differ by at most
+    one element.  The first ``size % num_chunks`` chunks receive one extra
+    element; the remaining chunks get the base size ``size // num_chunks``.
+
+    This is used internally by every distributed module to determine how
+    latitudes, longitudes, and spectral modes are partitioned across process
+    groups.
+
+    Parameters
+    ----------
+    size : int
+        Total number of elements to split (e.g.\ ``nlat`` or ``nlon``).
+    num_chunks : int
+        Number of chunks (typically the process-group size).
+
+    Returns
+    -------
+    List[int]
+        Per-rank chunk sizes, ordered by rank.
+
+    Raises
+    ------
+    RuntimeError
+        If ``size < num_chunks`` (every chunk must be non-empty).
+
+    Examples
+    --------
+    >>> from torch_harmonics.distributed import compute_split_shapes
+    >>> compute_split_shapes(256, 4)
+    [64, 64, 64, 64]
+    >>> compute_split_shapes(128, 3)
+    [43, 43, 42]
+    >>> compute_split_shapes(10, 4)
+    [3, 3, 2, 2]
+    """
 
     torch._check(size >= num_chunks, lambda: f"Cannot split {size} elements into {num_chunks} chunks; every chunk must be non-empty.")
 
@@ -66,7 +118,41 @@ def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
 
 
 def split_tensor_along_dim(tensor, dim, num_chunks):
-    """Split a tensor along a given dimension into a given number of chunks."""
+    r"""
+    Split a tensor along a given dimension into balanced chunks.
+
+    Uses :func:`compute_split_shapes` to determine chunk sizes, so the split
+    is consistent with the partitioning used by all distributed modules in
+    torch-harmonics.  Chunk sizes differ by at most one element.
+
+    Parameters
+    ----------
+    tensor : torch.Tensor
+        The tensor to split.
+    dim : int
+        The dimension along which to split.
+    num_chunks : int
+        Number of chunks (typically the process-group size).
+
+    Returns
+    -------
+    tuple[torch.Tensor, ...]
+        A tuple of ``num_chunks`` tensor views.
+
+    Raises
+    ------
+    RuntimeError
+        If ``dim`` is out of range or ``tensor.shape[dim] < num_chunks``.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from torch_harmonics.distributed import split_tensor_along_dim
+    >>> x = torch.arange(10).unsqueeze(0)          # shape (1, 10)
+    >>> parts = split_tensor_along_dim(x, dim=1, num_chunks=3)
+    >>> [p.shape[1] for p in parts]
+    [4, 3, 3]
+    """
 
     torch._check(dim < tensor.dim(), lambda: f"Error, tensor dimension is {tensor.dim()} which cannot be split along {dim}")
     torch._check(
@@ -687,56 +773,246 @@ class _GatherFromCopyToPolarRegion(torch.autograd.Function):
 
 @torch.compiler.disable()
 def distributed_transpose_azimuth(input_, dims_, shapes_):
+    """All-to-all transpose across the azimuth process group.
+
+    Redistributes ``input_`` so that data sharded along ``dims_[0]`` becomes
+    sharded along ``dims_[1]``.  This is the core communication pattern used
+    when switching between spatial and spectral partitioning of the longitude
+    axis.
+
+    Parameters
+    ----------
+    input_ : torch.Tensor
+        Input tensor, partitioned along ``dims_[0]``.
+    dims_ : tuple[int, int]
+        ``(source_dim, target_dim)`` — the dimension to scatter from and the
+        dimension to gather into.
+    shapes_ : list[int]
+        Per-rank sizes along ``dims_[1]`` (i.e. the expected receive sizes).
+
+    Returns
+    -------
+    torch.Tensor
+        Transposed tensor, now partitioned along ``dims_[1]``.
+    """
     return _DistributeTransposeAzimuth.apply(input_, dims_, shapes_)
 
 
 @torch.compiler.disable()
 def distributed_transpose_polar(input_, dims_, shapes_):
+    """All-to-all transpose across the polar process group.
+
+    Same semantics as :func:`distributed_transpose_azimuth` but operates on
+    the polar (latitudinal) process group.
+
+    Parameters
+    ----------
+    input_ : torch.Tensor
+        Input tensor, partitioned along ``dims_[0]``.
+    dims_ : tuple[int, int]
+        ``(source_dim, target_dim)``.
+    shapes_ : list[int]
+        Per-rank sizes along ``dims_[1]``.
+
+    Returns
+    -------
+    torch.Tensor
+        Transposed tensor, now partitioned along ``dims_[1]``.
+    """
     return _DistributeTransposePolar.apply(input_, dims_, shapes_)
 
 
 @torch.compiler.disable()
 def copy_to_polar_region(input_):
+    """Identity in the forward pass; all-reduce across polar ranks in the backward pass.
+
+    Use this to broadcast a replicated tensor into a region where each polar
+    rank will compute a partial result.  The backward pass sums the partial
+    gradients so that the replicated parameter receives the correct total
+    gradient.
+
+    Parameters
+    ----------
+    input_ : torch.Tensor
+        Replicated tensor (same value on every polar rank).
+
+    Returns
+    -------
+    torch.Tensor
+        Same tensor (forward is a no-op).
+    """
     return _CopyToPolarRegion.apply(input_)
 
 
 @torch.compiler.disable()
 def copy_to_azimuth_region(input_):
+    """Identity in the forward pass; all-reduce across azimuth ranks in the backward pass.
+
+    Azimuth counterpart of :func:`copy_to_polar_region`.
+
+    Parameters
+    ----------
+    input_ : torch.Tensor
+        Replicated tensor (same value on every azimuth rank).
+
+    Returns
+    -------
+    torch.Tensor
+        Same tensor (forward is a no-op).
+    """
     return _CopyToAzimuthRegion.apply(input_)
 
 
 @torch.compiler.disable()
 def reduce_from_polar_region(input_):
+    """All-reduce across polar ranks in the forward pass; identity in the backward pass.
+
+    Use this to aggregate partial results computed independently on each polar
+    rank.
+
+    Parameters
+    ----------
+    input_ : torch.Tensor
+        Partial result on the local polar rank.
+
+    Returns
+    -------
+    torch.Tensor
+        Sum of ``input_`` across all polar ranks.
+    """
     return _ReduceFromPolarRegion.apply(input_)
 
 
 @torch.compiler.disable()
 def reduce_from_azimuth_region(input_):
+    """All-reduce across azimuth ranks in the forward pass; identity in the backward pass.
+
+    Azimuth counterpart of :func:`reduce_from_polar_region`.
+
+    Parameters
+    ----------
+    input_ : torch.Tensor
+        Partial result on the local azimuth rank.
+
+    Returns
+    -------
+    torch.Tensor
+        Sum of ``input_`` across all azimuth ranks.
+    """
     return _ReduceFromAzimuthRegion.apply(input_)
 
 
 @torch.compiler.disable()
 def scatter_to_polar_region(input_, dim_):
+    """Split ``input_`` along ``dim_`` and keep only the local polar rank's chunk.
+
+    The backward pass is an all-gather that reconstructs the full tensor.
+
+    Parameters
+    ----------
+    input_ : torch.Tensor
+        Full (non-partitioned) tensor.
+    dim_ : int
+        Dimension along which to scatter.
+
+    Returns
+    -------
+    torch.Tensor
+        The local rank's slice of the input.
+    """
     return _ScatterToPolarRegion.apply(input_, dim_)
 
 
 @torch.compiler.disable()
 def gather_from_polar_region(input_, dim_, shapes_):
+    """All-gather along ``dim_`` across polar ranks to reconstruct the full tensor.
+
+    The backward pass is a split (scatter) that distributes gradients back to
+    owning ranks.
+
+    Parameters
+    ----------
+    input_ : torch.Tensor
+        Local partition of the tensor.
+    dim_ : int
+        Dimension along which to gather.
+    shapes_ : list[int]
+        Per-rank sizes along ``dim_``.
+
+    Returns
+    -------
+    torch.Tensor
+        Fully gathered tensor.
+    """
     return _GatherFromPolarRegion.apply(input_, dim_, shapes_)
 
 
 @torch.compiler.disable()
 def reduce_from_scatter_to_polar_region(input_, dim_):
+    """Fused reduce-scatter across polar ranks along ``dim_``.
+
+    Equivalent to an all-reduce followed by keeping only the local rank's
+    chunk, but performed in a single collective for efficiency.  The backward
+    pass is an all-gather.
+
+    Parameters
+    ----------
+    input_ : torch.Tensor
+        Tensor with partial contributions from the local rank.
+    dim_ : int
+        Dimension along which to scatter after reducing.
+
+    Returns
+    -------
+    torch.Tensor
+        Reduced and scattered tensor (local chunk only).
+    """
     return _ReduceFromScatterToPolarRegion.apply(input_, dim_)
 
 
 @torch.compiler.disable()
 def reduce_from_scatter_to_azimuth_region(input_, dim_):
+    """Fused reduce-scatter across azimuth ranks along ``dim_``.
+
+    Azimuth counterpart of :func:`reduce_from_scatter_to_polar_region`.
+
+    Parameters
+    ----------
+    input_ : torch.Tensor
+        Tensor with partial contributions from the local rank.
+    dim_ : int
+        Dimension along which to scatter after reducing.
+
+    Returns
+    -------
+    torch.Tensor
+        Reduced and scattered tensor (local chunk only).
+    """
     return _ReduceFromScatterToAzimuthRegion.apply(input_, dim_)
 
 
 @torch.compiler.disable()
 def gather_from_copy_to_polar_region(input_, dim_, shapes_):
+    """All-gather along ``dim_`` across polar ranks; reduce-scatter in the backward pass.
+
+    Similar to :func:`gather_from_polar_region`, but the backward pass uses
+    reduce-scatter instead of split, making it the adjoint of a copy-then-gather
+    pattern.
+
+    Parameters
+    ----------
+    input_ : torch.Tensor
+        Local partition of the tensor.
+    dim_ : int
+        Dimension along which to gather.
+    shapes_ : list[int]
+        Per-rank sizes along ``dim_``.
+
+    Returns
+    -------
+    torch.Tensor
+        Fully gathered tensor.
+    """
     return _GatherFromCopyToPolarRegion.apply(input_, dim_, shapes_)
 
 
@@ -865,4 +1141,23 @@ class _PolarHaloExchangeFn(torch.autograd.Function):
 
 @torch.compiler.disable()
 def polar_halo_exchange(x, r_lat):
+    """Exchange ``r_lat`` halo rows with neighbouring polar ranks.
+
+    Gathers ``r_lat`` latitude rows from each polar neighbour and returns a
+    halo-padded tensor.  Boundary ranks receive zero-padding on the missing
+    side.  The operation is fully differentiable: the backward pass sends
+    halo gradients back to their owning ranks and accumulates them.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Input tensor of shape ``(B, C, H_local, W)``.
+    r_lat : int
+        Number of halo rows to exchange on each side.
+
+    Returns
+    -------
+    torch.Tensor
+        Halo-padded tensor of shape ``(B, C, H_local + 2 * r_lat, W)``.
+    """
     return _PolarHaloExchangeFn.apply(x, r_lat)

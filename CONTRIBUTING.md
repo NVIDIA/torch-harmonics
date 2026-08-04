@@ -104,7 +104,7 @@ print('disco:', disco_ok())
 If CUDA is not detected automatically (containers, headless nodes):
 
 ```bash
-export FORCE_CUDA_EXTENSION=1
+export TORCH_HARMONICS_BUILD_CUDA_EXTENSION=1
 export TORCH_CUDA_ARCH_LIST="8.0 8.6 9.0"   # set to GPUs you target; reduces compile time
 pip install -e . --no-build-isolation
 ```
@@ -115,7 +115,8 @@ Custom CUDA extensions require compute capability **≥ 8.0**.
 
 | Variable | Effect |
 |----------|--------|
-| `FORCE_CUDA_EXTENSION=1` | Build CUDA kernels even if CUDA is not detected at configure time |
+| `TORCH_HARMONICS_BUILD_CPP_EXTENSION=1` | Build C++ extensions even if PyTorch is not detected at configure time |
+| `TORCH_HARMONICS_BUILD_CUDA_EXTENSION=1` | Build CUDA kernels even if CUDA is not detected at configure time |
 | `TORCH_CUDA_ARCH_LIST` | Limit NVCC target architectures |
 | `TORCH_HARMONICS_DEBUG=1` | Debug flags (`-O0`, `-g`) for extensions |
 | `TORCH_HARMONICS_PROFILE=1` | NVCC lineinfo / PTXAS verbose (CUDA) |
@@ -166,7 +167,7 @@ docker run --gpus all -it --rm --ipc=host --ulimit memlock=-1 --ulimit stack=671
 | Extensions not found / stale behavior | Rebuild with `pip install -e . --no-build-isolation`; remove old `_C*.so` if needed |
 | No matching wheel on install | Install PyTorch first, then torch-harmonics; or build from source |
 | ABI mismatch | Rebuild from source against the same PyTorch version |
-| CUDA not detected at build time | `export FORCE_CUDA_EXTENSION=1` and set `TORCH_CUDA_ARCH_LIST` |
+| CUDA not detected at build time | `export TORCH_HARMONICS_BUILD_CUDA_EXTENSION=1` and set `TORCH_CUDA_ARCH_LIST` |
 
 ## Running tests
 

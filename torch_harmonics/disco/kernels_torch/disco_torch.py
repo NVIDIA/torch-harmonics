@@ -48,7 +48,7 @@ from .._disco_utils import _compute_dtype
 # convolution
 def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
     """
-    Reference implementation of the custom contraction as described in [1]. This requires repeated
+    Reference implementation of the custom contraction as described in :cite:`Ocampo2023`. This requires repeated
     shifting of the input tensor, which can potentially be costly. For an efficient implementation
     on GPU, make sure to use the custom kernel written in CUDA.
     """

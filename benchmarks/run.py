@@ -71,7 +71,7 @@ def load_reference_csv(path: str) -> list[dict]:
     return rows
 
 
-def _lookup_reference(reference: Optional[list[dict]], result: "BenchmarkResult") -> Optional[dict]:
+def _lookup_reference(reference: Optional[list[dict]], result: "BenchmarkResult", reference_arch: Optional[str] = None) -> Optional[dict]:
     """Find the reference row matching result's name and architecture."""
     if reference is None:
         return None
@@ -80,17 +80,20 @@ def _lookup_reference(reference: Optional[list[dict]], result: "BenchmarkResult"
     for row in reference:
         if row["name"] != result.name:
             continue
-        if _arch_match(row, result):
+        if _arch_match(row, result, reference_arch):
             return row
         if not row.get("architecture"):
             fallback = row
     return fallback
 
 
-def _arch_match(ref: dict, result: "BenchmarkResult") -> bool:
+def _arch_match(ref: dict, result: "BenchmarkResult", reference_arch: Optional[str] = None) -> bool:
     """Return False if the reference entry was produced on a different GPU."""
     arch = ref.get("architecture", "")
-    return not arch or _fmt_arch(arch) == _fmt_arch(result.arch)
+    if not arch:
+        return True
+    target = _fmt_arch(reference_arch) if reference_arch else _fmt_arch(result.arch)
+    return _fmt_arch(arch) == target
 
 
 def _speedup(ref_ms: Optional[float], cur_ms: Optional[float]) -> Optional[float]:
@@ -143,6 +146,7 @@ def _render_rows(
     reference: Optional[dict[str, dict]],
     tol: float,
     with_err: bool,
+    reference_arch: Optional[str] = None,
 ) -> tuple[list[str], list[list[str]]]:
     """Return (headers, data_rows) as lists of pre-formatted cell strings."""
     headers = ["name", "architecture", "device", "dtype", "fwd_ms", "bwd_ms"]
@@ -153,7 +157,7 @@ def _render_rows(
 
     rows = []
     for r in results:
-        ref = _lookup_reference(reference, r)
+        ref = _lookup_reference(reference, r, reference_arch)
         cells = [
             r.name,
             _fmt_arch(r.arch),
@@ -216,10 +220,11 @@ def print_table(
     skipped: list[tuple[str, str]],
     reference: Optional[dict[str, dict]] = None,
     tol: float = 0.05,
+    reference_arch: Optional[str] = None,
 ) -> int:
     """Print results table. Returns number of flagged regressions."""
     with_err = any(r.ref_error is not None for r in results)
-    headers, rows = _render_rows(results, reference, tol, with_err)
+    headers, rows = _render_rows(results, reference, tol, with_err, reference_arch)
 
     # insert blank lines between benchmark groups (sht / disco / attention)
     separator_after: set = set()
@@ -236,7 +241,7 @@ def print_table(
     n_regressions = 0
     if reference is not None:
         for r in results:
-            ref = _lookup_reference(reference, r)
+            ref = _lookup_reference(reference, r, reference_arch)
             if ref is not None:
                 fwd_spd = _speedup(ref.get("fwd_ms"), r.fwd_ms)
                 bwd_spd = _speedup(ref.get("bwd_ms"), r.bwd_ms)
@@ -306,6 +311,12 @@ def main() -> int:
     parser.add_argument("--save-json", default=None, metavar="PATH", help="write results to a JSON file")
     parser.add_argument("--save-csv", default=None, metavar="PATH", help="write results to a CSV file")
     parser.add_argument("--reference-csv", default=None, metavar="PATH", help="CSV produced by a previous --save-csv run; " "adds speedup columns and flags regressions")
+    parser.add_argument(
+        "--reference-arch",
+        default=None,
+        metavar="ARCH",
+        help="match reference rows by this architecture instead of the current GPU " "(e.g. 'H100 80GB HBM3' to compare a GB200 run against H100 numbers)",
+    )
     parser.add_argument("--regression-tol", type=float, default=0.05, metavar="F", help="slowdowns within this fraction of 1x are not flagged " "(default 0.05 = 5%%)")
     parser.add_argument("--check-outputs", action="store_true", help="run float64/CPU reference and report ref_l_inf error")
     args = parser.parse_args()
@@ -321,9 +332,12 @@ def main() -> int:
     reference = None
     if args.reference_csv:
         reference = load_reference_csv(args.reference_csv)
-        ref_archs = sorted({r["architecture"] for r in reference if r.get("architecture")})
-        arch_str = ", ".join(_fmt_arch(a) for a in ref_archs) if ref_archs else "unknown"
-        print(f"reference : {args.reference_csv}  ({len(reference)} rows, arch: {arch_str})")
+        ref_archs = sorted({_fmt_arch(r["architecture"]) for r in reference if r.get("architecture")})
+        arch_str = ", ".join(ref_archs) if ref_archs else "unknown"
+        print(f"reference : {args.reference_csv}  ({len(reference)} rows)")
+        print(f"avail arch: {arch_str}")
+        if args.reference_arch:
+            print(f"ref arch  : {args.reference_arch}")
         print(f"tolerance : {args.regression_tol*100:.0f}%")
         print()
 
@@ -354,7 +368,7 @@ def main() -> int:
             results.append(result)
 
     print()
-    n_regressions = print_table(results, skipped, reference=reference, tol=args.regression_tol)
+    n_regressions = print_table(results, skipped, reference=reference, tol=args.regression_tol, reference_arch=args.reference_arch)
 
     if args.save_json:
         save_json(results, args.save_json)

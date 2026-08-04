@@ -60,7 +60,7 @@ class DiceLossS2(nn.Module):
     Dice loss for spherical segmentation tasks.
 
     Parameters
-    -----------
+    ----------
     nlat : int
         Number of latitude points
     nlon : int
@@ -139,7 +139,7 @@ class CrossEntropyLossS2(nn.Module):
     Cross-entropy loss for spherical classification tasks.
 
     Parameters
-    -----------
+    ----------
     nlat : int
         Number of latitude points
     nlon : int
@@ -185,7 +185,7 @@ class FocalLossS2(nn.Module):
     Focal loss for spherical classification tasks.
 
     Parameters
-    -----------
+    ----------
     nlat : int
         Number of latitude points
     nlon : int
@@ -256,12 +256,17 @@ class SphericalLossBase(nn.Module, ABC):
     def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
         """Abstract method that must be implemented by child classes to compute loss terms.
 
-        Args:
-            prd (torch.Tensor): Prediction tensor
-            tar (torch.Tensor): Target tensor
+        Parameters
+        ----------
+        prd : torch.Tensor
+            Prediction tensor
+        tar : torch.Tensor
+            Target tensor
 
-        Returns:
-            torch.Tensor: Computed loss term before integration
+        Returns
+        -------
+        torch.Tensor
+            Computed loss term before integration
         """
         pass
 
@@ -272,13 +277,19 @@ class SphericalLossBase(nn.Module, ABC):
     def forward(self, prd: torch.Tensor, tar: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Common forward pass that handles masking and reduction.
 
-        Args:
-            prd (torch.Tensor): Prediction tensor
-            tar (torch.Tensor): Target tensor
-            mask (Optional[torch.Tensor], optional): Mask tensor. Defaults to None.
+        Parameters
+        ----------
+        prd : torch.Tensor
+            Prediction tensor
+        tar : torch.Tensor
+            Target tensor
+        mask : torch.Tensor, optional
+            Mask tensor, by default None
 
-        Returns:
-            torch.Tensor: Final loss value
+        Returns
+        -------
+        torch.Tensor
+            Final loss value
         """
         loss_term = self._compute_loss_term(prd, tar)
         # Integrate over the sphere for each item in the batch

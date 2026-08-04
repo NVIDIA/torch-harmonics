@@ -40,19 +40,24 @@ from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, pol
 
 
 class DistributedQuadratureS2(torch.nn.Module):
-    """
+    r"""
     Distributed scalar quadrature on :math:`S^2` for integrating spherical fields on a
     latitude/longitude grid, with data and weights split across polar and
     azimuth communicator groups.
 
+    .. seealso::
+        :class:`torch_harmonics.QuadratureS2`
+            Serial counterpart with full mathematical description and parameter
+            documentation.
+
     Parameters
-    -----------
-    img_shape: Tuple[int]
+    ----------
+    img_shape : Tuple[int]
         Spatial grid shape ``(nlat, nlon)``.
-    grid: str, optional
+    grid : str, optional
         Quadrature grid type (``"equiangular"``, ``"legendre-gauss"``,
         ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``.
-    normalize: bool, optional
+    normalize : bool, optional
         If ``True``, divides weights by ``4π`` to return an average instead of
         an integral, by default ``False``.
 

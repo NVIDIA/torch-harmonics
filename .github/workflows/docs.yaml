@@ -1,0 +1,92 @@
+name: Build and deploy documentation
+
+# Publishing happens only on a published release or a manual dispatch with
+# "deploy" checked (see the deploy job's `if:` guard). Pull requests targeting
+# main run the BUILD job only: they produce a downloadable `html-docs` artifact
+# for preview and never touch the published documentation.
+on:
+  release:
+    types: [published]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Publish to GitHub Pages (leave unchecked for a test build you can download and inspect offline)"
+        type: boolean
+        default: false
+
+# Allow the deploy job to publish to GitHub Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; do not cancel an in-progress deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-documentation:
+    name: Build documentation
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.11"
+
+    # Same install logic as tests.yml: CPU-only torch, then an editable
+    # build of the package. autodoc imports torch_harmonics, so the compiled
+    # C++ extensions must be built (CPU-only needs no CUDA toolkit).
+    - name: Install dependencies
+      run: |
+        python3 -m pip install --upgrade pip setuptools wheel
+        python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
+
+    - name: Install package with docs dependencies
+      run: |
+        python3 -m pip install --no-build-isolation -e ".[docs]"
+
+    - name: Build HTML documentation
+      # -W turns Sphinx warnings (broken cross-references, malformed
+      # directives, etc.) into errors; --keep-going reports them all in one
+      # run instead of stopping at the first.
+      run: |
+        make -C docs html SPHINXOPTS="-W --keep-going"
+
+    # Plain downloadable artifact for offline inspection (a zip of the raw
+    # HTML). Produced on every run, including test builds that don't deploy.
+    - name: Upload HTML for download
+      uses: actions/upload-artifact@v7
+      with:
+        name: html-docs
+        path: docs/_build/html
+
+    # Special artifact consumed by the deploy job below (only used when the
+    # deploy job actually runs).
+    - name: Upload Pages artifact
+      uses: actions/upload-pages-artifact@v5
+      with:
+        path: docs/_build/html
+
+  deploy-documentation:
+    name: Deploy documentation
+    needs: build-documentation
+    # Publish on a release, or on a manual run only when "deploy" is checked.
+    # A manual run with deploy unchecked just builds the downloadable artifact.
+    if: github.event_name == 'release' || inputs.deploy
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v5

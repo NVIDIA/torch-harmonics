@@ -39,37 +39,75 @@ from torch_harmonics.truncation import truncate_sht
 
 
 class RealSHT(nn.Module):
-    """
+    r"""
     Defines a module for computing the forward (real-valued) SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
-    The SHT is applied to the last two dimensions of the input
+    The SHT is applied to the last two dimensions of the input.
+
+    Given a real-valued signal :math:`f(\theta, \lambda)` sampled on the sphere,
+    the forward scalar SHT computes the spherical harmonic coefficients via a
+    longitudinal FFT followed by Legendre quadrature:
+
+    .. math::
+
+        \hat{f}_l^m = 2\pi \sum_{k=0}^{N_\theta - 1}
+            \tilde{f}_m(\theta_k)\, P_l^m(\cos\theta_k)\, q_k
+
+    where :math:`\tilde{f}_m` are the Fourier modes and :math:`q_k` are the
+    quadrature weights.
+
+    .. seealso::
+        :doc:`/guide/spherical_harmonic_transforms`
+            User guide with the full mathematical derivation, normalization
+            conventions, grid types, and worked examples.
 
     Parameters
-    -----------
-    nlat: int
+    ----------
+    nlat : int
         Number of latitude points
-    nlon: int
+    nlon : int
         Number of longitude points
-    lmax: int
+    lmax : int
         Maximum spherical harmonic degree
-    mmax: int
+    mmax : int
         Maximum spherical harmonic order
-    grid: str
-        Grid type ("equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"), by default "equiangular"
-    norm: str
-        Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
-    csphase: bool
-        Whether to apply the Condon-Shortley phase factor, by default True
+    grid : str
+        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
+        ``"equiangular-trapezoidal"``), by default ``"equiangular"``
+    norm : str
+        Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
+        by default ``"ortho"``.
+    csphase : bool
+        Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
+        by default ``True``.
 
-    Returns
-    -------
-    x: torch.Tensor
-        Tensor of shape (..., lmax, mmax)
+    Examples
+    --------
+    >>> import torch
+    >>> import torch_harmonics as th
+    >>> nlat, nlon = 128, 256
+    >>> sht = th.RealSHT(nlat, nlon).cuda()
+    >>> signal = torch.randn(1, nlat, nlon, device="cuda")
+    >>> coeffs = sht(signal)   # shape (1, lmax, mmax), complex
+    >>> coeffs.shape
+    torch.Size([1, 128, 129])
+
+    .. note::
+        This module uses **cuFFT** (via :func:`torch.fft.rfft`) to compute the
+        longitudinal Fourier transform efficiently.  When running in **float16** or
+        **bfloat16** precision, cuFFT requires the transformed dimension (``nlon``)
+        to be a **power of two**.  If your grid does not satisfy this constraint and
+        the module is called inside a :class:`torch.autocast` context, guard it with
+        ``torch.autocast(device_type="cuda", enabled=False)``::
+
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                # ... other half-precision work ...
+                with torch.autocast(device_type="cuda", enabled=False):
+                    coeffs = sht(signal.float())
 
     References
     ----------
-    [1] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
-    [2] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
+    :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
@@ -111,6 +149,19 @@ class RealSHT(nn.Module):
         return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
+        """
+        Compute the forward (real) spherical harmonic transform.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Real-valued signal on the sphere of shape ``(..., nlat, nlon)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex spherical harmonic coefficients of shape ``(..., lmax, mmax)``.
+        """
 
         torch._check(x.dim() >= 2, lambda: f"Expected tensor with at least 2 dimensions but got {x.dim()} instead")
         torch._check(x.shape[-2] == self.nlat, lambda: f"Expected latitudes shape[-2]=={self.nlat}, got {x.shape[-2]}")
@@ -136,40 +187,83 @@ class RealSHT(nn.Module):
 
 
 class InverseRealSHT(nn.Module):
-    """
+    r"""
     Defines a module for computing the inverse (real-valued) SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
 
+    Given complex spherical harmonic coefficients :math:`\hat{f}_l^m`, the inverse
+    scalar SHT reconstructs the real-valued signal on the sphere via Legendre
+    synthesis followed by an inverse FFT:
+
+    .. math::
+
+        f(\theta, \lambda) = \sum_{l=0}^{l_{\max}-1} \sum_{m=0}^{m_{\max}-1}
+            \hat{f}_l^m\, Y_l^m(\theta, \lambda)
+
+    .. seealso::
+        :doc:`/guide/spherical_harmonic_transforms`
+            User guide with the full mathematical derivation, normalization
+            conventions, grid types, and worked examples.
+
     Parameters
-    -----------
-    nlat: int
+    ----------
+    nlat : int
         Number of latitude points
-    nlon: int
+    nlon : int
         Number of longitude points
-    lmax: int
+    lmax : int
         Maximum spherical harmonic degree
-    mmax: int
+    mmax : int
         Maximum spherical harmonic order
-    grid: str
-        Grid type ("equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"), by default "equiangular"
-    norm: str
-        Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
-    csphase: bool
-        Whether to apply the Condon-Shortley phase factor, by default True
+    grid : str
+        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
+        ``"equiangular-trapezoidal"``), by default ``"equiangular"``
+    norm : str
+        Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
+        by default ``"ortho"``.
+    csphase : bool
+        Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
+        by default ``True``.
+
+    Examples
+    --------
+    >>> import torch
+    >>> import torch_harmonics as th
+    >>> nlat, nlon = 128, 256
+    >>> isht = th.InverseRealSHT(nlat, nlon).cuda()
+    >>> coeffs = torch.randn(1, 128, 129, dtype=torch.cfloat, device="cuda")
+    >>> signal = isht(coeffs)   # shape (1, 128, 256), real
+    >>> signal.shape
+    torch.Size([1, 128, 256])
+
+    .. note::
+        This module uses **cuFFT** (via :func:`torch.fft.irfft`) to compute the
+        longitudinal inverse Fourier transform efficiently.  When running in
+        **float16** or **bfloat16** precision, cuFFT requires the transformed
+        dimension (``nlon``) to be a **power of two**.  If your grid does not
+        satisfy this constraint and the module is called inside a
+        :class:`torch.autocast` context, guard it with
+        ``torch.autocast(device_type="cuda", enabled=False)``::
+
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                # ... other half-precision work ...
+                with torch.autocast(device_type="cuda", enabled=False):
+                    signal = isht(coeffs.to(torch.cfloat))
+
+    .. note::
+        The inverse real FFT (C2R transform) expects the DC component (:math:`m = 0`)
+        and, when ``nlon`` is even, the Nyquist component (:math:`m = N_\lambda / 2`)
+        to be purely real.  This routine zeros out the imaginary parts of these
+        components before calling the transform.
 
     Raises
     ------
-    ValueError: If the grid type is unknown
-
-    Returns
-    -------
-    x: torch.Tensor
-        Tensor of shape (..., lmax, mmax)
+    ValueError
+        If the grid type is unknown
 
     References
     ----------
-    [1] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
-    [2] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
+    :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
@@ -210,6 +304,19 @@ class InverseRealSHT(nn.Module):
         return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
+        """
+        Compute the inverse (real) spherical harmonic transform.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Complex spherical harmonic coefficients of shape ``(..., lmax, mmax)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Real-valued signal on the sphere of shape ``(..., nlat, nlon)``.
+        """
 
         torch._check(x.dim() >= 2, lambda: f"Expected tensor with at least 2 dimensions but got {x.dim()} instead")
         torch._check(x.shape[-2] == self.lmax, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax}, got {x.shape[-2]}")
@@ -236,37 +343,69 @@ class InverseRealSHT(nn.Module):
 
 
 class RealVectorSHT(nn.Module):
-    """
+    r"""
     Defines a module for computing the forward (real) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
     The SHT is applied to the last three dimensions of the input.
 
-    Parameters
-    -----------
-    nlat: int
-        Number of latitude points
-    nlon: int
-        Number of longitude points
-    lmax: int
-        Maximum spherical harmonic degree
-    mmax: int
-        Maximum spherical harmonic order
-    grid: str
-        Grid type ("equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"), by default "equiangular"
-    norm: str
-        Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
-    csphase: bool
-        Whether to apply the Condon-Shortley phase factor, by default True
+    Decomposes a tangential vector field
+    :math:`\mathbf{v} = v_\theta\,\hat{e}_\theta + v_\lambda\,\hat{e}_\lambda`
+    into **spheroidal** and **toroidal** spectral coefficients
+    :math:`\hat{s}_l^m` and :math:`\hat{t}_l^m` using the derivatives of the
+    associated Legendre polynomials.
 
-    Returns
-    -------
-    x: torch.Tensor
-        Tensor of shape (..., lmax, mmax)
+    .. seealso::
+        :doc:`/guide/spherical_harmonic_transforms`
+            User guide with the full mathematical derivation of the vector SHT
+            formulas, normalization conventions, and worked examples.
+
+    Parameters
+    ----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    lmax : int
+        Maximum spherical harmonic degree
+    mmax : int
+        Maximum spherical harmonic order
+    grid : str
+        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
+        ``"equiangular-trapezoidal"``), by default ``"equiangular"``
+    norm : str
+        Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
+        by default ``"ortho"``.
+    csphase : bool
+        Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
+        by default ``True``.
+
+    Examples
+    --------
+    >>> import torch
+    >>> import torch_harmonics as th
+    >>> nlat, nlon = 128, 256
+    >>> vsht = th.RealVectorSHT(nlat, nlon).cuda()
+    >>> vector_field = torch.randn(1, 2, nlat, nlon, device="cuda")
+    >>> coeffs = vsht(vector_field)   # shape (1, 2, lmax, mmax), complex
+    >>> coeffs.shape
+    torch.Size([1, 2, 128, 129])
+
+    .. note::
+        This module uses **cuFFT** (via :func:`torch.fft.rfft`) to compute the
+        longitudinal Fourier transform efficiently.  When running in **float16** or
+        **bfloat16** precision, cuFFT requires the transformed dimension (``nlon``)
+        to be a **power of two**.  If your grid does not satisfy this constraint and
+        the module is called inside a :class:`torch.autocast` context, guard it with
+        ``torch.autocast(device_type="cuda", enabled=False)``::
+
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                # ... other half-precision work ...
+                with torch.autocast(device_type="cuda", enabled=False):
+                    coeffs = vsht(vector_field.float())
 
     References
     ----------
-    [1] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
-    [2] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
+    :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
@@ -313,6 +452,21 @@ class RealVectorSHT(nn.Module):
         return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
+        """
+        Compute the forward (real) vector spherical harmonic transform.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Real-valued tangential vector field of shape ``(..., 2, nlat, nlon)``, where the
+            size-2 dimension holds the two tangential (colatitude, longitude) components.
+
+        Returns
+        -------
+        torch.Tensor
+            Complex vector harmonic coefficients of shape ``(..., 2, lmax, mmax)``, where the
+            size-2 dimension holds the spheroidal and toroidal components.
+        """
 
         torch._check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
         torch._check(x.shape[-3] == 2, lambda: f"Expected vector field shape[-3]==2, got {x.shape[-3]}")
@@ -342,36 +496,74 @@ class RealVectorSHT(nn.Module):
 
 
 class InverseRealVectorSHT(nn.Module):
-    """
+    r"""
     Defines a module for computing the inverse (real-valued) vector SHT.
     Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
 
-    Parameters
-    -----------
-    nlat: int
-        Number of latitude points
-    nlon: int
-        Number of longitude points
-    lmax: int
-        Maximum spherical harmonic degree
-    mmax: int
-        Maximum spherical harmonic order
-    grid: str
-        Grid type ("equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"), by default "equiangular"
-    norm: str
-        Normalization type ("ortho", "schmidt", "unnorm"), by default "ortho"
-    csphase: bool
-        Whether to apply the Condon-Shortley phase factor, by default True
+    Given spheroidal and toroidal spectral coefficients :math:`\hat{s}_l^m` and
+    :math:`\hat{t}_l^m`, reconstructs the tangential vector field on the sphere
+    via Legendre synthesis with the derivatives of the associated Legendre
+    polynomials, followed by an inverse real FFT.
 
-    Returns
-    -------
-    x: torch.Tensor
-        Tensor of shape (..., lmax, mmax)
+    .. seealso::
+        :doc:`/guide/spherical_harmonic_transforms`
+            User guide with the full mathematical derivation of the inverse
+            vector SHT formulas, normalization conventions, and worked examples.
+
+    Parameters
+    ----------
+    nlat : int
+        Number of latitude points
+    nlon : int
+        Number of longitude points
+    lmax : int
+        Maximum spherical harmonic degree
+    mmax : int
+        Maximum spherical harmonic order
+    grid : str
+        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
+        ``"equiangular-trapezoidal"``), by default ``"equiangular"``
+    norm : str
+        Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
+        by default ``"ortho"``.
+    csphase : bool
+        Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
+        by default ``True``.
+
+    Examples
+    --------
+    >>> import torch
+    >>> import torch_harmonics as th
+    >>> nlat, nlon = 128, 256
+    >>> ivsht = th.InverseRealVectorSHT(nlat, nlon).cuda()
+    >>> coeffs = torch.randn(1, 2, 128, 129, dtype=torch.cfloat, device="cuda")
+    >>> vector_field = ivsht(coeffs)   # shape (1, 2, 128, 256), real
+    >>> vector_field.shape
+    torch.Size([1, 2, 128, 256])
+
+    .. note::
+        This module uses **cuFFT** (via :func:`torch.fft.irfft`) to compute the
+        longitudinal inverse Fourier transform efficiently.  When running in
+        **float16** or **bfloat16** precision, cuFFT requires the transformed
+        dimension (``nlon``) to be a **power of two**.  If your grid does not
+        satisfy this constraint and the module is called inside a
+        :class:`torch.autocast` context, guard it with
+        ``torch.autocast(device_type="cuda", enabled=False)``::
+
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                # ... other half-precision work ...
+                with torch.autocast(device_type="cuda", enabled=False):
+                    vector_field = ivsht(coeffs.to(torch.cfloat))
+
+    .. note::
+        The inverse real FFT (C2R transform) expects the DC component (:math:`m = 0`)
+        and, when ``nlon`` is even, the Nyquist component (:math:`m = N_\lambda / 2`)
+        to be purely real.  This routine zeros out the imaginary parts of these
+        components before calling the transform.
 
     References
     ----------
-    [1] Schaeffer, N. Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations, G3: Geochemistry, Geophysics, Geosystems.
-    [2] Wang, B., Wang, L., Xie, Z.; Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids; Adv Comput Math.
+    :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
     def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
@@ -412,6 +604,21 @@ class InverseRealVectorSHT(nn.Module):
         return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
+        """
+        Compute the inverse (real) vector spherical harmonic transform.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Complex vector harmonic coefficients of shape ``(..., 2, lmax, mmax)``, where the
+            size-2 dimension holds the spheroidal and toroidal components.
+
+        Returns
+        -------
+        torch.Tensor
+            Real-valued tangential vector field of shape ``(..., 2, nlat, nlon)``, where the
+            size-2 dimension holds the two tangential (colatitude, longitude) components.
+        """
 
         torch._check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
         torch._check(x.shape[-3] == 2, lambda: f"Expected vector field shape[-3]==2, got {x.shape[-3]}")

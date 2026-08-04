@@ -45,36 +45,51 @@ from torch_harmonics.quadrature import precompute_latitudes
 
 
 class AttentionS2(nn.Module):
-    """
+    r"""
     (Global) attention on the 2-sphere.
 
+    This is ordinary (global) scaled dot-product attention, made geometrically
+    faithful on the sphere by folding the numerical quadrature weights of the
+    grid into the attention. Following :cite:`Bonev2025`, the softmax over keys becomes a
+    quadrature approximation of a continuous attention integral over the sphere:
+    the *logarithms* of the spherical quadrature weights are added to the
+    pre-softmax attention scores as an additive mask, so that after the softmax
+    exponential they act as multiplicative quadrature weights in the
+    normalization. Using log-weights lets them be passed directly as the
+    ``attn_mask`` of :func:`torch.nn.functional.scaled_dot_product_attention`.
+
+    Incorporating the quadrature weights this way makes the layer a
+    resolution-agnostic neural operator (evaluable on arbitrary grids, though the
+    learned features remain resolution dependent) and approximately
+    :math:`SO(3)`-equivariant, since the underlying integral is invariant under
+    rotations (the Haar measure). For the local variant that confines attention
+    to a geodesic neighborhood, see
+    :class:`~torch_harmonics.NeighborhoodAttentionS2`.
+
     Parameters
-    -----------
-    in_channels: int
+    ----------
+    in_channels : int
         number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
-    num_heads: int
+    num_heads : int
         number of attention heads
-    in_shape: tuple
+    in_shape : tuple
         shape of the input grid
-    out_shape: tuple
+    out_shape : tuple
         shape of the output grid
-    grid_in: str, optional
-        input grid type, "equiangular" by default
-    grid_out: str, optional
-        output grid type, "equiangular" by default
-    bias: bool, optional
+    grid_in : str, optional
+        input grid type, ``"equiangular"`` by default
+    grid_out : str, optional
+        output grid type, ``"equiangular"`` by default
+    bias : bool, optional
         if specified, adds bias to input / output projection layers
-    k_channels: int
+    k_channels : int
         number of dimensions for interior inner product in the attention matrix (corresponds to kdim in MHA in PyTorch)
-    out_channels: int, optional
+    out_channels : int, optional
         number of dimensions for interior inner product in the attention matrix (corresponds to vdim in MHA in PyTorch)
 
-    Reference
-    ---------
-    Bonev, B., Rietmann, M., Paris, A., Carpentieri, A., & Kurth, T. (2025).
-    "Attention on the Sphere."
-    Advances in Neural Information Processing Systems (NeurIPS).
-    https://arxiv.org/abs/2505.11157
+    References
+    ----------
+    :cite:`Bonev2025`
     """
 
     def __init__(
@@ -155,6 +170,23 @@ class AttentionS2(nn.Module):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}"
 
     def forward(self, query: torch.Tensor, key: Optional[torch.Tensor] = None, value: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Apply global attention on the sphere.
+
+        Parameters
+        ----------
+        query : torch.Tensor
+            Query signal of shape ``(batch, in_channels, nlat_out, nlon_out)`` (sampled on the output grid).
+        key : torch.Tensor, optional
+            Key signal of shape ``(batch, in_channels, nlat_in, nlon_in)``. Defaults to ``query`` (self-attention).
+        value : torch.Tensor, optional
+            Value signal of shape ``(batch, in_channels, nlat_in, nlon_in)``. Defaults to ``query`` (self-attention).
+
+        Returns
+        -------
+        torch.Tensor
+            Attention output of shape ``(batch, out_channels, nlat_out, nlon_out)``.
+        """
 
         # self attention simplification
         if key is None:
@@ -216,38 +248,64 @@ class AttentionS2(nn.Module):
 
 
 class NeighborhoodAttentionS2(nn.Module):
-    """
+    r"""
     Neighborhood attention on the 2-sphere.
 
+    This is the local counterpart of :class:`~torch_harmonics.AttentionS2`.
+    Instead of attending globally, every output location attends only to the
+    input points inside a geodesic neighborhood around it -- the spherical disk
+    :math:`D(x) = \{x' \in S^2 : d(x, x') \le \theta_\mathrm{cutoff}\}`, where
+    :math:`d(\cdot, \cdot)` is the great-circle (Haversine) distance and
+    :math:`\theta_\mathrm{cutoff}` the cutoff radius. Restricting attention to
+    this disk adds an inductive bias for locality and lowers the cost from
+    :math:`\mathcal{O}(N^2)` to :math:`\mathcal{O}(k N)`, where :math:`k` is the
+    number of points in a neighborhood.
+
+    Following :cite:`Bonev2025`, the attention softmax integrates over the neighborhood
+    against the sphere's numerical quadrature weights. This makes the layer a
+    resolution-agnostic neural operator -- it can be evaluated on arbitrary grid
+    resolutions (though the learned features themselves remain resolution
+    dependent) -- and approximately :math:`SO(3)`-equivariant, since the
+    underlying integrals are invariant under rotations (the Haar measure).
+
+    The sparse neighborhood structure is precomputed with the same
+    discrete-continuous construction used for the DISCO convolutions
+    (:class:`~torch_harmonics.DiscreteContinuousConvS2`):
+    Here, only the suppot (index information) of the zero order DISCO kernel is
+    used to define an indicator function of the cutoff disk, so that any
+    input point contributes to an output location exactly when it lies within
+    :math:`\theta_\mathrm{cutoff}` of it. The relative weight of each input point
+    depends on their contribution to the softmax as well as their quadrature weights.
+
     Parameters
-    -----------
-    in_channels: int
+    ----------
+    in_channels : int
         number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
-    in_shape: tuple
+    in_shape : tuple
         shape of the input grid
-    out_shape: tuple
+    out_shape : tuple
         shape of the output grid
-    grid_in: str, optional
-        input grid type, "equiangular" by default
-    grid_out: str, optional
-        output grid type, "equiangular" by default
-    bias: bool, optional
+    grid_in : str, optional
+        input grid type, ``"equiangular"`` by default
+    grid_out : str, optional
+        output grid type, ``"equiangular"`` by default
+    bias : bool, optional
         if specified, adds bias to input / output projection layers
-    theta_cutoff: float, optional
-        neighborhood size
-    k_channels: int
+    theta_cutoff : float, optional
+        Angular radius of the geodesic neighborhood disk, in radians. Input points
+        farther than this from an output location are excluded from its attention.
+        If None (default), it is set to one latitudinal grid spacing of the coarser
+        of the input and output grids, i.e. ``pi / (nlat - 1)``. Must be positive.
+    k_channels : int
         number of dimensions for interior inner product in the attention matrix (corresponds to kdim in MHA in PyTorch)
-    out_channels: int, optional
+    out_channels : int, optional
         number of dimensions for interior inner product in the attention matrix (corresponds to vdim in MHA in PyTorch)
-    optimized_kernel: Optional[bool]
+    optimized_kernel : Optional[bool]
         Whether to use the optimized kernel (if available)
 
-    Reference
-    ---------
-    Bonev, B., Rietmann, M., Paris, A., Carpentieri, A., & Kurth, T. (2025).
-    "Attention on the Sphere."
-    Advances in Neural Information Processing Systems (NeurIPS).
-    https://arxiv.org/abs/2505.11157
+    References
+    ----------
+    :cite:`Bonev2025`
     """
 
     def __init__(
@@ -393,6 +451,25 @@ class NeighborhoodAttentionS2(nn.Module):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}, theta_cutoff={self.theta_cutoff}"
 
     def forward(self, query: torch.Tensor, key: Optional[torch.Tensor] = None, value: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Apply neighborhood attention on the sphere.
+
+        Parameters
+        ----------
+        query : torch.Tensor
+            Query signal of shape ``(batch, in_channels, nlat_out, nlon_out)`` (sampled on the output grid).
+        key : torch.Tensor, optional
+            Key signal of shape ``(batch, in_channels, nlat_in, nlon_in)`` (sampled on the input grid).
+            Defaults to ``query`` (self-attention, which requires matching input and output grids).
+        value : torch.Tensor, optional
+            Value signal of shape ``(batch, in_channels, nlat_in, nlon_in)`` (sampled on the input grid).
+            Defaults to ``query`` (self-attention, which requires matching input and output grids).
+
+        Returns
+        -------
+        torch.Tensor
+            Attention output of shape ``(batch, out_channels, nlat_out, nlon_out)``.
+        """
 
         # self attention simplification
         if key is None:

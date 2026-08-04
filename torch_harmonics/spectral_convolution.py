@@ -41,48 +41,108 @@ from torch_harmonics.truncation import truncate_sht
 
 
 class SpectralConvS2(nn.Module):
-    """
-        Spectral convolution layer on :math:`S^2` implemented via real SHT
-        (Driscoll-Healy formulation, see https://api.semanticscholar.org/CorpusID:122817218).
-    }).
+    r"""
+    Spectral convolution layer on :math:`S^2` implemented via real SHT
+    (Driscoll--Healy formulation, see https://api.semanticscholar.org/CorpusID:122817218).
 
-        Parameters
-        -----------
-        in_shape: Tuple[int]
-            Spatial input grid shape ``(nlat, nlon)``.
-        out_shape: Tuple[int]
-            Spatial output grid shape ``(nlat, nlon)``.
-        in_channels: int
-            Number of input channels.
-        out_channels: int
-            Number of output channels.
-        num_groups: int, optional
-            Number of channel groups for grouped spectral weights, by default 1.
-        grid_in: str, optional
-            Grid used for the forward SHT (``"equiangular"``, ``"legendre-gauss"``,
-            ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``.
-        grid_out: str, optional
-            Grid used for the inverse SHT, same options as ``grid_in``.
-        bias: bool, optional
-            If ``True``, adds a learnable spectral bias computed from the spatial
-            integral, by default ``False``.
+    Given a multi-channel input signal :math:`u^{c_i}(\theta, \lambda)` on the
+    sphere, the layer computes the output channels :math:`v^{c_o}(\theta, \lambda)`
+    in three steps:
 
-        Raises
-        ------
-        AssertionError
-            If ``in_channels`` or ``out_channels`` is not divisible by
-            ``num_groups``.
+    1. **Forward SHT** (cf. :class:`~torch_harmonics.RealSHT`) -- transform
+       each input channel to spectral space:
 
-        Returns
-        -------
-        x: torch.Tensor
-            Tensor of shape ``(..., out_channels, out_shape[0], out_shape[1])``.
+    .. math::
 
-        Notes
-        -----
-        The SHT truncation ``lmax``/``mmax`` is the minimum of the input and output
-        truncations, and the grouped contraction is performed with
-        ``_contract_lwise``.
+        \hat{u}_l^{m,\,c_i} = \text{SHT}\!\left[\, u^{c_i}(\theta, \lambda) \,\right]
+
+    2. **Spectral contraction** -- mix channels with learnable weights
+       :math:`K_l^{c_o,\,c_i}` that are diagonal in :math:`(l, m)` (i.e.\ the
+       same weight is applied to every order :math:`m` at a given degree
+       :math:`l`):
+
+    .. math::
+
+        \hat{v}_l^{m,\,c_o}
+            = \sum_{c_i} K_l^{c_o,\,c_i}\; \hat{u}_l^{m,\,c_i}
+
+    3. **Inverse SHT** (cf. :class:`~torch_harmonics.InverseRealSHT`) --
+       transform back to the spatial domain:
+
+    .. math::
+
+        v^{c_o}(\theta, \lambda)
+            = \text{ISHT}\!\left[\, \hat{v}_l^{m,\,c_o} \,\right]
+
+    Because the spectral weights depend only on degree :math:`l` and not on order
+    :math:`m`, this corresponds to an **isotropic** (azimuthally symmetric)
+    convolution kernel on the sphere.  When ``num_groups > 1``, the channel
+    contraction is performed independently within each group (grouped
+    convolution).
+
+    **Spectral bias.**
+    When ``bias=True``, a learnable spectral bias :math:`b_l^{m,\,c_i}` is
+    added to the SHT coefficients before the channel contraction.  The bias is
+    modulated by the spatial integral (zeroth moment) of each input channel:
+
+    .. math::
+
+        I^{c_i} = \int_0^{2\pi}\!\int_0^{\pi}
+            u^{c_i}(\theta,\lambda)\,\sin\theta\;d\theta\;d\lambda
+
+    .. math::
+
+        \hat{u}_l^{m,\,c_i} \;\leftarrow\;
+            \hat{u}_l^{m,\,c_i} + I^{c_i}\, b_l^{m,\,c_i}
+
+    This allows the layer to learn a spectral response that depends on the
+    global mean of each input channel, effectively coupling the zero-frequency
+    content into all spectral modes.
+
+    Parameters
+    ----------
+    in_shape : Tuple[int]
+        Spatial input grid shape ``(nlat, nlon)``.
+    out_shape : Tuple[int]
+        Spatial output grid shape ``(nlat, nlon)``.
+    in_channels : int
+        Number of input channels.
+    out_channels : int
+        Number of output channels.
+    num_groups : int, optional
+        Number of channel groups for grouped spectral weights, by default 1.
+    grid_in : str, optional
+        Grid used for the forward SHT (``"equiangular"``, ``"legendre-gauss"``,
+        ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``.
+    grid_out : str, optional
+        Grid used for the inverse SHT, same options as ``grid_in``.
+    bias : bool, optional
+        If ``True``, adds a learnable spectral bias computed from the spatial
+        integral, by default ``False``.
+
+    Examples
+    --------
+    >>> import torch
+    >>> import torch_harmonics as th
+    >>> conv = th.SpectralConvS2(
+    ...     in_shape=(128, 256), out_shape=(128, 256),
+    ...     in_channels=16, out_channels=32,
+    ... ).cuda()
+    >>> x = torch.randn(4, 16, 128, 256, device="cuda")
+    >>> y = conv(x)
+    >>> y.shape
+    torch.Size([4, 32, 128, 256])
+
+    Raises
+    ------
+    AssertionError
+        If ``in_channels`` or ``out_channels`` is not divisible by
+        ``num_groups``.
+
+    Notes
+    -----
+    The SHT truncation ``lmax``/``mmax`` is the minimum of the input and output
+    truncations.
     """
 
     def __init__(
@@ -141,6 +201,19 @@ class SpectralConvS2(nn.Module):
         return resc
 
     def forward(self, x):
+        """
+        Apply the spectral convolution.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input signal of shape ``(batch, in_channels, nlat_in, nlon_in)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Convolved signal of shape ``(batch, out_channels, nlat_out, nlon_out)``.
+        """
         dtype = x.dtype
 
         with torch.amp.autocast(device_type=x.device.type, enabled=False):

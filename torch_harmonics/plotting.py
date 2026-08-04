@@ -46,7 +46,7 @@ except ImportError:
     ccrs = None
 
 
-def check_plotting_dependencies():
+def _check_plotting_dependencies():
     if plt is None:
         raise ImportError("matplotlib is required for plotting functions. Install it with 'pip install matplotlib'")
     if cartopy is None:
@@ -62,7 +62,7 @@ def get_projection(
     Get a cartopy projection object for map plotting.
 
     Parameters
-    -----------
+    ----------
     projection : str
         Projection type ("orthographic", "robinson", "platecarree", "mollweide")
     central_latitude : float, optional
@@ -113,7 +113,7 @@ def plot_sphere(
     Plots a function defined on the sphere using pcolormesh
 
     Parameters
-    -----------
+    ----------
     data : numpy.ndarray or torch.Tensor
         Data to plot with shape (nlat, nlon)
     fig : matplotlib.figure.Figure, optional
@@ -148,7 +148,7 @@ def plot_sphere(
     """
 
     # make sure cartopy exist
-    check_plotting_dependencies()
+    _check_plotting_dependencies()
 
     if fig is None:
         fig = plt.figure()
@@ -196,7 +196,7 @@ def imshow_sphere(data, fig=None, projection="robinson", title=None, central_lat
     Displays an image on the sphere
 
     Parameters
-    -----------
+    ----------
     data : numpy.ndarray or torch.Tensor
         Data to display with shape (nlat, nlon)
     fig : matplotlib.figure.Figure, optional
@@ -219,7 +219,7 @@ def imshow_sphere(data, fig=None, projection="robinson", title=None, central_lat
     """
 
     # make sure cartopy exist
-    check_plotting_dependencies()
+    _check_plotting_dependencies()
 
     if fig is None:
         fig = plt.figure()
@@ -236,42 +236,3 @@ def imshow_sphere(data, fig=None, projection="robinson", title=None, central_lat
     plt.title(title, y=1.05)
 
     return im
-
-
-# def plot_data(data,
-#                 fig=None,
-#                 cmap="RdBu",
-#                 title=None,
-#                 colorbar=False,
-#                 coastlines=False,
-#                 central_longitude=0,
-#                 lon=None,
-#                 lat=None,
-#                 **kwargs):
-#     if fig is None:
-#         fig = plt.figure()
-
-#     nlat = data.shape[-2]
-#     nlon = data.shape[-1]
-#     if lon is None:
-#         lon = np.linspace(0, 2*np.pi, nlon+1)[:-1]
-#     if lat is None:
-#         lat = np.linspace(np.pi/2., -np.pi/2., nlat)
-#     Lon, Lat = np.meshgrid(lon, lat)
-
-#     proj = ccrs.Robinson(central_longitude=central_longitude)
-#     # proj = ccrs.Mollweide(central_longitude=central_longitude)
-
-#     ax = fig.add_subplot(projection=proj)
-#     Lon = Lon*180/np.pi
-#     Lat = Lat*180/np.pi
-
-#     # contour data over the map.
-#     im = ax.pcolormesh(Lon, Lat, data, cmap=cmap, transform=ccrs.PlateCarree(), antialiased=False, **kwargs)
-#     if coastlines:
-#         ax.add_feature(cartopy.feature.COASTLINE, edgecolor='white', facecolor='none', linewidth=1.5)
-#     if colorbar:
-#         plt.colorbar(im)
-#     plt.title(title, y=1.05)
-
-#     return im

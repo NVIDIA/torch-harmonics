@@ -45,13 +45,18 @@ from torch_harmonics.quadrature import precompute_latitudes, precompute_longitud
 from ._disco_utils import _get_psi
 from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
 from .optimized.disco_optimized import (
+    _build_kernel_split_csr,
     _disco_s2_contraction_kpacked,
     _disco_s2_contraction_optimized,
+    _disco_s2_conv_save_x_kpacked,
+    _disco_s2_conv_save_x_optimized,
     _disco_s2_fused_conv_kpacked,
     _disco_s2_fused_conv_optimized,
     _disco_s2_transpose_contraction_optimized,
     _kpacked_supported_on_device,
     _maybe_kpack_psi,
+    _split_csr_python_offsets,
+    _use_spatial_first_dgrad,
 )
 
 
@@ -88,36 +93,36 @@ def _normalize_convolution_tensor_s2(
     quantity, avoiding the per-(ikernel, ilat_out) Python double loop.
 
     Parameters
-    -----------
-    psi_idx: torch.Tensor
+    ----------
+    psi_idx : torch.Tensor
         Index tensor for the sparse convolution tensor.
-    psi_vals: torch.Tensor
+    psi_vals : torch.Tensor
         Value tensor for the sparse convolution tensor.
-    in_shape: Tuple[int]
+    in_shape : Tuple[int]
         Tuple of (nlat_in, nlon_in) representing input grid dimensions.
-    out_shape: Tuple[int]
+    out_shape : Tuple[int]
         Tuple of (nlat_out, nlon_out) representing output grid dimensions.
-    kernel_size: int
+    kernel_size : int
         Number of kernel basis functions.
-    quad_weights: torch.Tensor
+    quad_weights : torch.Tensor
         Quadrature weights for numerical integration.
-    theta_cutoff: float
+    theta_cutoff : float
         Angular cutoff of the filter support (radians). Required by the "geometric" mode,
         which normalizes by the theoretical area measure of the spherical cap of half-angle
         theta_cutoff; unused by other modes.
-    transpose_normalization: bool
+    transpose_normalization : bool
         If True, applies normalization in transpose direction.
-    basis_norm_mode: str
+    basis_norm_mode : str
         Normalization mode, one of ["none", "nodal", "modal", "mean", "support", "geometric"].
         The legacy names "individual" and "area ratio" are accepted as deprecated aliases
         for "nodal" and "geometric" respectively; each emits a DeprecationWarning.
-    merge_quadrature: bool
+    merge_quadrature : bool
         If True, multiplies values by quadrature weights.
-    isotropic_mask: Optional[Sequence[bool]]
+    isotropic_mask : Optional[Sequence[bool]]
         Per-kernel-index boolean mask; True marks an axisymmetric (m=0) basis function.
         Used by the "modal" mode to decide which kernels get a weighted-mean bias
         subtraction (anisotropic only). If None, only kernel index 0 is treated as isotropic.
-    eps: float
+    eps : float
         Small epsilon value to prevent division by zero.
 
     Returns
@@ -256,33 +261,33 @@ def _precompute_convolution_tensor_s2(
     $$
 
     Parameters
-    -----------
-    in_shape: Tuple[int]
+    ----------
+    in_shape : Tuple[int]
         Input shape of the convolution tensor
-    out_shape: Tuple[int]
+    out_shape : Tuple[int]
         Output shape of the convolution tensor
-    filter_basis: FilterBasis
+    filter_basis : FilterBasis
         Filter basis functions
-    grid_in: str
+    grid_in : str
         Input grid type
-    grid_out: str
+    grid_out : str
         Output grid type
-    theta_cutoff: float
+    theta_cutoff : float
         Theta cutoff for the filter basis functions
-    theta_eps: float
+    theta_eps : float
         Epsilon for the theta cutoff
-    transpose_normalization: bool
+    transpose_normalization : bool
         Whether to normalize the convolution tensor in the transpose direction
-    basis_norm_mode: str
+    basis_norm_mode : str
         Mode for basis normalization
-    merge_quadrature: bool
+    merge_quadrature : bool
         Whether to merge the quadrature weights into the convolution tensor
 
     Returns
     -------
-    out_idx: torch.Tensor
+    out_idx : torch.Tensor
         Index tensor of the convolution tensor
-    out_vals: torch.Tensor
+    out_vals : torch.Tensor
         Values tensor of the convolution tensor
 
     """
@@ -393,23 +398,23 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
     Abstract base class for discrete-continuous convolutions
 
     Parameters
-    -----------
-    in_channels: int
+    ----------
+    in_channels : int
         Number of input channels
-    out_channels: int
+    out_channels : int
         Number of output channels
-    kernel_shape: Union[int, Tuple[int], Tuple[int, int]]
+    kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
-    basis_type: Optional[str]
+    basis_type : Optional[str]
         Type of the basis functions
-    groups: Optional[int]
+    groups : Optional[int]
         Number of groups
-    bias: Optional[bool]
+    bias : Optional[bool]
         Whether to use bias
 
     Returns
     -------
-    out: torch.Tensor
+    torch.Tensor
         Output tensor
     """
 
@@ -440,6 +445,7 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
         if out_channels % self.groups != 0:
             raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
         self.groupsize = in_channels // self.groups
+        self.out_per_group = out_channels // self.groups
         scale = math.sqrt(1.0 / self.groupsize) * self.filter_basis.get_init_factors().reshape(1, 1, -1)
         self.weight = nn.Parameter(scale * torch.randn(out_channels, self.groupsize, self.kernel_size))
 
@@ -458,51 +464,71 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
 
 
 class DiscreteContinuousConvS2(DiscreteContinuousConv):
-    """
-    Discrete-continuous (DISCO) convolutions on the 2-Sphere as described in [1].
+    r"""
+    Discrete-continuous (DISCO) convolution on the 2-sphere, as described in :cite:`Ocampo2023`.
+
+    The layer evaluates a spherical convolution with a compactly supported
+    filter of angular radius ``theta_cutoff``.  The filter is parameterised as
+    a learnable linear combination of fixed basis functions
+    :math:`\{\phi_k\}`, and the integral is computed by sparse quadrature over
+    the input grid, giving :math:`O(N)` cost in the number of grid points.
+    The forward pass is
+
+    .. math::
+
+        g^{c_o}(\theta'_j, \lambda'_q)
+            = \sum_{c_i} \sum_k w_k^{c_o,c_i}
+              \sum_{i,\,p} \Psi_{k,\,j,\,(i,p)}\;
+              f^{c_i}(\theta_i, \lambda'_q + \lambda_p)
+
+    where :math:`\Psi` is a precomputed sparse convolution tensor that
+    encodes the basis function values at rotated input grid positions,
+    weighted by the quadrature weights.  Because the grid is equispaced in
+    longitude, :math:`\Psi` is independent of the output longitude
+    (p-shift symmetry).
+
+    .. seealso::
+        :doc:`/guide/disco_convolutions`
+            User guide with the full mathematical derivation, filter basis
+            visualisations, and worked examples.
 
     Parameters
-    -----------
-    in_channels: int
+    ----------
+    in_channels : int
         Number of input channels
-    out_channels: int
+    out_channels : int
         Number of output channels
-    in_shape: Tuple[int]
+    in_shape : Tuple[int]
         Input shape of the convolution tensor
-    out_shape: Tuple[int]
+    out_shape : Tuple[int]
         Output shape of the convolution tensor
-    kernel_shape: Union[int, Tuple[int], Tuple[int, int]]
+    kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
-    basis_type: Optional[str]
+    basis_type : Optional[str]
         Type of the basis functions
-    basis_norm_mode: Optional[str]
+    basis_norm_mode : Optional[str]
         Mode for basis normalization
-    groups: Optional[int]
+    groups : Optional[int]
         Number of groups
-    grid_in: Optional[str]
+    grid_in : Optional[str]
         Input grid type
-    grid_out: Optional[str]
+    grid_out : Optional[str]
         Output grid type
-    bias: Optional[bool]
+    bias : Optional[bool]
         Whether to use bias
-    theta_cutoff: Optional[float]
+    theta_cutoff : Optional[float]
         Theta cutoff for the filter basis functions
-    optimized_kernel: Optional[bool]
+    optimized_kernel : Optional[bool]
         Whether to use the optimized kernel (if available)
-    fused: Optional[bool]
+    fused : Optional[bool]
         When True, fuses the sparse contraction and weight multiplication into a single
         autograd region to avoid storing the K-expanded intermediate in the graph.
         Trades one extra contraction recompute in backward for K× memory savings.
         Only effective when optimized_kernel is True.
 
-    Returns
-    -------
-    out: torch.Tensor
-        Output tensor
-
     References
     ----------
-    [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
+    :cite:`Ocampo2023`
     """
 
     def __init__(
@@ -566,6 +592,37 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             # preprocessed data-structure for GPU kernel
             roff_idx = preprocess_psi(self.kernel_size, self.nlat_out, ker_idx, row_idx, col_idx, vals).contiguous()
             self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+            split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals = _build_kernel_split_csr(
+                roff_idx, ker_idx, row_idx, col_idx, vals, self.kernel_size, self.nlat_out
+            )
+            self.psi_split_row_offsets, self.psi_split_nnz_offsets = _split_csr_python_offsets(split_nnz_off)
+            self.register_buffer("psi_split_roff_idx", split_roff_idx, persistent=False)
+            self.register_buffer("psi_split_nnz_off", split_nnz_off, persistent=False)
+            self.register_buffer("psi_split_ker_idx", split_ker_idx, persistent=False)
+            self.register_buffer("psi_split_row_idx", split_row_idx, persistent=False)
+            self.register_buffer("psi_split_col_idx", split_col_idx, persistent=False)
+            self.register_buffer("psi_split_vals", split_vals, persistent=False)
+
+            # optional K-packed dense layout for the WGMMA path (Hopper bf16/fp16).
+            # precompute here so it's available at forward time.
+            psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(
+                self.kernel_size,
+                self.nlat_out,
+                self.nlon_in,
+                0,
+                ker_idx,
+                row_idx,
+                col_idx,
+                vals,
+                roff_idx,
+            )
+            kpack = _maybe_kpack_psi(psi_packed_idx.contiguous(), psi_packed_vals.contiguous(), psi_packed_count.contiguous())
+            if kpack is not None:
+                kpacked_idx, kpacked_vals, kpacked_count, K_pad = kpack
+                self.register_buffer("psi_kpacked_idx", kpacked_idx, persistent=False)
+                self.register_buffer("psi_kpacked_vals", kpacked_vals, persistent=False)
+                self.register_buffer("psi_kpacked_count", kpacked_count, persistent=False)
+                self.psi_kpacked_K_pad = K_pad
 
             # optional K-packed dense layout for the WGMMA path (Hopper bf16/fp16).
             # precompute here so it's available at forward time.
@@ -598,6 +655,10 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         if not self.optimized_kernel:
             self.psi = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out)
 
+        # cache static forward-path decisions so the forward sees plain Python bools/ints,
+        # not symbolic expressions that confuse torch.compile's value-range analysis
+        self._save_x_spatial_first_ok = self.optimized_kernel and _use_spatial_first_dgrad(self.out_per_group, self.groupsize, self.kernel_size, self.psi_roff_idx, self.nlat_out)
+
     def extra_repr(self):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
 
@@ -617,9 +678,21 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         return result
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Apply the discrete-continuous convolution.
 
-        out_per_group = self.weight.shape[0] // self.groups
-        weight_r = self.weight.reshape(self.groups, out_per_group, self.weight.shape[1], self.weight.shape[2])
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input signal of shape ``(batch, in_channels, nlat_in, nlon_in)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Convolved signal of shape ``(batch, out_channels, nlat_out, nlon_out)``.
+        """
+
+        weight_r = self.weight.reshape(self.groups, self.out_per_group, self.weight.shape[1], self.weight.shape[2])
         kpacked_dtype = x.dtype
         if x.is_cuda and torch.is_autocast_enabled("cuda"):
             kpacked_dtype = torch.get_autocast_dtype("cuda")
@@ -633,6 +706,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             and self.nlon_in % self.nlon_out == 0
             and self.kpacked_device_supported
         )
+        _save_x_spatial_first_ok = self._save_x_spatial_first_ok
 
         if self.fused and _kpacked_ok:
             out = _disco_s2_fused_conv_kpacked(
@@ -646,11 +720,19 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                 self.psi_row_idx,
                 self.psi_col_idx,
                 self.psi_vals,
+                self.psi_split_roff_idx,
+                self.psi_split_nnz_off,
+                self.psi_split_ker_idx,
+                self.psi_split_row_idx,
+                self.psi_split_col_idx,
+                self.psi_split_vals,
                 self.kernel_size,
                 self.nlat_out,
                 self.nlon_out,
                 self.groups,
                 self.groupsize,
+                self.psi_split_row_offsets,
+                self.psi_split_nnz_offsets,
             )
         elif self.fused:
             out = _disco_s2_fused_conv_optimized(
@@ -661,14 +743,71 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                 self.psi_row_idx,
                 self.psi_col_idx,
                 self.psi_vals,
+                self.psi_split_roff_idx,
+                self.psi_split_nnz_off,
+                self.psi_split_ker_idx,
+                self.psi_split_row_idx,
+                self.psi_split_col_idx,
+                self.psi_split_vals,
                 self.kernel_size,
                 self.nlat_out,
                 self.nlon_out,
                 self.groups,
                 self.groupsize,
+                self.psi_split_row_offsets,
+                self.psi_split_nnz_offsets,
             )
         else:
-            if _kpacked_ok:
+            if _save_x_spatial_first_ok and _kpacked_ok:
+                out = _disco_s2_conv_save_x_kpacked(
+                    x.to(kpacked_dtype),
+                    weight_r,
+                    self.psi_kpacked_idx,
+                    self.psi_kpacked_vals,
+                    self.psi_kpacked_count,
+                    self.psi_roff_idx,
+                    self.psi_ker_idx,
+                    self.psi_row_idx,
+                    self.psi_col_idx,
+                    self.psi_vals,
+                    self.psi_split_roff_idx,
+                    self.psi_split_nnz_off,
+                    self.psi_split_ker_idx,
+                    self.psi_split_row_idx,
+                    self.psi_split_col_idx,
+                    self.psi_split_vals,
+                    self.kernel_size,
+                    self.nlat_out,
+                    self.nlon_out,
+                    self.groups,
+                    self.groupsize,
+                    self.psi_split_row_offsets,
+                    self.psi_split_nnz_offsets,
+                )
+            elif _save_x_spatial_first_ok:
+                out = _disco_s2_conv_save_x_optimized(
+                    x.to(kpacked_dtype),
+                    weight_r,
+                    self.psi_roff_idx,
+                    self.psi_ker_idx,
+                    self.psi_row_idx,
+                    self.psi_col_idx,
+                    self.psi_vals,
+                    self.psi_split_roff_idx,
+                    self.psi_split_nnz_off,
+                    self.psi_split_ker_idx,
+                    self.psi_split_row_idx,
+                    self.psi_split_col_idx,
+                    self.psi_split_vals,
+                    self.kernel_size,
+                    self.nlat_out,
+                    self.nlon_out,
+                    self.groups,
+                    self.groupsize,
+                    self.psi_split_row_offsets,
+                    self.psi_split_nnz_offsets,
+                )
+            elif _kpacked_ok:
                 x = _disco_s2_contraction_kpacked(
                     x.to(kpacked_dtype),
                     self.psi_kpacked_idx,
@@ -691,12 +830,13 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                 x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
 
             # extract shape
-            B, C, K, H, W = x.shape
-            x = x.reshape(B, self.groups, self.groupsize, K, H, W)
+            if not _save_x_spatial_first_ok:
+                B, C, K, H, W = x.shape
+                x = x.reshape(B, self.groups, self.groupsize, K, H, W)
 
-            # do weight multiplication
-            out = torch.einsum("bgckxy,gock->bgoxy", x, weight_r).contiguous()
-            out = out.reshape(B, self.weight.shape[0], H, W)
+                # do weight multiplication
+                out = torch.einsum("bgckxy,gock->bgoxy", x, weight_r).contiguous()
+                out = out.reshape(B, self.weight.shape[0], H, W)
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, self.bias.shape[0], 1, 1)
@@ -705,46 +845,55 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
 
 class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
-    """
-    Discrete-continuous (DISCO) transpose convolutions on the 2-Sphere as described in [1].
+    r"""
+    Discrete-continuous (DISCO) transpose convolution on the 2-sphere, as described in :cite:`Ocampo2023`.
+
+    This is the transpose (adjoint) of
+    :class:`~torch_harmonics.DiscreteContinuousConvS2`.  It uses the same
+    continuous-filter and quadrature construction but applies the
+    :math:`\Psi` tensor in the reverse direction -- typically to map a coarser
+    grid to a finer one (upsampling), analogous to a transposed/strided
+    convolution in the planar case.  It shares the compact-support filter and
+    sparse, linearly scaling evaluation, and the same approximate
+    :math:`SO(3)` equivariance.
+
+    .. seealso::
+        :doc:`/guide/disco_convolutions`
+            User guide with the full mathematical derivation, filter basis
+            visualisations, and worked examples.
 
     Parameters
-    -----------
-    in_channels: int
+    ----------
+    in_channels : int
         Number of input channels
-    out_channels: int
+    out_channels : int
         Number of output channels
-    in_shape: Tuple[int]
+    in_shape : Tuple[int]
         Input shape of the convolution tensor
-    out_shape: Tuple[int]
+    out_shape : Tuple[int]
         Output shape of the convolution tensor
-    kernel_shape: Union[int, Tuple[int], Tuple[int, int]]
+    kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
-    basis_type: Optional[str]
+    basis_type : Optional[str]
         Type of the basis functions
-    basis_norm_mode: Optional[str]
+    basis_norm_mode : Optional[str]
         Mode for basis normalization
-    groups: Optional[int]
+    groups : Optional[int]
         Number of groups
-    grid_in: Optional[str]
+    grid_in : Optional[str]
         Input grid type
-    grid_out: Optional[str]
+    grid_out : Optional[str]
         Output grid type
-    bias: Optional[bool]
+    bias : Optional[bool]
         Whether to use bias
-    theta_cutoff: Optional[float]
+    theta_cutoff : Optional[float]
         Theta cutoff for the filter basis functions
-    optimized_kernel: Optional[bool]
+    optimized_kernel : Optional[bool]
         Whether to use the optimized kernel (if available)
-
-    Returns
-    --------
-    out: torch.Tensor
-        Output tensor
 
     References
     ----------
-    [1] Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
+    :cite:`Ocampo2023`
     """
 
     def __init__(
@@ -823,14 +972,26 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Apply the transpose discrete-continuous convolution.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input signal of shape ``(batch, in_channels, nlat_in, nlon_in)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Convolved signal of shape ``(batch, out_channels, nlat_out, nlon_out)``.
+        """
 
         # extract shape
         B, C, H, W = x.shape
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
-        out_per_group = self.weight.shape[0] // self.groups
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, out_per_group, self.weight.shape[1], self.weight.shape[2])).contiguous()
+        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, self.out_per_group, self.weight.shape[1], self.weight.shape[2])).contiguous()
         x = x.reshape(B, self.weight.shape[0], x.shape[-3], H, W)
 
         if self.optimized_kernel:

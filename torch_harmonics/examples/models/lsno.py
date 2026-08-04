@@ -379,8 +379,8 @@ class SphericalNeuralOperatorBlock(nn.Module):
 class LocalSphericalNeuralOperator(nn.Module):
     """
     LocalSphericalNeuralOperator module. A spherical neural operator which uses both local and global integral
-    operators to accureately model both types of solution operators [1]. The architecture is based on the Spherical
-    Fourier Neural Operator [2] and improves upon it with local integral operators in both the Neural Operator blocks,
+    operators to accureately model both types of solution operators :cite:`LiuSchiaffini2024`. The architecture is based on the Spherical
+    Fourier Neural Operator :cite:`Bonev2023` and improves upon it with local integral operators in both the Neural Operator blocks,
     as well as in the encoder and decoders.
 
     Parameters
@@ -432,8 +432,8 @@ class LocalSphericalNeuralOperator(nn.Module):
     bias : bool, optional
         Whether to use a bias, by default False
 
-    Example
-    ----------
+    Examples
+    --------
     >>> model = LocalSphericalNeuralOperator(
     ...         img_shape=(128, 256),
     ...         scale_factor=4,
@@ -447,14 +447,7 @@ class LocalSphericalNeuralOperator(nn.Module):
 
     References
     ----------
-    .. [1] Liu-Schiaffini M., Berner J., Bonev B., Kurth T., Azizzadenesheli K., Anandkumar A.;
-        "Neural Operators with Localized Integral and Differential Kernels" (2024).
-        ICML 2024, https://arxiv.org/pdf/2402.16845.
-
-    .. [2] Bonev B., Kurth T., Hundt C., Pathak, J., Baust M., Kashinath K., Anandkumar A.;
-        "Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere" (2023).
-        ICML 2023, https://arxiv.org/abs/2306.03838.
-
+    :cite:`LiuSchiaffini2024`, :cite:`Bonev2023`
     """
 
     def __init__(

@@ -50,7 +50,7 @@ def _truncate_lmax(nlat: int, grid: Optional[str] = "equiangular") -> int:
     nlat : int
         Number of latitude points
     grid : str, optional
-        Grid type ("legendre-gauss", "lobatto", "equiangular", "equiangular-trapezoidal"), by default "equiangular"
+        Grid type (``"legendre-gauss"``, ``"lobatto"``, ``"equiangular"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
 
     Returns
     -------
@@ -91,30 +91,77 @@ def _truncate_mmax(nlon: int) -> int:
 
 
 def truncate_sht(nlat: int, nlon: int, lmax: Optional[int] = None, mmax: Optional[int] = None, grid: Optional[str] = "equiangular") -> Tuple[int, int]:
-    """
-    Truncate the maximum spherical harmonic degree and azimuthal harmonic degree based on the latitude and longitude grids.
+    r"""
+    Determine the maximum spherical harmonic degree and order for an SHT based
+    on the spatial grid.
+
+    When ``lmax`` or ``mmax`` are not provided, they are inferred from the grid
+    resolution.  The default truncation for each grid type is chosen so that the
+    associated Legendre polynomials up to the returned degree can be
+    square-integrated exactly by the corresponding quadrature rule:
+
+    .. list-table:: Default latitudinal truncation :math:`l_{\max}` for :math:`N_\theta` latitude points
+       :header-rows: 1
+       :widths: 30 15 25 30
+
+       * - Grid type
+         - Includes poles?
+         - Quadrature exactness
+         - Default :math:`l_{\max}`
+       * - ``"legendre-gauss"``
+         - No
+         - :math:`2 N_\theta - 1`
+         - :math:`N_\theta`
+       * - ``"lobatto"``
+         - Yes
+         - :math:`2 N_\theta - 3`
+         - :math:`N_\theta - 1`
+       * - ``"equiangular"`` / ``"equiangular-trapezoidal"``
+         - Yes
+         - :math:`\approx N_\theta - 1`
+         - :math:`\lfloor (N_\theta + 1) / 2 \rfloor`
+
+    The default longitudinal truncation is the Nyquist limit of the uniform
+    longitude grid: :math:`m_{\max} = \lfloor N_\lambda / 2 \rfloor + 1`.
+
+    Finally, a **triangular truncation** is applied:
+    :math:`l_{\max} = m_{\max} = \min(l_{\max},\, m_{\max})`, so that every
+    retained degree has a full set of orders.
 
     Parameters
     ----------
     nlat : int
-        Number of latitude points
+        Number of latitude points :math:`N_\theta`.
     nlon : int
-        Number of longitude points
+        Number of longitude points :math:`N_\lambda`.
     lmax : int, optional
-        User-defined maximum spherical harmonic degree (non-inclusive)
-        If not provided, the maximum degree is determined based on the latitude grid.
+        User-defined maximum spherical harmonic degree (non-inclusive).
+        If not provided, the maximum degree is determined from the latitude
+        grid as shown in the table above.
     mmax : int, optional
-        User-defined maximum azimuthal harmonic degree (non-inclusive)
-        If not provided, the maximum degree is determined based on the longitude grid.
+        User-defined maximum azimuthal harmonic order (non-inclusive).
+        If not provided, set to the Nyquist limit
+        :math:`\lfloor N_\lambda / 2 \rfloor + 1`.
     grid : str, optional
-        Grid type ("legendre-gauss", "lobatto", "equiangular", "equiangular-trapezoidal"), by default "equiangular"
+        Grid type (``"legendre-gauss"``, ``"lobatto"``, ``"equiangular"``,
+        ``"equiangular-trapezoidal"``), by default ``"equiangular"``.
 
     Returns
     -------
     lmax : int
-        Maximum spherical harmonic degree (non-inclusive)
+        Maximum spherical harmonic degree (non-inclusive).
     mmax : int
-        Maximum azimuthal harmonic degree (non-inclusive)
+        Maximum azimuthal harmonic order (non-inclusive).
+
+    Examples
+    --------
+    >>> from torch_harmonics import truncate_sht
+    >>> truncate_sht(128, 256, grid="legendre-gauss")
+    (128, 128)
+    >>> truncate_sht(128, 256, grid="lobatto")
+    (127, 127)
+    >>> truncate_sht(128, 256, grid="equiangular")
+    (64, 64)
     """
 
     # determine the maximum degrees based on user-defined values or the default values based on the grid type

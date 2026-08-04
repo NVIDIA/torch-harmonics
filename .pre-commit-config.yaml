@@ -10,7 +10,7 @@ repos:
       - id: end-of-file-fixer
       - id: check-yaml
       - id: check-added-large-files
-        args: ['--maxkb=500']
+        args: ['--maxkb=2500']
       - id: check-merge-conflict
 
   - repo: https://github.com/psf/black
@@ -31,6 +31,16 @@ repos:
     hooks:
       - id: clang-format
         types_or: [c, c++, cuda]
+
+  # Format the MyST Markdown documentation sources. Scoped to docs/ so it does
+  # not reformat README.md / CONTRIBUTING.md (which have intentional layout).
+  - repo: https://github.com/executablebooks/mdformat
+    rev: 0.7.22
+    hooks:
+      - id: mdformat
+        additional_dependencies:
+          - mdformat-myst
+        files: ^docs/.*\.md$
 
   - repo: local
     hooks:

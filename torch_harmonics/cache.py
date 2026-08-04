@@ -43,7 +43,7 @@ def lru_cache(maxsize=20, typed=False, copy=False):
     deep copies of cached results to prevent unintended modifications to cached objects.
 
     Parameters
-    -----------
+    ----------
     maxsize : int, optional
         Maximum number of items to cache, by default 20
     typed : bool, optional
@@ -56,8 +56,8 @@ def lru_cache(maxsize=20, typed=False, copy=False):
     function
         Decorated function with LRU caching
 
-    Example
-    -------
+    Examples
+    --------
     >>> @lru_cache(maxsize=10, copy=True)
     ... def expensive_function(x):
     ...     return [x, x*2, x*3]

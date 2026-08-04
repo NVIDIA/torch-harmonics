@@ -45,11 +45,11 @@ def _precompute_quadrature_weights(
     Precompute grid points and quadrature weights for various quadrature rules.
 
     Parameters
-    -----------
+    ----------
     n : int
         Number of grid points
     grid : str, optional
-        Grid type ("equiangular-trapezoidal", "legendre-gauss", "lobatto", "equiangular"), by default "equiangular"
+        Grid type (``"equiangular-trapezoidal"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular"``), by default ``"equiangular"``
     a : float, optional
         Lower bound of interval, by default 0.0
     b : float, optional
@@ -88,14 +88,44 @@ def _precompute_quadrature_weights(
 
 @lru_cache(typed=True, copy=True)
 def precompute_longitudes(nlon: int):
+    r"""
+    Return equispaced longitude nodes in :math:`[0, 2\pi)`.
 
+    Parameters
+    ----------
+    nlon : int
+        Number of longitudinal nodes.
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor of longitude values in radians, shape ``(nlon,)``.
+    """
     lons = torch.linspace(0, 2 * math.pi, nlon + 1, dtype=torch.float64, requires_grad=False)[:-1]
     return lons
 
 
 @lru_cache(typed=True, copy=True)
 def precompute_latitudes(nlat: int, grid: Optional[str] = "equiangular") -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Return latitude nodes and quadrature weights for the given grid type.
 
+    Parameters
+    ----------
+    nlat : int
+        Number of latitudinal nodes.
+    grid : str, optional
+        Quadrature grid type. One of ``"equiangular"`` (Clenshaw–Curtis),
+        ``"legendre-gauss"``, ``"lobatto"``, or ``"equiangular-trapezoidal"``.
+        Default is ``"equiangular"``.
+
+    Returns
+    -------
+    lats : torch.Tensor
+        Tensor of co-latitude values in radians, shape ``(nlat,)``.
+    wlg : torch.Tensor
+        Corresponding quadrature weights, shape ``(nlat,)``.
+    """
     # compute coordinates in the cosine theta domain
     xlg, wlg = _precompute_quadrature_weights(nlat, grid=grid, a=-1.0, b=1.0, periodic=False)
 
@@ -113,21 +143,21 @@ def trapezoidal_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 
     on the interval [a, b]
 
     Parameters
-    -----------
-    n: int
+    ----------
+    n : int
         Number of quadrature nodes
-    a: Optional[float]
+    a : Optional[float]
         Lower bound of the interval
-    b: Optional[float]
+    b : Optional[float]
         Upper bound of the interval
-    periodic: Optional[bool]
+    periodic : Optional[bool]
         Whether the grid is periodic
 
     Returns
     -------
-    xlg: torch.Tensor
+    xlg : torch.Tensor
         Tensor of quadrature nodes
-    wlg: torch.Tensor
+    wlg : torch.Tensor
         Tensor of quadrature weights
     """
 
@@ -147,19 +177,19 @@ def legendre_gauss_weights(n: int, a: Optional[float] = -1.0, b: Optional[float]
     on the interval [a, b]
 
     Parameters
-    -----------
-    n: int
+    ----------
+    n : int
         Number of quadrature nodes
-    a: Optional[float]
+    a : Optional[float]
         Lower bound of the interval
-    b: Optional[float]
+    b : Optional[float]
         Upper bound of the interval
 
     Returns
     -------
-    xlg: torch.Tensor
+    xlg : torch.Tensor
         Tensor of quadrature nodes
-    wlg: torch.Tensor
+    wlg : torch.Tensor
         Tensor of quadrature weights
     """
 
@@ -178,23 +208,23 @@ def lobatto_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 1.0,
     on the interval [a, b]
 
     Parameters
-    -----------
-    n: int
+    ----------
+    n : int
         Number of quadrature nodes
-    a: Optional[float]
+    a : Optional[float]
         Lower bound of the interval
-    b: Optional[float]
+    b : Optional[float]
         Upper bound of the interval
-    tol: Optional[float]
+    tol : Optional[float]
         Tolerance for the iteration
-    maxiter: Optional[int]
+    maxiter : Optional[int]
         Maximum number of iterations
 
     Returns
     -------
-    tlg: torch.Tensor
+    tlg : torch.Tensor
         Tensor of quadrature nodes
-    wlg: torch.Tensor
+    wlg : torch.Tensor
         Tensor of quadrature weights
 
     """
@@ -241,24 +271,24 @@ def clenshaw_curtiss_weights(n: int, a: Optional[float] = -1.0, b: Optional[floa
     This implementation follows
 
     Parameters
-    -----------
-    n: int
+    ----------
+    n : int
         Number of quadrature nodes
-    a: Optional[float]
+    a : Optional[float]
         Lower bound of the interval
-    b: Optional[float]
+    b : Optional[float]
         Upper bound of the interval
 
     Returns
     -------
-    tcc: torch.Tensor
+    tcc : torch.Tensor
         Tensor of quadrature nodes
-    wcc: torch.Tensor
+    wcc : torch.Tensor
         Tensor of quadrature weights
 
     References
     ----------
-    [1] Joerg Waldvogel, Fast Construction of the Fejer and Clenshaw-Curtis Quadrature Rules; BIT Numerical Mathematics, Vol. 43, No. 1, pp. 001–018.
+    :cite:`Waldvogel2006`
     """
 
     if n <= 1:
@@ -294,26 +324,73 @@ def clenshaw_curtiss_weights(n: int, a: Optional[float] = -1.0, b: Optional[floa
 
 
 class QuadratureS2(torch.nn.Module):
-    """
+    r"""
     Scalar quadrature on :math:`S^2` for integrating spherical fields defined on a
     latitude/longitude grid.
 
+    Given a signal :math:`f(\theta, \lambda)` sampled on a latitude--longitude
+    grid, this module approximates the surface integral over the sphere:
+
+    .. math::
+
+        I[f] = \int_0^{2\pi}\!\int_0^{\pi}
+            f(\theta, \lambda)\,\sin\theta\; d\theta\; d\lambda
+        \;\approx\; \sum_{k=0}^{N_\theta - 1} \sum_{j=0}^{N_\lambda - 1}
+            f(\theta_k, \lambda_j)\, q_k\, \Delta\lambda
+
+    where :math:`q_k` are the latitudinal quadrature weights (which absorb the
+    :math:`\sin\theta` Jacobian via the change of variable to
+    :math:`\cos\theta`) and :math:`\Delta\lambda = 2\pi / N_\lambda` is the
+    uniform longitudinal spacing.
+
+    The choice of ``grid`` determines how the nodes :math:`\theta_k` and weights
+    :math:`q_k` are computed:
+
+    * ``"legendre-gauss"`` -- Gauss--Legendre quadrature.  Nodes are the roots
+      of the Legendre polynomial :math:`P_N(\cos\theta)`.  Exact for
+      polynomials of degree up to :math:`2N - 1`.
+    * ``"lobatto"`` -- Gauss--Lobatto quadrature.  Nodes include both endpoints
+      (poles).  Exact for polynomials of degree up to :math:`2N - 3`.
+    * ``"equiangular"`` -- Clenshaw--Curtis quadrature on equiangular nodes.
+      Nodes are equally spaced in :math:`\theta`.  Exact for polynomials of
+      degree up to approximately :math:`N - 1`.
+    * ``"equiangular-trapezoidal"`` -- Trapezoidal rule on equiangular nodes.
+
+    When ``normalize=True``, the weights are divided by :math:`4\pi` so that
+    the output represents the spherical mean rather than the integral:
+
+    .. math::
+
+        \bar{f} = \frac{1}{4\pi} \int_{S^2} f\; dA
+
     Parameters
-    -----------
-    img_shape: Tuple[int]
+    ----------
+    img_shape : Tuple[int]
         Spatial grid shape ``(nlat, nlon)``.
-    grid: str, optional
+    grid : str, optional
         Quadrature grid type (``"equiangular"``, ``"legendre-gauss"``,
         ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``.
-    normalize: bool, optional
-        If ``True``, divides weights by ``4π`` to return an average instead of
-        an integral, by default ``False``.
+    normalize : bool, optional
+        If ``True``, divides weights by :math:`4\pi` to return a spherical mean
+        instead of an integral, by default ``False``.
 
-    Returns
-    -------
-    torch.Tensor
-        Tensor of shape ``(..., channels)`` containing the integral over the
-        last two spatial dimensions.
+    Examples
+    --------
+    Compute the surface area of the unit sphere (:math:`\int_{S^2} 1\,dA = 4\pi`):
+
+    >>> import torch
+    >>> import torch_harmonics as th
+    >>> nlat, nlon = 128, 256
+    >>> quad = th.QuadratureS2(img_shape=(nlat, nlon), grid="legendre-gauss")
+    >>> ones = torch.ones(1, 1, nlat, nlon)
+    >>> quad(ones).item()  # ≈ 4π
+    12.566370614359172
+
+    Compute the spherical mean of a field:
+
+    >>> quad_norm = th.QuadratureS2(img_shape=(nlat, nlon), grid="legendre-gauss", normalize=True)
+    >>> quad_norm(ones).item()  # ≈ 1.0
+    1.0
 
     Raises
     ------
@@ -364,6 +441,20 @@ class QuadratureS2(torch.nn.Module):
         self.register_buffer("quad_weight", quad_weight, persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Integrate a signal over the sphere using the precomputed quadrature.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input signal of shape ``(..., nlat, nlon)``. Integration is over the last two
+            (spatial) dimensions.
+
+        Returns
+        -------
+        torch.Tensor
+            Integral of shape ``(...)`` (the input with its last two dimensions reduced).
+        """
         # integrate over last two axes only:
         quad = torch.sum(x * self.quad_weight, dim=(-2, -1))
 

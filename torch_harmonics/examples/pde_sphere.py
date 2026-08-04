@@ -47,7 +47,7 @@ class SphereSolver(nn.Module):
     - Ginzburg-Landau equation
 
     Parameters
-    -----------
+    ----------
     nlat : int
         Number of latitude points
     nlon : int
@@ -150,7 +150,7 @@ class SphereSolver(nn.Module):
         Plot data on the sphere grid. Requires cartopy for 3d plots.
 
         Parameters
-        -----------
+        ----------
         data : torch.Tensor
             Data to plot
         fig : matplotlib.figure.Figure

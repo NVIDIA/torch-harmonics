@@ -80,13 +80,18 @@ def _torch_cuda_arch_list_has(arch: str) -> bool:
     aliases = {
         "9.0a": ("9.0a", "9a", "sm_90a", "compute_90a"),
         "10.0a": ("10.0a", "10a", "sm_100a", "compute_100a"),
+        # GB300 / Blackwell Ultra. Same tcgen05 kernel as 10.0a, but a separate
+        # arch-conditional target: an sm_100a cubin will not load on sm_103.
+        "10.3a": ("10.3a", "103a", "sm_103a", "compute_103a"),
     }
     return any(alias in normalized for alias in aliases[arch])
 
 
 def get_helpers_compile_args(BUILD_CPP, BUILD_CUDA):
     build_kpacked_sm90 = BUILD_CUDA and _torch_cuda_arch_list_has("9.0a")
-    build_kpacked_sm100 = BUILD_CUDA and _torch_cuda_arch_list_has("10.0a")
+    # One flag for both Blackwell targets: the runtime dispatch keys off
+    # props.major == 10, which covers sm_100 and sm_103 alike.
+    build_kpacked_sm100 = BUILD_CUDA and (_torch_cuda_arch_list_has("10.0a") or _torch_cuda_arch_list_has("10.3a"))
     return {
         "cxx": [
             f"-DBUILD_CPP={1 if BUILD_CPP else 0}",
@@ -100,11 +105,10 @@ def get_helpers_compile_args(BUILD_CPP, BUILD_CUDA):
 def get_ext_modules():
     """Get list of extension modules to compile."""
 
-    # some code to handle the building of custom modules
-    FORCE_CUDA_EXTENSION = os.getenv("FORCE_CUDA_EXTENSION", "0") == "1"
+    TORCH_HARMONICS_BUILD_CPP_EXTENSION = os.getenv("TORCH_HARMONICS_BUILD_CPP_EXTENSION", "0") == "1"
+    TORCH_HARMONICS_BUILD_CUDA_EXTENSION = os.getenv("TORCH_HARMONICS_BUILD_CUDA_EXTENSION", "0") == "1"
     BUILD_CPP = BUILD_CUDA = False
 
-    # PyTorch is required for building this package
     try:
         import torch
 
@@ -114,12 +118,12 @@ def get_ext_modules():
         print(f"Building with C++11 ABI = {torch._C._GLIBCXX_USE_CXX11_ABI}")
         print(f"Compile flag will be -D_GLIBCXX_USE_CXX11_ABI={int(torch._C._GLIBCXX_USE_CXX11_ABI)}")
 
-        BUILD_CPP = True
-        BUILD_CUDA = FORCE_CUDA_EXTENSION or (torch.cuda.is_available() and (CUDA_HOME is not None))
+        BUILD_CPP = TORCH_HARMONICS_BUILD_CPP_EXTENSION or True
+        BUILD_CUDA = TORCH_HARMONICS_BUILD_CUDA_EXTENSION or (torch.cuda.is_available() and (CUDA_HOME is not None))
 
         if BUILD_CUDA:
             print("CUDA extensions will be built")
-        else:
+        elif BUILD_CPP:
             print("CPU-only extensions will be built")
 
     except (ImportError, TypeError, AssertionError, AttributeError) as e:

@@ -62,6 +62,13 @@ dev = [
 filter_basis = [
     "scipy>=1.9.0",
 ]
+docs = [
+    "sphinx>=7.1",
+    "nvidia-sphinx-theme>=0.0.9",  # official NVIDIA theme (pulls in pydata-sphinx-theme)
+    "myst-nb>=1.0",
+    "sphinx-copybutton>=0.5",
+    "sphinxcontrib-bibtex>=2.6",
+]
 2d3ds = [
     "requests",
     "tarfile",

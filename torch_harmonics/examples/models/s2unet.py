@@ -53,7 +53,7 @@ class DownsamplingBlock(nn.Module):
     using discrete-continuous convolutions to maintain spectral properties.
 
     Parameters
-    -----------
+    ----------
     in_shape : tuple
         Input shape (nlat, nlon)
     out_shape : tuple
@@ -219,7 +219,7 @@ class UpsamplingBlock(nn.Module):
     using discrete-continuous convolutions to maintain spectral properties.
 
     Parameters
-    -----------
+    ----------
     in_shape : tuple
         Input shape (nlat, nlon)
     out_shape : tuple
@@ -406,7 +406,7 @@ class SphericalUNet(nn.Module):
     Spherical U-Net model designed to approximate mappings from spherical signals to spherical segmentation masks
 
     Parameters
-    -----------
+    ----------
     img_size : tuple, optional
         Shape of the input channels, by default (128, 256)
     grid : str, optional
@@ -442,8 +442,8 @@ class SphericalUNet(nn.Module):
     upsampling_mode : str, optional
         Upsampling mode ("bilinear", "conv"), by default "bilinear"
 
-    Example
-    -----------
+    Examples
+    --------
     >>> model = SphericalUNet(
     ...         img_size=(128, 256),
     ...         scale_factor=4,
