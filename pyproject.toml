@@ -28,11 +28,11 @@ dynamic = ["version"]
 
 description = "Differentiable signal processing on the sphere for PyTorch."
 license = { file = "LICENSE.txt" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
     "Operating System :: OS Independent",
 ]
 
@@ -71,7 +71,6 @@ docs = [
 ]
 2d3ds = [
     "requests",
-    "tarfile",
     "tqdm",
     "pillow",
     "h5py",
@@ -106,8 +105,8 @@ ignore = [
 known-first-party = ["torch_harmonics"]
 
 [tool.cibuildwheel]
-# Build for Python 3.9, 3.10, 3.11, 3.12
-build = ["cp39-*", "cp310-*", "cp311-*", "cp312-*"]
+# Build for Python 3.10, 3.11, 3.12
+build = ["cp310-*", "cp311-*", "cp312-*"]
 build-frontend = "pip; args: --no-build-isolation"
 
 # Use manylinux for Linux wheels
