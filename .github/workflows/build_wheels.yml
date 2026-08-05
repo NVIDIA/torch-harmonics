@@ -7,6 +7,10 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# wheels are only uploaded as artifacts, publishing happens outside of this workflow
+permissions:
+  contents: read
+
 env:
   CUDA_ARCH_MAP: '{"12.6": "8.0;8.6;8.9;9.0;+PTX", "12.8": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "12.9": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "13.0": "8.0;8.6;8.9;9.0;10.0;12.0;+PTX", "none": ""}'
 
@@ -21,11 +25,11 @@ jobs:
           - torch-version: '2.6.0'
             torch-cuda: 'cu126'
             cuda-version: '12.6'
-            python-builds: 'cp39-* cp310-* cp311-* cp312-*'
+            python-builds: 'cp310-* cp311-* cp312-*'
           - torch-version: '2.7.0'
             torch-cuda: 'cu128'
             cuda-version: '12.8'
-            python-builds: 'cp39-* cp310-* cp311-* cp312-*'
+            python-builds: 'cp310-* cp311-* cp312-*'
           - torch-version: '2.8.0'
             torch-cuda: 'cu129'
             cuda-version: '12.9'
@@ -68,7 +72,7 @@ jobs:
 
     - name: Install cibuildwheel
       run: |
-        python -m pip install cibuildwheel
+        python -m pip install -r .github/requirements/build-tools.txt
 
     - name: Set CUDA architecture list
       run: |
@@ -86,7 +90,7 @@ jobs:
       env:
         CIBW_BEFORE_BUILD: |
           set -e
-          pip install --upgrade pip setuptools wheel setuptools-scm
+          pip install --upgrade -r {project}/.github/requirements/wheel-build-env.txt
           pip install --no-cache-dir torch==${{ matrix.torch-version }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
           pip install numpy
         CIBW_BEFORE_TEST: |
@@ -140,7 +144,7 @@ jobs:
     - name: Repack wheels for PyPI (strip local version identifier)
       if: matrix.torch-version == '2.11.0' && matrix.torch-cuda == 'cu130'
       run: |
-        pip install wheel
+        pip install -r .github/requirements/build-tools.txt
         mkdir -p pypi-wheelhouse
         for whl in wheelhouse/*.whl; do
           tmpdir=$(mktemp -d)
@@ -161,7 +165,7 @@ jobs:
     - name: Inspect repacked wheels and .so files
       if: always() && (matrix.torch-version == '2.11.0' && matrix.torch-cuda == 'cu130')
       run: |
-        pip install twine auditwheel
+        pip install -r .github/requirements/build-tools.txt
 
         echo "=== twine check ==="
         python -m twine check pypi-wheelhouse/*.whl

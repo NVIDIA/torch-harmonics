@@ -9,3 +9,10 @@ updates:
       # Offical actions have moving tags like v1
       # that are used, so they don't need updates here
       - dependency-name: "actions/*"
+
+  # Keep the pinned CI tooling up to date, otherwise the pins go stale and we
+  # end up building wheels with outdated and potentially vulnerable tools
+  - package-ecosystem: "pip"
+    directory: "/.github/requirements"
+    schedule:
+      interval: "weekly"

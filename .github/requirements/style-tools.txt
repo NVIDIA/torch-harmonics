@@ -1,0 +1,3 @@
+# Linting tooling, pinned so that style runs are reproducible and do not change under us.
+# The individual hook versions are pinned separately in .pre-commit-config.yaml.
+pre-commit==4.6.1

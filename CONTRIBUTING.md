@@ -32,7 +32,7 @@ We're happy to discuss ideas before you spend time on a large change.
 
 **Requirements**
 
-- Python 3.9+
+- Python 3.10+
 - PyTorch 2.6+ (install before building; extensions compile against your local `torch`)
 - NumPy 1.22.4+
 - A C++17 compiler; CUDA toolkit optional but recommended for GPU kernel work
