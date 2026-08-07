@@ -1,0 +1,6 @@
+# Host-side tooling for the wheel build job (runs on the runner, not in the manylinux container).
+# cibuildwheel drives the build, twine/auditwheel inspect the resulting artifacts.
+cibuildwheel==4.2.0
+twine==7.0.0
+auditwheel==6.7.0
+wheel==0.47.0

@@ -29,7 +29,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import hashlib
 import os
+from typing import Dict, Optional
 
 import numpy as np
 import torch
@@ -51,6 +53,20 @@ DEFAULT_TAR_FILE_PAIRS = [
 ]
 DEFAULT_LABELS_URL = "https://raw.githubusercontent.com/alexsax/2D-3D-Semantics/refs/heads/master/assets/semantic_labels.json"
 
+# SHA-256 checksums of the tar files, keyed by filename. Downloads are verified against these
+# before extraction, so that a compromised server or an intercepted connection cannot feed us a
+# manipulated archive. Files without an entry here are downloaded but not verified, in which case
+# a warning is printed. Compute new entries with `sha256sum <tar file>` on a trusted copy.
+DEFAULT_TAR_FILE_CHECKSUMS = {
+    "area_1_no_xyz.tar": "b02d3b12198a419bfecb0aebb7c0ad13e2f4d017bbc6e93606e9316248a8d374",
+    "area_2_no_xyz.tar": "4b23df4e987ffbac7a1e3943bb0cf14ad9e136a5a050c64d7485af01937111f1",
+    "area_3_no_xyz.tar": "6ddb3c2742dc870ef361e542d5075c846f9dc464b7b27d01c7aac3eedc32e36c",
+    "area_4_no_xyz.tar": "741824ebf7085273410d73e65a3a6e6e293359fb63d1ba5f0ae447be70cd0b58",
+    "area_5a_no_xyz.tar": "4541dcff9cc7121c76d72bffff88226361c653d8de43bc1b7815ef3de2fc897e",
+    "area_5b_no_xyz.tar": "feec8f709f750ea7a38303b353fdb6cd08f902ec82511b2c17f95d3109204f10",
+    "area_6_no_xyz.tar": "ff7dda619a555f0031860ba42c963b3c65487a4db55e90fce4ddd54428e190ed",
+}
+
 
 class Stanford2D3DSDownloader:
     """
@@ -62,6 +78,9 @@ class Stanford2D3DSDownloader:
         Base URL for downloading the dataset, by default DEFAULT_BASE_URL
     local_dir : str, optional
         Local directory to store downloaded files, by default "data"
+    checksums : dict, optional
+        Mapping of filename to expected SHA-256 checksum, by default DEFAULT_TAR_FILE_CHECKSUMS.
+        Pass a custom mapping when downloading from a mirror, or None to disable verification.
 
     Returns
     -------
@@ -75,11 +94,36 @@ class Stanford2D3DSDownloader:
     :cite:`Armeni2017`
     """
 
-    def __init__(self, base_url: str = DEFAULT_BASE_URL, local_dir: str = "data"):
+    def __init__(self, base_url: str = DEFAULT_BASE_URL, local_dir: str = "data", checksums: Optional[Dict[str, str]] = DEFAULT_TAR_FILE_CHECKSUMS):
 
         self.base_url = base_url
         self.local_dir = local_dir
+        self.checksums = checksums if checksums is not None else {}
+        self.verify_checksums = checksums is not None
         os.makedirs(self.local_dir, exist_ok=True)
+
+    def _compute_sha256(self, local_path):
+
+        sha256 = hashlib.sha256()
+        with open(local_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                sha256.update(chunk)
+
+        return sha256.hexdigest()
+
+    def _verify_checksum(self, filename, local_path):
+
+        if not self.verify_checksums:
+            return
+
+        expected = self.checksums.get(filename)
+        if expected is None:
+            print(f"Warning: No checksum known for {filename}, skipping integrity check")
+            return
+
+        digest = self._compute_sha256(local_path)
+        if digest != expected:
+            raise RuntimeError(f"Checksum mismatch for {filename}: expected {expected}, but got {digest}. " f"Remove {local_path} and retry the download.")
 
     def _download_file(self, filename):
 
@@ -90,10 +134,11 @@ class Stanford2D3DSDownloader:
         local_path = os.path.join(self.local_dir, filename)
         if os.path.exists(local_path):
             print(f"Note: Skipping download for {filename}, because it already exists")
+            self._verify_checksum(filename, local_path)
             return local_path
 
         print(f"Downloading {filename}...")
-        temp_path = local_path.split(".")[0] + ".part"
+        temp_path = os.path.splitext(local_path)[0] + ".part"
 
         # Resume logic
         headers = {}
@@ -101,26 +146,48 @@ class Stanford2D3DSDownloader:
             headers = {"Range": f"bytes={os.stat(temp_path).st_size}-"}
 
         response = requests.get(url, headers=headers, stream=True, timeout=30)
-        if os.path.exists(temp_path):
-            total_size = int(response.headers.get("content-length", 0)) + os.stat(temp_path).st_size
-        else:
-            total_size = int(response.headers.get("content-length", 0))
+        response.raise_for_status()
 
-        with open(temp_path, "ab") as f, tqdm(desc=filename, total=total_size, unit="B", unit_scale=True, unit_divisor=1024, initial=os.stat(temp_path).st_size) as pbar:
+        # only append if the server honored our range request, otherwise we start from scratch
+        resume = os.path.exists(temp_path) and response.status_code == 206
+        offset = os.stat(temp_path).st_size if resume else 0
+        total_size = int(response.headers.get("content-length", 0)) + offset
+
+        with open(temp_path, "ab" if resume else "wb") as f, tqdm(desc=filename, total=total_size, unit="B", unit_scale=True, unit_divisor=1024, initial=offset) as pbar:
             for chunk in response.iter_content(chunk_size=1024):
                 if chunk:
                     f.write(chunk)
                     pbar.update(len(chunk))
 
         os.rename(temp_path, local_path)
+        self._verify_checksum(filename, local_path)
+
         return local_path
+
+    def _check_tar_members(self, tar):
+        # guard against path traversal: reject members which would end up outside local_dir
+        base_dir = os.path.abspath(self.local_dir)
+        for member in tar.getmembers():
+            member_path = os.path.abspath(os.path.join(base_dir, member.name))
+            if member_path != base_dir and not member_path.startswith(base_dir + os.sep):
+                raise RuntimeError(f"Refusing to extract {member.name}, because it points outside of {self.local_dir}")
+            if member.issym() or member.islnk():
+                link_path = os.path.abspath(os.path.join(os.path.dirname(member_path), member.linkname))
+                if link_path != base_dir and not link_path.startswith(base_dir + os.sep):
+                    raise RuntimeError(f"Refusing to extract link {member.name}, because it points outside of {self.local_dir}")
 
     def _extract_tar(self, tar_path):
 
         import tarfile
 
         with tarfile.open(tar_path) as tar:
-            tar.extractall(path=self.local_dir)
+            # the data filter is available in python 3.12+ and in backports of older versions,
+            # otherwise we validate the member paths manually
+            if hasattr(tarfile, "data_filter"):
+                tar.extractall(path=self.local_dir, filter="data")
+            else:
+                self._check_tar_members(tar)
+                tar.extractall(path=self.local_dir)
             tar_filenames = tar.getnames()
             extracted_dir = tar_filenames[0]
             os.remove(tar_path)

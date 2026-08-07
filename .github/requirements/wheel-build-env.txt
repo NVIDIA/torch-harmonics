@@ -1,0 +1,8 @@
+# Build environment inside the manylinux containers (see CIBW_BEFORE_BUILD in build_wheels.yml).
+# These run with --no-build-isolation, so this is the toolchain that actually compiles the
+# extension and stamps the version into the published wheels. Pinned so that a compromised or
+# simply broken upstream release cannot silently change what we ship.
+pip==26.2.1
+setuptools==83.0.0
+wheel==0.47.0
+setuptools-scm==10.2.1
