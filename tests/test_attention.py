@@ -966,6 +966,157 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
     @parameterized.expand(
         [
+            # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out]
+            # upsampling (scatter) cases, pscale_out=2
+            [4, 4, 1, (6, 12), (12, 24), "equiangular", "equiangular"],
+            [4, 8, 4, (6, 12), (12, 24), "equiangular", "equiangular"],
+        ],
+        skip_on_empty=True,
+    )
+    def test_ring_upsample_kernels_pt2_compatibility(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, verbose=False):
+        """Tests whether the upsample (scatter) ring-step CUDA kernels (used by
+        DistributedNeighborhoodAttentionS2 in the upsample direction) are PyTorch 2 compatible.
+
+        Only the local CUDA kernels are exercised — the ring exchange itself (NCCL P2P) is not
+        tested here. With az_size = polar_size = 1 a single ring step covers the full longitude
+        and the serial scatter psi coincides with the local psi built by
+        _build_local_psi_upsample (lat_lo_out = lon_lo_out = 0, no halo padding), so we can call
+        the kernels in single-rank mode (lon_lo_kx=0, lat_halo_start=0).
+
+        opcheck only verifies the op contract (schema, fake tensors, AOT dispatch); the input
+        tensor values do not need to be numerically meaningful, so kw/vw/qw and the gradient /
+        state buffers are allocated directly with the right shapes."""
+
+        if self.device.type != "cuda":
+            raise unittest.SkipTest("ring kernels are only registered for CUDA")
+        if not cuda_kernels_is_available():
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+
+        set_seed(333)
+
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+        pscale_out = nlon_out // nlon_in
+
+        # Build the module just to get a consistent (quad_weights, psi_col_idx, psi_roff_idx)
+        # for the chosen grid; we do not exercise its forward. For upsample shapes the module
+        # builds the scatter psi (rows keyed by hi, cols encoding ho * nlon_out + wo).
+        att = NeighborhoodAttentionS2(
+            in_channels=channels,
+            num_heads=heads,
+            in_shape=in_shape,
+            out_shape=out_shape,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            bias=False,
+            optimized_kernel=True,
+        ).to(self.device)
+        self.assertTrue(att.upsample)
+
+        # Channel counts after the (head-folded) projections in DistributedNeighborhoodAttentionS2.
+        Bnh = batch_size * heads
+        C_k = channels // heads
+        C_v = channels // heads
+
+        # Synthetic projected k/v/q with the correct kernel-side shapes.
+        kw = torch.randn(Bnh, C_k, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
+        vw = torch.randn(Bnh, C_v, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
+        qw = torch.randn(Bnh, C_k, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+
+        # ---- forward ring step ----
+        # State buffers in channels-last layout, as expected by the CUDA kernels.
+        y_acc = torch.zeros(Bnh, nlat_out, nlon_out, C_v, device=self.device, dtype=torch.float32)
+        alpha_sum = torch.zeros(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+        qdotk_max = torch.full((Bnh, nlat_out, nlon_out), float("-inf"), device=self.device, dtype=torch.float32)
+
+        fwd_inputs = (
+            kw,
+            vw,
+            qw,
+            y_acc,
+            alpha_sum,
+            qdotk_max,
+            att.quad_weights,
+            att.psi_col_idx,
+            att.psi_roff_idx,
+            nlon_in,
+            nlon_out,
+            pscale_out,
+            0,
+            0,
+            nlat_out,
+            nlon_out,
+        )
+
+        opcheck(torch.ops.attention_kernels.forward_ring_step_upsample, fwd_inputs)
+
+        # ---- backward pass 1: scatter integral / alpha_k / alpha_kvw stats ----
+        # Uses the forward-final qdotk_max; synthetic but well-formed values (no -inf) so the
+        # kernel doesn't produce NaNs (opcheck doesn't check numerics, but NaNs can interact
+        # badly with AOT dispatch comparisons).
+        dy = torch.randn(Bnh, C_v, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+
+        fwd_qdotk_max = torch.zeros(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+        integral_buf = torch.zeros(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+        alpha_k_buf = torch.zeros(Bnh, nlat_out, nlon_out, C_k, device=self.device, dtype=torch.float32)
+        alpha_kvw_buf = torch.zeros(Bnh, nlat_out, nlon_out, C_k, device=self.device, dtype=torch.float32)
+
+        bwd1_inputs = (
+            kw,
+            vw,
+            qw,
+            dy,
+            fwd_qdotk_max,
+            integral_buf,
+            alpha_k_buf,
+            alpha_kvw_buf,
+            att.quad_weights,
+            att.psi_col_idx,
+            att.psi_roff_idx,
+            nlon_in,
+            nlon_out,
+            pscale_out,
+            0,
+            0,
+            nlat_out,
+            nlon_out,
+        )
+
+        opcheck(torch.ops.attention_kernels.backward_ring_step_upsample_pass1, bwd1_inputs)
+
+        # ---- backward pass 2: accumulate chunk-local dkx/dvx using finalized stats ----
+        fwd_alpha_sum = torch.ones(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+        integral_norm = torch.zeros(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+
+        dkw = torch.zeros(Bnh, nlat_in, nlon_in, C_k, device=self.device, dtype=torch.float32)
+        dvw = torch.zeros(Bnh, nlat_in, nlon_in, C_v, device=self.device, dtype=torch.float32)
+
+        bwd2_inputs = (
+            kw,
+            vw,
+            qw,
+            dy,
+            fwd_alpha_sum,
+            fwd_qdotk_max,
+            integral_norm,
+            dkw,
+            dvw,
+            att.quad_weights,
+            att.psi_col_idx,
+            att.psi_roff_idx,
+            nlon_in,
+            nlon_out,
+            pscale_out,
+            0,
+            0,
+            nlat_out,
+            nlon_out,
+        )
+
+        opcheck(torch.ops.attention_kernels.backward_ring_step_upsample_pass2, bwd2_inputs)
+
+    @parameterized.expand(
+        [
             # self attention
             [1, 256, 1, (91, 180), (91, 180), "equiangular", "equiangular", 1e-5, 1e-5],
         ],

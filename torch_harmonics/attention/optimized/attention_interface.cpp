@@ -123,6 +123,39 @@ namespace attention_kernels
               "col_idx, Tensor row_off, Tensor row_idx, int nlon_in, int pscale, int lon_lo_kx, int lat_halo_start, "
               "int nlat_out, int nlon_out, int n_long_rows, int max_row_len, int mid_row_len) -> ()",
               {at::Tag::pt2_compliant_tag});
+
+        // ---- Ring-step variants for the UPSAMPLE (input-keyed scatter) direction ----
+        // Used by DistributedNeighborhoodAttentionS2 when nlon_out % nlon_in == 0.
+        // K/V live on the coarse input grid and rotate along the azimuth ring; Q and
+        // the softmax state buffers live on the fine output grid and stay local.
+        // psi convention (see _build_local_psi_upsample in distributed_attention.py):
+        //   row_off : indexed by hi_local in [0, nlat_halo] (halo-padded local input
+        //             rows; hi_global = lat_halo_start + hi_local)
+        //   col_idx : ho_local * nlon_out_global + wo_shifted, with
+        //             wo_shifted = (wo_canonical - lon_lo_out) mod nlon_out_global.
+        // The kernel maps wo_shifted -> (wo_shifted + pscale_out * (lon_lo_kx + wi_local))
+        // mod nlon_out_global and treats the cell as local iff the result < nlon_out
+        // (the LOCAL output width). pscale_out is the GLOBAL nlon_out / nlon_in.
+        // A single forward step runs the 3-phase max/rescale/accumulate scheme so the
+        // online softmax stays consistent across ring steps despite the scatter form.
+        m.def("forward_ring_step_upsample(Tensor kx, Tensor vx, Tensor qy, Tensor(a!) y_acc, Tensor(b!) "
+              "alpha_sum_buf, Tensor(c!) qdotk_max_buf, Tensor quad_weights, Tensor col_idx, Tensor row_off, int "
+              "nlon_in, int nlon_out_global, int pscale_out, int lon_lo_kx, int lat_halo_start, int nlat_out, int "
+              "nlon_out) -> ()",
+              {at::Tag::pt2_compliant_tag});
+        // Backward reuses the forward-final alpha_sum / qdotk_max (no max recompute):
+        // pass1 scatters the per-output stats (integral, alpha_k, alpha_kvw) needed for
+        // dqy; pass2 accumulates chunk-local dkx/dvx (allreduced in Python).
+        m.def("backward_ring_step_upsample_pass1(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor qdotk_max_buf, "
+              "Tensor(a!) integral_buf, Tensor(b!) alpha_k_buf, Tensor(c!) alpha_kvw_buf, Tensor quad_weights, Tensor "
+              "col_idx, Tensor row_off, int nlon_in, int nlon_out_global, int pscale_out, int lon_lo_kx, int "
+              "lat_halo_start, int nlat_out, int nlon_out) -> ()",
+              {at::Tag::pt2_compliant_tag});
+        m.def("backward_ring_step_upsample_pass2(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor alpha_sum_buf, "
+              "Tensor qdotk_max_buf, Tensor integral_norm_buf, Tensor(a!) dkx, Tensor(b!) dvx, Tensor quad_weights, "
+              "Tensor col_idx, Tensor row_off, int nlon_in, int nlon_out_global, int pscale_out, int lon_lo_kx, int "
+              "lat_halo_start, int nlat_out, int nlon_out) -> ()",
+              {at::Tag::pt2_compliant_tag});
     }
 
 } // namespace attention_kernels

@@ -258,7 +258,8 @@ class InverseRealSHT(nn.Module):
 
     Raises
     ------
-    ValueError: If the grid type is unknown
+    ValueError
+        If the grid type is unknown
 
     References
     ----------

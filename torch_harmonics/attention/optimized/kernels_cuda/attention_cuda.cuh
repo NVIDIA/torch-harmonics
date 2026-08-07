@@ -75,4 +75,28 @@ namespace attention_kernels
                                                int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out,
                                                int64_t n_long_rows, int64_t max_row_len, int64_t mid_row_len);
 
+    // ring-step variants for the upsample (input-keyed scatter) direction
+    void s2_attention_fwd_ring_step_upsample_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor y_acc,
+                                                  at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
+                                                  at::Tensor quad_weights, at::Tensor psi_col_idx,
+                                                  at::Tensor psi_row_off, int64_t nlon_in, int64_t nlon_out_global,
+                                                  int64_t pscale_out, int64_t lon_lo_kx, int64_t lat_halo_start,
+                                                  int64_t nlat_out, int64_t nlon_out);
+
+    void s2_attention_bwd_ring_step_upsample_pass1_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
+                                                        at::Tensor qdotk_max_buf, at::Tensor integral_buf,
+                                                        at::Tensor alpha_k_buf, at::Tensor alpha_kvw_buf,
+                                                        at::Tensor quad_weights, at::Tensor psi_col_idx,
+                                                        at::Tensor psi_row_off, int64_t nlon_in,
+                                                        int64_t nlon_out_global, int64_t pscale_out, int64_t lon_lo_kx,
+                                                        int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out);
+
+    void s2_attention_bwd_ring_step_upsample_pass2_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
+                                                        at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
+                                                        at::Tensor integral_norm_buf, at::Tensor dkx, at::Tensor dvx,
+                                                        at::Tensor quad_weights, at::Tensor psi_col_idx,
+                                                        at::Tensor psi_row_off, int64_t nlon_in,
+                                                        int64_t nlon_out_global, int64_t pscale_out, int64_t lon_lo_kx,
+                                                        int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out);
+
 } // namespace attention_kernels

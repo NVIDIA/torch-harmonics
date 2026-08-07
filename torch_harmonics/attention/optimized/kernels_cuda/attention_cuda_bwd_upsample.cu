@@ -58,6 +58,7 @@
 #include "attention_cuda.cuh"
 #include <ATen/Dispatch.h>
 #include <ATen/cuda/CUDAUtils.h>
+#include <c10/cuda/CUDAException.h>
 
 #include <cuda_runtime.h>
 #include <cfloat>
@@ -401,6 +402,8 @@ namespace attention_kernels
                                              static_cast<int>(nlat_out), static_cast<int>(nlon_out), _kxp, _vxp, _qyp,
                                              _dyp, _row_off, _col_idx, _quad_weights, _dkxp, _dvxp, _dqyp, stream);
         });
+
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
 
 } // namespace attention_kernels

@@ -38,6 +38,7 @@
 #include <ATen/cuda/detail/KernelUtils.h>
 #include <ATen/cuda/detail/IndexUtils.cuh>
 #include <ATen/cuda/CUDAUtils.h>
+#include <c10/cuda/CUDAException.h>
 
 #include <ctime>
 #include <cub/cub.cuh>
@@ -951,6 +952,8 @@ namespace attention_kernels
                 if (!qy_is_channels_last) { dqy = permute_4D_to0312(dqy); }
             }
         });
+
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
 
         // convert precision back to starting dtype (no-op for fp32; narrows for fp16/bf16)
         dkx = dkx.to(kx_type);

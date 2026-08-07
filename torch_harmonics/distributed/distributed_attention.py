@@ -438,6 +438,350 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         return (dkw, dvw, dqy, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
 
 
+class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
+    """Forward ring attention + backward ring for the UPSAMPLE (scatter) direction.
+
+    K/V live on the coarse input grid (sharded, halo-padded in lat, rotating
+    around the azimuth ring); Q and the output live on the fine output grid and
+    stay local.
+
+    kw, vw : [B*nh, C_k/C_v, H_halo, W_in_local]   channels-first, lat-halo-padded
+    qw     : [B*nh, C_k,     H_out_local, W_out_local]  channels-first
+
+    State buffers use channels-last layout as required by the CUDA kernels:
+      y_acc        : [B, H_out, W_out, C_v]
+      alpha_k/kvw  : [B, H_out, W_out, C_k]
+      alpha_sum/qdotk_max/integral : [B, H_out, W_out]
+
+    The local psi is built by _build_local_psi_upsample: rows are keyed by the
+    halo-padded LOCAL input latitude, cols encode (ho_local, wo_shifted) on the
+    fine output grid with wo pre-shifted by -lon_lo_out.
+    """
+
+    @staticmethod
+    @torch.amp.custom_fwd(device_type="cuda")
+    def forward(
+        kw,
+        vw,
+        qw,
+        psi_col_idx,
+        psi_roff_idx,
+        quad_weights,
+        nlon_in: int,
+        nlon_out_global: int,
+        pscale_out: int,
+        lon_chunk_starts: list,
+        nlon_kx_list: list,
+        lat_halo_start: int,
+        nlat_out_local: int,
+        nlon_out_local: int,
+        r_lat: int,
+        az_group,
+        az_rank: int,
+        az_size: int,
+    ):
+        B, _, _, _ = kw.shape
+        _, C_v, _, _ = vw.shape
+        device = kw.device
+
+        # Capture input dtype so we can cast the user-visible output (y_out)
+        # back at the end of forward. The internal accumulators stay fp32 —
+        # softmax stability requires that, and the saved alpha_sum/qdotk_max
+        # feed fp32 math in backward.
+        inp_dtype = kw.dtype
+
+        # Allocate state buffers in formats expected by the CUDA kernels:
+        # y_acc: channels-last [B, H, W, C_v];  scalars: [B, H, W]
+        y_acc = torch.zeros(B, nlat_out_local, nlon_out_local, C_v, device=device, dtype=torch.float32)
+        alpha_sum = torch.zeros(B, nlat_out_local, nlon_out_local, device=device, dtype=torch.float32)
+        qdotk_max = torch.full((B, nlat_out_local, nlon_out_local), float("-inf"), device=device, dtype=torch.float32)
+
+        kw_chunk = kw.contiguous()
+        vw_chunk = vw.contiguous()
+
+        for step in range(az_size):
+            src_rank = (az_rank + step) % az_size
+            lon_lo_kx = lon_chunk_starts[src_rank]
+
+            # Pre-allocate receive buffers for the NEXT chunk (correct shape)
+            if step < az_size - 1:
+                next_src = (az_rank + step + 1) % az_size
+                recv_kw, recv_vw, reqs = _ring_kv(kw_chunk, vw_chunk, az_group, nlon_kx_list[next_src], nlon_kx_list[next_src])
+
+            attention_kernels.forward_ring_step_upsample.default(
+                kw_chunk,
+                vw_chunk,
+                qw,
+                y_acc,
+                alpha_sum,
+                qdotk_max,
+                quad_weights,
+                psi_col_idx,
+                psi_roff_idx,
+                nlon_in,
+                nlon_out_global,
+                pscale_out,
+                lon_lo_kx,
+                lat_halo_start,
+                nlat_out_local,
+                nlon_out_local,
+            )
+
+            if step < az_size - 1:
+                for req in reqs:
+                    req.wait()
+                kw_chunk = recv_kw.clone()
+                vw_chunk = recv_vw.clone()
+
+        # Finalize: y = y_acc / alpha_sum  (both channels-last layout). Cast
+        # back to the input dtype to keep the op faithful to its input dtype.
+        y_out = y_acc / alpha_sum.unsqueeze(-1)  # [B, H, W, C_v]
+        y_out = y_out.permute(0, 3, 1, 2).to(dtype=inp_dtype).contiguous()  # [B, C_v, H, W]
+
+        # alpha_sum and qdotk_max are returned so setup_context can save them;
+        # they are marked non-differentiable there, so backward still only
+        # receives one gradient argument (dy for y_out).
+        return y_out, alpha_sum, qdotk_max
+
+    @staticmethod
+    @_custom_setup_context(device_type="cuda")
+    def setup_context(ctx, inputs, output):
+        (
+            kw,
+            vw,
+            qw,
+            psi_col_idx,
+            psi_roff_idx,
+            quad_weights,
+            nlon_in,
+            nlon_out_global,
+            pscale_out,
+            lon_chunk_starts,
+            nlon_kx_list,
+            lat_halo_start,
+            nlat_out_local,
+            nlon_out_local,
+            r_lat,
+            az_group,
+            az_rank,
+            az_size,
+        ) = inputs
+        y_out, alpha_sum, qdotk_max = output
+        # alpha_sum and qdotk_max are internal accumulators, not true outputs;
+        # marking them non-differentiable keeps backward's signature as (ctx, dy).
+        ctx.mark_non_differentiable(alpha_sum, qdotk_max)
+        ctx.save_for_backward(kw, vw, qw, psi_col_idx, psi_roff_idx, quad_weights, alpha_sum, qdotk_max)
+        ctx.nlon_in = nlon_in
+        ctx.nlon_out_global = nlon_out_global
+        ctx.pscale_out = pscale_out
+        ctx.lon_chunk_starts = lon_chunk_starts
+        ctx.nlon_kx_list = nlon_kx_list
+        ctx.lat_halo_start = lat_halo_start
+        ctx.nlat_out_local = nlat_out_local
+        ctx.nlon_out_local = nlon_out_local
+        ctx.az_group = az_group
+        ctx.az_rank = az_rank
+        ctx.az_size = az_size
+
+    @staticmethod
+    @torch.amp.custom_bwd(device_type="cuda")
+    def backward(ctx, dy, _dalpha_sum, _dqdotk_max):
+        # _dalpha_sum and _dqdotk_max are always None (non-differentiable outputs)
+        (kw, vw, qw, psi_col_idx, psi_roff_idx, quad_weights, fwd_alpha_sum, fwd_qdotk_max) = ctx.saved_tensors
+
+        nlon_in = ctx.nlon_in
+        nlon_out_global = ctx.nlon_out_global
+        pscale_out = ctx.pscale_out
+        lon_chunk_starts = ctx.lon_chunk_starts
+        nlon_kx_list = ctx.nlon_kx_list
+        lat_halo_start = ctx.lat_halo_start
+        nlat_out_local = ctx.nlat_out_local
+        nlon_out_local = ctx.nlon_out_local
+        az_group = ctx.az_group
+        az_rank = ctx.az_rank
+        az_size = ctx.az_size
+
+        # Autograd contract: skip per-branch work (kernel calls, allreduces) for any
+        # of {kw, vw, qw} that doesn't need a gradient, and return None in those slots.
+        kw_needs_grad = ctx.needs_input_grad[0]
+        vw_needs_grad = ctx.needs_input_grad[1]
+        qw_needs_grad = ctx.needs_input_grad[2]
+
+        # Defensive: if somehow none of (kw, vw, qw) need grad, there's nothing to compute.
+        if not (kw_needs_grad or vw_needs_grad or qw_needs_grad):
+            return (None,) * 18
+
+        B, C_k, H_halo, _ = kw.shape
+        _, C_v, _, _ = vw.shape
+        device = kw.device
+
+        # Capture input dtypes so the returned grads can be cast back. The
+        # backward kernels consume kw/vw/qw/dy in their native dtype (widen at
+        # load, fp32 compute/accumulation), keeping the backward ring exchange
+        # at 16-bit under AMP.
+        kw_dtype = kw.dtype
+        vw_dtype = vw.dtype
+        qw_dtype = qw.dtype
+        dy_cf = dy.contiguous()  # channels-first [B, C_v, H, W], native dtype
+
+        # ----------------------------------------------------------------
+        # Backward pass 1: re-accumulate {integral, alpha_k, alpha_kvw} via
+        # ring, using the SAVED forward alpha_sum/qdotk_max (no max recompute
+        # is needed in the upsample direction — the forward-final softmax
+        # stats are authoritative). Required whenever any of (kw, vw, qw)
+        # needs grad: integral feeds pass-2's integral_norm and dqy reads
+        # alpha_k/alpha_kvw. The kernel writes all buffers in one call, so
+        # pass-1 cannot be pruned per-branch.
+        # ----------------------------------------------------------------
+        integral_buf = torch.zeros(B, nlat_out_local, nlon_out_local, device=device, dtype=torch.float32)
+        alpha_k_buf = torch.zeros(B, nlat_out_local, nlon_out_local, C_k, device=device, dtype=torch.float32)
+        alpha_kvw_buf = torch.zeros_like(alpha_k_buf)
+
+        kw_chunk = kw.contiguous()
+        vw_chunk = vw.contiguous()
+
+        for step in range(az_size):
+            src_rank = (az_rank + step) % az_size
+            lon_lo_kx = lon_chunk_starts[src_rank]
+
+            if step < az_size - 1:
+                next_src = (az_rank + step + 1) % az_size
+                recv_kw, recv_vw, reqs = _ring_kv(kw_chunk, vw_chunk, az_group, nlon_kx_list[next_src], nlon_kx_list[next_src])
+
+            attention_kernels.backward_ring_step_upsample_pass1.default(
+                kw_chunk,
+                vw_chunk,
+                qw,
+                dy_cf,
+                fwd_qdotk_max,
+                integral_buf,
+                alpha_k_buf,
+                alpha_kvw_buf,
+                quad_weights,
+                psi_col_idx,
+                psi_roff_idx,
+                nlon_in,
+                nlon_out_global,
+                pscale_out,
+                lon_lo_kx,
+                lat_halo_start,
+                nlat_out_local,
+                nlon_out_local,
+            )
+
+            if step < az_size - 1:
+                for req in reqs:
+                    req.wait()
+                kw_chunk = recv_kw.clone()
+                vw_chunk = recv_vw.clone()
+
+        # ----------------------------------------------------------------
+        # Finalize pass-1 outputs.
+        # ----------------------------------------------------------------
+        alpha_sum_inv = 1.0 / fwd_alpha_sum  # [B, H, W]
+
+        # integral_norm only feeds pass-2; skip if neither kw nor vw needs grad.
+        if kw_needs_grad or vw_needs_grad:
+            integral_norm = integral_buf * alpha_sum_inv  # [B, H, W]
+
+        # dqy[b,h,w,c] = inv_sq*(alpha_sum*alpha_kvw - integral*alpha_k)
+        if qw_needs_grad:
+            alpha_sum_inv_sq = alpha_sum_inv**2
+            dqy_cl = alpha_sum_inv_sq.unsqueeze(-1) * (fwd_alpha_sum.unsqueeze(-1) * alpha_kvw_buf - integral_buf.unsqueeze(-1) * alpha_k_buf)  # [B, H, W, C_k]
+            dqy = dqy_cl.permute(0, 3, 1, 2).to(dtype=qw_dtype).contiguous()  # [B, C_k, H, W]
+        else:
+            dqy = None
+
+        # ----------------------------------------------------------------
+        # Backward pass 2: accumulate dkw/dvw contributions per chunk.
+        # Each GPU computes its LOCAL outputs' contribution to every lon chunk
+        # it visits; then allreduce across azimuth ranks, extract local chunk.
+        # TODO: replace allreduce with ring reduce-scatter for efficiency.
+        # ----------------------------------------------------------------
+        if kw_needs_grad or vw_needs_grad:
+            kw_chunk = kw.contiguous()
+            vw_chunk = vw.contiguous()
+            nlon_in_total = sum(nlon_kx_list)
+            dkw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_k, device=device, dtype=torch.float32) if kw_needs_grad else None
+            dvw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_v, device=device, dtype=torch.float32) if vw_needs_grad else None
+
+            for step in range(az_size):
+                src_rank = (az_rank + step) % az_size
+                lon_lo_kx = lon_chunk_starts[src_rank]
+                nlon_kx = nlon_kx_list[src_rank]
+
+                # Channels-last gradient buffers for this chunk (both required by the
+                # fused kernel signature; we discard the one we don't need).
+                dkw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_k, device=device, dtype=torch.float32)
+                dvw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_v, device=device, dtype=torch.float32)
+
+                attention_kernels.backward_ring_step_upsample_pass2.default(
+                    kw_chunk,
+                    vw_chunk,
+                    qw,
+                    dy_cf,
+                    fwd_alpha_sum,
+                    fwd_qdotk_max,
+                    integral_norm,
+                    dkw_chunk_cl,
+                    dvw_chunk_cl,
+                    quad_weights,
+                    psi_col_idx,
+                    psi_roff_idx,
+                    nlon_in,
+                    nlon_out_global,
+                    pscale_out,
+                    lon_lo_kx,
+                    lat_halo_start,
+                    nlat_out_local,
+                    nlon_out_local,
+                )
+
+                if kw_needs_grad:
+                    dkw_full_cl[:, :, lon_lo_kx : lon_lo_kx + nlon_kx, :].add_(dkw_chunk_cl)
+                if vw_needs_grad:
+                    dvw_full_cl[:, :, lon_lo_kx : lon_lo_kx + nlon_kx, :].add_(dvw_chunk_cl)
+
+                if step < az_size - 1:
+                    next_src = (az_rank + step + 1) % az_size
+                    recv_kw, recv_vw, reqs = _ring_kv(kw_chunk, vw_chunk, az_group, nlon_kx_list[next_src], nlon_kx_list[next_src])
+                    for req in reqs:
+                        req.wait()
+                    kw_chunk = recv_kw.clone()
+                    vw_chunk = recv_vw.clone()
+
+            # Per-branch allreduce — only the branches we'll return.
+            if az_size > 1 and az_group is not None:
+                if kw_needs_grad:
+                    dist.all_reduce(dkw_full_cl, group=az_group)
+                if vw_needs_grad:
+                    dist.all_reduce(dvw_full_cl, group=az_group)
+
+            my_lo = lon_chunk_starts[az_rank]
+            my_nlon = nlon_kx_list[az_rank]
+            # Extract local chunk and convert channels-last → channels-first.
+            # No halo stripping: dkw/dvw must match kw/vw shape (= key_halo/value_halo).
+            if kw_needs_grad:
+                dkw_cl = dkw_full_cl[:, :, my_lo : my_lo + my_nlon, :].contiguous()
+                dkw = dkw_cl.permute(0, 3, 1, 2).to(dtype=kw_dtype).contiguous()  # [B, C_k, H_halo, W_local]
+            else:
+                dkw = None
+            if vw_needs_grad:
+                dvw_cl = dvw_full_cl[:, :, my_lo : my_lo + my_nlon, :].contiguous()
+                dvw = dvw_cl.permute(0, 3, 1, 2).to(dtype=vw_dtype).contiguous()  # [B, C_v, H_halo, W_local]
+            else:
+                dvw = None
+        else:
+            dkw = None
+            dvw = None
+
+        # Return grads for (kw, vw, qw, psi_col, psi_roff, quad_weights,
+        #                   nlon_in, nlon_out_global, pscale_out, lon_chunk_starts,
+        #                   nlon_kx_list, lat_halo_start, nlat_out_local, nlon_out_local,
+        #                   r_lat, az_group, az_rank, az_size)
+        return (dkw, dvw, dqy, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+
+
 # ---------------------------------------------------------------------------
 # Distributed Neighborhood Attention on the 2-sphere
 # ---------------------------------------------------------------------------
@@ -453,6 +797,12 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
     longitude (azimuth group) dimensions.  The forward pass uses ring exchange
     of key/value chunks over the azimuth group so that every output point can
     attend to its full spherical neighborhood.
+
+    All three directions of the serial layer are supported: self-attention
+    (in_shape == out_shape), downsampling cross-attention (gather kernels,
+    nlon_in % nlon_out == 0) and upsampling cross-attention (scatter kernels,
+    nlon_out % nlon_in == 0). In all cases K/V (which live on the input grid)
+    rotate around the azimuth ring while Q and the softmax state stay local.
 
     Inherits learnable parameters from :class:`torch_harmonics.NeighborhoodAttentionS2`.
 
@@ -515,44 +865,71 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         self.nlat_out_local = self.lat_out_shapes[self.comm_rank_polar]
         self.nlon_out_local = self.lon_out_shapes[self.comm_rank_azimuth]
 
-        # Downsampling invariant: every azimuth rank must carry the same lon pscale.
-        # The global `nlon_in % nlon_out == 0` check is inherited from the serial
+        # Uniform-pscale invariant: every azimuth rank must carry the same lon pscale.
+        # The global divisibility check is inherited from the serial
         # NeighborhoodAttentionS2.__init__, but that is not sufficient in distributed:
         # if compute_split_shapes hands different ranks different local pscales
         # (e.g. nlon_in=12, nlon_out=4, comm_size_azimuth=3 -> [4,4,4] vs [2,1,1]),
         # the p-shift mapping in the ring exchange is ill-defined.
-        pscale_lon = self.nlon_in // self.nlon_out
-        for r, (lon_in_r, lon_out_r) in enumerate(zip(self.lon_in_shapes, self.lon_out_shapes)):
-            if lon_in_r != pscale_lon * lon_out_r:
-                raise ValueError(
-                    f"DistributedNeighborhoodAttentionS2: inconsistent azimuth split at rank {r}: "
-                    f"nlon_in_local={lon_in_r}, nlon_out_local={lon_out_r}. "
-                    f"Every azimuth rank must satisfy nlon_in_local == (nlon_in // nlon_out) * nlon_out_local "
-                    f"= {pscale_lon} * nlon_out_local. "
-                    f"Choose (nlon_in, nlon_out, comm_size_azimuth) so that compute_split_shapes "
-                    f"produces uniform local pscale."
-                )
+        if self.upsample:
+            pscale_lon = self.nlon_out // self.nlon_in
+            for r, (lon_in_r, lon_out_r) in enumerate(zip(self.lon_in_shapes, self.lon_out_shapes)):
+                if lon_out_r != pscale_lon * lon_in_r:
+                    raise ValueError(
+                        f"DistributedNeighborhoodAttentionS2: inconsistent azimuth split at rank {r}: "
+                        f"nlon_in_local={lon_in_r}, nlon_out_local={lon_out_r}. "
+                        f"Every azimuth rank must satisfy nlon_out_local == (nlon_out // nlon_in) * nlon_in_local "
+                        f"= {pscale_lon} * nlon_in_local. "
+                        f"Choose (nlon_in, nlon_out, comm_size_azimuth) so that compute_split_shapes "
+                        f"produces uniform local pscale."
+                    )
+        else:
+            pscale_lon = self.nlon_in // self.nlon_out
+            for r, (lon_in_r, lon_out_r) in enumerate(zip(self.lon_in_shapes, self.lon_out_shapes)):
+                if lon_in_r != pscale_lon * lon_out_r:
+                    raise ValueError(
+                        f"DistributedNeighborhoodAttentionS2: inconsistent azimuth split at rank {r}: "
+                        f"nlon_in_local={lon_in_r}, nlon_out_local={lon_out_r}. "
+                        f"Every azimuth rank must satisfy nlon_in_local == (nlon_in // nlon_out) * nlon_out_local "
+                        f"= {pscale_lon} * nlon_out_local. "
+                        f"Choose (nlon_in, nlon_out, comm_size_azimuth) so that compute_split_shapes "
+                        f"produces uniform local pscale."
+                    )
 
-        # global lon offsets
+        # global lon/lat offsets
         self.lon_in_starts = list(accumulate([0] + self.lon_in_shapes[:-1]))
         self.lon_out_starts = list(accumulate([0] + self.lon_out_shapes[:-1]))
+        self.lat_in_starts = list(accumulate([0] + self.lat_in_shapes[:-1]))
         self.lat_out_starts = list(accumulate([0] + self.lat_out_shapes[:-1]))
 
         self.lon_lo_out = self.lon_out_starts[self.comm_rank_azimuth]
         self.lat_lo_out = self.lat_out_starts[self.comm_rank_polar]
 
-        # ---- build local psi ----
-        # The global psi built by the base class covers all output lat rows.
-        # We filter to only the rows owned by this rank and shift the wi
-        # component of col_idx by lon_lo_out so that the kernel can use
-        # local wo directly without knowing the global lon offset.
-        self._build_local_psi()  # also precomputes self.psi_{n_long_rows,max_row_len,mid_row_len}
+        if self.upsample:
+            # ---- lat halo size ----
+            # For the scatter direction psi rows are keyed by hi, so the halo
+            # radius must be known BEFORE the local psi (whose rows span the
+            # halo-padded input range) can be built.
+            self.r_lat = self._compute_r_lat_upsample()
 
-        # ---- lat halo size ----
-        # Compute r_lat from the global psi: maximum |hi_global - ho_global|
-        # over all (ho, hi) pairs in the neighbourhood.
-        # Use the lat_out_lo of our polar rank to compute ho_global.
-        self.r_lat = self._compute_r_lat()
+            # ---- build local psi ----
+            # Rows are re-keyed to the halo-padded local input lat range, cols
+            # are filtered to the local output lat rows and the wo component is
+            # pre-shifted by -lon_lo_out (see _build_local_psi_upsample).
+            self._build_local_psi_upsample()
+        else:
+            # ---- build local psi ----
+            # The global psi built by the base class covers all output lat rows.
+            # We filter to only the rows owned by this rank and shift the wi
+            # component of col_idx by lon_lo_out so that the kernel can use
+            # local wo directly without knowing the global lon offset.
+            self._build_local_psi()  # also precomputes self.psi_{n_long_rows,max_row_len,mid_row_len}
+
+            # ---- lat halo size ----
+            # Compute r_lat from the global psi: maximum |hi_global - ho_global|
+            # over all (ho, hi) pairs in the neighbourhood.
+            # Use the lat_out_lo of our polar rank to compute ho_global.
+            self.r_lat = self._compute_r_lat()
 
     # -----------------------------------------------------------------------
 
@@ -627,12 +1004,11 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         if col_idx.numel() == 0:
             return 0
 
-        lat_in_starts = list(accumulate([0] + self.lat_in_shapes[:-1]))
         roff = self.psi_roff_idx
 
         r = 0
         for rank in range(self.comm_size_polar):
-            lat_in_lo = lat_in_starts[rank]
+            lat_in_lo = self.lat_in_starts[rank]
             lat_in_hi = lat_in_lo + self.lat_in_shapes[rank]
             lat_out_lo = self.lat_out_starts[rank]
             lat_out_hi = lat_out_lo + self.lat_out_shapes[rank]
@@ -648,6 +1024,108 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
             r = max(r, r_top, r_bot)
 
         return r
+
+    # -----------------------------------------------------------------------
+    # upsample (scatter) direction helpers
+    # -----------------------------------------------------------------------
+
+    def _compute_r_lat_upsample(self) -> int:
+        """Max lat halo radius needed across all polar ranks, upsample direction.
+
+        In the scatter psi (rows keyed by input lat hi, cols encoding output
+        cells), the entries relevant to a polar rank are those whose OUTPUT row
+        ho falls into its local output shard; the halo is then determined by how
+        far the corresponding INPUT rows hi reach outside its local input shard.
+        Computed locally from the global psi (built identically on every rank
+        by the base class), so no communication is required.
+        """
+
+        if polar_group_size() == 1:
+            return 0
+
+        col_idx = self.psi_col_idx  # global, rows = nlat_in, cols = ho * nlon_out + wo
+        if col_idx.numel() == 0:
+            return 0
+
+        roff = self.psi_roff_idx
+        # input-lat row index of every nonzero entry
+        nnz_per_row = roff[1:] - roff[:-1]
+        hi_of_nz = torch.repeat_interleave(torch.arange(self.nlat_in, dtype=torch.int64, device=col_idx.device), nnz_per_row)
+        ho = (col_idx // self.nlon_out).long()
+
+        r = 0
+        for rank in range(self.comm_size_polar):
+            lat_in_lo = self.lat_in_starts[rank]
+            lat_in_hi = lat_in_lo + self.lat_in_shapes[rank]
+            lat_out_lo = self.lat_out_starts[rank]
+            lat_out_hi = lat_out_lo + self.lat_out_shapes[rank]
+
+            mask = (ho >= lat_out_lo) & (ho < lat_out_hi)
+            if not bool(mask.any()):
+                continue
+
+            hi = hi_of_nz[mask]
+            r_top = max(0, lat_in_lo - int(hi.min().item()))
+            r_bot = max(0, int(hi.max().item()) - (lat_in_hi - 1))
+            r = max(r, r_top, r_bot)
+
+        return r
+
+    def _build_local_psi_upsample(self):
+        """Build the local scatter psi for the upsample ring kernels.
+
+        The global psi built by the base class has rows keyed by the input lat
+        hi in [0, nlat_in) and cols encoding ho * nlon_out + wo_canonical on the
+        fine output grid (canonical at wi = 0). The local psi
+
+          * re-keys the rows to the halo-padded LOCAL input lat range
+            [lat_halo_start, lat_halo_start + nlat_halo); pole-padding rows
+            (hi outside the global grid) are empty,
+          * keeps only entries whose output row ho falls into the local output
+            shard and re-keys ho to ho_local = ho - lat_lo_out,
+          * pre-shifts the wo component by -lon_lo_out (mod nlon_out) so the
+            kernel's mapping w = (wo_shifted + pscale_out * wi_global) mod
+            nlon_out directly yields the LOCAL output longitude, with the
+            locality test w < nlon_out_local.
+        """
+
+        nlon_out = self.nlon_out
+        lat_lo_out = self.lat_lo_out
+        lat_hi_out = lat_lo_out + self.nlat_out_local
+        lon_lo_out = self.lon_lo_out
+
+        col_idx_global = self.psi_col_idx  # [nnz]        int64
+        roff_global = self.psi_roff_idx  # [nlat_in+1]  int64
+
+        nlat_halo = self.nlat_in_local + 2 * self.r_lat
+        lat_halo_start = self.lat_in_starts[self.comm_rank_polar] - self.r_lat
+
+        # input-lat row index of every nonzero entry
+        nnz_per_row = roff_global[1:] - roff_global[:-1]
+        hi_of_nz = torch.repeat_interleave(torch.arange(self.nlat_in, dtype=torch.int64, device=col_idx_global.device), nnz_per_row)
+
+        ho = col_idx_global // nlon_out
+        wo = col_idx_global - ho * nlon_out
+
+        # keep entries whose input row lies in the halo-padded local range and
+        # whose output row is owned by this polar rank
+        hi_local = hi_of_nz - lat_halo_start
+        mask = (ho >= lat_lo_out) & (ho < lat_hi_out) & (hi_local >= 0) & (hi_local < nlat_halo)
+
+        hi_sel = hi_local[mask]
+        ho_sel = ho[mask] - lat_lo_out
+        wo_sel = (wo[mask] - lon_lo_out) % nlon_out
+        col_idx_local = ho_sel * nlon_out + wo_sel
+
+        # rebuild the CSR row offsets over the halo-padded local rows; masked
+        # selection preserves the global row-major order, so col_idx_local is
+        # already CSR-consistent with roff_local
+        counts = torch.bincount(hi_sel, minlength=nlat_halo)
+        roff_local = torch.zeros(nlat_halo + 1, dtype=roff_global.dtype, device=roff_global.device)
+        roff_local[1:] = torch.cumsum(counts, dim=0)
+
+        self.register_buffer("psi_col_idx_local", col_idx_local.contiguous(), persistent=False)
+        self.register_buffer("psi_roff_idx_local", roff_local.contiguous(), persistent=False)
 
     # -----------------------------------------------------------------------
 
@@ -714,41 +1192,65 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
             value_halo = value_proj
 
         # global lat index of first halo row
-        lat_in_starts = list(accumulate([0] + self.lat_in_shapes[:-1]))
-        lat_halo_start = lat_in_starts[self.comm_rank_polar] - self.r_lat
+        lat_halo_start = self.lat_in_starts[self.comm_rank_polar] - self.r_lat
 
         # ---- 3. ring attention ----
-        # Global pscale — the kernel must not infer this from local shapes,
-        # because kernel `nlon_out` is nlon_out_local which differs when az_size > 1.
-        pscale = self.nlon_in // self.nlon_out
         # Under autocast, cast k/v/q to the autocast dtype before .apply() —
         # mirrors PyTorch's autocast-eligible-op dataflow. Upstream Linear
         # projections under autocast already produce bf16, so this is usually
         # a no-op; covers the case where upstream is fp32-producing.
         key_halo, value_halo, query_proj = _cast_to_autocast_dtype(key_halo, value_halo, query_proj)
-        out, _, _ = _RingNeighborhoodAttentionFn.apply(
-            key_halo,
-            value_halo,
-            query_proj,
-            self.psi_col_idx_local,
-            self.psi_roff_idx_local,
-            self.psi_row_idx_local,
-            self.quad_weights,
-            self.nlon_in,
-            pscale,
-            self.lon_in_starts,  # lon chunk starts for kv (same as lon_in)
-            self.lon_in_shapes,  # lon chunk sizes for kv
-            lat_halo_start,
-            self.nlat_out_local,
-            self.nlon_out_local,
-            self.r_lat,
-            azimuth_group(),
-            self.comm_rank_azimuth,
-            self.comm_size_azimuth,
-            self.psi_n_long_rows,
-            self.psi_max_row_len,
-            self.psi_mid_row_len,
-        )  # [Bnh, C_v, H_out_local, W_out_local]
+        if self.upsample:
+            # Global pscale_out — the kernel must not infer this from local shapes,
+            # because kernel `nlon_out` is nlon_out_local which differs when az_size > 1.
+            pscale_out = self.nlon_out // self.nlon_in
+            out, _, _ = _RingNeighborhoodAttentionUpsampleFn.apply(
+                key_halo,
+                value_halo,
+                query_proj,
+                self.psi_col_idx_local,
+                self.psi_roff_idx_local,
+                self.quad_weights,
+                self.nlon_in,
+                self.nlon_out,
+                pscale_out,
+                self.lon_in_starts,  # lon chunk starts for kv (same as lon_in)
+                self.lon_in_shapes,  # lon chunk sizes for kv
+                lat_halo_start,
+                self.nlat_out_local,
+                self.nlon_out_local,
+                self.r_lat,
+                azimuth_group(),
+                self.comm_rank_azimuth,
+                self.comm_size_azimuth,
+            )  # [Bnh, C_v, H_out_local, W_out_local]
+        else:
+            # Global pscale — the kernel must not infer this from local shapes,
+            # because kernel `nlon_out` is nlon_out_local which differs when az_size > 1.
+            pscale = self.nlon_in // self.nlon_out
+            out, _, _ = _RingNeighborhoodAttentionFn.apply(
+                key_halo,
+                value_halo,
+                query_proj,
+                self.psi_col_idx_local,
+                self.psi_roff_idx_local,
+                self.psi_row_idx_local,
+                self.quad_weights,
+                self.nlon_in,
+                pscale,
+                self.lon_in_starts,  # lon chunk starts for kv (same as lon_in)
+                self.lon_in_shapes,  # lon chunk sizes for kv
+                lat_halo_start,
+                self.nlat_out_local,
+                self.nlon_out_local,
+                self.r_lat,
+                azimuth_group(),
+                self.comm_rank_azimuth,
+                self.comm_size_azimuth,
+                self.psi_n_long_rows,
+                self.psi_max_row_len,
+                self.psi_mid_row_len,
+            )  # [Bnh, C_v, H_out_local, W_out_local]
 
         # unfold num_heads
         B_nh, C_v, H_out, W_out = out.shape

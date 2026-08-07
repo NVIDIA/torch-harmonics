@@ -43,7 +43,7 @@ dependencies = [
 
 
 [tool.setuptools_scm]
-fallback_version = "0.9.2a"
+fallback_version = "0.9.2c"
 
 [tool.setuptools.packages.find]
     include = ["torch_harmonics*"]
