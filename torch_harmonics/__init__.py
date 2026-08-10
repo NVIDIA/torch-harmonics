@@ -29,7 +29,13 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-__version__ = "0.9.2c"
+# Generated at build time by setuptools-scm from the git tag; see
+# [tool.setuptools_scm] in pyproject.toml. Not checked in, so an unbuilt source
+# tree falls back to the sentinel rather than a stale hardcoded string.
+try:
+    from ._version import version as __version__
+except ImportError:  # pragma: no cover - source tree that was never built
+    __version__ = "0.0.0"
 
 from . import examples, quadrature, random_fields
 from .attention import AttentionS2, NeighborhoodAttentionS2

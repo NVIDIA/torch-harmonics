@@ -20,10 +20,10 @@ project = "torch-harmonics"
 copyright = "2022-%Y, The torch-harmonics Authors"
 author = "The torch-harmonics Authors"
 
-try:
-    release = _pkg_version("torch_harmonics")
-except Exception:
-    release = "0.9.2a"
+# Read back from the installed distribution, which setuptools-scm stamped from
+# the git tag at build time. Deliberately no hardcoded fallback: a stale literal
+# here silently renders a wrong version instead of failing the docs build.
+release = _pkg_version("torch_harmonics")
 version = release
 
 # -- General configuration ---------------------------------------------------
