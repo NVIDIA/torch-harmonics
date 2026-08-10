@@ -23,6 +23,9 @@ jobs:
   build-manylinux-wheels:
     runs-on: ubuntu-latest
     strategy:
+      # One CUDA variant failing should not hide the state of the other five:
+      # they build independently and a release needs all of them.
+      fail-fast: false
       matrix:
         include:
           # One build per CUDA version, using the oldest torch that supports it.
@@ -206,7 +209,23 @@ jobs:
         CIBW_REPAIR_WHEEL_COMMAND_LINUX: |
           set -e
           TORCH_LIB=$(python -c "import torch, os; print(os.path.join(os.path.dirname(torch.__file__), 'lib'))")
-          EXCLUDES=$(find "$TORCH_LIB" -maxdepth 1 -name '*.so*' | xargs -I{} basename {} | sort -u | sed 's/^/--exclude /' | tr '\n' ' ')
+          # CUDA runtime libraries must be excluded as well as torch's own. They
+          # are supplied at runtime by torch's nvidia-*-cu12 dependencies, which
+          # are already loaded by the time our extension is imported. Bundling
+          # them would duplicate hundreds of MB per wheel and blow the 100 MB
+          # limit; not excluding them fails the repair outright, because
+          # libcudart lives in site-packages/nvidia/*/lib rather than torch/lib.
+          NVIDIA_LIBS=$(python -c "
+          import glob, os, site
+          dirs = []
+          for sp in site.getsitepackages():
+              dirs += glob.glob(os.path.join(sp, 'nvidia', '*', 'lib'))
+          print(' '.join(dirs))
+          ")
+          EXCLUDES=$(for d in "$TORCH_LIB" $NVIDIA_LIBS /usr/local/cuda/lib64 /usr/local/cuda/targets/x86_64-linux/lib; do
+            [ -d "$d" ] && find "$d" -maxdepth 1 -name '*.so*'
+          done | xargs -r -I{} basename {} | sort -u | sed 's/^/--exclude /' | tr '\n' ' ')
+          echo "auditwheel excludes: $EXCLUDES"
           LD_LIBRARY_PATH="$TORCH_LIB:${LD_LIBRARY_PATH:-}" auditwheel repair $EXCLUDES -w {dest_dir} {wheel}
           for whl in {dest_dir}/*.whl; do
             python -m wheel unpack "$whl" --dest /tmp/strip_tmp
