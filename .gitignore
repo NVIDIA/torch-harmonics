@@ -7,6 +7,9 @@ checkpoints
 build/
 *.egg-info
 
+# Version file generated at build time by setuptools-scm from the git tag
+torch_harmonics/_version.py
+
 # Kitmaker deployment secrets (never commit)
 scripts/kitmaker.env
 *.env

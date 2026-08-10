@@ -15,6 +15,10 @@ on:
         description: "Publish to GitHub Pages (leave unchecked for a test build you can download and inspect offline)"
         type: boolean
         default: false
+      version:
+        description: "Version to show in the docs, e.g. 0.9.2 (leave blank to derive it from git)"
+        type: string
+        default: ""
 
 # Allow the deploy job to publish to GitHub Pages.
 permissions:
@@ -34,6 +38,30 @@ jobs:
 
     steps:
     - uses: actions/checkout@v5
+      # setuptools-scm derives the version rendered in the docs header from git
+      # tags; the default shallow, --no-tags checkout gives it nothing to
+      # describe against.
+      with:
+        fetch-depth: 0
+        fetch-tags: true
+
+    # On a release, the tag name IS the version being published, so pin the
+    # docs to it rather than letting setuptools-scm re-derive it. `version` is
+    # the manual escape hatch for re-deploying the docs of an existing release;
+    # left blank, setuptools-scm decides as usual.
+    - name: Determine documentation version
+      env:
+        RELEASE_TAG: ${{ github.event.release.tag_name }}
+        VERSION_INPUT: ${{ inputs.version }}
+      run: |
+        version="${RELEASE_TAG:-$VERSION_INPUT}"
+        version="${version#v}"
+        if [ -n "$version" ]; then
+          echo "Pinning documentation version to ${version}"
+          echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_TORCH_HARMONICS=${version}" >> "$GITHUB_ENV"
+        else
+          echo "No version override; setuptools-scm will derive it from git."
+        fi
 
     - name: Set up Python 3.11
       uses: actions/setup-python@v6
@@ -43,9 +71,12 @@ jobs:
     # Same install logic as tests.yml: CPU-only torch, then an editable
     # build of the package. autodoc imports torch_harmonics, so the compiled
     # C++ extensions must be built (CPU-only needs no CUDA toolkit).
+    # setuptools-scm must be installed up front: the editable install below runs
+    # with --no-build-isolation, so a missing build-backend dependency does not
+    # fail loudly, it silently resolves the dynamic version to 0.0.0.
     - name: Install dependencies
       run: |
-        python3 -m pip install --upgrade pip setuptools wheel
+        python3 -m pip install --upgrade pip setuptools setuptools-scm wheel
         python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
 
     - name: Install package with docs dependencies

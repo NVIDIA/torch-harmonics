@@ -50,6 +50,11 @@ jobs:
 
     steps:
     - uses: actions/checkout@v5
+      # setuptools-scm reads the released version off the git tag, and the
+      # default shallow, --no-tags checkout gives it nothing to describe against.
+      with:
+        fetch-depth: 0
+        fetch-tags: true
 
     - name: Free Disk Space
       run: |
@@ -79,10 +84,20 @@ jobs:
         ARCH_LIST=$(echo "$CUDA_ARCH_MAP" | jq -r '.["${{ matrix.cuda-version }}"]')
         echo "TORCH_CUDA_ARCH_LIST=$ARCH_LIST" >> $GITHUB_ENV
 
-    - name: Extract base version from pyproject.toml
+    # Derived from the git tag, the single source of truth (see
+    # [tool.setuptools_scm] in pyproject.toml). On a tag push this is the exact
+    # release, e.g. "0.9.2"; off-tag it is a dev version, e.g. "0.9.3.dev83".
+    # The local segment is stripped because CIBW_ENVIRONMENT below appends its
+    # own +torch<ver>.<cuda>, and PEP 440 permits only one.
+    - name: Determine base version from git
       run: |
-        BASE_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['tool']['setuptools_scm']['fallback_version'])" 2>/dev/null || \
-                       python -c "import tomli; print(tomli.load(open('pyproject.toml', 'rb'))['tool']['setuptools_scm']['fallback_version'])")
+        BASE_VERSION=$(python -c "from setuptools_scm import get_version; print(get_version().split('+')[0])")
+        if [ "$BASE_VERSION" = "0.0.0" ]; then
+          echo "ERROR: setuptools-scm could not determine a version from git."
+          echo "       The checkout is missing tags or git metadata; refusing to"
+          echo "       build wheels that would be stamped with the fallback."
+          exit 1
+        fi
         echo "BASE_VERSION=$BASE_VERSION" >> $GITHUB_ENV
         echo "Base version: $BASE_VERSION"
 

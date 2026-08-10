@@ -1,6 +1,10 @@
 # Host-side tooling for the wheel build job (runs on the runner, not in the manylinux container).
 # cibuildwheel drives the build, twine/auditwheel inspect the resulting artifacts.
+# setuptools-scm is needed on the host too, to read the release version off the
+# git tag (see "Determine base version from git"); keep it pinned in lockstep
+# with wheel-build-env.txt so host and container agree on the version.
 cibuildwheel==4.2.0
+setuptools-scm==10.2.1
 twine==7.0.0
 auditwheel==6.7.0
 wheel==0.47.0
