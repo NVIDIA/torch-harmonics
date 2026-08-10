@@ -92,14 +92,68 @@ jobs:
     - name: Determine base version from git
       run: |
         BASE_VERSION=$(python -c "from setuptools_scm import get_version; print(get_version().split('+')[0])")
-        if [ "$BASE_VERSION" = "0.0.0" ]; then
-          echo "ERROR: setuptools-scm could not determine a version from git."
-          echo "       The checkout is missing tags or git metadata; refusing to"
-          echo "       build wheels that would be stamped with the fallback."
-          exit 1
-        fi
         echo "BASE_VERSION=$BASE_VERSION" >> $GITHUB_ENV
         echo "Base version: $BASE_VERSION"
+
+    # Release gate. Everything downstream -- wheel metadata, the GitHub release,
+    # the Kitmaker repack -- inherits BASE_VERSION, so this is the last point at
+    # which a wrong version is cheap to catch rather than published.
+    #
+    # Deliberately scoped to tag pushes only: dev builds (PRs, workflow_dispatch,
+    # and every local build) are expected to produce .devN versions and must not
+    # be blocked by this.
+    - name: Verify release version matches the tag
+      if: startsWith(github.ref, 'refs/tags/')
+      env:
+        TAG_NAME: ${{ github.ref_name }}
+      run: |
+        python - <<'PY'
+        import os, sys
+        from packaging.version import Version, InvalidVersion
+
+        tag_name = os.environ["TAG_NAME"]
+        base = os.environ["BASE_VERSION"]
+        errors = []
+
+        if base == "0.0.0":
+            errors.append(
+                "version resolved to the 0.0.0 fallback -- setuptools-scm found no git "
+                "metadata.\n    Check that the checkout uses fetch-depth: 0 and fetch-tags: true."
+            )
+
+        try:
+            parsed = Version(base)
+        except InvalidVersion:
+            errors.append(f"{base!r} is not a valid PEP 440 version.")
+            parsed = None
+
+        if parsed is not None:
+            if parsed.is_devrelease:
+                errors.append(
+                    f"{base!r} is a dev version. The build is not exactly on the tag, or the\n"
+                    "    working tree is dirty, so setuptools-scm guessed the *next* version."
+                )
+            if parsed.local:
+                errors.append(f"{base!r} carries a local segment; it must be stripped.")
+            try:
+                # Normalized compare, so a tag of v0.9.2c is correctly seen as 0.9.2rc0.
+                if parsed != Version(tag_name.removeprefix("v")):
+                    errors.append(
+                        f"built version {base!r} does not match tag {tag_name!r}."
+                    )
+            except InvalidVersion:
+                errors.append(f"tag {tag_name!r} is not a valid PEP 440 version.")
+
+        if errors:
+            print("ERROR: refusing to build release wheels.\n")
+            for e in errors:
+                print(f"  - {e}")
+            sys.exit(1)
+
+        # A pre-release is legitimate when the tag itself declares one (v1.0.0rc1).
+        note = " (pre-release, as declared by the tag)" if parsed.is_prerelease else ""
+        print(f"OK: building {base} for tag {tag_name}{note}")
+        PY
 
     - name: Build manylinux wheels
       env:
