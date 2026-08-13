@@ -37,6 +37,7 @@ import torch.nn as nn
 from attention_helpers import optimized_kernels_is_available
 
 from torch_harmonics.attention import attention_kernels
+from torch_harmonics.attention._attention_utils import _check_extent, _check_ndim
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
 from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_setup_context
 
@@ -1141,15 +1142,15 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         if value is None:
             value = query
 
-        torch._check(query.dim() == 4, lambda: f"Expected 4-dimensional query tensor, got {query.dim()} dimensions")
-        torch._check(key.dim() == 4, lambda: f"Expected 4-dimensional key tensor, got {key.dim()} dimensions")
-        torch._check(value.dim() == 4, lambda: f"Expected 4-dimensional value tensor, got {value.dim()} dimensions")
-        torch._check(query.shape[-2] == self.nlat_out_local, lambda: f"Expected query latitudes shape[-2]=={self.nlat_out_local}, got {query.shape[-2]}")
-        torch._check(query.shape[-1] == self.nlon_out_local, lambda: f"Expected query longitudes shape[-1]=={self.nlon_out_local}, got {query.shape[-1]}")
-        torch._check(key.shape[-2] == self.nlat_in_local, lambda: f"Expected key latitudes shape[-2]=={self.nlat_in_local}, got {key.shape[-2]}")
-        torch._check(key.shape[-1] == self.nlon_in_local, lambda: f"Expected key longitudes shape[-1]=={self.nlon_in_local}, got {key.shape[-1]}")
-        torch._check(value.shape[-2] == self.nlat_in_local, lambda: f"Expected value latitudes shape[-2]=={self.nlat_in_local}, got {value.shape[-2]}")
-        torch._check(value.shape[-1] == self.nlon_in_local, lambda: f"Expected value longitudes shape[-1]=={self.nlon_in_local}, got {value.shape[-1]}")
+        _check_ndim(query, 4, "query")
+        _check_ndim(key, 4, "key")
+        _check_ndim(value, 4, "value")
+        _check_extent(query, -2, self.nlat_out_local, "query latitudes")
+        _check_extent(query, -1, self.nlon_out_local, "query longitudes")
+        _check_extent(key, -2, self.nlat_in_local, "key latitudes")
+        _check_extent(key, -1, self.nlon_in_local, "key longitudes")
+        _check_extent(value, -2, self.nlat_in_local, "value latitudes")
+        _check_extent(value, -1, self.nlon_in_local, "value longitudes")
 
         # ---- 1. project to k/v/q ----
         key_proj = nn.functional.conv2d(key, self.k_weights, bias=self.k_bias)

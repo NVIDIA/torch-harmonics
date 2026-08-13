@@ -37,6 +37,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from attention_helpers import optimized_kernels_is_available
 
+from torch_harmonics.attention._attention_utils import _check_extent, _check_ndim
 from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhood_s2_attention_torch
 from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_optimized
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
@@ -196,9 +197,9 @@ class AttentionS2(nn.Module):
             value = query
 
         # change this later to allow arbitrary number of batch dims
-        torch._check(query.dim() == 4, lambda: f"Expected 4-dimensional query tensor, got {query.dim()} dimensions")
-        torch._check(key.dim() == 4, lambda: f"Expected 4-dimensional key tensor, got {key.dim()} dimensions")
-        torch._check(value.dim() == 4, lambda: f"Expected 4-dimensional value tensor, got {value.dim()} dimensions")
+        _check_ndim(query, 4, "query")
+        _check_ndim(key, 4, "key")
+        _check_ndim(value, 4, "value")
 
         # perform QKV projections
         query = nn.functional.conv2d(query, self.q_weights, bias=self.q_bias)
@@ -479,15 +480,15 @@ class NeighborhoodAttentionS2(nn.Module):
             value = query
 
         # change this later to allow arbitrary number of batch dims
-        torch._check(query.dim() == 4, lambda: f"Expected 4-dimensional query tensor, got {query.dim()} dimensions")
-        torch._check(key.dim() == 4, lambda: f"Expected 4-dimensional key tensor, got {key.dim()} dimensions")
-        torch._check(value.dim() == 4, lambda: f"Expected 4-dimensional value tensor, got {value.dim()} dimensions")
-        torch._check(query.shape[-2] == self.nlat_out, lambda: f"Expected query latitudes shape[-2]=={self.nlat_out}, got {query.shape[-2]}")
-        torch._check(query.shape[-1] == self.nlon_out, lambda: f"Expected query longitudes shape[-1]=={self.nlon_out}, got {query.shape[-1]}")
-        torch._check(key.shape[-2] == self.nlat_in, lambda: f"Expected key latitudes shape[-2]=={self.nlat_in}, got {key.shape[-2]}")
-        torch._check(key.shape[-1] == self.nlon_in, lambda: f"Expected key longitudes shape[-1]=={self.nlon_in}, got {key.shape[-1]}")
-        torch._check(value.shape[-2] == self.nlat_in, lambda: f"Expected value latitudes shape[-2]=={self.nlat_in}, got {value.shape[-2]}")
-        torch._check(value.shape[-1] == self.nlon_in, lambda: f"Expected value longitudes shape[-1]=={self.nlon_in}, got {value.shape[-1]}")
+        _check_ndim(query, 4, "query")
+        _check_ndim(key, 4, "key")
+        _check_ndim(value, 4, "value")
+        _check_extent(query, -2, self.nlat_out, "query latitudes")
+        _check_extent(query, -1, self.nlon_out, "query longitudes")
+        _check_extent(key, -2, self.nlat_in, "key latitudes")
+        _check_extent(key, -1, self.nlon_in, "key longitudes")
+        _check_extent(value, -2, self.nlat_in, "value latitudes")
+        _check_extent(value, -1, self.nlon_in, "value longitudes")
 
         # perform QKV projections
         query = nn.functional.conv2d(query, self.q_weights, bias=self.q_bias)
