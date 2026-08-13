@@ -43,12 +43,24 @@ namespace attention_kernels
     //
     // dtype is handled by ATen (fp32 / fp16 / bf16 alike).
 
+    // Note: allocate + copy_ rather than permute().contiguous(). When the
+    // permuted view happens to be contiguous already -- which is the case
+    // whenever C == 1 or H*W == 1, since both layouts then hold identical bytes
+    // -- .contiguous() is a no-op and hands back a view aliasing the input. The
+    // op schema declares no aliasing, so that would break functionalization
+    // under torch.compile and would let a caller writing into the converted
+    // tensor corrupt the source. The CUDA path always allocates a fresh output;
+    // this keeps the two consistent.
+
     at::Tensor permute_to_nhwc_cpu(at::Tensor x)
     {
         CHECK_CPU_TENSOR(x);
         TORCH_CHECK(x.dim() == 4, "permute_to_nhwc expects a 4D (B, C, H, W) tensor, got ", x.dim(), "D");
         TORCH_CHECK(x.is_contiguous(), "permute_to_nhwc expects a contiguous (B, C, H, W) tensor");
-        return x.permute({0, 2, 3, 1}).contiguous();
+
+        at::Tensor y = at::empty({x.size(0), x.size(2), x.size(3), x.size(1)}, x.options());
+        y.copy_(x.permute({0, 2, 3, 1}));
+        return y;
     }
 
     at::Tensor permute_to_nchw_cpu(at::Tensor x)
@@ -56,7 +68,10 @@ namespace attention_kernels
         CHECK_CPU_TENSOR(x);
         TORCH_CHECK(x.dim() == 4, "permute_to_nchw expects a 4D (B, H, W, C) tensor, got ", x.dim(), "D");
         TORCH_CHECK(x.is_contiguous(), "permute_to_nchw expects a contiguous (B, H, W, C) tensor");
-        return x.permute({0, 3, 1, 2}).contiguous();
+
+        at::Tensor y = at::empty({x.size(0), x.size(3), x.size(1), x.size(2)}, x.options());
+        y.copy_(x.permute({0, 3, 1, 2}));
+        return y;
     }
 
     TORCH_LIBRARY_IMPL(attention_kernels, CPU, m)

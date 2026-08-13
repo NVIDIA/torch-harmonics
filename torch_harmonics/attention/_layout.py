@@ -61,6 +61,8 @@ When the optimized kernels are not built, everything falls back to
 reference path keeps working with no build dependency.
 """
 
+from typing import Tuple
+
 import torch
 from attention_helpers import optimized_kernels_is_available
 
@@ -115,6 +117,23 @@ if _OPTIMIZED:
     # precision change. test_autocast_preserves_dtype pins this.
 
 
+def _permuted_copy(x: torch.Tensor, dims: Tuple[int, int, int, int]) -> torch.Tensor:
+    """
+    Permute ``x`` into a freshly allocated contiguous tensor.
+
+    Not ``x.permute(dims).contiguous()``: when the permuted view is already
+    contiguous -- which happens whenever ``C == 1`` or ``H * W == 1``, since the
+    two layouts then hold identical bytes -- ``.contiguous()`` is a no-op and
+    returns a view aliasing ``x``. The conversion must always hand back storage
+    the caller owns, both to match the optimized path (which allocates) and so
+    that writing into the result cannot corrupt the source.
+    """
+
+    view = x.permute(*dims)
+
+    return view.clone() if view.is_contiguous() else view.contiguous()
+
+
 def to_nhwc(x: torch.Tensor) -> torch.Tensor:
     """
     Convert a channels-first tensor to physical channels-last.
@@ -130,12 +149,14 @@ def to_nhwc(x: torch.Tensor) -> torch.Tensor:
         Contiguous tensor of shape ``(B, H, W, C)`` holding the same values.
     """
 
-    torch._check(x.dim() == 4, lambda: f"to_nhwc expects a 4-dimensional tensor, got {x.dim()} dimensions")
+    # the message must not close over x: dynamo rejects a torch._check message
+    # closure that captures anything other than Python constants
+    torch._check(x.dim() == 4, lambda: "to_nhwc expects a 4-dimensional (B, C, H, W) tensor")
 
     if _OPTIMIZED:
         return torch.ops.attention_kernels.permute_to_nhwc.default(x.contiguous())
 
-    return x.permute(0, 2, 3, 1).contiguous()
+    return _permuted_copy(x, (0, 2, 3, 1))
 
 
 def to_nchw(x: torch.Tensor) -> torch.Tensor:
@@ -155,9 +176,9 @@ def to_nchw(x: torch.Tensor) -> torch.Tensor:
         Contiguous tensor of shape ``(B, C, H, W)`` holding the same values.
     """
 
-    torch._check(x.dim() == 4, lambda: f"to_nchw expects a 4-dimensional tensor, got {x.dim()} dimensions")
+    torch._check(x.dim() == 4, lambda: "to_nchw expects a 4-dimensional (B, H, W, C) tensor")
 
     if _OPTIMIZED:
         return torch.ops.attention_kernels.permute_to_nchw.default(x.contiguous())
 
-    return x.permute(0, 3, 1, 2).contiguous()
+    return _permuted_copy(x, (0, 3, 1, 2))
