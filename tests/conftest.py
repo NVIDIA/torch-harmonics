@@ -50,11 +50,16 @@ The grid hooks no-op when GRID_H == GRID_W == 1, and the reporter is only silenc
 on non-zero ranks, so plain non-distributed pytest invocations see zero change in
 output. The per-test suffix additionally filters on filenames starting with
 `test_distributed_`.
+
+Finally, it isolates each test's torch.compile state:
+  * `reset_dynamo`: an autouse fixture clearing dynamo's compilation cache before
+    every test, so compiled artifacts never leak between test cases.
 """
 
 import os
 
 import pytest
+import torch
 
 
 def _grid():
@@ -91,6 +96,30 @@ def pytest_report_header(config):
     if h == 1 and w == 1:
         return None
     return f"distributed grid: GRID_H x GRID_W = {h} x {w}"
+
+
+@pytest.fixture(autouse=True)
+def reset_dynamo():
+    """Start every test with an empty torch.compile cache.
+
+    Dynamo keys its compilation cache on the *code object*, so a helper defined
+    inside a parameterized test body is one cache key shared by every run of that
+    test. Each run then adds an entry -- a different shape, dtype or device is a
+    legitimate recompile -- and once the entries exceed
+    ``torch._dynamo.config.recompile_limit`` (8 by default) compilation fails.
+    Under ``fullgraph=True`` that is a hard error, so a test can fail purely
+    because of how many tests ran before it.
+
+    Resetting per test makes each case independent of collection order and of how
+    many parameterizations precede it. It is a no-op for tests that never invoke
+    torch.compile, beyond clearing caches that should not outlive a test anyway.
+
+    autouse fixtures apply to unittest.TestCase methods as well as plain test
+    functions, so this covers the whole suite.
+    """
+
+    torch._dynamo.reset()
+    yield
 
 
 def pytest_collection_modifyitems(config, items):
