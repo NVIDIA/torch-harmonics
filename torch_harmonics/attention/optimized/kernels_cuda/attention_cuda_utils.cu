@@ -37,9 +37,12 @@
 
 #include <cuda_runtime.h>
 
+#include <atomic>
 #include <cub/cub.cuh>
 #include <limits>
-#include <unordered_set>
+#include <map>
+#include <mutex>
+#include <utility>
 
 #include "cudamacro.h"
 #include "attention_cuda.cuh"
@@ -115,8 +118,34 @@ namespace attention_kernels
 
     int getPtxver()
     {
+        // Cached: this is called on every transpose to pick the tile width, but
+        // the answer is fixed for the lifetime of the process.
+        //
+        // Cached *per device* rather than process-wide: ptxVersion describes the
+        // cubin actually loaded for empty_k, and a fat binary can load a
+        // different one on a device of a different arch. Homogeneous nodes make
+        // this moot, but the check costs a TLS read.
+        //
+        // The race is benign -- concurrent callers on the same device compute
+        // the same value -- but the entries are atomic so the write is not a
+        // data race. 0 means "not yet queried"; no real PTX version is 0.
+        constexpr int MAX_DEVICES = 64;
+        static std::atomic<int> cache[MAX_DEVICES];
+
+        int dev = 0;
+        CHECK_CUDA(cudaGetDevice(&dev));
+
+        const bool cacheable = (dev >= 0) && (dev < MAX_DEVICES);
+        if (cacheable) {
+            const int cached = cache[dev].load(std::memory_order_relaxed);
+            if (cached != 0) { return cached; }
+        }
+
         cudaFuncAttributes attrs;
         CHECK_CUDA(cudaFuncGetAttributes(&attrs, empty_k));
+
+        if (cacheable) { cache[dev].store(attrs.ptxVersion, std::memory_order_relaxed); }
+
         return attrs.ptxVersion;
     }
 
@@ -168,6 +197,32 @@ namespace attention_kernels
         C10_CUDA_KERNEL_LAUNCH_CHECK();
 
         return dst;
+    }
+
+    // Registered op wrappers. The dtype dispatch lives in permute_4D_to*
+    // (AT_DISPATCH_FLOATING_TYPES_AND2 over kHalf/kBFloat16): the tiled kernel
+    // is templated on the element type and only moves elements, so fp32, fp16
+    // and bf16 all share one code path.
+    at::Tensor permute_to_nhwc_cuda(at::Tensor x)
+    {
+        CHECK_CUDA_TENSOR(x);
+        TORCH_CHECK(x.dim() == 4, "permute_to_nhwc expects a 4D (B, C, H, W) tensor, got ", x.dim(), "D");
+        TORCH_CHECK(x.is_contiguous(), "permute_to_nhwc expects a contiguous (B, C, H, W) tensor");
+        return permute_4D_to0231(x);
+    }
+
+    at::Tensor permute_to_nchw_cuda(at::Tensor x)
+    {
+        CHECK_CUDA_TENSOR(x);
+        TORCH_CHECK(x.dim() == 4, "permute_to_nchw expects a 4D (B, H, W, C) tensor, got ", x.dim(), "D");
+        TORCH_CHECK(x.is_contiguous(), "permute_to_nchw expects a contiguous (B, H, W, C) tensor");
+        return permute_4D_to0312(x);
+    }
+
+    TORCH_LIBRARY_IMPL(attention_kernels, CUDA, m)
+    {
+        m.impl("permute_to_nhwc", &permute_to_nhwc_cuda);
+        m.impl("permute_to_nchw", &permute_to_nchw_cuda);
     }
     // END - tensor permutation kernels and functions
 
@@ -345,11 +400,38 @@ namespace attention_kernels
 
         if (shsize <= 48u * 1024u) { return; }
 
-        static std::unordered_set<const void *> done;
+        // The opt-in is per (device, kernel), and the granted size has to be at
+        // least the largest ever requested for that pair:
+        //
+        //  - shsize depends on the channel count, so one kernel instantiation is
+        //    launched at different sizes by different module instances in the
+        //    same process. Caching on the kernel alone drops every request after
+        //    the first, and a later, larger launch then fails with
+        //    cudaErrorInvalidValue. (attention_cuda_bwd_ring.cu works around the
+        //    same-call-site version of this by passing max(shsize_lr, shsize).)
+        //
+        //  - cudaFuncSetAttribute applies to the current device, so a
+        //    process-wide cache would let device 0 suppress the opt-in that
+        //    device 1 never received.
+        //
+        // The mutex is what makes the cache safe to touch from the launch path,
+        // which torch may drive from several threads; an unsynchronized
+        // container mutation here is a data race. It is uncontended, and only
+        // reached on the >48KB path.
+        int dev = 0;
+        CHECK_CUDA(cudaGetDevice(&dev));
 
-        if (done.insert(kern).second) {
-            CHECK_CUDA(cudaFuncSetAttribute(kern, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(shsize)));
-        }
+        static std::mutex mtx;
+        static std::map<std::pair<int, const void *>, size_t> granted;
+
+        std::lock_guard<std::mutex> lock(mtx);
+
+        // inserts a 0 entry when this (device, kernel) pair is new
+        size_t &granted_size = granted[std::make_pair(dev, kern)];
+        if (granted_size >= shsize) { return; }
+
+        CHECK_CUDA(cudaFuncSetAttribute(kern, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(shsize)));
+        granted_size = shsize;
     }
     // END - general host-side functions
 

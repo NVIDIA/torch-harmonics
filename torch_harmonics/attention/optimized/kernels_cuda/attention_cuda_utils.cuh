@@ -76,6 +76,14 @@ namespace attention_kernels
     at::Tensor permute_4D_to0231(at::Tensor src);
     at::Tensor permute_4D_to0312(at::Tensor src);
 
+    // Registered op entry points wrapping the two transposes above. These are
+    // the only layout conversion the attention stack should use: they are
+    // torch.compile visible (fake impl + autograd registered in Python, see
+    // attention/_layout.py) and validate their input rather than inferring
+    // layout from strides.
+    at::Tensor permute_to_nhwc_cuda(at::Tensor x);
+    at::Tensor permute_to_nchw_cuda(at::Tensor x);
+
     // Host tensor dump and CSR manipulation functions
     void dump_tensor(const char *fname, at::Tensor t);
     void dump_csr(const char *fname, at::Tensor roff, at::Tensor cols);
