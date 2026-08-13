@@ -67,6 +67,24 @@ namespace attention_kernels
     //
     TORCH_LIBRARY(attention_kernels, m)
     {
+        // ---- Layout conversion ----
+        // Single point of truth for NCHW <-> NHWC conversion in the attention
+        // stack. Every attention kernel operates on physical NHWC (channel
+        // innermost) data, so layout is converted explicitly at the module
+        // boundary rather than inferred from strides inside each launcher --
+        // stride inspection cannot distinguish the two layouts when a dimension
+        // is degenerate (a contiguous NCHW tensor with H*W == 1 has stride(1)
+        // == 1 and is indistinguishable from NHWC).
+        //
+        // Both directions are pure element permutations, hence exact inverses
+        // of each other and dtype-agnostic: fp32, fp16 and bf16 all dispatch to
+        // the same tiled transpose. The autograd rule (registered in Python,
+        // see attention/_layout.py) is therefore just the opposite direction.
+        //   permute_to_nhwc : (B, C, H, W) contiguous -> (B, H, W, C) contiguous
+        //   permute_to_nchw : (B, H, W, C) contiguous -> (B, C, H, W) contiguous
+        m.def("permute_to_nhwc(Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});
+        m.def("permute_to_nchw(Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});
+
         // ---- Self-attention / downsample (output-centric gather) ----
         // Standard direction: each Q point at (ho, wo) gathers from a neighborhood
         // of K/V points. K/V are at the higher resolution (or equal).

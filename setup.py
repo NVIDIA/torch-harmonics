@@ -182,6 +182,7 @@ def get_ext_modules():
     # Create a single extension that includes both CPU and CUDA code
     attention_sources = [
         "torch_harmonics/attention/optimized/attention_interface.cpp",
+        "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_permute.cpp",
         "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_fwd.cpp",
         "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_fwd_upsample.cpp",
         "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_bwd.cpp",
