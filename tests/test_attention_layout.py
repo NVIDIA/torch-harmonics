@@ -113,6 +113,30 @@ class TestAttentionLayout(unittest.TestCase):
                 self.assertTrue(torch.equal(to_nchw(to_nhwc(x)), x))
 
     @parameterized.expand(_shapes)
+    def test_output_does_not_alias_input(self, B, C, H, W):
+        """The conversion always returns storage the caller owns.
+
+        For C == 1 and H*W == 1 the two layouts hold identical bytes, so a
+        naive ``permute(...).contiguous()`` returns a view of the input instead
+        of a copy. That violates the op schema (which declares no aliasing) and
+        would let a write into the converted tensor corrupt the source.
+        """
+
+        x = torch.randn(B, C, H, W, device=self.device, dtype=torch.float32)
+        x_ref = x.clone()
+
+        y = to_nhwc(x)
+        y.zero_()
+        self.assertTrue(torch.equal(x, x_ref), "to_nhwc output aliases its input")
+
+        z = torch.randn(B, H, W, C, device=self.device, dtype=torch.float32)
+        z_ref = z.clone()
+
+        zc = to_nchw(z)
+        zc.zero_()
+        self.assertTrue(torch.equal(z, z_ref), "to_nchw output aliases its input")
+
+    @parameterized.expand(_shapes)
     def test_backward(self, B, C, H, W):
         """The backward pass is the opposite conversion applied to grad_output."""
 
