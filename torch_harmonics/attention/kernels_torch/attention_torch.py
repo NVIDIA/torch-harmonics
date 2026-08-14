@@ -404,13 +404,22 @@ def _neighborhood_s2_attention_torch(
     nlon_out: int,
 ) -> torch.Tensor:
 
-    # reshape, folding num heads into batch dim
-    B, _, H, W = kw.shape
-    kw = kw.reshape(B * nh, -1, H, W)
-    B, _, H, W = vw.shape
-    vw = vw.reshape(B * nh, -1, H, W)
-    B, _, H, W = qw.shape
-    qw = qw.reshape(B * nh, -1, H, W)
+    # The op ABI is NHWC with heads packed along the channel dimension (matching
+    # the optimized kernels), but the reference loops below are written against
+    # channels-first indexing and are deliberately left that way -- they are the
+    # correctness specification, and rewriting ~800 lines of [:, :, ho, wo] into
+    # [:, ho, wo, :] would buy nothing (this is a Python loop, slow by design)
+    # while risking an error in the thing everything else is checked against.
+    #
+    # So convert at the boundary instead: unpack heads, move channels to dim 1,
+    # fold heads into the batch dimension (all free in channels-first), run, and
+    # invert on the way out.
+    B, H, W, _ = kw.shape
+    kw = kw.reshape(B, H, W, nh, -1).permute(0, 3, 4, 1, 2).reshape(B * nh, -1, H, W)
+    B, H, W, _ = vw.shape
+    vw = vw.reshape(B, H, W, nh, -1).permute(0, 3, 4, 1, 2).reshape(B * nh, -1, H, W)
+    B, H, W, _ = qw.shape
+    qw = qw.reshape(B, H, W, nh, -1).permute(0, 3, 4, 1, 2).reshape(B * nh, -1, H, W)
 
     # Promote to fp32 internally for softmax numerics; cast back to the input
     # dtype on return so the op is faithful to its declared output dtype
@@ -431,10 +440,11 @@ def _neighborhood_s2_attention_torch(
     else:
         raise ValueError(f"either nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out}), or vice versa")
 
-    _, _, H, W = output.shape
-    output = output.reshape(B, -1, H, W).to(dtype=inp_dtype)
+    # back to packed NHWC: (B*nh, C, H, W) -> (B, H, W, nh*C)
+    _, C, H, W = output.shape
+    output = output.reshape(B, nh, C, H, W).permute(0, 3, 4, 1, 2).reshape(B, H, W, nh * C)
 
-    return output
+    return output.to(dtype=inp_dtype)
 
 
 @torch.library.register_fake("attention_kernels::_neighborhood_s2_attention_torch")
@@ -450,7 +460,7 @@ def _(
     nlat_out: int,
     nlon_out: int,
 ) -> torch.Tensor:
-    out_shape = (kw.shape[0], vw.shape[1], nlat_out, nlon_out)
+    out_shape = (kw.shape[0], nlat_out, nlon_out, vw.shape[3])
     return torch.empty(out_shape, dtype=kw.dtype, device=kw.device)
 
 
@@ -466,15 +476,19 @@ def _neighborhood_s2_attention_bwd_torch(ctx, grad_output):
     vw_needs_grad = ctx.needs_input_grad[1]
     qw_needs_grad = ctx.needs_input_grad[2]
 
-    # reshape, folding num heads into batch dim
-    B, _, H, W = kw.shape
-    kw = kw.reshape(B * nh, -1, H, W)
-    B, _, H, W = vw.shape
-    vw = vw.reshape(B * nh, -1, H, W)
-    B, _, H, W = qw.shape
-    qw = qw.reshape(B * nh, -1, H, W)
-    B, _, H, W = grad_output.shape
-    grad_output = grad_output.reshape(B * nh, -1, H, W)
+    # NHWC -> channels-first with heads folded into batch (see the forward op)
+    def _to_cf(t):
+        b, h, w, _ = t.shape
+        return t.reshape(b, h, w, nh, -1).permute(0, 3, 4, 1, 2).reshape(b * nh, -1, h, w)
+
+    def _to_nhwc(t):
+        bh, c, h, w = t.shape
+        return t.reshape(bh // nh, nh, c, h, w).permute(0, 3, 4, 1, 2).reshape(bh // nh, h, w, nh * c)
+
+    kw = _to_cf(kw)
+    vw = _to_cf(vw)
+    qw = _to_cf(qw)
+    grad_output = _to_cf(grad_output)
 
     # Promote to fp32 internally for softmax numerics; cast each grad back to
     # its corresponding input's dtype on return. Mirrors the optimized bwd
@@ -501,22 +515,19 @@ def _neighborhood_s2_attention_bwd_torch(ctx, grad_output):
 
     if vw_needs_grad:
         dvw = dv_fn(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
-        _, _, H, W = dvw.shape
-        dvw = dvw.reshape(B, -1, H, W).to(dtype=vw_dtype)
+        dvw = _to_nhwc(dvw).to(dtype=vw_dtype)
     else:
         dvw = None
 
     if kw_needs_grad:
         dkw = dk_fn(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
-        _, _, H, W = dkw.shape
-        dkw = dkw.reshape(B, -1, H, W).to(dtype=kw_dtype)
+        dkw = _to_nhwc(dkw).to(dtype=kw_dtype)
     else:
         dkw = None
 
     if qw_needs_grad:
         dqw = dq_fn(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
-        _, _, H, W = dqw.shape
-        dqw = dqw.reshape(B, -1, H, W).to(dtype=qw_dtype)
+        dqw = _to_nhwc(dqw).to(dtype=qw_dtype)
     else:
         dqw = None
 
