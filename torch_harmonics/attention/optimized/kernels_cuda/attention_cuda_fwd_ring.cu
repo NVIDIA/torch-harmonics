@@ -1162,11 +1162,14 @@ namespace attention_kernels
         CHECK_CUDA_TENSOR(psi_row_off);
         CHECK_CUDA_TENSOR(psi_row_idx);
 
+        // NHWC by contract: kx/vx/qy (and dy) are physical (B, H, W, C), which is
+        // the layout these kernels address. The conversion happens once at the ring
+        // boundary rather than per step -- see distributed_attention.py.
         const int batch_size = kx.size(0);
-        const int nlat_halo = kx.size(2); // kx is [B,C,H,W], H is dim 2
-        const int nlon_kx = kx.size(3);   // W is dim 3
-        const size_t nchans_in = qy.size(1);
-        const size_t nchans_out = vx.size(1);
+        const int nlat_halo = kx.size(1);
+        const int nlon_kx = kx.size(2);
+        const size_t nchans_in = qy.size(3);
+        const size_t nchans_out = vx.size(3);
 
         // ATen dispatch over the input dtype. Tier B: native storage. kx/vx/qy
         // keep their dtype; the kernels widen to fp32 at load (vload) so there is
@@ -1180,14 +1183,6 @@ namespace attention_kernels
             torch::Tensor kxP = kx;
             torch::Tensor vxP = vx;
             torch::Tensor qyP = qy;
-
-            bool kx_is_channels_last = kxP.strides()[1] == 1;
-            bool vx_is_channels_last = vxP.strides()[1] == 1;
-            bool qy_is_channels_last = qyP.strides()[1] == 1;
-
-            if (!kx_is_channels_last) { kxP = permute_4D_to0231(kxP); }
-            if (!vx_is_channels_last) { vxP = permute_4D_to0231(vxP); }
-            if (!qy_is_channels_last) { qyP = permute_4D_to0231(qyP); }
 
             s2_attn_fwd_ring_step_dispatch<storage_t>(
                 batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start,

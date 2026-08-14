@@ -896,9 +896,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         C_v = channels // heads
 
         # Synthetic projected k/v/q with the correct kernel-side shapes.
-        kw = torch.randn(Bnh, C_k, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
-        vw = torch.randn(Bnh, C_v, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
-        qw = torch.randn(Bnh, C_k, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+        kw = torch.randn(Bnh, nlat_in, nlon_in, C_k, device=self.device, dtype=torch.float32)
+        vw = torch.randn(Bnh, nlat_in, nlon_in, C_v, device=self.device, dtype=torch.float32)
+        qw = torch.randn(Bnh, nlat_out, nlon_out, C_k, device=self.device, dtype=torch.float32)
 
         # The kernel expects row_idx to be the sorted permutation of output rows (by nnz),
         # not the row index buffer registered on the serial module. Build it the same way
@@ -941,7 +941,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         opcheck(torch.ops.attention_kernels.forward_ring_step, fwd_inputs)
 
         # ---- backward pass 1: re-accumulate softmax stats + alpha_k / alpha_kvw ----
-        dy = torch.randn(Bnh, C_v, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+        dy = torch.randn(Bnh, nlat_out, nlon_out, C_v, device=self.device, dtype=torch.float32)
 
         bwd_alpha_sum = torch.zeros(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
         bwd_qdotk_max = torch.full((Bnh, nlat_out, nlon_out), float("-inf"), device=self.device, dtype=torch.float32)
@@ -1069,9 +1069,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         C_v = channels // heads
 
         # Synthetic projected k/v/q with the correct kernel-side shapes.
-        kw = torch.randn(Bnh, C_k, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
-        vw = torch.randn(Bnh, C_v, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
-        qw = torch.randn(Bnh, C_k, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+        kw = torch.randn(Bnh, nlat_in, nlon_in, C_k, device=self.device, dtype=torch.float32)
+        vw = torch.randn(Bnh, nlat_in, nlon_in, C_v, device=self.device, dtype=torch.float32)
+        qw = torch.randn(Bnh, nlat_out, nlon_out, C_k, device=self.device, dtype=torch.float32)
 
         # ---- forward ring step ----
         # State buffers in channels-last layout, as expected by the CUDA kernels.
@@ -1104,7 +1104,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         # Uses the forward-final qdotk_max; synthetic but well-formed values (no -inf) so the
         # kernel doesn't produce NaNs (opcheck doesn't check numerics, but NaNs can interact
         # badly with AOT dispatch comparisons).
-        dy = torch.randn(Bnh, C_v, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+        dy = torch.randn(Bnh, nlat_out, nlon_out, C_v, device=self.device, dtype=torch.float32)
 
         fwd_qdotk_max = torch.zeros(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
         integral_buf = torch.zeros(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
