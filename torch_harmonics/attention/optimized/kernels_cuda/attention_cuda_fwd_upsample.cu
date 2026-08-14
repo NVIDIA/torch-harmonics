@@ -109,14 +109,24 @@ namespace attention_kernels
     // pass 1: per coarse cell, scatter q.k into the per-output-cell running max.
     template <int THREADS_PER_BLOCK, typename STORAGE_T>
     __global__ __launch_bounds__(THREADS_PER_BLOCK) void s2_attn_fwd_upsample_scatter_max_k(
-        int nchan_in, int nlat_in, int nlon_in, int nlat_out, int nlon_out, const STORAGE_T *__restrict__ kx,
-        const STORAGE_T *__restrict__ qy, const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx,
-        float *__restrict__ maxbuf)
+        int nheads, int nchan_in, int nlat_in, int nlon_in, int nlat_out, int nlon_out,
+        const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ qy, const int64_t *__restrict__ row_off,
+        const int64_t *__restrict__ col_idx, float *__restrict__ maxbuf)
     {
         extern __shared__ float shext[];
         float *sh_k = shext + threadIdx.y * nchan_in;
 
-        const int batch = blockIdx.y;
+        // gridDim.y spans batch * nheads. The user tensors (kx, qy) are packed
+        // (B, nlat, nlon, nheads*nchan), so they are addressed with a leading
+        // dimension and a head offset. The scratch buffers below are allocated by
+        // this launcher, so they simply keep (batch, head) as their leading index
+        // -- no packing, hence no leading dimension needed for them.
+        const int bh = blockIdx.y;
+        const int batch = bh / nheads;
+        const int head = bh - (batch * nheads);
+
+        const int64_t ldi = int64_t(nheads) * nchan_in;
+
         const int wid = blockIdx.x * blockDim.y + threadIdx.y;
         if (wid >= nlat_in * nlon_in) { return; }
 
@@ -125,9 +135,9 @@ namespace attention_kernels
         const int wi = wid - hi * nlon_in;
         const int pscale_out = nlon_out / nlon_in;
 
-        kx += int64_t(batch) * nlat_in * nlon_in * nchan_in + (int64_t(hi) * nlon_in + wi) * nchan_in;
-        qy += int64_t(batch) * nlat_out * nlon_out * nchan_in;
-        maxbuf += int64_t(batch) * nlat_out * nlon_out;
+        kx += int64_t(batch) * nlat_in * nlon_in * ldi + int64_t(head) * nchan_in + (int64_t(hi) * nlon_in + wi) * ldi;
+        qy += int64_t(batch) * nlat_out * nlon_out * ldi + int64_t(head) * nchan_in;
+        maxbuf += int64_t(bh) * nlat_out * nlon_out;
 
         for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { sh_k[chan] = vload(kx, chan); }
 
@@ -139,7 +149,7 @@ namespace attention_kernels
             const int64_t col = col_hi[off];
             const int ho = static_cast<int>(col / nlon_out);
             const int wo = scatter_wo(static_cast<int>(col - int64_t(ho) * nlon_out), wi, pscale_out, nlon_out);
-            const STORAGE_T *_qy = qy + (int64_t(ho) * nlon_out + wo) * nchan_in;
+            const STORAGE_T *_qy = qy + (int64_t(ho) * nlon_out + wo) * ldi;
 
             float qd = 0.f;
             for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { qd += sh_k[chan] * vload(_qy, chan); }
@@ -151,7 +161,7 @@ namespace attention_kernels
     // pass 2: per coarse cell, scatter exp(q.k - max)*w into denom and exp(...)*w*v into numer.
     template <int THREADS_PER_BLOCK, typename STORAGE_T>
     __global__ __launch_bounds__(THREADS_PER_BLOCK) void s2_attn_fwd_upsample_scatter_acc_k(
-        int nchan_in, int nchan_out, int nlat_in, int nlon_in, int nlat_out, int nlon_out,
+        int nheads, int nchan_in, int nchan_out, int nlat_in, int nlon_in, int nlat_out, int nlon_out,
         const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy,
         const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx, const float *__restrict__ quad_weights,
         const float *__restrict__ maxbuf, float *__restrict__ numer, float *__restrict__ denom)
@@ -160,7 +170,15 @@ namespace attention_kernels
         float *sh_k = shext + threadIdx.y * (nchan_in + nchan_out);
         float *sh_v = sh_k + nchan_in;
 
-        const int batch = blockIdx.y;
+        // see s2_attn_fwd_upsample_scatter_max_k: user tensors use ldi/ldo plus a
+        // head offset, scratch buffers are indexed by (batch, head) directly
+        const int bh = blockIdx.y;
+        const int batch = bh / nheads;
+        const int head = bh - (batch * nheads);
+
+        const int64_t ldi = int64_t(nheads) * nchan_in;
+        const int64_t ldo = int64_t(nheads) * nchan_out;
+
         const int wid = blockIdx.x * blockDim.y + threadIdx.y;
         if (wid >= nlat_in * nlon_in) { return; }
 
@@ -169,12 +187,12 @@ namespace attention_kernels
         const int wi = wid - hi * nlon_in;
         const int pscale_out = nlon_out / nlon_in;
 
-        kx += int64_t(batch) * nlat_in * nlon_in * nchan_in + (int64_t(hi) * nlon_in + wi) * nchan_in;
-        vx += int64_t(batch) * nlat_in * nlon_in * nchan_out + (int64_t(hi) * nlon_in + wi) * nchan_out;
-        qy += int64_t(batch) * nlat_out * nlon_out * nchan_in;
-        numer += int64_t(batch) * nlat_out * nlon_out * nchan_out;
-        denom += int64_t(batch) * nlat_out * nlon_out;
-        maxbuf += int64_t(batch) * nlat_out * nlon_out;
+        kx += int64_t(batch) * nlat_in * nlon_in * ldi + int64_t(head) * nchan_in + (int64_t(hi) * nlon_in + wi) * ldi;
+        vx += int64_t(batch) * nlat_in * nlon_in * ldo + int64_t(head) * nchan_out + (int64_t(hi) * nlon_in + wi) * ldo;
+        qy += int64_t(batch) * nlat_out * nlon_out * ldi + int64_t(head) * nchan_in;
+        numer += int64_t(bh) * nlat_out * nlon_out * nchan_out;
+        denom += int64_t(bh) * nlat_out * nlon_out;
+        maxbuf += int64_t(bh) * nlat_out * nlon_out;
 
         for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { sh_k[chan] = vload(kx, chan); }
         for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { sh_v[chan] = vload(vx, chan); }
@@ -189,7 +207,7 @@ namespace attention_kernels
             const int ho = static_cast<int>(col / nlon_out);
             const int wo = scatter_wo(static_cast<int>(col - int64_t(ho) * nlon_out), wi, pscale_out, nlon_out);
             const int64_t cell = int64_t(ho) * nlon_out + wo;
-            const STORAGE_T *_qy = qy + cell * nchan_in;
+            const STORAGE_T *_qy = qy + cell * ldi;
 
             float qd = 0.f;
             for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { qd += sh_k[chan] * vload(_qy, chan); }
@@ -205,56 +223,68 @@ namespace attention_kernels
     // finalize: y[b, ho, wo, :] = numer / denom (one warp per fine output cell).
     template <int THREADS_PER_BLOCK, typename STORAGE_T>
     __global__ __launch_bounds__(THREADS_PER_BLOCK) void s2_attn_fwd_upsample_scatter_final_k(
-        int nchan_out, int nlat_out, int nlon_out, const float *__restrict__ numer, const float *__restrict__ denom,
-        STORAGE_T *__restrict__ y)
+        int nheads, int nchan_out, int nlat_out, int nlon_out, const float *__restrict__ numer,
+        const float *__restrict__ denom, STORAGE_T *__restrict__ y)
     {
-        const int batch = blockIdx.y;
+        const int bh = blockIdx.y;
+        const int batch = bh / nheads;
+        const int head = bh - (batch * nheads);
+
+        const int64_t ldo = int64_t(nheads) * nchan_out;
+
         const int wid = blockIdx.x * blockDim.y + threadIdx.y;
         if (wid >= nlat_out * nlon_out) { return; }
         const int tidx = threadIdx.x;
 
-        const int64_t cell = int64_t(batch) * nlat_out * nlon_out + wid;
-        const float inv = 1.0f / denom[cell];
-        const float *_numer = numer + cell * nchan_out;
-        STORAGE_T *_y = y + cell * nchan_out;
+        // scratch is indexed by (batch, head); y is packed along channels
+        const int64_t scell = int64_t(bh) * nlat_out * nlon_out + wid;
+        const float inv = 1.0f / denom[scell];
+        const float *_numer = numer + scell * nchan_out;
+        STORAGE_T *_y = y + (int64_t(batch) * nlat_out * nlon_out + wid) * ldo + int64_t(head) * nchan_out;
         for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { vstore(_y, chan, _numer[chan] * inv); }
     }
 
     // host launcher for the scatter forward (allocates the fp32 reduction buffers,
     // runs the three passes). STORAGE_T deduces from the activation pointers.
     template <typename STORAGE_T>
-    static void launch_attn_fwd_upsample_scatter(int batch_size, int nchans_in, int nchans_out, int nlat_in,
+    static void launch_attn_fwd_upsample_scatter(int batch_size, int nheads, int nchans_in, int nchans_out, int nlat_in,
                                                  int nlon_in, int nlat_out, int nlon_out, STORAGE_T *_kxp,
                                                  STORAGE_T *_vxp, STORAGE_T *_qyp, int64_t *_row_off, int64_t *_col_idx,
                                                  float *_quad_weights, STORAGE_T *_yp, cudaStream_t stream)
     {
+        // Reduction scratch carries (batch, head) as its leading index rather than
+        // packing heads along channels: these buffers are private to this launcher,
+        // so there is nothing to be gained from matching the activation layout, and
+        // a plain leading index keeps the kernel addressing simpler.
+        const int bh_size = batch_size * nheads;
+
         auto opts = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);
-        torch::Tensor numer = torch::zeros({batch_size, nlat_out, nlon_out, nchans_out}, opts);
-        torch::Tensor denom = torch::zeros({batch_size, nlat_out, nlon_out}, opts);
-        torch::Tensor maxbuf = torch::full({batch_size, nlat_out, nlon_out}, -FLT_MAX, opts);
+        torch::Tensor numer = torch::zeros({bh_size, nlat_out, nlon_out, nchans_out}, opts);
+        torch::Tensor denom = torch::zeros({bh_size, nlat_out, nlon_out}, opts);
+        torch::Tensor maxbuf = torch::full({bh_size, nlat_out, nlon_out}, -FLT_MAX, opts);
 
         float *_numer = reinterpret_cast<float *>(numer.data_ptr());
         float *_denom = reinterpret_cast<float *>(denom.data_ptr());
         float *_maxbuf = reinterpret_cast<float *>(maxbuf.data_ptr());
 
         dim3 block(WARP_SIZE, THREADS / WARP_SIZE);
-        dim3 grid_in(DIV_UP(nlat_in * nlon_in, block.y), batch_size);
-        dim3 grid_out(DIV_UP(nlat_out * nlon_out, block.y), batch_size);
+        dim3 grid_in(DIV_UP(nlat_in * nlon_in, block.y), bh_size);
+        dim3 grid_out(DIV_UP(nlat_out * nlon_out, block.y), bh_size);
 
         const size_t sh1 = sizeof(float) * nchans_in * block.y;
         const size_t sh2 = sizeof(float) * (nchans_in + nchans_out) * block.y;
 
         s2_attn_fwd_upsample_scatter_max_k<THREADS><<<grid_in, block, sh1, stream>>>(
-            nchans_in, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _qyp, _row_off, _col_idx, _maxbuf);
+            nheads, nchans_in, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _qyp, _row_off, _col_idx, _maxbuf);
         CHECK_ERROR("s2_attn_fwd_upsample_scatter_max_k");
 
         s2_attn_fwd_upsample_scatter_acc_k<THREADS>
-            <<<grid_in, block, sh2, stream>>>(nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp,
-                                              _qyp, _row_off, _col_idx, _quad_weights, _maxbuf, _numer, _denom);
+            <<<grid_in, block, sh2, stream>>>(nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp,
+                                              _vxp, _qyp, _row_off, _col_idx, _quad_weights, _maxbuf, _numer, _denom);
         CHECK_ERROR("s2_attn_fwd_upsample_scatter_acc_k");
 
         s2_attn_fwd_upsample_scatter_final_k<THREADS>
-            <<<grid_out, block, 0, stream>>>(nchans_out, nlat_out, nlon_out, _numer, _denom, _yp);
+            <<<grid_out, block, 0, stream>>>(nheads, nchans_out, nlat_out, nlon_out, _numer, _denom, _yp);
         CHECK_ERROR("s2_attn_fwd_upsample_scatter_final_k");
     }
 
@@ -266,9 +296,9 @@ namespace attention_kernels
     // (scalar path for every dtype; activations widen at load, fp32 compute, output
     // narrowed at store). The fp32 reduction buffers are allocated inside the launcher.
     // -----------------------------------------------------------------------------
-    void s2_attn_fwd_upsample_dispatch(int batch_size, size_t nchans_in, size_t nchans_out, int64_t nlon_in,
-                                       int64_t nlat_in, int64_t nlat_out, int64_t nlon_out, torch::Tensor kxP,
-                                       torch::Tensor vxP, torch::Tensor qyP, torch::Tensor psi_row_off,
+    void s2_attn_fwd_upsample_dispatch(int batch_size, int64_t num_heads, size_t nchans_in, size_t nchans_out,
+                                       int64_t nlon_in, int64_t nlat_in, int64_t nlat_out, int64_t nlon_out,
+                                       torch::Tensor kxP, torch::Tensor vxP, torch::Tensor qyP, torch::Tensor psi_row_off,
                                        torch::Tensor psi_col_idx, torch::Tensor quad_weights, torch::Tensor yP)
     {
 
@@ -284,10 +314,10 @@ namespace attention_kernels
             scalar_t *_qyp = reinterpret_cast<scalar_t *>(qyP.data_ptr());
             scalar_t *_yp = reinterpret_cast<scalar_t *>(yP.data_ptr());
 
-            launch_attn_fwd_upsample_scatter(batch_size, static_cast<int>(nchans_in), static_cast<int>(nchans_out),
-                                             static_cast<int>(nlat_in), static_cast<int>(nlon_in),
-                                             static_cast<int>(nlat_out), static_cast<int>(nlon_out), _kxp, _vxp, _qyp,
-                                             _row_off, _col_idx, _quad_weights, _yp, stream);
+            launch_attn_fwd_upsample_scatter(
+                batch_size, static_cast<int>(num_heads), static_cast<int>(nchans_in), static_cast<int>(nchans_out),
+                static_cast<int>(nlat_in), static_cast<int>(nlon_in), static_cast<int>(nlat_out),
+                static_cast<int>(nlon_out), _kxp, _vxp, _qyp, _row_off, _col_idx, _quad_weights, _yp, stream);
         });
 
         C10_CUDA_KERNEL_LAUNCH_CHECK();

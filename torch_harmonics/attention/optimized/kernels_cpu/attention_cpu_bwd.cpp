@@ -36,20 +36,21 @@ using namespace torch::indexing;
 namespace attention_kernels
 {
 
+    // NHWC ABI with heads packed along channels -- see s2_attention_fwd_cpu.
     std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
     s2_attention_bwd_cpu(torch::Tensor kx, torch::Tensor vx, torch::Tensor qy, torch::Tensor dy,
-                         torch::Tensor quad_weights, torch::Tensor col_idx, torch::Tensor row_off, int64_t nlon_in,
-                         int64_t nlat_out, int64_t nlon_out)
+                         torch::Tensor quad_weights, torch::Tensor col_idx, torch::Tensor row_off, int64_t num_heads,
+                         int64_t nlon_in, int64_t nlat_out, int64_t nlon_out)
     {
 
-        // Caller-visible shapes (BCHW logical):
-        //   kx, vx          : (B, C, Hi, Wi)
-        //   qy, dy          : (B, C, Ho, Wo)
+        // Caller-visible shapes (NHWC, heads packed along channels):
+        //   kx, vx          : (B, Hi, Wi, num_heads * C)
+        //   qy, dy          : (B, Ho, Wo, num_heads * C)
         //   quad_weights    : (Hi,)
         //   dkx, dvx (out)  : same as kx, vx
         //   dqy (out)       : same as qy
-        // Internally the kernel operates on physical (B, H, W, C) layout; the
-        // wrapper does the BCHW↔BHWC permute (mirrors the forward path).
+        // The loop kernels are head-agnostic, so the wrapper folds heads into the
+        // batch dimension on the way in and unfolds on the way out.
 
         CHECK_CPU_INPUT_TENSOR(kx);
         CHECK_CPU_INPUT_TENSOR(vx);
@@ -66,11 +67,21 @@ namespace attention_kernels
         TORCH_CHECK(downsample || upsample, "either nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (",
                     nlon_out, "), or vice versa");
 
-        // stride(1) == 1 ⇒ caller is already in BCHW-logical / BHWC-physical
-        // (channels-last) layout; we match that on the output side.
-        const bool kx_is_channels_last = kx.strides()[1] == 1;
-        const bool vx_is_channels_last = vx.strides()[1] == 1;
-        const bool qy_is_channels_last = qy.strides()[1] == 1;
+        TORCH_CHECK(num_heads >= 1, "num_heads must be positive, got ", num_heads);
+        TORCH_CHECK(qy.size(3) % num_heads == 0, "q/k channel count (", qy.size(3),
+                    ") must be divisible by num_heads (", num_heads, ")");
+        TORCH_CHECK(vx.size(3) % num_heads == 0, "v channel count (", vx.size(3), ") must be divisible by num_heads (",
+                    num_heads, ")");
+
+        // Every activation must share one dtype: the dispatch below selects a single
+        // scalar_t from qy and the launchers reinterpret_cast k/v/q (and dy) to it, so
+        // a mismatched input would be reinterpreted rather than converted.
+        TORCH_CHECK(kx.scalar_type() == qy.scalar_type(), "k dtype (", kx.scalar_type(), ") must match q dtype (",
+                    qy.scalar_type(), ")");
+        TORCH_CHECK(vx.scalar_type() == qy.scalar_type(), "v dtype (", vx.scalar_type(), ") must match q dtype (",
+                    qy.scalar_type(), ")");
+        TORCH_CHECK(dy.scalar_type() == qy.scalar_type(), "dy dtype (", dy.scalar_type(), ") must match q dtype (",
+                    qy.scalar_type(), ")");
 
         // The CPU kernels are fp32-only (storage/compute split is CUDA-only Tier B).
         // Upcast fp16/bf16 inputs to fp32 and cast the grads back at the end; CPU
@@ -82,14 +93,11 @@ namespace attention_kernels
         qy = qy.to(torch::kFloat32);
         dy = dy.to(torch::kFloat32);
 
-        // Force inputs to physical (B, H, W, C) via explicit permute + contiguous.
-        // Mirrors CUDA permute_4D_to0231; avoids relying on
-        // MemoryFormat::ChannelsLast which is silently ignored on some PyTorch
-        // builds (notably the C == 1 degenerate case).
-        kx = kx.permute({0, 2, 3, 1}).contiguous();
-        vx = vx.permute({0, 2, 3, 1}).contiguous();
-        qy = qy.permute({0, 2, 3, 1}).contiguous();
-        dy = dy.permute({0, 2, 3, 1}).contiguous();
+        // already NHWC by contract; only the head fold is needed
+        kx = fold_heads(kx, num_heads).contiguous();
+        vx = fold_heads(vx, num_heads).contiguous();
+        qy = fold_heads(qy, num_heads).contiguous();
+        dy = fold_heads(dy, num_heads).contiguous();
 
         const int64_t batch_size = kx.size(0);
         const int64_t nlat_in = kx.size(1);
@@ -122,15 +130,10 @@ namespace attention_kernels
                                           nchannels_in, nchannels_out);
         }
 
-        // Return logical (B, C, H, W). Permute view is the desired layout when the
-        // matching input was channels-last; otherwise .contiguous() materializes
-        // default BCHW.
-        dkx = dkx.permute({0, 3, 1, 2});
-        dvx = dvx.permute({0, 3, 1, 2});
-        dqy = dqy.permute({0, 3, 1, 2});
-        if (!kx_is_channels_last) { dkx = dkx.contiguous(); }
-        if (!vx_is_channels_last) { dvx = dvx.contiguous(); }
-        if (!qy_is_channels_last) { dqy = dqy.contiguous(); }
+        // back to the packed NHWC form the caller supplied
+        dkx = unfold_heads(dkx, num_heads).contiguous();
+        dvx = unfold_heads(dvx, num_heads).contiguous();
+        dqy = unfold_heads(dqy, num_heads).contiguous();
 
         return std::make_tuple(dkx.to(inp_dtype), dvx.to(inp_dtype), dqy.to(inp_dtype));
     }
