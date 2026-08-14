@@ -259,11 +259,14 @@ namespace attention_kernels
         CHECK_CUDA_TENSOR(psi_col_idx);
         CHECK_CUDA_TENSOR(psi_row_off);
 
+        // NHWC by contract: kx/vx/qy (and dy) are physical (B, H, W, C), which is
+        // the layout these kernels address. The conversion happens once at the ring
+        // boundary rather than per step -- see distributed_attention.py.
         const int batch_size = kx.size(0);
-        const int nlat_halo = kx.size(2);
-        const int nlon_kx = kx.size(3);
-        const size_t nchans_in = qy.size(1);
-        const size_t nchans_out = vx.size(1);
+        const int nlat_halo = kx.size(1);
+        const int nlon_kx = kx.size(2);
+        const size_t nchans_in = qy.size(3);
+        const size_t nchans_out = vx.size(3);
 
         auto stream = at::cuda::getCurrentCUDAStream().stream();
 
@@ -283,11 +286,6 @@ namespace attention_kernels
                 torch::Tensor vxP = vx;
                 torch::Tensor qyP = qy;
                 torch::Tensor dyP = dy;
-
-                if (kxP.strides()[1] != 1) { kxP = permute_4D_to0231(kxP); }
-                if (vxP.strides()[1] != 1) { vxP = permute_4D_to0231(vxP); }
-                if (qyP.strides()[1] != 1) { qyP = permute_4D_to0231(qyP); }
-                if (dyP.strides()[1] != 1) { dyP = permute_4D_to0231(dyP); }
 
                 storage_t *_kxp = reinterpret_cast<storage_t *>(kxP.data_ptr());
                 storage_t *_vxp = reinterpret_cast<storage_t *>(vxP.data_ptr());
@@ -331,11 +329,14 @@ namespace attention_kernels
         CHECK_CUDA_TENSOR(psi_col_idx);
         CHECK_CUDA_TENSOR(psi_row_off);
 
+        // NHWC by contract: kx/vx/qy (and dy) are physical (B, H, W, C), which is
+        // the layout these kernels address. The conversion happens once at the ring
+        // boundary rather than per step -- see distributed_attention.py.
         const int batch_size = kx.size(0);
-        const int nlat_halo = kx.size(2);
-        const int nlon_kx = kx.size(3);
-        const size_t nchans_in = qy.size(1);
-        const size_t nchans_out = vx.size(1);
+        const int nlat_halo = kx.size(1);
+        const int nlon_kx = kx.size(2);
+        const size_t nchans_in = qy.size(3);
+        const size_t nchans_out = vx.size(3);
 
         auto stream = at::cuda::getCurrentCUDAStream().stream();
 
@@ -357,11 +358,6 @@ namespace attention_kernels
                 torch::Tensor vxP = vx;
                 torch::Tensor qyP = qy;
                 torch::Tensor dyP = dy;
-
-                if (kxP.strides()[1] != 1) { kxP = permute_4D_to0231(kxP); }
-                if (vxP.strides()[1] != 1) { vxP = permute_4D_to0231(vxP); }
-                if (qyP.strides()[1] != 1) { qyP = permute_4D_to0231(qyP); }
-                if (dyP.strides()[1] != 1) { dyP = permute_4D_to0231(dyP); }
 
                 storage_t *_kxp = reinterpret_cast<storage_t *>(kxP.data_ptr());
                 storage_t *_vxp = reinterpret_cast<storage_t *>(vxP.data_ptr());
