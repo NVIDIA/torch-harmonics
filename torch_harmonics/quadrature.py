@@ -173,7 +173,7 @@ def trapezoidal_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 
 
 def geometric_weights(n: int, a: Optional[float] = 1.0, b: Optional[float] = math.e) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Helper routine which returns geometrically spaced nodes, uniform in log(v), together
+    Helper routine which returns geometrically spaced nodes, uniform in log(x), together
     with the corresponding trapezoidal weights for the integral over dv on [a, b]
 
     Parameters

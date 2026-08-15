@@ -89,7 +89,7 @@ def radial_grid(nr: int, vmin: float, vmax: float, grid: str = "half-line", R: O
 class GreensOperator(nn.Module):
     """
     Exact per-degree Green's operator for the radial Poisson equation. Solves the radial ODE that lap u = f reduces to under a spherical harmonic
-    transform, in closed form.
+    transform.
 
     Parameters
     -----------
@@ -174,8 +174,7 @@ class RadialPoissonSolver(nn.Module):
     nr : int
         Number of radial points
     r_min, r_max : float, optional
-        Truncation bounds of the radial grid: on r for the half-line, on the
-        non-dimensional rho / R = (r - R) / R for the exterior.
+        Bounds of the radial grid.
     lmax : int, optional
         Maximum l mode, by default None
     mmax : int, optional
@@ -260,7 +259,7 @@ class RadialPoissonSolver(nn.Module):
         return self.spec2grid(self.radial(self.grid2spec(f), v0spec))
 
     def solve_density(self, density: torch.Tensor, v0: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Solve newtonian poisson equation lap V = 4 pi G rho."""
+        """Solve newtonian poisson equation."""
         return self.solve(4.0 * math.pi * self.gravity * density, v0)
 
     def _random_angular_spec(self, shape, l_src=8, decay=1.0) -> torch.Tensor:
@@ -285,7 +284,7 @@ class RadialPoissonSolver(nn.Module):
 
     def random_source(self, nblobs=(1, 8), l_src=8, decay=1.0, margin=None, width=(0.03, 0.10), positive=False) -> torch.Tensor:
         """
-        Random, compactly supported, multi-scale source.
+        Random multi-scale source.
         A sum of nblobs terms, each a radial bump in x = log r times a random band-limited angular field.
 
         Parameters
@@ -297,8 +296,7 @@ class RadialPoissonSolver(nn.Module):
         decay : float, optional
             Decay exponent of angular spectrum, by default 1.0
         margin : float, optional
-            Fraction of the log range kept free at each end, by default width[1] + 0.02,
-            the smallest value that still keeps every blob strictly inside the grid
+            Fraction of the log range kept free at each end, by default width[1] + 0.02
         width : tuple of float, optional
             Range of blob half-widths as a fraction of the log range, by default (0.03, 0.10)
         positive : bool, optional

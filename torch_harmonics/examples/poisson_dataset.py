@@ -59,7 +59,7 @@ class PoissonDataset(torch.utils.data.Dataset):
     l_src : int, optional
         Angular band limit of the source, by default 8
     positive : bool, optional
-        Draw non-negative sources, as a mass density has to be, by default False
+        Draw only positive sources, by default False
 
     Returns
     -------
@@ -108,10 +108,8 @@ class PoissonDataset(torch.utils.data.Dataset):
     def scale(self, f):
         """Scale a pair by the L2 norm of the source in the measure r**2 dr dn."""
 
-        w, r = self.solver.w.to(f.dtype), self.solver.r.to(f.dtype)
-        norm = ((w * r**2) * (f**2).mean(dim=(-1, -2))).sum().sqrt()
-
-        return norm.clamp_min(torch.finfo(f.dtype).tiny)
+        w, r = self.solver.w, self.solver.r
+        return ((w * r**2) * (f**2).mean(dim=(-1, -2))).sum().sqrt()
 
     def __getitem__(self, index):
 
