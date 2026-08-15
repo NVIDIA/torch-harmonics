@@ -91,7 +91,12 @@ class PoissonDataset(torch.utils.data.Dataset):
         self.nlat, self.nlon, self.nr = dims
 
         self.solver = RadialPoissonSolver(
-            self.nlat, self.nlon, self.nr, grid=grid, domain=domain, R=R,
+            self.nlat,
+            self.nlon,
+            self.nr,
+            grid=grid,
+            domain=domain,
+            R=R,
         ).to(self.device)
 
     def __len__(self):

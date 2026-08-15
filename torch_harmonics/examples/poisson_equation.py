@@ -38,10 +38,12 @@ import torch.nn as nn
 from einops import rearrange
 
 import torch_harmonics as th
-from torch_harmonics.quadrature import precompute_longitudes, geometric_weights, trapezoidal_weights
+from torch_harmonics.quadrature import geometric_weights, precompute_longitudes, trapezoidal_weights
 
 
-def radial_grid(nr: int, vmin: float, vmax: float, grid: str = "half-line", R: Optional[float] = None, dtype: torch.dtype = torch.float64) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def radial_grid(
+    nr: int, vmin: float, vmax: float, grid: str = "half-line", R: Optional[float] = None, dtype: torch.dtype = torch.float64
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Radial grid and quadrature weights.
 
@@ -86,6 +88,7 @@ def radial_grid(nr: int, vmin: float, vmax: float, grid: str = "half-line", R: O
 
     return x.to(dtype), r.to(dtype), w.to(dtype)
 
+
 class GreensOperator(nn.Module):
     """
     Exact per-degree Green's operator for the radial Poisson equation. Solves the radial ODE that lap u = f reduces to under a spherical harmonic
@@ -104,6 +107,7 @@ class GreensOperator(nn.Module):
     R : float, optional
         Inner radius for exterior domain, by default None
     """
+
     def __init__(self, r: torch.Tensor, w: torch.Tensor, lmax: int, domain: str = "half-line", R: Optional[float] = None):
         super().__init__()
 
@@ -281,7 +285,6 @@ class RadialPoissonSolver(nn.Module):
 
         return aspec
 
-
     def random_source(self, nblobs=(1, 8), l_src=8, decay=1.0, margin=None, width=(0.03, 0.10), positive=False) -> torch.Tensor:
         """
         Random multi-scale source.
@@ -350,7 +353,7 @@ class RadialPoissonSolver(nn.Module):
         import matplotlib.pyplot as plt
         import numpy as np
 
-        assert data.ndim==2, f"data must be 2D (nlat, nlon), got {data.shape}"
+        assert data.ndim == 2, f"data must be 2D (nlat, nlon), got {data.shape}"
 
         data = data.detach().cpu()
         lons = self.lons.cpu() - torch.pi
