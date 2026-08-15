@@ -29,11 +29,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from .heat_equation import SphericalHeatSolver
 from .pde_dataset import PdeDataset
+from .poisson_dataset import PoissonDataset
 from .pde_sphere import SphereSolver
-from .poisson_radial import RadialPoissonOperator, geometric_grid, radial_grid
-from .poisson_sphere import PoissonSolver
-from .radial_geometry import coordinates, default_grid_kind, sturm_liouville_weights, to_uniform, uniform_nodes
+from .poisson_equation import RadialPoissonSolver
 from .shallow_water_equations import ShallowWaterSolver
 from .stanford_2d3ds_dataset import Stanford2D3DSDownloader, StanfordDatasetSubset, StanfordDepthDataset, StanfordSegmentationDataset, compute_stats_s2

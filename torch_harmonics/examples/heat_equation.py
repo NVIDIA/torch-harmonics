@@ -113,6 +113,7 @@ time-stepping reference implementations.
 
 import math
 import warnings
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -120,7 +121,59 @@ import torch.nn as nn
 import torch_harmonics as th
 from torch_harmonics.quadrature import precompute_longitudes
 
-from .radial_geometry import coordinates, sturm_liouville_weights, to_uniform, uniform_nodes
+
+def coordinates(s: torch.Tensor, kind: str, R: Optional[float] = None, scale: float = 1.0) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Radius r(s) and the Jacobian J = dr/ds.
+
+    `scale` multiplies the geometric coordinate, i.e. rho = scale * exp(s), rather than
+    folding the factor into the exponent as exp(s + log(scale)). Both are accurate; the
+    difference is small, roughly 1 to 4 ulp for the folded form against 0 to 0.3 ulp for
+    this one, and it does not show up end to end. The reason to prefer this form is
+    structural: rho is then literally R times one fixed array, which is what the
+    non-dimensional exterior grid claims to be.
+    """
+
+    if kind == "linear":
+        return scale * s, torch.full_like(s, scale)
+    if kind == "geometric":
+        r = scale * torch.exp(s)
+        return r, r
+    if kind == "shifted-geometric":
+        if R is None:
+            raise ValueError("R must be given for a shifted-geometric grid")
+        rho = scale * torch.exp(s)
+        return R + rho, rho
+    raise ValueError(f"unknown grid kind: {kind}")
+
+
+def sturm_liouville_weights(r: torch.Tensor, jac: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """(w, m, q) = (r^2 / J, r^2 J, J), putting the radial Laplacian in flux form."""
+
+    return r**2 / jac, r**2 * jac, jac
+
+
+def uniform_nodes(n: int, s_in: float, s_out: float, layout: str, dtype: torch.dtype = torch.float64):
+    """Evolved-node coordinates, face coordinates and the uniform spacing ds.
+
+    node : nodes span [s_in, s_out]; nodes 0 and n-1 hold boundary data. Evolved nodes
+           are 1..n-2, and the faces flanking them are the midpoints.
+    cell : n cell centers, n + 1 faces, the outermost faces sitting exactly on s_in and
+           s_out. Every cell is evolved.
+    """
+
+    if layout == "node":
+        s = torch.linspace(s_in, s_out, n, dtype=dtype)
+        ds = (s[1] - s[0]).clone()
+        s_ev = s[1:-1]
+        # faces at the midpoints flanking the evolved nodes: s_ev -/+ ds/2
+        return s_ev, torch.cat([s_ev - 0.5 * ds, s_ev[-1:] + 0.5 * ds]), ds
+
+    if layout == "cell":
+        ds = torch.as_tensor((s_out - s_in) / n, dtype=dtype)
+        s_face = s_in + ds * torch.arange(n + 1, dtype=dtype)
+        return 0.5 * (s_face[:-1] + s_face[1:]), s_face, ds
+
+    raise ValueError(f"unknown layout: {layout}")
 
 
 def _sturm_liouville(nr, v_in, v_out, radial_grid, layout, bc_inner, bc_outer, lvals, R=None, scale=1.0):
@@ -137,7 +190,7 @@ def _sturm_liouville(nr, v_in, v_out, radial_grid, layout, bc_inner, bc_outer, l
     `bc_inner="regular"` encodes the origin behaviour u ~ r^l of the half-line:
     Neumann for l = 0, Dirichlet for l >= 1.
     """
-    s_in, s_out = to_uniform(v_in, v_out, radial_grid)
+    s_in, s_out = (v_in, v_out) if radial_grid == "linear" else (math.log(v_in), math.log(v_out))
     s_ev, s_face, ds = uniform_nodes(nr, s_in, s_out, layout)
 
     r_ev, jac_ev = coordinates(s_ev, radial_grid, R, scale=scale)
