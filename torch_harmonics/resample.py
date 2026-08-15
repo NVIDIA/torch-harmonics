@@ -178,9 +178,6 @@ class ResampleS2(nn.Module):
 
         self.skip_resampling = (nlon_in == nlon_out) and (nlat_in == nlat_out) and (grid_in == grid_out)
 
-    def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}"
-
     def _upscale_longitudes(self, x: torch.Tensor):
         # do the interpolation in precision of x
         lwgt = self.lon_weights.to(x.dtype)
