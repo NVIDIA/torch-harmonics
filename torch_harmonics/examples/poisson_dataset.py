@@ -111,7 +111,11 @@ class PoissonDataset(torch.utils.data.Dataset):
         return f.float(), u.float()
 
     def scale(self, f):
-        """Scale a pair by the L2 norm of the source in the measure r**2 dr dn."""
+        """
+        Scale factor for a pair: the L2 norm of the source, quadrature-weighted in the
+        radial direction by r**2 dr and approximated by an unweighted mean over the
+        angular directions.
+        """
 
         w, r = self.solver.w, self.solver.r
         return ((w * r**2) * (f**2).mean(dim=(-1, -2))).sum().sqrt()

@@ -37,7 +37,7 @@ import torch
 import torch.nn as nn
 
 import torch_harmonics as th
-from torch_harmonics.quadrature import geometric_weights, precompute_latitudes, precompute_longitudes, trapezoidal_weights
+from torch_harmonics.quadrature import geometric_weights, precompute_latitudes, precompute_longitudes
 
 
 def radial_grid(
@@ -55,7 +55,7 @@ def radial_grid(
     vmax : float
         Upper bound
     grid : str, optional
-        One of "half-line", "exterior" or "shell", by default "half-line"
+        Either "half-line" or "exterior", by default "half-line"
     R : float, optional
         Inner radius, required for domain="exterior", by default None
     dtype : torch.dtype, optional
@@ -79,9 +79,6 @@ def radial_grid(
             raise ValueError("R must be given for grid='exterior'")
         rho, wrho = geometric_weights(nr, vmin, vmax)
         x, r, w = torch.log(rho), R + R * rho, R * wrho
-    elif grid == "shell":
-        r, w = trapezoidal_weights(nr, vmin, vmax)
-        x = r
     else:
         raise ValueError(f"unknown grid: {grid}")
 
@@ -172,6 +169,10 @@ class RadialPoissonSolver(nn.Module):
     operator in the radial direction and a spherical harmonic transform in the angular
     directions.
 
+    The Green's kernel is stored densely, so the solver holds an (lmax, nr, nr) float64
+    buffer and each solve costs O(lmax * mmax * nr**2): 33 MB at nlat=64, nr=256, but
+    537 MB at nlat=256, nr=512. Size the radial grid accordingly.
+
     Parameters
     -----------
     nlat : int
@@ -192,11 +193,9 @@ class RadialPoissonSolver(nn.Module):
         Either "half-line" or "exterior", by default "half-line"
     R : float, optional
         Inner radius for exterior domain, by default None
-    gravity : float, optional
-        Gravitational constant G for Newtonian form, by default 1.0
     """
 
-    def __init__(self, nlat, nlon, nr, r_min=None, r_max=None, lmax=None, mmax=None, grid="legendre-gauss", domain="half-line", R=None, gravity=1.0):
+    def __init__(self, nlat, nlon, nr, r_min=None, r_max=None, lmax=None, mmax=None, grid="legendre-gauss", domain="half-line", R=None):
         super().__init__()
 
         # grid parameters
@@ -206,9 +205,6 @@ class RadialPoissonSolver(nn.Module):
         self.grid = grid
         self.domain = domain
         self.R = R
-
-        # physical constants
-        self.register_buffer("gravity", torch.as_tensor(gravity, dtype=torch.float64))
 
         # SHT
         self.sht = th.RealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
@@ -259,10 +255,6 @@ class RadialPoissonSolver(nn.Module):
         """Solve poisson equation lap u = f on the grid."""
         v0spec = None if v0 is None else self.grid2spec(v0)
         return self.spec2grid(self.radial(self.grid2spec(f), v0spec))
-
-    def solve_density(self, density: torch.Tensor, v0: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Solve newtonian poisson equation."""
-        return self.solve(4.0 * math.pi * self.gravity * density, v0)
 
     def _random_angular_spec(self, shape, l_src=8, decay=1.0) -> torch.Tensor:
         """Random band-limited complex coefficients of a real field on the sphere."""
@@ -346,7 +338,7 @@ class RadialPoissonSolver(nn.Module):
         return self.spec2grid(self._random_angular_spec((), l_src=l_src, decay=decay))
 
     def plot_sphere(self, data, ax, title="", cmap=None, vmin=None, vmax=None, projection="mollweide", colorbar=True):
-        """One radial level of a grid field, on the sphere. Support projections "mollweide" and "orthographic"."""
+        """One radial level of a grid field, on the sphere. Supports the "mollweide" projection."""
 
         import matplotlib.pyplot as plt
         import numpy as np
@@ -363,11 +355,6 @@ class RadialPoissonSolver(nn.Module):
             ax.set_xticklabels([])
             ax.set_yticklabels([])
             ax.grid(True, alpha=0.3)
-        elif projection == "orthographic":
-            import cartopy.crs as ccrs
-
-            Lons, Lats = np.meshgrid(lons * 180 / math.pi, lats * 180 / math.pi)
-            im = ax.pcolormesh(Lons, Lats, data, cmap=cmap, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
         else:
             raise NotImplementedError(f"projection {projection!r} not implemented")
 
