@@ -343,7 +343,8 @@ class RadialPoissonSolver(nn.Module):
         import matplotlib.pyplot as plt
         import numpy as np
 
-        assert data.ndim == 2, f"data must be 2D (nlat, nlon), got {data.shape}"
+        if data.ndim != 2:
+            raise ValueError(f"data must be 2D (nlat, nlon), got {tuple(data.shape)}")
 
         data = data.detach().cpu()
         lons = self.lons.cpu() - torch.pi
