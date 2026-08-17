@@ -881,6 +881,8 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             att.quad_weights,
             att.psi_col_idx,
             att.psi_roff_idx,
+            att.psi_seg,
+            att.psi_seg_off,
             att.num_heads,
             nlon_in,
             nlat_out,

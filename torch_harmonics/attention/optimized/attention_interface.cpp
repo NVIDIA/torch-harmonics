@@ -111,8 +111,13 @@ namespace attention_kernels
         //              applies the integer p-shift  wip = wi + pscale*wo  internally,
         //              where pscale = nlon_in / nlon_out).
         // Requires nlon_in % nlon_out == 0.
-        m.def("forward(Tensor kx, Tensor vx, Tensor qy, Tensor quad_weights, Tensor col_idx, Tensor row_off, int "
-              "num_heads, int nlon_in, int nlat_out, int nlon_out) -> Tensor",
+        // seg / seg_off are the contiguous-arc form of psi (see _build_psi_segments):
+        // seg is (nsegs, 3) int32 holding (input_lat, lon_start, arc_len), seg_off maps
+        // an output row to its segment range. The CUDA kernels use them instead of
+        // col_idx; col_idx and row_off stay because the CPU and torch reference paths
+        // still consume them -- which is what keeps the reference independent.
+        m.def("forward(Tensor kx, Tensor vx, Tensor qy, Tensor quad_weights, Tensor col_idx, Tensor row_off, "
+              "Tensor seg, Tensor seg_off, int num_heads, int nlon_in, int nlat_out, int nlon_out) -> Tensor",
               {at::Tag::pt2_compliant_tag});
         m.def("backward(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor quad_weights, Tensor col_idx, Tensor "
               "row_off, int num_heads, int nlon_in, int nlat_out, int nlon_out) -> (Tensor, Tensor, Tensor)",
