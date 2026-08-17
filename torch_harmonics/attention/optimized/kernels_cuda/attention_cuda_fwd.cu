@@ -266,7 +266,115 @@ namespace attention_kernels
 
         const int rlen = rend - rbeg;
 
-        for (int off = 0; off < rlen; off++) {
+        // Neighbors are processed in groups of NB.
+        //
+        // The one-at-a-time form this replaces had a fully serial dependency chain per
+        // neighbor: col_idx -> address -> load k -> warp reduce -> softmax -> load v.
+        // Nothing was in flight while a ~500-cycle k load resolved, and with nchan_in
+        // = 64 over BDIM_X = 32 lanes there were only two independent loads inside the
+        // channel loop to hide it with. Measured 1.6 TFLOP/s on H100 -- about 2% of
+        // this GPU's scalar fp32 peak and ~300x off its bandwidth roofline, i.e. the
+        // kernel was latency-bound, not compute- or bandwidth-bound.
+        //
+        // Grouping issues NB independent k loads (and later NB v loads) before any is
+        // consumed, which is the entire point: memory-level parallelism, not fewer
+        // flops. The online softmax is applied once per group instead of once per
+        // neighbor. That is algebraically the same reduction -- one running max, one
+        // rescale of locy per group rather than NB of them -- and is if anything
+        // better conditioned, since it rescales less often.
+        constexpr int NB = 4;
+
+        int off = 0;
+        for (; off + NB <= rlen; off += NB) {
+
+            const STORAGE_T *kp[NB];
+            const STORAGE_T *vp[NB];
+            float qw[NB];
+
+#pragma unroll
+            for (int u = 0; u < NB; u++) {
+                const int64_t col = col_idx[off + u];
+                const int hi = col / nlon_in;
+                const int wi = col - (hi * nlon_in);
+                const int wi_wo = wi + pscale * wo;
+                const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
+                kp[u] = kx + int64_t(hi) * nlon_in * ldi + int64_t(wip) * ldi;
+                vp[u] = vx + int64_t(hi) * nlon_in * ldo + int64_t(wip) * ldo;
+                qw[u] = quad_weights[hi];
+            }
+
+            COMPUTE_T acc[NB];
+#pragma unroll
+            for (int u = 0; u < NB; u++) { acc[u] = __vset<COMPUTE_T>(0.f); }
+
+            // one channel loop feeding NB accumulators, so NB loads are outstanding
+            // per channel step rather than one
+            if constexpr (CHIN_AS_OUT) {
+#pragma unroll
+                for (int i = 0; i < NLOC_M1; i++) {
+                    const COMPUTE_T q = shq[i * BDIM_X];
+#pragma unroll
+                    for (int u = 0; u < NB; u++) { acc[u] = __vadd(acc[u], __vmul(q, vload(kp[u], i * BDIM_X))); }
+                }
+                if (NLOC_M1 * BDIM_X + tidx < nchan_in) {
+                    const COMPUTE_T q = shq[NLOC_M1 * BDIM_X];
+#pragma unroll
+                    for (int u = 0; u < NB; u++) { acc[u] = __vadd(acc[u], __vmul(q, vload(kp[u], NLOC_M1 * BDIM_X))); }
+                }
+            } else {
+                for (int chan = tidx; chan < nchan_in; chan += BDIM_X) {
+                    const COMPUTE_T q = shq[chan];
+#pragma unroll
+                    for (int u = 0; u < NB; u++) { acc[u] = __vadd(acc[u], __vmul(q, vload(kp[u], chan))); }
+                }
+            }
+
+            float qdotk[NB];
+#pragma unroll
+            for (int u = 0; u < NB; u++) {
+                float t = __vred(acc[u]);
+                if constexpr (BDIM_X == 32) {
+                    t = __warp_sum(t);
+                } else {
+                    t = __block_sum<BDIM_X>(t);
+                }
+                qdotk[u] = t;
+            }
+
+            // group-wise online softmax: one running max and one rescale for all NB
+            float qdotk_max_tmp = qdotk_max;
+#pragma unroll
+            for (int u = 0; u < NB; u++) { qdotk_max_tmp = max(qdotk_max_tmp, qdotk[u]); }
+            const float exp_save = expf(qdotk_max - qdotk_max_tmp);
+
+            float alpha[NB];
+            float alpha_grp = 0.0f;
+#pragma unroll
+            for (int u = 0; u < NB; u++) {
+                alpha[u] = expf(qdotk[u] - qdotk_max_tmp) * qw[u];
+                alpha_grp += alpha[u];
+            }
+            alpha_sum = alpha_grp + alpha_sum * exp_save;
+
+#pragma unroll
+            for (int i = 0; i < NLOC_M1; i++) {
+                COMPUTE_T t = __vscale(exp_save, locy[i]);
+#pragma unroll
+                for (int u = 0; u < NB; u++) { t = __vadd(t, __vscale(alpha[u], vload(vp[u], i * BDIM_X))); }
+                locy[i] = t;
+            }
+            if (NLOC_M1 * BDIM_X + tidx < nchan_out) {
+                COMPUTE_T t = __vscale(exp_save, locy[NLOC_M1]);
+#pragma unroll
+                for (int u = 0; u < NB; u++) { t = __vadd(t, __vscale(alpha[u], vload(vp[u], NLOC_M1 * BDIM_X))); }
+                locy[NLOC_M1] = t;
+            }
+
+            qdotk_max = qdotk_max_tmp;
+        }
+
+        // remainder: fewer than NB neighbors left, original one-at-a-time path
+        for (; off < rlen; off++) {
 
             const int64_t col = col_idx[off];
 
