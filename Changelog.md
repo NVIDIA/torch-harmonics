@@ -2,6 +2,11 @@
 
 ## Versioning
 
+### v0.9.3
+
+* Added a radial Poisson solver example (`RadialPoissonSolver` and `PoissonDataset` in `torch_harmonics.examples`), solving `lap u = f` on `(0, inf) x S2` and `[R, inf) x S2` subject to `u -> 0` at infinity. It combines an exact per-degree Green's operator in the radial direction with a spherical harmonic transform in the angular directions, and supports Dirichlet data on the inner sphere of the exterior domain. New tutorial notebook: `notebooks/poisson_equation.ipynb`.
+* Added `geometric_weights` to `torch_harmonics.quadrature`: geometrically spaced nodes, uniform in `log(x)`, together with the corresponding trapezoidal weights for the integral over `dx` on a positive interval. Intended for radial directions spanning several decades.
+
 ### v0.9.2
 
 * Added upsampling support to `DistributedNeighborhoodAttentionS2` (`nlon_out % nlon_in == 0`): new upsample (scatter) ring-step CUDA kernels for forward and backward, matching the serial upsample attention. K/V rotate around the azimuth ring while queries and the softmax state stay local; all three directions (self-attention, downsampling, upsampling) are now supported by the distributed layer.
