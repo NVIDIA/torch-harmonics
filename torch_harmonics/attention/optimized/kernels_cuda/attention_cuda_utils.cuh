@@ -575,4 +575,23 @@ namespace attention_kernels
             dst.packed_accessor32<VAL_T, 4, at::RestrictPtrTraits>());
     }
 
+    // Reduce wi + pscale*wo into [0, nlon_in).
+    //
+    // Deliberately not `%`. nlon_in is a runtime value and the GPU has no integer
+    // divide instruction, so `x % nlon_in` compiles to ~25 instructions of software
+    // emulation. Profiling the forward kernel on H100 showed exactly this dominating:
+    // 78% compute throughput while only ~2.4% of peak FLOPs were the actual dot
+    // product, with DRAM at 0.5% -- the kernel was spending its time on address
+    // arithmetic, not on math or memory.
+    //
+    // The reduction is exact with one conditional subtract because both terms are
+    // already bounded: wi is a canonical column so wi < nlon_in, and
+    // pscale*wo <= pscale*(nlon_out - 1) < pscale*nlon_out == nlon_in. Hence
+    // wi_wo < 2*nlon_in and at most one wrap can occur. This also holds in the ring
+    // kernels, where wi arrives pre-shifted modulo nlon_in and wo is rank-local.
+    __device__ __forceinline__ int wrap_lon(int wi_wo, int nlon_in)
+    {
+        return (wi_wo >= nlon_in) ? wi_wo - nlon_in : wi_wo;
+    }
+
 } // namespace attention_kernels

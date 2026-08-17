@@ -141,7 +141,7 @@ namespace attention_kernels
             const int hi = col / nlon_in;
             const int wi = col - (hi * nlon_in);
             const int wi_wo = wi + pscale * wo;
-            const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
+            const int wip = wrap_lon(wi_wo, nlon_in);
 
             // stride between spatial points is ldi/ldo; the head offset is
             // already baked into kx/vx above
@@ -297,7 +297,7 @@ namespace attention_kernels
                 const int hi = col / nlon_in;
                 const int wi = col - (hi * nlon_in);
                 const int wi_wo = wi + pscale * wo;
-                const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
+                const int wip = wrap_lon(wi_wo, nlon_in);
                 kp[u] = kx + int64_t(hi) * nlon_in * ldi + int64_t(wip) * ldi;
                 vp[u] = vx + int64_t(hi) * nlon_in * ldo + int64_t(wip) * ldo;
                 qw[u] = quad_weights[hi];
@@ -381,7 +381,7 @@ namespace attention_kernels
             const int hi = col / nlon_in;
             const int wi = col - (hi * nlon_in);
             const int wi_wo = wi + pscale * wo;
-            const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
+            const int wip = wrap_lon(wi_wo, nlon_in);
 
             const STORAGE_T *_kx = kx + int64_t(hi) * nlon_in * ldi + int64_t(wip) * ldi;
             const STORAGE_T *_vx = vx + int64_t(hi) * nlon_in * ldo + int64_t(wip) * ldo;
