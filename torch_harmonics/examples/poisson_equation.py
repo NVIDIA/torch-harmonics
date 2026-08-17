@@ -37,7 +37,7 @@ import torch
 import torch.nn as nn
 
 import torch_harmonics as th
-from torch_harmonics.quadrature import geometric_weights, precompute_longitudes, trapezoidal_weights
+from torch_harmonics.quadrature import geometric_weights, precompute_latitudes, precompute_longitudes, trapezoidal_weights
 
 
 def radial_grid(
@@ -217,16 +217,11 @@ class RadialPoissonSolver(nn.Module):
         self.lmax = self.sht.lmax
         self.mmax = self.sht.mmax
 
-        # compute gridpoints
-        if self.grid == "legendre-gauss":
-            cost, _ = th.quadrature.legendre_gauss_weights(self.nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, _ = th.quadrature.lobatto_weights(self.nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, _ = th.quadrature.clenshaw_curtiss_weights(self.nlat, -1, 1)
-
-        # apply cosine transform and flip them
-        lats = -torch.arcsin(cost)
+        # compute gridpoints; precompute_latitudes returns colatitudes ordered from the
+        # north pole, matching the row order the SHT expects. Unsupported grids are
+        # already rejected by the RealSHT constructor above.
+        colats, _ = precompute_latitudes(self.nlat, grid=self.grid)
+        lats = 0.5 * torch.pi - colats
         lons = precompute_longitudes(self.nlon)
 
         # radial grid and the exact radial Green's operator
