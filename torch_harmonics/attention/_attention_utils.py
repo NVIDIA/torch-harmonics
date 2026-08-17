@@ -98,3 +98,82 @@ def _setup_context_attention_backward(ctx, inputs, output):
     ctx.nlon_in = nlon_in
     ctx.nlat_out = nlat_out
     ctx.nlon_out = nlon_out
+
+
+def _build_psi_segments(col_idx: torch.Tensor, roff_idx: torch.Tensor, nlon: int):
+    """
+    Re-express psi's column list as contiguous longitude arcs.
+
+    psi's sparsity is a union of arcs: for a given output row and input latitude, the
+    neighbor longitudes are contiguous on the circle (possibly wrapping). This is
+    geometric -- a geodesic ball meets a latitude circle in one arc -- and is pinned by
+    TestPsiArcStructure.
+
+    That lets a kernel iterate (hi, lo, len) segments and derive each neighbor's column
+    by counting, instead of loading it from col_idx and recovering hi with a 64-bit
+    integer division. The GPU has no integer divide instruction, so that division costs
+    ~70-100 emulated instructions per neighbor against roughly four instructions of
+    useful math; profiling showed the forward kernel at 80% compute throughput while
+    delivering ~2.4% of peak FLOPs.
+
+    Returns
+    -------
+    seg : int32 tensor of shape (nsegs, 3), columns (hi, lo, len)
+    seg_off : int32 tensor of shape (nrows + 1,), row -> segment range
+
+    Notes
+    -----
+    Relies on col_idx being sorted ascending within each row, which is how
+    _precompute_convolution_tensor_s2 emits it. A wrapping arc therefore appears as
+    two runs at the ends of the sorted list, which is handled explicitly.
+    """
+
+    col = col_idx.cpu().to(torch.int64)
+    roff = roff_idx.cpu().to(torch.int64)
+    nrows = roff.numel() - 1
+
+    seg_rows = []
+    segs = []
+    for row in range(nrows):
+        beg, end = int(roff[row]), int(roff[row + 1])
+        n_before = len(segs)
+        if end > beg:
+            cols = col[beg:end]
+            hi = torch.div(cols, nlon, rounding_mode="floor")
+            wi = cols - hi * nlon
+            for h in torch.unique(hi):
+                w = torch.unique(wi[hi == h]).sort().values
+                count = int(w.numel())
+                lo, hi_w = int(w[0]), int(w[-1])
+                if hi_w - lo + 1 == count:
+                    # plain arc
+                    start, length = lo, count
+                else:
+                    # wraps the seam: sorted as [0..a] u [b..nlon-1]; the arc starts at
+                    # b, which is one past the single interior gap
+                    gaps = torch.diff(w)
+                    split = int(torch.argmax(gaps))
+                    start = int(w[split + 1])
+                    length = count
+                segs.append((int(h), start, length))
+        seg_rows.append(len(segs) - n_before)
+
+    seg = torch.tensor(segs, dtype=torch.int32).reshape(-1, 3)
+    seg_off = torch.zeros(nrows + 1, dtype=torch.int32)
+    seg_off[1:] = torch.tensor(seg_rows, dtype=torch.int32).cumsum(0)
+    return seg, seg_off
+
+
+def _expand_psi_segments(seg: torch.Tensor, seg_off: torch.Tensor, nlon: int):
+    """Expand segments back to a per-row column list. Inverse of _build_psi_segments,
+    used to verify the two representations describe the same sparsity."""
+
+    out = []
+    for row in range(seg_off.numel() - 1):
+        cols = []
+        for s in range(int(seg_off[row]), int(seg_off[row + 1])):
+            hi, lo, length = (int(x) for x in seg[s])
+            for j in range(length):
+                cols.append(hi * nlon + (lo + j) % nlon)
+        out.append(sorted(cols))
+    return out

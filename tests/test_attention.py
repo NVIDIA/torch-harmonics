@@ -43,6 +43,7 @@ from torch.library import opcheck
 # from torch.autograd import gradcheck
 from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
 from torch_harmonics.attention import cuda_kernels_is_available, optimized_kernels_is_available
+from torch_harmonics.attention._attention_utils import _build_psi_segments, _expand_psi_segments
 from torch_harmonics.attention._layout import to_nhwc
 from torch_harmonics.attention.kernels_torch.attention_torch import (
     _neighborhood_s2_attention_bwd_dk_torch,
@@ -1473,6 +1474,61 @@ class TestPsiArcStructure(unittest.TestCase):
                 )
 
         self.assertGreater(checked, 0, msg=f"{name}: psi was empty, nothing verified")
+
+    @parameterized.expand(
+        [
+            ["self_equiangular", (64, 128), (64, 128), "equiangular", "equiangular", 0.05],
+            ["self_legendre_gauss", (64, 128), (64, 128), "legendre-gauss", "legendre-gauss", 0.05],
+            ["self_lobatto", (64, 128), (64, 128), "lobatto", "lobatto", 0.05],
+            ["self_wide_cutoff", (64, 128), (64, 128), "equiangular", "equiangular", 0.25],
+            ["downsample", (64, 128), (32, 64), "equiangular", "equiangular", 0.05],
+            ["upsample", (32, 64), (64, 128), "equiangular", "equiangular", 0.05],
+            ["odd_lat_down", (65, 128), (33, 64), "equiangular", "equiangular", 0.05],
+            ["odd_lat_up", (33, 64), (65, 128), "equiangular", "equiangular", 0.05],
+            ["lon_only_down", (64, 128), (64, 64), "equiangular", "equiangular", 0.05],
+        ]
+    )
+    def test_segments_reproduce_col_idx(self, name, in_shape, out_shape, grid_in, grid_out, theta_cutoff):
+        """(hi, lo, len) segments expand back to exactly psi_col_idx.
+
+        Stronger than the arc property above and closer to what a kernel relies on: it
+        is not enough that the arcs are contiguous, the segment table has to describe
+        the *same* sparsity. A segment whose start is off by one -- which is what a
+        mishandled wrapping arc produces -- still passes the contiguity check while
+        silently attending to the wrong cells.
+        """
+
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        att = NeighborhoodAttentionS2(
+            in_channels=8,
+            num_heads=1,
+            in_shape=in_shape,
+            out_shape=out_shape,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            theta_cutoff=theta_cutoff,
+            bias=False,
+            optimized_kernel=False,
+        )
+
+        upsample = (nlat_out > nlat_in) or (nlon_out > nlon_in)
+        nlon_decode = nlon_out if upsample else nlon_in
+
+        col = att.psi_col_idx.cpu()
+        roff = att.psi_roff_idx.cpu()
+        seg, seg_off = _build_psi_segments(col, roff, nlon_decode)
+        expanded = _expand_psi_segments(seg, seg_off, nlon_decode)
+
+        self.assertEqual(seg_off.numel() - 1, roff.numel() - 1, msg=f"{name}: row count mismatch")
+        for row in range(roff.numel() - 1):
+            want = sorted(col[int(roff[row]) : int(roff[row + 1])].tolist())
+            self.assertEqual(
+                want,
+                expanded[row],
+                msg=f"{name}: row {row} segments do not reproduce psi_col_idx",
+            )
 
 
 if __name__ == "__main__":
