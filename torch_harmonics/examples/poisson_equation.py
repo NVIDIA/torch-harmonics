@@ -35,7 +35,6 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-from einops import rearrange
 
 import torch_harmonics as th
 from torch_harmonics.quadrature import geometric_weights, precompute_longitudes, trapezoidal_weights
@@ -125,24 +124,28 @@ class GreensOperator(nn.Module):
 
         self.register_buffer("green", green)
 
-        # harmonic lift for boundary data
+        # harmonic lift for boundary data, shape (nr, lmax)
         if domain == "exterior":
-            l = rearrange(torch.arange(0, lmax, dtype=r.dtype), "l -> 1 l")
-            self.register_buffer("blift", torch.exp((l + 1) * (math.log(R) - rearrange(logr, "k -> k 1"))))
+            l = torch.arange(0, lmax, dtype=r.dtype).unsqueeze(0)
+            self.register_buffer("blift", torch.exp((l + 1) * (math.log(R) - logr.unsqueeze(-1))))
 
     def _assemble(self, logr: torch.Tensor, quad: torch.Tensor) -> torch.Tensor:
         """Green's kernel of shape (lmax, nr, nr), assembled in log space."""
 
-        loglo = torch.minimum(rearrange(logr, "k -> k 1"), rearrange(logr, "j -> 1 j"))
-        loghi = torch.maximum(rearrange(logr, "k -> k 1"), rearrange(logr, "j -> 1 j"))
+        # radial nodes broadcast against each other, shapes (nr, 1) and (1, nr)
+        logrk = logr.unsqueeze(-1)
+        logrj = logr.unsqueeze(0)
+        loglo = torch.minimum(logrk, logrj)
+        loghi = torch.maximum(logrk, logrj)
 
-        l = rearrange(torch.arange(0, self.lmax, dtype=logr.dtype, device=logr.device), "l -> l 1 1")
+        # degrees, shape (lmax, 1, 1)
+        l = torch.arange(0, self.lmax, dtype=logr.dtype, device=logr.device).reshape(-1, 1, 1)
 
         core = torch.exp(l * loglo - (l + 1) * loghi)
         if self.domain == "exterior":
             core = core - torch.exp((2 * l + 1) * math.log(self.R) - (l + 1) * (loglo + loghi))
 
-        return -core * rearrange(quad, "j -> 1 1 j") / (2 * l + 1)
+        return -core * quad.reshape(1, 1, -1) / (2 * l + 1)
 
     def forward(self, fspec: torch.Tensor, v0spec: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Solve lap u = f in spectral space."""
@@ -156,7 +159,7 @@ class GreensOperator(nn.Module):
         if v0spec is not None:
             if self.domain != "exterior":
                 raise ValueError("inner Dirichlet data is only defined on the exterior domain")
-            uspec = uspec + v0spec.unsqueeze(-3) * rearrange(self.blift, "k l -> k l 1").to(v0spec.dtype)
+            uspec = uspec + v0spec.unsqueeze(-3) * self.blift.unsqueeze(-1).to(v0spec.dtype)
 
         return uspec
 
@@ -326,8 +329,8 @@ class RadialPoissonSolver(nn.Module):
         # random centers of blobs
         centers = xlo + half + (xhi - xlo - 2 * half) * torch.rand(nblobs, dtype=dtype, device=device)
 
-        # dim random angular center towards blob boundary
-        t = (rearrange(x, "k -> 1 k") - rearrange(centers, "b -> b 1")) / rearrange(half, "b -> b 1")
+        # dim random angular center towards blob boundary, shape (nblobs, nr)
+        t = (x.unsqueeze(0) - centers.unsqueeze(-1)) / half.unsqueeze(-1)
         inside = t.abs() < 1.0
         radial = torch.zeros_like(t)
         radial[inside] = torch.exp(1.0 - 1.0 / (1.0 - t[inside] ** 2))
