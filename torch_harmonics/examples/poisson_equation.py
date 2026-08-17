@@ -255,7 +255,23 @@ class RadialPoissonSolver(nn.Module):
         return self.isht(uspec)
 
     def solve(self, f: torch.Tensor, v0: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Solve poisson equation lap u = f on the grid."""
+        """
+        Solve poisson equation lap u = f on the grid.
+
+        Parameters
+        -----------
+        f : torch.Tensor
+            Source, shape (..., nr, nlat, nlon)
+        v0 : torch.Tensor, optional
+            Dirichlet data on the inner sphere r = R, shape (..., nlat, nlon). Only
+            defined on the exterior domain, where it is lifted harmonically as
+            (R / r)**(l + 1) per degree. Homogeneous (u = 0 at r = R) if omitted.
+
+        Returns
+        -------
+        u : torch.Tensor
+            Solution, same shape as f
+        """
         v0spec = None if v0 is None else self.grid2spec(v0)
         return self.spec2grid(self.radial(self.grid2spec(f), v0spec))
 
@@ -368,7 +384,27 @@ class RadialPoissonSolver(nn.Module):
         return im
 
     def plot_meridional(self, data, ax, ilon=0, title="", cmap=None, vmin=None, vmax=None, projection="log", colorbar=True, rmax=None):
-        """Meridional slice of a grid field of shape (nr, nlat, nlon)."""
+        """
+        Meridional slice of a grid field of shape (nr, nlat, nlon).
+
+        Parameters
+        -----------
+        data : torch.Tensor
+            Grid field, shape (nr, nlat, nlon)
+        ax : matplotlib.axes.Axes
+            Axes to draw on. The "polar" projection expects a plain (non-polar) axes,
+            since the slice is drawn in Cartesian coordinates.
+        ilon : int, optional
+            Index of the meridian to slice, by default 0. The "polar" projection also
+            draws the antipodal meridian, closing the plane through the poles.
+        projection : str, optional
+            Either "log", radius against latitude on a logarithmic radial axis (rho / R
+            on the exterior domain), or "polar", the meridional plane in Cartesian
+            coordinates with the north pole at the top. By default "log".
+        rmax : float, optional
+            Clip the plot to r <= rmax, by default None. Useful on grids spanning
+            several decades, where the outermost nodes dominate the extent.
+        """
 
         import matplotlib.pyplot as plt
         import numpy as np

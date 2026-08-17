@@ -44,12 +44,6 @@ class PoissonDataset(torch.utils.data.Dataset):
         Number of latitude, longitude and radial points, by default (64, 128, 256)
     grid : str, optional
         Angular grid type, by default "legendre-gauss"
-    num_examples : int, optional
-        Number of examples, by default 32
-    device : torch.device, optional
-        Device to use, by default torch.device("cpu")
-    normalize : bool, optional
-        Whether to normalize the input and target, by default True
     domain : str, optional
         Either "half-line" or "exterior", by default "half-line"
     R : float, optional
@@ -60,6 +54,12 @@ class PoissonDataset(torch.utils.data.Dataset):
         Angular band limit of the source, by default 8
     positive : bool, optional
         Draw only positive sources, by default False
+    num_examples : int, optional
+        Number of examples, by default 32
+    device : torch.device, optional
+        Device to use, by default torch.device("cpu")
+    normalize : bool, optional
+        Whether to normalize the input and target, by default True
 
     Returns
     -------
