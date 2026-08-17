@@ -37,7 +37,7 @@ from parameterized import parameterized, parameterized_class
 from testutils import compare_tensors, set_seed
 
 import torch_harmonics as th
-from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
+from torch_harmonics.quadrature import geometric_weights, precompute_latitudes, precompute_longitudes
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -203,6 +203,78 @@ class TestQuadrature(unittest.TestCase):
                 verbose=verbose,
             )
         )
+
+
+class TestGeometricWeights(unittest.TestCase):
+    """Geometrically spaced quadrature nodes and weights on a positive interval."""
+
+    @parameterized.expand(
+        [
+            # n, a, b
+            [8, 1e-3, 1e3],
+            [64, 1e-3, 1e3],
+            [512, 1e-3, 1e3],
+            [33, 1.0, 2.0],
+            [65, 1e-6, 1.0],
+        ]
+    )
+    def test_inverse_integral(self, n, a, b, verbose=False):
+        """The rule is exact for f(x) = 1/x, whose integral over [a, b] is log(b / a).
+
+        The nodes are equispaced in t = log(x), so f dx/dt = 1 is constant and the
+        trapezoidal rule integrates it without discretization error at any n. This
+        pins down both the node placement and the dx/dt Jacobian carried by the
+        weights: dropping it turns the result into something n-dependent.
+        """
+
+        x, w = geometric_weights(n, a, b)
+
+        integral = (w / x).sum()
+        expected = torch.as_tensor(math.log(b / a), dtype=integral.dtype)
+
+        self.assertTrue(compare_tensors("inverse integral", integral, expected, atol=1e-6, rtol=1e-6, verbose=verbose))
+
+    @parameterized.expand(
+        [
+            # n, a, b
+            [16, 1e-3, 1e3],
+            [65, 1e-2, 1.0],
+        ]
+    )
+    def test_node_placement(self, n, a, b, verbose=False):
+        """Nodes span [a, b] and are geometrically spaced, i.e. a constant ratio apart."""
+
+        x, w = geometric_weights(n, a, b)
+
+        self.assertEqual(x.shape, (n,))
+        self.assertEqual(w.shape, (n,))
+        self.assertTrue(compare_tensors("endpoints", x[[0, -1]], torch.as_tensor([a, b], dtype=x.dtype), atol=1e-12, rtol=1e-12, verbose=verbose))
+
+        ratio = x[1:] / x[:-1]
+        expected = torch.full_like(ratio, (b / a) ** (1.0 / (n - 1)))
+        self.assertTrue(compare_tensors("node ratio", ratio, expected, atol=1e-12, rtol=1e-12, verbose=verbose))
+        self.assertTrue(torch.all(w > 0.0))
+
+    def test_convergence(self, verbose=False):
+        """For f(x) = 1, which is not exact, the error decays at second order in h = log(b / a) / (n - 1)."""
+
+        a, b = 1.0, 10.0
+        errors = [abs(geometric_weights(n, a, b)[1].sum().item() - (b - a)) for n in (64, 128, 256)]
+
+        for coarse, fine in zip(errors[:-1], errors[1:]):
+            self.assertGreater(coarse / fine, 3.5)
+
+    def test_invalid_bounds(self):
+        """A geometric grid is undefined for a non-positive lower bound.
+
+        Matched on the message rather than the type: math.log raises ValueError for
+        these inputs by itself, so a bare assertRaises would also pass if the explicit
+        bound check were removed.
+        """
+
+        for a in (0.0, -1.0):
+            with self.assertRaisesRegex(ValueError, "must be positive"):
+                geometric_weights(8, a, 10.0)
 
 
 if __name__ == "__main__":
