@@ -469,7 +469,10 @@ def _(
 
 
 def _neighborhood_s2_attention_bwd_torch(ctx, grad_output):
-    col_idx, row_off, quad_weights, kw, vw, qw = ctx.saved_tensors
+    # seg / seg_off are unpacked but unused: this reference walks the column list, which
+    # is what keeps it independent of the arc-segment derivation the CUDA kernels use.
+    # The unpack is positional and shares _setup_context_attention_backward with them.
+    col_idx, row_off, seg, seg_off, quad_weights, kw, vw, qw = ctx.saved_tensors
     nh = ctx.nh
     nlon_in = ctx.nlon_in
     nlat_out = ctx.nlat_out
