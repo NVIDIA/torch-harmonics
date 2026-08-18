@@ -194,6 +194,18 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             # row uses C in {4, 8} and therefore only exercises the vector branch.
             [4, 6, 6, 2, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
             [4, 6, 6, 2, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.bfloat16, 5e-2, 5e-2],
+            # Vectorized-load coverage. The CUDA dispatch only takes the vector path when
+            # the vectorized channel count still fills the block -- nchans_per_head / 4 >=
+            # bdimx, i.e. >= 128 channels per head. Every other row in this grid has <= 8,
+            # so without these the float4 / half4 / bf164 loads are compiled but never
+            # executed. 256 channels over 2 heads also gives 128 per head, which checks
+            # that the gate reads the per-head count rather than the packed extent.
+            [1, 128, 128, 1, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],
+            [1, 128, 128, 1, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
+            [1, 128, 128, 1, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.bfloat16, 5e-2, 5e-2],
+            [1, 256, 256, 2, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
+            [1, 128, 128, 1, (12, 24), (6, 12), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
+            [1, 128, 128, 1, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
             # gather with QK norm enabled
             [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", True, torch.float16, 2e-2, 1e-2],
             [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", True, torch.bfloat16, 5e-2, 5e-2],
