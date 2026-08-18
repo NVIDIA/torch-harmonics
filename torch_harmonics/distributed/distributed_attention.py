@@ -37,6 +37,8 @@ import torch.nn as nn
 from attention_helpers import optimized_kernels_is_available
 
 from torch_harmonics.attention import attention_kernels
+from torch_harmonics.attention._attention_utils import _check_extent, _check_ndim
+from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
 from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_setup_context
 
@@ -50,12 +52,20 @@ from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, polar_
 
 @torch.compiler.disable()
 def _ring_kv(kw_chunk, vw_chunk, az_group, next_nlon_kw, next_nlon_kv):
-    """Async send current chunks, receive next chunks with known shapes."""
+    """
+    Async send current chunks, receive next chunks with known shapes.
+
+    Chunks are physical NHWC ``[B, H, W, C]``. The ring carries them in the layout
+    the kernels consume, so a received chunk is usable directly and no step pays a
+    conversion; only the local chunk is converted, once, before the loop. The sent
+    tensors have to be contiguous for NCCL, which is why the ring exchanges the NHWC
+    tensors themselves rather than channels-first views of them.
+    """
     send_to, recv_from = get_group_neighbors(az_group)
-    B, C_k, H, _ = kw_chunk.shape
-    B, C_v, H, _ = vw_chunk.shape
-    recv_kw = torch.empty(B, C_k, H, next_nlon_kw, device=kw_chunk.device, dtype=kw_chunk.dtype)
-    recv_vw = torch.empty(B, C_v, H, next_nlon_kv, device=vw_chunk.device, dtype=vw_chunk.dtype)
+    B, H, _, C_k = kw_chunk.shape
+    B, H, _, C_v = vw_chunk.shape
+    recv_kw = torch.empty(B, H, next_nlon_kw, C_k, device=kw_chunk.device, dtype=kw_chunk.dtype)
+    recv_vw = torch.empty(B, H, next_nlon_kv, C_v, device=vw_chunk.device, dtype=vw_chunk.dtype)
     ops = [
         dist.P2POp(dist.isend, kw_chunk, send_to, az_group),
         dist.P2POp(dist.irecv, recv_kw, recv_from, az_group),
@@ -119,8 +129,14 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         alpha_sum = torch.zeros(B, nlat_out_local, nlon_out_local, device=device, dtype=torch.float32)
         qdotk_max = torch.full((B, nlat_out_local, nlon_out_local), float("-inf"), device=device, dtype=torch.float32)
 
-        kw_chunk = kw.contiguous()
-        vw_chunk = vw.contiguous()
+        # Convert to the kernels' NHWC ABI once, here, and keep the ring in that
+        # layout for every step: received chunks arrive ready to use. Previously the
+        # launcher converted all three tensors on every one of the az_size steps --
+        # including qw, which is loop-invariant and so was converted identically
+        # each time.
+        kw_chunk = to_nhwc(kw.contiguous())
+        vw_chunk = to_nhwc(vw.contiguous())
+        qw_nhwc = to_nhwc(qw.contiguous())
 
         for step in range(az_size):
             src_rank = (az_rank + step) % az_size
@@ -134,7 +150,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
             attention_kernels.forward_ring_step.default(
                 kw_chunk,
                 vw_chunk,
-                qw,
+                qw_nhwc,
                 y_acc,
                 alpha_sum,
                 qdotk_max,
@@ -162,7 +178,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # Finalize: y = y_acc / alpha_sum  (both channels-last layout). Cast
         # back to the input dtype to keep the op faithful to its input dtype.
         y_out = y_acc / alpha_sum.unsqueeze(-1)  # [B, H, W, C_v]
-        y_out = y_out.permute(0, 3, 1, 2).to(dtype=inp_dtype).contiguous()  # [B, C_v, H, W]
+        y_out = to_nchw(y_out).to(dtype=inp_dtype)  # [B, C_v, H, W]
 
         # alpha_sum and qdotk_max are returned so setup_context can save them;
         # they are marked non-differentiable there, so backward still only
@@ -262,7 +278,9 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         kw_dtype = kw.dtype
         vw_dtype = vw.dtype
         qw_dtype = qw.dtype
-        dy_cf = dy.contiguous()  # channels-first [B, C_v, H, W], native dtype
+        # dy and qw are loop-invariant: converted once here, not once per ring step.
+        dy_nhwc = to_nhwc(dy.contiguous())  # NHWC [B, H, W, C_v], native dtype
+        qw_nhwc = to_nhwc(qw.contiguous())
 
         # ----------------------------------------------------------------
         # Backward pass 1: re-accumulate {alpha_sum, qdotk_max, integral,
@@ -278,8 +296,9 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         alpha_k_buf = torch.zeros(B, nlat_out_local, nlon_out_local, C_k, device=device, dtype=torch.float32)
         alpha_kvw_buf = torch.zeros_like(alpha_k_buf)
 
-        kw_chunk = kw.contiguous()
-        vw_chunk = vw.contiguous()
+        kw_nhwc = to_nhwc(kw.contiguous())
+        vw_nhwc = to_nhwc(vw.contiguous())
+        kw_chunk, vw_chunk = kw_nhwc, vw_nhwc
 
         for step in range(az_size):
             src_rank = (az_rank + step) % az_size
@@ -292,8 +311,8 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
             attention_kernels.backward_ring_step_pass1.default(
                 kw_chunk,
                 vw_chunk,
-                qw,
-                dy_cf,
+                qw_nhwc,
+                dy_nhwc,
                 bwd_alpha_sum,
                 bwd_qdotk_max,
                 integral_buf,
@@ -334,7 +353,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         if qw_needs_grad:
             alpha_sum_inv_sq = alpha_sum_inv**2
             dqy_cl = alpha_sum_inv_sq.unsqueeze(-1) * (fwd_alpha_sum.unsqueeze(-1) * alpha_kvw_buf - integral_buf.unsqueeze(-1) * alpha_k_buf)  # [B, H, W, C_k]
-            dqy = dqy_cl.permute(0, 3, 1, 2).to(dtype=qw_dtype).contiguous()  # [B, C_k, H, W]
+            dqy = to_nchw(dqy_cl).to(dtype=qw_dtype)  # [B, C_k, H, W]
         else:
             dqy = None
 
@@ -349,8 +368,9 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # TODO: replace allreduce with ring reduce-scatter for efficiency.
         # ----------------------------------------------------------------
         if kw_needs_grad or vw_needs_grad:
-            kw_chunk = kw.contiguous()
-            vw_chunk = vw.contiguous()
+            # pass 1 rotated kw_chunk/vw_chunk; reset to the local chunk, which is
+            # already converted -- no second conversion needed.
+            kw_chunk, vw_chunk = kw_nhwc, vw_nhwc
             nlon_in_total = sum(nlon_kx_list)
             dkw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_k, device=device, dtype=torch.float32) if kw_needs_grad else None
             dvw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_v, device=device, dtype=torch.float32) if vw_needs_grad else None
@@ -368,8 +388,8 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                 attention_kernels.backward_ring_step_pass2.default(
                     kw_chunk,
                     vw_chunk,
-                    qw,
-                    dy_cf,
+                    qw_nhwc,
+                    dy_nhwc,
                     fwd_alpha_sum,
                     fwd_qdotk_max,
                     integral_norm,
@@ -418,12 +438,12 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
             # middle H_in rows as the gradient for key_proj/value_proj.
             if kw_needs_grad:
                 dkw_cl = dkw_full_cl[:, :, my_lo : my_lo + my_nlon, :].contiguous()
-                dkw = dkw_cl.permute(0, 3, 1, 2).to(dtype=kw_dtype).contiguous()  # [B, C_k, H_halo, W_local]
+                dkw = to_nchw(dkw_cl).to(dtype=kw_dtype)  # [B, C_k, H_halo, W_local]
             else:
                 dkw = None
             if vw_needs_grad:
                 dvw_cl = dvw_full_cl[:, :, my_lo : my_lo + my_nlon, :].contiguous()
-                dvw = dvw_cl.permute(0, 3, 1, 2).to(dtype=vw_dtype).contiguous()  # [B, C_v, H_halo, W_local]
+                dvw = to_nchw(dvw_cl).to(dtype=vw_dtype)  # [B, C_v, H_halo, W_local]
             else:
                 dvw = None
         else:
@@ -496,8 +516,11 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
         alpha_sum = torch.zeros(B, nlat_out_local, nlon_out_local, device=device, dtype=torch.float32)
         qdotk_max = torch.full((B, nlat_out_local, nlon_out_local), float("-inf"), device=device, dtype=torch.float32)
 
-        kw_chunk = kw.contiguous()
-        vw_chunk = vw.contiguous()
+        # Converted once here, not once per ring step; qw is loop-invariant and the
+        # rotating chunks stay NHWC across the exchange.
+        kw_chunk = to_nhwc(kw.contiguous())
+        vw_chunk = to_nhwc(vw.contiguous())
+        qw_nhwc = to_nhwc(qw.contiguous())
 
         for step in range(az_size):
             src_rank = (az_rank + step) % az_size
@@ -511,7 +534,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
             attention_kernels.forward_ring_step_upsample.default(
                 kw_chunk,
                 vw_chunk,
-                qw,
+                qw_nhwc,
                 y_acc,
                 alpha_sum,
                 qdotk_max,
@@ -536,7 +559,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
         # Finalize: y = y_acc / alpha_sum  (both channels-last layout). Cast
         # back to the input dtype to keep the op faithful to its input dtype.
         y_out = y_acc / alpha_sum.unsqueeze(-1)  # [B, H, W, C_v]
-        y_out = y_out.permute(0, 3, 1, 2).to(dtype=inp_dtype).contiguous()  # [B, C_v, H, W]
+        y_out = to_nchw(y_out).to(dtype=inp_dtype)  # [B, C_v, H, W]
 
         # alpha_sum and qdotk_max are returned so setup_context can save them;
         # they are marked non-differentiable there, so backward still only
@@ -622,7 +645,9 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
         kw_dtype = kw.dtype
         vw_dtype = vw.dtype
         qw_dtype = qw.dtype
-        dy_cf = dy.contiguous()  # channels-first [B, C_v, H, W], native dtype
+        # dy and qw are loop-invariant: converted once here, not once per ring step.
+        dy_nhwc = to_nhwc(dy.contiguous())  # NHWC [B, H, W, C_v], native dtype
+        qw_nhwc = to_nhwc(qw.contiguous())
 
         # ----------------------------------------------------------------
         # Backward pass 1: re-accumulate {integral, alpha_k, alpha_kvw} via
@@ -637,8 +662,9 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
         alpha_k_buf = torch.zeros(B, nlat_out_local, nlon_out_local, C_k, device=device, dtype=torch.float32)
         alpha_kvw_buf = torch.zeros_like(alpha_k_buf)
 
-        kw_chunk = kw.contiguous()
-        vw_chunk = vw.contiguous()
+        kw_nhwc = to_nhwc(kw.contiguous())
+        vw_nhwc = to_nhwc(vw.contiguous())
+        kw_chunk, vw_chunk = kw_nhwc, vw_nhwc
 
         for step in range(az_size):
             src_rank = (az_rank + step) % az_size
@@ -651,8 +677,8 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
             attention_kernels.backward_ring_step_upsample_pass1.default(
                 kw_chunk,
                 vw_chunk,
-                qw,
-                dy_cf,
+                qw_nhwc,
+                dy_nhwc,
                 fwd_qdotk_max,
                 integral_buf,
                 alpha_k_buf,
@@ -688,7 +714,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
         if qw_needs_grad:
             alpha_sum_inv_sq = alpha_sum_inv**2
             dqy_cl = alpha_sum_inv_sq.unsqueeze(-1) * (fwd_alpha_sum.unsqueeze(-1) * alpha_kvw_buf - integral_buf.unsqueeze(-1) * alpha_k_buf)  # [B, H, W, C_k]
-            dqy = dqy_cl.permute(0, 3, 1, 2).to(dtype=qw_dtype).contiguous()  # [B, C_k, H, W]
+            dqy = to_nchw(dqy_cl).to(dtype=qw_dtype)  # [B, C_k, H, W]
         else:
             dqy = None
 
@@ -699,8 +725,9 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
         # TODO: replace allreduce with ring reduce-scatter for efficiency.
         # ----------------------------------------------------------------
         if kw_needs_grad or vw_needs_grad:
-            kw_chunk = kw.contiguous()
-            vw_chunk = vw.contiguous()
+            # pass 1 rotated kw_chunk/vw_chunk; reset to the local chunk, which is
+            # already converted -- no second conversion needed.
+            kw_chunk, vw_chunk = kw_nhwc, vw_nhwc
             nlon_in_total = sum(nlon_kx_list)
             dkw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_k, device=device, dtype=torch.float32) if kw_needs_grad else None
             dvw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_v, device=device, dtype=torch.float32) if vw_needs_grad else None
@@ -718,8 +745,8 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                 attention_kernels.backward_ring_step_upsample_pass2.default(
                     kw_chunk,
                     vw_chunk,
-                    qw,
-                    dy_cf,
+                    qw_nhwc,
+                    dy_nhwc,
                     fwd_alpha_sum,
                     fwd_qdotk_max,
                     integral_norm,
@@ -763,12 +790,12 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
             # No halo stripping: dkw/dvw must match kw/vw shape (= key_halo/value_halo).
             if kw_needs_grad:
                 dkw_cl = dkw_full_cl[:, :, my_lo : my_lo + my_nlon, :].contiguous()
-                dkw = dkw_cl.permute(0, 3, 1, 2).to(dtype=kw_dtype).contiguous()  # [B, C_k, H_halo, W_local]
+                dkw = to_nchw(dkw_cl).to(dtype=kw_dtype)  # [B, C_k, H_halo, W_local]
             else:
                 dkw = None
             if vw_needs_grad:
                 dvw_cl = dvw_full_cl[:, :, my_lo : my_lo + my_nlon, :].contiguous()
-                dvw = dvw_cl.permute(0, 3, 1, 2).to(dtype=vw_dtype).contiguous()  # [B, C_v, H_halo, W_local]
+                dvw = to_nchw(dvw_cl).to(dtype=vw_dtype)  # [B, C_v, H_halo, W_local]
             else:
                 dvw = None
         else:
@@ -1141,15 +1168,15 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         if value is None:
             value = query
 
-        torch._check(query.dim() == 4, lambda: f"Expected 4-dimensional query tensor, got {query.dim()} dimensions")
-        torch._check(key.dim() == 4, lambda: f"Expected 4-dimensional key tensor, got {key.dim()} dimensions")
-        torch._check(value.dim() == 4, lambda: f"Expected 4-dimensional value tensor, got {value.dim()} dimensions")
-        torch._check(query.shape[-2] == self.nlat_out_local, lambda: f"Expected query latitudes shape[-2]=={self.nlat_out_local}, got {query.shape[-2]}")
-        torch._check(query.shape[-1] == self.nlon_out_local, lambda: f"Expected query longitudes shape[-1]=={self.nlon_out_local}, got {query.shape[-1]}")
-        torch._check(key.shape[-2] == self.nlat_in_local, lambda: f"Expected key latitudes shape[-2]=={self.nlat_in_local}, got {key.shape[-2]}")
-        torch._check(key.shape[-1] == self.nlon_in_local, lambda: f"Expected key longitudes shape[-1]=={self.nlon_in_local}, got {key.shape[-1]}")
-        torch._check(value.shape[-2] == self.nlat_in_local, lambda: f"Expected value latitudes shape[-2]=={self.nlat_in_local}, got {value.shape[-2]}")
-        torch._check(value.shape[-1] == self.nlon_in_local, lambda: f"Expected value longitudes shape[-1]=={self.nlon_in_local}, got {value.shape[-1]}")
+        _check_ndim(query, 4, "query")
+        _check_ndim(key, 4, "key")
+        _check_ndim(value, 4, "value")
+        _check_extent(query, -2, self.nlat_out_local, "query latitudes")
+        _check_extent(query, -1, self.nlon_out_local, "query longitudes")
+        _check_extent(key, -2, self.nlat_in_local, "key latitudes")
+        _check_extent(key, -1, self.nlon_in_local, "key longitudes")
+        _check_extent(value, -2, self.nlat_in_local, "value latitudes")
+        _check_extent(value, -1, self.nlon_in_local, "value longitudes")
 
         # ---- 1. project to k/v/q ----
         key_proj = nn.functional.conv2d(key, self.k_weights, bias=self.k_bias)

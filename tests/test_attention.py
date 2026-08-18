@@ -43,6 +43,7 @@ from torch.library import opcheck
 # from torch.autograd import gradcheck
 from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
 from torch_harmonics.attention import cuda_kernels_is_available, optimized_kernels_is_available
+from torch_harmonics.attention._layout import to_nhwc
 from torch_harmonics.attention.kernels_torch.attention_torch import (
     _neighborhood_s2_attention_bwd_dk_torch,
     _neighborhood_s2_attention_bwd_dq_torch,
@@ -170,9 +171,36 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             # gather, multi-head + asymmetric channels (C_in > C_out)
             [4, 8, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
             [4, 8, 4, 4, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.bfloat16, 5e-2, 5e-2],
+            # resampling paths, multi-head + both channel asymmetries. Heads are packed
+            # along the channel dimension, so the per-head base offset is h*C and the
+            # channel extent the kernel sees is num_heads*C -- which is exactly what the
+            # vectorized (float4) branch gates on. The fp32 rows above cover these shapes;
+            # these cover them on the AMP paths, where the vector and scalar branches
+            # diverge most.
+            # downsampling (gather)
+            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
+            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular", "equiangular", False, torch.bfloat16, 5e-2, 5e-2],
+            [4, 4, 8, 4, (12, 24), (6, 12), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
+            [4, 4, 8, 4, (12, 24), (6, 12), "equiangular", "equiangular", False, torch.bfloat16, 5e-2, 5e-2],
+            # upsampling (scatter)
+            [4, 8, 4, 4, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
+            [4, 8, 4, 4, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.bfloat16, 5e-2, 5e-2],
+            [4, 4, 8, 4, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
+            [4, 4, 8, 4, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.bfloat16, 5e-2, 5e-2],
+            # multi-head on the scalar branch: 6 channels over 2 heads is not a multiple
+            # of the float4 vector width, so the vectorized branch is gated off and the
+            # scalar path handles the packed-head offsets instead. Every other heads>1
+            # row uses C in {4, 8} and therefore only exercises the vector branch.
+            [4, 6, 6, 2, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
+            [4, 6, 6, 2, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.bfloat16, 5e-2, 5e-2],
             # gather with QK norm enabled
             [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", True, torch.float16, 2e-2, 1e-2],
             [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", True, torch.bfloat16, 5e-2, 5e-2],
+            # resampling, multi-head, with QK norm enabled
+            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular", "equiangular", True, torch.float16, 2e-2, 1e-2],
+            [4, 8, 4, 4, (12, 24), (6, 12), "equiangular", "equiangular", True, torch.bfloat16, 5e-2, 5e-2],
+            [4, 8, 4, 4, (6, 12), (12, 24), "equiangular", "equiangular", True, torch.float16, 2e-2, 1e-2],
+            [4, 8, 4, 4, (6, 12), (12, 24), "equiangular", "equiangular", True, torch.bfloat16, 5e-2, 5e-2],
         ],
         skip_on_empty=True,
     )
@@ -759,6 +787,13 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             # case (pscale=1) would not.
             [4, 4, 1, (12, 24), (6, 12), "equiangular", "equiangular", 1e-2, 0],  # downsample, pscale=2
             [4, 4, 1, (6, 12), (12, 24), "equiangular", "equiangular", 1e-2, 0],  # upsample, pscale_out=2
+            # Same two paths with heads packed along the channel dimension. The op
+            # contract differs between these and the heads=1 rows above: the registered
+            # fake derives the output extent from vw.shape[3], which is num_heads*C
+            # rather than C, so a packing mistake there is invisible until num_heads>1.
+            # test_faketensor and test_aot_dispatch_dynamic are what catch it.
+            [4, 8, 4, (12, 24), (6, 12), "equiangular", "equiangular", 1e-2, 0],  # downsample, packed heads
+            [4, 8, 4, (6, 12), (12, 24), "equiangular", "equiangular", 1e-2, 0],  # upsample, packed heads
         ],
         skip_on_empty=True,
     )
@@ -787,7 +822,22 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         vw = F.conv2d(inputs["v"], att.v_weights, att.v_bias)
         qw = F.conv2d(inputs["q"], att.q_weights, att.q_bias) * att.scale
 
-        test_inputs = (kw, vw, qw, att.quad_weights, att.psi_col_idx, att.psi_roff_idx, att.num_heads, nlon_in, nlat_out, nlon_out)
+        # The op takes physical NHWC with heads packed along the channel dimension;
+        # the projections above are channels-first, so convert exactly as the module
+        # does at its boundary. Heads are NOT folded into the batch dimension -- the
+        # op receives num_heads and addresses a head in place.
+        test_inputs = (
+            to_nhwc(kw),
+            to_nhwc(vw),
+            to_nhwc(qw),
+            att.quad_weights,
+            att.psi_col_idx,
+            att.psi_roff_idx,
+            att.num_heads,
+            nlon_in,
+            nlat_out,
+            nlon_out,
+        )
 
         opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs)
         # opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_optimized, test_inputs, test_utils="test_schema")
@@ -846,9 +896,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         C_v = channels // heads
 
         # Synthetic projected k/v/q with the correct kernel-side shapes.
-        kw = torch.randn(Bnh, C_k, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
-        vw = torch.randn(Bnh, C_v, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
-        qw = torch.randn(Bnh, C_k, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+        kw = torch.randn(Bnh, nlat_in, nlon_in, C_k, device=self.device, dtype=torch.float32)
+        vw = torch.randn(Bnh, nlat_in, nlon_in, C_v, device=self.device, dtype=torch.float32)
+        qw = torch.randn(Bnh, nlat_out, nlon_out, C_k, device=self.device, dtype=torch.float32)
 
         # The kernel expects row_idx to be the sorted permutation of output rows (by nnz),
         # not the row index buffer registered on the serial module. Build it the same way
@@ -891,7 +941,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         opcheck(torch.ops.attention_kernels.forward_ring_step, fwd_inputs)
 
         # ---- backward pass 1: re-accumulate softmax stats + alpha_k / alpha_kvw ----
-        dy = torch.randn(Bnh, C_v, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+        dy = torch.randn(Bnh, nlat_out, nlon_out, C_v, device=self.device, dtype=torch.float32)
 
         bwd_alpha_sum = torch.zeros(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
         bwd_qdotk_max = torch.full((Bnh, nlat_out, nlon_out), float("-inf"), device=self.device, dtype=torch.float32)
@@ -1019,9 +1069,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         C_v = channels // heads
 
         # Synthetic projected k/v/q with the correct kernel-side shapes.
-        kw = torch.randn(Bnh, C_k, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
-        vw = torch.randn(Bnh, C_v, nlat_in, nlon_in, device=self.device, dtype=torch.float32)
-        qw = torch.randn(Bnh, C_k, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+        kw = torch.randn(Bnh, nlat_in, nlon_in, C_k, device=self.device, dtype=torch.float32)
+        vw = torch.randn(Bnh, nlat_in, nlon_in, C_v, device=self.device, dtype=torch.float32)
+        qw = torch.randn(Bnh, nlat_out, nlon_out, C_k, device=self.device, dtype=torch.float32)
 
         # ---- forward ring step ----
         # State buffers in channels-last layout, as expected by the CUDA kernels.
@@ -1054,7 +1104,7 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         # Uses the forward-final qdotk_max; synthetic but well-formed values (no -inf) so the
         # kernel doesn't produce NaNs (opcheck doesn't check numerics, but NaNs can interact
         # badly with AOT dispatch comparisons).
-        dy = torch.randn(Bnh, C_v, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
+        dy = torch.randn(Bnh, nlat_out, nlon_out, C_v, device=self.device, dtype=torch.float32)
 
         fwd_qdotk_max = torch.zeros(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)
         integral_buf = torch.zeros(Bnh, nlat_out, nlon_out, device=self.device, dtype=torch.float32)

@@ -346,9 +346,14 @@ namespace attention_kernels
         }
     }
 
+    // head packing helpers, defined in attention_cpu_fwd.cpp (declared here too so
+    // this header stays self-contained)
+    at::Tensor fold_heads(const at::Tensor &t, int64_t num_heads);
+    at::Tensor unfold_heads(const at::Tensor &t, int64_t num_heads);
+
     std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
     s2_attention_bwd_cpu(torch::Tensor kx, torch::Tensor vx, torch::Tensor qy, torch::Tensor dy,
-                         torch::Tensor quad_weights, torch::Tensor col_idx, torch::Tensor row_off, int64_t nlon_in,
-                         int64_t nlat_out, int64_t nlon_out);
+                         torch::Tensor quad_weights, torch::Tensor col_idx, torch::Tensor row_off, int64_t num_heads,
+                         int64_t nlon_in, int64_t nlat_out, int64_t nlon_out);
 
 } // namespace attention_kernels

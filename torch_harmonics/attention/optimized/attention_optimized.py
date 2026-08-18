@@ -42,9 +42,20 @@ if optimized_kernels_is_available():
     # raw forward fake
     @torch.library.register_fake("attention_kernels::forward")
     def _(
-        kw: torch.Tensor, vw: torch.Tensor, qw: torch.Tensor, quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor, nlon_in: int, nlat_out: int, nlon_out: int
+        kw: torch.Tensor,
+        vw: torch.Tensor,
+        qw: torch.Tensor,
+        quad_weights: torch.Tensor,
+        col_idx: torch.Tensor,
+        row_off: torch.Tensor,
+        num_heads: int,
+        nlon_in: int,
+        nlat_out: int,
+        nlon_out: int,
     ) -> torch.Tensor:
-        out_shape = (kw.shape[0], vw.shape[1], nlat_out, nlon_out)
+        # NHWC: (B, nlat_out, nlon_out, num_heads * C_v). The channel extent is
+        # taken from vw, which already carries the packed (num_heads * C_v) width.
+        out_shape = (kw.shape[0], nlat_out, nlon_out, vw.shape[3])
         return torch.empty(out_shape, dtype=kw.dtype, device=kw.device)
 
     # raw backward fake
@@ -57,6 +68,7 @@ if optimized_kernels_is_available():
         quad_weights: torch.Tensor,
         col_idx: torch.Tensor,
         row_off: torch.Tensor,
+        num_heads: int,
         nlon_in: int,
         nlat_out: int,
         nlon_out: int,
@@ -229,32 +241,18 @@ if optimized_kernels_is_available():
         nlon_out: int,
     ) -> torch.Tensor:
 
-        # reshape, folding num heads into batch dim
-        B, _, H, W = kw.shape
-        kw = kw.reshape(B * nh, -1, H, W)
-        B, _, H, W = vw.shape
-        vw = vw.reshape(B * nh, -1, H, W)
-        B, _, H, W = qw.shape
-        qw = qw.reshape(B * nh, -1, H, W)
-
-        # Keep the native dtype: the CUDA forward op handles fp16/bf16/fp32 natively
-        # (Tier B storage refactor), so the earlier .to(float32) upcast here was a
-        # leftover that forced the op onto the fp32 branch — the module never exercised
-        # the reduced-precision kernels under autocast.
-        inp_dtype = kw.dtype
+        # NHWC in, NHWC out, heads packed along the channel dimension. There is no
+        # reshape to fold heads into the batch dimension any more: the head axis is
+        # interior in this layout, so folding it would materialize a copy. The
+        # kernels address a head in place instead, which is why nh is passed down.
+        #
+        # The native dtype is kept: the CUDA op handles fp16/bf16/fp32 natively
+        # (Tier B storage refactor), widening to fp32 only at the load site.
         kw = kw.contiguous()
         vw = vw.contiguous()
         qw = qw.contiguous()
 
-        output = attention_kernels.forward.default(kw, vw, qw, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
-
-        _, C, H, W = output.shape
-        output = output.reshape(B, -1, H, W)
-
-        # native dtype already; cast is a no-op safety net for the fp32 path.
-        output = output.to(dtype=inp_dtype)
-
-        return output
+        return attention_kernels.forward.default(kw, vw, qw, quad_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out)
 
     @torch.library.register_fake("attention_kernels::_neighborhood_s2_attention_optimized")
     def _(
@@ -269,7 +267,7 @@ if optimized_kernels_is_available():
         nlat_out: int,
         nlon_out: int,
     ) -> torch.Tensor:
-        out_shape = (kw.shape[0], vw.shape[1], nlat_out, nlon_out)
+        out_shape = (kw.shape[0], nlat_out, nlon_out, vw.shape[3])
         return torch.empty(out_shape, dtype=kw.dtype, device=kw.device)
 
 
@@ -280,36 +278,15 @@ def _neighborhood_s2_attention_bwd_optimized(ctx, grad_output):
     nlat_out = ctx.nlat_out
     nlon_out = ctx.nlon_out
 
-    # reshape, folding num heads into batch dim
-    B, _, H, W = kw.shape
-    kw = kw.reshape(B * nh, -1, H, W)
-    B, _, H, W = vw.shape
-    vw = vw.reshape(B * nh, -1, H, W)
-    B, _, H, W = qw.shape
-    qw = qw.reshape(B * nh, -1, H, W)
-    B, _, H, W = grad_output.shape
-    grad_output = grad_output.reshape(B * nh, -1, H, W)
-
-    # Keep the native dtype: the CUDA backward handles fp16/bf16 natively (Tier B),
-    # accumulating gradients in fp32 internally and casting back at the op boundary.
-    kw_dtype = kw.dtype
-    vw_dtype = vw.dtype
-    qw_dtype = qw.dtype
-
+    # NHWC throughout, heads packed along channels -- no folding, see the forward.
+    # The CUDA backward accumulates gradients in fp32 internally and casts back at
+    # the op boundary.
     kw = kw.contiguous()
     vw = vw.contiguous()
     qw = qw.contiguous()
     grad_output = grad_output.contiguous()
 
-    dkw, dvw, dqw = attention_kernels.backward.default(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
-
-    # reshape back to original batch dim and convert back precision
-    _, _, Hk, Wk = dkw.shape
-    dkw = dkw.reshape(B, -1, Hk, Wk).to(dtype=kw_dtype)
-    _, _, Hv, Wv = dvw.shape
-    dvw = dvw.reshape(B, -1, Hv, Wv).to(dtype=vw_dtype)
-    _, _, Hq, Wq = dqw.shape
-    dqw = dqw.reshape(B, -1, Hq, Wq).to(dtype=qw_dtype)
+    dkw, dvw, dqw = attention_kernels.backward.default(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out)
 
     return dkw, dvw, dqw, None, None, None, None, None, None, None
 

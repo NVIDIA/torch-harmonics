@@ -37,6 +37,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from attention_helpers import optimized_kernels_is_available
 
+from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim
+from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhood_s2_attention_torch
 from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_optimized
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
@@ -196,9 +198,10 @@ class AttentionS2(nn.Module):
             value = query
 
         # change this later to allow arbitrary number of batch dims
-        torch._check(query.dim() == 4, lambda: f"Expected 4-dimensional query tensor, got {query.dim()} dimensions")
-        torch._check(key.dim() == 4, lambda: f"Expected 4-dimensional key tensor, got {key.dim()} dimensions")
-        torch._check(value.dim() == 4, lambda: f"Expected 4-dimensional value tensor, got {value.dim()} dimensions")
+        _check_ndim(query, 4, "query")
+        _check_ndim(key, 4, "key")
+        _check_ndim(value, 4, "value")
+        _check_dtypes_match((query, key, value))
 
         # perform QKV projections
         query = nn.functional.conv2d(query, self.q_weights, bias=self.q_bias)
@@ -479,38 +482,74 @@ class NeighborhoodAttentionS2(nn.Module):
             value = query
 
         # change this later to allow arbitrary number of batch dims
-        torch._check(query.dim() == 4, lambda: f"Expected 4-dimensional query tensor, got {query.dim()} dimensions")
-        torch._check(key.dim() == 4, lambda: f"Expected 4-dimensional key tensor, got {key.dim()} dimensions")
-        torch._check(value.dim() == 4, lambda: f"Expected 4-dimensional value tensor, got {value.dim()} dimensions")
-        torch._check(query.shape[-2] == self.nlat_out, lambda: f"Expected query latitudes shape[-2]=={self.nlat_out}, got {query.shape[-2]}")
-        torch._check(query.shape[-1] == self.nlon_out, lambda: f"Expected query longitudes shape[-1]=={self.nlon_out}, got {query.shape[-1]}")
-        torch._check(key.shape[-2] == self.nlat_in, lambda: f"Expected key latitudes shape[-2]=={self.nlat_in}, got {key.shape[-2]}")
-        torch._check(key.shape[-1] == self.nlon_in, lambda: f"Expected key longitudes shape[-1]=={self.nlon_in}, got {key.shape[-1]}")
-        torch._check(value.shape[-2] == self.nlat_in, lambda: f"Expected value latitudes shape[-2]=={self.nlat_in}, got {value.shape[-2]}")
-        torch._check(value.shape[-1] == self.nlon_in, lambda: f"Expected value longitudes shape[-1]=={self.nlon_in}, got {value.shape[-1]}")
+        _check_ndim(query, 4, "query")
+        _check_ndim(key, 4, "key")
+        _check_ndim(value, 4, "value")
+        _check_dtypes_match((query, key, value))
+        _check_extent(query, -2, self.nlat_out, "query latitudes")
+        _check_extent(query, -1, self.nlon_out, "query longitudes")
+        _check_extent(key, -2, self.nlat_in, "key latitudes")
+        _check_extent(key, -1, self.nlon_in, "key longitudes")
+        _check_extent(value, -2, self.nlat_in, "value latitudes")
+        _check_extent(value, -1, self.nlon_in, "value longitudes")
 
-        # perform QKV projections
-        query = nn.functional.conv2d(query, self.q_weights, bias=self.q_bias)
-        key = nn.functional.conv2d(key, self.k_weights, bias=self.k_bias)
-        value = nn.functional.conv2d(value, self.v_weights, bias=self.v_bias)
+        # Convert to NHWC once, here, and stay in it for the whole module. Every
+        # projection is 1x1 (see __init__), so in NHWC it is a plain GEMM over a
+        # contiguous reduction dimension rather than a convolution; qk-norm's head
+        # split becomes a free view; and the attention op already takes NHWC with
+        # heads packed along the channel dimension. The only conversions left are
+        # the two the channels-first public API forces: inputs in, output out.
+        #
+        # The shape checks above index dims -2/-1 as (lat, lon), so they have to
+        # run before this point.
+        #
+        # Self-attention binds all three names to one tensor (see the `key is None`
+        # handling above), which needs one conversion rather than three. Identity
+        # rather than equality: that is how the caller expresses it, and it cannot
+        # false-positive. Note query can only alias key/value when in_shape ==
+        # out_shape -- with resampling the extents differ, so there is nothing to
+        # share and the general path is already the right one.
+        # Aliasing has to be sampled before any rebinding, or the conversion of the
+        # first tensor would make every later identity test false.
+        key_is_query = key is query
+        value_is_query = value is query
+        value_is_key = value is key
 
-        # perform QK normalization (must come before scale)
+        query = to_nhwc(query)
+        key = query if key_is_query else to_nhwc(key)
+        if value_is_query:
+            value = query
+        elif value_is_key:
+            value = key
+        else:
+            value = to_nhwc(value)
+
+        # perform QKV projections. The stored weights keep their (C_out, C_in, 1, 1)
+        # convolution shape so checkpoints stay loadable; the view to (C_out, C_in)
+        # is free.
+        query = F.linear(query, self.q_weights.view(self.q_weights.shape[0], -1), self.q_bias)
+        key = F.linear(key, self.k_weights.view(self.k_weights.shape[0], -1), self.k_bias)
+        value = F.linear(value, self.v_weights.view(self.v_weights.shape[0], -1), self.v_bias)
+
+        # perform QK normalization (must come before scale). In NHWC the channel
+        # axis is innermost, so splitting it into (heads, per-head channels) is a
+        # reshape of contiguous memory -- a view, not a copy. The channels-first
+        # form of this needed a 5D permute in and another back out.
         if self.q_norm_weights is not None:
-            B, C, H, W = query.shape
-            query = query.reshape(B, self.num_heads, -1, H, W).permute(0, 1, 3, 4, 2)
+            B, H, W, C = query.shape
+            query = query.reshape(B, H, W, self.num_heads, -1)
             query = F.rms_norm(query, normalized_shape=self.q_norm_weights.shape, weight=1 + self.q_norm_weights)
-            query = query.permute(0, 1, 4, 2, 3).reshape(B, C, H, W).contiguous()
+            query = query.reshape(B, H, W, C)
 
         if self.k_norm_weights is not None:
-            B, C, H, W = key.shape
-            key = key.reshape(B, self.num_heads, -1, H, W).permute(0, 1, 3, 4, 2)
+            B, H, W, C = key.shape
+            key = key.reshape(B, H, W, self.num_heads, -1)
             key = F.rms_norm(key, normalized_shape=self.k_norm_weights.shape, weight=1 + self.k_norm_weights)
-            key = key.permute(0, 1, 4, 2, 3).reshape(B, C, H, W).contiguous()
+            key = key.reshape(B, H, W, C)
 
         # scale after normalization
         query_scaled = query * self.scale
 
-        # TODO: insert dimension checks for input
         out = self.attention_handle(
             key,
             value,
@@ -524,6 +563,9 @@ class NeighborhoodAttentionS2(nn.Module):
             self.nlon_out,
         )
 
-        out = nn.functional.conv2d(out, self.proj_weights, bias=self.proj_bias)
+        # output projection stays in NHWC for the same reason as the input ones;
+        # only then back to channels-first. The matching backward conversion is
+        # generated by autograd and uses the same tiled kernel.
+        out = F.linear(out, self.proj_weights.view(self.proj_weights.shape[0], -1), self.proj_bias)
 
-        return out
+        return to_nchw(out)

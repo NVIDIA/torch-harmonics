@@ -56,9 +56,9 @@ namespace attention_kernels
 
     // scatter-direction launcher, defined in attention_cuda_fwd_upsample.cu;
     // called by s2_attention_fwd_cuda when nlon_out % nlon_in == 0.
-    void s2_attn_fwd_upsample_dispatch(int batch_size, size_t nchans_in, size_t nchans_out, int64_t nlon_in,
-                                       int64_t nlat_in, int64_t nlat_out, int64_t nlon_out, torch::Tensor kxP,
-                                       torch::Tensor vxP, torch::Tensor qyP, torch::Tensor psi_row_off,
+    void s2_attn_fwd_upsample_dispatch(int batch_size, int64_t num_heads, size_t nchans_in, size_t nchans_out,
+                                       int64_t nlon_in, int64_t nlat_in, int64_t nlat_out, int64_t nlon_out,
+                                       torch::Tensor kxP, torch::Tensor vxP, torch::Tensor qyP, torch::Tensor psi_row_off,
                                        torch::Tensor psi_col_idx, torch::Tensor quad_weights, torch::Tensor yP);
 
     // called with (blockDim.x=32 and blockDim.y>1, BDIM_X=blockDim.x*blockDim.y)
@@ -68,10 +68,21 @@ namespace attention_kernels
     // the arithmetic type (float4 for the vectorized path, float otherwise) — all
     // dot products, softmax and accumulation happen in COMPUTE_T. vload/vstore
     // widen/narrow at the memory boundary.
+    // Heads are NOT folded into the batch dimension. The tensors are physically
+    // (B, nlat, nlon, nheads * nchan), and this kernel addresses one head of one
+    // batch element: gridDim.y spans batch * nheads, and the head selects a
+    // contiguous nchan-wide slice within each spatial point.
+    //
+    // Consequently nchan_in / nchan_out keep their meaning as the number of
+    // channels this kernel iterates over, while the distance between adjacent
+    // spatial points becomes ldi / ldo. Folding heads into batch would have been
+    // free in a channels-first layout, but here the head axis sits inside the
+    // innermost dimension, so pre-folding would cost a full copy.
     template <int BDIM_X, typename STORAGE_T>
     __global__ __launch_bounds__(BDIM_X) void s2_attn_fwd_generic_vec_k(
-        int nchan_in,  // no. of STORAGE_T elements along channel dim
-        int nchan_out, // no. of STORAGE_T elements along channel dim
+        int nheads,    // no. of attention heads packed along the channel dim
+        int nchan_in,  // no. of STORAGE_T elements along channel dim, per head
+        int nchan_out, // no. of STORAGE_T elements along channel dim, per head
         int nlat_in, int nlon_in, int nlat_out, int nlon_out, const STORAGE_T *__restrict__ kx,
         const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy, const int32_t *__restrict__ row_idx,
         const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx,
@@ -82,7 +93,14 @@ namespace attention_kernels
         extern __shared__ __align__(sizeof(float4)) float shext[];
         COMPUTE_T *shy = reinterpret_cast<COMPUTE_T *>(shext) + threadIdx.y * nchan_out;
 
-        const int batch = blockIdx.y;
+        const int bh = blockIdx.y;
+        const int batch = bh / nheads;
+        const int head = bh - (batch * nheads);
+
+        // leading dimensions: elements between adjacent spatial points
+        const int64_t ldi = int64_t(nheads) * nchan_in;
+        const int64_t ldo = int64_t(nheads) * nchan_out;
+
         const int wid = blockIdx.x * blockDim.y + threadIdx.y;
 
         if (wid >= nlat_out * nlon_out) { return; }
@@ -98,13 +116,13 @@ namespace attention_kernels
 
         for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { shy[chan] = __vset<COMPUTE_T>(0.f); }
 
-        kx += int64_t(batch) * nlat_in * nlon_in * nchan_in;
-        qy += int64_t(batch) * nlat_out * nlon_out * nchan_in + int64_t(ho) * nchan_in * nlon_out
-            + int64_t(wo) * nchan_in;
+        kx += int64_t(batch) * nlat_in * nlon_in * ldi + int64_t(head) * nchan_in;
+        qy += int64_t(batch) * nlat_out * nlon_out * ldi + int64_t(head) * nchan_in + int64_t(ho) * ldi * nlon_out
+            + int64_t(wo) * ldi;
 
-        vx += int64_t(batch) * nlat_in * nlon_in * nchan_out;
-        y += int64_t(batch) * nlat_out * nlon_out * nchan_out + int64_t(ho) * nchan_out * nlon_out
-            + int64_t(wo) * nchan_out;
+        vx += int64_t(batch) * nlat_in * nlon_in * ldo + int64_t(head) * nchan_out;
+        y += int64_t(batch) * nlat_out * nlon_out * ldo + int64_t(head) * nchan_out + int64_t(ho) * ldo * nlon_out
+            + int64_t(wo) * ldo;
 
         float alpha_sum = 0.0f;
         float qdotk_max = -FLT_MAX;
@@ -125,8 +143,10 @@ namespace attention_kernels
             const int wi_wo = wi + pscale * wo;
             const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
 
-            const STORAGE_T *_kx = kx + int64_t(hi) * nlon_in * nchan_in + int64_t(wip) * nchan_in;
-            const STORAGE_T *_vx = vx + int64_t(hi) * nlon_in * nchan_out + int64_t(wip) * nchan_out;
+            // stride between spatial points is ldi/ldo; the head offset is
+            // already baked into kx/vx above
+            const STORAGE_T *_kx = kx + int64_t(hi) * nlon_in * ldi + int64_t(wip) * ldi;
+            const STORAGE_T *_vx = vx + int64_t(hi) * nlon_in * ldo + int64_t(wip) * ldo;
 
             COMPUTE_T qdotkv = __vset<COMPUTE_T>(0.f);
 
@@ -164,8 +184,9 @@ namespace attention_kernels
               int NLOC,        // smallest int such that BDIM_X*NLOC >= nchan_out
               typename STORAGE_T>
     __global__ __launch_bounds__(BDIM_X *BDIM_Y) void s2_attn_fwd_special_vec_k(
-        int nchan_in,  // no. of STORAGE_T elements along channel dim
-        int nchan_out, // no. of STORAGE_T elements along channel dim
+        int nheads,    // no. of attention heads packed along the channel dim
+        int nchan_in,  // no. of STORAGE_T elements along channel dim, per head
+        int nchan_out, // no. of STORAGE_T elements along channel dim, per head
         int nlat_in, int nlon_in, int nlat_out, int nlon_out, const STORAGE_T *__restrict__ kx,
         const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy, const int32_t *__restrict__ row_idx,
         const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx,
@@ -180,7 +201,18 @@ namespace attention_kernels
         constexpr int NLOC_M1 = NLOC - 1;
 
         const int tidx = threadIdx.x;
-        const int batch = blockIdx.y;
+
+        // see s2_attn_fwd_generic_vec_k: gridDim.y spans batch * nheads, and the
+        // head selects an nchan-wide slice at each spatial point. nchan_in /
+        // nchan_out remain per-head counts (they bound the loops and size shq);
+        // only the distance between spatial points becomes ldi / ldo.
+        const int bh = blockIdx.y;
+        const int batch = bh / nheads;
+        const int head = bh - (batch * nheads);
+
+        const int64_t ldi = int64_t(nheads) * nchan_in;
+        const int64_t ldo = int64_t(nheads) * nchan_out;
+
         const int ctaid = blockIdx.x * blockDim.y + threadIdx.y;
 
         if (ctaid >= nlat_out * nlon_out) { return; }
@@ -201,17 +233,17 @@ namespace attention_kernels
         // one output lon step corresponds to pscale input lon steps (requires nlon_in % nlon_out == 0)
         const int pscale = nlon_in / nlon_out;
 
-        kx += int64_t(batch) * nlat_in * nlon_in * nchan_in;
-        qy += int64_t(batch) * nlat_out * nlon_out * nchan_in + int64_t(ho) * nlon_out * nchan_in
-            + int64_t(wo) * nchan_in;
+        kx += int64_t(batch) * nlat_in * nlon_in * ldi + int64_t(head) * nchan_in;
+        qy += int64_t(batch) * nlat_out * nlon_out * ldi + int64_t(head) * nchan_in + int64_t(ho) * nlon_out * ldi
+            + int64_t(wo) * ldi;
         if constexpr (CHIN_AS_OUT) {
             kx += tidx;
             qy += tidx;
         }
 
-        vx += int64_t(batch) * nlat_in * nlon_in * nchan_out + tidx;
-        y += int64_t(batch) * nlat_out * nlon_out * nchan_out + int64_t(ho) * nlon_out * nchan_out
-            + int64_t(wo) * nchan_out + tidx;
+        vx += int64_t(batch) * nlat_in * nlon_in * ldo + int64_t(head) * nchan_out + tidx;
+        y += int64_t(batch) * nlat_out * nlon_out * ldo + int64_t(head) * nchan_out + int64_t(ho) * nlon_out * ldo
+            + int64_t(wo) * ldo + tidx;
 
 #pragma unroll
         for (int i = 0; i < NLOC; i++) { locy[i] = __vset<COMPUTE_T>(0.f); }
@@ -243,8 +275,8 @@ namespace attention_kernels
             const int wi_wo = wi + pscale * wo;
             const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
 
-            const STORAGE_T *_kx = kx + int64_t(hi) * nlon_in * nchan_in + int64_t(wip) * nchan_in;
-            const STORAGE_T *_vx = vx + int64_t(hi) * nlon_in * nchan_out + int64_t(wip) * nchan_out;
+            const STORAGE_T *_kx = kx + int64_t(hi) * nlon_in * ldi + int64_t(wip) * ldi;
+            const STORAGE_T *_vx = vx + int64_t(hi) * nlon_in * ldo + int64_t(wip) * ldo;
 
             COMPUTE_T qdotkv = __vset<COMPUTE_T>(0.f);
 
@@ -300,21 +332,23 @@ namespace attention_kernels
     }
 
     template <typename STORAGE_T>
-    void launch_gen_attn_fwd(int batch_size, int nchans_in, int nchans_out, int nlat_in, int nlon_in, int nlat_out,
-                             int nlon_out, STORAGE_T *__restrict__ _kxp, STORAGE_T *__restrict__ _vxp,
+    void launch_gen_attn_fwd(int batch_size, int nheads, int nchans_in, int nchans_out, int nlat_in, int nlon_in,
+                             int nlat_out, int nlon_out, STORAGE_T *__restrict__ _kxp, STORAGE_T *__restrict__ _vxp,
                              STORAGE_T *__restrict__ _qyp, int32_t *_row_idx, int64_t *_row_off, int64_t *_col_idx,
                              float *_quad_weights, STORAGE_T *__restrict__ _yp, cudaStream_t stream)
     {
 
         dim3 block(WARP_SIZE, THREADS / WARP_SIZE);
-        dim3 grid(DIV_UP(nlat_out * nlon_out, block.y), batch_size);
+        // one block row per (batch, head) pair
+        dim3 grid(DIV_UP(nlat_out * nlon_out, block.y), batch_size * nheads);
 
         // shared memory holds compute-type (COMPUTE_T) data, not STORAGE_T.
+        // sized from the per-head channel count, so it does not scale with nheads
         size_t shsize = sizeof(typename vec_traits<STORAGE_T>::compute_t) * nchans_out * block.y;
 
         s2_attn_fwd_generic_vec_k<THREADS>
-            <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp,
-                                              _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp);
+            <<<grid, block, shsize, stream>>>(nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp,
+                                              _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp);
         CHECK_ERROR("s2_attn_fwd_generic_vec_k");
 
         return;
@@ -324,8 +358,8 @@ namespace attention_kernels
               int MAX_LOC_SIZE, // max size of COMPUTE_T[] local array
               typename STORAGE_T>
     void launch_spc_attn_fwd(int nloc, // "BDIM_X*nloc" >= nchans_out
-                             int batch_size, int nchans_in, int nchans_out, int nlat_in, int nlon_in, int nlat_out,
-                             int nlon_out, STORAGE_T *__restrict__ _kxp, STORAGE_T *__restrict__ _vxp,
+                             int batch_size, int nheads, int nchans_in, int nchans_out, int nlat_in, int nlon_in,
+                             int nlat_out, int nlon_out, STORAGE_T *__restrict__ _kxp, STORAGE_T *__restrict__ _vxp,
                              STORAGE_T *__restrict__ _qyp, int32_t *_row_idx, int64_t *_row_off, int64_t *_col_idx,
                              float *_quad_weights, STORAGE_T *__restrict__ _yp, cudaStream_t stream)
     {
@@ -333,7 +367,8 @@ namespace attention_kernels
         if (CUR_LOC_SIZE == nloc) {
 
             dim3 block(BDIM_X, BDIM_Y);
-            dim3 grid(DIV_UP(nlat_out * nlon_out, block.y), batch_size);
+            // one block row per (batch, head) pair
+            dim3 grid(DIV_UP(nlat_out * nlon_out, block.y), batch_size * nheads);
 
             // shared memory holds compute-type (COMPUTE_T) data, not STORAGE_T.
             // block.y > 1 iif block.x==32
@@ -350,14 +385,14 @@ namespace attention_kernels
             // is <= BDIM_X we can use the faster path
             if (nchans_in >= BDIM_X * (CUR_LOC_SIZE - 1) && nchans_in <= BDIM_X * CUR_LOC_SIZE) {
 
-                s2_attn_fwd_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE>
-                    <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp,
-                                                      _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp);
+                s2_attn_fwd_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE><<<grid, block, shsize, stream>>>(
+                    nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx,
+                    _row_off, _col_idx, _quad_weights, _yp);
             } else {
 
-                s2_attn_fwd_special_vec_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE>
-                    <<<grid, block, shsize, stream>>>(nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp,
-                                                      _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp);
+                s2_attn_fwd_special_vec_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE><<<grid, block, shsize, stream>>>(
+                    nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx,
+                    _row_off, _col_idx, _quad_weights, _yp);
             }
             CHECK_ERROR("s2_attn_fwd_special_vec_k");
 
@@ -365,7 +400,7 @@ namespace attention_kernels
         }
         if constexpr (CUR_LOC_SIZE < MAX_LOC_SIZE) {
             launch_spc_attn_fwd<BDIM_X, BDIM_Y, CUR_LOC_SIZE + 1, MAX_LOC_SIZE>(
-                nloc, batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp,
+                nloc, batch_size, nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp,
                 _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream);
         }
         return;
@@ -375,45 +410,46 @@ namespace attention_kernels
     // given storage vector type SV. MAX_LOC / MIN_LOC bound the per-thread local
     // array length (in COMPUTE_T units). nci / nco are channel counts in SV units.
     template <int MAX_LOC, int MIN_LOC, typename SV>
-    static void fwd_dispatch_bdimx(int bdimx, int nloc, int64_t batch_size, int64_t nci, int64_t nco, int nlat_in,
-                                   int64_t nlon_in, int64_t nlat_out, int64_t nlon_out, SV *_kxp, SV *_vxp, SV *_qyp,
-                                   int32_t *_row_idx, int64_t *_row_off, int64_t *_col_idx, float *_quad_weights,
-                                   SV *_yp, cudaStream_t stream)
+    static void fwd_dispatch_bdimx(int bdimx, int nloc, int64_t batch_size, int64_t nheads, int64_t nci, int64_t nco,
+                                   int nlat_in, int64_t nlon_in, int64_t nlat_out, int64_t nlon_out, SV *_kxp, SV *_vxp,
+                                   SV *_qyp, int32_t *_row_idx, int64_t *_row_off, int64_t *_col_idx,
+                                   float *_quad_weights, SV *_yp, cudaStream_t stream)
     {
         // use 2D blocks only if 32 threads are enough
         switch (bdimx) {
         case 32:
-            launch_spc_attn_fwd<32, 2, 1, MAX_LOC>(nloc, batch_size, nci, nco, nlat_in, nlon_in, nlat_out, nlon_out, _kxp,
-                                                   _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream);
+            launch_spc_attn_fwd<32, 2, 1, MAX_LOC>(nloc, batch_size, nheads, nci, nco, nlat_in, nlon_in, nlat_out,
+                                                   nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx,
+                                                   _quad_weights, _yp, stream);
             break;
         case 64:
-            launch_spc_attn_fwd<64, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nci, nco, nlat_in, nlon_in, nlat_out,
+            launch_spc_attn_fwd<64, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nheads, nci, nco, nlat_in, nlon_in, nlat_out,
                                                          nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx,
                                                          _quad_weights, _yp, stream);
             break;
         case 128:
-            launch_spc_attn_fwd<128, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nci, nco, nlat_in, nlon_in, nlat_out,
-                                                          nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx,
-                                                          _quad_weights, _yp, stream);
+            launch_spc_attn_fwd<128, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nheads, nci, nco, nlat_in, nlon_in,
+                                                          nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off,
+                                                          _col_idx, _quad_weights, _yp, stream);
             break;
         case 256:
-            launch_spc_attn_fwd<256, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nci, nco, nlat_in, nlon_in, nlat_out,
-                                                          nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx,
-                                                          _quad_weights, _yp, stream);
+            launch_spc_attn_fwd<256, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nheads, nci, nco, nlat_in, nlon_in,
+                                                          nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off,
+                                                          _col_idx, _quad_weights, _yp, stream);
             break;
         case 512:
-            launch_spc_attn_fwd<512, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nci, nco, nlat_in, nlon_in, nlat_out,
-                                                          nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx,
-                                                          _quad_weights, _yp, stream);
+            launch_spc_attn_fwd<512, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nheads, nci, nco, nlat_in, nlon_in,
+                                                          nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off,
+                                                          _col_idx, _quad_weights, _yp, stream);
             break;
         case 1024:
-            launch_spc_attn_fwd<1024, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nci, nco, nlat_in, nlon_in, nlat_out,
-                                                           nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx,
-                                                           _quad_weights, _yp, stream);
+            launch_spc_attn_fwd<1024, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nheads, nci, nco, nlat_in, nlon_in,
+                                                           nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off,
+                                                           _col_idx, _quad_weights, _yp, stream);
             break;
         default:
-            launch_gen_attn_fwd(batch_size, nci, nco, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx,
-                                _row_off, _col_idx, _quad_weights, _yp, stream);
+            launch_gen_attn_fwd(batch_size, nheads, nci, nco, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp,
+                                _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream);
             break;
         }
     }
@@ -424,9 +460,10 @@ namespace attention_kernels
     //   - fp16/bf16, 16B-aligned, nchans % 8 == 0 -> half8/bf168 vectorized (LDG.128)
     //   - otherwise -> scalar STORAGE_T path
     template <typename scalar_t>
-    static void s2_attn_fwd_dispatch(int64_t batch_size, int64_t nchans_in, int64_t nchans_out, int64_t nlon_in,
-                                     int64_t nlat_out, int64_t nlon_out, at::Tensor kxP, at::Tensor vxP, at::Tensor qyP,
-                                     at::Tensor row_off, at::Tensor col_idx, at::Tensor quad_weights, at::Tensor yP)
+    static void s2_attn_fwd_dispatch(int64_t batch_size, int64_t nheads, int64_t nchans_in, int64_t nchans_out,
+                                     int64_t nlon_in, int64_t nlat_out, int64_t nlon_out, at::Tensor kxP,
+                                     at::Tensor vxP, at::Tensor qyP, at::Tensor row_off, at::Tensor col_idx,
+                                     at::Tensor quad_weights, at::Tensor yP)
     {
 
         static_assert(0 == (MAX_LOCAL_ARR_LEN & (MAX_LOCAL_ARR_LEN - 1)));
@@ -470,13 +507,13 @@ namespace attention_kernels
                 const int64_t nci = nchans_in / VEC_SIZE;
                 const int64_t nco = nchans_out / VEC_SIZE;
                 fwd_dispatch_bdimx<MAX_VEC, MIN_VEC, float4>(
-                    bdimx, DIV_UP(nco, bdimx), batch_size, nci, nco, nlat_in, nlon_in, nlat_out, nlon_out,
+                    bdimx, DIV_UP(nco, bdimx), batch_size, nheads, nci, nco, nlat_in, nlon_in, nlat_out, nlon_out,
                     reinterpret_cast<float4 *>(_kxp), reinterpret_cast<float4 *>(_vxp), reinterpret_cast<float4 *>(_qyp),
                     _row_idx, _row_off, _col_idx, _quad_weights, reinterpret_cast<float4 *>(_yp), stream);
             } else {
                 fwd_dispatch_bdimx<MAX_LOCAL_ARR_LEN, MIN_LOC_ARR_LEN, float>(
-                    bdimx, DIV_UP(nchans_out, bdimx), batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out,
-                    nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream);
+                    bdimx, DIV_UP(nchans_out, bdimx), batch_size, nheads, nchans_in, nchans_out, nlat_in, nlon_in,
+                    nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream);
             }
         } else {
             // fp16/bf16: scalar STORAGE_T path (widen at load, narrow at store; fp32
@@ -485,7 +522,7 @@ namespace attention_kernels
             // kernel is latency/occupancy-bound (DRAM ~25%), not bandwidth-bound, so
             // vectorizing reduced precision only hurt. See the AMP refactor notes.
             fwd_dispatch_bdimx<MAX_LOCAL_ARR_LEN, MIN_LOC_ARR_LEN, scalar_t>(
-                bdimx, DIV_UP(nchans_out, bdimx), batch_size, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out,
+                bdimx, DIV_UP(nchans_out, bdimx), batch_size, nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out,
                 nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream);
         }
 
@@ -494,9 +531,14 @@ namespace attention_kernels
 
     // END - forward kernels and functions
 
+    // NHWC ABI: kx, vx, qy are physically (B, nlat, nlon, num_heads * nchan) and
+    // contiguous. Layout is never inferred from strides here -- the caller states
+    // it by construction (see attention/_layout.py). Heads are packed along the
+    // channel dimension rather than folded into the batch dimension, because
+    // folding is not free in this layout.
     torch::Tensor s2_attention_fwd_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor quad_weights,
-                                        at::Tensor psi_col_idx, at::Tensor psi_row_off, int64_t nlon_in,
-                                        int64_t nlat_out, int64_t nlon_out)
+                                        at::Tensor psi_col_idx, at::Tensor psi_row_off, int64_t num_heads,
+                                        int64_t nlon_in, int64_t nlat_out, int64_t nlon_out)
     {
         CHECK_CUDA_INPUT_TENSOR(kx);
         CHECK_CUDA_INPUT_TENSOR(vx);
@@ -513,82 +555,76 @@ namespace attention_kernels
         TORCH_CHECK(downsample || upsample, "either nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (",
                     nlon_out, "), or vice versa");
 
-        size_t nchans_in = qy.size(1); // or kx.size(1)
-        size_t nchans_out = vx.size(1);
+        TORCH_CHECK(num_heads >= 1, "num_heads must be positive, got ", num_heads);
+        TORCH_CHECK(qy.size(3) % num_heads == 0, "q/k channel count (", qy.size(3),
+                    ") must be divisible by num_heads (", num_heads, ")");
+        TORCH_CHECK(vx.size(3) % num_heads == 0, "v channel count (", vx.size(3), ") must be divisible by num_heads (",
+                    num_heads, ")");
+
+        // Every activation must share one dtype: the dispatch below selects a single
+        // scalar_t from qy and the launchers reinterpret_cast k/v/q (and dy) to it, so
+        // a mismatched input would be reinterpreted rather than converted.
+        TORCH_CHECK(kx.scalar_type() == qy.scalar_type(), "k dtype (", kx.scalar_type(), ") must match q dtype (",
+                    qy.scalar_type(), ")");
+        TORCH_CHECK(vx.scalar_type() == qy.scalar_type(), "v dtype (", vx.scalar_type(), ") must match q dtype (",
+                    qy.scalar_type(), ")");
+
+        // per-head channel counts; the packed extent is num_heads times these
+        size_t nchans_in = qy.size(3) / num_heads; // or kx.size(3) / num_heads
+        size_t nchans_out = vx.size(3) / num_heads;
 
         const int batch_size = kx.size(0);
-        const int64_t nlat_in = kx.size(2);
+        const int64_t nlat_in = kx.size(1);
 
         // extract dtype
         auto qy_type = qy.dtype();
 
-        const int64_t out_dims[] = {batch_size, nlat_out, nlon_out, nchans_out};
+        const int64_t out_dims[] = {batch_size, nlat_out, nlon_out, int64_t(nchans_out) * num_heads};
         torch::Tensor y;
 
         // ATen dispatch over the input dtype.
         //
-        // Gather (downsample / self) path: native storage. kx/vx/qy keep their
-        // dtype; the kernel widens to fp32 at load and narrows back at store
-        // (Tier B), so there is no whole-tensor fp32 copy and the read bandwidth
-        // for fp16/bf16 is halved. Compute/accumulation are fp32 in-kernel.
+        // Both paths are on native storage: kx/vx/qy keep their dtype and y is
+        // allocated in it, so there is no whole-tensor fp32 copy anywhere and the
+        // read bandwidth for fp16/bf16 is halved. The kernels widen to fp32 at
+        // load and narrow back at store (Tier B); compute and accumulation are
+        // fp32 in-kernel either way.
         //
-        // Scatter (upsample) path: the scatter kernels are not yet on the native
-        // storage path, so we still upcast to fp32 here and downcast the result
-        // at the end (the trailing y.to(qy_type)). fp32 inputs are unaffected
-        // either way (the .to(kFloat32) is a no-op).
+        // The scatter (upsample) path additionally keeps its softmax reduction
+        // scratch -- numer/denom/maxbuf -- in fp32 regardless of the input dtype
+        // (see launch_attn_fwd_upsample_scatter). Those are private accumulators,
+        // not converted copies of the activations: a scatter accumulates an
+        // unbounded number of contributions per output element, so narrowing them
+        // would lose precision that the gather path never risks.
         AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, qy.scalar_type(), "s2_attention_fwd_cuda", [&] {
             using storage_t = scalar_t;
 
+            // No layout conversion here any more: inputs are NHWC by contract and
+            // the output is produced NHWC. The conversion, when a caller needs
+            // one, happens once at the module boundary via the permute_to_nhwc /
+            // permute_to_nchw ops rather than once per launcher.
+            torch::Tensor y_nhwc = torch::empty(out_dims, kx.options()); // native dtype
+
             if (downsample) {
-                // native-storage gather path
-                torch::Tensor kxP = kx;
-                torch::Tensor vxP = vx;
-                torch::Tensor qyP = qy;
-
-                // safer than is_contiguous(ChannelsLast), which fails for num_channels == 1
-                bool kx_is_channels_last = kxP.strides()[1] == 1;
-                bool vx_is_channels_last = vxP.strides()[1] == 1;
-                bool qy_is_channels_last = qyP.strides()[1] == 1;
-
-                if (!kx_is_channels_last) { kxP = permute_4D_to0231(kxP); }
-                if (!vx_is_channels_last) { vxP = permute_4D_to0231(vxP); }
-                if (!qy_is_channels_last) { qyP = permute_4D_to0231(qyP); }
-
-                torch::Tensor yP = torch::empty(out_dims, kxP.options()); // native dtype
-
-                s2_attn_fwd_dispatch<storage_t>(batch_size, nchans_in, nchans_out, nlon_in, nlat_out, nlon_out, kxP,
-                                                vxP, qyP, psi_row_off, psi_col_idx, quad_weights, yP);
-
-                y = yP;
-                if (!qy_is_channels_last) { y = permute_4D_to0312(y); }
+                s2_attn_fwd_dispatch<storage_t>(batch_size, num_heads, nchans_in, nchans_out, nlon_in, nlat_out,
+                                                nlon_out, kx, vx, qy, psi_row_off, psi_col_idx, quad_weights, y_nhwc);
             } else {
-                // upsample (scatter) path: native storage. s2_attn_fwd_upsample_dispatch
-                // does its own AT_DISPATCH and widens fp16/bf16 at load (fp32 compute),
-                // narrowing the output at store — same as the gather path.
-                torch::Tensor kxP = kx;
-                torch::Tensor vxP = vx;
-                torch::Tensor qyP = qy;
-
-                bool kx_is_channels_last = kxP.strides()[1] == 1;
-                bool vx_is_channels_last = vxP.strides()[1] == 1;
-                bool qy_is_channels_last = qyP.strides()[1] == 1;
-
-                if (!kx_is_channels_last) { kxP = permute_4D_to0231(kxP); }
-                if (!vx_is_channels_last) { vxP = permute_4D_to0231(vxP); }
-                if (!qy_is_channels_last) { qyP = permute_4D_to0231(qyP); }
-
-                torch::Tensor yP = torch::empty(out_dims, kxP.options()); // native dtype
-
-                s2_attn_fwd_upsample_dispatch(batch_size, nchans_in, nchans_out, nlon_in, nlat_in, nlat_out, nlon_out,
-                                              kxP, vxP, qyP, psi_row_off, psi_col_idx, quad_weights, yP);
-
-                y = yP;
-                if (!qy_is_channels_last) { y = permute_4D_to0312(y); }
+                // upsample (scatter) path: s2_attn_fwd_upsample_dispatch does its own
+                // AT_DISPATCH and widens fp16/bf16 at load (fp32 compute), narrowing
+                // the output at store — same as the gather path.
+                s2_attn_fwd_upsample_dispatch(batch_size, num_heads, nchans_in, nchans_out, nlon_in, nlat_in, nlat_out,
+                                              nlon_out, kx, vx, qy, psi_row_off, psi_col_idx, quad_weights, y_nhwc);
             }
+
+            y = y_nhwc;
         });
 
-        // convert precision back to starting dtype. No-op now that both the gather
-        // and upsample paths produce native-dtype output; kept as a safety net.
+        // A no-op whenever kx and qy share a dtype, which is the only case this
+        // function supports: the dispatch above selects scalar_t from qy, while y
+        // is allocated from kx.options() and the launchers reinterpret_cast every
+        // activation pointer to that one scalar_t. Mismatched input dtypes would
+        // therefore misread storage long before reaching this line -- so this is a
+        // shape-preserving formality, not a guard against that case.
         y = y.to(qy_type);
 
         C10_CUDA_KERNEL_LAUNCH_CHECK();

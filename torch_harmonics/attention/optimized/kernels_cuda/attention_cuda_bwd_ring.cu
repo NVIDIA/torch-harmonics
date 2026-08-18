@@ -2033,11 +2033,14 @@ namespace attention_kernels
         CHECK_CUDA_TENSOR(psi_row_off);
         CHECK_CUDA_TENSOR(psi_row_idx);
 
+        // NHWC by contract: kx/vx/qy (and dy) are physical (B, H, W, C), which is
+        // the layout these kernels address. The conversion happens once at the ring
+        // boundary rather than per step -- see distributed_attention.py.
         const int batch_size = kx.size(0);
-        const int nlat_halo = kx.size(2); // kx is [B,C,H,W], H is dim 2
-        const int nlon_kx = kx.size(3);   // W is dim 3
-        const size_t nchans_in = qy.size(1);
-        const size_t nchans_out = vx.size(1);
+        const int nlat_halo = kx.size(1);
+        const int nlon_kx = kx.size(2);
+        const size_t nchans_in = qy.size(3);
+        const size_t nchans_out = vx.size(3);
 
         // ATen dispatch over the input dtype. Tier B: kx/vx/qy/dy keep their native
         // storage dtype (fp32/fp16/bf16); the kernels widen to fp32 at the load site
@@ -2052,11 +2055,6 @@ namespace attention_kernels
                 torch::Tensor vxP = vx;
                 torch::Tensor qyP = qy;
                 torch::Tensor dyP = dy;
-
-                if (kxP.strides()[1] != 1) { kxP = permute_4D_to0231(kxP); }
-                if (vxP.strides()[1] != 1) { vxP = permute_4D_to0231(vxP); }
-                if (qyP.strides()[1] != 1) { qyP = permute_4D_to0231(qyP); }
-                if (dyP.strides()[1] != 1) { dyP = permute_4D_to0231(dyP); }
 
                 s2_attn_bwd_ring_step_pass1_dispatch<storage_t>(
                     batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start,
@@ -2090,11 +2088,14 @@ namespace attention_kernels
         CHECK_CUDA_TENSOR(psi_row_off);
         CHECK_CUDA_TENSOR(psi_row_idx);
 
+        // NHWC by contract: kx/vx/qy (and dy) are physical (B, H, W, C), which is
+        // the layout these kernels address. The conversion happens once at the ring
+        // boundary rather than per step -- see distributed_attention.py.
         const int batch_size = kx.size(0);
-        const int nlat_halo = kx.size(2); // kx is [B,C,H,W], H is dim 2
-        const int nlon_kx = kx.size(3);   // W is dim 3
-        const size_t nchans_in = qy.size(1);
-        const size_t nchans_out = vx.size(1);
+        const int nlat_halo = kx.size(1);
+        const int nlon_kx = kx.size(2);
+        const size_t nchans_in = qy.size(3);
+        const size_t nchans_out = vx.size(3);
 
         // ATen dispatch over the input dtype. Tier B: kx/vx/qy/dy keep their native
         // storage dtype (fp32/fp16/bf16); the kernels widen to fp32 at the load site
@@ -2110,11 +2111,6 @@ namespace attention_kernels
                 torch::Tensor vxP = vx;
                 torch::Tensor qyP = qy;
                 torch::Tensor dyP = dy;
-
-                if (kxP.strides()[1] != 1) { kxP = permute_4D_to0231(kxP); }
-                if (vxP.strides()[1] != 1) { vxP = permute_4D_to0231(vxP); }
-                if (qyP.strides()[1] != 1) { qyP = permute_4D_to0231(qyP); }
-                if (dyP.strides()[1] != 1) { dyP = permute_4D_to0231(dyP); }
 #if 0
     dump_csr_linear("csr_attn_distr", pscale, nlon_in, lon_lo_kx, nlon_kx, lat_halo_start, nlat_halo, nlat_out, psi_row_idx, psi_row_off, psi_col_idx);
 #endif

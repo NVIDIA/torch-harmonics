@@ -47,7 +47,7 @@ namespace attention_kernels
     // pscale_out = nlon_out / nlon_in. Requires nlon_out % nlon_in == 0.
     //
     // Tensor layout: all tensors enter as physical (B, H, W, C) — accessor
-    // indexing is [b][h][w][c], channel stride = 1; wrapper handles BCHW↔BHWC.
+    // indexing is [b][h][w][c], channel stride = 1; the wrapper folds heads into b.
     //
     // Three OpenMP phases (mirrors bwd downsample's structure, but adapted to
     // the upsample-side psi keying):

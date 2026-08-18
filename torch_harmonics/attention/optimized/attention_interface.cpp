@@ -67,12 +67,43 @@ namespace attention_kernels
     //
     TORCH_LIBRARY(attention_kernels, m)
     {
+        // ---- Layout conversion ----
+        // Single point of truth for NCHW <-> NHWC conversion in the attention
+        // stack. Every attention kernel operates on physical NHWC (channel
+        // innermost) data, so layout is converted explicitly at the module
+        // boundary rather than inferred from strides inside each launcher --
+        // stride inspection cannot distinguish the two layouts when a dimension
+        // is degenerate (a contiguous NCHW tensor with H*W == 1 has stride(1)
+        // == 1 and is indistinguishable from NHWC).
+        //
+        // Both directions are pure element permutations, hence exact inverses
+        // of each other and dtype-agnostic: fp32, fp16 and bf16 all dispatch to
+        // the same tiled transpose. The autograd rule (registered in Python,
+        // see attention/_layout.py) is therefore just the opposite direction.
+        //   permute_to_nhwc : (B, C, H, W) contiguous -> (B, H, W, C) contiguous
+        //   permute_to_nchw : (B, H, W, C) contiguous -> (B, C, H, W) contiguous
+        m.def("permute_to_nhwc(Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});
+        m.def("permute_to_nchw(Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});
+
         // ---- Self-attention / downsample (output-centric gather) ----
         // Standard direction: each Q point at (ho, wo) gathers from a neighborhood
         // of K/V points. K/V are at the higher resolution (or equal).
-        //   kx, vx : [B, C_k, nlat_in,  nlon_in ]
-        //   qy     : [B, C_k, nlat_out, nlon_out]
-        //   y      : [B, C_v, nlat_out, nlon_out]
+        //
+        // LAYOUT: all activation tensors are physical NHWC (channel innermost) and
+        // contiguous, with the attention heads packed along the channel dimension.
+        // C_k / C_v below denote the PER-HEAD channel counts, so the extent of the
+        // last dimension is num_heads * C. Layout is part of the contract and is
+        // never inferred from strides -- see attention/_layout.py, which owns the
+        // conversion, and note that stride inspection cannot distinguish the two
+        // layouts when a dimension is degenerate.
+        //
+        // Heads are packed rather than folded into the batch dimension because in
+        // a channel-innermost layout the head axis is interior: folding it to the
+        // front would require materializing a copy, whereas the kernels can address
+        // a head in place via a leading dimension (num_heads * C) and an offset.
+        //   kx, vx : [B, nlat_in,  nlon_in,  num_heads * C_k / C_v]
+        //   qy     : [B, nlat_out, nlon_out, num_heads * C_k]
+        //   y      : [B, nlat_out, nlon_out, num_heads * C_v]
         // psi convention (canonical at wo=0):
         //   row_off : indexed by ho in [0, nlat_out],  length nlat_out + 1
         //   col_idx : hi * nlon_in + wi_canonical
@@ -81,10 +112,10 @@ namespace attention_kernels
         //              where pscale = nlon_in / nlon_out).
         // Requires nlon_in % nlon_out == 0.
         m.def("forward(Tensor kx, Tensor vx, Tensor qy, Tensor quad_weights, Tensor col_idx, Tensor row_off, int "
-              "nlon_in, int nlat_out, int nlon_out) -> Tensor",
+              "num_heads, int nlon_in, int nlat_out, int nlon_out) -> Tensor",
               {at::Tag::pt2_compliant_tag});
         m.def("backward(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor quad_weights, Tensor col_idx, Tensor "
-              "row_off, int nlon_in, int nlat_out, int nlon_out) -> (Tensor, Tensor, Tensor)",
+              "row_off, int num_heads, int nlon_in, int nlat_out, int nlon_out) -> (Tensor, Tensor, Tensor)",
               {at::Tag::pt2_compliant_tag});
 
         // ---- Ring-step variants for DistributedNeighborhoodAttentionS2 ----
