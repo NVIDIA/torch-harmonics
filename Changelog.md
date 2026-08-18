@@ -2,6 +2,10 @@
 
 ## Versioning
 
+### v0.9.3
+
+* Fixed `trapezoidal_weights` returning float32 weights alongside float64 nodes, because the underlying `torch.ones(n)` inherited the default dtype. It was the only rule in `torch_harmonics.quadrature` doing so, and it capped the accuracy of everything derived from it at roughly 1e-7, including the latitude weights of the `"equiangular-trapezoidal"` grid. Weights are now float64 like the other rules, and the tolerances of the affected tests have been tightened to match the other grids.
+
 ### v0.9.2
 
 * Added upsampling support to `DistributedNeighborhoodAttentionS2` (`nlon_out % nlon_in == 0`): new upsample (scatter) ring-step CUDA kernels for forward and backward, matching the serial upsample attention. K/V rotate around the azimuth ring while queries and the softmax state stay local; all three directions (self-attention, downsampling, upsampling) are now supported by the distributed layer.

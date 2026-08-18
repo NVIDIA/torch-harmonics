@@ -162,7 +162,9 @@ def trapezoidal_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 
     """
 
     xlg = torch.as_tensor(np.linspace(a, b, n, endpoint=not periodic))
-    wlg = (b - a) / (n - 1 + periodic * 1) * torch.ones(n, requires_grad=False)
+    # dtype is explicit: torch.ones defaults to float32, which would make these the only
+    # float32 weights in the module and cap the accuracy of every rule derived from them
+    wlg = (b - a) / (n - 1 + periodic * 1) * torch.ones(n, dtype=xlg.dtype, requires_grad=False)
 
     if not periodic:
         wlg[0] *= 0.5

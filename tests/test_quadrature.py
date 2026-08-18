@@ -37,7 +37,7 @@ from parameterized import parameterized, parameterized_class
 from testutils import compare_tensors, set_seed
 
 import torch_harmonics as th
-from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
+from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes, trapezoidal_weights
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -56,8 +56,8 @@ class TestQuadrature(unittest.TestCase):
             [65, 128, 1, 1, "legendre-gauss", True, 1e-6, 1e-6],
             [65, 128, 2, 2, "lobatto", False, 1e-6, 1e-6],
             [65, 128, 2, 2, "lobatto", True, 1e-6, 1e-6],
-            [64, 128, 2, 3, "equiangular-trapezoidal", False, 1e-4, 1e-4],
-            [64, 128, 2, 3, "equiangular-trapezoidal", True, 1e-4, 1e-4],
+            [64, 128, 2, 3, "equiangular-trapezoidal", False, 1e-6, 1e-6],
+            [64, 128, 2, 3, "equiangular-trapezoidal", True, 1e-6, 1e-6],
         ]
     )
     def test_constant_integral(self, nlat, nlon, batch_size, num_chan, grid, normalize, atol, rtol, verbose=False):
@@ -203,6 +203,53 @@ class TestQuadrature(unittest.TestCase):
                 verbose=verbose,
             )
         )
+
+
+class TestQuadratureWeightPrecision(unittest.TestCase):
+    """Every quadrature rule must carry its weights in the same precision as its nodes."""
+
+    @parameterized.expand(
+        [
+            ["equiangular"],
+            ["legendre-gauss"],
+            ["lobatto"],
+            ["equiangular-trapezoidal"],
+        ]
+    )
+    def test_latitude_weight_dtype(self, grid):
+        """Nodes and weights come back in float64, whichever rule produced them."""
+
+        lats, weights = precompute_latitudes(64, grid=grid)
+
+        self.assertEqual(lats.dtype, torch.float64)
+        self.assertEqual(weights.dtype, torch.float64)
+
+    @parameterized.expand(
+        [
+            # n, a, b, periodic
+            [64, -1.0, 1.0, False],
+            [64, 0.0, 2.0, True],
+            [33, -1.0, 1.0, False],
+        ]
+    )
+    def test_trapezoidal_weight_values(self, n, a, b, periodic, verbose=False):
+        """Weights match the analytic rule to double precision.
+
+        The uniform weight (b - a) / (n - 1) is not exactly representable in binary, so
+        computing it in float32 leaves a relative error around 1e-8. Comparing against a
+        float64 reference at 1e-15 is what distinguishes the two.
+        """
+
+        x, w = trapezoidal_weights(n, a, b, periodic=periodic)
+
+        h = (b - a) / (n - 1 + periodic * 1)
+        expected = torch.full((n,), h, dtype=torch.float64)
+        if not periodic:
+            expected[0] *= 0.5
+            expected[-1] *= 0.5
+
+        self.assertEqual(w.dtype, x.dtype)
+        self.assertTrue(compare_tensors(f"trapezoidal weights (periodic={periodic})", w, expected, atol=1e-15, rtol=1e-15, verbose=verbose))
 
 
 if __name__ == "__main__":
