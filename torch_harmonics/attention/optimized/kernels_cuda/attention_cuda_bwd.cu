@@ -63,8 +63,9 @@ namespace attention_kernels
     void s2_attn_bwd_upsample_dispatch(int batch_size, int64_t num_heads, size_t nchans_in, size_t nchans_out,
                                        int64_t nlon_in, int64_t nlat_in, int64_t nlat_out, int64_t nlon_out,
                                        torch::Tensor kxP, torch::Tensor vxP, torch::Tensor qyP, torch::Tensor dyP,
-                                       torch::Tensor psi_row_off, torch::Tensor psi_col_idx, torch::Tensor quad_weights,
-                                       torch::Tensor dkxP, torch::Tensor dvxP, torch::Tensor dqyP);
+                                       torch::Tensor psi_row_off, torch::Tensor psi_seg, torch::Tensor psi_seg_off,
+                                       torch::Tensor quad_weights, torch::Tensor dkxP, torch::Tensor dvxP,
+                                       torch::Tensor dqyP);
 
     // BEGIN backward kernels and functions
 
@@ -387,6 +388,23 @@ namespace attention_kernels
         COMPUTE_T loc_vw_[NLOC];
         COMPUTE_T loc_kvw[NLOC];
 
+        // Register copies of this thread's slice of qy / dy. Both are loop-invariant
+        // across neighbors, and each thread only ever touches its own (tidx + i*BDIM_X)
+        // slots, so re-reading them from shared once per neighbor was pure overhead --
+        // and this kernel is issue-limited on exactly that pipe: 69% of peak LSU
+        // instruction issue and 84% SM throughput against 1.1% DRAM, with "not selected"
+        // the largest stall (warps eligible but no issue slot). Trading a little
+        // occupancy for fewer instructions is the right direction when warps are in
+        // surplus. The shared copies stay: the scalar epilogue undoes the tidx offset and
+        // reads across the warp, which registers cannot serve.
+        COMPUTE_T loc_qy[NLOC];
+        COMPUTE_T loc_dy[NLOC];
+#pragma unroll
+        for (int i = 0; i < NLOC; i++) {
+            loc_qy[i] = __vset<COMPUTE_T>(0.0f);
+            loc_dy[i] = __vset<COMPUTE_T>(0.0f);
+        }
+
         // use permuted rows
         const int h = ctaid / nlon_out;
         const int wo = ctaid - (h * nlon_out);
@@ -423,13 +441,25 @@ namespace attention_kernels
         }
 
 #pragma unroll
-        for (int i = 0; i < NLOC_M1; i++) { sh_qy[i * BDIM_X] = vload(qy, i * BDIM_X); }
-        if (NLOC_M1 * BDIM_X + tidx < nchan_in) { sh_qy[NLOC_M1 * BDIM_X] = vload(qy, NLOC_M1 * BDIM_X); }
+        for (int i = 0; i < NLOC_M1; i++) {
+            loc_qy[i] = vload(qy, i * BDIM_X);
+            sh_qy[i * BDIM_X] = loc_qy[i];
+        }
+        if (NLOC_M1 * BDIM_X + tidx < nchan_in) {
+            loc_qy[NLOC_M1] = vload(qy, NLOC_M1 * BDIM_X);
+            sh_qy[NLOC_M1 * BDIM_X] = loc_qy[NLOC_M1];
+        }
 
         if constexpr (CHOUT_AS_IN) {
 #pragma unroll
-            for (int i = 0; i < NLOC_M1; i++) { sh_dy[i * BDIM_X] = vload(dy, i * BDIM_X); }
-            if (NLOC_M1 * BDIM_X + tidx < nchan_out) { sh_dy[NLOC_M1 * BDIM_X] = vload(dy, NLOC_M1 * BDIM_X); }
+            for (int i = 0; i < NLOC_M1; i++) {
+                loc_dy[i] = vload(dy, i * BDIM_X);
+                sh_dy[i * BDIM_X] = loc_dy[i];
+            }
+            if (NLOC_M1 * BDIM_X + tidx < nchan_out) {
+                loc_dy[NLOC_M1] = vload(dy, NLOC_M1 * BDIM_X);
+                sh_dy[NLOC_M1 * BDIM_X] = loc_dy[NLOC_M1];
+            }
         } else {
             for (int chan = tidx; chan < nchan_out; chan += BDIM_X) { sh_dy[chan] = vload(dy, chan); }
         }
@@ -489,18 +519,18 @@ namespace attention_kernels
 
 #pragma unroll
                 for (int i = 0; i < NLOC_M1; i++) {
-                    qdotk_v = __vadd(qdotk_v, __vmul(sh_qy[i * BDIM_X], vload(_kx, i * BDIM_X)));
+                    qdotk_v = __vadd(qdotk_v, __vmul(loc_qy[i], vload(_kx, i * BDIM_X)));
                 }
                 if (NLOC_M1 * BDIM_X + tidx < nchan_in) {
-                    qdotk_v = __vadd(qdotk_v, __vmul(sh_qy[NLOC_M1 * BDIM_X], vload(_kx, NLOC_M1 * BDIM_X)));
+                    qdotk_v = __vadd(qdotk_v, __vmul(loc_qy[NLOC_M1], vload(_kx, NLOC_M1 * BDIM_X)));
                 }
                 if constexpr (CHOUT_AS_IN) {
 #pragma unroll
                     for (int i = 0; i < NLOC_M1; i++) {
-                        gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[i * BDIM_X], vload(_vx, i * BDIM_X)));
+                        gdotv_v = __vadd(gdotv_v, __vmul(loc_dy[i], vload(_vx, i * BDIM_X)));
                     }
                     if (NLOC_M1 * BDIM_X + tidx < nchan_out) {
-                        gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[NLOC_M1 * BDIM_X], vload(_vx, NLOC_M1 * BDIM_X)));
+                        gdotv_v = __vadd(gdotv_v, __vmul(loc_dy[NLOC_M1], vload(_vx, NLOC_M1 * BDIM_X)));
                     }
                 } else {
                     for (int chan = tidx; chan < nchan_out; chan += BDIM_X) {
@@ -591,18 +621,18 @@ namespace attention_kernels
 
 #pragma unroll
                 for (int i = 0; i < NLOC_M1; i++) {
-                    qdotk_v = __vadd(qdotk_v, __vmul(sh_qy[i * BDIM_X], vload(_kx, i * BDIM_X)));
+                    qdotk_v = __vadd(qdotk_v, __vmul(loc_qy[i], vload(_kx, i * BDIM_X)));
                 }
                 if (NLOC_M1 * BDIM_X + tidx < nchan_in) {
-                    qdotk_v = __vadd(qdotk_v, __vmul(sh_qy[NLOC_M1 * BDIM_X], vload(_kx, NLOC_M1 * BDIM_X)));
+                    qdotk_v = __vadd(qdotk_v, __vmul(loc_qy[NLOC_M1], vload(_kx, NLOC_M1 * BDIM_X)));
                 }
                 if constexpr (CHOUT_AS_IN) {
 #pragma unroll
                     for (int i = 0; i < NLOC_M1; i++) {
-                        gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[i * BDIM_X], vload(_vx, i * BDIM_X)));
+                        gdotv_v = __vadd(gdotv_v, __vmul(loc_dy[i], vload(_vx, i * BDIM_X)));
                     }
                     if (NLOC_M1 * BDIM_X + tidx < nchan_out) {
-                        gdotv_v = __vadd(gdotv_v, __vmul(sh_dy[NLOC_M1 * BDIM_X], vload(_vx, NLOC_M1 * BDIM_X)));
+                        gdotv_v = __vadd(gdotv_v, __vmul(loc_dy[NLOC_M1], vload(_vx, NLOC_M1 * BDIM_X)));
                     }
                 } else {
                     for (int chan = tidx; chan < nchan_out; chan += BDIM_X) {
@@ -663,19 +693,17 @@ namespace attention_kernels
                 }
 #else
 #pragma unroll
-                for (int i = 0; i < NLOC_M1; i++) {
-                    atomicAdd(_dkx + i * BDIM_X, __vscale(scale_fact_qy, sh_qy[i * BDIM_X]));
-                }
+                for (int i = 0; i < NLOC_M1; i++) { atomicAdd(_dkx + i * BDIM_X, __vscale(scale_fact_qy, loc_qy[i])); }
                 if (NLOC_M1 * BDIM_X + tidx < nchan_in) {
-                    atomicAdd(_dkx + NLOC_M1 * BDIM_X, __vscale(scale_fact_qy, sh_qy[NLOC_M1 * BDIM_X]));
+                    atomicAdd(_dkx + NLOC_M1 * BDIM_X, __vscale(scale_fact_qy, loc_qy[NLOC_M1]));
                 }
                 if constexpr (CHOUT_AS_IN) {
 #pragma unroll
                     for (int i = 0; i < NLOC_M1; i++) {
-                        atomicAdd(_dvx + i * BDIM_X, __vscale(scale_fact_dy, sh_dy[i * BDIM_X]));
+                        atomicAdd(_dvx + i * BDIM_X, __vscale(scale_fact_dy, loc_dy[i]));
                     }
                     if (NLOC_M1 * BDIM_X + tidx < nchan_out) {
-                        atomicAdd(_dvx + NLOC_M1 * BDIM_X, __vscale(scale_fact_dy, sh_dy[NLOC_M1 * BDIM_X]));
+                        atomicAdd(_dvx + NLOC_M1 * BDIM_X, __vscale(scale_fact_dy, loc_dy[NLOC_M1]));
                     }
                 } else {
                     for (int chan = tidx; chan < nchan_out; chan += BDIM_X) {
@@ -981,8 +1009,8 @@ namespace attention_kernels
                                                 quad_weights, dkxP, dvxP, dqyP);
             } else {
                 s2_attn_bwd_upsample_dispatch(batch_size, num_heads, nchans_in, nchans_out, nlon_in, nlat_in, nlat_out,
-                                              nlon_out, kx, vx, qy, dy, psi_row_off, psi_col_idx, quad_weights, dkxP,
-                                              dvxP, dqyP);
+                                              nlon_out, kx, vx, qy, dy, psi_row_off, psi_seg, psi_seg_off, quad_weights,
+                                              dkxP, dvxP, dqyP);
             }
 
             dkx = dkxP;
