@@ -294,7 +294,13 @@ namespace attention_kernels
         // neighbor. That is algebraically the same reduction -- one running max, one
         // rescale of locy per group rather than NB of them -- and is if anything
         // better conditioned, since it rescales less often.
-        constexpr int NB = 4;
+        // Neighbours per group. Overridable so the register/occupancy trade can be
+        // swept: grouping buys instruction-level parallelism but costs NB accumulator
+        // sets, and this kernel's occupancy is register-limited.
+#ifndef TH_ATTENTION_FWD_NB
+#define TH_ATTENTION_FWD_NB 4
+#endif
+        constexpr int NB = TH_ATTENTION_FWD_NB;
 
         // Outer loop over contiguous longitude arcs. hi and the quadrature weight are
         // per-arc constants and the column advances by counting, so the per-neighbour
@@ -639,8 +645,20 @@ namespace attention_kernels
         if constexpr (std::is_same<scalar_t, float>::value) {
             // fp32: float4 vectorized when 16B-aligned + 4-divisible, else scalar.
             constexpr int VEC_SIZE = sizeof(float4) / sizeof(float); // 4
+            // Vectorising only pays if the vectorised channel count still fills the
+            // block. bdimx is derived from the RAW channel count above, so with
+            // nchans=64 and VEC_SIZE=4 the loop runs over nco=16 elements across
+            // bdimx=32 lanes and half the block idles. Worse, a float4 FMA scalarises
+            // into four FFMA, so per warp per neighbour the vector form is 1 load +
+            // 2 cvt + 4 FFMA against the scalar form's 2 + 2 + 2 -- more instructions,
+            // not fewer, on a kernel that is issue-limited. Measured on H100 at c64:
+            // vectorised fp16 is 13-23% slower than scalar, and costs 95 registers
+            // against 64 (31% occupancy against 50%).
+            //
+            // It does pay once nchans/VEC_SIZE >= bdimx, i.e. nchans >= 128 here.
             const bool use_vec = is_aligned<16>(_kxp) && is_aligned<16>(_vxp) && is_aligned<16>(_qyp)
-                && is_aligned<16>(_yp) && (nchans_in % VEC_SIZE) == 0 && (nchans_out % VEC_SIZE) == 0;
+                && is_aligned<16>(_yp) && (nchans_in % VEC_SIZE) == 0 && (nchans_out % VEC_SIZE) == 0
+                && (nchans_in / VEC_SIZE) >= bdimx && (nchans_out / VEC_SIZE) >= bdimx;
 
             if (use_vec) {
                 constexpr int MAX_VEC = MAX_LOCAL_ARR_LEN / VEC_SIZE;
@@ -658,14 +676,47 @@ namespace attention_kernels
                     _yp, stream);
             }
         } else {
-            // fp16/bf16: scalar STORAGE_T path (widen at load, narrow at store; fp32
-            // compute/accumulation). A vectorized 8-wide path was tried and reverted:
-            // it raised register pressure and lowered occupancy, and ncu shows this
-            // kernel is latency/occupancy-bound (DRAM ~25%), not bandwidth-bound, so
-            // vectorizing reduced precision only hurt. See the AMP refactor notes.
-            fwd_dispatch_bdimx<MAX_LOCAL_ARR_LEN, MIN_LOC_ARR_LEN, scalar_t>(
-                bdimx, DIV_UP(nchans_out, bdimx), batch_size, nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out,
-                nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _seg, _seg_off, _quad_weights, _yp, stream);
+            // fp16/bf16 vectorized. The width is chosen to FILL the block, not fixed.
+            //
+            // bdimx comes from the raw channel count above, so at nchans == 64 it is 32.
+            // A 4-wide vector then leaves nci == 16 over 32 lanes and half the block
+            // idles, and because a float4 FMA scalarises into four FFMA the vector form
+            // ends up issuing MORE instructions than the scalar one: per warp per
+            // neighbour 1 load + 2 cvt + 4 FFMA against 2 + 2 + 2. Measured on H100 at
+            // c64 that was 13-23% slower than scalar and cost 95 registers against 64.
+            //
+            // A 2-wide vector gives nci == 32 at nchans == 64 -- exactly one element per
+            // lane -- for 1 load + 1 cvt + 2 FFMA, a third fewer instructions than scalar
+            // with the whole block busy. At nchans == 128 the 4-wide form fills the block
+            // and is preferred. head_dim 64 and 128 are the cases that matter, so the
+            // width adapts rather than the path switching off.
+            // 2-wide (nci == 32 at nchans == 64, i.e. exactly one element per lane) was
+            // implemented and measured: consistently 3-5% SLOWER than scalar on H100
+            // (1deg_tc003 0.451 -> 0.463, hdeg_tc003 3.496 -> 3.682). The instruction
+            // count argued the other way -- 1 load + 1 cvt + 2 FFMA against scalar's
+            // 2 + 2 + 2 -- so the float2 accumulator and the changed NLOC templating
+            // evidently cost more than the arithmetic saves. Removed rather than left
+            // as an unused branch.
+            constexpr int VEC_SIZE = 4;
+            const bool use_vec = is_aligned<8>(_kxp) && is_aligned<8>(_vxp) && is_aligned<8>(_qyp) && is_aligned<8>(_yp)
+                && (nchans_in % VEC_SIZE) == 0 && (nchans_out % VEC_SIZE) == 0 && (nchans_in / VEC_SIZE) >= bdimx
+                && (nchans_out / VEC_SIZE) >= bdimx;
+
+            if (use_vec) {
+                using vec_t = std::conditional_t<std::is_same<scalar_t, at::Half>::value, half4, bf164>;
+                constexpr int MAX_VEC = MAX_LOCAL_ARR_LEN / VEC_SIZE;
+                constexpr int MIN_VEC = MAX_VEC / 2 + 1;
+                fwd_dispatch_bdimx<MAX_VEC, MIN_VEC, vec_t>(
+                    bdimx, DIV_UP(nchans_out / VEC_SIZE, bdimx), batch_size, nheads, nchans_in / VEC_SIZE,
+                    nchans_out / VEC_SIZE, nlat_in, nlon_in, nlat_out, nlon_out, reinterpret_cast<vec_t *>(_kxp),
+                    reinterpret_cast<vec_t *>(_vxp), reinterpret_cast<vec_t *>(_qyp), _row_idx, _row_off, _col_idx,
+                    _seg, _seg_off, _quad_weights, reinterpret_cast<vec_t *>(_yp), stream);
+            } else {
+                fwd_dispatch_bdimx<MAX_LOCAL_ARR_LEN, MIN_LOC_ARR_LEN, scalar_t>(
+                    bdimx, DIV_UP(nchans_out, bdimx), batch_size, nheads, nchans_in, nchans_out, nlat_in, nlon_in,
+                    nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _seg, _seg_off, _quad_weights,
+                    _yp, stream);
+            }
         }
 
         return;
