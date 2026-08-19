@@ -65,8 +65,8 @@ namespace attention_kernels
     // contiguous; the result is returned in the same layout. Layout is never
     // inferred from strides -- the caller states it by construction.
     torch::Tensor s2_attention_fwd_cpu(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor quad_weights,
-                                       at::Tensor col_idx, at::Tensor row_off, int64_t num_heads, int64_t nlon_in,
-                                       int64_t nlat_out, int64_t nlon_out)
+                                       at::Tensor col_idx, at::Tensor row_off, at::Tensor seg, at::Tensor seg_off,
+                                       int64_t num_heads, int64_t nlon_in, int64_t nlat_out, int64_t nlon_out)
     {
         CHECK_CPU_INPUT_TENSOR(kx);
         CHECK_CPU_INPUT_TENSOR(vx);
@@ -82,6 +82,14 @@ namespace attention_kernels
         const bool upsample = (nlon_out % nlon_in == 0);
         TORCH_CHECK(downsample || upsample, "either nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (",
                     nlon_out, "), or vice versa");
+
+        // seg / seg_off are accepted for ABI parity with the CUDA path but not used
+        // here: this is a correctness reference, and the CPU accessors have no
+        // equivalent of the GPU's missing integer-divide instruction, which is the
+        // whole reason the CUDA kernels switched to arcs. Optimizing the CPU path is
+        // a separate question.
+        (void)seg;
+        (void)seg_off;
 
         TORCH_CHECK(num_heads >= 1, "num_heads must be positive, got ", num_heads);
         TORCH_CHECK(qy.size(3) % num_heads == 0, "q/k channel count (", qy.size(3),
