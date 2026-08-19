@@ -408,11 +408,22 @@ if optimized_kernels_is_available():
     # excludes the AutocastCUDA key from the dispatch set so the inner call
     # routes to the regular CUDA kernel (the op body) instead of recursing
     # back into this autocast kernel.
-    @torch.library.impl("disco_kernels::_disco_s2_contraction_optimized", "AutocastCUDA")
-    def _(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out):
-        cast_dtype = torch.get_autocast_dtype("cuda")
-        with torch.amp.autocast("cuda", enabled=False):
-            return _disco_s2_contraction_optimized(inp.to(cast_dtype), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+    # Registered for CPU as well as CUDA. Without the CPU key, torch.autocast("cpu")
+    # is silently a no-op for DISCO: the op runs at whatever dtype it was handed
+    # rather than the autocast dtype. That is quieter than the attention case (the
+    # CPU kernel normalizes dtypes itself, in disco_cpu_fwd.cpp, so nothing errors),
+    # but it means CPU AMP did not actually apply here.
+    def _make_contraction_autocast(device_type):
+        @torch.library.impl("disco_kernels::_disco_s2_contraction_optimized", f"Autocast{device_type.upper()}")
+        def _(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out):
+            cast_dtype = torch.get_autocast_dtype(device_type)
+            with torch.amp.autocast(device_type, enabled=False):
+                return _disco_s2_contraction_optimized(inp.to(cast_dtype), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+
+        return _
+
+    _make_contraction_autocast("cuda")
+    _make_contraction_autocast("cpu")
 
 
 # Transpose convolution related
@@ -439,11 +450,17 @@ if optimized_kernels_is_available():
         "disco_kernels::_disco_s2_transpose_contraction_optimized", _disco_s2_transpose_contraction_bwd_optimized, setup_context=_setup_context_conv_backward
     )
 
-    @torch.library.impl("disco_kernels::_disco_s2_transpose_contraction_optimized", "AutocastCUDA")
-    def _(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out):
-        cast_dtype = torch.get_autocast_dtype("cuda")
-        with torch.amp.autocast("cuda", enabled=False):
-            return _disco_s2_transpose_contraction_optimized(inp.to(cast_dtype), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+    def _make_transpose_contraction_autocast(device_type):
+        @torch.library.impl("disco_kernels::_disco_s2_transpose_contraction_optimized", f"Autocast{device_type.upper()}")
+        def _(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out):
+            cast_dtype = torch.get_autocast_dtype(device_type)
+            with torch.amp.autocast(device_type, enabled=False):
+                return _disco_s2_transpose_contraction_optimized(inp.to(cast_dtype), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+
+        return _
+
+    _make_transpose_contraction_autocast("cuda")
+    _make_transpose_contraction_autocast("cpu")
 
 
 # Fused convolution + weight contraction.
