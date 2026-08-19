@@ -4,5 +4,5 @@
 # simply broken upstream release cannot silently change what we ship.
 pip==26.2.1
 setuptools==83.0.0
-wheel==0.47.0
+wheel==0.48.0
 setuptools-scm==10.2.1
