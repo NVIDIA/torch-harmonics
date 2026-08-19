@@ -38,9 +38,12 @@ namespace attention_kernels
 
     // NHWC ABI with heads packed along channels -- see s2_attention_fwd_cpu.
     std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
+    // seg / seg_off are accepted but unused here: the CPU backward still walks the column
+    // list. They are part of the shared schema because the CUDA backward consumes them,
+    // and keeping this path on col_idx is what keeps it independent of that derivation.
     s2_attention_bwd_cpu(torch::Tensor kx, torch::Tensor vx, torch::Tensor qy, torch::Tensor dy,
-                         torch::Tensor quad_weights, torch::Tensor col_idx, torch::Tensor row_off, int64_t num_heads,
-                         int64_t nlon_in, int64_t nlat_out, int64_t nlon_out)
+                         torch::Tensor quad_weights, torch::Tensor col_idx, torch::Tensor row_off, torch::Tensor seg,
+                         torch::Tensor seg_off, int64_t num_heads, int64_t nlon_in, int64_t nlat_out, int64_t nlon_out)
     {
 
         // Caller-visible shapes (NHWC, heads packed along channels):

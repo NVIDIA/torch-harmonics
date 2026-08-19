@@ -398,6 +398,8 @@ def _neighborhood_s2_attention_torch(
     quad_weights: torch.Tensor,
     col_idx: torch.Tensor,
     row_off: torch.Tensor,
+    seg: torch.Tensor,
+    seg_off: torch.Tensor,
     nh: int,
     nlon_in: int,
     nlat_out: int,
@@ -455,6 +457,8 @@ def _(
     quad_weights: torch.Tensor,
     col_idx: torch.Tensor,
     row_off: torch.Tensor,
+    seg: torch.Tensor,
+    seg_off: torch.Tensor,
     nh: int,
     nlon_in: int,
     nlat_out: int,
@@ -465,7 +469,10 @@ def _(
 
 
 def _neighborhood_s2_attention_bwd_torch(ctx, grad_output):
-    col_idx, row_off, quad_weights, kw, vw, qw = ctx.saved_tensors
+    # seg / seg_off are unpacked but unused: this reference walks the column list, which
+    # is what keeps it independent of the arc-segment derivation the CUDA kernels use.
+    # The unpack is positional and shares _setup_context_attention_backward with them.
+    col_idx, row_off, seg, seg_off, quad_weights, kw, vw, qw = ctx.saved_tensors
     nh = ctx.nh
     nlon_in = ctx.nlon_in
     nlat_out = ctx.nlat_out
@@ -531,7 +538,9 @@ def _neighborhood_s2_attention_bwd_torch(ctx, grad_output):
     else:
         dqw = None
 
-    return dkw, dvw, dqw, None, None, None, None, None, None, None
+    # one gradient per forward input: kw, vw, qw, then None for quad_weights,
+    # col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out
+    return dkw, dvw, dqw, None, None, None, None, None, None, None, None, None
 
 
 # register backward
@@ -547,10 +556,12 @@ torch.library.register_autograd("attention_kernels::_neighborhood_s2_attention_t
 # needs its own key.
 def _make_autocast_impl(device_type):
     @torch.library.impl("attention_kernels::_neighborhood_s2_attention_torch", f"Autocast{device_type.upper()}")
-    def _(kw, vw, qw, quad_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out):
+    def _(kw, vw, qw, quad_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out):
         cast_dtype = torch.get_autocast_dtype(device_type)
         with torch.amp.autocast(device_type, enabled=False):
-            return _neighborhood_s2_attention_torch(kw.to(cast_dtype), vw.to(cast_dtype), qw.to(cast_dtype), quad_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out)
+            return _neighborhood_s2_attention_torch(
+                kw.to(cast_dtype), vw.to(cast_dtype), qw.to(cast_dtype), quad_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out
+            )
 
     return _
 
