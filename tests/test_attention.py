@@ -342,6 +342,53 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             f"Attention output dtype {out.dtype} != autocast dtype {autocast_dtype}",
         )
 
+    @parameterized.expand([[torch.float16], [torch.bfloat16]], skip_on_empty=True)
+    @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
+    def test_autocast_normalizes_mixed_input_dtypes(self, autocast_dtype):
+        """Autocast must reconcile k/v/q dtypes before they reach the kernel.
+
+        The kernels dispatch once on q's scalar type and then reinterpret every
+        activation pointer as that type, so they require k, v and q to share a dtype
+        and check it explicitly. Autocast does not guarantee that by itself: it casts
+        some ops and not others, so a module that mixes projections with normalization
+        can hand the op an fp32 q next to an fp16 v. The Autocast{CUDA,CPU} registrations
+        are what make the requirement hold.
+
+        This is a direct op-level test rather than a module-level one because at module
+        level the mismatch only appears on some torch versions -- it was found on
+        torch 2.6 (CPU) while newer builds happened to produce consistent dtypes and
+        passed. Constructing the mismatch here makes the regression detectable
+        everywhere. The negative control is implicit: without autocast active the same
+        inputs raise "must match q dtype".
+        """
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+
+        set_seed(333)
+        nlat, nlon, channels = 6, 12, 4
+
+        model = NeighborhoodAttentionS2(
+            in_channels=channels,
+            num_heads=1,
+            in_shape=(nlat, nlon),
+            out_shape=(nlat, nlon),
+            grid_in="equiangular",
+            grid_out="equiangular",
+            bias=False,
+            optimized_kernel=True,
+        ).to(self.device)
+
+        # NHWC, as the op expects. q is deliberately left fp32 while k/v are reduced
+        # precision -- the exact shape of the failure observed on torch 2.6.
+        kw = torch.randn(2, nlat, nlon, channels, device=self.device, dtype=autocast_dtype)
+        vw = torch.randn(2, nlat, nlon, channels, device=self.device, dtype=autocast_dtype)
+        qw = torch.randn(2, nlat, nlon, channels, device=self.device, dtype=torch.float32)
+
+        with torch.autocast(self.device.type, dtype=autocast_dtype):
+            out = torch.ops.attention_kernels._neighborhood_s2_attention_optimized(kw, vw, qw, model.quad_weights, model.psi_col_idx, model.psi_roff_idx, 1, nlon, nlat, nlon)
+
+        self.assertEqual(out.dtype, autocast_dtype, f"autocast output dtype {out.dtype} != {autocast_dtype}")
+
     @parameterized.expand(
         [
             # Format: [in_shape, out_shape, frozen]  -- which of {k, v, q} has no requires_grad

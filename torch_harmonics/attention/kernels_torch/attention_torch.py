@@ -538,14 +538,25 @@ def _neighborhood_s2_attention_bwd_torch(ctx, grad_output):
 torch.library.register_autograd("attention_kernels::_neighborhood_s2_attention_torch", _neighborhood_s2_attention_bwd_torch, setup_context=_setup_context_attention_backward)
 
 
-# Autocast: register at the dispatcher's AutocastCUDA key (not via
+# Autocast: register at the dispatcher's Autocast{CUDA,CPU} keys (not via
 # register_autocast — that API hard-codes ``cast_inputs`` and can't follow the
 # active autocast dtype). Index tensors and quad_weights pass through.
-@torch.library.impl("attention_kernels::_neighborhood_s2_attention_torch", "AutocastCUDA")
-def _(kw, vw, qw, quad_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out):
-    cast_dtype = torch.get_autocast_dtype("cuda")
-    with torch.amp.autocast("cuda", enabled=False):
-        return _neighborhood_s2_attention_torch(kw.to(cast_dtype), vw.to(cast_dtype), qw.to(cast_dtype), quad_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out)
+#
+# The reference path mirrors the optimized one so the two stay comparable under
+# autocast on either device; see the note in attention_optimized.py for why CPU
+# needs its own key.
+def _make_autocast_impl(device_type):
+    @torch.library.impl("attention_kernels::_neighborhood_s2_attention_torch", f"Autocast{device_type.upper()}")
+    def _(kw, vw, qw, quad_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out):
+        cast_dtype = torch.get_autocast_dtype(device_type)
+        with torch.amp.autocast(device_type, enabled=False):
+            return _neighborhood_s2_attention_torch(kw.to(cast_dtype), vw.to(cast_dtype), qw.to(cast_dtype), quad_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out)
+
+    return _
+
+
+_make_autocast_impl("cuda")
+_make_autocast_impl("cpu")
 
 
 # =====================================================================================

@@ -12,6 +12,7 @@
 * Added fused distributed DISCO convolution variant which reduces activation storage.
 * Adding WGMMA (tensor core) support to DISCO forward kernels on H100 (SM90) architectures. The kernel will be selected automatically if shapes allow, no specific action from the user is required.
 * Improved performance for CPU based attention kernels.
+* Fixed autocast on CPU for attention and DISCO: the custom ops registered an autocast kernel only at the `AutocastCUDA` dispatch key, so under `torch.autocast("cpu", ...)` nothing reconciled the inputs. For attention this could hand the kernel an fp32 query alongside fp16/bf16 keys and values, tripping the kernel's dtype check (`v dtype (Half) must match q dtype (Float)`); for DISCO it silently meant CPU autocast had no effect at all. Both now register `AutocastCPU` alongside `AutocastCUDA`. Whether the mismatch surfaced depended on the PyTorch version, so it was invisible on newer builds.
 * Fixed stride problems in SHT under torch.compile on CPU.
 * Converted all Python assert statements to torch._check for better torch.compile friendliness. All asserts in cosntructors were converted into ValueErrors for streamlined and clear error handling. In C++ and CUDA compiled code, all dynamic asserts were changed to TORCH_CHECK calls.
 * Improved performance of distributed attention kernels achieved by splitting the kernel into two different ones for dense and less dense rows. This happens behind the scenes and the distributed attention API is unchanged.
