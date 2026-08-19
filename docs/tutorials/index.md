@@ -23,6 +23,7 @@ maxdepth: 1
 caption: Applications
 ---
 helmholtz
+poisson_equation
 shallow_water_equations
 train_spherical_neural_operator
 stanford_2d3ds_dataset

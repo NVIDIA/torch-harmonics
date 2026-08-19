@@ -173,6 +173,37 @@ def trapezoidal_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 
     return xlg, wlg
 
 
+def geometric_weights(n: int, a: Optional[float] = 1.0, b: Optional[float] = math.e) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Helper routine which returns geometrically spaced nodes, uniform in log(x), together
+    with the corresponding trapezoidal weights for the integral over dv on [a, b]
+
+    Parameters
+    -----------
+    n: int
+        Number of quadrature nodes
+    a: Optional[float]
+        Lower bound of the interval
+    b: Optional[float]
+        Upper bound of the interval
+
+    Returns
+    -------
+    vlg: torch.Tensor
+        Tensor of quadrature nodes
+    wlg: torch.Tensor
+        Tensor of quadrature weights
+    """
+
+    if a <= 0.0:
+        raise ValueError(f"lower bound of a geometric grid must be positive, got {a}")
+
+    xlg, wlg = trapezoidal_weights(n, math.log(a), math.log(b))
+    vlg = torch.exp(xlg)
+
+    return vlg, vlg * wlg
+
+
 def legendre_gauss_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 1.0) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Helper routine which returns the Legendre-Gauss nodes and weights

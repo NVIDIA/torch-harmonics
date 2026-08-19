@@ -4,6 +4,8 @@
 
 ### v0.9.3
 
+* Added a radial Poisson solver example (`RadialPoissonSolver` and `PoissonDataset` in `torch_harmonics.examples`), solving `lap u = f` on `(0, inf) x S2` and `[R, inf) x S2` subject to `u -> 0` at infinity. It combines an exact per-degree Green's operator in the radial direction with a spherical harmonic transform in the angular directions, and supports Dirichlet data on the inner sphere of the exterior domain. New tutorial notebook: `notebooks/poisson_equation.ipynb`.
+* Added `geometric_weights` to `torch_harmonics.quadrature`: geometrically spaced nodes, uniform in `log(x)`, together with the corresponding trapezoidal weights for the integral over `dx` on a positive interval. Intended for radial directions spanning several decades.
 * Fixed `trapezoidal_weights` returning float32 weights alongside float64 nodes, because the underlying `torch.ones(n)` inherited the default dtype. It was the only rule in `torch_harmonics.quadrature` doing so, and it capped the accuracy of everything derived from it at roughly 1e-7, including the latitude weights of the `"equiangular-trapezoidal"` grid. Weights are now float64 like the other rules, and the tolerances of the affected tests have been tightened to match the other grids.
 
 ### v0.9.2
