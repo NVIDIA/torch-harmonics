@@ -40,7 +40,7 @@ from disco_helpers import optimized_kernels_is_available, pack_psi_dense, prepro
 
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
-from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
+from torch_harmonics.quadrature import compute_theta_cutoff, precompute_latitudes, precompute_longitudes
 
 from ._disco_utils import _get_psi
 from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
@@ -561,7 +561,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
         if theta_cutoff is None:
-            self.theta_cutoff = torch.pi / float(self.nlat_out - 1)
+            self.theta_cutoff = compute_theta_cutoff(self.nlat_out, grid=grid_out)
         else:
             self.theta_cutoff = theta_cutoff
 
@@ -923,7 +923,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # bandlimit
         if theta_cutoff is None:
-            self.theta_cutoff = torch.pi / float(self.nlat_in - 1)
+            self.theta_cutoff = compute_theta_cutoff(self.nlat_in, grid=grid_in)
         else:
             self.theta_cutoff = theta_cutoff
 

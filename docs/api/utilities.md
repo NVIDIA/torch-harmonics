@@ -8,15 +8,20 @@ torch-harmonics supports several quadrature rules for the latitudinal
 direction. Each corresponds to a `grid` keyword accepted by the SHT and
 convolution layers:
 
-| Grid string                 | Quadrature rule | Nodes                                           | Key properties                                                                                      |
-| --------------------------- | --------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `"equiangular"`             | Clenshaw–Curtis | Equally spaced in $\theta$ (including poles)    | Default grid. Exact for polynomials up to degree $N-1$. Simple, FFT-friendly.                       |
-| `"legendre-gauss"`          | Gauss–Legendre  | Roots of $P_N(\cos\theta)$                      | Exact for polynomials up to degree $2N-1$. Optimal accuracy per node, but nodes are non-uniform.    |
-| `"lobatto"`                 | Gauss–Lobatto   | Roots of $P'_{N-1}(\cos\theta)$, plus endpoints | Exact for polynomials up to degree $2N-3$. Includes both poles, useful when pole values are needed. |
-| `"equiangular-trapezoidal"` | Trapezoidal     | Equally spaced                                  | Supports periodic grids. Lower-order accuracy but simplest structure.                               |
+| Grid string                 | Quadrature rule | Nodes                                            | Key properties                                                                                                                                                                                                                                                                                                        |
+| --------------------------- | --------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `"equiangular"`             | Clenshaw–Curtis | Equally spaced in $\theta$ (including poles)     | Default grid. Exact for polynomials up to degree $N-1$. Simple, FFT-friendly.                                                                                                                                                                                                                                         |
+| `"legendre-gauss"`          | Gauss–Legendre  | Roots of $P_N(\cos\theta)$                       | Exact for polynomials up to degree $2N-1$. Optimal accuracy per node, but nodes are non-uniform.                                                                                                                                                                                                                      |
+| `"lobatto"`                 | Gauss–Lobatto   | Roots of $P'_{N-1}(\cos\theta)$, plus endpoints  | Exact for polynomials up to degree $2N-3$. Includes both poles, useful when pole values are needed.                                                                                                                                                                                                                   |
+| `"equiangular-trapezoidal"` | Trapezoidal     | Equally spaced in $\cos\theta$ (including poles) | Supports periodic grids. Lower-order accuracy but simplest structure. Despite the name, the nodes are *not* equiangular in $\theta$: the rule is applied on the $\cos\theta$ interval $[-1, 1]$, so the spacing in $\theta$ is strongly non-uniform and roughly $5\times$ coarser near the poles than at the equator. |
 
 The longitudinal direction always uses equispaced nodes (see
 `precompute_longitudes`).
+
+Because only `"equiangular"` has uniform spacing in $\theta$, quantities derived
+from "one latitudinal grid spacing" must come from the grid's actual node
+distribution rather than from $\pi / (N_\theta - 1)$; see
+`compute_latitude_spacing` and `compute_theta_cutoff`.
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics.quadrature
@@ -27,6 +32,8 @@ The longitudinal direction always uses equispaced nodes (see
 
    precompute_longitudes
    precompute_latitudes
+   compute_latitude_spacing
+   compute_theta_cutoff
    legendre_gauss_weights
    lobatto_weights
    clenshaw_curtiss_weights

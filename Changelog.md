@@ -2,8 +2,10 @@
 
 ## Versioning
 
-### v0.9.3
+### v0.9.3b1 (unreleased)
 
+* Unified the default `theta_cutoff` heuristic for DISCO convolutions and neighborhood attention into `torch_harmonics.quadrature.compute_theta_cutoff`, backed by the new `compute_latitude_spacing`. The cutoff was previously computed as `pi / (nlat - 1)` in six independent places; that expression is the exact latitudinal node spacing of an equiangular grid, but not of the others. Gauss-Lobatto nodes cluster towards the equator (polar spacing ~21% larger) and `"equiangular-trapezoidal"` nodes are equispaced in `cos(theta)` rather than in `theta` (polar spacing ~5x larger), so on both grids the old default under-covered the poles: at `nlat = 129`, 6 of 129 output latitudes on a lobatto grid and 30 of 129 on an equiangular-trapezoidal grid saw only the single latitude ring they sit on, silently degenerating the stencil there. The cutoff is now taken from the grid's actual node distribution.
+* **Breaking**: the default `theta_cutoff` of `DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2`, `NeighborhoodAttentionS2`, and their distributed counterparts now depends on the grid's node distribution rather than on `nlat` alone. Equiangular grids, which are the default, are unaffected in practice — the value moves by ~1e-15 and the resulting `psi` has an identical sparsity pattern — but `"lobatto"` widens by ~21%, `"equiangular-trapezoidal"` by ~5x, and `"legendre-gauss"` narrows by ~2.3%. Models trained on non-equiangular grids will see a different stencil unless `theta_cutoff` is passed explicitly. A `UserWarning` is emitted on the grids whose default changed, following the `truncate_sht` precedent from v0.9.0.
 * Fixed `trapezoidal_weights` returning float32 weights alongside float64 nodes, because the underlying `torch.ones(n)` inherited the default dtype. It was the only rule in `torch_harmonics.quadrature` doing so, and it capped the accuracy of everything derived from it at roughly 1e-7, including the latitude weights of the `"equiangular-trapezoidal"` grid. Weights are now float64 like the other rules, and the tolerances of the affected tests have been tightened to match the other grids.
 
 ### v0.9.2
