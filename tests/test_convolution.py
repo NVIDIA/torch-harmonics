@@ -46,7 +46,7 @@ from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
 )
 from torch_harmonics.filter_basis import get_filter_basis
-from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
+from torch_harmonics.quadrature import compute_theta_cutoff, precompute_latitudes, precompute_longitudes
 
 if not optimized_kernels_is_available():
     print("Warning: Couldn't import optimized disco convolution kernels")
@@ -293,6 +293,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             # mixed grid
             [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "legendre-gauss", "equiangular"],
             [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "equiangular", "legendre-gauss"],
+            # non-equiangular output grids, where the default theta_cutoff is driven by a
+            # node distribution that is not uniform in theta (lobatto clusters towards the
+            # equator, equiangular-trapezoidal is equispaced in cos(theta))
+            [(16, 32), (16, 32), (3, 3), "harmonic", "mean", "lobatto", "lobatto"],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "lobatto", "lobatto"],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "equiangular", "lobatto"],
+            [(16, 32), (16, 32), (3, 3), "harmonic", "mean", "equiangular-trapezoidal", "equiangular-trapezoidal"],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "equiangular", "equiangular-trapezoidal"],
         ],
         skip_on_empty=True,
     )
@@ -310,7 +318,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         filter_basis = get_filter_basis(kernel_shape=kernel_shape, basis_type=basis_type)
 
-        theta_cutoff = torch.pi / float(nlat_out - 1)
+        # use the same default DiscreteContinuousConvS2 would pick, rather than a
+        # hardcoded pi/(nlat_out-1), which is only the node spacing of an equiangular grid
+        theta_cutoff = compute_theta_cutoff(nlat_out, grid=grid_out)
 
         idx, vals, _ = _precompute_convolution_tensor_s2(
             in_shape=in_shape,
