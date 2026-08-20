@@ -30,6 +30,7 @@
 #
 
 import math
+import warnings
 from typing import Optional, Tuple
 
 import numpy as np
@@ -135,6 +136,98 @@ def precompute_latitudes(nlat: int, grid: Optional[str] = "equiangular") -> Tupl
     wlg = torch.flip(wlg, dims=(0,)).clone()
 
     return lats, wlg
+
+
+@lru_cache(typed=True, copy=False)
+def compute_latitude_spacing(nlat: int, grid: Optional[str] = "equiangular") -> float:
+    r"""
+    Return the largest gap between adjacent latitude nodes of a grid.
+
+    This is the grid's own notion of "one latitudinal grid spacing". Only the
+    ``equiangular`` grid has uniform spacing, in which case this reduces to the
+    familiar :math:`\pi / (N_\theta - 1)`. Gauss--Lobatto nodes cluster towards
+    the equator, and ``equiangular-trapezoidal`` nodes are equispaced in
+    :math:`\cos\theta` rather than in :math:`\theta`, so both are considerably
+    coarser near the poles than a node count alone would suggest.
+
+    Parameters
+    ----------
+    nlat : int
+        Number of latitudinal nodes.
+    grid : str, optional
+        Quadrature grid type, by default ``"equiangular"``.
+
+    Returns
+    -------
+    float
+        Maximum spacing :math:`\max_k (\theta_{k+1} - \theta_k)` in radians.
+    """
+    lats, _ = precompute_latitudes(nlat, grid=grid)
+    return (lats[1:] - lats[:-1]).max().item()
+
+
+def compute_theta_cutoff(nlat: int, grid: Optional[str] = "equiangular", scale: Optional[float] = 1.0) -> float:
+    r"""
+    Default angular cutoff for localized operators on the sphere.
+
+    Both the DISCO convolutions and neighborhood attention need a support radius
+    for their filter basis. The heuristic is to take one latitudinal grid
+    spacing of the coarser of the two grids involved, so that the basis functions
+    of adjacent output points overlap and every output point sees more than the
+    single latitude ring it sits on.
+
+    The spacing is taken from the grid's actual node distribution
+    (:func:`compute_latitude_spacing`) rather than from ``nlat`` alone. Using
+    :math:`\pi / (N_\theta - 1)` is only correct for equiangular grids; on
+    ``lobatto`` and ``equiangular-trapezoidal`` grids it underestimates the polar
+    spacing by ~21% and ~5x respectively, which collapses the stencil of the
+    polar output latitudes to a single latitude ring.
+
+    Parameters
+    ----------
+    nlat : int
+        Number of latitudinal nodes of the grid that sets the cutoff. This is the
+        output grid for a forward transform and the input grid for a transpose
+        one, mirroring which of the two is the coarser.
+    grid : str, optional
+        Quadrature grid type, by default ``"equiangular"``.
+    scale : float, optional
+        Multiplier on the grid spacing, by default 1.0.
+
+    Returns
+    -------
+    float
+        Cutoff angle in radians.
+
+    Warns
+    -----
+    UserWarning
+        On grids whose node spacing is not uniform in :math:`\theta`, where this
+        returns a different value than the ``pi / (N_\theta - 1)`` heuristic used
+        before v0.9.3. Equiangular grids are unaffected and do not warn.
+
+    Notes
+    -----
+    This routine is the single place where the cutoff heuristic lives; it is
+    intended to take a grid descriptor once the descriptor-based API lands, at
+    which point ``nlat`` and ``grid`` collapse into a single argument.
+    """
+    dlat_max = compute_latitude_spacing(nlat, grid=grid)
+
+    # only the equiangular grid is uniform in theta, so only there does the
+    # superseded heuristic still agree (up to arccos roundoff)
+    legacy = math.pi / float(nlat - 1)
+    if abs(dlat_max - legacy) > 1e-9 * legacy:
+        consequence = "the previous value under-covered the poles" if dlat_max > legacy else "the previous value was slightly wider than the grid warrants"
+        warnings.warn(
+            f"Default theta_cutoff changed in v0.9.3: the '{grid}' grid is not uniform in theta, so the cutoff is now "
+            f"its maximum latitudinal node spacing ({dlat_max:.6f}) rather than pi/(nlat-1) ({legacy:.6f}); "
+            f"{consequence}. Specify theta_cutoff explicitly to override.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    return scale * dlat_max
 
 
 def trapezoidal_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 1.0, periodic: Optional[bool] = False) -> Tuple[torch.Tensor, torch.Tensor]:

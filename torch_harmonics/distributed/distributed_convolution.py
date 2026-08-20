@@ -43,6 +43,7 @@ from torch_harmonics.disco.convolution import (
 )
 from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_transpose_contraction_torch
 from torch_harmonics.disco.optimized.disco_optimized import _build_kernel_split_csr, _disco_s2_transpose_contraction_optimized, _maybe_kpack_psi, _split_csr_python_offsets
+from torch_harmonics.quadrature import compute_theta_cutoff
 
 # a2a forward orchestration: standard (fused=False) and reordered (fused=True).
 from .kernels import (
@@ -239,7 +240,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # compute theta cutoff based on the bandlimit of the input field
         if theta_cutoff is None:
-            self.theta_cutoff = torch.pi / float(self.nlat_out - 1)
+            self.theta_cutoff = compute_theta_cutoff(self.nlat_out, grid=grid_out)
         else:
             self.theta_cutoff = theta_cutoff
 
@@ -520,7 +521,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # bandlimit
         if theta_cutoff is None:
-            self.theta_cutoff = torch.pi / float(self.nlat_in - 1)
+            self.theta_cutoff = compute_theta_cutoff(self.nlat_in, grid=grid_in)
         else:
             self.theta_cutoff = theta_cutoff
 

@@ -43,7 +43,7 @@ from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhoo
 from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_optimized
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.filter_basis import get_filter_basis
-from torch_harmonics.quadrature import precompute_latitudes
+from torch_harmonics.quadrature import compute_theta_cutoff, precompute_latitudes
 
 
 class AttentionS2(nn.Module):
@@ -298,7 +298,8 @@ class NeighborhoodAttentionS2(nn.Module):
         Angular radius of the geodesic neighborhood disk, in radians. Input points
         farther than this from an output location are excluded from its attention.
         If None (default), it is set to one latitudinal grid spacing of the coarser
-        of the input and output grids, i.e. ``pi / (nlat - 1)``. Must be positive.
+        of the input and output grids, see
+        :func:`torch_harmonics.quadrature.compute_theta_cutoff`. Must be positive.
     k_channels : int
         number of dimensions for interior inner product in the attention matrix (corresponds to kdim in MHA in PyTorch)
     out_channels : int, optional
@@ -351,9 +352,9 @@ class NeighborhoodAttentionS2(nn.Module):
         # convention and use the coarser (input) grid spacing.
         if theta_cutoff is None:
             if self.upsample:
-                self.theta_cutoff = torch.pi / float(self.nlat_in - 1)
+                self.theta_cutoff = compute_theta_cutoff(self.nlat_in, grid=grid_in)
             else:
-                self.theta_cutoff = torch.pi / float(self.nlat_out - 1)
+                self.theta_cutoff = compute_theta_cutoff(self.nlat_out, grid=grid_out)
         else:
             self.theta_cutoff = theta_cutoff
 
