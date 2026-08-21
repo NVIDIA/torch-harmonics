@@ -70,6 +70,102 @@ class TestCacheConsistency(unittest.TestCase):
             self.assertFalse(torch.allclose(leg1, leg2))
 
 
+class TestLruCacheWrapper(unittest.TestCase):
+    """
+    The copying ``lru_cache`` wrapper must not hide the function it decorates.
+
+    ``functools.lru_cache`` attaches ``cache_info`` / ``cache_clear`` /
+    ``cache_parameters`` to the object it returns, and carries the wrapped
+    function's metadata. The copying wrapper sits in front of all of that, so it
+    has to forward both explicitly.
+    """
+
+    def test_cache_info_is_forwarded(self):
+        @lru_cache(maxsize=20, typed=True)
+        def _square(x):
+            return x * x
+
+        _square.cache_clear()
+        self.assertEqual(_square.cache_info().currsize, 0)
+
+        self.assertEqual(_square(4), 16)
+        self.assertEqual(_square.cache_info().misses, 1)
+        self.assertEqual(_square.cache_info().hits, 0)
+
+        self.assertEqual(_square(4), 16)
+        self.assertEqual(_square.cache_info().hits, 1)
+        self.assertEqual(_square.cache_info().currsize, 1)
+
+    def test_cache_clear_is_forwarded(self):
+        calls = []
+
+        @lru_cache(maxsize=20)
+        def _tracked(x):
+            calls.append(x)
+            return x
+
+        _tracked(1)
+        _tracked(1)
+        self.assertEqual(len(calls), 1)
+
+        _tracked.cache_clear()
+        self.assertEqual(_tracked.cache_info().currsize, 0)
+
+        _tracked(1)
+        self.assertEqual(len(calls), 2, msg="cache_clear did not drop the cached entry")
+
+    def test_cache_parameters_are_forwarded(self):
+        @lru_cache(maxsize=7, typed=True)
+        def _identity(x):
+            return x
+
+        params = _identity.cache_parameters()
+        self.assertEqual(params["maxsize"], 7)
+        self.assertTrue(params["typed"])
+
+    def test_wrapped_function_metadata_is_preserved(self):
+        """
+        Without functools.wraps every cached routine documents as
+        ``wrapper(*args, **kwargs)`` with no docstring, which silently dropped the
+        API documentation of precompute_latitudes and friends.
+        """
+
+        @lru_cache(maxsize=20)
+        def _documented(x):
+            """A very specific docstring."""
+            return x
+
+        self.assertEqual(_documented.__name__, "_documented")
+        self.assertEqual(_documented.__doc__, "A very specific docstring.")
+        self.assertIs(_documented.__wrapped__.__doc__, _documented.__doc__)
+
+    def test_public_cached_routines_keep_their_docstrings(self):
+        """The regression that motivated the fix, checked on the real functions."""
+        from torch_harmonics.quadrature import compute_latitude_spacing, precompute_latitudes, precompute_longitudes
+
+        for func, name in [
+            (precompute_latitudes, "precompute_latitudes"),
+            (precompute_longitudes, "precompute_longitudes"),
+            (compute_latitude_spacing, "compute_latitude_spacing"),
+        ]:
+            with self.subTest(func=name):
+                self.assertEqual(func.__name__, name)
+                self.assertIsNotNone(func.__doc__, msg=f"{name} lost its docstring to the cache decorator")
+                self.assertIn("Parameters", func.__doc__)
+
+    def test_copying_wrapper_still_copies(self):
+        """Forwarding must not disturb the deep-copy behaviour the decorator exists for."""
+
+        @lru_cache(maxsize=20, copy=True)
+        def _make_list(n):
+            return [0] * n
+
+        first = _make_list(3)
+        first[0] = 99
+        self.assertEqual(_make_list(3), [0, 0, 0])
+        self.assertEqual(_make_list.cache_info().hits, 1)
+
+
 class TestGridDescriptorCaching(unittest.TestCase):
     """
     Interaction between :class:`torch_harmonics.grid.GridS2` and this module's
