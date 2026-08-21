@@ -251,6 +251,34 @@ class GridS2:
         r"""Whether the latitude nodes are equispaced in :math:`\theta`."""
         return False
 
+    # -- spectral bounds -----------------------------------------------------
+    #
+    # These are facts about what the grid can represent, not decisions about
+    # what an SHT should keep. The policy -- applying user overrides, enforcing
+    # triangular truncation, warning about changed defaults -- lives in
+    # :mod:`torch_harmonics.truncation`, so these properties stay silent.
+
+    @property
+    def max_exact_degree(self) -> int:
+        r"""
+        Highest spherical harmonic degree the quadrature rule integrates exactly.
+
+        Non-inclusive, i.e. degrees :math:`0 \le l < l_{\max}`. Determined by the
+        exactness of the latitudinal rule, so each grid type answers differently.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not define max_exact_degree")
+
+    @property
+    def max_azimuthal_order(self) -> int:
+        r"""
+        Nyquist limit of the longitudinal sampling, :math:`\lfloor N_\lambda / 2 \rfloor + 1`.
+
+        Non-inclusive. On a ragged grid each latitude ring has its own limit; this
+        returns the bound for the widest ring, which is the one a dense spectral
+        representation has to accommodate.
+        """
+        return self.nlon // 2 + 1
+
     def theta_cutoff(self, scale: Optional[float] = 1.0) -> float:
         r"""
         Default angular cutoff for localized operators on this grid.
@@ -301,6 +329,11 @@ class EquiangularGrid(GridS2):
     def is_uniform_in_theta(self) -> bool:
         return True
 
+    @property
+    def max_exact_degree(self) -> int:
+        r"""Clenshaw--Curtis is exact to roughly degree :math:`N_\theta - 1`, giving :math:`\lfloor (N_\theta + 1) / 2 \rfloor`."""
+        return (self.nlat + 1) // 2
+
 
 @dataclass(frozen=True, eq=False)
 class LegendreGaussGrid(GridS2):
@@ -314,6 +347,11 @@ class LegendreGaussGrid(GridS2):
 
     grid_type: ClassVar[str] = "legendre-gauss"
 
+    @property
+    def max_exact_degree(self) -> int:
+        r"""Gauss--Legendre is exact to degree :math:`2N_\theta - 1`, giving :math:`N_\theta`."""
+        return self.nlat
+
 
 @dataclass(frozen=True, eq=False)
 class LobattoGrid(GridS2):
@@ -325,6 +363,11 @@ class LobattoGrid(GridS2):
     """
 
     grid_type: ClassVar[str] = "lobatto"
+
+    @property
+    def max_exact_degree(self) -> int:
+        r"""Gauss--Lobatto is exact to degree :math:`2N_\theta - 3`, giving :math:`N_\theta - 1`."""
+        return self.nlat - 1
 
 
 @dataclass(frozen=True, eq=False)
@@ -340,6 +383,11 @@ class EquiangularTrapezoidalGrid(GridS2):
     """
 
     grid_type: ClassVar[str] = "equiangular-trapezoidal"
+
+    @property
+    def max_exact_degree(self) -> int:
+        r"""Matches the equiangular grid: :math:`\lfloor (N_\theta + 1) / 2 \rfloor`."""
+        return (self.nlat + 1) // 2
 
 
 def grid_types() -> Tuple[str, ...]:

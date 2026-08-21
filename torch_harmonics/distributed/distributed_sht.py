@@ -33,6 +33,7 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics.fft import irfft, rfft
+from torch_harmonics.grid import as_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.quadrature import clenshaw_curtiss_weights, legendre_gauss_weights, lobatto_weights
 from torch_harmonics.truncation import truncate_sht
@@ -145,7 +146,7 @@ class DistributedRealSHT(nn.Module):
         tq = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        self.lmax, self.mmax = truncate_sht(as_grid(self.grid, (self.nlat, self.nlon)), lmax, mmax)
 
         # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
@@ -314,7 +315,7 @@ class DistributedInverseRealSHT(nn.Module):
         t = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        self.lmax, self.mmax = truncate_sht(as_grid(self.grid, (self.nlat, self.nlon)), lmax, mmax)
 
         # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
@@ -464,7 +465,7 @@ class DistributedRealVectorSHT(nn.Module):
         tq = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        self.lmax, self.mmax = truncate_sht(as_grid(self.grid, (self.nlat, self.nlon)), lmax, mmax)
 
         # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
@@ -626,7 +627,7 @@ class DistributedInverseRealVectorSHT(nn.Module):
         t = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        self.lmax, self.mmax = truncate_sht(as_grid(self.grid, (self.nlat, self.nlon)), lmax, mmax)
 
         # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)

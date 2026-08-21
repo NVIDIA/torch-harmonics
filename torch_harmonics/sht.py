@@ -33,6 +33,7 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics.fft import irfft, rfft
+from torch_harmonics.grid import as_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.quadrature import clenshaw_curtiss_weights, legendre_gauss_weights, lobatto_weights
 from torch_harmonics.truncation import truncate_sht
@@ -136,7 +137,7 @@ class RealSHT(nn.Module):
         tq = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        self.lmax, self.mmax = truncate_sht(as_grid(self.grid, (self.nlat, self.nlon)), lmax, mmax)
 
         # combine quadrature weights with the legendre weights
         pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
@@ -290,7 +291,7 @@ class InverseRealSHT(nn.Module):
         t = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        self.lmax, self.mmax = truncate_sht(as_grid(self.grid, (self.nlat, self.nlon)), lmax, mmax)
 
         # precompute associated Legendre polynomials
         # store as (mmax, nlat, lmax) so the contraction dim l is stride-1
@@ -432,7 +433,7 @@ class RealVectorSHT(nn.Module):
         tq = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        self.lmax, self.mmax = truncate_sht(as_grid(self.grid, (self.nlat, self.nlon)), lmax, mmax)
 
         # precompute associated Legendre polynomials
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
@@ -590,7 +591,7 @@ class InverseRealVectorSHT(nn.Module):
         t = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        self.lmax, self.mmax = truncate_sht(as_grid(self.grid, (self.nlat, self.nlon)), lmax, mmax)
 
         # precompute associated Legendre polynomials
         # store as (2, mmax, nlat, lmax) so the contraction dim l is stride-1

@@ -36,6 +36,7 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics import InverseRealSHT, RealSHT
+from torch_harmonics.grid import as_grid
 from torch_harmonics.quadrature import QuadratureS2
 from torch_harmonics.truncation import truncate_sht
 
@@ -169,8 +170,8 @@ class SpectralConvS2(nn.Module):
         self.num_groups = num_groups
 
         # compute truncation
-        lmax_in, mmax_in = truncate_sht(in_shape[0], in_shape[1], grid=grid_in)
-        lmax_out, mmax_out = truncate_sht(out_shape[0], out_shape[1], grid=grid_out)
+        lmax_in, mmax_in = truncate_sht(as_grid(grid_in, in_shape))
+        lmax_out, mmax_out = truncate_sht(as_grid(grid_out, out_shape))
 
         # compute lmax and lmin
         lmax = min(lmax_in, lmax_out)
