@@ -361,9 +361,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             self.assertTrue(torch.equal(row_idx_ref, row_idx[ker_idx == k]), f"row_idx differs for kernel index {k}")
             self.assertTrue(torch.equal(col_idx_ref, col_idx[ker_idx == k]), f"col_idx differs for kernel index {k}")
 
-        if verbose:
-            print(f"\nintegrity OK: nnz={ker_idx.shape[0]}, per-kernel={counts[0].item()}, nrows={roff_idx.shape[0]-1}")
-
     @parameterized.expand(
         [
             # fp32 tests
@@ -929,9 +926,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping GPU test because CUDA kernels are not available")
-
-        if verbose:
-            print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
 
         set_seed(333)
 

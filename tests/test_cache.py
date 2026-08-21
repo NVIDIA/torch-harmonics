@@ -43,8 +43,6 @@ from torch_harmonics.quadrature import clenshaw_curtiss_weights, legendre_gauss_
 
 class TestCacheConsistency(unittest.TestCase):
     def test_consistency(self, verbose=False):
-        if verbose:
-            print("Testing that cache values does not get modified externally")
         from torch_harmonics.legendre import _precompute_legpoly
 
         with torch.no_grad():
@@ -192,8 +190,6 @@ class TestGridDescriptorCaching(unittest.TestCase):
                 calls.clear()
                 first = _expensive(as_grid(grid_type, (64, 128)))
                 second = _expensive(as_grid(grid_type, (64, 128)))
-                if verbose:
-                    print(f"{grid_type}: {len(calls)} evaluation(s) for two equal descriptors")
                 self.assertEqual(first, second)
                 self.assertEqual(len(calls), 1, msg=f"grid={grid_type}: an equal-but-distinct descriptor missed the cache")
 

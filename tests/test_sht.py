@@ -86,9 +86,6 @@ class TestLegendrePolynomials(unittest.TestCase):
         self.tol = 1e-9
 
     def test_legendre(self, verbose=False):
-        if verbose:
-            print(f"Testing computation of associated Legendre polynomials on {self.device.type} device")
-
         t = torch.linspace(0, 1, 100, dtype=torch.float64, device=self.device)
         vdm = th.legendre.legpoly(self.mmax, self.lmax, t)
 
@@ -131,9 +128,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         skip_on_empty=True,
     )
     def test_forward_inverse(self, nlat, nlon, batch_size, norm, grid, atol, rtol, verbose=False):
-        if verbose:
-            print(f"Testing real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization on {self.device.type} device")
-
         # set seed
         set_seed(333)
 
@@ -157,9 +151,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         # testing error accumulation
         for iter in testiters:
             with self.subTest(i=iter):
-                if verbose:
-                    print(f"{iter} iterations of batchsize {batch_size}:")
-
                 base = signal
 
                 for _ in range(iter):
@@ -193,9 +184,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         skip_on_empty=True,
     )
     def test_grads(self, nlat, nlon, batch_size, norm, grid, atol, rtol, verbose=False):
-        if verbose:
-            print(f"Testing gradients of real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization")
-
         # set seed
         set_seed(333)
 
@@ -243,9 +231,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         This catches bugs where a norm is internally self-consistent but scaled wrongly
         relative to the standard conventions.
         """
-        if verbose:
-            print(f"Testing cross-norm consistency on {nlat}x{nlon} {grid} grid on {self.device.type}")
-
         # set seed
         set_seed(333)
 
@@ -305,9 +290,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         These are strict value checks that will fail even when the forward/inverse
         transforms are mutually consistent but carry a wrong overall scale.
         """
-        if verbose:
-            print(f"Testing known-function SHT on {nlat}x{nlon} {grid} grid with {norm} norm on {self.device.type}")
-
         sht = th.RealSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
         lmax = sht.lmax
         mmax = sht.mmax
@@ -439,9 +421,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         This catches a bug where csphase is applied in both the forward and
         inverse transforms, causing the signs to cancel and hiding the error.
         """
-        if verbose:
-            print(f"Testing csphase sign flip on {nlat}x{nlon} {grid} grid with {norm} norm on {self.device.type}")
-
         # set seed
         set_seed(333)
 
@@ -496,9 +475,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
 
         In all cases: ||f||^2_{S^2} = sum_{l,m} W_{l,m} * |c_{l,m}|^2
         """
-        if verbose:
-            print(f"Testing Parseval's theorem on {nlat}x{nlon} {grid} grid with {norm} normalization on {self.device.type}")
-
         # set seed
         set_seed(333)
 
@@ -547,9 +523,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
     )
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA is not available")
     def test_device_instantiation(self, nlat, nlon, norm, grid, atol, rtol, verbose=False):
-        if verbose:
-            print(f"Testing device instantiation of real-valued SHT on {nlat}x{nlon} {grid} grid with {norm} normalization")
-
         # set seed
         set_seed(333)
 
@@ -600,9 +573,6 @@ class TestSphericalHarmonicsFunctions(unittest.TestCase):
     def test_orthogonality(self, nlat, nlon, grid, atol, rtol, verbose=False):
         """Verify that isht(norm="ortho") synthesizes mutually orthogonal basis
         functions and that the self inner-products equal 1 (m=0) or 2 (m>0)."""
-        if verbose:
-            print(f"Testing Y_lm orthogonality on {nlat}x{nlon} {grid} grid on {self.device.type}")
-
         # set seed
         set_seed(333)
 
@@ -686,15 +656,12 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
-    def test_gradient_consistency(self, nlat, nlon, batch_size, norm, grid, atol, rtol, verbose=True):
+    def test_gradient_consistency(self, nlat, nlon, batch_size, norm, grid, atol, rtol, verbose=False):
         """ivsht([c, 0]) synthesizes the surface gradient ∇_S f of a scalar field
         f = isht(c).  Applying vsht to this gradient field must recover c in the
         spheroidal channel and zero in the toroidal channel, because a gradient
         field is curl-free (purely spheroidal).
         """
-        if verbose:
-            print(f"Testing gradient consistency on {nlat}x{nlon} {grid} grid with {norm} norm on {self.device.type}")
-
         # set seed
         set_seed(333)
 
@@ -737,9 +704,6 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         toroidal channel and zero in the spheroidal channel, because a surface
         curl field is divergence-free (purely toroidal).
         """
-        if verbose:
-            print(f"Testing curl consistency on {nlat}x{nlon} {grid} grid with {norm} norm on {self.device.type}")
-
         # set seed
         set_seed(333)
 
@@ -787,9 +751,6 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         two-channel vector field and verifies that vsht and ivsht are genuine left-
         inverses of each other across multiple iterations.
         """
-        if verbose:
-            print(f"Testing vector SHT forward-inverse on {nlat}x{nlon} {grid} grid with {norm} norm on {self.device.type}")
-
         # set seed
         set_seed(333)
 
@@ -845,9 +806,6 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         (not via vsht) so the test is exact to quadrature precision, mirroring
         the scalar Parseval test which uses c rather than sht(f).
         """
-        if verbose:
-            print(f"Testing vector Parseval's theorem on {nlat}x{nlon} {grid} grid with {norm} norm on {self.device.type}")
-
         # set seed
         set_seed(333)
 
