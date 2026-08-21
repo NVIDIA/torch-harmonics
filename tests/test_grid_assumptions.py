@@ -45,6 +45,7 @@ properties, so that the refactor can be validated against them:
   agree by accident.
 """
 
+import functools
 import math
 import unittest
 import warnings
@@ -55,7 +56,8 @@ from testutils import compare_tensors
 
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.filter_basis import get_filter_basis
-from torch_harmonics.quadrature import compute_latitude_spacing, compute_theta_cutoff, precompute_latitudes
+from torch_harmonics.grid import GridS2, as_grid, grid_types
+from torch_harmonics.quadrature import compute_latitude_spacing, compute_theta_cutoff, precompute_latitudes, precompute_longitudes
 
 _ALL_GRIDS = ["equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"]
 
@@ -288,6 +290,163 @@ class TestQuadratureOrderingContract(unittest.TestCase):
         integral = 2.0 * math.pi * torch.sum(w * torch.exp(torch.cos(lats)))
         expected = torch.full_like(integral, 2.0 * math.pi * (math.e - 1.0 / math.e))
         self.assertTrue(compare_tensors(f"exp(cos theta) integral (grid={grid}, nlat={nlat})", integral, expected, atol=0.0, rtol=1e-3, verbose=verbose))
+
+
+class TestGridDescriptor(unittest.TestCase):
+    """
+    Contract for :class:`torch_harmonics.grid.GridS2`.
+
+    The descriptor is meant to become the single argument layers take in place of
+    ``(nlat, nlon, grid)``. These tests fix the properties the rest of the codebase
+    will rely on once that migration happens.
+    """
+
+    @parameterized.expand([[grid] for grid in _ALL_GRIDS])
+    def test_as_grid_coerces_a_legacy_spec(self, grid):
+        g = as_grid(grid, (64, 128))
+        self.assertEqual(g.grid_type, grid)
+        self.assertEqual(g.shape, (64, 128))
+        self.assertEqual((g.nlat, g.nlon), (64, 128))
+
+    @parameterized.expand([[grid] for grid in _ALL_GRIDS])
+    def test_as_grid_is_idempotent(self, grid):
+        g = as_grid(grid, (64, 128))
+        self.assertIs(as_grid(g), g)
+        self.assertIs(as_grid(g, (64, 128)), g)
+
+    def test_as_grid_rejects_bad_specs(self):
+        with self.assertRaises(ValueError):
+            as_grid("not-a-grid", (64, 128))
+        with self.assertRaises(ValueError):
+            as_grid("equiangular")  # shape required for a string spec
+        with self.assertRaises(ValueError):
+            as_grid("equiangular", (64,))
+        with self.assertRaises(ValueError):
+            as_grid(as_grid("equiangular", (64, 128)), (32, 64))  # contradicts the descriptor
+
+    def test_abstract_base_is_not_instantiable(self):
+        with self.assertRaises(TypeError):
+            GridS2(nlat=64, nlon=128)
+
+    def test_invalid_resolutions_raise(self):
+        for nlat, nlon in [(1, 128), (0, 128), (64, 0), (-4, 128)]:
+            with self.subTest(nlat=nlat, nlon=nlon):
+                with self.assertRaises(ValueError):
+                    as_grid("equiangular", (nlat, nlon))
+
+    @parameterized.expand([[nlat, grid] for nlat in [64, 65] for grid in _ALL_GRIDS])
+    def test_nodes_and_weights_match_the_quadrature_helpers(self, nlat, grid, verbose=False):
+        """The descriptor must be a view onto the existing routines, not a reimplementation."""
+        g = as_grid(grid, (nlat, 2 * nlat))
+        lats, w = precompute_latitudes(nlat, grid=grid)
+        self.assertTrue(compare_tensors(f"lats (grid={grid}, nlat={nlat})", g.lats, lats, atol=0.0, rtol=0.0, verbose=verbose))
+        self.assertTrue(compare_tensors(f"weights (grid={grid}, nlat={nlat})", g.quad_weights, w, atol=0.0, rtol=0.0, verbose=verbose))
+        self.assertTrue(compare_tensors(f"lons (grid={grid}, nlat={nlat})", g.lons(), precompute_longitudes(2 * nlat), atol=0.0, rtol=0.0, verbose=verbose))
+
+    @parameterized.expand([[nlat, grid] for nlat in _NLATS for grid in _ALL_GRIDS])
+    def test_theta_cutoff_matches_the_free_function(self, nlat, grid):
+        """Descriptor-based and legacy call sites must not be able to drift apart."""
+        g = as_grid(grid, (nlat, 2 * nlat))
+        self.assertEqual(g.theta_cutoff(), compute_theta_cutoff(nlat, grid=grid))
+        self.assertEqual(g.theta_cutoff(scale=2.5), compute_theta_cutoff(nlat, grid=grid, scale=2.5))
+        self.assertEqual(g.max_latitude_spacing, compute_latitude_spacing(nlat, grid=grid))
+
+    @parameterized.expand([[grid] for grid in _ALL_GRIDS])
+    def test_is_uniform_in_theta_agrees_with_the_actual_nodes(self, grid):
+        """The advertised flag has to match what the node distribution really does."""
+        g = as_grid(grid, (65, 128))
+        dlat = g.latitude_spacing
+        actually_uniform = bool(((dlat - dlat.mean()).abs().max() < 1e-12).item())
+        self.assertEqual(g.is_uniform_in_theta, actually_uniform, msg=f"grid={grid}: is_uniform_in_theta={g.is_uniform_in_theta} but measured uniformity={actually_uniform}")
+
+    # -- identity / caching --------------------------------------------------
+
+    @parameterized.expand([[grid] for grid in _ALL_GRIDS])
+    def test_equal_descriptors_hash_equal(self, grid):
+        """
+        Load-bearing: `torch_harmonics/cache.py` keys its `lru_cache` on the grid.
+        A descriptor that hashed by object identity would turn every lookup into a
+        miss, silently regressing psi and Legendre precompute.
+        """
+        a = as_grid(grid, (64, 128))
+        b = as_grid(grid, (64, 128))
+        self.assertIsNot(a, b)
+        self.assertEqual(a, b)
+        self.assertEqual(hash(a), hash(b))
+        self.assertEqual(len({a, b}), 1)
+
+    def test_differing_descriptors_are_distinct(self):
+        base = as_grid("equiangular", (64, 128))
+        for other in [as_grid("equiangular", (65, 128)), as_grid("equiangular", (64, 256)), as_grid("lobatto", (64, 128))]:
+            with self.subTest(other=repr(other)):
+                self.assertNotEqual(base, other)
+
+    def test_key_contains_only_scalars(self):
+        """Anything unhashable or identity-hashed in `key` would break the cache contract."""
+        for grid in _ALL_GRIDS:
+            with self.subTest(grid=grid):
+                key = as_grid(grid, (64, 128)).key
+                self.assertIsInstance(key, tuple)
+                for field in key:
+                    self.assertIsInstance(field, (str, int, float, bool, tuple))
+
+    @parameterized.expand([[grid] for grid in _ALL_GRIDS])
+    def test_hash_is_stable_across_tensor_access(self, grid):
+        """Guards against node/weight tensors ever becoming dataclass fields."""
+        g = as_grid(grid, (64, 128))
+        before = hash(g)
+        _ = g.lats, g.quad_weights, g.lons(), g.latitude_spacing
+        self.assertEqual(hash(g), before)
+
+    def test_descriptor_works_as_an_lru_cache_key(self):
+        calls = []
+
+        @functools.lru_cache(maxsize=None)
+        def _expensive(g):
+            calls.append(g)
+            return g.nlat * g.nlon
+
+        first = _expensive(as_grid("equiangular", (64, 128)))
+        second = _expensive(as_grid("equiangular", (64, 128)))
+        third = _expensive(as_grid("lobatto", (64, 128)))
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(calls), 2, msg="an equal-but-distinct descriptor missed the cache")
+        self.assertEqual(third, 64 * 128)
+
+    # -- raggedness ----------------------------------------------------------
+
+    @parameterized.expand([[grid] for grid in _ALL_GRIDS])
+    def test_regular_grid_ragged_fields_are_trivial(self, grid, verbose=False):
+        """
+        The ragged accessors exist on regular grids too, so consumers can flatten via
+        `lon_offsets` instead of assuming a uniform `nlon` stride.
+        """
+        g = as_grid(grid, (16, 32))
+        self.assertTrue(g.is_regular)
+        self.assertEqual(g.npoints, 16 * 32)
+        self.assertTrue(compare_tensors(f"nlon_per_lat (grid={grid})", g.nlon_per_lat, torch.full((16,), 32, dtype=torch.int64), verbose=verbose))
+        self.assertTrue(compare_tensors(f"lon_offsets (grid={grid})", g.lon_offsets, torch.arange(17, dtype=torch.int64) * 32, verbose=verbose))
+        self.assertEqual(int(g.lon_offsets[-1].item()), g.npoints)
+
+    # -- serialization -------------------------------------------------------
+
+    @parameterized.expand([[grid] for grid in _ALL_GRIDS])
+    def test_to_dict_roundtrip(self, grid):
+        """Checkpoints and configs carry the grid as plain data, so this must be lossless."""
+        g = as_grid(grid, (64, 128))
+        restored = GridS2.from_dict(g.to_dict())
+        self.assertEqual(g, restored)
+        self.assertEqual(hash(g), hash(restored))
+        self.assertIs(type(g), type(restored))
+
+    def test_from_dict_rejects_incomplete_data(self):
+        with self.assertRaises(ValueError):
+            GridS2.from_dict({"grid": "equiangular", "nlat": 64})
+
+    def test_registry_covers_every_supported_grid_string(self):
+        """A grid string accepted by precompute_latitudes must have a descriptor."""
+        self.assertEqual(set(grid_types()), set(_ALL_GRIDS))
 
 
 if __name__ == "__main__":
