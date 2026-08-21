@@ -84,19 +84,16 @@ class GridS2:
     This is the abstract base; instantiate one of the concrete subclasses, or use
     :func:`as_grid` to coerce a legacy ``(grid_string, shape)`` pair.
 
+    Each concrete subclass carries a class-level ``grid_type`` holding the
+    historical grid string it corresponds to, e.g. ``"equiangular"``. That string
+    is used for serialization and for the registry behind :func:`as_grid`.
+
     Parameters
     ----------
     nlat : int
         Number of latitudinal nodes. Must be at least 2.
     nlon : int
         Number of longitudinal nodes. Must be at least 1.
-
-    Attributes
-    ----------
-    grid_type : str
-        The historical grid string this descriptor corresponds to, e.g.
-        ``"equiangular"``. Class-level; used for serialization and for the
-        registry behind :func:`as_grid`.
     """
 
     nlat: int
@@ -134,8 +131,8 @@ class GridS2:
         Canonical, hashable identity of this grid.
 
         Contains only scalars. Everything that distinguishes two grids must appear
-        here, and nothing that does not; this tuple backs both :meth:`__hash__` and
-        :meth:`__eq__`, and therefore every cache keyed on a descriptor.
+        here, and nothing that does not; this tuple backs both ``__hash__`` and
+        ``__eq__``, and therefore every cache keyed on a descriptor.
         """
         return (self.grid_type, self.nlat, self.nlon)
 
@@ -386,7 +383,7 @@ class EquiangularTrapezoidalGrid(GridS2):
 
     @property
     def max_exact_degree(self) -> int:
-        r"""Matches the equiangular grid: :math:`\lfloor (N_\theta + 1) / 2 \rfloor`."""
+        r"""Matches the equiangular grid, :math:`\lfloor (N_\theta + 1) / 2 \rfloor`."""
         return (self.nlat + 1) // 2
 
 

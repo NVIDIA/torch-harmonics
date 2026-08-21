@@ -1,6 +1,43 @@
 # Utilities
 
-Plotting, quadrature, and helper functions.
+Grids, plotting, quadrature, and helper functions.
+
+## Grids
+
+A `GridS2` describes a latitude--longitude grid on the sphere: where its nodes
+sit, what quadrature weights go with them, and the quantities derived from that
+node distribution, such as the default angular cutoff and the spectral bounds an
+SHT can be truncated to. It is the single argument that replaces a
+`(nlat, nlon, grid_string)` triple, so a new grid type can be added without
+editing every consumer.
+
+Use `as_grid` to build one, either from a grid type name and a shape or from an
+existing descriptor:
+
+```python
+from torch_harmonics.grid import as_grid
+
+grid = as_grid("legendre-gauss", (128, 256))
+grid.lats, grid.quad_weights     # nodes and weights
+grid.theta_cutoff()              # default support radius for localized operators
+grid.max_exact_degree            # highest degree the quadrature integrates exactly
+```
+
+```{eval-rst}
+.. currentmodule:: torch_harmonics.grid
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   as_grid
+   grid_types
+   GridS2
+   EquiangularGrid
+   LegendreGaussGrid
+   LobattoGrid
+   EquiangularTrapezoidalGrid
+```
 
 ## Quadrature
 
