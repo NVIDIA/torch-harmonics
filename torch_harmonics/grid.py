@@ -334,8 +334,9 @@ class EquiangularTrapezoidalGrid(GridS2):
 
     Despite the name, the nodes are **not** equiangular in :math:`\theta`: they are
     equispaced in :math:`\cos\theta`, which makes the spacing in :math:`\theta`
-    strongly non-uniform and several times coarser near the poles than at the
-    equator.
+    strongly non-uniform. The polar spacing is a factor :math:`\sqrt{N_\theta - 1}`
+    coarser than the equatorial one, so the disparity grows with resolution instead
+    of staying fixed.
     """
 
     grid_type: ClassVar[str] = "equiangular-trapezoidal"
