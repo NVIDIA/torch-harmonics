@@ -39,6 +39,7 @@ import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
 from torch_harmonics import InverseRealSHT
+from torch_harmonics.grid import as_grid
 
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
@@ -540,7 +541,7 @@ class SpectralPositionEmbedding(PositionEmbedding):
         super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
 
         # compute maximum required frequency and prepare isht
-        isht = InverseRealSHT(nlat=self.img_shape[0], nlon=self.img_shape[1], lmax=lmax, mmax=mmax, grid=grid)
+        isht = InverseRealSHT(as_grid(grid, (self.img_shape[0], self.img_shape[1])), lmax=lmax, mmax=mmax)
 
         # fill position embedding
         with torch.no_grad():

@@ -30,12 +30,13 @@
 #
 
 import warnings
+from typing import Optional
 
 import torch
 import torch.nn as nn
 
 from torch_harmonics.fft import irfft, rfft
-from torch_harmonics.grid import as_grid
+from torch_harmonics.grid import GridS2, require_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.truncation import truncate_sht
 
@@ -90,16 +91,15 @@ class DistributedRealSHT(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
+    grid : GridS2
+        Descriptor of the spatial grid the transform operates on. It carries the
+        resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
+        is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
+        The grid is the *global* one; the local shard is derived from it.
     lmax : int
         Maximum spherical harmonic degree
     mmax : int
         Maximum spherical harmonic order
-    grid : str
-        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
@@ -115,20 +115,18 @@ class DistributedRealSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
+    def __init__(self, grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.nlat = nlat
-        self.nlon = nlon
-        self.grid = grid
-        self.quadrature_grid = as_grid(grid, (nlat, nlon))
-        if not self.quadrature_grid.is_spectrally_accurate:
+        self.grid = require_grid(grid)
+        self.nlat, self.nlon = self.grid.shape
+        if not self.grid.is_spectrally_accurate:
             warnings.warn(
-                f"grid '{self.quadrature_grid.grid_type}' must not be used for spherical harmonic transforms. Its quadrature converges only "
+                f"grid '{self.grid.grid_type}' must not be used for spherical harmonic transforms. Its quadrature converges only "
                 "algebraically, so the associated Legendre polynomials are not discretely orthogonal on it and the transform does not "
                 "round-trip. Measured relative round-trip error at nlat=64: 2e-4 at lmax=2, 2e-2 at lmax=8, and 6.7e-1 at the default "
-                f"lmax={self.quadrature_grid.max_exact_degree} -- i.e. the result is of the same order as the signal. Only lmax=1 is exact. "
+                f"lmax={self.grid.max_exact_degree} -- i.e. the result is of the same order as the signal. Only lmax=1 is exact. "
                 "Use 'equiangular', 'legendre-gauss' or 'lobatto' instead. This grid remains appropriate for plain quadrature "
                 "(QuadratureS2) and for the localized operators (DISCO convolutions, neighborhood attention), which make no "
                 "orthogonality assumption.",
@@ -149,11 +147,11 @@ class DistributedRealSHT(nn.Module):
         # nodes and weights come from the grid descriptor, which supports every grid
         # precompute_latitudes does -- the switch this replaced silently rejected
         # "equiangular-trapezoidal".
-        tq = self.quadrature_grid.lats
-        weights = self.quadrature_grid.quad_weights
+        tq = self.grid.lats
+        weights = self.grid.quad_weights
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.quadrature_grid, lmax, mmax)
+        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
@@ -175,7 +173,7 @@ class DistributedRealSHT(nn.Module):
         self.register_buffer("weights", weights, persistent=False)
 
     def extra_repr(self):
-        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
+        return f"grid={self.grid!r},\n lmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
 
@@ -267,16 +265,15 @@ class DistributedInverseRealSHT(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
+    grid : GridS2
+        Descriptor of the spatial grid the transform operates on. It carries the
+        resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
+        is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
+        The grid is the *global* one; the local shard is derived from it.
     lmax : int
         Maximum spherical harmonic degree
     mmax : int
         Maximum spherical harmonic order
-    grid : str
-        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
@@ -292,20 +289,18 @@ class DistributedInverseRealSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
+    def __init__(self, grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.nlat = nlat
-        self.nlon = nlon
-        self.grid = grid
-        self.quadrature_grid = as_grid(grid, (nlat, nlon))
-        if not self.quadrature_grid.is_spectrally_accurate:
+        self.grid = require_grid(grid)
+        self.nlat, self.nlon = self.grid.shape
+        if not self.grid.is_spectrally_accurate:
             warnings.warn(
-                f"grid '{self.quadrature_grid.grid_type}' must not be used for spherical harmonic transforms. Its quadrature converges only "
+                f"grid '{self.grid.grid_type}' must not be used for spherical harmonic transforms. Its quadrature converges only "
                 "algebraically, so the associated Legendre polynomials are not discretely orthogonal on it and the transform does not "
                 "round-trip. Measured relative round-trip error at nlat=64: 2e-4 at lmax=2, 2e-2 at lmax=8, and 6.7e-1 at the default "
-                f"lmax={self.quadrature_grid.max_exact_degree} -- i.e. the result is of the same order as the signal. Only lmax=1 is exact. "
+                f"lmax={self.grid.max_exact_degree} -- i.e. the result is of the same order as the signal. Only lmax=1 is exact. "
                 "Use 'equiangular', 'legendre-gauss' or 'lobatto' instead. This grid remains appropriate for plain quadrature "
                 "(QuadratureS2) and for the localized operators (DISCO convolutions, neighborhood attention), which make no "
                 "orthogonality assumption.",
@@ -322,10 +317,10 @@ class DistributedInverseRealSHT(nn.Module):
         self.comm_rank_azimuth = azimuth_group_rank()
 
         # see the note in the forward transform: the descriptor covers every grid
-        t = self.quadrature_grid.lats
+        t = self.grid.lats
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.quadrature_grid, lmax, mmax)
+        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
@@ -347,7 +342,7 @@ class DistributedInverseRealSHT(nn.Module):
         self.register_buffer("pct", pct, persistent=False)
 
     def extra_repr(self):
-        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
+        return f"grid={self.grid!r},\n lmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
 
@@ -420,16 +415,15 @@ class DistributedRealVectorSHT(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
+    grid : GridS2
+        Descriptor of the spatial grid the transform operates on. It carries the
+        resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
+        is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
+        The grid is the *global* one; the local shard is derived from it.
     lmax : int
         Maximum spherical harmonic degree
     mmax : int
         Maximum spherical harmonic order
-    grid : str
-        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
@@ -445,20 +439,18 @@ class DistributedRealVectorSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
+    def __init__(self, grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.nlat = nlat
-        self.nlon = nlon
-        self.grid = grid
-        self.quadrature_grid = as_grid(grid, (nlat, nlon))
-        if not self.quadrature_grid.is_spectrally_accurate:
+        self.grid = require_grid(grid)
+        self.nlat, self.nlon = self.grid.shape
+        if not self.grid.is_spectrally_accurate:
             warnings.warn(
-                f"grid '{self.quadrature_grid.grid_type}' must not be used for spherical harmonic transforms. Its quadrature converges only "
+                f"grid '{self.grid.grid_type}' must not be used for spherical harmonic transforms. Its quadrature converges only "
                 "algebraically, so the associated Legendre polynomials are not discretely orthogonal on it and the transform does not "
                 "round-trip. Measured relative round-trip error at nlat=64: 2e-4 at lmax=2, 2e-2 at lmax=8, and 6.7e-1 at the default "
-                f"lmax={self.quadrature_grid.max_exact_degree} -- i.e. the result is of the same order as the signal. Only lmax=1 is exact. "
+                f"lmax={self.grid.max_exact_degree} -- i.e. the result is of the same order as the signal. Only lmax=1 is exact. "
                 "Use 'equiangular', 'legendre-gauss' or 'lobatto' instead. This grid remains appropriate for plain quadrature "
                 "(QuadratureS2) and for the localized operators (DISCO convolutions, neighborhood attention), which make no "
                 "orthogonality assumption.",
@@ -477,11 +469,11 @@ class DistributedRealVectorSHT(nn.Module):
         # nodes and weights come from the grid descriptor, which supports every grid
         # precompute_latitudes does -- the switch this replaced silently rejected
         # "equiangular-trapezoidal".
-        tq = self.quadrature_grid.lats
-        weights = self.quadrature_grid.quad_weights
+        tq = self.grid.lats
+        weights = self.grid.quad_weights
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.quadrature_grid, lmax, mmax)
+        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
@@ -510,7 +502,7 @@ class DistributedRealVectorSHT(nn.Module):
         self.register_buffer("weights", weights, persistent=False)
 
     def extra_repr(self):
-        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
+        return f"grid={self.grid!r},\n lmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
 
@@ -589,16 +581,15 @@ class DistributedInverseRealVectorSHT(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
+    grid : GridS2
+        Descriptor of the spatial grid the transform operates on. It carries the
+        resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
+        is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
+        The grid is the *global* one; the local shard is derived from it.
     lmax : int
         Maximum spherical harmonic degree
     mmax : int
         Maximum spherical harmonic order
-    grid : str
-        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
@@ -614,20 +605,18 @@ class DistributedInverseRealVectorSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
+    def __init__(self, grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.nlat = nlat
-        self.nlon = nlon
-        self.grid = grid
-        self.quadrature_grid = as_grid(grid, (nlat, nlon))
-        if not self.quadrature_grid.is_spectrally_accurate:
+        self.grid = require_grid(grid)
+        self.nlat, self.nlon = self.grid.shape
+        if not self.grid.is_spectrally_accurate:
             warnings.warn(
-                f"grid '{self.quadrature_grid.grid_type}' must not be used for spherical harmonic transforms. Its quadrature converges only "
+                f"grid '{self.grid.grid_type}' must not be used for spherical harmonic transforms. Its quadrature converges only "
                 "algebraically, so the associated Legendre polynomials are not discretely orthogonal on it and the transform does not "
                 "round-trip. Measured relative round-trip error at nlat=64: 2e-4 at lmax=2, 2e-2 at lmax=8, and 6.7e-1 at the default "
-                f"lmax={self.quadrature_grid.max_exact_degree} -- i.e. the result is of the same order as the signal. Only lmax=1 is exact. "
+                f"lmax={self.grid.max_exact_degree} -- i.e. the result is of the same order as the signal. Only lmax=1 is exact. "
                 "Use 'equiangular', 'legendre-gauss' or 'lobatto' instead. This grid remains appropriate for plain quadrature "
                 "(QuadratureS2) and for the localized operators (DISCO convolutions, neighborhood attention), which make no "
                 "orthogonality assumption.",
@@ -643,10 +632,10 @@ class DistributedInverseRealVectorSHT(nn.Module):
         self.comm_rank_azimuth = azimuth_group_rank()
 
         # see the note in the forward transform: the descriptor covers every grid
-        t = self.quadrature_grid.lats
+        t = self.grid.lats
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.quadrature_grid, lmax, mmax)
+        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # compute splits
         self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
@@ -668,7 +657,7 @@ class DistributedInverseRealVectorSHT(nn.Module):
         self.register_buffer("dpct", dpct, persistent=False)
 
     def extra_repr(self):
-        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
+        return f"grid={self.grid!r},\n lmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
 

@@ -37,6 +37,7 @@ import torch.nn as nn
 
 from torch_harmonics import DiscreteContinuousConvS2, InverseRealSHT, RealSHT, ResampleS2
 from torch_harmonics.examples.models._layers import MLP, DropPath, LearnablePositionEmbedding, SequencePositionEmbedding, SpectralConvS2, SpectralPositionEmbedding
+from torch_harmonics.grid import as_grid
 
 
 # heuristic for finding theta_cutoff
@@ -170,8 +171,8 @@ class DiscreteContinuousDecoder(nn.Module):
 
         # set up upsampling
         if upsample_sht:
-            self.sht = RealSHT(*in_shape, grid=grid_in).float()
-            self.isht = InverseRealSHT(*out_shape, lmax=self.sht.lmax, mmax=self.sht.mmax, grid=grid_out).float()
+            self.sht = RealSHT(as_grid(grid_in, in_shape)).float()
+            self.isht = InverseRealSHT(as_grid(grid_out, out_shape), lmax=self.sht.lmax, mmax=self.sht.mmax).float()
             self.upsample = nn.Sequential(self.sht, self.isht)
         else:
             self.upsample = ResampleS2(*in_shape, *out_shape, grid_in=grid_in, grid_out=grid_out)
@@ -545,8 +546,8 @@ class LocalSphericalNeuralOperator(nn.Module):
 
         modes_lat = modes_lon = int(min(modes_lat, modes_lon) * self.hard_thresholding_fraction)
 
-        self.trans = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
-        self.itrans = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
+        self.trans = RealSHT(as_grid(grid_internal, (self.h, self.w)), lmax=modes_lat, mmax=modes_lon).float()
+        self.itrans = InverseRealSHT(as_grid(grid_internal, (self.h, self.w)), lmax=modes_lat, mmax=modes_lon).float()
 
         self.blocks = nn.ModuleList([])
         for i in range(self.num_layers):

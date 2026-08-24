@@ -141,8 +141,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             mmax = nlat
         lmax = mmax
 
-        sht = th.RealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm).to(self.device)
-        isht = th.InverseRealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm).to(self.device)
+        sht = th.RealSHT(th.as_grid(grid, (nlat, nlon)), mmax=mmax, lmax=lmax, norm=norm).to(self.device)
+        isht = th.InverseRealSHT(th.as_grid(grid, (nlat, nlon)), mmax=mmax, lmax=lmax, norm=norm).to(self.device)
 
         with torch.no_grad():
             coeffs = torch.zeros(batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)
@@ -196,8 +196,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             mmax = nlat
         lmax = mmax
 
-        sht = th.RealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm).to(self.device)
-        isht = th.InverseRealSHT(nlat, nlon, mmax=mmax, lmax=lmax, grid=grid, norm=norm).to(self.device)
+        sht = th.RealSHT(th.as_grid(grid, (nlat, nlon)), mmax=mmax, lmax=lmax, norm=norm).to(self.device)
+        isht = th.InverseRealSHT(th.as_grid(grid, (nlat, nlon)), mmax=mmax, lmax=lmax, norm=norm).to(self.device)
 
         with torch.no_grad():
             coeffs = torch.zeros(batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)
@@ -235,10 +235,10 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         # set seed
         set_seed(333)
 
-        sht_ortho = th.RealSHT(nlat, nlon, grid=grid, norm="ortho").to(self.device)
-        sht_four_pi = th.RealSHT(nlat, nlon, grid=grid, norm="four-pi").to(self.device)
-        sht_schmidt = th.RealSHT(nlat, nlon, grid=grid, norm="schmidt").to(self.device)
-        isht_ortho = th.InverseRealSHT(nlat, nlon, grid=grid, norm="ortho").to(self.device)
+        sht_ortho = th.RealSHT(th.as_grid(grid, (nlat, nlon)), norm="ortho").to(self.device)
+        sht_four_pi = th.RealSHT(th.as_grid(grid, (nlat, nlon)), norm="four-pi").to(self.device)
+        sht_schmidt = th.RealSHT(th.as_grid(grid, (nlat, nlon)), norm="schmidt").to(self.device)
+        isht_ortho = th.InverseRealSHT(th.as_grid(grid, (nlat, nlon)), norm="ortho").to(self.device)
 
         lmax = sht_ortho.lmax
         mmax = sht_ortho.mmax
@@ -291,7 +291,7 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         These are strict value checks that will fail even when the forward/inverse
         transforms are mutually consistent but carry a wrong overall scale.
         """
-        sht = th.RealSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
+        sht = th.RealSHT(th.as_grid(grid, (nlat, nlon)), norm=norm).to(self.device)
         lmax = sht.lmax
         mmax = sht.mmax
 
@@ -425,9 +425,9 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         # set seed
         set_seed(333)
 
-        sht_cs = th.RealSHT(nlat, nlon, grid=grid, norm=norm, csphase=True).to(self.device)
-        sht_no_cs = th.RealSHT(nlat, nlon, grid=grid, norm=norm, csphase=False).to(self.device)
-        isht = th.InverseRealSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
+        sht_cs = th.RealSHT(th.as_grid(grid, (nlat, nlon)), norm=norm, csphase=True).to(self.device)
+        sht_no_cs = th.RealSHT(th.as_grid(grid, (nlat, nlon)), norm=norm, csphase=False).to(self.device)
+        isht = th.InverseRealSHT(th.as_grid(grid, (nlat, nlon)), norm=norm).to(self.device)
         lmax, mmax = sht_cs.lmax, sht_cs.mmax
 
         with torch.no_grad():
@@ -479,7 +479,7 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         # set seed
         set_seed(333)
 
-        isht = th.InverseRealSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
+        isht = th.InverseRealSHT(th.as_grid(grid, (nlat, nlon)), norm=norm).to(self.device)
         lmax = isht.lmax
         mmax = isht.mmax
 
@@ -528,13 +528,13 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         set_seed(333)
 
         # init on cpu
-        sht_host = th.RealSHT(nlat, nlon, grid=grid, norm=norm)
-        isht_host = th.InverseRealSHT(nlat, nlon, grid=grid, norm=norm)
+        sht_host = th.RealSHT(th.as_grid(grid, (nlat, nlon)), norm=norm)
+        isht_host = th.InverseRealSHT(th.as_grid(grid, (nlat, nlon)), norm=norm)
 
         # init on device
         with torch.device(self.device):
-            sht_device = th.RealSHT(nlat, nlon, grid=grid, norm=norm)
-            isht_device = th.InverseRealSHT(nlat, nlon, grid=grid, norm=norm)
+            sht_device = th.RealSHT(th.as_grid(grid, (nlat, nlon)), norm=norm)
+            isht_device = th.InverseRealSHT(th.as_grid(grid, (nlat, nlon)), norm=norm)
 
         self.assertTrue(compare_tensors("sht weights", sht_host.weights.cpu(), sht_device.weights.cpu(), atol=atol, rtol=rtol, verbose=verbose))
         self.assertTrue(compare_tensors("isht weights", isht_host.pct.cpu(), isht_device.pct.cpu(), atol=atol, rtol=rtol, verbose=verbose))
@@ -584,7 +584,7 @@ class TestSphericalHarmonicsFunctions(unittest.TestCase):
         else:
             lmax = mmax = nlat
 
-        isht = th.InverseRealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, norm="ortho").to(self.device)
+        isht = th.InverseRealSHT(th.as_grid(grid, (nlat, nlon)), lmax=lmax, mmax=mmax, norm="ortho").to(self.device)
 
         # Build one coefficient tensor per real basis function.
         # For m = 0: one tensor with c[l, 0] = 1+0j (real mode only).
@@ -666,8 +666,8 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         # set seed
         set_seed(333)
 
-        vsht = th.RealVectorSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
-        ivsht = th.InverseRealVectorSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
+        vsht = th.RealVectorSHT(th.as_grid(grid, (nlat, nlon)), norm=norm).to(self.device)
+        ivsht = th.InverseRealVectorSHT(th.as_grid(grid, (nlat, nlon)), norm=norm).to(self.device)
         lmax, mmax = vsht.lmax, vsht.mmax
 
         with torch.no_grad():
@@ -708,8 +708,8 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         # set seed
         set_seed(333)
 
-        vsht = th.RealVectorSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
-        ivsht = th.InverseRealVectorSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
+        vsht = th.RealVectorSHT(th.as_grid(grid, (nlat, nlon)), norm=norm).to(self.device)
+        ivsht = th.InverseRealVectorSHT(th.as_grid(grid, (nlat, nlon)), norm=norm).to(self.device)
         lmax, mmax = vsht.lmax, vsht.mmax
 
         with torch.no_grad():
@@ -755,8 +755,8 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         # set seed
         set_seed(333)
 
-        vsht = th.RealVectorSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
-        ivsht = th.InverseRealVectorSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
+        vsht = th.RealVectorSHT(th.as_grid(grid, (nlat, nlon)), norm=norm).to(self.device)
+        ivsht = th.InverseRealVectorSHT(th.as_grid(grid, (nlat, nlon)), norm=norm).to(self.device)
         lmax, mmax = vsht.lmax, vsht.mmax
 
         testiters = [1, 2, 4, 8, 16]
@@ -810,7 +810,7 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         # set seed
         set_seed(333)
 
-        ivsht = th.InverseRealVectorSHT(nlat, nlon, grid=grid, norm=norm).to(self.device)
+        ivsht = th.InverseRealVectorSHT(th.as_grid(grid, (nlat, nlon)), norm=norm).to(self.device)
         lmax, mmax = ivsht.lmax, ivsht.mmax
 
         with torch.no_grad():
@@ -861,14 +861,14 @@ class TestUnsuitableGridWarning(unittest.TestCase):
     @parameterized.expand([[cls_name] for cls_name in ["RealSHT", "InverseRealSHT", "RealVectorSHT", "InverseRealVectorSHT"]])
     def test_unsuitable_grid_warns(self, cls_name):
         with self.assertWarns(UserWarning) as ctx:
-            getattr(th, cls_name)(32, 64, grid="equiangular-trapezoidal")
+            getattr(th, cls_name)(th.as_grid("equiangular-trapezoidal", (32, 64)))
         self.assertIn("must not be used", str(ctx.warning))
 
     @parameterized.expand([[cls_name, grid] for cls_name in ["RealSHT", "InverseRealSHT"] for grid in ["equiangular", "legendre-gauss", "lobatto"]])
     def test_supported_grids_do_not_warn(self, cls_name, grid):
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
-            getattr(th, cls_name)(32, 64, lmax=8, grid=grid)
+            getattr(th, cls_name)(th.as_grid(grid, (32, 64)), lmax=8)
 
 
 if __name__ == "__main__":

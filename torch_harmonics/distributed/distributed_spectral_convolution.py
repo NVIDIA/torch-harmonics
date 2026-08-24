@@ -166,8 +166,8 @@ class DistributedSpectralConvS2(nn.Module):
         self.mmax = self.lmax
 
         # set up sht layers
-        self.sht = DistributedRealSHT(*in_shape, grid=grid_in, lmax=self.lmax, mmax=self.mmax)
-        self.isht = DistributedInverseRealSHT(*out_shape, grid=grid_out, lmax=self.lmax, mmax=self.mmax)
+        self.sht = DistributedRealSHT(as_grid(grid_in, in_shape), lmax=self.lmax, mmax=self.mmax)
+        self.isht = DistributedInverseRealSHT(as_grid(grid_out, out_shape), lmax=self.lmax, mmax=self.mmax)
 
         # extract sht parameters
         self.l_shapes = self.isht.l_shapes

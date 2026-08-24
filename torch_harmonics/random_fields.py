@@ -31,6 +31,8 @@
 
 import torch
 
+from torch_harmonics.grid import as_grid
+
 from .sht import InverseRealSHT
 
 
@@ -98,7 +100,7 @@ class GaussianRandomFieldS2(torch.nn.Module):
             sigma = tau ** (0.5 * (2 * alpha - 2.0))
 
         # Inverse SHT
-        self.isht = InverseRealSHT(self.nlat, 2 * self.nlat, grid=grid, norm="backward").to(dtype=dtype)
+        self.isht = InverseRealSHT(as_grid(grid, (self.nlat, 2 * self.nlat)), norm="backward").to(dtype=dtype)
 
         lmax = self.isht.lmax
         mmax = self.isht.mmax

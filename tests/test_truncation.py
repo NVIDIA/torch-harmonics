@@ -162,18 +162,18 @@ class TestShtLayerTruncationAgrees(unittest.TestCase):
         expected = truncate_sht(as_grid(grid, (nlat, nlon)))
         for cls in [th.RealSHT, th.InverseRealSHT, th.RealVectorSHT, th.InverseRealVectorSHT]:
             with self.subTest(layer=cls.__name__):
-                layer = cls(nlat, nlon, grid=grid)
+                layer = cls(as_grid(grid, (nlat, nlon)))
                 self.assertEqual((layer.lmax, layer.mmax), expected)
 
     @parameterized.expand([[grid] for grid in ["equiangular", "legendre-gauss", "lobatto"]])
     def test_layers_honour_an_explicit_truncation(self, grid):
-        layer = th.RealSHT(64, 128, lmax=17, grid=grid)
+        layer = th.RealSHT(th.as_grid(grid, (64, 128)), lmax=17)
         self.assertEqual((layer.lmax, layer.mmax), (17, 17))
 
     def test_roundtrip_still_works_at_a_user_truncation(self):
         """A non-default truncation has to remain a usable transform, not just a pair of ints."""
-        sht = th.RealSHT(64, 128, lmax=20, grid="legendre-gauss")
-        isht = th.InverseRealSHT(64, 128, lmax=20, grid="legendre-gauss")
+        sht = th.RealSHT(th.as_grid("legendre-gauss", (64, 128)), lmax=20)
+        isht = th.InverseRealSHT(th.as_grid("legendre-gauss", (64, 128)), lmax=20)
         coeffs = torch.zeros(2, 20, 20, dtype=torch.complex128)
         coeffs[:, :10, :10] = torch.randn(2, 10, 10, dtype=torch.complex128)
         signal = isht(coeffs)

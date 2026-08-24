@@ -92,10 +92,10 @@ class ShallowWaterSolver(nn.Module):
         self.register_buffer("hamp", torch.as_tensor(hamp, dtype=torch.float64))
 
         # SHT
-        self.sht = th.RealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.isht = th.InverseRealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.vsht = th.RealVectorSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.ivsht = th.InverseRealVectorSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
+        self.sht = th.RealSHT(as_grid(grid, (nlat, nlon)), lmax=lmax, mmax=mmax, csphase=False)
+        self.isht = th.InverseRealSHT(as_grid(grid, (nlat, nlon)), lmax=lmax, mmax=mmax, csphase=False)
+        self.vsht = th.RealVectorSHT(as_grid(grid, (nlat, nlon)), lmax=lmax, mmax=mmax, csphase=False)
+        self.ivsht = th.InverseRealVectorSHT(as_grid(grid, (nlat, nlon)), lmax=lmax, mmax=mmax, csphase=False)
 
         self.lmax = lmax or self.sht.lmax
         self.mmax = lmax or self.sht.mmax

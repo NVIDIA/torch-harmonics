@@ -180,8 +180,8 @@ class SpectralConvS2(nn.Module):
         self.mmax = self.lmax
 
         # set up sht layers
-        self.sht = RealSHT(*in_shape, grid=grid_in, lmax=self.lmax, mmax=self.mmax)
-        self.isht = InverseRealSHT(*out_shape, grid=grid_out, lmax=self.lmax, mmax=self.mmax)
+        self.sht = RealSHT(as_grid(grid_in, in_shape), lmax=self.lmax, mmax=self.mmax)
+        self.isht = InverseRealSHT(as_grid(grid_out, out_shape), lmax=self.lmax, mmax=self.mmax)
 
         # weight shape
         weight_shape = [num_groups, in_channels // num_groups, out_channels // num_groups, self.lmax]
