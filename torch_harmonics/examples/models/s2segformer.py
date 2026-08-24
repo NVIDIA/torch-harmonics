@@ -631,13 +631,12 @@ class SphericalSegformer(nn.Module):
     --------
     >>> model = SphericalSegformer(
     ...         img_size=(128, 256),
-    ...         scale_factor=4,
+    ...         scale_factor=2,
     ...         in_chans=2,
     ...         out_chans=2,
     ...         embed_dims=[16, 32, 64, 128],
     ...         heads=[1, 2, 4, 8],
-    ...         depths=[3, 4, 6, 3],
-    ...         use_mlp=True,)
+    ...         depths=[3, 4, 6, 3],)
     >>> model(torch.randn(1, 2, 128, 256)).shape
     torch.Size([1, 2, 128, 256])
     """

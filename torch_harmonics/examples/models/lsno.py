@@ -437,7 +437,7 @@ class LocalSphericalNeuralOperator(nn.Module):
     Examples
     --------
     >>> model = LocalSphericalNeuralOperator(
-    ...         img_shape=(128, 256),
+    ...         img_size=(128, 256),
     ...         scale_factor=4,
     ...         in_chans=2,
     ...         out_chans=2,

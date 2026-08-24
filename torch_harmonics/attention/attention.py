@@ -79,12 +79,21 @@ class AttentionS2(nn.Module):
         number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
     num_heads : int
         number of attention heads
+    scale : torch.Tensor or float, optional
+        Scaling applied to the attention logits. If None (default), the usual
+        :math:`1/\sqrt{d}` scaling is used, with :math:`d` the head dimension.
+    use_qknorm : bool, optional
+        if specified, applies a learnable per-head RMS normalization to the
+        queries and keys before scaling, by default ``False``
     bias : bool, optional
         if specified, adds bias to input / output projection layers
     k_channels : int
         number of dimensions for interior inner product in the attention matrix (corresponds to kdim in MHA in PyTorch)
     out_channels : int, optional
         number of dimensions for interior inner product in the attention matrix (corresponds to vdim in MHA in PyTorch)
+    drop_rate : float, optional
+        Dropout probability applied to the attention weights during training,
+        by default ``0.0``
 
     References
     ----------
@@ -286,6 +295,14 @@ class NeighborhoodAttentionS2(nn.Module):
         Descriptor of the output grid.
     in_channels : int
         number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
+    num_heads : int, optional
+        number of attention heads, by default ``1``
+    scale : torch.Tensor or float, optional
+        Scaling applied to the queries after normalization. If None (default),
+        :math:`1/\sqrt{d}` is used, with :math:`d` the per-head dimension.
+    use_qknorm : bool, optional
+        if specified, applies a learnable per-head RMS normalization to the
+        queries and keys before scaling, by default ``False``
     bias : bool, optional
         if specified, adds bias to input / output projection layers
     theta_cutoff : float, optional

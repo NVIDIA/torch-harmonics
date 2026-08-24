@@ -531,6 +531,12 @@ class SpectralPositionEmbedding(PositionEmbedding):
     ----------
     img_shape : tuple, optional
         Image shape (height, width), by default (480, 960)
+    lmax : int, optional
+        Maximum spherical harmonic degree of the embedding. If None (default),
+        the truncation is derived from the grid.
+    mmax : int, optional
+        Maximum azimuthal order of the embedding. If None (default), the
+        truncation is derived from the grid.
     grid : str, optional
         Grid type, by default "equiangular"
     num_chans : int, optional

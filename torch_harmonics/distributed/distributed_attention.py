@@ -827,7 +827,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
     attend to its full spherical neighborhood.
 
     All three directions of the serial layer are supported: self-attention
-    (in_shape == out_shape), downsampling cross-attention (gather kernels,
+    (grid_in == grid_out), downsampling cross-attention (gather kernels,
     nlon_in % nlon_out == 0) and upsampling cross-attention (scatter kernels,
     nlon_out % nlon_in == 0). In all cases K/V (which live on the input grid)
     rotate around the azimuth ring while Q and the softmax state stay local.

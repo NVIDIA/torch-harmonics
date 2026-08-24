@@ -477,6 +477,8 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         Whether to use bias
     theta_cutoff : Optional[float]
         Theta cutoff for the filter basis
+    optimized_kernel : Optional[bool]
+        Whether to use the optimized kernel (if available)
 
     Returns
     -------
