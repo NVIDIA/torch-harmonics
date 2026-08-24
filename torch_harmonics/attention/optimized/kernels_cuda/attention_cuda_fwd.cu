@@ -85,8 +85,8 @@ namespace attention_kernels
         int nchan_out, // no. of STORAGE_T elements along channel dim, per head
         int nlat_in, int nlon_in, int nlat_out, int nlon_out, const STORAGE_T *__restrict__ kx,
         const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy, const int32_t *__restrict__ row_idx,
-        const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx,
-        const float *__restrict__ quad_weights, STORAGE_T *__restrict__ y)
+        const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx, const int32_t *__restrict__ seg,
+        const int32_t *__restrict__ seg_off, const float *__restrict__ quad_weights, STORAGE_T *__restrict__ y)
     {
         using COMPUTE_T = typename vec_traits<STORAGE_T>::compute_t;
 
@@ -127,49 +127,68 @@ namespace attention_kernels
         float alpha_sum = 0.0f;
         float qdotk_max = -FLT_MAX;
 
-        const int64_t rbeg = row_off[ho];
-        const int64_t rend = row_off[ho + 1];
+        // Iterate contiguous longitude arcs rather than individual columns.
+        //
+        // The old form loaded col_idx[off] and recovered hi with `col / nlon_in`, a
+        // 64-bit integer division. The GPU has no integer divide instruction, so that
+        // is ~70-100 emulated instructions per neighbor against roughly four of useful
+        // math; profiling put this kernel at 80% compute throughput while delivering
+        // ~2.4% of peak FLOPs, with DRAM at 0.6%. It was instruction-bound on address
+        // arithmetic.
+        //
+        // With segments, hi and the quadrature weight are per-arc constants and the
+        // column advances by counting, so the division disappears entirely. The arcs
+        // also make the k/v accesses stride-1 in longitude. See _build_psi_segments;
+        // TestPsiArcStructure pins that the segments reproduce col_idx exactly.
+        const int seg_beg = seg_off[ho];
+        const int seg_end = seg_off[ho + 1];
 
-        col_idx += rbeg;
+        for (int sg = seg_beg; sg < seg_end; sg++) {
 
-        const int rlen = rend - rbeg;
+            const int hi = seg[3 * sg + 0];
+            const int lo = seg[3 * sg + 1];
+            const int len = seg[3 * sg + 2];
 
-        for (int off = 0; off < rlen; off++) {
-
-            const int64_t col = col_idx[off];
-
-            const int hi = col / nlon_in;
-            const int wi = col - (hi * nlon_in);
-            const int wi_wo = wi + pscale * wo;
-            const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
+            const float qw = quad_weights[hi];
 
             // stride between spatial points is ldi/ldo; the head offset is
             // already baked into kx/vx above
-            const STORAGE_T *_kx = kx + int64_t(hi) * nlon_in * ldi + int64_t(wip) * ldi;
-            const STORAGE_T *_vx = vx + int64_t(hi) * nlon_in * ldo + int64_t(wip) * ldo;
+            const STORAGE_T *kx_row = kx + int64_t(hi) * nlon_in * ldi;
+            const STORAGE_T *vx_row = vx + int64_t(hi) * nlon_in * ldo;
 
-            COMPUTE_T qdotkv = __vset<COMPUTE_T>(0.f);
+            int wip = wrap_lon(lo + pscale * wo, nlon_in);
 
-            for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
-                qdotkv = __vadd(qdotkv, __vmul(vload(qy, chan), vload(_kx, chan)));
+            for (int j = 0; j < len; j++) {
+
+                const STORAGE_T *_kx = kx_row + int64_t(wip) * ldi;
+                const STORAGE_T *_vx = vx_row + int64_t(wip) * ldo;
+
+                COMPUTE_T qdotkv = __vset<COMPUTE_T>(0.f);
+
+                for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
+                    qdotkv = __vadd(qdotkv, __vmul(vload(qy, chan), vload(_kx, chan)));
+                }
+
+                float qdotk = __warp_sum(__vred(qdotkv));
+
+                float qdotk_max_tmp;
+                float alpha;
+                float exp_save;
+
+                qdotk_max_tmp = max(qdotk_max, qdotk);
+                alpha = expf(qdotk - qdotk_max_tmp) * qw;
+                exp_save = expf(qdotk_max - qdotk_max_tmp);
+
+                alpha_sum = alpha + alpha_sum * exp_save;
+
+                for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
+                    shy[chan] = __vadd(__vscale(exp_save, shy[chan]), __vscale(alpha, vload(_vx, chan)));
+                }
+                qdotk_max = qdotk_max_tmp;
+
+                // next longitude in the arc; wraps at most once
+                if (++wip == nlon_in) { wip = 0; }
             }
-
-            float qdotk = __warp_sum(__vred(qdotkv));
-
-            float qdotk_max_tmp;
-            float alpha;
-            float exp_save;
-
-            qdotk_max_tmp = max(qdotk_max, qdotk);
-            alpha = expf(qdotk - qdotk_max_tmp) * quad_weights[hi];
-            exp_save = expf(qdotk_max - qdotk_max_tmp);
-
-            alpha_sum = alpha + alpha_sum * exp_save;
-
-            for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
-                shy[chan] = __vadd(__vscale(exp_save, shy[chan]), __vscale(alpha, vload(_vx, chan)));
-            }
-            qdotk_max = qdotk_max_tmp;
         }
 
         alpha_sum = 1.0f / alpha_sum;
@@ -189,8 +208,8 @@ namespace attention_kernels
         int nchan_out, // no. of STORAGE_T elements along channel dim, per head
         int nlat_in, int nlon_in, int nlat_out, int nlon_out, const STORAGE_T *__restrict__ kx,
         const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy, const int32_t *__restrict__ row_idx,
-        const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx,
-        const float *__restrict__ quad_weights, STORAGE_T *__restrict__ y)
+        const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx, const int32_t *__restrict__ seg,
+        const int32_t *__restrict__ seg_off, const float *__restrict__ quad_weights, STORAGE_T *__restrict__ y)
     {
         using COMPUTE_T = typename vec_traits<STORAGE_T>::compute_t;
 
@@ -259,67 +278,189 @@ namespace attention_kernels
         float alpha_sum = 0.0f;
         float qdotk_max = -FLT_MAX;
 
-        const int64_t rbeg = row_off[ho];
-        const int64_t rend = row_off[ho + 1];
+        // Neighbors are processed in groups of NB.
+        //
+        // The one-at-a-time form this replaces had a fully serial dependency chain per
+        // neighbor: col_idx -> address -> load k -> warp reduce -> softmax -> load v.
+        // Nothing was in flight while a ~500-cycle k load resolved, and with nchan_in
+        // = 64 over BDIM_X = 32 lanes there were only two independent loads inside the
+        // channel loop to hide it with. Measured 1.6 TFLOP/s on H100 -- about 2% of
+        // this GPU's scalar fp32 peak and ~300x off its bandwidth roofline, i.e. the
+        // kernel was latency-bound, not compute- or bandwidth-bound.
+        //
+        // Grouping issues NB independent k loads (and later NB v loads) before any is
+        // consumed, which is the entire point: memory-level parallelism, not fewer
+        // flops. The online softmax is applied once per group instead of once per
+        // neighbor. That is algebraically the same reduction -- one running max, one
+        // rescale of locy per group rather than NB of them -- and is if anything
+        // better conditioned, since it rescales less often.
+        // Neighbours per group. Overridable so the register/occupancy trade can be
+        // swept: grouping buys instruction-level parallelism but costs NB accumulator
+        // sets, and this kernel's occupancy is register-limited.
+#ifndef TH_ATTENTION_FWD_NB
+#define TH_ATTENTION_FWD_NB 4
+#endif
+        constexpr int NB = TH_ATTENTION_FWD_NB;
 
-        col_idx += rbeg;
+        // Outer loop over contiguous longitude arcs. hi and the quadrature weight are
+        // per-arc constants and the column advances by counting, so the per-neighbour
+        // 64-bit division that used to recover hi from col_idx is gone. See
+        // _build_psi_segments; TestPsiArcStructure pins that segments reproduce
+        // col_idx exactly. The inner grouping is unchanged in purpose -- NB loads in
+        // flight -- but now costs nothing to set up, since the addresses are simply
+        // consecutive longitudes.
+        const int seg_beg = seg_off[ho];
+        const int seg_end = seg_off[ho + 1];
 
-        const int rlen = rend - rbeg;
+        for (int sg = seg_beg; sg < seg_end; sg++) {
 
-        for (int off = 0; off < rlen; off++) {
+            const int hi = seg[3 * sg + 0];
+            const int lo = seg[3 * sg + 1];
+            const int len = seg[3 * sg + 2];
 
-            const int64_t col = col_idx[off];
+            const float qw_seg = quad_weights[hi];
+            const STORAGE_T *kx_row = kx + int64_t(hi) * nlon_in * ldi;
+            const STORAGE_T *vx_row = vx + int64_t(hi) * nlon_in * ldo;
 
-            const int hi = col / nlon_in;
-            const int wi = col - (hi * nlon_in);
-            const int wi_wo = wi + pscale * wo;
-            const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
+            int wip = wrap_lon(lo + pscale * wo, nlon_in);
 
-            const STORAGE_T *_kx = kx + int64_t(hi) * nlon_in * ldi + int64_t(wip) * ldi;
-            const STORAGE_T *_vx = vx + int64_t(hi) * nlon_in * ldo + int64_t(wip) * ldo;
+            int j = 0;
+            for (; j + NB <= len; j += NB) {
 
-            COMPUTE_T qdotkv = __vset<COMPUTE_T>(0.f);
+                const STORAGE_T *kp[NB];
+                const STORAGE_T *vp[NB];
 
-            if constexpr (CHIN_AS_OUT) {
+#pragma unroll
+                for (int u = 0; u < NB; u++) {
+                    kp[u] = kx_row + int64_t(wip) * ldi;
+                    vp[u] = vx_row + int64_t(wip) * ldo;
+                    if (++wip == nlon_in) { wip = 0; }
+                }
+
+                COMPUTE_T acc[NB];
+#pragma unroll
+                for (int u = 0; u < NB; u++) { acc[u] = __vset<COMPUTE_T>(0.f); }
+
+                // one channel loop feeding NB accumulators, so NB loads are outstanding
+                // per channel step rather than one
+                if constexpr (CHIN_AS_OUT) {
+#pragma unroll
+                    for (int i = 0; i < NLOC_M1; i++) {
+                        const COMPUTE_T q = shq[i * BDIM_X];
+#pragma unroll
+                        for (int u = 0; u < NB; u++) { acc[u] = __vadd(acc[u], __vmul(q, vload(kp[u], i * BDIM_X))); }
+                    }
+                    if (NLOC_M1 * BDIM_X + tidx < nchan_in) {
+                        const COMPUTE_T q = shq[NLOC_M1 * BDIM_X];
+#pragma unroll
+                        for (int u = 0; u < NB; u++) {
+                            acc[u] = __vadd(acc[u], __vmul(q, vload(kp[u], NLOC_M1 * BDIM_X)));
+                        }
+                    }
+                } else {
+                    for (int chan = tidx; chan < nchan_in; chan += BDIM_X) {
+                        const COMPUTE_T q = shq[chan];
+#pragma unroll
+                        for (int u = 0; u < NB; u++) { acc[u] = __vadd(acc[u], __vmul(q, vload(kp[u], chan))); }
+                    }
+                }
+
+                float qdotk[NB];
+#pragma unroll
+                for (int u = 0; u < NB; u++) {
+                    float t = __vred(acc[u]);
+                    if constexpr (BDIM_X == 32) {
+                        t = __warp_sum(t);
+                    } else {
+                        t = __block_sum<BDIM_X>(t);
+                    }
+                    qdotk[u] = t;
+                }
+
+                // group-wise online softmax: one running max and one rescale for all NB
+                float qdotk_max_tmp = qdotk_max;
+#pragma unroll
+                for (int u = 0; u < NB; u++) { qdotk_max_tmp = max(qdotk_max_tmp, qdotk[u]); }
+                const float exp_save = expf(qdotk_max - qdotk_max_tmp);
+
+                float alpha[NB];
+                float alpha_grp = 0.0f;
+#pragma unroll
+                for (int u = 0; u < NB; u++) {
+                    alpha[u] = expf(qdotk[u] - qdotk_max_tmp) * qw_seg;
+                    alpha_grp += alpha[u];
+                }
+                alpha_sum = alpha_grp + alpha_sum * exp_save;
+
 #pragma unroll
                 for (int i = 0; i < NLOC_M1; i++) {
-                    qdotkv = __vadd(qdotkv, __vmul(shq[i * BDIM_X], vload(_kx, i * BDIM_X)));
+                    COMPUTE_T t = __vscale(exp_save, locy[i]);
+#pragma unroll
+                    for (int u = 0; u < NB; u++) { t = __vadd(t, __vscale(alpha[u], vload(vp[u], i * BDIM_X))); }
+                    locy[i] = t;
                 }
-                if (NLOC_M1 * BDIM_X + tidx < nchan_in) {
-                    qdotkv = __vadd(qdotkv, __vmul(shq[NLOC_M1 * BDIM_X], vload(_kx, NLOC_M1 * BDIM_X)));
+                if (NLOC_M1 * BDIM_X + tidx < nchan_out) {
+                    COMPUTE_T t = __vscale(exp_save, locy[NLOC_M1]);
+#pragma unroll
+                    for (int u = 0; u < NB; u++) { t = __vadd(t, __vscale(alpha[u], vload(vp[u], NLOC_M1 * BDIM_X))); }
+                    locy[NLOC_M1] = t;
                 }
-            } else {
-                for (int chan = tidx; chan < nchan_in; chan += BDIM_X) {
-                    qdotkv = __vadd(qdotkv, __vmul(shq[chan], vload(_kx, chan)));
-                }
+
+                qdotk_max = qdotk_max_tmp;
             }
 
-            float qdotk = __vred(qdotkv);
-            if constexpr (BDIM_X == 32) {
-                qdotk = __warp_sum(qdotk);
-            } else {
-                qdotk = __block_sum<BDIM_X>(qdotk);
-            }
+            // remainder: fewer than NB neighbours left in this arc
+            for (; j < len; j++) {
 
-            float qdotk_max_tmp;
-            float alpha;
-            float exp_save;
+                const STORAGE_T *_kx = kx_row + int64_t(wip) * ldi;
+                const STORAGE_T *_vx = vx_row + int64_t(wip) * ldo;
 
-            qdotk_max_tmp = max(qdotk_max, qdotk);
-            alpha = expf(qdotk - qdotk_max_tmp) * quad_weights[hi];
-            exp_save = expf(qdotk_max - qdotk_max_tmp);
+                COMPUTE_T qdotkv = __vset<COMPUTE_T>(0.f);
 
-            alpha_sum = alpha + alpha_sum * exp_save;
+                if constexpr (CHIN_AS_OUT) {
+#pragma unroll
+                    for (int i = 0; i < NLOC_M1; i++) {
+                        qdotkv = __vadd(qdotkv, __vmul(shq[i * BDIM_X], vload(_kx, i * BDIM_X)));
+                    }
+                    if (NLOC_M1 * BDIM_X + tidx < nchan_in) {
+                        qdotkv = __vadd(qdotkv, __vmul(shq[NLOC_M1 * BDIM_X], vload(_kx, NLOC_M1 * BDIM_X)));
+                    }
+                } else {
+                    for (int chan = tidx; chan < nchan_in; chan += BDIM_X) {
+                        qdotkv = __vadd(qdotkv, __vmul(shq[chan], vload(_kx, chan)));
+                    }
+                }
+
+                float qdotk = __vred(qdotkv);
+                if constexpr (BDIM_X == 32) {
+                    qdotk = __warp_sum(qdotk);
+                } else {
+                    qdotk = __block_sum<BDIM_X>(qdotk);
+                }
+
+                float qdotk_max_tmp;
+                float alpha;
+                float exp_save;
+
+                qdotk_max_tmp = max(qdotk_max, qdotk);
+                alpha = expf(qdotk - qdotk_max_tmp) * qw_seg;
+                exp_save = expf(qdotk_max - qdotk_max_tmp);
+
+                alpha_sum = alpha + alpha_sum * exp_save;
 
 #pragma unroll
-            for (int i = 0; i < NLOC_M1; i++) {
-                locy[i] = __vadd(__vscale(exp_save, locy[i]), __vscale(alpha, vload(_vx, i * BDIM_X)));
-            }
-            if (NLOC_M1 * BDIM_X + tidx < nchan_out) {
-                locy[NLOC_M1] = __vadd(__vscale(exp_save, locy[NLOC_M1]), __vscale(alpha, vload(_vx, NLOC_M1 * BDIM_X)));
-            }
+                for (int i = 0; i < NLOC_M1; i++) {
+                    locy[i] = __vadd(__vscale(exp_save, locy[i]), __vscale(alpha, vload(_vx, i * BDIM_X)));
+                }
+                if (NLOC_M1 * BDIM_X + tidx < nchan_out) {
+                    locy[NLOC_M1]
+                        = __vadd(__vscale(exp_save, locy[NLOC_M1]), __vscale(alpha, vload(_vx, NLOC_M1 * BDIM_X)));
+                }
 
-            qdotk_max = qdotk_max_tmp;
+                qdotk_max = qdotk_max_tmp;
+
+                if (++wip == nlon_in) { wip = 0; }
+            }
         }
 
         alpha_sum = 1.0f / alpha_sum;
@@ -335,7 +476,8 @@ namespace attention_kernels
     void launch_gen_attn_fwd(int batch_size, int nheads, int nchans_in, int nchans_out, int nlat_in, int nlon_in,
                              int nlat_out, int nlon_out, STORAGE_T *__restrict__ _kxp, STORAGE_T *__restrict__ _vxp,
                              STORAGE_T *__restrict__ _qyp, int32_t *_row_idx, int64_t *_row_off, int64_t *_col_idx,
-                             float *_quad_weights, STORAGE_T *__restrict__ _yp, cudaStream_t stream)
+                             const int32_t *_seg, const int32_t *_seg_off, float *_quad_weights,
+                             STORAGE_T *__restrict__ _yp, cudaStream_t stream)
     {
 
         dim3 block(WARP_SIZE, THREADS / WARP_SIZE);
@@ -346,9 +488,9 @@ namespace attention_kernels
         // sized from the per-head channel count, so it does not scale with nheads
         size_t shsize = sizeof(typename vec_traits<STORAGE_T>::compute_t) * nchans_out * block.y;
 
-        s2_attn_fwd_generic_vec_k<THREADS>
-            <<<grid, block, shsize, stream>>>(nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp,
-                                              _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp);
+        s2_attn_fwd_generic_vec_k<THREADS><<<grid, block, shsize, stream>>>(
+            nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off,
+            _col_idx, _seg, _seg_off, _quad_weights, _yp);
         CHECK_ERROR("s2_attn_fwd_generic_vec_k");
 
         return;
@@ -361,7 +503,8 @@ namespace attention_kernels
                              int batch_size, int nheads, int nchans_in, int nchans_out, int nlat_in, int nlon_in,
                              int nlat_out, int nlon_out, STORAGE_T *__restrict__ _kxp, STORAGE_T *__restrict__ _vxp,
                              STORAGE_T *__restrict__ _qyp, int32_t *_row_idx, int64_t *_row_off, int64_t *_col_idx,
-                             float *_quad_weights, STORAGE_T *__restrict__ _yp, cudaStream_t stream)
+                             const int32_t *_seg, const int32_t *_seg_off, float *_quad_weights,
+                             STORAGE_T *__restrict__ _yp, cudaStream_t stream)
     {
 
         if (CUR_LOC_SIZE == nloc) {
@@ -387,12 +530,12 @@ namespace attention_kernels
 
                 s2_attn_fwd_special_vec_k<BDIM_X, BDIM_Y, 1, CUR_LOC_SIZE><<<grid, block, shsize, stream>>>(
                     nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx,
-                    _row_off, _col_idx, _quad_weights, _yp);
+                    _row_off, _col_idx, _seg, _seg_off, _quad_weights, _yp);
             } else {
 
                 s2_attn_fwd_special_vec_k<BDIM_X, BDIM_Y, 0, CUR_LOC_SIZE><<<grid, block, shsize, stream>>>(
                     nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx,
-                    _row_off, _col_idx, _quad_weights, _yp);
+                    _row_off, _col_idx, _seg, _seg_off, _quad_weights, _yp);
             }
             CHECK_ERROR("s2_attn_fwd_special_vec_k");
 
@@ -401,7 +544,7 @@ namespace attention_kernels
         if constexpr (CUR_LOC_SIZE < MAX_LOC_SIZE) {
             launch_spc_attn_fwd<BDIM_X, BDIM_Y, CUR_LOC_SIZE + 1, MAX_LOC_SIZE>(
                 nloc, batch_size, nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp,
-                _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream);
+                _row_idx, _row_off, _col_idx, _seg, _seg_off, _quad_weights, _yp, stream);
         }
         return;
     }
@@ -412,44 +555,44 @@ namespace attention_kernels
     template <int MAX_LOC, int MIN_LOC, typename SV>
     static void fwd_dispatch_bdimx(int bdimx, int nloc, int64_t batch_size, int64_t nheads, int64_t nci, int64_t nco,
                                    int nlat_in, int64_t nlon_in, int64_t nlat_out, int64_t nlon_out, SV *_kxp, SV *_vxp,
-                                   SV *_qyp, int32_t *_row_idx, int64_t *_row_off, int64_t *_col_idx,
-                                   float *_quad_weights, SV *_yp, cudaStream_t stream)
+                                   SV *_qyp, int32_t *_row_idx, int64_t *_row_off, int64_t *_col_idx, const int32_t *_seg,
+                                   const int32_t *_seg_off, float *_quad_weights, SV *_yp, cudaStream_t stream)
     {
         // use 2D blocks only if 32 threads are enough
         switch (bdimx) {
         case 32:
             launch_spc_attn_fwd<32, 2, 1, MAX_LOC>(nloc, batch_size, nheads, nci, nco, nlat_in, nlon_in, nlat_out,
-                                                   nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx,
-                                                   _quad_weights, _yp, stream);
+                                                   nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _seg,
+                                                   _seg_off, _quad_weights, _yp, stream);
             break;
         case 64:
             launch_spc_attn_fwd<64, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nheads, nci, nco, nlat_in, nlon_in, nlat_out,
-                                                         nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx,
-                                                         _quad_weights, _yp, stream);
+                                                         nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _seg,
+                                                         _seg_off, _quad_weights, _yp, stream);
             break;
         case 128:
             launch_spc_attn_fwd<128, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nheads, nci, nco, nlat_in, nlon_in,
                                                           nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off,
-                                                          _col_idx, _quad_weights, _yp, stream);
+                                                          _col_idx, _seg, _seg_off, _quad_weights, _yp, stream);
             break;
         case 256:
             launch_spc_attn_fwd<256, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nheads, nci, nco, nlat_in, nlon_in,
                                                           nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off,
-                                                          _col_idx, _quad_weights, _yp, stream);
+                                                          _col_idx, _seg, _seg_off, _quad_weights, _yp, stream);
             break;
         case 512:
             launch_spc_attn_fwd<512, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nheads, nci, nco, nlat_in, nlon_in,
                                                           nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off,
-                                                          _col_idx, _quad_weights, _yp, stream);
+                                                          _col_idx, _seg, _seg_off, _quad_weights, _yp, stream);
             break;
         case 1024:
             launch_spc_attn_fwd<1024, 1, MIN_LOC, MAX_LOC>(nloc, batch_size, nheads, nci, nco, nlat_in, nlon_in,
                                                            nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off,
-                                                           _col_idx, _quad_weights, _yp, stream);
+                                                           _col_idx, _seg, _seg_off, _quad_weights, _yp, stream);
             break;
         default:
             launch_gen_attn_fwd(batch_size, nheads, nci, nco, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp,
-                                _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream);
+                                _row_idx, _row_off, _col_idx, _seg, _seg_off, _quad_weights, _yp, stream);
             break;
         }
     }
@@ -463,7 +606,7 @@ namespace attention_kernels
     static void s2_attn_fwd_dispatch(int64_t batch_size, int64_t nheads, int64_t nchans_in, int64_t nchans_out,
                                      int64_t nlon_in, int64_t nlat_out, int64_t nlon_out, at::Tensor kxP,
                                      at::Tensor vxP, at::Tensor qyP, at::Tensor row_off, at::Tensor col_idx,
-                                     at::Tensor quad_weights, at::Tensor yP)
+                                     at::Tensor seg, at::Tensor seg_off, at::Tensor quad_weights, at::Tensor yP)
     {
 
         static_assert(0 == (MAX_LOCAL_ARR_LEN & (MAX_LOCAL_ARR_LEN - 1)));
@@ -491,6 +634,10 @@ namespace attention_kernels
         int32_t *_row_idx = reinterpret_cast<int32_t *>(row_idx.data_ptr());
         int64_t *_row_off = reinterpret_cast<int64_t *>(row_off.data_ptr());
         int64_t *_col_idx = reinterpret_cast<int64_t *>(col_idx.data_ptr());
+        // (hi, lo, len) arcs, one per (output row, input latitude); seg_off maps a row
+        // to its segment range. See _build_psi_segments.
+        const int32_t *_seg = reinterpret_cast<const int32_t *>(seg.data_ptr());
+        const int32_t *_seg_off = reinterpret_cast<const int32_t *>(seg_off.data_ptr());
         float *_quad_weights = reinterpret_cast<float *>(quad_weights.data_ptr());
 
         constexpr int MIN_LOC_ARR_LEN = MAX_LOCAL_ARR_LEN / 2 + 1;
@@ -498,8 +645,20 @@ namespace attention_kernels
         if constexpr (std::is_same<scalar_t, float>::value) {
             // fp32: float4 vectorized when 16B-aligned + 4-divisible, else scalar.
             constexpr int VEC_SIZE = sizeof(float4) / sizeof(float); // 4
+            // Vectorising only pays if the vectorised channel count still fills the
+            // block. bdimx is derived from the RAW channel count above, so with
+            // nchans=64 and VEC_SIZE=4 the loop runs over nco=16 elements across
+            // bdimx=32 lanes and half the block idles. Worse, a float4 FMA scalarises
+            // into four FFMA, so per warp per neighbour the vector form is 1 load +
+            // 2 cvt + 4 FFMA against the scalar form's 2 + 2 + 2 -- more instructions,
+            // not fewer, on a kernel that is issue-limited. Measured on H100 at c64:
+            // vectorised fp16 is 13-23% slower than scalar, and costs 95 registers
+            // against 64 (31% occupancy against 50%).
+            //
+            // It does pay once nchans/VEC_SIZE >= bdimx, i.e. nchans >= 128 here.
             const bool use_vec = is_aligned<16>(_kxp) && is_aligned<16>(_vxp) && is_aligned<16>(_qyp)
-                && is_aligned<16>(_yp) && (nchans_in % VEC_SIZE) == 0 && (nchans_out % VEC_SIZE) == 0;
+                && is_aligned<16>(_yp) && (nchans_in % VEC_SIZE) == 0 && (nchans_out % VEC_SIZE) == 0
+                && (nchans_in / VEC_SIZE) >= bdimx && (nchans_out / VEC_SIZE) >= bdimx;
 
             if (use_vec) {
                 constexpr int MAX_VEC = MAX_LOCAL_ARR_LEN / VEC_SIZE;
@@ -509,21 +668,55 @@ namespace attention_kernels
                 fwd_dispatch_bdimx<MAX_VEC, MIN_VEC, float4>(
                     bdimx, DIV_UP(nco, bdimx), batch_size, nheads, nci, nco, nlat_in, nlon_in, nlat_out, nlon_out,
                     reinterpret_cast<float4 *>(_kxp), reinterpret_cast<float4 *>(_vxp), reinterpret_cast<float4 *>(_qyp),
-                    _row_idx, _row_off, _col_idx, _quad_weights, reinterpret_cast<float4 *>(_yp), stream);
+                    _row_idx, _row_off, _col_idx, _seg, _seg_off, _quad_weights, reinterpret_cast<float4 *>(_yp), stream);
             } else {
                 fwd_dispatch_bdimx<MAX_LOCAL_ARR_LEN, MIN_LOC_ARR_LEN, float>(
                     bdimx, DIV_UP(nchans_out, bdimx), batch_size, nheads, nchans_in, nchans_out, nlat_in, nlon_in,
-                    nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream);
+                    nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _seg, _seg_off, _quad_weights,
+                    _yp, stream);
             }
         } else {
-            // fp16/bf16: scalar STORAGE_T path (widen at load, narrow at store; fp32
-            // compute/accumulation). A vectorized 8-wide path was tried and reverted:
-            // it raised register pressure and lowered occupancy, and ncu shows this
-            // kernel is latency/occupancy-bound (DRAM ~25%), not bandwidth-bound, so
-            // vectorizing reduced precision only hurt. See the AMP refactor notes.
-            fwd_dispatch_bdimx<MAX_LOCAL_ARR_LEN, MIN_LOC_ARR_LEN, scalar_t>(
-                bdimx, DIV_UP(nchans_out, bdimx), batch_size, nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out,
-                nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _quad_weights, _yp, stream);
+            // fp16/bf16 vectorized. The width is chosen to FILL the block, not fixed.
+            //
+            // bdimx comes from the raw channel count above, so at nchans == 64 it is 32.
+            // A 4-wide vector then leaves nci == 16 over 32 lanes and half the block
+            // idles, and because a float4 FMA scalarises into four FFMA the vector form
+            // ends up issuing MORE instructions than the scalar one: per warp per
+            // neighbour 1 load + 2 cvt + 4 FFMA against 2 + 2 + 2. Measured on H100 at
+            // c64 that was 13-23% slower than scalar and cost 95 registers against 64.
+            //
+            // A 2-wide vector gives nci == 32 at nchans == 64 -- exactly one element per
+            // lane -- for 1 load + 1 cvt + 2 FFMA, a third fewer instructions than scalar
+            // with the whole block busy. At nchans == 128 the 4-wide form fills the block
+            // and is preferred. head_dim 64 and 128 are the cases that matter, so the
+            // width adapts rather than the path switching off.
+            // 2-wide (nci == 32 at nchans == 64, i.e. exactly one element per lane) was
+            // implemented and measured: consistently 3-5% SLOWER than scalar on H100
+            // (1deg_tc003 0.451 -> 0.463, hdeg_tc003 3.496 -> 3.682). The instruction
+            // count argued the other way -- 1 load + 1 cvt + 2 FFMA against scalar's
+            // 2 + 2 + 2 -- so the float2 accumulator and the changed NLOC templating
+            // evidently cost more than the arithmetic saves. Removed rather than left
+            // as an unused branch.
+            constexpr int VEC_SIZE = 4;
+            const bool use_vec = is_aligned<8>(_kxp) && is_aligned<8>(_vxp) && is_aligned<8>(_qyp) && is_aligned<8>(_yp)
+                && (nchans_in % VEC_SIZE) == 0 && (nchans_out % VEC_SIZE) == 0 && (nchans_in / VEC_SIZE) >= bdimx
+                && (nchans_out / VEC_SIZE) >= bdimx;
+
+            if (use_vec) {
+                using vec_t = std::conditional_t<std::is_same<scalar_t, at::Half>::value, half4, bf164>;
+                constexpr int MAX_VEC = MAX_LOCAL_ARR_LEN / VEC_SIZE;
+                constexpr int MIN_VEC = MAX_VEC / 2 + 1;
+                fwd_dispatch_bdimx<MAX_VEC, MIN_VEC, vec_t>(
+                    bdimx, DIV_UP(nchans_out / VEC_SIZE, bdimx), batch_size, nheads, nchans_in / VEC_SIZE,
+                    nchans_out / VEC_SIZE, nlat_in, nlon_in, nlat_out, nlon_out, reinterpret_cast<vec_t *>(_kxp),
+                    reinterpret_cast<vec_t *>(_vxp), reinterpret_cast<vec_t *>(_qyp), _row_idx, _row_off, _col_idx,
+                    _seg, _seg_off, _quad_weights, reinterpret_cast<vec_t *>(_yp), stream);
+            } else {
+                fwd_dispatch_bdimx<MAX_LOCAL_ARR_LEN, MIN_LOC_ARR_LEN, scalar_t>(
+                    bdimx, DIV_UP(nchans_out, bdimx), batch_size, nheads, nchans_in, nchans_out, nlat_in, nlon_in,
+                    nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _row_off, _col_idx, _seg, _seg_off, _quad_weights,
+                    _yp, stream);
+            }
         }
 
         return;
@@ -537,8 +730,9 @@ namespace attention_kernels
     // channel dimension rather than folded into the batch dimension, because
     // folding is not free in this layout.
     torch::Tensor s2_attention_fwd_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor quad_weights,
-                                        at::Tensor psi_col_idx, at::Tensor psi_row_off, int64_t num_heads,
-                                        int64_t nlon_in, int64_t nlat_out, int64_t nlon_out)
+                                        at::Tensor psi_col_idx, at::Tensor psi_row_off, at::Tensor psi_seg,
+                                        at::Tensor psi_seg_off, int64_t num_heads, int64_t nlon_in, int64_t nlat_out,
+                                        int64_t nlon_out)
     {
         CHECK_CUDA_INPUT_TENSOR(kx);
         CHECK_CUDA_INPUT_TENSOR(vx);
@@ -607,7 +801,8 @@ namespace attention_kernels
 
             if (downsample) {
                 s2_attn_fwd_dispatch<storage_t>(batch_size, num_heads, nchans_in, nchans_out, nlon_in, nlat_out,
-                                                nlon_out, kx, vx, qy, psi_row_off, psi_col_idx, quad_weights, y_nhwc);
+                                                nlon_out, kx, vx, qy, psi_row_off, psi_col_idx, psi_seg, psi_seg_off,
+                                                quad_weights, y_nhwc);
             } else {
                 // upsample (scatter) path: s2_attn_fwd_upsample_dispatch does its own
                 // AT_DISPATCH and widens fp16/bf16 at load (fp32 compute), narrowing
