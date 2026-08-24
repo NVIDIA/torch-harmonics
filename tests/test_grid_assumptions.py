@@ -560,8 +560,11 @@ class TestDirectConstructionMatchesFactory(unittest.TestCase):
         self.assertEqual(cls(32, 64), cls(nlat=32, nlon=64))
 
 
-# (polar_size, azimuth_size) decompositions exercised against a global grid
-_DECOMPOSITIONS = [(1, 1), (2, 1), (1, 2), (2, 2), (3, 2), (4, 1)]
+# (polar_size, azimuth_size) decompositions exercised against a global grid. This is
+# the outer product of {1, 2, 4}, matching the grid sizes the distributed suites are
+# actually run at, plus (3, 2) so that an uneven split -- where the per-rank shapes
+# differ by one -- is covered too.
+_DECOMPOSITIONS = [(p, a) for p in (1, 2, 4) for a in (1, 2, 4)] + [(3, 2)]
 
 # global grids the decompositions are applied to; (13, 7) is deliberately awkward
 _GLOBAL_SHAPES = [(13, 7), (32, 64), (10, 8)]
