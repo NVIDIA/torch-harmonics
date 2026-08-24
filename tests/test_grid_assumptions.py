@@ -46,6 +46,7 @@ properties, so that the refactor can be validated against them:
 """
 
 import functools
+import inspect
 import math
 import unittest
 import warnings
@@ -56,7 +57,7 @@ from testutils import compare_tensors
 
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.filter_basis import get_filter_basis
-from torch_harmonics.grid import GridS2, as_grid, grid_types
+from torch_harmonics.grid import EquiangularGrid, EquiangularTrapezoidalGrid, GridS2, LegendreGaussGrid, LobattoGrid, as_grid, grid_types
 from torch_harmonics.quadrature import compute_latitude_spacing, compute_theta_cutoff, precompute_latitudes, precompute_longitudes
 
 _ALL_GRIDS = ["equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"]
@@ -64,7 +65,19 @@ _ALL_GRIDS = ["equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoid
 # grids on which the superseded pi / (nlat - 1) heuristic was too narrow near the poles
 _IRREGULAR_THETA_GRIDS = ["lobatto", "equiangular-trapezoidal"]
 
+# the class a caller would instantiate directly, against the name as_grid resolves
+_DIRECT_CLASSES = {
+    "equiangular": EquiangularGrid,
+    "legendre-gauss": LegendreGaussGrid,
+    "lobatto": LobattoGrid,
+    "equiangular-trapezoidal": EquiangularTrapezoidalGrid,
+}
+
+
 _NLATS = [33, 65, 129]
+
+# shapes used to compare the two construction routes; includes the smallest legal grid
+_PAIR_SHAPES = [(32, 64), (33, 64), (2, 1)]
 
 
 def _legacy_theta_cutoff(nlat: int) -> float:
@@ -447,6 +460,102 @@ class TestGridDescriptor(unittest.TestCase):
     def test_registry_covers_every_supported_grid_string(self):
         """A grid string accepted by precompute_latitudes must have a descriptor."""
         self.assertEqual(set(grid_types()), set(_ALL_GRIDS))
+
+
+class TestDirectConstructionMatchesFactory(unittest.TestCase):
+    """
+    A directly constructed grid and one built by :func:`as_grid` must be the same thing.
+
+    ``as_grid`` is a convenience for callers holding a grid *name*, not a separate
+    construction path, so ``EquiangularGrid(nlat=32, nlon=64)`` has to be
+    indistinguishable from ``as_grid("equiangular", (32, 64))``. Everything else in
+    the suite reaches for the factory, so without this the direct constructors are
+    effectively untested -- and they are what a user writes once they know which
+    grid they want.
+
+    The property comparison is driven by introspection rather than a hand-written
+    list, so a property added to :class:`GridS2` later is covered here the moment it
+    exists.
+    """
+
+    def _pair(self, name, shape):
+        nlat, nlon = shape
+        return _DIRECT_CLASSES[name](nlat=nlat, nlon=nlon), as_grid(name, shape)
+
+    @parameterized.expand([[name, shape] for name in grid_types() for shape in _PAIR_SHAPES])
+    def test_identity_matches(self, name, shape):
+        direct, factory = self._pair(name, shape)
+        self.assertIs(type(direct), type(factory))
+        self.assertEqual(direct, factory)
+        self.assertEqual(hash(direct), hash(factory))
+        self.assertEqual(direct.key, factory.key)
+        self.assertEqual(repr(direct), repr(factory))
+        self.assertEqual(len({direct, factory}), 1)
+
+    @parameterized.expand([[name] for name in grid_types()])
+    def test_factory_resolves_to_the_class_you_would_write(self, name):
+        """The registry must not drift from the concrete classes."""
+        self.assertIs(type(as_grid(name, (32, 64))), _DIRECT_CLASSES[name])
+
+    @parameterized.expand([[name, shape] for name in grid_types() for shape in _PAIR_SHAPES])
+    def test_every_property_matches(self, name, shape, verbose=False):
+        """
+        Compare every public property on the class, discovered by introspection.
+
+        This is the part that keeps working as GridS2 grows: a property whose value
+        depended on how the grid was built would be caught without anyone
+        remembering to extend a list here.
+        """
+        direct, factory = self._pair(name, shape)
+        names = sorted(n for n, _ in inspect.getmembers(type(direct), lambda m: isinstance(m, property)) if not n.startswith("_"))
+        self.assertGreater(len(names), 8, msg=f"introspection found only {names}, which suggests it stopped working")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)  # non-equiangular grids announce the changed theta_cutoff default
+            for prop in names:
+                with self.subTest(prop=prop):
+                    a, b = getattr(direct, prop), getattr(factory, prop)
+                    self.assertIs(type(a), type(b))
+                    if isinstance(a, torch.Tensor):
+                        self.assertTrue(compare_tensors(f"{name}{shape}.{prop}", a, b, atol=0.0, rtol=0.0, verbose=verbose))
+                    else:
+                        self.assertEqual(a, b)
+
+    @parameterized.expand([[name, shape] for name in grid_types() for shape in _PAIR_SHAPES])
+    def test_methods_match(self, name, shape, verbose=False):
+        """Properties are not the whole surface: lons() and theta_cutoff() are methods."""
+        direct, factory = self._pair(name, shape)
+        self.assertTrue(compare_tensors(f"{name}{shape}.lons()", direct.lons(), factory.lons(), atol=0.0, rtol=0.0, verbose=verbose))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            self.assertEqual(direct.theta_cutoff(), factory.theta_cutoff())
+            self.assertEqual(direct.theta_cutoff(scale=2.5), factory.theta_cutoff(scale=2.5))
+        self.assertEqual(direct.to_dict(), factory.to_dict())
+
+    @parameterized.expand([[name] for name in grid_types()])
+    def test_interchangeable_as_a_cache_key(self, name):
+        """The two routes must not produce two cache entries for one grid."""
+        calls = []
+
+        @functools.lru_cache(maxsize=None)
+        def _expensive(g):
+            calls.append(g)
+            return g.npoints
+
+        direct, factory = self._pair(name, (32, 64))
+        self.assertEqual(_expensive(direct), _expensive(factory))
+        self.assertEqual(len(calls), 1, msg=f"{name}: direct construction and as_grid missed each other's cache entry")
+
+    @parameterized.expand([[name] for name in grid_types()])
+    def test_round_trip_lands_on_the_same_grid_either_way(self, name):
+        direct, factory = self._pair(name, (32, 64))
+        self.assertEqual(GridS2.from_dict(direct.to_dict()), GridS2.from_dict(factory.to_dict()))
+        self.assertIs(type(GridS2.from_dict(direct.to_dict())), _DIRECT_CLASSES[name])
+
+    @parameterized.expand([[name] for name in grid_types()])
+    def test_positional_and_keyword_construction_agree(self, name):
+        cls = _DIRECT_CLASSES[name]
+        self.assertEqual(cls(32, 64), cls(nlat=32, nlon=64))
 
 
 if __name__ == "__main__":
