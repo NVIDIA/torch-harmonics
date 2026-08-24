@@ -18,6 +18,11 @@ convolution layers:
 The longitudinal direction always uses equispaced nodes (see
 `precompute_longitudes`).
 
+`geometric_weights` is not a latitudinal rule: it returns nodes that are
+equispaced in $\log x$ on a positive interval, together with the corresponding
+trapezoidal weights for $\int f \, \mathrm{d}x$. It is intended for radial
+directions spanning several decades.
+
 ```{eval-rst}
 .. currentmodule:: torch_harmonics.quadrature
 
@@ -31,6 +36,7 @@ The longitudinal direction always uses equispaced nodes (see
    lobatto_weights
    clenshaw_curtiss_weights
    trapezoidal_weights
+   geometric_weights
 ```
 
 ## Plotting
