@@ -102,8 +102,7 @@ def truncate_sht(grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] =
 
     Examples
     --------
-    >>> from torch_harmonics import truncate_sht
-    >>> from torch_harmonics.grid import as_grid
+    >>> from torch_harmonics import as_grid, truncate_sht
     >>> truncate_sht(as_grid("legendre-gauss", (128, 256)))
     (128, 128)
     >>> truncate_sht(as_grid("lobatto", (128, 256)))

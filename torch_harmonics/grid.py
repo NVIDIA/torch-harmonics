@@ -470,7 +470,7 @@ def as_grid(spec: Union[GridS2, str], shape: Optional[Tuple[int, int]] = None) -
 
     Examples
     --------
-    >>> from torch_harmonics.grid import as_grid
+    >>> from torch_harmonics import as_grid
     >>> as_grid("equiangular", (128, 256))
     EquiangularGrid(nlat=128, nlon=256)
     """

@@ -15,7 +15,7 @@ Use `as_grid` to build one, either from a grid type name and a shape or from an
 existing descriptor:
 
 ```python
-from torch_harmonics.grid import as_grid
+from torch_harmonics import as_grid
 
 grid = as_grid("legendre-gauss", (128, 256))
 grid.lats, grid.quad_weights     # nodes and weights
