@@ -29,32 +29,6 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-r"""
-Grid descriptors for spherical latitude--longitude grids.
-
-A :class:`GridS2` bundles everything a layer needs to know about the grid it
-operates on -- node positions, quadrature weights, and the derived quantities
-that used to be recomputed from ``nlat`` and a grid *string* at each call site.
-The intent is that a layer takes one descriptor per side instead of the
-``(nlat, nlon, grid)`` triple, so that new grid types can be added without
-touching every consumer.
-
-Design notes
-------------
-* **Hashing is by canonical key, never by tensor identity.** The node and weight
-  tensors are looked up lazily through the ``lru_cache`` in
-  :mod:`torch_harmonics.quadrature`, and are deliberately *not* dataclass fields.
-  A descriptor that carried tensors would fall back to identity hashing and
-  silently defeat every cache keyed on the grid.
-* **Raggedness is expressible from day one.** :attr:`nlon_per_lat` and
-  :attr:`lon_offsets` exist on the regular grids too, where they are trivial.
-  Consumers that cannot handle a ragged grid should assert :attr:`is_regular`
-  rather than assume a uniform ``nlon`` stride, so that reduced Gaussian grids
-  become an additive change instead of a second API break.
-* **Descriptors stop at the Python layer.** Compiled kernels keep taking plain
-  ints; modules unpack the descriptor before calling into them.
-"""
-
 from dataclasses import dataclass
 from typing import Any, ClassVar, Dict, Optional, Tuple, Type, Union
 
@@ -97,6 +71,23 @@ class GridS2:
         Number of latitudinal nodes. Must be at least 2.
     nlon : int
         Number of longitudinal nodes. Must be at least 1.
+
+    Notes
+    -----
+    Three properties of this type are load-bearing rather than incidental.
+
+    Identity is a canonical tuple of scalars, and :attr:`key` backs both hashing
+    and equality. Node and weight tensors are deliberately not fields: a descriptor
+    carrying tensors would fall back to identity hashing and silently defeat every
+    cache keyed on the grid.
+
+    :attr:`nlon_per_lat` and :attr:`lon_offsets` exist on the regular grids too,
+    where they are trivial. Consumers that cannot handle a ragged grid should assert
+    :attr:`is_regular` rather than assume a uniform ``nlon`` stride, so that reduced
+    Gaussian grids become an additive change instead of a second API break.
+
+    Descriptors stop at the Python layer: compiled kernels keep taking plain ints,
+    and modules unpack the descriptor before calling into them.
     """
 
     nlat: int

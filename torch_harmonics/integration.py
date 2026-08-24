@@ -29,17 +29,15 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-r"""
-Integration of scalar fields over the sphere.
-
-This module sits above :mod:`torch_harmonics.grid`: it consumes a grid descriptor
-rather than computing nodes and weights itself. The quadrature *rules* live below
-the descriptor, in :mod:`torch_harmonics.quadrature`, giving a strict layering of
-
-    quadrature (rules) -> grid (descriptors) -> integration (layers)
-
-with no cycle, which is why the layer cannot live alongside the rules.
-"""
+# Integration of scalar fields over the sphere.
+#
+# This module sits above torch_harmonics.grid: it consumes a grid descriptor rather
+# than computing nodes and weights itself. The quadrature rules live below the
+# descriptor, in torch_harmonics.quadrature, giving a strict layering of
+#
+#     quadrature (rules) -> grid (descriptors) -> integration (layers)
+#
+# with no cycle, which is why the layer cannot live alongside the rules.
 
 from typing import Optional
 

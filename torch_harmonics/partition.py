@@ -28,15 +28,13 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
-"""
-Balanced partitioning of a dimension across ranks.
-
-Deliberately free of any dependency on :mod:`torch.distributed`, so that both the
-grid descriptors and the distributed primitives can share one implementation. A
-second copy of this arithmetic in :mod:`torch_harmonics.grid` would be a bug
-waiting to happen: the two would have to agree exactly for a sharded grid to line
-up with the tensors the collectives move.
-"""
+# Balanced partitioning of a dimension across ranks.
+#
+# Deliberately free of any dependency on torch.distributed, so that both the grid
+# descriptors and the distributed primitives can share one implementation. A second
+# copy of this arithmetic in torch_harmonics.grid would be a bug waiting to happen:
+# the two would have to agree exactly for a sharded grid to line up with the tensors
+# the collectives move.
 
 from typing import List
 
