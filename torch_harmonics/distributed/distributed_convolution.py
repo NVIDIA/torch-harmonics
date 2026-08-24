@@ -43,7 +43,7 @@ from torch_harmonics.disco.convolution import (
 )
 from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_transpose_contraction_torch
 from torch_harmonics.disco.optimized.disco_optimized import _build_kernel_split_csr, _disco_s2_transpose_contraction_optimized, _maybe_kpack_psi, _split_csr_python_offsets
-from torch_harmonics.quadrature import compute_theta_cutoff
+from torch_harmonics.grid import GridS2, require_grid
 
 # a2a forward orchestration: standard (fused=False) and reordered (fused=True).
 from .kernels import (
@@ -69,8 +69,8 @@ from .utils import (
 def _split_distributed_convolution_tensor_s2(
     idx: torch.Tensor,
     vals: torch.Tensor,
-    in_shape: Tuple[int],
-    out_shape: Tuple[int],
+    grid_in: GridS2,
+    grid_out: GridS2,
 ):
     """
     Splits a pre-computed convolution tensor along the latitude dimension for distributed processing.
@@ -85,10 +85,11 @@ def _split_distributed_convolution_tensor_s2(
         Indices of the pre-computed convolution tensor
     vals : torch.Tensor
         Values of the pre-computed convolution tensor
-    in_shape : Tuple[int]
-        Shape of the input tensor (nlat_in, nlon_in)
-    out_shape : Tuple[int]
-        Shape of the output tensor (nlat_out, nlon_out)
+    grid_in : GridS2
+        Descriptor of the **global** input grid, not this rank's shard: the local
+        latitude range is derived here from the polar process group.
+    grid_out : GridS2
+        Descriptor of the **global** output grid.
 
     Returns
     -------
@@ -98,8 +99,10 @@ def _split_distributed_convolution_tensor_s2(
         Filtered values corresponding to the local latitude slice
     """
 
-    nlat_in, nlon_in = in_shape
-    nlat_out, nlon_out = out_shape
+    # these must be the global grids; require_grid rejects a GridShardS2, since
+    # sharding an already-sharded grid would silently select the wrong latitudes
+    nlat_in, nlon_in = require_grid(grid_in, "grid_in").shape
+    nlat_out, nlon_out = require_grid(grid_out, "grid_out").shape
 
     comm_size_polar = polar_group_size()
     comm_rank_polar = polar_group_rank()
@@ -154,10 +157,12 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         Number of input channels
     out_channels : int
         Number of output channels
-    in_shape : Tuple[int]
-        Shape of the input tensor
-    out_shape : Tuple[int]
-        Shape of the output tensor
+    grid_in : GridS2
+        Descriptor of the input grid; it carries the resolution as well as the
+        quadrature rule.
+    grid_out : GridS2
+        Descriptor of the output grid.
+        Both are the **global** grids; each rank derives its own slice.
     kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
     basis_type : Optional[str]
@@ -166,10 +171,6 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         Normalization mode for the filter basis
     groups : Optional[int]
         Number of groups
-    grid_in : Optional[str]
-        Grid type for the input tensor
-    grid_out : Optional[str]
-        Grid type for the output tensor
     bias : Optional[bool]
         Whether to use bias
     theta_cutoff : Optional[float]
@@ -198,14 +199,12 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self,
         in_channels: int,
         out_channels: int,
-        in_shape: Tuple[int],
-        out_shape: Tuple[int],
+        grid_in: GridS2,
+        grid_out: GridS2,
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
         basis_type: Optional[str] = "piecewise linear",
         basis_norm_mode: Optional[str] = "nodal",
         groups: Optional[int] = 1,
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         optimized_kernel: Optional[bool] = True,
@@ -223,8 +222,10 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 "K-expanded recompute in backward). Use fused=False otherwise."
             )
 
-        self.nlat_in, self.nlon_in = in_shape
-        self.nlat_out, self.nlon_out = out_shape
+        self.grid_in = require_grid(grid_in, "grid_in")
+        self.grid_out = require_grid(grid_out, "grid_out")
+        self.nlat_in, self.nlon_in = self.grid_in.shape
+        self.nlat_out, self.nlon_out = self.grid_out.shape
 
         # get the comms grid:
         self.comm_size_polar = polar_group_size()
@@ -240,7 +241,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # compute theta cutoff based on the bandlimit of the input field
         if theta_cutoff is None:
-            self.theta_cutoff = compute_theta_cutoff(self.nlat_out, grid=grid_out)
+            self.theta_cutoff = self.grid_out.theta_cutoff()
         else:
             self.theta_cutoff = theta_cutoff
 
@@ -262,17 +263,15 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # compute global convolution tensor
         idx, vals, _ = _precompute_convolution_tensor_s2(
-            in_shape,
-            out_shape,
+            self.grid_in,
+            self.grid_out,
             self.filter_basis,
-            grid_in=grid_in,
-            grid_out=grid_out,
             theta_cutoff=self.theta_cutoff,
             transpose_normalization=False,
             basis_norm_mode=basis_norm_mode,
             merge_quadrature=True,
         )
-        idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, in_shape, out_shape)
+        idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, self.grid_in, self.grid_out)
         self._build_local_psi(idx, vals)
 
     def _build_local_psi(self, idx: torch.Tensor, vals: torch.Tensor):
@@ -455,10 +454,12 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         Number of input channels
     out_channels : int
         Number of output channels
-    in_shape : Tuple[int]
-        Shape of the input tensor
-    out_shape : Tuple[int]
-        Shape of the output tensor
+    grid_in : GridS2
+        Descriptor of the input grid; it carries the resolution as well as the
+        quadrature rule.
+    grid_out : GridS2
+        Descriptor of the output grid.
+        Both are the **global** grids; each rank derives its own slice.
     kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
     basis_type : Optional[str]
@@ -467,10 +468,6 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         Normalization mode for the filter basis
     groups : Optional[int]
         Number of groups
-    grid_in : Optional[str]
-        Grid type for the input tensor
-    grid_out : Optional[str]
-        Grid type for the output tensor
     bias : Optional[bool]
         Whether to use bias
     theta_cutoff : Optional[float]
@@ -490,22 +487,22 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self,
         in_channels: int,
         out_channels: int,
-        in_shape: Tuple[int],
-        out_shape: Tuple[int],
+        grid_in: GridS2,
+        grid_out: GridS2,
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
         basis_type: Optional[str] = "piecewise linear",
         basis_norm_mode: Optional[str] = "nodal",
         groups: Optional[int] = 1,
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         optimized_kernel: Optional[bool] = True,
     ):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
-        self.nlat_in, self.nlon_in = in_shape
-        self.nlat_out, self.nlon_out = out_shape
+        self.grid_in = require_grid(grid_in, "grid_in")
+        self.grid_out = require_grid(grid_out, "grid_out")
+        self.nlat_in, self.nlon_in = self.grid_in.shape
+        self.nlat_out, self.nlon_out = self.grid_out.shape
 
         # get the comms grid:
         self.comm_size_polar = polar_group_size()
@@ -521,7 +518,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # bandlimit
         if theta_cutoff is None:
-            self.theta_cutoff = compute_theta_cutoff(self.nlat_in, grid=grid_in)
+            self.theta_cutoff = self.grid_in.theta_cutoff()
         else:
             self.theta_cutoff = theta_cutoff
 
@@ -540,11 +537,9 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         # switch in_shape and out_shape since we want transpose conv
         # distributed mode here is swapped because of the transpose
         idx, vals, _ = _precompute_convolution_tensor_s2(
-            out_shape,
-            in_shape,
+            self.grid_out,
+            self.grid_in,
             self.filter_basis,
-            grid_in=grid_out,
-            grid_out=grid_in,
             theta_cutoff=self.theta_cutoff,
             transpose_normalization=True,
             basis_norm_mode=basis_norm_mode,
@@ -553,7 +548,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # split the convolution tensor along latitude, again, we need to swap the meaning
         # of in_shape and out_shape
-        idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, out_shape, in_shape)
+        idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, self.grid_out, self.grid_in)
 
         # sort the values
         ker_idx = idx[0, ...].contiguous()

@@ -97,12 +97,10 @@ class DiscreteContinuousEncoder(nn.Module):
         self.conv = DiscreteContinuousConvS2(
             in_chans,
             out_chans,
-            in_shape=in_shape,
-            out_shape=out_shape,
+            as_grid(grid_in, in_shape),
+            as_grid(grid_out, out_shape),
             kernel_shape=kernel_shape,
             basis_type=basis_type,
-            grid_in=grid_in,
-            grid_out=grid_out,
             groups=groups,
             bias=bias,
             theta_cutoff=_compute_cutoff_radius(in_shape[0], kernel_shape, basis_type),
@@ -175,18 +173,16 @@ class DiscreteContinuousDecoder(nn.Module):
             self.isht = InverseRealSHT(as_grid(grid_out, out_shape), lmax=self.sht.lmax, mmax=self.sht.mmax).float()
             self.upsample = nn.Sequential(self.sht, self.isht)
         else:
-            self.upsample = ResampleS2(*in_shape, *out_shape, grid_in=grid_in, grid_out=grid_out)
+            self.upsample = ResampleS2(as_grid(grid_in, in_shape), as_grid(grid_out, out_shape))
 
         # set up DISCO convolution
         self.conv = DiscreteContinuousConvS2(
             in_chans,
             out_chans,
-            in_shape=out_shape,
-            out_shape=out_shape,
+            as_grid(grid_out, out_shape),
+            as_grid(grid_out, out_shape),
             kernel_shape=kernel_shape,
             basis_type=basis_type,
-            grid_in=grid_out,
-            grid_out=grid_out,
             groups=groups,
             bias=False,
             theta_cutoff=_compute_cutoff_radius(in_shape[0], kernel_shape, basis_type),
@@ -289,10 +285,8 @@ class SphericalAttentionBlock(nn.Module):
                 theta_cutoff = (7.0 / math.sqrt(math.pi)) * math.pi / (in_shape[0] - 1)
             self.self_attn = NeighborhoodAttentionS2(
                 in_channels=in_chans,
-                in_shape=in_shape,
-                out_shape=out_shape,
-                grid_in=grid_in,
-                grid_out=grid_out,
+                grid_in=as_grid(grid_in, in_shape),
+                grid_out=as_grid(grid_out, out_shape),
                 num_heads=num_heads,
                 theta_cutoff=theta_cutoff,
                 k_channels=None,

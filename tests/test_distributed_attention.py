@@ -299,10 +299,8 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         attn_args = dict(
             in_channels=C,
-            in_shape=(nlat_in, nlon_in),
-            out_shape=(nlat_out, nlon_out),
-            grid_in=grid_in,
-            grid_out=grid_out,
+            grid_in=th.as_grid(grid_in, (nlat_in, nlon_in)),
+            grid_out=th.as_grid(grid_out, (nlat_out, nlon_out)),
             num_heads=num_heads,
             bias=True,
             use_qknorm=use_qknorm,
@@ -441,10 +439,8 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         attn_args = dict(
             in_channels=C,
-            in_shape=(nlat_in, nlon_in),
-            out_shape=(nlat_out, nlon_out),
-            grid_in=grid_in,
-            grid_out=grid_out,
+            grid_in=th.as_grid(grid_in, (nlat_in, nlon_in)),
+            grid_out=th.as_grid(grid_out, (nlat_out, nlon_out)),
             num_heads=num_heads,
             bias=True,
             use_qknorm=False,
@@ -548,10 +544,8 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         attn = thd.DistributedNeighborhoodAttentionS2(
             in_channels=C,
-            in_shape=in_shape,
-            out_shape=out_shape,
-            grid_in="equiangular",
-            grid_out="equiangular",
+            grid_in=th.as_grid("equiangular", in_shape),
+            grid_out=th.as_grid("equiangular", out_shape),
             num_heads=1,
             bias=False,
         ).to(self.device)

@@ -35,7 +35,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from torch_harmonics.grid import as_grid
+from torch_harmonics.grid import GridS2, require_grid
 
 from .primitives import compute_split_shapes, copy_to_azimuth_region, distributed_transpose_azimuth, distributed_transpose_polar, reduce_from_azimuth_region
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -75,12 +75,8 @@ class DistributedResampleS2(nn.Module):
 
     def __init__(
         self,
-        nlat_in: int,
-        nlon_in: int,
-        nlat_out: int,
-        nlon_out: int,
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
+        grid_in: GridS2,
+        grid_out: GridS2,
         mode: Optional[str] = "bilinear",
     ):
 
@@ -92,11 +88,10 @@ class DistributedResampleS2(nn.Module):
         else:
             raise NotImplementedError(f"unknown interpolation mode {mode}")
 
-        self.nlat_in, self.nlon_in = nlat_in, nlon_in
-        self.nlat_out, self.nlon_out = nlat_out, nlon_out
-
-        self.grid_in = grid_in
-        self.grid_out = grid_out
+        self.grid_in = require_grid(grid_in, "grid_in")
+        self.grid_out = require_grid(grid_out, "grid_out")
+        self.nlat_in, self.nlon_in = self.grid_in.shape
+        self.nlat_out, self.nlon_out = self.grid_out.shape
 
         # get the comms grid:
         self.comm_size_polar = polar_group_size()
@@ -111,12 +106,10 @@ class DistributedResampleS2(nn.Module):
         self.lon_out_shapes = compute_split_shapes(self.nlon_out, self.comm_size_azimuth)
 
         # for upscaling the latitudes we will use interpolation
-        self.input_grid = as_grid(grid_in, (nlat_in, nlon_in))
-        self.output_grid = as_grid(grid_out, (nlat_out, nlon_out))
-        self.lats_in = self.input_grid.lats
-        self.lons_in = self.input_grid.lons()
-        self.lats_out = self.output_grid.lats
-        self.lons_out = self.output_grid.lons()
+        self.lats_in = self.grid_in.lats
+        self.lons_in = self.grid_in.lons()
+        self.lats_out = self.grid_out.lats
+        self.lons_out = self.grid_out.lons()
 
         # in the case where some points lie outside of the range spanned by lats_in,
         # we need to expand the solution to the poles before interpolating
@@ -154,7 +147,9 @@ class DistributedResampleS2(nn.Module):
         self.register_buffer("lon_idx_right", lon_idx_right, persistent=False)
         self.register_buffer("lon_weights", lon_weights, persistent=False)
 
-        self.skip_resampling = (nlon_in == nlon_out) and (nlat_in == nlat_out) and (grid_in == grid_out)
+        # descriptor equality covers the grid type and both extents, which is exactly
+        # the conjunction this used to spell out
+        self.skip_resampling = self.grid_in == self.grid_out
 
     def extra_repr(self):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}"

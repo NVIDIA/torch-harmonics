@@ -40,8 +40,7 @@ from disco_helpers import optimized_kernels_is_available, pack_psi_dense, prepro
 
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
-from torch_harmonics.grid import as_grid
-from torch_harmonics.quadrature import compute_theta_cutoff
+from torch_harmonics.grid import GridS2, require_grid
 
 from ._disco_utils import _get_psi
 from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
@@ -235,11 +234,9 @@ def _normalize_convolution_tensor_s2(
 
 @lru_cache(typed=True, copy=True)
 def _precompute_convolution_tensor_s2(
-    in_shape: Tuple[int],
-    out_shape: Tuple[int],
+    grid_in: GridS2,
+    grid_out: GridS2,
     filter_basis: FilterBasis,
-    grid_in: Optional[str] = "equiangular",
-    grid_out: Optional[str] = "equiangular",
     theta_cutoff: Optional[float] = 0.01 * math.pi,
     theta_eps: Optional[float] = 1e-3,
     transpose_normalization: Optional[bool] = False,
@@ -263,16 +260,12 @@ def _precompute_convolution_tensor_s2(
 
     Parameters
     ----------
-    in_shape : Tuple[int]
-        Input shape of the convolution tensor
-    out_shape : Tuple[int]
-        Output shape of the convolution tensor
+    grid_in : GridS2
+        Descriptor of the input grid
+    grid_out : GridS2
+        Descriptor of the output grid
     filter_basis : FilterBasis
         Filter basis functions
-    grid_in : str
-        Input grid type
-    grid_out : str
-        Output grid type
     theta_cutoff : float
         Theta cutoff for the filter basis functions
     theta_eps : float
@@ -293,19 +286,16 @@ def _precompute_convolution_tensor_s2(
 
     """
 
-    if len(in_shape) != 2:
-        raise ValueError(f"in_shape must be a 2-tuple (nlat, nlon), got length {len(in_shape)}")
-    if len(out_shape) != 2:
-        raise ValueError(f"out_shape must be a 2-tuple (nlat, nlon), got length {len(out_shape)}")
+    # the descriptors carry the shapes, so the old 2-tuple validation is gone; what
+    # is still worth rejecting is a shard, whose latitudes are only part of the sphere
+    input_grid = require_grid(grid_in, "grid_in")
+    output_grid = require_grid(grid_out, "grid_out")
+    in_shape, out_shape = input_grid.shape, output_grid.shape
 
     kernel_size = filter_basis.kernel_size
 
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
-
-    # precompute input and output grids
-    input_grid = as_grid(grid_in, in_shape)
-    output_grid = as_grid(grid_out, out_shape)
     lats_in, win = input_grid.lats, input_grid.quad_weights
     lats_out, wout = output_grid.lats, output_grid.quad_weights
 
@@ -501,10 +491,11 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         Number of input channels
     out_channels : int
         Number of output channels
-    in_shape : Tuple[int]
-        Input shape of the convolution tensor
-    out_shape : Tuple[int]
-        Output shape of the convolution tensor
+    grid_in : GridS2
+        Descriptor of the input grid; it carries the resolution as well as the
+        quadrature rule.
+    grid_out : GridS2
+        Descriptor of the output grid.
     kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
     basis_type : Optional[str]
@@ -513,10 +504,6 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         Mode for basis normalization
     groups : Optional[int]
         Number of groups
-    grid_in : Optional[str]
-        Input grid type
-    grid_out : Optional[str]
-        Output grid type
     bias : Optional[bool]
         Whether to use bias
     theta_cutoff : Optional[float]
@@ -538,14 +525,12 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self,
         in_channels: int,
         out_channels: int,
-        in_shape: Tuple[int],
-        out_shape: Tuple[int],
+        grid_in: GridS2,
+        grid_out: GridS2,
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
         basis_type: Optional[str] = "piecewise linear",
         basis_norm_mode: Optional[str] = "nodal",
         groups: Optional[int] = 1,
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         optimized_kernel: Optional[bool] = True,
@@ -554,8 +539,10 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
         self.fused = fused and self.optimized_kernel
-        self.nlat_in, self.nlon_in = in_shape
-        self.nlat_out, self.nlon_out = out_shape
+        self.grid_in = require_grid(grid_in, "grid_in")
+        self.grid_out = require_grid(grid_out, "grid_out")
+        self.nlat_in, self.nlon_in = self.grid_in.shape
+        self.nlat_out, self.nlon_out = self.grid_out.shape
         self.kpacked_device_supported = False
 
         # make sure the p-shift works by checking that longitudes are divisible
@@ -564,7 +551,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
         if theta_cutoff is None:
-            self.theta_cutoff = compute_theta_cutoff(self.nlat_out, grid=grid_out)
+            self.theta_cutoff = self.grid_out.theta_cutoff()
         else:
             self.theta_cutoff = theta_cutoff
 
@@ -572,11 +559,9 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             raise ValueError("Error, theta_cutoff has to be positive.")
 
         idx, vals, _ = _precompute_convolution_tensor_s2(
-            in_shape,
-            out_shape,
+            self.grid_in,
+            self.grid_out,
             self.filter_basis,
-            grid_in=grid_in,
-            grid_out=grid_out,
             theta_cutoff=self.theta_cutoff,
             transpose_normalization=False,
             basis_norm_mode=basis_norm_mode,
@@ -871,10 +856,11 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         Number of input channels
     out_channels : int
         Number of output channels
-    in_shape : Tuple[int]
-        Input shape of the convolution tensor
-    out_shape : Tuple[int]
-        Output shape of the convolution tensor
+    grid_in : GridS2
+        Descriptor of the input grid; it carries the resolution as well as the
+        quadrature rule.
+    grid_out : GridS2
+        Descriptor of the output grid.
     kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
     basis_type : Optional[str]
@@ -883,10 +869,6 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         Mode for basis normalization
     groups : Optional[int]
         Number of groups
-    grid_in : Optional[str]
-        Input grid type
-    grid_out : Optional[str]
-        Output grid type
     bias : Optional[bool]
         Whether to use bias
     theta_cutoff : Optional[float]
@@ -903,22 +885,22 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self,
         in_channels: int,
         out_channels: int,
-        in_shape: Tuple[int],
-        out_shape: Tuple[int],
+        grid_in: GridS2,
+        grid_out: GridS2,
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
         basis_type: Optional[str] = "piecewise linear",
         basis_norm_mode: Optional[str] = "nodal",
         groups: Optional[int] = 1,
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         optimized_kernel: Optional[bool] = True,
     ):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
-        self.nlat_in, self.nlon_in = in_shape
-        self.nlat_out, self.nlon_out = out_shape
+        self.grid_in = require_grid(grid_in, "grid_in")
+        self.grid_out = require_grid(grid_out, "grid_out")
+        self.nlat_in, self.nlon_in = self.grid_in.shape
+        self.nlat_out, self.nlon_out = self.grid_out.shape
 
         # make sure the p-shift works by checking that longitudes are divisible
         if self.nlon_out % self.nlon_in != 0:
@@ -926,7 +908,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # bandlimit
         if theta_cutoff is None:
-            self.theta_cutoff = compute_theta_cutoff(self.nlat_in, grid=grid_in)
+            self.theta_cutoff = self.grid_in.theta_cutoff()
         else:
             self.theta_cutoff = theta_cutoff
 
@@ -935,11 +917,9 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # switch in_shape and out_shape since we want the transpose convolution
         idx, vals, _ = _precompute_convolution_tensor_s2(
-            out_shape,
-            in_shape,
+            self.grid_out,
+            self.grid_in,
             self.filter_basis,
-            grid_in=grid_out,
-            grid_out=grid_in,
             theta_cutoff=self.theta_cutoff,
             transpose_normalization=True,
             basis_norm_mode=basis_norm_mode,

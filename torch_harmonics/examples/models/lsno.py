@@ -97,12 +97,10 @@ class DiscreteContinuousEncoder(nn.Module):
         self.conv = DiscreteContinuousConvS2(
             inp_chans,
             out_chans,
-            in_shape=in_shape,
-            out_shape=out_shape,
+            as_grid(grid_in, in_shape),
+            as_grid(grid_out, out_shape),
             kernel_shape=kernel_shape,
             basis_type=basis_type,
-            grid_in=grid_in,
-            grid_out=grid_out,
             groups=groups,
             bias=bias,
             theta_cutoff=_compute_cutoff_radius(in_shape[0], kernel_shape, basis_type),
@@ -175,18 +173,16 @@ class DiscreteContinuousDecoder(nn.Module):
             self.isht = InverseRealSHT(as_grid(grid_out, out_shape), lmax=self.sht.lmax, mmax=self.sht.mmax).float()
             self.upsample = nn.Sequential(self.sht, self.isht)
         else:
-            self.upsample = ResampleS2(*in_shape, *out_shape, grid_in=grid_in, grid_out=grid_out)
+            self.upsample = ResampleS2(as_grid(grid_in, in_shape), as_grid(grid_out, out_shape))
 
         # set up DISCO convolution
         self.conv = DiscreteContinuousConvS2(
             inp_chans,
             out_chans,
-            in_shape=out_shape,
-            out_shape=out_shape,
+            as_grid(grid_out, out_shape),
+            as_grid(grid_out, out_shape),
             kernel_shape=kernel_shape,
             basis_type=basis_type,
-            grid_in=grid_out,
-            grid_out=grid_out,
             groups=groups,
             bias=False,
             theta_cutoff=_compute_cutoff_radius(in_shape[0], kernel_shape, basis_type),
@@ -285,12 +281,10 @@ class SphericalNeuralOperatorBlock(nn.Module):
             self.local_conv = DiscreteContinuousConvS2(
                 input_dim,
                 output_dim,
-                in_shape=(forward_transform.nlat, forward_transform.nlon),
-                out_shape=(inverse_transform.nlat, inverse_transform.nlon),
+                as_grid(forward_transform.grid, (forward_transform.nlat, forward_transform.nlon)),
+                as_grid(inverse_transform.grid, (inverse_transform.nlat, inverse_transform.nlon)),
                 kernel_shape=disco_kernel_shape,
                 basis_type=disco_basis_type,
-                grid_in=forward_transform.grid,
-                grid_out=inverse_transform.grid,
                 bias=bias,
                 theta_cutoff=theta_cutoff,
             )

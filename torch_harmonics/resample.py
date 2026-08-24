@@ -36,7 +36,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from torch_harmonics.grid import as_grid
+from torch_harmonics.grid import GridS2, require_grid
 
 
 class ResampleS2(nn.Module):
@@ -100,7 +100,7 @@ class ResampleS2(nn.Module):
     --------
     >>> import torch
     >>> import torch_harmonics as th
-    >>> resample = th.ResampleS2(64, 128, 128, 256).cuda()
+    >>> resample = th.ResampleS2(th.as_grid("equiangular", (64, 128)), th.as_grid("equiangular", (128, 256))).cuda()
     >>> x = torch.randn(1, 64, 128, device="cuda")
     >>> y = resample(x)
     >>> y.shape
@@ -109,12 +109,8 @@ class ResampleS2(nn.Module):
 
     def __init__(
         self,
-        nlat_in: int,
-        nlon_in: int,
-        nlat_out: int,
-        nlon_out: int,
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
+        grid_in: GridS2,
+        grid_out: GridS2,
         mode: Optional[str] = "bilinear",
     ):
 
@@ -126,19 +122,16 @@ class ResampleS2(nn.Module):
         else:
             raise NotImplementedError(f"unknown interpolation mode {mode}")
 
-        self.nlat_in, self.nlon_in = nlat_in, nlon_in
-        self.nlat_out, self.nlon_out = nlat_out, nlon_out
-
-        self.grid_in = grid_in
-        self.grid_out = grid_out
+        self.grid_in = require_grid(grid_in, "grid_in")
+        self.grid_out = require_grid(grid_out, "grid_out")
+        self.nlat_in, self.nlon_in = self.grid_in.shape
+        self.nlat_out, self.nlon_out = self.grid_out.shape
 
         # for upscaling the latitudes we will use interpolation
-        self.input_grid = as_grid(grid_in, (nlat_in, nlon_in))
-        self.output_grid = as_grid(grid_out, (nlat_out, nlon_out))
-        self.lats_in = self.input_grid.lats
-        self.lons_in = self.input_grid.lons()
-        self.lats_out = self.output_grid.lats
-        self.lons_out = self.output_grid.lons()
+        self.lats_in = self.grid_in.lats
+        self.lons_in = self.grid_in.lons()
+        self.lats_out = self.grid_out.lats
+        self.lons_out = self.grid_out.lons()
 
         # in the case where some points lie outside of the range spanned by lats_in,
         # we need to expand the solution to the poles before interpolating
@@ -178,7 +171,9 @@ class ResampleS2(nn.Module):
         self.register_buffer("lon_idx_right", lon_idx_right, persistent=False)
         self.register_buffer("lon_weights", lon_weights, persistent=False)
 
-        self.skip_resampling = (nlon_in == nlon_out) and (nlat_in == nlat_out) and (grid_in == grid_out)
+        # descriptor equality covers the grid type and both extents, which is exactly
+        # the conjunction this used to spell out
+        self.skip_resampling = self.grid_in == self.grid_out
 
     def extra_repr(self):
         return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}"

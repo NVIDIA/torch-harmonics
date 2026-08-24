@@ -125,12 +125,8 @@ class TestDistributedResampling(unittest.TestCase):
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
 
         res_args = dict(
-            nlat_in=nlat_in,
-            nlon_in=nlon_in,
-            nlat_out=nlat_out,
-            nlon_out=nlon_out,
-            grid_in=grid_in,
-            grid_out=grid_out,
+            grid_in=th.as_grid(grid_in, (nlat_in, nlon_in)),
+            grid_out=th.as_grid(grid_out, (nlat_out, nlon_out)),
             mode=mode,
         )
 

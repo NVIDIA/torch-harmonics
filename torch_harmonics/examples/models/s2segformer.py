@@ -37,6 +37,7 @@ import torch.nn as nn
 
 from torch_harmonics import AttentionS2, DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2, NeighborhoodAttentionS2, ResampleS2
 from torch_harmonics.examples.models._layers import MLP, DropPath
+from torch_harmonics.grid import as_grid
 
 
 # heuristic for finding theta_cutoff
@@ -94,12 +95,10 @@ class OverlapPatchMerging(nn.Module):
         self.conv = DiscreteContinuousConvS2(
             in_channels,
             out_channels,
-            in_shape=in_shape,
-            out_shape=out_shape,
+            as_grid(grid_in, in_shape),
+            as_grid(grid_out, out_shape),
             kernel_shape=kernel_shape,
             basis_type=basis_type,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=bias,
             theta_cutoff=theta_cutoff,
         )
@@ -195,12 +194,10 @@ class MixFFN(nn.Module):
         self.conv = DiscreteContinuousConvS2(
             inout_channels,
             inout_channels,
-            in_shape=shape,
-            out_shape=shape,
+            as_grid(grid, shape),
+            as_grid(grid, shape),
             kernel_shape=kernel_shape,
             basis_type=basis_type,
-            grid_in=grid,
-            grid_out=grid,
             groups=inout_channels,
             bias=conv_bias,
             theta_cutoff=theta_cutoff,
@@ -290,10 +287,8 @@ class AttentionWrapper(nn.Module):
                 theta_cutoff = (7.0 / math.sqrt(math.pi)) * math.pi / (shape[0] - 1)
             self.att = NeighborhoodAttentionS2(
                 in_channels=channels,
-                in_shape=shape,
-                out_shape=shape,
-                grid_in=grid,
-                grid_out=grid,
+                grid_in=as_grid(grid, shape),
+                grid_out=as_grid(grid, shape),
                 theta_cutoff=theta_cutoff,
                 out_channels=channels,
                 num_heads=heads,
@@ -551,17 +546,15 @@ class Upsampling(nn.Module):
             self.upsample = DiscreteContinuousConvTransposeS2(
                 out_channels,
                 out_channels,
-                in_shape=in_shape,
-                out_shape=out_shape,
+                as_grid(grid_in, in_shape),
+                as_grid(grid_out, out_shape),
                 kernel_shape=kernel_shape,
                 basis_type=basis_type,
-                grid_in=grid_in,
-                grid_out=grid_out,
                 bias=conv_bias,
                 theta_cutoff=theta_cutoff,
             )
         elif upsampling_method == "bilinear":
-            self.upsample = ResampleS2(*in_shape, *out_shape, grid_in=grid_in, grid_out=grid_out)
+            self.upsample = ResampleS2(as_grid(grid_in, in_shape), as_grid(grid_out, out_shape))
         else:
             raise ValueError(f"Unknown upsampling method {upsampling_method}")
 

@@ -40,7 +40,7 @@ from parameterized import parameterized, parameterized_class
 from testutils import _is_sm90, _is_sm100, compare_tensors, disable_tf32, maybe_autocast, set_seed
 from torch.library import opcheck
 
-from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
+from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2, as_grid
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
 from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
@@ -323,11 +323,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         theta_cutoff = compute_theta_cutoff(nlat_out, grid=grid_out)
 
         idx, vals, _ = _precompute_convolution_tensor_s2(
-            in_shape=in_shape,
-            out_shape=out_shape,
+            as_grid(grid_in, in_shape),
+            as_grid(grid_out, out_shape),
             filter_basis=filter_basis,
-            grid_in=grid_in,
-            grid_out=grid_out,
             theta_cutoff=theta_cutoff,
             transpose_normalization=False,
             basis_norm_mode=basis_norm_mode,
@@ -1170,14 +1168,12 @@ class TestKpackedPath(unittest.TestCase):
         conv = DiscreteContinuousConvS2(
             in_channels=channels,
             out_channels=channels,
-            in_shape=in_shape,
-            out_shape=out_shape,
+            grid_in=as_grid(grid_in, in_shape),
+            grid_out=as_grid(grid_out, out_shape),
             kernel_shape=(3, 3),
             basis_type="harmonic",
             basis_norm_mode="nodal",
             groups=1,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=False,
             theta_cutoff=theta_cutoff,
             fused=fused,
@@ -1268,14 +1264,12 @@ class TestKpackedPath(unittest.TestCase):
                 conv_fp32 = DiscreteContinuousConvS2(
                     in_channels=channels,
                     out_channels=channels,
-                    in_shape=in_shape,
-                    out_shape=in_shape,
+                    grid_in=as_grid("legendre-gauss", in_shape),
+                    grid_out=as_grid("legendre-gauss", in_shape),
                     kernel_shape=(3, 3),
                     basis_type="harmonic",
                     basis_norm_mode="nodal",
                     groups=1,
-                    grid_in="legendre-gauss",
-                    grid_out="legendre-gauss",
                     bias=False,
                     theta_cutoff=0.05,
                 ).to(device=self.device, dtype=torch.float32)

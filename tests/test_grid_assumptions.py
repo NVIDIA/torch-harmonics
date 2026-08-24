@@ -197,11 +197,9 @@ class TestThetaCutoffPsiRegression(unittest.TestCase):
 
         def _psi(theta_cutoff):
             idx, vals, _ = _precompute_convolution_tensor_s2(
-                (nlat, nlon),
-                (nlat, nlon),
+                as_grid("equiangular", (nlat, nlon)),
+                as_grid("equiangular", (nlat, nlon)),
                 filter_basis,
-                grid_in="equiangular",
-                grid_out="equiangular",
                 theta_cutoff=theta_cutoff,
                 transpose_normalization=False,
                 basis_norm_mode="mean",

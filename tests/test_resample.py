@@ -35,7 +35,7 @@ import torch
 from parameterized import parameterized, parameterized_class
 from testutils import compare_tensors, set_seed
 
-from torch_harmonics import ResampleS2
+from torch_harmonics import ResampleS2, as_grid
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
 
 _devices = [(torch.device("cpu"),)]
@@ -58,7 +58,7 @@ class TestResampleS2(unittest.TestCase):
         """Identical input/output grid → skip_resampling=True and output is the same object."""
         set_seed(333)
 
-        resample = ResampleS2(nlat, nlon, nlat, nlon, grid_in=grid, grid_out=grid).to(self.device)
+        resample = ResampleS2(as_grid(grid, (nlat, nlon)), as_grid(grid, (nlat, nlon))).to(self.device)
 
         self.assertTrue(resample.skip_resampling, "skip_resampling should be True for identical grids")
 
@@ -86,7 +86,7 @@ class TestResampleS2(unittest.TestCase):
         """A constant field f=1 must be reproduced exactly under any resampling."""
         set_seed(333)
 
-        resample = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out, grid_in=grid_in, grid_out=grid_out, mode=mode).to(self.device)
+        resample = ResampleS2(as_grid(grid_in, (nlat_in, nlon_in)), as_grid(grid_out, (nlat_out, nlon_out)), mode=mode).to(self.device)
 
         data = torch.ones(2, 3, nlat_in, nlon_in, dtype=torch.float32, device=self.device)
         out = resample(data)
@@ -111,7 +111,7 @@ class TestResampleS2(unittest.TestCase):
         """Bilinear interpolation is exact for f(θ,φ)=θ (linear in latitude)."""
         set_seed(333)
 
-        resample = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out, grid_in=grid_in, grid_out=grid_out).to(self.device)
+        resample = ResampleS2(as_grid(grid_in, (nlat_in, nlon_in)), as_grid(grid_out, (nlat_out, nlon_out))).to(self.device)
 
         # self.assertFalse(resample.expand_poles,
         #                 f"expand_poles must be False for this test ({grid_in}→{grid_out}), "
@@ -149,7 +149,7 @@ class TestResampleS2(unittest.TestCase):
         """Upsampling in longitude handles the 2π→0 periodic wrap-around correctly."""
         set_seed(333)
 
-        resample = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out, grid_in=grid_in, grid_out=grid_out).to(self.device)
+        resample = ResampleS2(as_grid(grid_in, (nlat_in, nlon_in)), as_grid(grid_out, (nlat_out, nlon_out))).to(self.device)
 
         lons_in = precompute_longitudes(nlon_in)
         lons_out = precompute_longitudes(nlon_out)

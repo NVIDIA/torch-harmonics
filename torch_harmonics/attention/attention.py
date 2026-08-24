@@ -30,7 +30,7 @@
 #
 
 import math
-from typing import Optional, Tuple, Union
+from typing import Optional, Union
 
 import torch
 import torch.nn as nn
@@ -43,8 +43,7 @@ from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhoo
 from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_optimized
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.filter_basis import get_filter_basis
-from torch_harmonics.grid import as_grid
-from torch_harmonics.quadrature import compute_theta_cutoff
+from torch_harmonics.grid import GridS2, require_grid
 
 
 class AttentionS2(nn.Module):
@@ -75,14 +74,11 @@ class AttentionS2(nn.Module):
         number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
     num_heads : int
         number of attention heads
-    in_shape : tuple
-        shape of the input grid
-    out_shape : tuple
-        shape of the output grid
-    grid_in : str, optional
-        input grid type, ``"equiangular"`` by default
-    grid_out : str, optional
-        output grid type, ``"equiangular"`` by default
+    grid_in : GridS2
+        Descriptor of the input grid; it carries the resolution as well as the
+        quadrature rule.
+    grid_out : GridS2
+        Descriptor of the output grid.
     bias : bool, optional
         if specified, adds bias to input / output projection layers
     k_channels : int
@@ -99,10 +95,8 @@ class AttentionS2(nn.Module):
         self,
         in_channels: int,
         num_heads: int,
-        in_shape: Tuple[int],
-        out_shape: Tuple[int],
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
+        grid_in: GridS2,
+        grid_out: GridS2,
         scale: Optional[Union[torch.Tensor, float]] = None,
         use_qknorm: Optional[bool] = False,
         bias: Optional[bool] = True,
@@ -112,8 +106,10 @@ class AttentionS2(nn.Module):
     ):
         super().__init__()
 
-        self.nlat_in, self.nlon_in = in_shape
-        self.nlat_out, self.nlon_out = out_shape
+        self.grid_in = require_grid(grid_in, "grid_in")
+        self.grid_out = require_grid(grid_out, "grid_out")
+        self.nlat_in, self.nlon_in = self.grid_in.shape
+        self.nlat_out, self.nlon_out = self.grid_out.shape
 
         if self.nlon_in % self.nlon_out != 0:
             raise ValueError(f"nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}) for the attention p-shift to be exact")
@@ -126,7 +122,7 @@ class AttentionS2(nn.Module):
         self.scale = scale
 
         # integration weights
-        wgl = as_grid(grid_in, (self.nlat_in, self.nlon_in)).quad_weights
+        wgl = self.grid_in.quad_weights
         quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
         # we need to tile and flatten them accordingly
         quad_weights = torch.tile(quad_weights.reshape(-1, 1), (1, self.nlon_in)).flatten()
@@ -285,14 +281,11 @@ class NeighborhoodAttentionS2(nn.Module):
     ----------
     in_channels : int
         number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
-    in_shape : tuple
-        shape of the input grid
-    out_shape : tuple
-        shape of the output grid
-    grid_in : str, optional
-        input grid type, ``"equiangular"`` by default
-    grid_out : str, optional
-        output grid type, ``"equiangular"`` by default
+    grid_in : GridS2
+        Descriptor of the input grid; it carries the resolution as well as the
+        quadrature rule.
+    grid_out : GridS2
+        Descriptor of the output grid.
     bias : bool, optional
         if specified, adds bias to input / output projection layers
     theta_cutoff : float, optional
@@ -316,10 +309,8 @@ class NeighborhoodAttentionS2(nn.Module):
     def __init__(
         self,
         in_channels: int,
-        in_shape: Tuple[int],
-        out_shape: Tuple[int],
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
+        grid_in: GridS2,
+        grid_out: GridS2,
         num_heads: Optional[int] = 1,
         scale: Optional[Union[torch.Tensor, float]] = None,
         use_qknorm: Optional[bool] = False,
@@ -331,8 +322,10 @@ class NeighborhoodAttentionS2(nn.Module):
     ):
         super().__init__()
 
-        self.nlat_in, self.nlon_in = in_shape
-        self.nlat_out, self.nlon_out = out_shape
+        self.grid_in = require_grid(grid_in, "grid_in")
+        self.grid_out = require_grid(grid_out, "grid_out")
+        self.nlat_in, self.nlon_in = self.grid_in.shape
+        self.nlat_out, self.nlon_out = self.grid_out.shape
 
         # direction selection: gather (self / downsample) iff nlon_in is an integer
         # multiple of nlon_out; scatter (upsample) iff nlon_out is an integer multiple
@@ -353,9 +346,9 @@ class NeighborhoodAttentionS2(nn.Module):
         # convention and use the coarser (input) grid spacing.
         if theta_cutoff is None:
             if self.upsample:
-                self.theta_cutoff = compute_theta_cutoff(self.nlat_in, grid=grid_in)
+                self.theta_cutoff = self.grid_in.theta_cutoff()
             else:
-                self.theta_cutoff = compute_theta_cutoff(self.nlat_out, grid=grid_out)
+                self.theta_cutoff = self.grid_out.theta_cutoff()
         else:
             self.theta_cutoff = theta_cutoff
 
@@ -363,7 +356,7 @@ class NeighborhoodAttentionS2(nn.Module):
             raise ValueError("Error, theta_cutoff has to be positive.")
 
         # integration weights live on the input grid
-        wgl = as_grid(grid_in, (self.nlat_in, self.nlon_in)).quad_weights
+        wgl = self.grid_in.quad_weights
         quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
@@ -378,11 +371,9 @@ class NeighborhoodAttentionS2(nn.Module):
         # output grid as ho_big * nlon_out + wo_big_canonical.
         if self.upsample:
             idx, _, roff = _precompute_convolution_tensor_s2(
-                out_shape,
-                in_shape,
+                self.grid_out,
+                self.grid_in,
                 fb,
-                grid_in=grid_out,
-                grid_out=grid_in,
                 theta_cutoff=self.theta_cutoff,
                 transpose_normalization=True,
                 basis_norm_mode="none",
@@ -390,11 +381,9 @@ class NeighborhoodAttentionS2(nn.Module):
             )
         else:
             idx, _, roff = _precompute_convolution_tensor_s2(
-                in_shape,
-                out_shape,
+                self.grid_in,
+                self.grid_out,
                 fb,
-                grid_in=grid_in,
-                grid_out=grid_out,
                 theta_cutoff=self.theta_cutoff,
                 transpose_normalization=False,
                 basis_norm_mode="none",

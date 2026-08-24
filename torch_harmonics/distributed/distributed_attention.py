@@ -29,7 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from itertools import accumulate
-from typing import Optional, Tuple, Union
+from typing import Optional, Union
 
 import torch
 import torch.distributed as dist
@@ -41,6 +41,7 @@ from torch_harmonics.attention._attention_utils import _check_extent, _check_ndi
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
 from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_setup_context
+from torch_harmonics.grid import GridS2
 
 from .primitives import compute_split_shapes, get_group_neighbors, polar_halo_exchange
 from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -841,10 +842,8 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
     def __init__(
         self,
         in_channels: int,
-        in_shape: Tuple[int, int],
-        out_shape: Tuple[int, int],
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
+        grid_in: GridS2,
+        grid_out: GridS2,
         num_heads: Optional[int] = 1,
         scale: Optional[Union[torch.Tensor, float]] = None,
         use_qknorm: Optional[bool] = False,
@@ -860,10 +859,8 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         # initialise base class (builds global psi, creates parameters)
         super().__init__(
             in_channels,
-            in_shape,
-            out_shape,
-            grid_in=grid_in,
-            grid_out=grid_out,
+            grid_in,
+            grid_out,
             num_heads=num_heads,
             scale=scale,
             use_qknorm=use_qknorm,

@@ -31,7 +31,7 @@
 
 import torch
 
-from torch_harmonics.grid import as_grid
+from torch_harmonics.grid import GridS2, require_grid
 
 from .sht import InverseRealSHT
 
@@ -59,8 +59,10 @@ class GaussianRandomFieldS2(torch.nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitudinal grid points (``nlon`` is set to ``2 * nlat``).
+    grid : GridS2
+        Descriptor of the grid the field is sampled on. It carries both extents, so
+        the longitudinal resolution is whatever the grid says rather than being
+        assumed to be twice the latitudinal one.
     alpha : float, optional
         Spectral exponent (smoothness).  Must be > 1 when ``sigma`` is not
         given.  Default ``2.0``.
@@ -71,9 +73,6 @@ class GaussianRandomFieldS2(torch.nn.Module):
         and ``tau`` so that the field variance is :math:`\mathcal{O}(1)`.
     radius : float, optional
         Radius of the sphere.  Default ``1.0``.
-    grid : str, optional
-        Grid type for the inverse SHT (``"equiangular"``,
-        ``"legendre-gauss"``, etc.).  Default ``"equiangular"``.
     dtype : torch.dtype, optional
         Floating-point dtype.  Default ``torch.float32``.
 
@@ -81,17 +80,19 @@ class GaussianRandomFieldS2(torch.nn.Module):
     --------
     >>> import torch
     >>> from torch_harmonics.random_fields import GaussianRandomFieldS2
-    >>> grf = GaussianRandomFieldS2(nlat=128, alpha=2.5, tau=5.0)
+    >>> import torch_harmonics as th
+    >>> grf = GaussianRandomFieldS2(th.as_grid("equiangular", (128, 256)), alpha=2.5, tau=5.0)
     >>> samples = grf(4)          # 4 independent realisations
     >>> samples.shape
     torch.Size([4, 128, 256])
     """
 
-    def __init__(self, nlat, alpha=2.0, tau=3.0, sigma=None, radius=1.0, grid="equiangular", dtype=torch.float32):
+    def __init__(self, grid: GridS2, alpha=2.0, tau=3.0, sigma=None, radius=1.0, dtype=torch.float32):
         super().__init__()
 
-        # Number of latitudinal modes.
-        self.nlat = nlat
+        # both extents come from the descriptor; nlon is no longer assumed to be 2*nlat
+        self.grid = require_grid(grid)
+        self.nlat, self.nlon = self.grid.shape
 
         # Default value of sigma if None is given.
         if sigma is None:
@@ -100,7 +101,7 @@ class GaussianRandomFieldS2(torch.nn.Module):
             sigma = tau ** (0.5 * (2 * alpha - 2.0))
 
         # Inverse SHT
-        self.isht = InverseRealSHT(as_grid(grid, (self.nlat, 2 * self.nlat)), norm="backward").to(dtype=dtype)
+        self.isht = InverseRealSHT(self.grid, norm="backward").to(dtype=dtype)
 
         lmax = self.isht.lmax
         mmax = self.isht.mmax

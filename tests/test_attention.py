@@ -41,7 +41,7 @@ from testutils import compare_tensors, disable_tf32, maybe_autocast, set_seed
 from torch.library import opcheck
 
 # from torch.autograd import gradcheck
-from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
+from torch_harmonics import AttentionS2, NeighborhoodAttentionS2, as_grid
 from torch_harmonics.attention import cuda_kernels_is_available, optimized_kernels_is_available
 from torch_harmonics.attention._layout import to_nhwc
 from torch_harmonics.attention.kernels_torch.attention_torch import (
@@ -228,12 +228,10 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         # reference input and model
         model_ref = NeighborhoodAttentionS2(
             in_channels=channels,
+            grid_in=as_grid(grid_in, in_shape),
+            grid_out=as_grid(grid_out, out_shape),
             out_channels=channels_out,
             num_heads=heads,
-            in_shape=in_shape,
-            out_shape=out_shape,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=True,
             use_qknorm=use_qknorm,
             optimized_kernel=False,
@@ -242,12 +240,10 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         # Device model and inputs
         model_opt = NeighborhoodAttentionS2(
             in_channels=channels,
+            grid_in=as_grid(grid_in, in_shape),
+            grid_out=as_grid(grid_out, out_shape),
             out_channels=channels_out,
             num_heads=heads,
-            in_shape=in_shape,
-            out_shape=out_shape,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=True,
             use_qknorm=use_qknorm,
             optimized_kernel=True,
@@ -317,12 +313,10 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         model = NeighborhoodAttentionS2(
             in_channels=4,
+            grid_in=as_grid("equiangular", in_shape),
+            grid_out=as_grid("equiangular", out_shape),
             out_channels=4,
             num_heads=1,
-            in_shape=in_shape,
-            out_shape=out_shape,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=False,
             use_qknorm=False,
             optimized_kernel=True,
@@ -369,11 +363,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         model = NeighborhoodAttentionS2(
             in_channels=channels,
+            grid_in=as_grid("equiangular", (nlat, nlon)),
+            grid_out=as_grid("equiangular", (nlat, nlon)),
             num_heads=1,
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=False,
             optimized_kernel=True,
         ).to(self.device)
@@ -439,21 +431,17 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         model_ref = NeighborhoodAttentionS2(
             in_channels=channels,
+            grid_in=as_grid("equiangular", in_shape),
+            grid_out=as_grid("equiangular", out_shape),
             num_heads=heads,
-            in_shape=in_shape,
-            out_shape=out_shape,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=True,
             optimized_kernel=False,
         ).to(self.device)
         model_opt = NeighborhoodAttentionS2(
             in_channels=channels,
+            grid_in=as_grid("equiangular", in_shape),
+            grid_out=as_grid("equiangular", out_shape),
             num_heads=heads,
-            in_shape=in_shape,
-            out_shape=out_shape,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=True,
             optimized_kernel=True,
         ).to(self.device)
@@ -567,10 +555,10 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         # reference input and model (use default local theta_cutoff so the test is sensitive
         # to the (wi + pscale*wo) % nlon_in shift; a global cutoff makes every input a neighbor
         # of every output and collapses the shift to a permutation the result is invariant to)
-        att_host = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True)
+        att_host = NeighborhoodAttentionS2(in_channels=channels, grid_in=as_grid(grid_in, in_shape), grid_out=as_grid(grid_out, out_shape), num_heads=heads, bias=True)
 
         # Device model and inputs
-        att_device = NeighborhoodAttentionS2(in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True).to(
+        att_device = NeighborhoodAttentionS2(in_channels=channels, grid_in=as_grid(grid_in, in_shape), grid_out=as_grid(grid_out, out_shape), num_heads=heads, bias=True).to(
             self.device
         )
 
@@ -645,18 +633,21 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         # reference input and model
         model_ref = AttentionS2(
-            in_channels=channels, out_channels=channels_out, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=False
+            in_channels=channels,
+            out_channels=channels_out,
+            grid_in=as_grid(grid_in, in_shape),
+            grid_out=as_grid(grid_out, out_shape),
+            num_heads=heads,
+            bias=False,
         ).to(self.device)
 
         # Device model and inputs
         model = NeighborhoodAttentionS2(
             in_channels=channels,
+            grid_in=as_grid(grid_in, in_shape),
+            grid_out=as_grid(grid_out, out_shape),
             num_heads=heads,
             out_channels=channels_out,
-            in_shape=in_shape,
-            out_shape=out_shape,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=False,
             theta_cutoff=2 * torch.pi,
         )
@@ -708,11 +699,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         model = AttentionS2(
             in_channels=4,
             out_channels=4,
+            grid_in=as_grid("equiangular", (4, 8)),
+            grid_out=as_grid("equiangular", (4, 8)),
             num_heads=1,
-            in_shape=(4, 8),
-            out_shape=(4, 8),
-            grid_in="equiangular",
-            grid_out="equiangular",
             scale=scale,
             bias=False,
             drop_rate=0.9,
@@ -777,11 +766,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         # gather psi (rows by ho, cols by hi*nlon + wi_canonical)
         idx_g, _, roff_g = _precompute_convolution_tensor_s2(
-            shape,
-            shape,
+            as_grid(grid, shape),
+            as_grid(grid, shape),
             fb,
-            grid_in=grid,
-            grid_out=grid,
             theta_cutoff=theta_cutoff,
             transpose_normalization=False,
             basis_norm_mode="none",
@@ -792,11 +779,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         # scatter psi (rows by hi, cols by ho*nlon + wo_canonical) — shapes swapped + transpose_normalization=True
         idx_s, _, roff_s = _precompute_convolution_tensor_s2(
-            shape,
-            shape,
+            as_grid(grid, shape),
+            as_grid(grid, shape),
             fb,
-            grid_in=grid,
-            grid_out=grid,
             theta_cutoff=theta_cutoff,
             transpose_normalization=True,
             basis_norm_mode="none",
@@ -856,7 +841,12 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         nlat_out, nlon_out = out_shape
 
         att = NeighborhoodAttentionS2(
-            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=False, optimized_kernel=True
+            in_channels=channels,
+            grid_in=as_grid(grid_in, in_shape),
+            grid_out=as_grid(grid_out, out_shape),
+            num_heads=heads,
+            bias=False,
+            optimized_kernel=True,
         ).to(self.device)
 
         inputs = {
@@ -928,11 +918,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         # for the chosen grid; we do not exercise its forward.
         att = NeighborhoodAttentionS2(
             in_channels=channels,
+            grid_in=as_grid(grid_in, in_shape),
+            grid_out=as_grid(grid_out, out_shape),
             num_heads=heads,
-            in_shape=in_shape,
-            out_shape=out_shape,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=False,
             optimized_kernel=True,
         ).to(self.device)
@@ -1100,11 +1088,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         # builds the scatter psi (rows keyed by hi, cols encoding ho * nlon_out + wo).
         att = NeighborhoodAttentionS2(
             in_channels=channels,
+            grid_in=as_grid(grid_in, in_shape),
+            grid_out=as_grid(grid_out, out_shape),
             num_heads=heads,
-            in_shape=in_shape,
-            out_shape=out_shape,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=False,
             optimized_kernel=True,
         ).to(self.device)
@@ -1241,7 +1227,12 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         q_inp.requires_grad = False
 
         att_optimized = NeighborhoodAttentionS2(
-            in_channels=channels, num_heads=heads, in_shape=in_shape, out_shape=out_shape, grid_in=grid_in, grid_out=grid_out, bias=True, optimized_kernel=True
+            in_channels=channels,
+            grid_in=as_grid(grid_in, in_shape),
+            grid_out=as_grid(grid_out, out_shape),
+            num_heads=heads,
+            bias=True,
+            optimized_kernel=True,
         ).to(self.device)
 
         # random weights
@@ -1304,10 +1295,8 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
 
         model = NeighborhoodAttentionS2(
             in_channels=C,
-            in_shape=in_shape,
-            out_shape=out_shape,
-            grid_in="equiangular",
-            grid_out="equiangular",
+            grid_in=as_grid("equiangular", in_shape),
+            grid_out=as_grid("equiangular", out_shape),
             num_heads=1,
             bias=False,
         ).to(self.device)
