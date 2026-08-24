@@ -56,8 +56,10 @@ from parameterized import parameterized
 from testutils import compare_tensors
 
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
+from torch_harmonics.distributed.primitives import split_tensor_along_dim
 from torch_harmonics.filter_basis import get_filter_basis
-from torch_harmonics.grid import EquiangularGrid, EquiangularTrapezoidalGrid, GridS2, LegendreGaussGrid, LobattoGrid, as_grid, grid_types
+from torch_harmonics.grid import EquiangularGrid, EquiangularTrapezoidalGrid, GridS2, GridShardS2, LegendreGaussGrid, LobattoGrid, as_grid, grid_types, require_grid
+from torch_harmonics.partition import compute_split_shapes
 from torch_harmonics.quadrature import compute_latitude_spacing, compute_theta_cutoff, precompute_latitudes, precompute_longitudes
 
 _ALL_GRIDS = ["equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"]
@@ -556,6 +558,140 @@ class TestDirectConstructionMatchesFactory(unittest.TestCase):
     def test_positional_and_keyword_construction_agree(self, name):
         cls = _DIRECT_CLASSES[name]
         self.assertEqual(cls(32, 64), cls(nlat=32, nlon=64))
+
+
+# (polar_size, azimuth_size) decompositions exercised against a global grid
+_DECOMPOSITIONS = [(1, 1), (2, 1), (1, 2), (2, 2), (3, 2), (4, 1)]
+
+# global grids the decompositions are applied to; (13, 7) is deliberately awkward
+_GLOBAL_SHAPES = [(13, 7), (32, 64), (10, 8)]
+
+
+class TestGridShard(unittest.TestCase):
+    """
+    Decomposition of a grid into per-rank pieces.
+
+    The grid owns this because *how* a grid decomposes depends on the grid: a
+    regular latitude--longitude grid splits as a product of a latitude range and a
+    longitude range, a reduced Gaussian grid has no single ``nlon`` to split, and an
+    unstructured grid has no axes at all. The distributed layers currently derive
+    these ranges themselves, in twenty-two places, all assuming the product form.
+
+    A shard is a separate type from :class:`GridS2` on purpose: a band of latitudes
+    does not cover the sphere, so its weights are a partial sum and the quantities
+    describing the quadrature *rule* remain global.
+    """
+
+    @parameterized.expand([[name, shape, dec] for name in grid_types() for shape in _GLOBAL_SHAPES for dec in _DECOMPOSITIONS])
+    def test_shards_tile_the_global_grid_exactly(self, name, shape, dec, verbose=False):
+        """Concatenating the pieces in rank order must reproduce the global arrays."""
+        psize, asize = dec
+        grid = as_grid(name, shape)
+        if grid.nlat < psize or grid.nlon < asize:
+            self.skipTest(f"{shape} cannot be split {psize}x{asize} with every chunk non-empty")
+
+        lats = torch.cat([grid.shard(polar=(r, psize)).lats for r in range(psize)])
+        weights = torch.cat([grid.shard(polar=(r, psize)).quad_weights for r in range(psize)])
+        lons = torch.cat([grid.shard(azimuth=(r, asize)).lons() for r in range(asize)])
+
+        self.assertTrue(compare_tensors(f"{name}{shape} lats tiled {psize}x", lats, grid.lats, atol=0.0, rtol=0.0, verbose=verbose))
+        self.assertTrue(compare_tensors(f"{name}{shape} weights tiled {psize}x", weights, grid.quad_weights, atol=0.0, rtol=0.0, verbose=verbose))
+        self.assertTrue(compare_tensors(f"{name}{shape} lons tiled {asize}x", lons, grid.lons(), atol=0.0, rtol=0.0, verbose=verbose))
+
+    @parameterized.expand([[name, dec] for name in grid_types() for dec in _DECOMPOSITIONS])
+    def test_partial_weights_sum_to_the_global_total(self, name, dec):
+        """
+        The local weights are a partial contribution completed by a reduction, so
+        they must add up across ranks and not, individually, to 2.
+        """
+        psize, _ = dec
+        grid = as_grid(name, (32, 64))
+        total = sum(grid.shard(polar=(r, psize)).quad_weights.sum().item() for r in range(psize))
+        self.assertAlmostEqual(total, grid.quad_weights.sum().item(), places=14)
+
+    @parameterized.expand([[name, shape] for name in grid_types() for shape in _GLOBAL_SHAPES])
+    def test_trivial_shard_is_the_whole_grid(self, name, shape, verbose=False):
+        grid = as_grid(name, shape)
+        shard = grid.shard()
+        self.assertEqual(shard.shape, grid.shape)
+        self.assertEqual((shard.lat_offset, shard.lon_offset), (0, 0))
+        self.assertTrue(compare_tensors("trivial shard lats", shard.lats, grid.lats, atol=0.0, rtol=0.0, verbose=verbose))
+
+    @parameterized.expand([[dec] for dec in _DECOMPOSITIONS])
+    def test_agrees_with_the_tensor_splitter_the_collectives_use(self, dec, verbose=False):
+        """
+        The load-bearing interop property. The distributed layers move tensors with
+        ``split_tensor_along_dim``; if a shard's idea of its own range differed from
+        that, the descriptor and the data would silently disagree about which
+        latitudes a rank owns.
+        """
+        psize, asize = dec
+        grid = as_grid("lobatto", (13, 7))
+        if grid.nlat < psize or grid.nlon < asize:
+            self.skipTest("decomposition too fine for this grid")
+        for r in range(psize):
+            with self.subTest(polar=r):
+                expected = split_tensor_along_dim(grid.lats, dim=0, num_chunks=psize)[r]
+                self.assertTrue(compare_tensors(f"polar {r}/{psize}", grid.shard(polar=(r, psize)).lats, expected, atol=0.0, rtol=0.0, verbose=verbose))
+        for r in range(asize):
+            with self.subTest(azimuth=r):
+                expected = split_tensor_along_dim(grid.lons(), dim=0, num_chunks=asize)[r]
+                self.assertTrue(compare_tensors(f"azimuth {r}/{asize}", grid.shard(azimuth=(r, asize)).lons(), expected, atol=0.0, rtol=0.0, verbose=verbose))
+
+    @parameterized.expand([[dec] for dec in _DECOMPOSITIONS])
+    def test_shapes_come_from_the_shared_partitioner(self, dec):
+        """One implementation of the split arithmetic, not two that must agree."""
+        psize, asize = dec
+        grid = as_grid("equiangular", (32, 64))
+        self.assertEqual(list(grid.lat_shapes(psize)), compute_split_shapes(32, psize))
+        self.assertEqual(list(grid.lon_shapes(asize)), compute_split_shapes(64, asize))
+        shard = grid.shard(polar=(0, psize), azimuth=(0, asize))
+        self.assertEqual(list(shard.lat_shapes), compute_split_shapes(32, psize))
+        self.assertEqual(list(shard.lon_shapes), compute_split_shapes(64, asize))
+
+    @parameterized.expand([[dec] for dec in _DECOMPOSITIONS])
+    def test_offsets_follow_the_shapes(self, dec):
+        psize, _ = dec
+        grid = as_grid("equiangular", (13, 8))
+        if grid.nlat < psize:
+            self.skipTest("decomposition too fine")
+        offset = 0
+        for r in range(psize):
+            shard = grid.shard(polar=(r, psize))
+            self.assertEqual(shard.lat_offset, offset)
+            offset += shard.nlat
+        self.assertEqual(offset, grid.nlat)
+
+    def test_a_shard_is_not_a_grid(self):
+        """
+        The distinction that makes the separate type worth having: a shard must not
+        be usable where a global grid is required, because its weights are partial
+        and its spectral bounds would be meaningless.
+        """
+        shard = as_grid("equiangular", (32, 64)).shard(polar=(1, 2))
+        self.assertNotIsInstance(shard, GridS2)
+        self.assertFalse(shard.is_global)
+        self.assertEqual(shard.global_grid, as_grid("equiangular", (32, 64)))
+        with self.assertRaises(TypeError) as ctx:
+            require_grid(shard)
+        self.assertIn("global_grid", str(ctx.exception))
+
+    def test_identity_and_round_trip(self):
+        grid = as_grid("legendre-gauss", (32, 64))
+        a, b = grid.shard(polar=(1, 2)), grid.shard(polar=(1, 2))
+        self.assertIsNot(a, b)
+        self.assertEqual(a, b)
+        self.assertEqual(hash(a), hash(b))
+        self.assertEqual(len({a, b}), 1)
+        self.assertNotEqual(a, grid.shard(polar=(0, 2)))
+        self.assertEqual(GridShardS2.from_dict(a.to_dict()), a)
+
+    def test_rejects_a_nonsensical_decomposition(self):
+        grid = as_grid("equiangular", (32, 64))
+        for kwargs in [dict(polar=(2, 2)), dict(polar=(-1, 2)), dict(polar=(0, 0)), dict(azimuth=(5, 3))]:
+            with self.subTest(**kwargs):
+                with self.assertRaises(ValueError):
+                    grid.shard(**kwargs)
 
 
 if __name__ == "__main__":

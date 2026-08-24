@@ -28,10 +28,11 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
-from typing import List
 
 import torch
 import torch.distributed as dist
+
+from torch_harmonics.partition import compute_split_shapes
 
 from ._amp_utils import _custom_setup_context
 from .utils import azimuth_group, azimuth_group_size, is_distributed_azimuth, is_distributed_polar, polar_group, polar_group_rank, polar_group_size
@@ -71,52 +72,6 @@ def _check_shapes(msg, shapes_gather, shapes_expected):
 
 
 # helper routine to compute uneven splitting in balanced way:
-def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
-    r"""
-    Compute balanced chunk sizes for distributing a dimension across ranks.
-
-    Divides ``size`` elements into ``num_chunks`` pieces that differ by at most
-    one element.  The first ``size % num_chunks`` chunks receive one extra
-    element; the remaining chunks get the base size ``size // num_chunks``.
-
-    This is used internally by every distributed module to determine how
-    latitudes, longitudes, and spectral modes are partitioned across process
-    groups.
-
-    Parameters
-    ----------
-    size : int
-        Total number of elements to split (e.g.\ ``nlat`` or ``nlon``).
-    num_chunks : int
-        Number of chunks (typically the process-group size).
-
-    Returns
-    -------
-    List[int]
-        Per-rank chunk sizes, ordered by rank.
-
-    Raises
-    ------
-    RuntimeError
-        If ``size < num_chunks`` (every chunk must be non-empty).
-
-    Examples
-    --------
-    >>> from torch_harmonics.distributed import compute_split_shapes
-    >>> compute_split_shapes(256, 4)
-    [64, 64, 64, 64]
-    >>> compute_split_shapes(128, 3)
-    [43, 43, 42]
-    >>> compute_split_shapes(10, 4)
-    [3, 3, 2, 2]
-    """
-
-    torch._check(size >= num_chunks, lambda: f"Cannot split {size} elements into {num_chunks} chunks; every chunk must be non-empty.")
-
-    base, remainder = divmod(size, num_chunks)
-    return [base + 1] * remainder + [base] * (num_chunks - remainder)
-
-
 def split_tensor_along_dim(tensor, dim, num_chunks):
     r"""
     Split a tensor along a given dimension into balanced chunks.

@@ -60,10 +60,12 @@ from typing import Any, ClassVar, Dict, Optional, Tuple, Type, Union
 
 import torch
 
+from torch_harmonics.partition import compute_split_shapes
 from torch_harmonics.quadrature import compute_latitude_spacing, compute_theta_cutoff, precompute_latitudes, precompute_longitudes
 
 __all__ = [
     "GridS2",
+    "GridShardS2",
     "EquiangularGrid",
     "LegendreGaussGrid",
     "LobattoGrid",
@@ -310,6 +312,45 @@ class GridS2:
         """
         return compute_theta_cutoff(self.nlat, grid=self.grid_type, scale=scale)
 
+    # -- decomposition -------------------------------------------------------
+
+    def shard(self, polar: Optional[Tuple[int, int]] = (0, 1), azimuth: Optional[Tuple[int, int]] = (0, 1)) -> "GridShardS2":
+        """
+        Return the piece of this grid held by one rank of a 2D decomposition.
+
+        Deliberately takes plain integers rather than process groups, so that the
+        descriptors stay free of any dependency on :mod:`torch.distributed` and
+        remain testable without a process group. The distributed layers translate
+        their groups into these.
+
+        How a grid decomposes is a property of the grid: a regular
+        latitude--longitude grid splits as a product of a latitude range and a
+        longitude range, but a reduced Gaussian grid has no single ``nlon`` to split,
+        and an unstructured grid has no axes at all. Consumers should therefore ask
+        the grid for a shard rather than compute ranges themselves.
+
+        Parameters
+        ----------
+        polar : tuple of int, optional
+            ``(rank, size)`` along the polar (latitude) direction, by default ``(0, 1)``.
+        azimuth : tuple of int, optional
+            ``(rank, size)`` along the azimuthal (longitude) direction, by default ``(0, 1)``.
+
+        Returns
+        -------
+        GridShardS2
+            The local piece, which knows the global grid it came from.
+        """
+        return GridShardS2(grid=self, polar_rank=polar[0], polar_size=polar[1], azimuth_rank=azimuth[0], azimuth_size=azimuth[1])
+
+    def lat_shapes(self, num_chunks: int) -> Tuple[int, ...]:
+        """Latitude counts held by each rank of a ``num_chunks``-way polar split."""
+        return tuple(compute_split_shapes(self.nlat, num_chunks))
+
+    def lon_shapes(self, num_chunks: int) -> Tuple[int, ...]:
+        """Longitude counts held by each rank of a ``num_chunks``-way azimuthal split."""
+        return tuple(compute_split_shapes(self.nlon, num_chunks))
+
     # -- serialization -------------------------------------------------------
 
     def to_dict(self) -> Dict[str, Any]:
@@ -323,6 +364,169 @@ class GridS2:
         if missing:
             raise ValueError(f"grid dict is missing {sorted(missing)}")
         return as_grid(data["grid"], (data["nlat"], data["nlon"]))
+
+
+@dataclass(frozen=True, eq=False)
+class GridShardS2:
+    r"""
+    One rank's piece of a decomposed :class:`GridS2`.
+
+    A shard is deliberately **not** a :class:`GridS2`, because it is not a grid on the
+    sphere. A band of latitudes does not cover :math:`S^2`, so:
+
+    * its :attr:`quad_weights` do not sum to 2 -- they are the local contribution to
+      an integral that a collective reduction completes;
+    * quantities that describe the quadrature *rule* rather than this piece of it --
+      the spectral bounds, the default angular cutoff -- are global. They are
+      forwarded from :attr:`global_grid` rather than recomputed locally, because a
+      cutoff derived from a shard's own node spacing would differ between ranks, and
+      ranks disagreeing about the support of an operator is a correctness bug rather
+      than an inefficiency.
+
+    Making this a separate type keeps that distinction enforceable: a shard cannot be
+    passed where a global grid is required, and :func:`require_grid` says so.
+
+    Parameters
+    ----------
+    grid : GridS2
+        The global grid this is a piece of.
+    polar_rank, polar_size : int
+        Position and extent of the decomposition along latitude.
+    azimuth_rank, azimuth_size : int
+        Position and extent of the decomposition along longitude.
+    """
+
+    grid: GridS2
+    polar_rank: int = 0
+    polar_size: int = 1
+    azimuth_rank: int = 0
+    azimuth_size: int = 1
+
+    def __post_init__(self):
+        if not isinstance(self.grid, GridS2):
+            raise ValueError(f"grid must be a GridS2, got {type(self.grid).__name__}")
+        for rank, size, name in [(self.polar_rank, self.polar_size, "polar"), (self.azimuth_rank, self.azimuth_size, "azimuth")]:
+            if size < 1:
+                raise ValueError(f"{name}_size must be at least 1, got {size}")
+            if not 0 <= rank < size:
+                raise ValueError(f"{name}_rank must lie in [0, {size}), got {rank}")
+
+    # -- identity ------------------------------------------------------------
+
+    @property
+    def key(self) -> Tuple[Any, ...]:
+        """Canonical identity, including the global grid's own key."""
+        return (self.grid.key, self.polar_rank, self.polar_size, self.azimuth_rank, self.azimuth_size)
+
+    def __hash__(self) -> int:
+        return hash(self.key)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, GridShardS2):
+            return NotImplemented
+        return self.key == other.key
+
+    def __repr__(self) -> str:
+        return f"GridShardS2({self.grid!r}, polar={self.polar_rank}/{self.polar_size}, azimuth={self.azimuth_rank}/{self.azimuth_size})"
+
+    # -- the global grid this came from --------------------------------------
+
+    @property
+    def global_grid(self) -> GridS2:
+        """The undecomposed grid. Pass this wherever a global quantity is needed."""
+        return self.grid
+
+    @property
+    def is_global(self) -> bool:
+        """``False``; see :attr:`global_grid`."""
+        return False
+
+    # -- local extent --------------------------------------------------------
+
+    @property
+    def lat_shapes(self) -> Tuple[int, ...]:
+        """Latitude counts held by every polar rank, ordered by rank."""
+        return self.grid.lat_shapes(self.polar_size)
+
+    @property
+    def lon_shapes(self) -> Tuple[int, ...]:
+        """Longitude counts held by every azimuthal rank, ordered by rank."""
+        return self.grid.lon_shapes(self.azimuth_size)
+
+    @property
+    def nlat(self) -> int:
+        """Number of latitudes on this rank."""
+        return self.lat_shapes[self.polar_rank]
+
+    @property
+    def nlon(self) -> int:
+        """Number of longitudes on this rank."""
+        return self.lon_shapes[self.azimuth_rank]
+
+    @property
+    def lat_offset(self) -> int:
+        """Index of this rank's first latitude within the global grid."""
+        return sum(self.lat_shapes[: self.polar_rank])
+
+    @property
+    def lon_offset(self) -> int:
+        """Index of this rank's first longitude within the global grid."""
+        return sum(self.lon_shapes[: self.azimuth_rank])
+
+    @property
+    def shape(self) -> Tuple[int, int]:
+        """Local spatial shape ``(nlat, nlon)``."""
+        return (self.nlat, self.nlon)
+
+    @property
+    def npoints(self) -> int:
+        """Number of grid points on this rank."""
+        return self.nlat * self.nlon
+
+    # -- local geometry ------------------------------------------------------
+
+    @property
+    def lats(self) -> torch.Tensor:
+        """This rank's slice of the global colatitudes, shape ``(nlat,)``."""
+        return self.grid.lats[self.lat_offset : self.lat_offset + self.nlat]
+
+    @property
+    def quad_weights(self) -> torch.Tensor:
+        """
+        This rank's slice of the global latitudinal weights, shape ``(nlat,)``.
+
+        These sum to 2 only across all polar ranks; locally they are a partial sum.
+        """
+        return self.grid.quad_weights[self.lat_offset : self.lat_offset + self.nlat]
+
+    def lons(self, ilat: Optional[int] = None) -> torch.Tensor:
+        """This rank's slice of the longitudes of a latitude ring."""
+        return self.grid.lons(ilat)[self.lon_offset : self.lon_offset + self.nlon]
+
+    @property
+    def is_regular(self) -> bool:
+        """Whether every local latitude ring carries the same number of longitudes."""
+        return self.grid.is_regular
+
+    # -- serialization -------------------------------------------------------
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Plain-data representation, carrying the global grid with it."""
+        return {"grid": self.grid.to_dict(), "polar_rank": self.polar_rank, "polar_size": self.polar_size, "azimuth_rank": self.azimuth_rank, "azimuth_size": self.azimuth_size}
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> "GridShardS2":
+        """Inverse of :meth:`to_dict`."""
+        missing = {"grid", "polar_rank", "polar_size", "azimuth_rank", "azimuth_size"} - set(data)
+        if missing:
+            raise ValueError(f"grid shard dict is missing {sorted(missing)}")
+        return GridShardS2(
+            grid=GridS2.from_dict(data["grid"]),
+            polar_rank=data["polar_rank"],
+            polar_size=data["polar_size"],
+            azimuth_rank=data["azimuth_rank"],
+            azimuth_size=data["azimuth_size"],
+        )
 
 
 @dataclass(frozen=True, eq=False)
@@ -465,6 +669,10 @@ def require_grid(grid: Any, name: Optional[str] = "grid") -> GridS2:
     """
     if isinstance(grid, GridS2):
         return grid
+    if isinstance(grid, GridShardS2):
+        raise TypeError(
+            f"{name} must be the global GridS2, not a shard of one. Quantities such as the spectral bounds and the angular cutoff are global; " f"pass {name}.global_grid."
+        )
     if isinstance(grid, str):
         raise TypeError(f"{name} must be a GridS2, not the grid name {grid!r}. The descriptor carries the resolution too, so build one with " f"as_grid({grid!r}, (nlat, nlon)).")
     if isinstance(grid, (tuple, list)):

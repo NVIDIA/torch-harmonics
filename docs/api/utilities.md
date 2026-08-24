@@ -32,7 +32,9 @@ grid.max_exact_degree            # highest degree the quadrature integrates exac
 
    as_grid
    grid_types
+   require_grid
    GridS2
+   GridShardS2
    EquiangularGrid
    LegendreGaussGrid
    LobattoGrid
