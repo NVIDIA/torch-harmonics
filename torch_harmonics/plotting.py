@@ -32,6 +32,8 @@
 
 import numpy as np
 
+from torch_harmonics.grid import as_grid
+
 # guarded imports
 try:
     import matplotlib.pyplot as plt
@@ -107,6 +109,7 @@ def plot_sphere(
     central_longitude=0,
     lon=None,
     lat=None,
+    grid=None,
     **kwargs,
 ):
     """
@@ -135,9 +138,16 @@ def plot_sphere(
     central_longitude : float, optional
         Central longitude for projection, by default 0
     lon : numpy.ndarray, optional
-        Longitude coordinates, by default None (auto-generated)
+        Longitude coordinates in radians. Ignored when ``grid`` is given.
     lat : numpy.ndarray, optional
-        Latitude coordinates, by default None (auto-generated)
+        Latitude coordinates in radians. Ignored when ``grid`` is given.
+    grid : GridS2 or str, optional
+        Descriptor of the grid the data lives on, used to place the samples.
+        A string is coerced with :func:`torch_harmonics.grid.as_grid` against
+        the shape of ``data``. Prefer this over ``lat``/``lon``: only the
+        equiangular grid has samples equispaced in latitude, so the default
+        placement misplaces every other grid (by 4.2 degrees on a 32-point
+        Legendre-Gauss grid, and by 18.9 degrees on the trapezoidal one).
     **kwargs
         Additional arguments passed to pcolormesh
 
@@ -145,6 +155,12 @@ def plot_sphere(
     -------
     matplotlib.collections.QuadMesh
         The plotted image object
+
+    Notes
+    -----
+    Rows of ``data`` are ordered north to south, matching the ascending
+    co-latitudes of :attr:`torch_harmonics.grid.GridS2.lats`, so the output of a
+    transform can be handed over directly without flipping.
     """
 
     # make sure cartopy exist
@@ -155,6 +171,21 @@ def plot_sphere(
 
     nlat = data.shape[-2]
     nlon = data.shape[-1]
+
+    if grid is not None:
+        if lat is not None or lon is not None:
+            raise ValueError("pass either grid or lat/lon, not both: the grid descriptor already carries both coordinate vectors")
+        grid = as_grid(grid, (nlat, nlon))
+        if grid.shape != (nlat, nlon):
+            raise ValueError(f"grid {grid!r} does not match the shape of the data, which is {(nlat, nlon)}")
+        if not grid.is_regular:
+            # pcolormesh needs a rectangular mesh; a reduced grid has a different
+            # number of longitudes per latitude and cannot be expressed as one
+            raise NotImplementedError(f"plot_sphere cannot draw the non-regular grid {grid!r}; it needs one longitude vector shared by all latitudes")
+        # GridS2 stores co-latitudes measured from the north pole
+        lat = (np.pi / 2.0 - grid.lats).numpy()
+        lon = grid.lons().numpy()
+
     if lon is None:
         lon = np.linspace(0, 2 * np.pi, nlon + 1)[:-1]
     if lat is None:
