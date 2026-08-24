@@ -487,15 +487,15 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
     Parameters
     ----------
-    in_channels : int
-        Number of input channels
-    out_channels : int
-        Number of output channels
     grid_in : GridS2
         Descriptor of the input grid; it carries the resolution as well as the
         quadrature rule.
     grid_out : GridS2
         Descriptor of the output grid.
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
     kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
     basis_type : Optional[str]
@@ -523,10 +523,10 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
     def __init__(
         self,
-        in_channels: int,
-        out_channels: int,
         grid_in: GridS2,
         grid_out: GridS2,
+        in_channels: int,
+        out_channels: int,
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
         basis_type: Optional[str] = "piecewise linear",
         basis_norm_mode: Optional[str] = "nodal",
@@ -852,15 +852,15 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
     Parameters
     ----------
-    in_channels : int
-        Number of input channels
-    out_channels : int
-        Number of output channels
     grid_in : GridS2
         Descriptor of the input grid; it carries the resolution as well as the
         quadrature rule.
     grid_out : GridS2
         Descriptor of the output grid.
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
     kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
     basis_type : Optional[str]
@@ -883,10 +883,10 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
     def __init__(
         self,
-        in_channels: int,
-        out_channels: int,
         grid_in: GridS2,
         grid_out: GridS2,
+        in_channels: int,
+        out_channels: int,
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
         basis_type: Optional[str] = "piecewise linear",
         basis_norm_mode: Optional[str] = "nodal",

@@ -93,10 +93,10 @@ class OverlapPatchMerging(nn.Module):
         # convolution for patches, curtoff radius inferred from kernel shape
         theta_cutoff = _compute_cutoff_radius(out_shape[0], kernel_shape, basis_type)
         self.conv = DiscreteContinuousConvS2(
-            in_channels,
-            out_channels,
             as_grid(grid_in, in_shape),
             as_grid(grid_out, out_shape),
+            in_channels,
+            out_channels,
             kernel_shape=kernel_shape,
             basis_type=basis_type,
             bias=bias,
@@ -192,10 +192,10 @@ class MixFFN(nn.Module):
         # convolution for patches, curtoff radius inferred from kernel shape
         theta_cutoff = _compute_cutoff_radius(shape[0], kernel_shape, basis_type)
         self.conv = DiscreteContinuousConvS2(
-            inout_channels,
-            inout_channels,
             as_grid(grid, shape),
             as_grid(grid, shape),
+            inout_channels,
+            inout_channels,
             kernel_shape=kernel_shape,
             basis_type=basis_type,
             groups=inout_channels,
@@ -297,7 +297,13 @@ class AttentionWrapper(nn.Module):
             )
         else:
             self.att = AttentionS2(
-                in_channels=channels, num_heads=heads, in_shape=shape, out_shape=shape, grid_in=grid, grid_out=grid, out_channels=channels, drop_rate=attention_drop_rate, bias=bias
+                in_channels=channels,
+                num_heads=heads,
+                grid_in=as_grid(grid, shape),
+                grid_out=as_grid(grid, shape),
+                out_channels=channels,
+                drop_rate=attention_drop_rate,
+                bias=bias,
             )
 
         self.norm = None
@@ -544,10 +550,10 @@ class Upsampling(nn.Module):
         if upsampling_method == "conv":
             theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
             self.upsample = DiscreteContinuousConvTransposeS2(
-                out_channels,
-                out_channels,
                 as_grid(grid_in, in_shape),
                 as_grid(grid_out, out_shape),
+                out_channels,
+                out_channels,
                 kernel_shape=kernel_shape,
                 basis_type=basis_type,
                 bias=conv_bias,

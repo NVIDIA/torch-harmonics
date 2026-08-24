@@ -147,10 +147,10 @@ class DownsamplingBlock(nn.Module):
         if downsampling_mode == "conv":
             theta_cutoff = _compute_cutoff_radius(out_shape[0], kernel_shape, basis_type)
             self.downsample = DiscreteContinuousConvS2(
-                out_channels,
-                out_channels,
                 as_grid(grid_in, in_shape),
                 as_grid(grid_out, out_shape),
+                out_channels,
+                out_channels,
                 kernel_shape=kernel_shape,
                 basis_type=basis_type,
                 bias=False,

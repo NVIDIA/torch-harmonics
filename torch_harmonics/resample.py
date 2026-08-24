@@ -78,20 +78,11 @@ class ResampleS2(nn.Module):
 
     Parameters
     ----------
-    nlat_in : int
-        Number of latitude points in the input grid
-    nlon_in : int
-        Number of longitude points in the input grid
-    nlat_out : int
-        Number of latitude points in the output grid
-    nlon_out : int
-        Number of longitude points in the output grid
-    grid_in : str, optional
-        Input grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``),
-        by default ``"equiangular"``
-    grid_out : str, optional
-        Output grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``),
-        by default ``"equiangular"``
+    grid_in : GridS2
+        Descriptor of the input grid; it carries the resolution as well as the
+        quadrature rule.
+    grid_out : GridS2
+        Descriptor of the output grid.
     mode : str, optional
         Interpolation mode (``"bilinear"``, ``"bilinear-spherical"``), by default
         ``"bilinear"``.  See above for a description of each mode.

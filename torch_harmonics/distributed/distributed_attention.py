@@ -235,7 +235,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, dy, _dalpha_sum, _dqdotk_max):
         # _dalpha_sum and _dqdotk_max are always None (non-differentiable outputs)
-        (kw, vw, qw, psi_col_idx, psi_roff_idx, psi_row_idx, quad_weights, fwd_alpha_sum, fwd_qdotk_max) = ctx.saved_tensors
+        kw, vw, qw, psi_col_idx, psi_roff_idx, psi_row_idx, quad_weights, fwd_alpha_sum, fwd_qdotk_max = ctx.saved_tensors
 
         nlon_in = ctx.nlon_in
         pscale = ctx.pscale
@@ -611,7 +611,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, dy, _dalpha_sum, _dqdotk_max):
         # _dalpha_sum and _dqdotk_max are always None (non-differentiable outputs)
-        (kw, vw, qw, psi_col_idx, psi_roff_idx, quad_weights, fwd_alpha_sum, fwd_qdotk_max) = ctx.saved_tensors
+        kw, vw, qw, psi_col_idx, psi_roff_idx, quad_weights, fwd_alpha_sum, fwd_qdotk_max = ctx.saved_tensors
 
         nlon_in = ctx.nlon_in
         nlon_out_global = ctx.nlon_out_global
@@ -841,9 +841,9 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
 
     def __init__(
         self,
-        in_channels: int,
         grid_in: GridS2,
         grid_out: GridS2,
+        in_channels: int,
         num_heads: Optional[int] = 1,
         scale: Optional[Union[torch.Tensor, float]] = None,
         use_qknorm: Optional[bool] = False,
@@ -858,9 +858,9 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
 
         # initialise base class (builds global psi, creates parameters)
         super().__init__(
-            in_channels,
             grid_in,
             grid_out,
+            in_channels,
             num_heads=num_heads,
             scale=scale,
             use_qknorm=use_qknorm,

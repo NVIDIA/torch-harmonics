@@ -57,18 +57,11 @@ class DistributedResampleS2(nn.Module):
 
     Parameters
     ----------
-    nlat_in : int
-        Number of input latitude points
-    nlon_in : int
-        Number of input longitude points
-    nlat_out : int
-        Number of output latitude points
-    nlon_out : int
-        Number of output longitude points
-    grid_in : str, optional
-        Input grid type, by default ``"equiangular"``
-    grid_out : str, optional
-        Output grid type, by default ``"equiangular"``
+    grid_in : GridS2
+        Descriptor of the **global** input grid, not this rank's shard; each rank
+        derives its own slice.
+    grid_out : GridS2
+        Descriptor of the **global** output grid.
     mode : str, optional
         Interpolation mode (``"bilinear"`` or ``"bilinear-spherical"``), by default ``"bilinear"``
     """

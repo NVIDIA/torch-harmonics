@@ -36,7 +36,14 @@ import torch.amp as amp
 import torch.nn as nn
 
 from torch_harmonics import DiscreteContinuousConvS2, InverseRealSHT, RealSHT, ResampleS2
-from torch_harmonics.examples.models._layers import MLP, DropPath, LearnablePositionEmbedding, SequencePositionEmbedding, SpectralConvS2, SpectralPositionEmbedding
+from torch_harmonics.examples.models._layers import (
+    MLP,
+    DropPath,
+    LearnablePositionEmbedding,
+    SequencePositionEmbedding,
+    SpectralConvS2,
+    SpectralPositionEmbedding,
+)
 from torch_harmonics.grid import as_grid
 
 
@@ -95,10 +102,10 @@ class DiscreteContinuousEncoder(nn.Module):
 
         # set up local convolution
         self.conv = DiscreteContinuousConvS2(
-            inp_chans,
-            out_chans,
             as_grid(grid_in, in_shape),
             as_grid(grid_out, out_shape),
+            inp_chans,
+            out_chans,
             kernel_shape=kernel_shape,
             basis_type=basis_type,
             groups=groups,
@@ -177,10 +184,10 @@ class DiscreteContinuousDecoder(nn.Module):
 
         # set up DISCO convolution
         self.conv = DiscreteContinuousConvS2(
+            as_grid(grid_out, out_shape),
+            as_grid(grid_out, out_shape),
             inp_chans,
             out_chans,
-            as_grid(grid_out, out_shape),
-            as_grid(grid_out, out_shape),
             kernel_shape=kernel_shape,
             basis_type=basis_type,
             groups=groups,
@@ -279,10 +286,10 @@ class SphericalNeuralOperatorBlock(nn.Module):
         if conv_type == "local":
             theta_cutoff = 2.0 * _compute_cutoff_radius(forward_transform.nlat, disco_kernel_shape, disco_basis_type)
             self.local_conv = DiscreteContinuousConvS2(
-                input_dim,
-                output_dim,
                 as_grid(forward_transform.grid, (forward_transform.nlat, forward_transform.nlon)),
                 as_grid(inverse_transform.grid, (inverse_transform.nlat, inverse_transform.nlon)),
+                input_dim,
+                output_dim,
                 kernel_shape=disco_kernel_shape,
                 basis_type=disco_basis_type,
                 bias=bias,

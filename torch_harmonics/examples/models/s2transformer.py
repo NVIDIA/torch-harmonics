@@ -95,10 +95,10 @@ class DiscreteContinuousEncoder(nn.Module):
 
         # set up local convolution
         self.conv = DiscreteContinuousConvS2(
-            in_chans,
-            out_chans,
             as_grid(grid_in, in_shape),
             as_grid(grid_out, out_shape),
+            in_chans,
+            out_chans,
             kernel_shape=kernel_shape,
             basis_type=basis_type,
             groups=groups,
@@ -177,10 +177,10 @@ class DiscreteContinuousDecoder(nn.Module):
 
         # set up DISCO convolution
         self.conv = DiscreteContinuousConvS2(
+            as_grid(grid_out, out_shape),
+            as_grid(grid_out, out_shape),
             in_chans,
             out_chans,
-            as_grid(grid_out, out_shape),
-            as_grid(grid_out, out_shape),
             kernel_shape=kernel_shape,
             basis_type=basis_type,
             groups=groups,
@@ -297,10 +297,8 @@ class SphericalAttentionBlock(nn.Module):
             self.self_attn = AttentionS2(
                 in_channels=in_chans,
                 num_heads=num_heads,
-                in_shape=in_shape,
-                out_shape=out_shape,
-                grid_in=grid_in,
-                grid_out=grid_out,
+                grid_in=as_grid(grid_in, in_shape),
+                grid_out=as_grid(grid_out, out_shape),
                 out_channels=out_chans,
                 drop_rate=drop_rate,
                 bias=bias,

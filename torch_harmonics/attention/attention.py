@@ -70,15 +70,15 @@ class AttentionS2(nn.Module):
 
     Parameters
     ----------
-    in_channels : int
-        number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
-    num_heads : int
-        number of attention heads
     grid_in : GridS2
         Descriptor of the input grid; it carries the resolution as well as the
         quadrature rule.
     grid_out : GridS2
         Descriptor of the output grid.
+    in_channels : int
+        number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
+    num_heads : int
+        number of attention heads
     bias : bool, optional
         if specified, adds bias to input / output projection layers
     k_channels : int
@@ -93,10 +93,10 @@ class AttentionS2(nn.Module):
 
     def __init__(
         self,
-        in_channels: int,
-        num_heads: int,
         grid_in: GridS2,
         grid_out: GridS2,
+        in_channels: int,
+        num_heads: int,
         scale: Optional[Union[torch.Tensor, float]] = None,
         use_qknorm: Optional[bool] = False,
         bias: Optional[bool] = True,
@@ -279,13 +279,13 @@ class NeighborhoodAttentionS2(nn.Module):
 
     Parameters
     ----------
-    in_channels : int
-        number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
     grid_in : GridS2
         Descriptor of the input grid; it carries the resolution as well as the
         quadrature rule.
     grid_out : GridS2
         Descriptor of the output grid.
+    in_channels : int
+        number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
     bias : bool, optional
         if specified, adds bias to input / output projection layers
     theta_cutoff : float, optional
@@ -308,9 +308,9 @@ class NeighborhoodAttentionS2(nn.Module):
 
     def __init__(
         self,
-        in_channels: int,
         grid_in: GridS2,
         grid_out: GridS2,
+        in_channels: int,
         num_heads: Optional[int] = 1,
         scale: Optional[Union[torch.Tensor, float]] = None,
         use_qknorm: Optional[bool] = False,
