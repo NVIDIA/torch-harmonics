@@ -205,6 +205,40 @@ class TestQuadrature(unittest.TestCase):
         )
 
 
+class TestQuadratureS2Constructor(unittest.TestCase):
+    """
+    The constructor contract after the switch to grid descriptors.
+
+    The numerical tests above all build their grid with :func:`as_grid`, so two
+    things go unexercised there: that a directly constructed grid works just as
+    well, and that the arguments the old signature took now fail with an error
+    that says what to write instead. The latter matters because this is a
+    breaking change -- without it a caller passing the old ``(nlat, nlon)`` shape
+    gets ``AttributeError: 'tuple' object has no attribute 'shape'`` from deep
+    inside the constructor.
+    """
+
+    def test_takes_a_directly_constructed_grid(self):
+        """as_grid is a convenience, not the only way in."""
+        direct = th.LegendreGaussGrid(nlat=32, nlon=64)
+        via_helper = th.as_grid("legendre-gauss", (32, 64))
+        self.assertTrue(compare_tensors("direct vs as_grid", th.QuadratureS2(direct).quad_weight, th.QuadratureS2(via_helper).quad_weight))
+
+    @parameterized.expand(
+        [
+            [(32, 64), "not a shape (32, 64)"],
+            ["legendre-gauss", "not the grid name 'legendre-gauss'"],
+            [32, "got int"],
+        ]
+    )
+    def test_old_style_arguments_explain_themselves(self, bad_grid, expected_fragment):
+        with self.assertRaises(TypeError) as ctx:
+            th.QuadratureS2(bad_grid)
+        message = str(ctx.exception)
+        self.assertIn(expected_fragment, message)
+        self.assertIn("as_grid", message, msg="the error should name the replacement")
+
+
 class TestQuadratureWeightPrecision(unittest.TestCase):
     """Every quadrature rule must carry its weights in the same precision as its nodes."""
 

@@ -46,7 +46,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from torch_harmonics.grid import GridS2
+from torch_harmonics.grid import GridS2, require_grid
 
 
 class QuadratureS2(nn.Module):
@@ -121,7 +121,7 @@ class QuadratureS2(nn.Module):
     def __init__(self, grid: GridS2, normalize: Optional[bool] = False):
         super().__init__()
 
-        self.grid = grid
+        self.grid = require_grid(grid)
         self.nlat, self.nlon = grid.shape
         self.normalize = normalize
 

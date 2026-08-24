@@ -33,7 +33,7 @@ from typing import Optional
 
 import torch
 
-from torch_harmonics.grid import GridS2
+from torch_harmonics.grid import GridS2, require_grid
 
 from .primitives import compute_split_shapes, reduce_from_azimuth_region, reduce_from_polar_region, split_tensor_along_dim
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -71,7 +71,7 @@ class DistributedQuadratureS2(torch.nn.Module):
         super().__init__()
 
         # copy input
-        self.grid = grid
+        self.grid = require_grid(grid)
         self.img_shape = grid.shape
         self.nlat, self.nlon = grid.shape
         self.normalize = normalize

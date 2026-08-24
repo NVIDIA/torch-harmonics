@@ -70,6 +70,7 @@ __all__ = [
     "EquiangularTrapezoidalGrid",
     "as_grid",
     "grid_types",
+    "require_grid",
 ]
 
 # populated by __init_subclass__; maps the historical grid string to its class
@@ -434,6 +435,42 @@ class EquiangularTrapezoidalGrid(GridS2):
         serviceable for plain quadrature and for the localized operators.
         """
         return False
+
+
+def require_grid(grid: Any, name: Optional[str] = "grid") -> GridS2:
+    """
+    Validate that a layer received a grid descriptor, with a migration-friendly error.
+
+    Layers used to take a shape plus a grid name; they now take a single
+    :class:`GridS2`. Passing either of the old arguments would otherwise fail deep
+    inside the constructor with an opaque ``AttributeError``, so intercept it here
+    and say what to write instead.
+
+    Parameters
+    ----------
+    grid : Any
+        The value supplied by the caller.
+    name : str, optional
+        Name of the parameter, used in the error message, by default ``"grid"``.
+
+    Returns
+    -------
+    GridS2
+        ``grid`` unchanged, once validated.
+
+    Raises
+    ------
+    TypeError
+        If ``grid`` is not a :class:`GridS2`.
+    """
+    if isinstance(grid, GridS2):
+        return grid
+    if isinstance(grid, str):
+        raise TypeError(f"{name} must be a GridS2, not the grid name {grid!r}. The descriptor carries the resolution too, so build one with " f"as_grid({grid!r}, (nlat, nlon)).")
+    if isinstance(grid, (tuple, list)):
+        shape = tuple(grid)
+        raise TypeError(f"{name} must be a GridS2, not a shape {shape!r}. The descriptor carries the shape, so pass as_grid(<grid name>, {shape!r}) instead.")
+    raise TypeError(f"{name} must be a GridS2, got {type(grid).__name__}. Build one with as_grid(<grid name>, (nlat, nlon)).")
 
 
 def grid_types() -> Tuple[str, ...]:
