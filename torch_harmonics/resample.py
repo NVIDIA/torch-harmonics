@@ -36,7 +36,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
+from torch_harmonics.grid import as_grid
 
 
 class ResampleS2(nn.Module):
@@ -133,10 +133,12 @@ class ResampleS2(nn.Module):
         self.grid_out = grid_out
 
         # for upscaling the latitudes we will use interpolation
-        self.lats_in, _ = precompute_latitudes(nlat_in, grid=grid_in)
-        self.lons_in = precompute_longitudes(nlon_in)
-        self.lats_out, _ = precompute_latitudes(nlat_out, grid=grid_out)
-        self.lons_out = precompute_longitudes(nlon_out)
+        self.input_grid = as_grid(grid_in, (nlat_in, nlon_in))
+        self.output_grid = as_grid(grid_out, (nlat_out, nlon_out))
+        self.lats_in = self.input_grid.lats
+        self.lons_in = self.input_grid.lons()
+        self.lats_out = self.output_grid.lats
+        self.lons_out = self.output_grid.lons()
 
         # in the case where some points lie outside of the range spanned by lats_in,
         # we need to expand the solution to the poles before interpolating

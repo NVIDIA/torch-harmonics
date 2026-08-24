@@ -40,7 +40,8 @@ from disco_helpers import optimized_kernels_is_available, pack_psi_dense, prepro
 
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
-from torch_harmonics.quadrature import compute_theta_cutoff, precompute_latitudes, precompute_longitudes
+from torch_harmonics.grid import as_grid
+from torch_harmonics.quadrature import compute_theta_cutoff
 
 from ._disco_utils import _get_psi
 from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
@@ -303,12 +304,14 @@ def _precompute_convolution_tensor_s2(
     nlat_out, nlon_out = out_shape
 
     # precompute input and output grids
-    lats_in, win = precompute_latitudes(nlat_in, grid=grid_in)
-    lats_out, wout = precompute_latitudes(nlat_out, grid=grid_out)
+    input_grid = as_grid(grid_in, in_shape)
+    output_grid = as_grid(grid_out, out_shape)
+    lats_in, win = input_grid.lats, input_grid.quad_weights
+    lats_out, wout = output_grid.lats, output_grid.quad_weights
 
     # compute the phi differences
     # It's imporatant to not include the 2 pi point in the longitudes, as it is equivalent to lon=0
-    lons_in = precompute_longitudes(nlon_in)
+    lons_in = input_grid.lons()
 
     # compute quadrature weights and merge them into the convolution tensor.
     # These quadrature integrate to 1 over the sphere.

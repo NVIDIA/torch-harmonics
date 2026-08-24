@@ -43,7 +43,8 @@ from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhoo
 from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_optimized
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.filter_basis import get_filter_basis
-from torch_harmonics.quadrature import compute_theta_cutoff, precompute_latitudes
+from torch_harmonics.grid import as_grid
+from torch_harmonics.quadrature import compute_theta_cutoff
 
 
 class AttentionS2(nn.Module):
@@ -125,7 +126,7 @@ class AttentionS2(nn.Module):
         self.scale = scale
 
         # integration weights
-        _, wgl = precompute_latitudes(self.nlat_in, grid=grid_in)
+        wgl = as_grid(grid_in, (self.nlat_in, self.nlon_in)).quad_weights
         quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
         # we need to tile and flatten them accordingly
         quad_weights = torch.tile(quad_weights.reshape(-1, 1), (1, self.nlon_in)).flatten()
@@ -362,7 +363,7 @@ class NeighborhoodAttentionS2(nn.Module):
             raise ValueError("Error, theta_cutoff has to be positive.")
 
         # integration weights live on the input grid
-        _, wgl = precompute_latitudes(self.nlat_in, grid=grid_in)
+        wgl = as_grid(grid_in, (self.nlat_in, self.nlon_in)).quad_weights
         quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
