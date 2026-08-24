@@ -94,6 +94,15 @@ class TestGridSpectralBounds(unittest.TestCase):
 class TestTruncateSht(unittest.TestCase):
     """The policy side: what the transform keeps."""
 
+    def setUp(self):
+        # These classes exercise the default truncation, so they necessarily take the
+        # path that announces the v0.9.0 change, once per equiangular parameterization.
+        # It is noise here; test_changed_default_warns and
+        # test_unchanged_default_does_not_warn cover the announcement itself, and both
+        # override this filter through assertWarns / catch_warnings.
+        warnings.filterwarnings("ignore", message="Default SHT truncation changed", category=UserWarning)
+        self.addCleanup(warnings.resetwarnings)
+
     @parameterized.expand(
         [
             # grid, (nlat, nlon), expected (lmax, mmax)
@@ -155,6 +164,15 @@ class TestTruncateSht(unittest.TestCase):
 
 class TestShtLayerTruncationAgrees(unittest.TestCase):
     """The SHT layers must not derive a truncation of their own."""
+
+    def setUp(self):
+        # These classes exercise the default truncation, so they necessarily take the
+        # path that announces the v0.9.0 change, once per equiangular parameterization.
+        # It is noise here; test_changed_default_warns and
+        # test_unchanged_default_does_not_warn cover the announcement itself, and both
+        # override this filter through assertWarns / catch_warnings.
+        warnings.filterwarnings("ignore", message="Default SHT truncation changed", category=UserWarning)
+        self.addCleanup(warnings.resetwarnings)
 
     @parameterized.expand([[nlat, grid] for nlat in [32, 33] for grid in ["equiangular", "legendre-gauss", "lobatto"]])
     def test_layers_match_truncate_sht(self, nlat, grid, verbose=False):
