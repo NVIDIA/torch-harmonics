@@ -142,6 +142,9 @@ class QuadratureS2(nn.Module):
         # register buffer
         self.register_buffer("quad_weight", quad_weight, persistent=False)
 
+    def extra_repr(self):
+        return f"grid={self.grid!r},\nnormalize={self.normalize}"
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Integrate a signal over the sphere using the precomputed quadrature.

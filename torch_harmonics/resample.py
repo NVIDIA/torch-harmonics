@@ -167,7 +167,7 @@ class ResampleS2(nn.Module):
         self.skip_resampling = self.grid_in == self.grid_out
 
     def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}"
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nmode={self.mode}"
 
     def _upscale_longitudes(self, x: torch.Tensor):
         # do the interpolation in precision of x

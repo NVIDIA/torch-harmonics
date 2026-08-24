@@ -183,6 +183,9 @@ class DistributedSpectralConvS2(nn.Module):
             self.spectral_bias = nn.Parameter(torch.zeros(1, self.in_channels, self.lmax_local, self.mmax_local, dtype=torch.complex64))
             self.quadrature = DistributedQuadratureS2(self.grid_in, normalize=False)
 
+    def extra_repr(self):
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.in_channels}, out_channels={self.out_channels}, lmax={self.lmax}, mmax={self.mmax}, num_groups={self.num_groups}"
+
     @torch.compile
     def _contract_lwise(self, ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:
         resc = torch.einsum("bgixy,giox->bgoxy", ac, bc)

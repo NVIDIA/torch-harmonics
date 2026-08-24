@@ -353,10 +353,10 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
     def extra_repr(self):
         return (
-            f"in_shape={(self.nlat_in, self.nlon_in)}, "
-            f"out_shape={(self.nlat_out, self.nlon_out)}, "
-            f"in_chans={self.groupsize * self.groups}, "
-            f"out_chans={self.weight.shape[0]}, "
+            f"grid_in={self.grid_in!r},\n"
+            f"grid_out={self.grid_out!r},\n"
+            f"in_channels={self.groupsize * self.groups}, "
+            f"out_channels={self.weight.shape[0]}, "
             f"filter_basis={self.filter_basis}, "
             f"kernel_shape={self.kernel_shape}, "
             f"theta_cutoff={self.theta_cutoff}, "
@@ -590,7 +590,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             )
 
     def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.groupsize * self.groups}, out_channels={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
 
     @property
     def psi_idx(self):

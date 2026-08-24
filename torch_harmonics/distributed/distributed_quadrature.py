@@ -111,6 +111,9 @@ class DistributedQuadratureS2(torch.nn.Module):
         # register buffer
         self.register_buffer("quad_weight", quad_weight, persistent=False)
 
+    def extra_repr(self):
+        return f"grid={self.grid!r},\nnormalize={self.normalize}"
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # integrate over last two axes only:
         quad = torch.sum(x * self.quad_weight, dim=(-2, -1))

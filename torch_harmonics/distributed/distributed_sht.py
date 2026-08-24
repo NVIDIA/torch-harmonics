@@ -173,7 +173,7 @@ class DistributedRealSHT(nn.Module):
         self.register_buffer("weights", weights, persistent=False)
 
     def extra_repr(self):
-        return f"grid={self.grid!r},\n lmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
 
@@ -342,7 +342,7 @@ class DistributedInverseRealSHT(nn.Module):
         self.register_buffer("pct", pct, persistent=False)
 
     def extra_repr(self):
-        return f"grid={self.grid!r},\n lmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
 
@@ -502,7 +502,7 @@ class DistributedRealVectorSHT(nn.Module):
         self.register_buffer("weights", weights, persistent=False)
 
     def extra_repr(self):
-        return f"grid={self.grid!r},\n lmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
 
@@ -657,7 +657,7 @@ class DistributedInverseRealVectorSHT(nn.Module):
         self.register_buffer("dpct", dpct, persistent=False)
 
     def extra_repr(self):
-        return f"grid={self.grid!r},\n lmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
 
     def forward(self, x: torch.Tensor):
 
