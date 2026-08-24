@@ -31,6 +31,7 @@
 
 import math
 import unittest
+import warnings
 
 import torch
 from parameterized import parameterized, parameterized_class
@@ -839,6 +840,35 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         spectral_energy = torch.einsum("blm,lm->b", c_s.abs() ** 2 + c_t.abs() ** 2, W)  # (batch,)
 
         self.assertTrue(compare_tensors("vector Parseval's theorem", spatial_energy, spectral_energy, atol=atol, rtol=rtol, verbose=verbose))
+
+
+@parameterized_class(("device"), _devices)
+class TestUnsuitableGridWarning(unittest.TestCase):
+    """
+    The SHT must object loudly when handed a grid whose quadrature cannot support it.
+
+    ``equiangular-trapezoidal`` is the only such grid today: it converges as
+    :math:`O(h^2)` rather than spectrally, so the associated Legendre polynomials are
+    not discretely orthogonal under its quadrature and the transform does not
+    round-trip. Its numerical behaviour is deliberately *not* covered here -- it is not
+    a supported configuration, and pinning its error would suggest otherwise. What is
+    covered is that a user cannot stumble into it silently.
+    """
+
+    def setUp(self):
+        disable_tf32()
+
+    @parameterized.expand([[cls_name] for cls_name in ["RealSHT", "InverseRealSHT", "RealVectorSHT", "InverseRealVectorSHT"]])
+    def test_unsuitable_grid_warns(self, cls_name):
+        with self.assertWarns(UserWarning) as ctx:
+            getattr(th, cls_name)(32, 64, grid="equiangular-trapezoidal")
+        self.assertIn("must not be used", str(ctx.warning))
+
+    @parameterized.expand([[cls_name, grid] for cls_name in ["RealSHT", "InverseRealSHT"] for grid in ["equiangular", "legendre-gauss", "lobatto"]])
+    def test_supported_grids_do_not_warn(self, cls_name, grid):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            getattr(th, cls_name)(32, 64, lmax=8, grid=grid)
 
 
 if __name__ == "__main__":

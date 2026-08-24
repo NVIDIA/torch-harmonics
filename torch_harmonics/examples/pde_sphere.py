@@ -37,7 +37,7 @@ import torch
 import torch.nn as nn
 
 import torch_harmonics as th
-from torch_harmonics.quadrature import precompute_longitudes
+from torch_harmonics.grid import as_grid
 
 
 class SphereSolver(nn.Module):
@@ -88,17 +88,12 @@ class SphereSolver(nn.Module):
         self.lmax = lmax or self.sht.lmax
         self.mmax = lmax or self.sht.mmax
 
-        # compute gridpoints
-        if self.grid == "legendre-gauss":
-            cost, _ = th.quadrature.legendre_gauss_weights(self.nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, _ = th.quadrature.lobatto_weights(self.nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, _ = th.quadrature.clenshaw_curtiss_weights(self.nlat, -1, 1)
-
-        # apply cosine transform and flip them
-        lats = -torch.arcsin(cost)
-        lons = precompute_longitudes(self.nlon)
+        # compute gridpoints. The descriptor returns colatitudes already ordered north
+        # to south, matching the layout the transforms use, so the latitudes follow by
+        # complement rather than by relying on the node set being pole-symmetric.
+        quadrature_grid = as_grid(self.grid, (self.nlat, self.nlon))
+        lats = torch.pi / 2 - quadrature_grid.lats
+        lons = quadrature_grid.lons()
 
         self.lmax = self.sht.lmax
         self.mmax = self.sht.mmax

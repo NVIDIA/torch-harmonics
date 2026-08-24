@@ -499,28 +499,13 @@ class QuadratureS2(torch.nn.Module):
         self.grid = grid
         self.normalize = normalize
 
-        if self.grid == "legendre-gauss":
-            _, weights = legendre_gauss_weights(img_shape[0], -1, 1)
-            dlambda = 2 * torch.pi / img_shape[1]
-            quad_weight = dlambda * weights.unsqueeze(1)
-            quad_weight = quad_weight.tile(1, img_shape[1])
-        elif self.grid == "lobatto":
-            _, weights = lobatto_weights(img_shape[0], -1, 1)
-            dlambda = 2 * torch.pi / img_shape[1]
-            quad_weight = dlambda * weights.unsqueeze(1)
-            quad_weight = quad_weight.tile(1, img_shape[1])
-        elif self.grid == "equiangular":
-            _, weights = clenshaw_curtiss_weights(img_shape[0], -1, 1)
-            dlambda = 2 * torch.pi / img_shape[1]
-            quad_weight = dlambda * weights.unsqueeze(1)
-            quad_weight = quad_weight.tile(1, img_shape[1])
-        elif self.grid == "equiangular-trapezoidal":
-            _, weights = trapezoidal_weights(img_shape[0], -1, 1)
-            dlambda = 2 * torch.pi / img_shape[1]
-            quad_weight = dlambda * weights.unsqueeze(1)
-            quad_weight = quad_weight.tile(1, img_shape[1])
-        else:
-            raise (ValueError("Unknown quadrature mode"))
+        # precompute_latitudes owns the per-grid dispatch and covers every supported
+        # grid; the branches this replaced differed only in the weight function, and
+        # the distributed variant silently rejected "equiangular-trapezoidal".
+        _, weights = precompute_latitudes(img_shape[0], grid=self.grid)
+        dlambda = 2 * torch.pi / img_shape[1]
+        quad_weight = dlambda * weights.unsqueeze(1)
+        quad_weight = quad_weight.tile(1, img_shape[1])
 
         # apply normalization
         if normalize:

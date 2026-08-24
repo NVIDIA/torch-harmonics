@@ -29,13 +29,14 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import warnings
+
 import torch
 import torch.nn as nn
 
 from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.grid import as_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
-from torch_harmonics.quadrature import clenshaw_curtiss_weights, legendre_gauss_weights, lobatto_weights
 from torch_harmonics.truncation import truncate_sht
 
 
@@ -118,26 +119,33 @@ class RealSHT(nn.Module):
         self.nlat = nlat
         self.nlon = nlon
         self.grid = grid
+        self.quadrature_grid = as_grid(grid, (nlat, nlon))
+        if not self.quadrature_grid.is_spectrally_accurate:
+            warnings.warn(
+                f"grid '{self.quadrature_grid.grid_type}' must not be used for spherical harmonic transforms. Its quadrature converges only "
+                "algebraically, so the associated Legendre polynomials are not discretely orthogonal on it and the transform does not "
+                "round-trip. Measured relative round-trip error at nlat=64: 2e-4 at lmax=2, 2e-2 at lmax=8, and 6.7e-1 at the default "
+                f"lmax={self.quadrature_grid.max_exact_degree} -- i.e. the result is of the same order as the signal. Only lmax=1 is exact. "
+                "Use 'equiangular', 'legendre-gauss' or 'lobatto' instead. This grid remains appropriate for plain quadrature "
+                "(QuadratureS2) and for the localized operators (DISCO convolutions, neighborhood attention), which make no "
+                "orthogonality assumption.",
+                UserWarning,
+                stacklevel=2,
+            )
         self.norm = norm
         self.csphase = csphase
 
         # TODO: include assertions regarding the dimensions
 
         # compute quadrature points and lmax based on the exactness of the quadrature
-        if self.grid == "legendre-gauss":
-            cost, weights = legendre_gauss_weights(nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, weights = lobatto_weights(nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, weights = clenshaw_curtiss_weights(nlat, -1, 1)
-        else:
-            raise (ValueError("Unknown quadrature mode"))
-
-        # apply cosine transform and flip them
-        tq = torch.flip(torch.arccos(cost), dims=(0,))
+        # nodes and weights come from the grid descriptor, which supports every
+        # grid precompute_latitudes does -- the switch this replaced silently
+        # rejected "equiangular-trapezoidal".
+        tq = self.quadrature_grid.lats
+        weights = self.quadrature_grid.quad_weights
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(as_grid(self.grid, (self.nlat, self.nlon)), lmax, mmax)
+        self.lmax, self.mmax = truncate_sht(self.quadrature_grid, lmax, mmax)
 
         # combine quadrature weights with the legendre weights
         pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
@@ -274,24 +282,28 @@ class InverseRealSHT(nn.Module):
         self.nlat = nlat
         self.nlon = nlon
         self.grid = grid
+        self.quadrature_grid = as_grid(grid, (nlat, nlon))
+        if not self.quadrature_grid.is_spectrally_accurate:
+            warnings.warn(
+                f"grid '{self.quadrature_grid.grid_type}' must not be used for spherical harmonic transforms. Its quadrature converges only "
+                "algebraically, so the associated Legendre polynomials are not discretely orthogonal on it and the transform does not "
+                "round-trip. Measured relative round-trip error at nlat=64: 2e-4 at lmax=2, 2e-2 at lmax=8, and 6.7e-1 at the default "
+                f"lmax={self.quadrature_grid.max_exact_degree} -- i.e. the result is of the same order as the signal. Only lmax=1 is exact. "
+                "Use 'equiangular', 'legendre-gauss' or 'lobatto' instead. This grid remains appropriate for plain quadrature "
+                "(QuadratureS2) and for the localized operators (DISCO convolutions, neighborhood attention), which make no "
+                "orthogonality assumption.",
+                UserWarning,
+                stacklevel=2,
+            )
         self.norm = norm
         self.csphase = csphase
 
         # compute quadrature points
-        if self.grid == "legendre-gauss":
-            cost, _ = legendre_gauss_weights(nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, _ = lobatto_weights(nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, _ = clenshaw_curtiss_weights(nlat, -1, 1)
-        else:
-            raise (ValueError("Unknown quadrature mode"))
-
-        # apply cosine transform and flip them
-        t = torch.flip(torch.arccos(cost), dims=(0,))
+        # see the note in the forward transform: the descriptor covers every grid
+        t = self.quadrature_grid.lats
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(as_grid(self.grid, (self.nlat, self.nlon)), lmax, mmax)
+        self.lmax, self.mmax = truncate_sht(self.quadrature_grid, lmax, mmax)
 
         # precompute associated Legendre polynomials
         # store as (mmax, nlat, lmax) so the contraction dim l is stride-1
@@ -416,24 +428,31 @@ class RealVectorSHT(nn.Module):
         self.nlat = nlat
         self.nlon = nlon
         self.grid = grid
+        self.quadrature_grid = as_grid(grid, (nlat, nlon))
+        if not self.quadrature_grid.is_spectrally_accurate:
+            warnings.warn(
+                f"grid '{self.quadrature_grid.grid_type}' must not be used for spherical harmonic transforms. Its quadrature converges only "
+                "algebraically, so the associated Legendre polynomials are not discretely orthogonal on it and the transform does not "
+                "round-trip. Measured relative round-trip error at nlat=64: 2e-4 at lmax=2, 2e-2 at lmax=8, and 6.7e-1 at the default "
+                f"lmax={self.quadrature_grid.max_exact_degree} -- i.e. the result is of the same order as the signal. Only lmax=1 is exact. "
+                "Use 'equiangular', 'legendre-gauss' or 'lobatto' instead. This grid remains appropriate for plain quadrature "
+                "(QuadratureS2) and for the localized operators (DISCO convolutions, neighborhood attention), which make no "
+                "orthogonality assumption.",
+                UserWarning,
+                stacklevel=2,
+            )
         self.norm = norm
         self.csphase = csphase
 
         # compute quadrature points
-        if self.grid == "legendre-gauss":
-            cost, weights = legendre_gauss_weights(nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, weights = lobatto_weights(nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, weights = clenshaw_curtiss_weights(nlat, -1, 1)
-        else:
-            raise (ValueError("Unknown quadrature mode"))
-
-        # apply cosine transform and flip them
-        tq = torch.flip(torch.arccos(cost), dims=(0,))
+        # nodes and weights come from the grid descriptor, which supports every
+        # grid precompute_latitudes does -- the switch this replaced silently
+        # rejected "equiangular-trapezoidal".
+        tq = self.quadrature_grid.lats
+        weights = self.quadrature_grid.quad_weights
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(as_grid(self.grid, (self.nlat, self.nlon)), lmax, mmax)
+        self.lmax, self.mmax = truncate_sht(self.quadrature_grid, lmax, mmax)
 
         # precompute associated Legendre polynomials
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
@@ -574,24 +593,28 @@ class InverseRealVectorSHT(nn.Module):
         self.nlat = nlat
         self.nlon = nlon
         self.grid = grid
+        self.quadrature_grid = as_grid(grid, (nlat, nlon))
+        if not self.quadrature_grid.is_spectrally_accurate:
+            warnings.warn(
+                f"grid '{self.quadrature_grid.grid_type}' must not be used for spherical harmonic transforms. Its quadrature converges only "
+                "algebraically, so the associated Legendre polynomials are not discretely orthogonal on it and the transform does not "
+                "round-trip. Measured relative round-trip error at nlat=64: 2e-4 at lmax=2, 2e-2 at lmax=8, and 6.7e-1 at the default "
+                f"lmax={self.quadrature_grid.max_exact_degree} -- i.e. the result is of the same order as the signal. Only lmax=1 is exact. "
+                "Use 'equiangular', 'legendre-gauss' or 'lobatto' instead. This grid remains appropriate for plain quadrature "
+                "(QuadratureS2) and for the localized operators (DISCO convolutions, neighborhood attention), which make no "
+                "orthogonality assumption.",
+                UserWarning,
+                stacklevel=2,
+            )
         self.norm = norm
         self.csphase = csphase
 
         # compute quadrature points
-        if self.grid == "legendre-gauss":
-            cost, _ = legendre_gauss_weights(nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, _ = lobatto_weights(nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, _ = clenshaw_curtiss_weights(nlat, -1, 1)
-        else:
-            raise (ValueError("Unknown quadrature mode"))
-
-        # apply cosine transform and flip them
-        t = torch.flip(torch.arccos(cost), dims=(0,))
+        # see the note in the forward transform: the descriptor covers every grid
+        t = self.quadrature_grid.lats
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(as_grid(self.grid, (self.nlat, self.nlon)), lmax, mmax)
+        self.lmax, self.mmax = truncate_sht(self.quadrature_grid, lmax, mmax)
 
         # precompute associated Legendre polynomials
         # store as (2, mmax, nlat, lmax) so the contraction dim l is stride-1

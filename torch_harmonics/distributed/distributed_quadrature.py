@@ -33,7 +33,7 @@ from typing import Optional, Tuple
 
 import torch
 
-from torch_harmonics.quadrature import clenshaw_curtiss_weights, legendre_gauss_weights, lobatto_weights
+from torch_harmonics.quadrature import precompute_latitudes
 
 from .primitives import compute_split_shapes, reduce_from_azimuth_region, reduce_from_polar_region, split_tensor_along_dim
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -87,23 +87,13 @@ class DistributedQuadratureS2(torch.nn.Module):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
-        if self.grid == "legendre-gauss":
-            _, weights = legendre_gauss_weights(img_shape[0], -1, 1)
-            dlambda = 2 * torch.pi / img_shape[1]
-            quad_weight = dlambda * weights.unsqueeze(1)
-            quad_weight = quad_weight.tile(1, img_shape[1])
-        elif self.grid == "lobatto":
-            _, weights = lobatto_weights(img_shape[0], -1, 1)
-            dlambda = 2 * torch.pi / img_shape[1]
-            quad_weight = dlambda * weights.unsqueeze(1)
-            quad_weight = quad_weight.tile(1, img_shape[1])
-        elif self.grid == "equiangular":
-            _, weights = clenshaw_curtiss_weights(img_shape[0], -1, 1)
-            dlambda = 2 * torch.pi / img_shape[1]
-            quad_weight = dlambda * weights.unsqueeze(1)
-            quad_weight = quad_weight.tile(1, img_shape[1])
-        else:
-            raise (ValueError("Unknown quadrature mode"))
+        # precompute_latitudes owns the per-grid dispatch and covers every supported
+        # grid; the branches this replaced differed only in the weight function, and
+        # the distributed variant silently rejected "equiangular-trapezoidal".
+        _, weights = precompute_latitudes(img_shape[0], grid=self.grid)
+        dlambda = 2 * torch.pi / img_shape[1]
+        quad_weight = dlambda * weights.unsqueeze(1)
+        quad_weight = quad_weight.tile(1, img_shape[1])
 
         # apply normalization
         if normalize:
