@@ -37,7 +37,7 @@ import torch.nn as nn
 
 from torch_harmonics import InverseRealSHT, RealSHT
 from torch_harmonics.grid import as_grid
-from torch_harmonics.quadrature import QuadratureS2
+from torch_harmonics.integration import QuadratureS2
 from torch_harmonics.truncation import truncate_sht
 
 
@@ -194,7 +194,7 @@ class SpectralConvS2(nn.Module):
 
         if bias:
             self.spectral_bias = nn.Parameter(torch.zeros(1, self.in_channels, self.lmax, self.mmax, dtype=torch.complex64))
-            self.quadrature = QuadratureS2(img_shape=in_shape, grid=grid_in, normalize=False)
+            self.quadrature = QuadratureS2(as_grid(grid_in, in_shape), normalize=False)
 
     @torch.compile
     def _contract_lwise(self, ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:

@@ -92,8 +92,8 @@ class TestDistributedQuadrature(unittest.TestCase):
 
         B, C, H, W = batch_size, num_chan, nlat, nlon
 
-        quad_local = th.QuadratureS2(img_shape=(H, W), grid=grid, normalize=normalize).to(self.device)
-        quad_dist = thd.DistributedQuadratureS2(img_shape=(H, W), grid=grid, normalize=normalize).to(self.device)
+        quad_local = th.QuadratureS2(th.as_grid(grid, (H, W)), normalize=normalize).to(self.device)
+        quad_dist = thd.DistributedQuadratureS2(th.as_grid(grid, (H, W)), normalize=normalize).to(self.device)
 
         # create tensors
         inp_full = torch.randn((B, C, H, W), dtype=torch.float32, device=self.device)

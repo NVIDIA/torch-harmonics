@@ -37,11 +37,11 @@ try:
 except ImportError:  # pragma: no cover - source tree that was never built
     __version__ = "0.0.0"
 
-from . import examples, grid, quadrature, random_fields
+from . import examples, grid, integration, quadrature, random_fields
 from .attention import AttentionS2, NeighborhoodAttentionS2
 from .disco import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 from .grid import EquiangularGrid, EquiangularTrapezoidalGrid, GridS2, LegendreGaussGrid, LobattoGrid, as_grid, grid_types
-from .quadrature import QuadratureS2
+from .integration import QuadratureS2
 from .resample import ResampleS2
 from .sht import InverseRealSHT, InverseRealVectorSHT, RealSHT, RealVectorSHT
 from .spectral_convolution import SpectralConvS2

@@ -29,11 +29,11 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 
-from torch_harmonics.quadrature import precompute_latitudes
+from torch_harmonics.grid import GridS2
 
 from .primitives import compute_split_shapes, reduce_from_azimuth_region, reduce_from_polar_region, split_tensor_along_dim
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -52,11 +52,9 @@ class DistributedQuadratureS2(torch.nn.Module):
 
     Parameters
     ----------
-    img_shape : Tuple[int]
-        Spatial grid shape ``(nlat, nlon)``.
-    grid : str, optional
-        Quadrature grid type (``"equiangular"``, ``"legendre-gauss"``,
-        ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``.
+    grid : GridS2
+        Descriptor of the *global* grid to integrate on. It carries both the
+        resolution and the quadrature rule; the local shard is derived from it.
     normalize : bool, optional
         If ``True``, divides weights by ``4π`` to return an average instead of
         an integral, by default ``False``.
@@ -67,19 +65,17 @@ class DistributedQuadratureS2(torch.nn.Module):
         Tensor of shape ``(..., channels)`` containing the global integral over
         the last two spatial dimensions (reduced across communicator groups).
 
-    Raises
-    ------
-    ValueError
-        If an unknown ``grid`` type is provided.
     """
 
-    def __init__(self, img_shape: Tuple[int], grid: Optional[str] = "equiangular", normalize: Optional[bool] = False):
+    def __init__(self, grid: GridS2, normalize: Optional[bool] = False):
         super().__init__()
 
         # copy input
         self.grid = grid
-        self.img_shape = img_shape
+        self.img_shape = grid.shape
+        self.nlat, self.nlon = grid.shape
         self.normalize = normalize
+        img_shape = grid.shape
 
         # get the comms grid:
         self.comm_size_polar = polar_group_size()
@@ -87,10 +83,7 @@ class DistributedQuadratureS2(torch.nn.Module):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
-        # precompute_latitudes owns the per-grid dispatch and covers every supported
-        # grid; the branches this replaced differed only in the weight function, and
-        # the distributed variant silently rejected "equiangular-trapezoidal".
-        _, weights = precompute_latitudes(img_shape[0], grid=self.grid)
+        weights = grid.quad_weights
         dlambda = 2 * torch.pi / img_shape[1]
         quad_weight = dlambda * weights.unsqueeze(1)
         quad_weight = quad_weight.tile(1, img_shape[1])
