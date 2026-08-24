@@ -35,6 +35,7 @@ import torch
 from parameterized import parameterized, parameterized_class
 from testutils import compare_tensors, disable_tf32, set_seed
 
+from torch_harmonics import as_grid
 from torch_harmonics.spectral_convolution import SpectralConvS2
 
 _devices = [(torch.device("cpu"),)]
@@ -79,13 +80,11 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", (nlat, nlon)),
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
         ).to(self.device)
         conv.eval()
 
@@ -131,13 +130,11 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv_grouped = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", (nlat, nlon)),
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
         ).to(self.device)
         conv_grouped.eval()
 
@@ -148,13 +145,11 @@ class TestSpectralConvS2(unittest.TestCase):
         group_convs = []
         for g in range(num_groups):
             gc = SpectralConvS2(
-                in_shape=(nlat, nlon),
-                out_shape=(nlat, nlon),
+                as_grid("equiangular", (nlat, nlon)),
+                as_grid("equiangular", (nlat, nlon)),
                 in_channels=ic_per_group,
                 out_channels=oc_per_group,
                 num_groups=1,
-                grid_in="equiangular",
-                grid_out="equiangular",
             ).to(self.device)
             # weight shape: [num_groups, ic_per_group, oc_per_group, lmax]
             gc.weight.data = conv_grouped.weight[g : g + 1].clone()
@@ -202,12 +197,10 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", (nlat, nlon)),
             in_channels=in_channels,
             out_channels=out_channels,
-            grid_in="equiangular",
-            grid_out="equiangular",
         ).to(self.device)
         conv.eval()
 
@@ -247,13 +240,11 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", (nlat, nlon)),
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
         ).to(self.device)
         conv.eval()
 
@@ -292,13 +283,11 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", (nlat, nlon)),
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
         ).to(self.device)
         conv.eval()
 
@@ -346,25 +335,21 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv_no_bias = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", (nlat, nlon)),
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=False,
         ).to(self.device)
 
         set_seed(333)
         conv_bias = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", (nlat, nlon)),
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=True,
         ).to(self.device)
         # spectral_bias is zero-initialised; weights must match
@@ -392,13 +377,11 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", (nlat, nlon)),
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=True,
         ).to(self.device)
 
@@ -428,13 +411,11 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", (nlat, nlon)),
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=True,
         ).to(self.device)
 
@@ -466,13 +447,11 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", (nlat, nlon)),
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=True,
         ).to(self.device)
 

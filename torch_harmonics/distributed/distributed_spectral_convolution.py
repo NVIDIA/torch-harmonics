@@ -30,12 +30,12 @@
 #
 
 import math
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
 
-from torch_harmonics.grid import as_grid
+from torch_harmonics.grid import GridS2, require_grid
 from torch_harmonics.truncation import truncate_sht
 
 from .distributed_quadrature import DistributedQuadratureS2
@@ -87,22 +87,17 @@ class DistributedSpectralConvS2(nn.Module):
 
     Parameters
     ----------
-    in_shape : Tuple[int]
-        Spatial input grid shape ``(nlat, nlon)``.
-    out_shape : Tuple[int]
-        Spatial output grid shape ``(nlat, nlon)``.
+    grid_in : GridS2
+        Descriptor of the input grid. It carries the resolution as well as the
+        quadrature rule, so no separate shape argument is needed.
+    grid_out : GridS2
+        Descriptor of the output grid.
     in_channels : int
         Number of input channels.
     out_channels : int
         Number of output channels.
     num_groups : int, optional
         Number of channel groups for grouped spectral weights, by default 1.
-    grid_in : str, optional
-        Grid used for the forward distributed SHT (``"equiangular"``,
-        ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default
-        ``"equiangular"``.
-    grid_out : str, optional
-        Grid used for the inverse distributed SHT, same options as ``grid_in``.
     bias : bool, optional
         If ``True``, adds a learnable spectral bias computed from the spatial
         integral (replicated across process groups as needed), by default
@@ -128,13 +123,11 @@ class DistributedSpectralConvS2(nn.Module):
 
     def __init__(
         self,
-        in_shape: Tuple[int],
-        out_shape: Tuple[int],
+        grid_in: GridS2,
+        grid_out: GridS2,
         in_channels: int,
         out_channels: int,
         num_groups: Optional[int] = 1,
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
         bias: Optional[bool] = False,
     ):
         super().__init__()
@@ -145,6 +138,8 @@ class DistributedSpectralConvS2(nn.Module):
             raise ValueError(f"out_channels ({out_channels}) must be divisible by num_groups ({num_groups})")
 
         # copy inputs
+        self.grid_in = require_grid(grid_in, "grid_in")
+        self.grid_out = require_grid(grid_out, "grid_out")
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.num_groups = num_groups
@@ -156,8 +151,8 @@ class DistributedSpectralConvS2(nn.Module):
         self.comm_rank_azimuth = azimuth_group_rank()
 
         # compute truncation
-        lmax_in, mmax_in = truncate_sht(as_grid(grid_in, in_shape))
-        lmax_out, mmax_out = truncate_sht(as_grid(grid_out, out_shape))
+        lmax_in, mmax_in = truncate_sht(self.grid_in)
+        lmax_out, mmax_out = truncate_sht(self.grid_out)
 
         # compute lmax and lmin
         lmax = min(lmax_in, lmax_out)
@@ -166,8 +161,8 @@ class DistributedSpectralConvS2(nn.Module):
         self.mmax = self.lmax
 
         # set up sht layers
-        self.sht = DistributedRealSHT(as_grid(grid_in, in_shape), lmax=self.lmax, mmax=self.mmax)
-        self.isht = DistributedInverseRealSHT(as_grid(grid_out, out_shape), lmax=self.lmax, mmax=self.mmax)
+        self.sht = DistributedRealSHT(self.grid_in, lmax=self.lmax, mmax=self.mmax)
+        self.isht = DistributedInverseRealSHT(self.grid_out, lmax=self.lmax, mmax=self.mmax)
 
         # extract sht parameters
         self.l_shapes = self.isht.l_shapes
@@ -186,7 +181,7 @@ class DistributedSpectralConvS2(nn.Module):
 
         if bias:
             self.spectral_bias = nn.Parameter(torch.zeros(1, self.in_channels, self.lmax_local, self.mmax_local, dtype=torch.complex64))
-            self.quadrature = DistributedQuadratureS2(as_grid(grid_in, in_shape), normalize=False)
+            self.quadrature = DistributedQuadratureS2(self.grid_in, normalize=False)
 
     @torch.compile
     def _contract_lwise(self, ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:
