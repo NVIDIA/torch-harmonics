@@ -43,7 +43,7 @@ from torch_harmonics.attention.attention import NeighborhoodAttentionS2
 from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_setup_context
 from torch_harmonics.grid import GridS2
 
-from .primitives import compute_split_shapes, get_group_neighbors, polar_halo_exchange
+from .primitives import get_group_neighbors, polar_halo_exchange
 from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 # ---------------------------------------------------------------------------
@@ -877,22 +877,31 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
-        # split shapes
-        self.lat_in_shapes = compute_split_shapes(self.nlat_in, self.comm_size_polar)
-        self.lon_in_shapes = compute_split_shapes(self.nlon_in, self.comm_size_azimuth)
-        self.lat_out_shapes = compute_split_shapes(self.nlat_out, self.comm_size_polar)
-        self.lon_out_shapes = compute_split_shapes(self.nlon_out, self.comm_size_azimuth)
+        # each grid decomposes itself. The ring and the halo exchange need every
+        # rank's extent, not just this one's, which is what the shape lists carry.
+        self.shard_in = self.grid_in.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.shard_out = self.grid_out.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.lat_in_shapes = list(self.shard_in.lat_shapes)
+        self.lon_in_shapes = list(self.shard_in.lon_shapes)
+        self.lat_out_shapes = list(self.shard_out.lat_shapes)
+        self.lon_out_shapes = list(self.shard_out.lon_shapes)
 
         # local sizes for this rank
-        self.nlat_in_local = self.lat_in_shapes[self.comm_rank_polar]
-        self.nlon_in_local = self.lon_in_shapes[self.comm_rank_azimuth]
-        self.nlat_out_local = self.lat_out_shapes[self.comm_rank_polar]
-        self.nlon_out_local = self.lon_out_shapes[self.comm_rank_azimuth]
+        self.nlat_in_local = self.shard_in.nlat
+        self.nlon_in_local = self.shard_in.nlon
+        self.nlat_out_local = self.shard_out.nlat
+        self.nlon_out_local = self.shard_out.nlon
 
         # Uniform-pscale invariant: every azimuth rank must carry the same lon pscale.
         # The global divisibility check is inherited from the serial
         # NeighborhoodAttentionS2.__init__, but that is not sufficient in distributed:
-        # if compute_split_shapes hands different ranks different local pscales
+        # if the grid hands different ranks different local pscales
         # (e.g. nlon_in=12, nlon_out=4, comm_size_azimuth=3 -> [4,4,4] vs [2,1,1]),
         # the p-shift mapping in the ring exchange is ill-defined.
         if self.upsample:
@@ -904,7 +913,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
                         f"nlon_in_local={lon_in_r}, nlon_out_local={lon_out_r}. "
                         f"Every azimuth rank must satisfy nlon_out_local == (nlon_out // nlon_in) * nlon_in_local "
                         f"= {pscale_lon} * nlon_in_local. "
-                        f"Choose (nlon_in, nlon_out, comm_size_azimuth) so that compute_split_shapes "
+                        f"Choose (nlon_in, nlon_out, comm_size_azimuth) so that the azimuth split "
                         f"produces uniform local pscale."
                     )
         else:
@@ -916,7 +925,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
                         f"nlon_in_local={lon_in_r}, nlon_out_local={lon_out_r}. "
                         f"Every azimuth rank must satisfy nlon_in_local == (nlon_in // nlon_out) * nlon_out_local "
                         f"= {pscale_lon} * nlon_out_local. "
-                        f"Choose (nlon_in, nlon_out, comm_size_azimuth) so that compute_split_shapes "
+                        f"Choose (nlon_in, nlon_out, comm_size_azimuth) so that the azimuth split "
                         f"produces uniform local pscale."
                     )
 
@@ -926,8 +935,8 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         self.lat_in_starts = list(accumulate([0] + self.lat_in_shapes[:-1]))
         self.lat_out_starts = list(accumulate([0] + self.lat_out_shapes[:-1]))
 
-        self.lon_lo_out = self.lon_out_starts[self.comm_rank_azimuth]
-        self.lat_lo_out = self.lat_out_starts[self.comm_rank_polar]
+        self.lon_lo_out = self.shard_out.lon_offset
+        self.lat_lo_out = self.shard_out.lat_offset
 
         if self.upsample:
             # ---- lat halo size ----

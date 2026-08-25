@@ -29,7 +29,6 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from itertools import accumulate
 from typing import Optional, Tuple, Union
 
 import torch
@@ -106,15 +105,14 @@ def _split_distributed_convolution_tensor_s2(
 
     # these must be the global grids; require_grid rejects a GridShardS2, since
     # sharding an already-sharded grid would silently select the wrong latitudes
-    nlat_in, nlon_in = require_grid(grid_in, "grid_in").shape
-    nlat_out, nlon_out = require_grid(grid_out, "grid_out").shape
+    nlon_in = require_grid(grid_in, "grid_in").nlon
+    require_grid(grid_out, "grid_out")
 
-    comm_size_polar = polar_group_size()
-    comm_rank_polar = polar_group_rank()
-    split_shapes = compute_split_shapes(nlat_in, num_chunks=comm_size_polar)
-    offsets = [0] + list(accumulate(split_shapes))
-    start_idx = offsets[comm_rank_polar]
-    end_idx = offsets[comm_rank_polar + 1]
+    # the grid locates this rank's latitude range; sharding the global grid here is
+    # why require_grid above rejects a shard, which would offset into an offset
+    shard_in = grid_in.shard(polar=(polar_group_rank(), polar_group_size()))
+    start_idx = shard_in.lat_offset
+    end_idx = start_idx + shard_in.nlat
 
     # once normalization is done we can throw away the entries which correspond to input latitudes we do not care about
     lats = idx[2] // nlon_in
@@ -238,11 +236,21 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
-        # we need those shapes:
-        self.lat_in_shapes = compute_split_shapes(self.nlat_in, self.comm_size_polar)
-        self.lon_in_shapes = compute_split_shapes(self.nlon_in, self.comm_size_azimuth)
-        self.lat_out_shapes = compute_split_shapes(self.nlat_out, self.comm_size_polar)
-        self.lon_out_shapes = compute_split_shapes(self.nlon_out, self.comm_size_azimuth)
+        # each grid decomposes itself. Only the shape lists come from the shards: the
+        # local extents below deliberately keep one side global, since psi is split
+        # along a single latitude axis rather than both.
+        self.shard_in = self.grid_in.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.shard_out = self.grid_out.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.lat_in_shapes = list(self.shard_in.lat_shapes)
+        self.lon_in_shapes = list(self.shard_in.lon_shapes)
+        self.lat_out_shapes = list(self.shard_out.lat_shapes)
+        self.lon_out_shapes = list(self.shard_out.lon_shapes)
 
         # compute theta cutoff based on the bandlimit of the input field
         if theta_cutoff is None:
@@ -517,11 +525,21 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
-        # we need those shapes:
-        self.lat_in_shapes = compute_split_shapes(self.nlat_in, self.comm_size_polar)
-        self.lon_in_shapes = compute_split_shapes(self.nlon_in, self.comm_size_azimuth)
-        self.lat_out_shapes = compute_split_shapes(self.nlat_out, self.comm_size_polar)
-        self.lon_out_shapes = compute_split_shapes(self.nlon_out, self.comm_size_azimuth)
+        # each grid decomposes itself. Only the shape lists come from the shards: the
+        # local extents below deliberately keep one side global, since psi is split
+        # along a single latitude axis rather than both.
+        self.shard_in = self.grid_in.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.shard_out = self.grid_out.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.lat_in_shapes = list(self.shard_in.lat_shapes)
+        self.lon_in_shapes = list(self.shard_in.lon_shapes)
+        self.lat_out_shapes = list(self.shard_out.lat_shapes)
+        self.lon_out_shapes = list(self.shard_out.lon_shapes)
 
         # bandlimit
         if theta_cutoff is None:
