@@ -2,6 +2,8 @@
 
 Grids, plotting, quadrature, and helper functions.
 
+(grids)=
+
 ## Grids
 
 A `GridS2` describes a latitude--longitude grid on the sphere: where its nodes
@@ -44,8 +46,8 @@ grid.max_exact_degree            # highest degree the quadrature integrates exac
 ## Quadrature
 
 torch-harmonics supports several quadrature rules for the latitudinal
-direction. Each corresponds to a `grid` keyword accepted by the SHT and
-convolution layers:
+direction. Each is named by one of the strings below, which is what `as_grid`
+takes to build the descriptor the layers are given:
 
 | Grid string                 | Quadrature rule | Nodes                                            | Key properties                                                                                                                                                                                                                                                                                                                                                                                              |
 | --------------------------- | --------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

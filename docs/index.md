@@ -60,6 +60,13 @@ coeffs = sht(signal)          # -> spherical harmonic coefficients
 reconstructed = isht(coeffs)  # -> back to grid space
 ```
 
+Every operator takes a grid descriptor rather than a resolution and a grid
+name. The descriptor carries both, together with everything that follows from
+where the nodes sit: the quadrature weights, the angular cutoff localized
+operators default to, the degree an SHT can be truncated to, and how the grid
+decomposes across ranks. Operators mapping between two grids take `grid_in` and
+`grid_out` in that leading position. See {ref}`grids`.
+
 ```{toctree}
 ---
 maxdepth: 1
