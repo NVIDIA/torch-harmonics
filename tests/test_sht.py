@@ -141,8 +141,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             mmax = nlat
         lmax = mmax
 
-        sht = th.RealSHT(th.as_grid(grid, (nlat, nlon)), mmax=mmax, lmax=lmax, norm=norm).to(self.device)
-        isht = th.InverseRealSHT(th.as_grid(grid, (nlat, nlon)), mmax=mmax, lmax=lmax, norm=norm).to(self.device)
+        sht = th.RealSHT(th.as_grid(grid, (nlat, nlon)), lmax=lmax, mmax=mmax, norm=norm).to(self.device)
+        isht = th.InverseRealSHT(th.as_grid(grid, (nlat, nlon)), lmax=lmax, mmax=mmax, norm=norm).to(self.device)
 
         with torch.no_grad():
             coeffs = torch.zeros(batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)
@@ -196,8 +196,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             mmax = nlat
         lmax = mmax
 
-        sht = th.RealSHT(th.as_grid(grid, (nlat, nlon)), mmax=mmax, lmax=lmax, norm=norm).to(self.device)
-        isht = th.InverseRealSHT(th.as_grid(grid, (nlat, nlon)), mmax=mmax, lmax=lmax, norm=norm).to(self.device)
+        sht = th.RealSHT(th.as_grid(grid, (nlat, nlon)), lmax=lmax, mmax=mmax, norm=norm).to(self.device)
+        isht = th.InverseRealSHT(th.as_grid(grid, (nlat, nlon)), lmax=lmax, mmax=mmax, norm=norm).to(self.device)
 
         with torch.no_grad():
             coeffs = torch.zeros(batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)

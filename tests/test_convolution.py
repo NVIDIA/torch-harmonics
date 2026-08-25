@@ -500,16 +500,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # fused is only supported for forward (non-transpose) convolution
         fused_kwarg = {"fused": fused} if (fused and not transpose) else {}
         conv = Conv(
+            as_grid(grid_in, in_shape),
+            as_grid(grid_out, out_shape),
             in_channels,
             out_channels,
-            in_shape,
-            out_shape,
             kernel_shape,
             basis_type=basis_type,
             basis_norm_mode=basis_norm_mode,
             groups=1,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=False,
             theta_cutoff=theta_cutoff,
             optimized_kernel=use_optimized_kernels,
@@ -701,16 +699,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
 
         conv_naive = Conv(
+            as_grid(grid_in, in_shape),
+            as_grid(grid_out, out_shape),
             in_channels,
             out_channels,
-            in_shape,
-            out_shape,
             kernel_shape,
             basis_type=basis_type,
             basis_norm_mode=basis_norm_mode,
             groups=1,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=False,
             theta_cutoff=theta_cutoff,
             optimized_kernel=False,
@@ -719,16 +715,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # fused is only supported for forward (non-transpose) convolution
         fused_kwarg = {"fused": fused} if (fused and not transpose) else {}
         conv_opt = Conv(
+            as_grid(grid_in, in_shape),
+            as_grid(grid_out, out_shape),
             in_channels,
             out_channels,
-            in_shape,
-            out_shape,
             kernel_shape,
             basis_type=basis_type,
             basis_norm_mode=basis_norm_mode,
             groups=1,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=False,
             theta_cutoff=theta_cutoff,
             optimized_kernel=True,
@@ -796,16 +790,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         theta_cutoff = 4 * torch.pi / float(nlat_in - 1)
 
         conv = Conv(
+            grid_in=as_grid("equiangular", in_shape),
+            grid_out=as_grid("equiangular", out_shape),
             in_channels=4,
             out_channels=4,
-            in_shape=in_shape,
-            out_shape=out_shape,
             kernel_shape=(3,),
             basis_type="piecewise linear",
             basis_norm_mode="mean",
             groups=1,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=False,
             theta_cutoff=theta_cutoff,
             optimized_kernel=True,
@@ -852,16 +844,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # init on cpu
         conv_host = Conv(
+            as_grid(grid_in, in_shape),
+            as_grid(grid_out, out_shape),
             in_channels,
             out_channels,
-            in_shape,
-            out_shape,
             kernel_shape,
             basis_type=basis_type,
             basis_norm_mode=basis_norm_mode,
             groups=1,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=False,
             theta_cutoff=theta_cutoff,
         )
@@ -869,16 +859,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # torch.set_default_device(self.device)
         with torch.device(self.device):
             conv_device = Conv(
+                as_grid(grid_in, in_shape),
+                as_grid(grid_out, out_shape),
                 in_channels,
                 out_channels,
-                in_shape,
-                out_shape,
                 kernel_shape,
                 basis_type=basis_type,
                 basis_norm_mode=basis_norm_mode,
                 groups=1,
-                grid_in=grid_in,
-                grid_out=grid_out,
                 bias=False,
                 theta_cutoff=theta_cutoff,
             )
@@ -938,16 +926,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
         fused_kwarg = {"fused": fused} if (fused and not transpose) else {}
         conv = Conv(
+            as_grid(grid_in, in_shape),
+            as_grid(grid_out, out_shape),
             in_channels,
             out_channels,
-            in_shape,
-            out_shape,
             kernel_shape,
             basis_type=basis_type,
             basis_norm_mode=basis_norm_mode,
             groups=1,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=False,
             theta_cutoff=theta_cutoff,
             **fused_kwarg,
@@ -1022,16 +1008,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
         conv = Conv(
+            as_grid("equiangular", in_shape),
+            as_grid("equiangular", out_shape),
             in_channels,
             out_channels,
-            in_shape,
-            out_shape,
             kernel_shape,
             basis_type=basis_type,
             basis_norm_mode="mean",
             groups=1,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=True,
             theta_cutoff=theta_cutoff,
         ).to(self.device)
@@ -1084,16 +1068,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # init on cpu
         conv_optimized = Conv(
+            as_grid(grid_in, in_shape),
+            as_grid(grid_out, out_shape),
             in_channels,
             out_channels,
-            in_shape,
-            out_shape,
             kernel_shape,
             basis_type=basis_type,
             basis_norm_mode=basis_norm_mode,
             groups=1,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=True,
             theta_cutoff=theta_cutoff,
             optimized_kernel=True,
@@ -1166,10 +1148,10 @@ class TestKpackedPath(unittest.TestCase):
         if out_shape is None:
             out_shape = in_shape
         conv = DiscreteContinuousConvS2(
-            in_channels=channels,
-            out_channels=channels,
             grid_in=as_grid(grid_in, in_shape),
             grid_out=as_grid(grid_out, out_shape),
+            in_channels=channels,
+            out_channels=channels,
             kernel_shape=(3, 3),
             basis_type="harmonic",
             basis_norm_mode="nodal",
@@ -1262,10 +1244,10 @@ class TestKpackedPath(unittest.TestCase):
                 set_seed(0)
                 conv_bf16 = self._make_conv(batch, channels, in_shape)
                 conv_fp32 = DiscreteContinuousConvS2(
-                    in_channels=channels,
-                    out_channels=channels,
                     grid_in=as_grid("legendre-gauss", in_shape),
                     grid_out=as_grid("legendre-gauss", in_shape),
+                    in_channels=channels,
+                    out_channels=channels,
                     kernel_shape=(3, 3),
                     basis_type="harmonic",
                     basis_norm_mode="nodal",

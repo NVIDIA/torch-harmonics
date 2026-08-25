@@ -30,7 +30,7 @@
 import torch
 from bench import BenchmarkEntry, maybe_autocast, register
 
-from torch_harmonics import DiscreteContinuousConvS2
+from torch_harmonics import DiscreteContinuousConvS2, as_grid
 
 # ------------------------------------------------------------------------------
 # Setup / forward / backward / reference
@@ -42,16 +42,16 @@ def _disco_setup(batch, in_ch, out_ch, nlat_in, nlon_in, nlat_out, nlon_out, ker
         use_autocast = dtype in (torch.float16, torch.bfloat16)
         module_dtype = torch.float32 if use_autocast else dtype
         conv = DiscreteContinuousConvS2(
+            grid_in=as_grid("equiangular", (nlat_in, nlon_in)),
+            grid_out=as_grid("equiangular", (nlat_out, nlon_out)),
             in_channels=in_ch,
             out_channels=out_ch,
-            in_shape=(nlat_in, nlon_in),
-            out_shape=(nlat_out, nlon_out),
             kernel_shape=kernel_shape,
             basis_type=basis_type,
             basis_norm_mode=basis_norm_mode,
+            groups=groups,
             theta_cutoff=theta_cutoff,
             optimized_kernel=optimized,
-            groups=groups,
             fused=fused,
         ).to(device=device, dtype=module_dtype)
         x = torch.randn(batch, in_ch, nlat_in, nlon_in, dtype=module_dtype, device=device, requires_grad=True)
@@ -87,15 +87,15 @@ def _disco_backward(state, out):
 
 def _disco_reference(state):
     conv_ref = DiscreteContinuousConvS2(
+        grid_in=as_grid("equiangular", (state["nlat_in"], state["nlon_in"])),
+        grid_out=as_grid("equiangular", (state["nlat_out"], state["nlon_out"])),
         in_channels=state["in_ch"],
         out_channels=state["out_ch"],
-        in_shape=(state["nlat_in"], state["nlon_in"]),
-        out_shape=(state["nlat_out"], state["nlon_out"]),
         kernel_shape=state["kernel_shape"],
         basis_type=state["basis_type"],
         basis_norm_mode=state["basis_norm_mode"],
-        theta_cutoff=state["theta_cutoff"],
         groups=state["groups"],
+        theta_cutoff=state["theta_cutoff"],
         optimized_kernel=False,
     ).to(dtype=torch.float64)
     conv_ref.load_state_dict({k: v.cpu().double() for k, v in state["conv"].state_dict().items()})

@@ -30,7 +30,7 @@
 import torch
 from bench import BenchmarkEntry, maybe_autocast, register
 
-from torch_harmonics import AttentionS2, NeighborhoodAttentionS2
+from torch_harmonics import AttentionS2, NeighborhoodAttentionS2, as_grid
 
 # ------------------------------------------------------------------------------
 # AttentionS2 (global)
@@ -43,10 +43,10 @@ def _attn_setup(batch, channels, num_heads, nlat, nlon):
         # (casting the full model to fp16 produces NaN from softmax overflow)
         model_dtype = torch.float32
         attn = AttentionS2(
+            grid_in=as_grid("equiangular", (nlat, nlon)),
+            grid_out=as_grid("equiangular", (nlat, nlon)),
             in_channels=channels,
             num_heads=num_heads,
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
         ).to(device=device, dtype=model_dtype)
         x = torch.randn(batch, channels, nlat, nlon, dtype=torch.float32, device=device, requires_grad=True)
         return {"attn": attn, "x": x, "dtype": dtype, "device": device}
@@ -71,10 +71,10 @@ def _attn_backward(state, out):
 def _nattn_setup(batch, channels, num_heads, nlat_in, nlon_in, nlat_out, nlon_out, theta_cutoff, optimized):
     def setup(device, dtype):
         attn = NeighborhoodAttentionS2(
+            grid_in=as_grid("equiangular", (nlat_in, nlon_in)),
+            grid_out=as_grid("equiangular", (nlat_out, nlon_out)),
             in_channels=channels,
             num_heads=num_heads,
-            in_shape=(nlat_in, nlon_in),
-            out_shape=(nlat_out, nlon_out),
             theta_cutoff=theta_cutoff,
             optimized_kernel=optimized,
         ).to(device=device, dtype=torch.float32)
@@ -114,10 +114,10 @@ def _nattn_backward(state, out):
 
 def _nattn_reference(state):
     attn_ref = NeighborhoodAttentionS2(
+        grid_in=as_grid("equiangular", (state["nlat_in"], state["nlon_in"])),
+        grid_out=as_grid("equiangular", (state["nlat_out"], state["nlon_out"])),
         in_channels=state["channels"],
         num_heads=state["num_heads"],
-        in_shape=(state["nlat_in"], state["nlon_in"]),
-        out_shape=(state["nlat_out"], state["nlon_out"]),
         theta_cutoff=state["theta_cutoff"],
         optimized_kernel=False,
     ).to(dtype=torch.float32)

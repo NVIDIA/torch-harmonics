@@ -543,9 +543,9 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         out_shape = (32, 64)
 
         attn = thd.DistributedNeighborhoodAttentionS2(
-            in_channels=C,
             grid_in=th.as_grid("equiangular", in_shape),
             grid_out=th.as_grid("equiangular", out_shape),
+            in_channels=C,
             num_heads=1,
             bias=False,
         ).to(self.device)

@@ -305,14 +305,12 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         disco_args = dict(
             in_channels=C,
             out_channels=C,
-            in_shape=(nlat_in, nlon_in),
-            out_shape=(nlat_out, nlon_out),
             basis_type=basis_type,
             basis_norm_mode=basis_norm_mode,
             kernel_shape=kernel_shape,
             groups=groups,
-            grid_in=grid_in,
-            grid_out=grid_out,
+            grid_in=th.as_grid(grid_in, (nlat_in, nlon_in)),
+            grid_out=th.as_grid(grid_out, (nlat_out, nlon_out)),
             bias=True,
         )
 
@@ -419,14 +417,12 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         args = dict(
             in_channels=C,
             out_channels=C,
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
             basis_type="piecewise linear",
             basis_norm_mode="mean",
             kernel_shape=(3,),
             groups=1,
-            grid_in="equiangular",
-            grid_out="equiangular",
+            grid_in=th.as_grid("equiangular", (nlat, nlon)),
+            grid_out=th.as_grid("equiangular", (nlat, nlon)),
             bias=True,
         )
 
