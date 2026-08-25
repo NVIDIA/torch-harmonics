@@ -154,10 +154,16 @@ class DistributedRealSHT(nn.Module):
         self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # compute splits
-        self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
-        self.nlat_local = self.lat_shapes[self.comm_rank_polar]
-        self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
-        self.nlon_local = self.lon_shapes[self.comm_rank_azimuth]
+        # the grid decomposes itself in space; the spectral split below stays manual,
+        # since lmax/mmax are not grid dimensions
+        self.shard = self.grid.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.lat_shapes = list(self.shard.lat_shapes)
+        self.lon_shapes = list(self.shard.lon_shapes)
+        self.nlat_local = self.shard.nlat
+        self.nlon_local = self.shard.nlon
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
@@ -323,8 +329,14 @@ class DistributedInverseRealSHT(nn.Module):
         self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # compute splits
-        self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
-        self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
+        # the grid decomposes itself in space; the spectral split below stays manual,
+        # since lmax/mmax are not grid dimensions
+        self.shard = self.grid.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.lat_shapes = list(self.shard.lat_shapes)
+        self.lon_shapes = list(self.shard.lon_shapes)
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.lmax_local = self.l_shapes[self.comm_rank_polar]
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
@@ -476,10 +488,16 @@ class DistributedRealVectorSHT(nn.Module):
         self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # compute splits
-        self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
-        self.nlat_local = self.lat_shapes[self.comm_rank_polar]
-        self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
-        self.nlon_local = self.lon_shapes[self.comm_rank_azimuth]
+        # the grid decomposes itself in space; the spectral split below stays manual,
+        # since lmax/mmax are not grid dimensions
+        self.shard = self.grid.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.lat_shapes = list(self.shard.lat_shapes)
+        self.lon_shapes = list(self.shard.lon_shapes)
+        self.nlat_local = self.shard.nlat
+        self.nlon_local = self.shard.nlon
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
@@ -638,8 +656,14 @@ class DistributedInverseRealVectorSHT(nn.Module):
         self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # compute splits
-        self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
-        self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
+        # the grid decomposes itself in space; the spectral split below stays manual,
+        # since lmax/mmax are not grid dimensions
+        self.shard = self.grid.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.lat_shapes = list(self.shard.lat_shapes)
+        self.lon_shapes = list(self.shard.lon_shapes)
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.lmax_local = self.l_shapes[self.comm_rank_polar]
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
