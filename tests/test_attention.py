@@ -43,6 +43,7 @@ from torch.library import opcheck
 # from torch.autograd import gradcheck
 from torch_harmonics import AttentionS2, NeighborhoodAttentionS2, as_grid
 from torch_harmonics.attention import cuda_kernels_is_available, optimized_kernels_is_available
+from torch_harmonics.attention._attention_utils import _build_psi_segments, _expand_psi_segments
 from torch_harmonics.attention._layout import to_nhwc
 from torch_harmonics.attention.kernels_torch.attention_torch import (
     _neighborhood_s2_attention_bwd_dk_torch,
@@ -193,6 +194,18 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             # row uses C in {4, 8} and therefore only exercises the vector branch.
             [4, 6, 6, 2, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
             [4, 6, 6, 2, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.bfloat16, 5e-2, 5e-2],
+            # Vectorized-load coverage. The CUDA dispatch only takes the vector path when
+            # the vectorized channel count still fills the block -- nchans_per_head / 4 >=
+            # bdimx, i.e. >= 128 channels per head. Every other row in this grid has <= 8,
+            # so without these the float4 / half4 / bf164 loads are compiled but never
+            # executed. 256 channels over 2 heads also gives 128 per head, which checks
+            # that the gate reads the per-head count rather than the packed extent.
+            [1, 128, 128, 1, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-3],
+            [1, 128, 128, 1, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
+            [1, 128, 128, 1, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.bfloat16, 5e-2, 5e-2],
+            [1, 256, 256, 2, (6, 12), (6, 12), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
+            [1, 128, 128, 1, (12, 24), (6, 12), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
+            [1, 128, 128, 1, (6, 12), (12, 24), "equiangular", "equiangular", False, torch.float16, 2e-2, 1e-2],
             # gather with QK norm enabled
             [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", True, torch.float16, 2e-2, 1e-2],
             [4, 4, 4, 1, (6, 12), (6, 12), "equiangular", "equiangular", True, torch.bfloat16, 5e-2, 5e-2],
@@ -377,7 +390,9 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         qw = torch.randn(2, nlat, nlon, channels, device=self.device, dtype=torch.float32)
 
         with torch.autocast(self.device.type, dtype=autocast_dtype):
-            out = torch.ops.attention_kernels._neighborhood_s2_attention_optimized(kw, vw, qw, model.quad_weights, model.psi_col_idx, model.psi_roff_idx, 1, nlon, nlat, nlon)
+            out = torch.ops.attention_kernels._neighborhood_s2_attention_optimized(
+                kw, vw, qw, model.quad_weights, model.psi_col_idx, model.psi_roff_idx, model.psi_seg, model.psi_seg_off, 1, nlon, nlat, nlon
+            )
 
         self.assertEqual(out.dtype, autocast_dtype, f"autocast output dtype {out.dtype} != {autocast_dtype}")
 
@@ -870,6 +885,8 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
             att.quad_weights,
             att.psi_col_idx,
             att.psi_roff_idx,
+            att.psi_seg,
+            att.psi_seg_off,
             att.num_heads,
             nlon_in,
             nlat_out,
@@ -1373,6 +1390,146 @@ class TestSplitCsrRows(unittest.TestCase):
             cuda_out,
             msg=f"[{name}] CPU split {cpu_out} != CUDA split {cuda_out} " f"(n_long_rows, max_row_len, mid_row_len)",
         )
+
+
+class TestPsiArcStructure(unittest.TestCase):
+    """psi's sparsity is a union of contiguous longitude arcs, one per (row, input lat).
+
+    This is a geometric consequence of the neighborhood being a geodesic ball: a ball
+    intersects a latitude circle in a single arc, never in disjoint pieces. It is not
+    an accident of one grid or cutoff, and the kernels are entitled to rely on it.
+
+    Why pin it down: it means the neighbor longitudes for a row can be described by
+    (start, width) instead of an explicit column list, so a kernel can compute a
+    neighbor's address arithmetically -- wip = (lo + j + pscale*wo) % nlon_in -- rather
+    than loading it from psi_col_idx. That removes a dependent load from the inner loop
+    and makes the k/v accesses stride-1 in longitude. If a future change to how psi is
+    built ever introduces holes, every such kernel silently reads the wrong elements,
+    and this test is what catches it.
+
+    Device-independent: psi is built on CPU at construction time.
+    """
+
+    @staticmethod
+    def _is_single_arc(wi, nlon):
+        """True if the longitudes form one contiguous arc on the circle (wrap allowed)."""
+
+        w = torch.unique(wi).sort().values
+        if w.numel() <= 1:
+            return True
+        # A single arc has exactly one gap larger than 1 -- the complement. Count the
+        # seam between last and first as a gap too, which is what makes a wrapping arc
+        # (e.g. {718, 719, 0, 1}) register as contiguous rather than as two pieces.
+        interior = int((torch.diff(w) > 1).sum())
+        seam = 1 if (w[0] + nlon) - w[-1] > 1 else 0
+        return interior + seam <= 1
+
+    @parameterized.expand(
+        [
+            # name, in_shape, out_shape, grid_in, grid_out, theta_cutoff
+            ["self_equiangular", (64, 128), (64, 128), "equiangular", "equiangular", 0.05],
+            ["self_legendre_gauss", (64, 128), (64, 128), "legendre-gauss", "legendre-gauss", 0.05],
+            ["self_lobatto", (64, 128), (64, 128), "lobatto", "lobatto", 0.05],
+            ["self_wide_cutoff", (64, 128), (64, 128), "equiangular", "equiangular", 0.25],
+            ["downsample", (64, 128), (32, 64), "equiangular", "equiangular", 0.05],
+            ["upsample", (32, 64), (64, 128), "equiangular", "equiangular", 0.05],
+            ["odd_lat_down", (65, 128), (33, 64), "equiangular", "equiangular", 0.05],
+            ["odd_lat_up", (33, 64), (65, 128), "equiangular", "equiangular", 0.05],
+            ["lon_only_down", (64, 128), (64, 64), "equiangular", "equiangular", 0.05],
+        ]
+    )
+    def test_rows_are_contiguous_arcs(self, name, in_shape, out_shape, grid_in, grid_out, theta_cutoff):
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        att = NeighborhoodAttentionS2(
+            grid_in=as_grid(grid_in, in_shape),
+            grid_out=as_grid(grid_out, out_shape),
+            in_channels=8,
+            num_heads=1,
+            bias=False,
+            theta_cutoff=theta_cutoff,
+            optimized_kernel=False,
+        )
+
+        col = att.psi_col_idx.cpu()
+        roff = att.psi_roff_idx.cpu()
+
+        # The scatter (upsample) psi is keyed by input latitude and its columns index
+        # the output grid; the gather psi is the other way round.
+        upsample = (nlat_out > nlat_in) or (nlon_out > nlon_in)
+        nlon_decode = nlon_out if upsample else nlon_in
+
+        nrows = roff.numel() - 1
+        checked = 0
+        for row in range(nrows):
+            beg, end = int(roff[row]), int(roff[row + 1])
+            if end <= beg:
+                continue
+            cols = col[beg:end]
+            lat = cols // nlon_decode
+            lon = cols - lat * nlon_decode
+            for h in torch.unique(lat):
+                checked += 1
+                self.assertTrue(
+                    self._is_single_arc(lon[lat == h], nlon_decode),
+                    msg=f"{name}: row {row}, input lat {int(h)} has non-contiguous longitudes; " f"kernels that derive addresses arithmetically would read the wrong cells",
+                )
+
+        self.assertGreater(checked, 0, msg=f"{name}: psi was empty, nothing verified")
+
+    @parameterized.expand(
+        [
+            ["self_equiangular", (64, 128), (64, 128), "equiangular", "equiangular", 0.05],
+            ["self_legendre_gauss", (64, 128), (64, 128), "legendre-gauss", "legendre-gauss", 0.05],
+            ["self_lobatto", (64, 128), (64, 128), "lobatto", "lobatto", 0.05],
+            ["self_wide_cutoff", (64, 128), (64, 128), "equiangular", "equiangular", 0.25],
+            ["downsample", (64, 128), (32, 64), "equiangular", "equiangular", 0.05],
+            ["upsample", (32, 64), (64, 128), "equiangular", "equiangular", 0.05],
+            ["odd_lat_down", (65, 128), (33, 64), "equiangular", "equiangular", 0.05],
+            ["odd_lat_up", (33, 64), (65, 128), "equiangular", "equiangular", 0.05],
+            ["lon_only_down", (64, 128), (64, 64), "equiangular", "equiangular", 0.05],
+        ]
+    )
+    def test_segments_reproduce_col_idx(self, name, in_shape, out_shape, grid_in, grid_out, theta_cutoff):
+        """(hi, lo, len) segments expand back to exactly psi_col_idx.
+
+        Stronger than the arc property above and closer to what a kernel relies on: it
+        is not enough that the arcs are contiguous, the segment table has to describe
+        the *same* sparsity. A segment whose start is off by one -- which is what a
+        mishandled wrapping arc produces -- still passes the contiguity check while
+        silently attending to the wrong cells.
+        """
+
+        nlat_in, nlon_in = in_shape
+        nlat_out, nlon_out = out_shape
+
+        att = NeighborhoodAttentionS2(
+            grid_in=as_grid(grid_in, in_shape),
+            grid_out=as_grid(grid_out, out_shape),
+            in_channels=8,
+            num_heads=1,
+            bias=False,
+            theta_cutoff=theta_cutoff,
+            optimized_kernel=False,
+        )
+
+        upsample = (nlat_out > nlat_in) or (nlon_out > nlon_in)
+        nlon_decode = nlon_out if upsample else nlon_in
+
+        col = att.psi_col_idx.cpu()
+        roff = att.psi_roff_idx.cpu()
+        seg, seg_off = _build_psi_segments(col, roff, nlon_decode)
+        expanded = _expand_psi_segments(seg, seg_off, nlon_decode)
+
+        self.assertEqual(seg_off.numel() - 1, roff.numel() - 1, msg=f"{name}: row count mismatch")
+        for row in range(roff.numel() - 1):
+            want = sorted(col[int(roff[row]) : int(roff[row + 1])].tolist())
+            self.assertEqual(
+                want,
+                expanded[row],
+                msg=f"{name}: row {row} segments do not reproduce psi_col_idx",
+            )
 
 
 if __name__ == "__main__":

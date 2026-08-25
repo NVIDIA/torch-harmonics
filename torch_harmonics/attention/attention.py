@@ -37,7 +37,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from attention_helpers import optimized_kernels_is_available
 
-from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim
+from torch_harmonics.attention._attention_utils import _build_psi_segments, _check_dtypes_match, _check_extent, _check_ndim
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhood_s2_attention_torch
 from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_optimized
@@ -410,6 +410,20 @@ class NeighborhoodAttentionS2(nn.Module):
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
 
+        # Contiguous-arc form of the same sparsity, consumed by the CUDA kernels: it
+        # lets them derive a neighbour's column by counting instead of recovering it
+        # from col_idx with a per-neighbour 64-bit integer division, which the GPU has
+        # no instruction for. col_idx is kept because the CPU and torch reference paths
+        # still use it -- which is what keeps the reference independent of this
+        # derivation. See _build_psi_segments and TestPsiArcStructure.
+        #
+        # For the scatter (upsample) psi the rows are keyed by input latitude and the
+        # columns index the output grid, so the decode width differs.
+        nlon_decode = self.nlon_out if (self.nlat_out > self.nlat_in or self.nlon_out > self.nlon_in) else self.nlon_in
+        psi_seg, psi_seg_off = _build_psi_segments(col_idx, roff_idx, nlon_decode)
+        self.register_buffer("psi_seg", psi_seg, persistent=False)
+        self.register_buffer("psi_seg_off", psi_seg_off, persistent=False)
+
         # learnable parameters — Xavier uniform init matching PyTorch MHA convention:
         # bound = sqrt(6 / (fan_in + fan_out)) for each projection
         if self.k_channels % self.num_heads != 0:
@@ -559,6 +573,8 @@ class NeighborhoodAttentionS2(nn.Module):
             self.quad_weights,
             self.psi_col_idx,
             self.psi_roff_idx,
+            self.psi_seg,
+            self.psi_seg_off,
             self.num_heads,
             self.nlon_in,
             self.nlat_out,
