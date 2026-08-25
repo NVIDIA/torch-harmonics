@@ -404,6 +404,8 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
         Number of groups
     bias : Optional[bool]
         Whether to use bias
+    optimized_kernel : Optional[bool]
+        Whether to use the optimized kernel (if available)
 
     Returns
     -------

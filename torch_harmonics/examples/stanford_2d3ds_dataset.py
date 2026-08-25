@@ -522,8 +522,6 @@ class StanfordSegmentationDataset(Dataset):
         Path to the HDF5 dataset file
     ignore_alpha_channel : bool, optional
         Whether to ignore the alpha channel in the RGB images, by default True
-    log_depth : bool, optional
-        Whether to log the depth values, by default False
     exclude_polar_fraction : float, optional
         Fraction of polar points to exclude, by default 0.0
 
