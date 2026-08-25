@@ -122,10 +122,10 @@ class DownsamplingBlock(nn.Module):
             theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
             self.fwd.append(
                 DiscreteContinuousConvS2(
-                    in_channels=(in_channels if i == 0 else out_channels),
-                    out_channels=out_channels,
                     grid_in=as_grid(grid_out, in_shape),
                     grid_out=as_grid(grid_out, in_shape),
+                    in_channels=(in_channels if i == 0 else out_channels),
+                    out_channels=out_channels,
                     kernel_shape=kernel_shape,
                     basis_type=basis_type,
                     bias=False,
@@ -277,10 +277,10 @@ class UpsamplingBlock(nn.Module):
                 theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
                 self.upsample = nn.Sequential(
                     DiscreteContinuousConvTransposeS2(
-                        in_channels=out_channels,
-                        out_channels=out_channels,
                         grid_in=as_grid(grid_in, in_shape),
                         grid_out=as_grid(grid_out, out_shape),
+                        in_channels=out_channels,
+                        out_channels=out_channels,
                         kernel_shape=kernel_shape,
                         basis_type=basis_type,
                         bias=False,
@@ -289,10 +289,10 @@ class UpsamplingBlock(nn.Module):
                     nn.BatchNorm2d(out_channels, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
                     activation(),
                     DiscreteContinuousConvS2(
-                        in_channels=out_channels,
-                        out_channels=out_channels,
                         grid_in=as_grid(grid_in, out_shape),
                         grid_out=as_grid(grid_out, out_shape),
+                        in_channels=out_channels,
+                        out_channels=out_channels,
                         kernel_shape=kernel_shape,
                         basis_type=basis_type,
                         bias=False,
@@ -309,10 +309,10 @@ class UpsamplingBlock(nn.Module):
         else:
             theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
             self.upsample = DiscreteContinuousConvS2(
-                in_channels=out_channels,
-                out_channels=out_channels,
                 grid_in=as_grid(grid_in, in_shape),
                 grid_out=as_grid(grid_out, in_shape),
+                in_channels=out_channels,
+                out_channels=out_channels,
                 kernel_shape=kernel_shape,
                 basis_type=basis_type,
                 bias=False,
@@ -325,10 +325,10 @@ class UpsamplingBlock(nn.Module):
             theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
             self.fwd.append(
                 DiscreteContinuousConvS2(
-                    in_channels=in_channels,
-                    out_channels=(out_channels if i == nrep - 1 else in_channels),
                     grid_in=as_grid(grid_in, in_shape),
                     grid_out=as_grid(grid_in, in_shape),
+                    in_channels=in_channels,
+                    out_channels=(out_channels if i == nrep - 1 else in_channels),
                     kernel_shape=kernel_shape,
                     basis_type=basis_type,
                     bias=False,

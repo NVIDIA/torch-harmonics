@@ -206,12 +206,18 @@ Three dedicated methods cover the fallback:
 The code base currently does not have a benchmark. For writing profiling scripts for serial kernels, stick to a minimal implementation. Aim at running the kernel in question in isolation, comparing to existing kernels when possible. Incorporate all 3 precisions (fp32, bf16, fp16) into the benchmark and also compare the results of the kernel against its fp32 variant. Relevant shape combinations are:
 
 ```python
+from torch_harmonics import as_grid
+
 CONFIGS = {
-    "self_256x360x720":  dict(in_channels=256, out_channels=256, in_shape=(360, 720), out_shape=(360, 720), grid_in="legendre-gauss", grid_out="legendre-gauss", theta_cutoff=0.017, kernel_shape=(3,3), basis_type="harmonic", basis_norm_mode="mean"),
-    "self_512x360x720":  dict(in_channels=512, out_channels=512, in_shape=(360, 720), out_shape=(360, 720), grid_in="legendre-gauss", grid_out="legendre-gauss", theta_cutoff=0.017,
-    kernel_shape=(3,3), basis_type="harmonic", basis_norm_mode="mean"),
-    "down_73x721x1440":  dict(in_channels=80, out_channels=512,, in_shape=(721, 1440), out_shape=(360, 720), grid_in="equiangular", grid_out="legendre-gauss", theta_cutoff=0.017,
-    kernel_shape=(3,3), basis_type="harmonic", basis_norm_mode="mean"),
+    "self_256x360x720":  dict(grid_in=as_grid("legendre-gauss", (360, 720)), grid_out=as_grid("legendre-gauss", (360, 720)),
+                              in_channels=256, out_channels=256, kernel_shape=(3, 3), basis_type="harmonic",
+                              basis_norm_mode="mean", theta_cutoff=0.017),
+    "self_512x360x720":  dict(grid_in=as_grid("legendre-gauss", (360, 720)), grid_out=as_grid("legendre-gauss", (360, 720)),
+                              in_channels=512, out_channels=512, kernel_shape=(3, 3), basis_type="harmonic",
+                              basis_norm_mode="mean", theta_cutoff=0.017),
+    "down_73x721x1440":  dict(grid_in=as_grid("equiangular", (721, 1440)), grid_out=as_grid("legendre-gauss", (360, 720)),
+                              in_channels=80, out_channels=512, kernel_shape=(3, 3), basis_type="harmonic",
+                              basis_norm_mode="mean", theta_cutoff=0.017),
 }
 ```
 

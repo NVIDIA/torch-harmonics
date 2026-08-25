@@ -48,9 +48,12 @@ api/utilities
 import torch
 import torch_harmonics as th
 
-# forward / inverse real spherical harmonic transform on an equiangular grid
-sht = th.RealSHT(nlat=128, nlon=256, grid="equiangular")
-isht = th.InverseRealSHT(nlat=128, nlon=256, grid="equiangular")
+# the grid descriptor carries the resolution and the quadrature rule together
+grid = th.as_grid("equiangular", (128, 256))
+
+# forward / inverse real spherical harmonic transform on that grid
+sht = th.RealSHT(grid)
+isht = th.InverseRealSHT(grid)
 
 signal = torch.randn(1, 128, 256)
 coeffs = sht(signal)          # -> spherical harmonic coefficients

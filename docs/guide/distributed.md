@@ -170,14 +170,17 @@ Note that the input must have at least three dimensions `(N, nlat_local, nlon_lo
 channel) dimensions:
 
 ```python
+import torch_harmonics as th
 import torch_harmonics.distributed as thd
 
 batch, channels = 4, 16
 x_local = torch.randn(batch, channels, nlat_local, nlon_local, device="cuda")
 
-# create the distributed forward / inverse SHT with *global* grid sizes
-sht  = thd.DistributedRealSHT(nlat, nlon, grid="equiangular").cuda()
-isht = thd.DistributedInverseRealSHT(nlat, nlon, grid="equiangular").cuda()
+# the descriptor is the *global* grid; each rank derives its own shard from it
+grid = th.as_grid("equiangular", (nlat, nlon))
+
+sht  = thd.DistributedRealSHT(grid).cuda()
+isht = thd.DistributedInverseRealSHT(grid).cuda()
 
 # each rank passes only its local tile
 coeffs  = sht(x_local)           # (4, 16, lmax_local, mmax_local), complex
@@ -231,6 +234,7 @@ Putting it all together as a script that can be launched with
 
 import torch
 import torch.distributed as dist
+import torch_harmonics as th
 import torch_harmonics.distributed as thd
 from torch_harmonics.distributed import compute_split_shapes
 
@@ -273,8 +277,9 @@ def main():
     x_local = torch.randn(batch, channels, nlat_local, nlon_local, device="cuda")
 
     # --- 3. Distributed SHT round-trip ---
-    sht  = thd.DistributedRealSHT(nlat, nlon, grid="equiangular").cuda()
-    isht = thd.DistributedInverseRealSHT(nlat, nlon, grid="equiangular").cuda()
+    grid = th.as_grid("equiangular", (nlat, nlon))
+    sht  = thd.DistributedRealSHT(grid).cuda()
+    isht = thd.DistributedInverseRealSHT(grid).cuda()
 
     coeffs  = sht(x_local)    # (4, 16, lmax_local, mmax_local)
     x_recon = isht(coeffs)    # (4, 16, nlat_local, nlon_local)

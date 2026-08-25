@@ -286,24 +286,24 @@ class AttentionWrapper(nn.Module):
             if theta_cutoff is None:
                 theta_cutoff = (7.0 / math.sqrt(math.pi)) * math.pi / (shape[0] - 1)
             self.att = NeighborhoodAttentionS2(
-                in_channels=channels,
                 grid_in=as_grid(grid, shape),
                 grid_out=as_grid(grid, shape),
-                theta_cutoff=theta_cutoff,
-                out_channels=channels,
+                in_channels=channels,
                 num_heads=heads,
                 bias=bias,
+                theta_cutoff=theta_cutoff,
+                out_channels=channels,
                 # drop_rate=attention_drop_rate,
             )
         else:
             self.att = AttentionS2(
-                in_channels=channels,
-                num_heads=heads,
                 grid_in=as_grid(grid, shape),
                 grid_out=as_grid(grid, shape),
+                in_channels=channels,
+                num_heads=heads,
+                bias=bias,
                 out_channels=channels,
                 drop_rate=attention_drop_rate,
-                bias=bias,
             )
 
         self.norm = None

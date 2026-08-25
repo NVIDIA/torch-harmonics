@@ -284,24 +284,24 @@ class SphericalAttentionBlock(nn.Module):
             if theta_cutoff is None:
                 theta_cutoff = (7.0 / math.sqrt(math.pi)) * math.pi / (in_shape[0] - 1)
             self.self_attn = NeighborhoodAttentionS2(
-                in_channels=in_chans,
                 grid_in=as_grid(grid_in, in_shape),
                 grid_out=as_grid(grid_out, out_shape),
+                in_channels=in_chans,
                 num_heads=num_heads,
+                bias=bias,
                 theta_cutoff=theta_cutoff,
                 k_channels=None,
                 out_channels=out_chans,
-                bias=bias,
             )
         else:
             self.self_attn = AttentionS2(
-                in_channels=in_chans,
-                num_heads=num_heads,
                 grid_in=as_grid(grid_in, in_shape),
                 grid_out=as_grid(grid_out, out_shape),
+                in_channels=in_chans,
+                num_heads=num_heads,
+                bias=bias,
                 out_channels=out_chans,
                 drop_rate=drop_rate,
-                bias=bias,
             )
 
         self.skip0 = nn.Identity()
