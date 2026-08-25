@@ -41,6 +41,7 @@ from disco_helpers import optimized_kernels_is_available, pack_psi_dense, prepro
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
 from torch_harmonics.grid import GridS2, require_grid
+from torch_harmonics.truncation import truncate_support
 
 from ._disco_utils import _get_psi
 from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
@@ -552,13 +553,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             raise ValueError(f"nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}) for the DISCO p-shift to be exact")
 
         # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
-        if theta_cutoff is None:
-            self.theta_cutoff = self.grid_out.theta_cutoff()
-        else:
-            self.theta_cutoff = theta_cutoff
-
-        if self.theta_cutoff <= 0.0:
-            raise ValueError("Error, theta_cutoff has to be positive.")
+        self.theta_cutoff = truncate_support(self.grid_out, theta_cutoff)
 
         idx, vals, _ = _precompute_convolution_tensor_s2(
             self.grid_in,
@@ -909,13 +904,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             raise ValueError(f"nlon_out ({self.nlon_out}) must be an integer multiple of nlon_in ({self.nlon_in}) for the DISCO transpose p-shift to be exact")
 
         # bandlimit
-        if theta_cutoff is None:
-            self.theta_cutoff = self.grid_in.theta_cutoff()
-        else:
-            self.theta_cutoff = theta_cutoff
-
-        if self.theta_cutoff <= 0.0:
-            raise ValueError("Error, theta_cutoff has to be positive.")
+        self.theta_cutoff = truncate_support(self.grid_in, theta_cutoff)
 
         # switch in_shape and out_shape since we want the transpose convolution
         idx, vals, _ = _precompute_convolution_tensor_s2(

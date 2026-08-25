@@ -44,6 +44,7 @@ from torch_harmonics.attention.optimized.attention_optimized import _neighborhoo
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.filter_basis import get_filter_basis
 from torch_harmonics.grid import GridS2, require_grid
+from torch_harmonics.truncation import truncate_support
 
 
 class AttentionS2(nn.Module):
@@ -310,7 +311,7 @@ class NeighborhoodAttentionS2(nn.Module):
         farther than this from an output location are excluded from its attention.
         If None (default), it is set to one latitudinal grid spacing of the coarser
         of the input and output grids, see
-        :func:`torch_harmonics.quadrature.compute_theta_cutoff`. Must be positive.
+        :func:`torch_harmonics.truncate_support`. Must be positive.
     k_channels : int
         number of dimensions for interior inner product in the attention matrix (corresponds to kdim in MHA in PyTorch)
     out_channels : int, optional
@@ -361,16 +362,9 @@ class NeighborhoodAttentionS2(nn.Module):
         # heuristic to compute theta cutoff based on the bandlimit of the input field
         # and overlaps of the basis functions. For upsample we follow DISCO's transpose
         # convention and use the coarser (input) grid spacing.
-        if theta_cutoff is None:
-            if self.upsample:
-                self.theta_cutoff = self.grid_in.theta_cutoff()
-            else:
-                self.theta_cutoff = self.grid_out.theta_cutoff()
-        else:
-            self.theta_cutoff = theta_cutoff
-
-        if self.theta_cutoff <= 0.0:
-            raise ValueError("Error, theta_cutoff has to be positive.")
+        # the coarser of the two grids sets the support: the input when upsampling,
+        # the output otherwise
+        self.theta_cutoff = truncate_support(self.grid_in if self.upsample else self.grid_out, theta_cutoff)
 
         # integration weights live on the input grid
         wgl = self.grid_in.quad_weights

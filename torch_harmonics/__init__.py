@@ -45,4 +45,4 @@ from .integration import QuadratureS2
 from .resample import ResampleS2
 from .sht import InverseRealSHT, InverseRealVectorSHT, RealSHT, RealVectorSHT
 from .spectral_convolution import SpectralConvS2
-from .truncation import truncate_sht
+from .truncation import truncate_sht, truncate_support

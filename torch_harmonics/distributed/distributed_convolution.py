@@ -48,6 +48,7 @@ from torch_harmonics.disco.optimized.disco_optimized import (
     _split_csr_python_offsets,
 )
 from torch_harmonics.grid import GridS2, require_grid
+from torch_harmonics.truncation import truncate_support
 
 # a2a forward orchestration: standard (fused=False) and reordered (fused=True).
 from .kernels import (
@@ -253,13 +254,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.lon_out_shapes = list(self.shard_out.lon_shapes)
 
         # compute theta cutoff based on the bandlimit of the input field
-        if theta_cutoff is None:
-            self.theta_cutoff = self.grid_out.theta_cutoff()
-        else:
-            self.theta_cutoff = theta_cutoff
-
-        if self.theta_cutoff <= 0.0:
-            raise ValueError("Error, theta_cutoff has to be positive.")
+        self.theta_cutoff = truncate_support(self.grid_out, theta_cutoff)
 
         # Note that the psi matrix is of shape nlat_out x nlat_in * nlon_in.
         # Since the contraction in nlon direction is a convolution, we keep
@@ -542,13 +537,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.lon_out_shapes = list(self.shard_out.lon_shapes)
 
         # bandlimit
-        if theta_cutoff is None:
-            self.theta_cutoff = self.grid_in.theta_cutoff()
-        else:
-            self.theta_cutoff = theta_cutoff
-
-        if self.theta_cutoff <= 0.0:
-            raise ValueError("Error, theta_cutoff has to be positive.")
+        self.theta_cutoff = truncate_support(self.grid_in, theta_cutoff)
 
         # Note that the psi matrix is of shape nlat_out x nlat_in * nlon_in. Since the contraction in nlon direction is a convolution,
         # we will keep local to all nodes and split the computation up along nlat. We further split the input dim because this reduces the number

@@ -50,7 +50,7 @@ from parameterized import parameterized
 
 import torch_harmonics as th
 from torch_harmonics.grid import as_grid
-from torch_harmonics.truncation import truncate_sht
+from torch_harmonics.truncation import truncate_sht, truncate_support
 
 # grid type -> expected max_exact_degree as a function of nlat, per the table in
 # the truncate_sht docstring
@@ -197,6 +197,108 @@ class TestShtLayerTruncationAgrees(unittest.TestCase):
         signal = isht(coeffs)
         self.assertEqual(signal.shape, (2, 64, 128))
         self.assertEqual(sht(signal).shape, coeffs.shape)
+
+
+class TestTruncateSupport(unittest.TestCase):
+    """
+    The spatial counterpart of truncate_sht: the default comes from the grid, an
+    explicit value wins, and the descriptor itself stays out of the decision.
+    """
+
+    # this class exercises the changed default on purpose
+    warnings.filterwarnings("ignore", message="Default theta_cutoff changed", category=UserWarning)
+
+    @parameterized.expand([(g, n) for g in th.grid_types() for n in (16, 33, 64)])
+    def test_default_is_one_grid_spacing(self, grid, nlat):
+        g = as_grid(grid, (nlat, 2 * nlat))
+        self.assertEqual(truncate_support(g), g.max_latitude_spacing)
+
+    @parameterized.expand([(g,) for g in th.grid_types()])
+    def test_default_matches_the_descriptor_property(self, grid):
+        g = as_grid(grid, (32, 64))
+        self.assertEqual(truncate_support(g), g.theta_cutoff())
+
+    @parameterized.expand([(g,) for g in th.grid_types()])
+    def test_scale_multiplies_the_default(self, grid):
+        g = as_grid(grid, (32, 64))
+        self.assertAlmostEqual(truncate_support(g, scale=2.5), 2.5 * truncate_support(g), places=15)
+
+    def test_explicit_value_is_returned_verbatim(self):
+        g = as_grid("equiangular", (32, 64))
+        self.assertEqual(truncate_support(g, theta_cutoff=0.3), 0.3)
+
+    def test_explicit_value_ignores_scale(self):
+        """scale tunes the default; an explicit cutoff is already final."""
+        g = as_grid("equiangular", (32, 64))
+        self.assertEqual(truncate_support(g, theta_cutoff=0.3, scale=2.0), 0.3)
+
+    @parameterized.expand([(0.0,), (-1.0,)])
+    def test_non_positive_is_rejected(self, bad):
+        g = as_grid("equiangular", (32, 64))
+        with self.assertRaises(ValueError):
+            truncate_support(g, theta_cutoff=bad)
+
+    def test_a_shard_is_rejected(self):
+        """A radius from a shard's own spacing would differ between ranks."""
+        g = as_grid("equiangular", (64, 128))
+        with self.assertRaises(TypeError):
+            truncate_support(g.shard(polar=(0, 2)))
+
+    def test_the_descriptor_does_not_warn(self):
+        """The fact is silent; only the policy announces a changed default."""
+        g = as_grid("lobatto", (32, 64))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            g.theta_cutoff()
+            g.max_latitude_spacing
+
+    def test_an_explicit_value_does_not_warn(self):
+        """Nothing defaulted, so there is no changed default to announce."""
+        g = as_grid("lobatto", (32, 64))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            truncate_support(g, theta_cutoff=0.3)
+
+    @parameterized.expand([("lobatto",), ("equiangular-trapezoidal",), ("legendre-gauss",)])
+    def test_the_default_warns_on_non_uniform_grids(self, grid):
+        with self.assertWarns(UserWarning):
+            truncate_support(as_grid(grid, (32, 64)))
+
+    def test_the_default_is_silent_on_equiangular(self):
+        """Equiangular spacing is pi/(nlat-1), so nothing changed there."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            truncate_support(as_grid("equiangular", (32, 64)))
+
+
+class TestLayersUseTruncateSupport(unittest.TestCase):
+    """The layers must not reimplement the policy they delegate."""
+
+    warnings.filterwarnings("ignore", message="Default theta_cutoff changed", category=UserWarning)
+
+    @parameterized.expand([(g,) for g in th.grid_types()])
+    def test_conv_default_comes_from_the_output_grid(self, grid):
+        gi, go = as_grid(grid, (32, 64)), as_grid(grid, (16, 32))
+        conv = th.DiscreteContinuousConvS2(gi, go, 2, 2, kernel_shape=3)
+        self.assertEqual(conv.theta_cutoff, truncate_support(go))
+
+    @parameterized.expand([(g,) for g in th.grid_types()])
+    def test_transpose_conv_default_comes_from_the_input_grid(self, grid):
+        gi, go = as_grid(grid, (16, 32)), as_grid(grid, (32, 64))
+        conv = th.DiscreteContinuousConvTransposeS2(gi, go, 2, 2, kernel_shape=3)
+        self.assertEqual(conv.theta_cutoff, truncate_support(gi))
+
+    def test_attention_default_comes_from_the_coarser_grid(self):
+        fine, coarse = as_grid("equiangular", (32, 64)), as_grid("equiangular", (16, 32))
+        down = th.NeighborhoodAttentionS2(fine, coarse, 2, num_heads=1, optimized_kernel=False)
+        up = th.NeighborhoodAttentionS2(coarse, fine, 2, num_heads=1, optimized_kernel=False)
+        self.assertEqual(down.theta_cutoff, truncate_support(coarse))
+        self.assertEqual(up.theta_cutoff, truncate_support(coarse))
+
+    def test_layers_reject_a_non_positive_cutoff(self):
+        g = as_grid("equiangular", (32, 64))
+        with self.assertRaises(ValueError):
+            th.DiscreteContinuousConvS2(g, g, 2, 2, kernel_shape=3, theta_cutoff=-1.0)
 
 
 if __name__ == "__main__":

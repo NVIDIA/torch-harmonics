@@ -32,7 +32,8 @@
 import warnings
 from typing import Optional, Tuple
 
-from torch_harmonics.grid import GridS2
+from torch_harmonics.grid import GridS2, require_grid
+from torch_harmonics.quadrature import compute_theta_cutoff
 
 
 def truncate_sht(grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] = None) -> Tuple[int, int]:
@@ -111,6 +112,10 @@ def truncate_sht(grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] =
     (32, 32)
     """
 
+    # a shard has no spectral bounds of its own; say so with the migration message
+    # rather than letting an AttributeError surface from deeper in
+    grid = require_grid(grid)
+
     # fall back to what the grid can actually represent. `is None` rather than a
     # falsy test: lmax=0 is meaningless but should not silently become the default.
     if lmax is None:
@@ -129,3 +134,77 @@ def truncate_sht(grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] =
     mmax = lmax
 
     return lmax, mmax
+
+
+def truncate_support(grid: GridS2, theta_cutoff: Optional[float] = None, scale: Optional[float] = 1.0) -> float:
+    r"""
+    Determine the angular support radius of a localized operator on a grid.
+
+    The spatial counterpart of :func:`truncate_sht`. Where that decides how far
+    up in degree an SHT keeps, this decides how far out in angle the filter basis
+    of a DISCO convolution or of neighborhood attention reaches. Both take the
+    bound the grid can support, apply a user override if one is given, and warn
+    when the default they pick differs from the one a previous release used.
+
+    The default is one latitudinal node spacing of the grid, so that the basis
+    functions of adjacent output points overlap and every output point sees more
+    than the single latitude ring it sits on. It is read from
+    :attr:`~torch_harmonics.grid.GridS2.max_latitude_spacing`, which is a fact
+    about the node distribution; the policy of turning that into a default, and
+    of rejecting a non-positive override, lives here.
+
+    Parameters
+    ----------
+    grid : GridS2
+        Descriptor of the grid that sets the cutoff. This is the output grid of a
+        forward transform and the input grid of a transpose one, mirroring which
+        of the two is the coarser. It must be the global grid: a cutoff taken
+        from a shard's own spacing would differ between ranks, and ranks
+        disagreeing about the support of an operator is a correctness bug.
+    theta_cutoff : float, optional
+        Explicit cutoff in radians. If None (default), the grid's node spacing is
+        used. Must be positive.
+    scale : float, optional
+        Multiplier applied to the default spacing, by default 1.0. Ignored when
+        *theta_cutoff* is given, which is already a final value.
+
+    Returns
+    -------
+    float
+        Cutoff angle in radians.
+
+    Raises
+    ------
+    ValueError
+        If *theta_cutoff* is not positive.
+
+    Warns
+    -----
+    UserWarning
+        On grids whose node spacing is not uniform in :math:`\theta`, where the
+        default differs from the ``pi / (nlat - 1)`` heuristic used before
+        v0.9.3. Equiangular grids are unaffected and do not warn.
+
+    See Also
+    --------
+    truncate_sht : The spectral counterpart.
+
+    Examples
+    --------
+    >>> from torch_harmonics import as_grid
+    >>> from torch_harmonics.truncation import truncate_support
+    >>> round(truncate_support(as_grid("equiangular", (64, 128))), 6)
+    0.049873
+    >>> truncate_support(as_grid("equiangular", (64, 128)), theta_cutoff=0.2)
+    0.2
+    """
+
+    if theta_cutoff is None:
+        # a support radius taken from a shard would differ between ranks
+        grid = require_grid(grid)
+        return scale * compute_theta_cutoff(grid.nlat, grid=grid.grid_type)
+
+    if theta_cutoff <= 0.0:
+        raise ValueError(f"Error, theta_cutoff has to be positive, got {theta_cutoff}.")
+
+    return theta_cutoff

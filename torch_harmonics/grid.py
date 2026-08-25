@@ -35,7 +35,7 @@ from typing import Any, ClassVar, Dict, Optional, Tuple, Type, Union
 import torch
 
 from torch_harmonics.partition import compute_split_shapes
-from torch_harmonics.quadrature import compute_latitude_spacing, compute_theta_cutoff, precompute_latitudes, precompute_longitudes
+from torch_harmonics.quadrature import compute_latitude_spacing, precompute_latitudes, precompute_longitudes
 
 __all__ = [
     "GridS2",
@@ -286,10 +286,13 @@ class GridS2:
 
     def theta_cutoff(self, scale: Optional[float] = 1.0) -> float:
         r"""
-        Default angular cutoff for localized operators on this grid.
+        Angular support radius of one latitudinal grid spacing.
 
-        Delegates to :func:`torch_harmonics.quadrature.compute_theta_cutoff`, so
-        descriptor-based and legacy call sites cannot drift apart.
+        A restatement of :attr:`max_latitude_spacing` in the units localized
+        operators ask for, and like it a fact about the node distribution: it
+        neither applies a user override nor warns that the default moved. That
+        policy lives in :func:`torch_harmonics.truncate_support`,
+        which is what the layers call.
 
         Parameters
         ----------
@@ -301,7 +304,7 @@ class GridS2:
         float
             Cutoff angle in radians.
         """
-        return compute_theta_cutoff(self.nlat, grid=self.grid_type, scale=scale)
+        return scale * self.max_latitude_spacing
 
     # -- decomposition -------------------------------------------------------
 
@@ -368,11 +371,11 @@ class GridShardS2:
     * its :attr:`quad_weights` do not sum to 2 -- they are the local contribution to
       an integral that a collective reduction completes;
     * quantities that describe the quadrature *rule* rather than this piece of it --
-      the spectral bounds, the default angular cutoff -- are global. They are
-      forwarded from :attr:`global_grid` rather than recomputed locally, because a
-      cutoff derived from a shard's own node spacing would differ between ranks, and
-      ranks disagreeing about the support of an operator is a correctness bug rather
-      than an inefficiency.
+      the spectral bounds, the angular support radius -- are global, and a shard does
+      not define them at all. Ask :attr:`global_grid` for them. Absent is a stronger
+      guarantee than forwarded: a support radius derived from a shard's own node
+      spacing would differ between ranks, and ranks disagreeing about the support of
+      an operator is a correctness bug rather than an inefficiency.
 
     Making this a separate type keeps that distinction enforceable: a shard cannot be
     passed where a global grid is required, and :func:`require_grid` says so.
