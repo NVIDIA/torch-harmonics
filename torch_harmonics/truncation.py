@@ -148,10 +148,17 @@ def truncate_support(grid: GridS2, theta_cutoff: Optional[float] = None, scale: 
 
     The default is one latitudinal node spacing of the grid, so that the basis
     functions of adjacent output points overlap and every output point sees more
-    than the single latitude ring it sits on. It is read from
-    :attr:`~torch_harmonics.grid.GridS2.max_latitude_spacing`, which is a fact
-    about the node distribution; the policy of turning that into a default, and
-    of rejecting a non-positive override, lives here.
+    than the single latitude ring it sits on. That spacing is a fact about the
+    node distribution, which the descriptor also reports as
+    :attr:`~torch_harmonics.grid.GridS2.max_latitude_spacing`; the policy of
+    turning it into a default, of rejecting a non-positive result, and of warning
+    that the default moved, lives here.
+
+    The spacing comes via :func:`torch_harmonics.quadrature.compute_theta_cutoff`
+    rather than off the descriptor property, because the changed-default warning
+    is raised there. The two agree by construction -- both are
+    :func:`~torch_harmonics.quadrature.compute_latitude_spacing` of the same grid
+    -- and ``test_default_is_one_grid_spacing`` pins that they keep agreeing.
 
     Parameters
     ----------
