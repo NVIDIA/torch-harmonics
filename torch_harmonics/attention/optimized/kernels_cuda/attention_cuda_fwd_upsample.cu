@@ -110,8 +110,8 @@ namespace attention_kernels
     template <int THREADS_PER_BLOCK, typename STORAGE_T>
     __global__ __launch_bounds__(THREADS_PER_BLOCK) void s2_attn_fwd_upsample_scatter_max_k(
         int nheads, int nchan_in, int nlat_in, int nlon_in, int nlat_out, int nlon_out,
-        const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ qy, const int64_t *__restrict__ row_off,
-        const int64_t *__restrict__ col_idx, float *__restrict__ maxbuf)
+        const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ qy, const int32_t *__restrict__ seg,
+        const int32_t *__restrict__ seg_off, float *__restrict__ maxbuf)
     {
         extern __shared__ float shext[];
         float *sh_k = shext + threadIdx.y * nchan_in;
@@ -141,20 +141,37 @@ namespace attention_kernels
 
         for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { sh_k[chan] = vload(kx, chan); }
 
-        const int64_t rbeg = row_off[hi];
-        const int rlen = static_cast<int>(row_off[hi + 1] - rbeg);
-        const int64_t *col_hi = col_idx + rbeg;
+        // Arc segments instead of the flat column list, matching every other serial
+        // attention kernel: a neighbor's (output lat, output lon) is derived by counting
+        // along a contiguous arc rather than decoded from a flat column index with a
+        // 64-bit division the GPU has no instruction for. psi_seg is already built
+        // against the output grid here (attention.py sets nlon_decode = nlon_out when the
+        // layer upsamples), so this needs no extra precompute.
+        //
+        // Unlike the gather kernels this one is bound by atomic throughput -- pass 1
+        // atomicMaxf per neighbor, pass 2 atomicAdd into numer/denom -- so the win is
+        // consistency and one representation of psi, not speed.
+        const int seg_beg = seg_off[hi];
+        const int seg_end = seg_off[hi + 1];
 
-        for (int off = 0; off < rlen; off++) {
-            const int64_t col = col_hi[off];
-            const int ho = static_cast<int>(col / nlon_out);
-            const int wo = scatter_wo(static_cast<int>(col - int64_t(ho) * nlon_out), wi, pscale_out, nlon_out);
-            const STORAGE_T *_qy = qy + (int64_t(ho) * nlon_out + wo) * ldi;
+        for (int sg = seg_beg; sg < seg_end; sg++) {
 
-            float qd = 0.f;
-            for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { qd += sh_k[chan] * vload(_qy, chan); }
-            qd = __warp_sum(qd);
-            if (tidx == 0) { atomicMaxf(&maxbuf[int64_t(ho) * nlon_out + wo], qd); }
+            const int ho = seg[3 * sg + 0];
+            const int seg_lo = seg[3 * sg + 1];
+            const int seg_len = seg[3 * sg + 2];
+
+            // one shift at the arc start, then a counted walk: no modulus inside
+            int wo = scatter_wo(seg_lo, wi, pscale_out, nlon_out);
+
+            for (int j = 0; j < seg_len; j++) {
+                const STORAGE_T *_qy = qy + (int64_t(ho) * nlon_out + wo) * ldi;
+
+                float qd = 0.f;
+                for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { qd += sh_k[chan] * vload(_qy, chan); }
+                qd = __warp_sum(qd);
+                if (tidx == 0) { atomicMaxf(&maxbuf[int64_t(ho) * nlon_out + wo], qd); }
+                if (++wo == nlon_out) { wo = 0; }
+            }
         }
     }
 
@@ -163,7 +180,7 @@ namespace attention_kernels
     __global__ __launch_bounds__(THREADS_PER_BLOCK) void s2_attn_fwd_upsample_scatter_acc_k(
         int nheads, int nchan_in, int nchan_out, int nlat_in, int nlon_in, int nlat_out, int nlon_out,
         const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy,
-        const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx, const float *__restrict__ quad_weights,
+        const int32_t *__restrict__ seg, const int32_t *__restrict__ seg_off, const float *__restrict__ quad_weights,
         const float *__restrict__ maxbuf, float *__restrict__ numer, float *__restrict__ denom)
     {
         extern __shared__ float shext[];
@@ -198,25 +215,44 @@ namespace attention_kernels
         for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { sh_v[chan] = vload(vx, chan); }
 
         const float qw = quad_weights[hi];
-        const int64_t rbeg = row_off[hi];
-        const int rlen = static_cast<int>(row_off[hi + 1] - rbeg);
-        const int64_t *col_hi = col_idx + rbeg;
+        // Arc segments instead of the flat column list, matching every other serial
+        // attention kernel: a neighbor's (output lat, output lon) is derived by counting
+        // along a contiguous arc rather than decoded from a flat column index with a
+        // 64-bit division the GPU has no instruction for. psi_seg is already built
+        // against the output grid here (attention.py sets nlon_decode = nlon_out when the
+        // layer upsamples), so this needs no extra precompute.
+        //
+        // Unlike the gather kernels this one is bound by atomic throughput -- pass 1
+        // atomicMaxf per neighbor, pass 2 atomicAdd into numer/denom -- so the win is
+        // consistency and one representation of psi, not speed.
+        const int seg_beg = seg_off[hi];
+        const int seg_end = seg_off[hi + 1];
 
-        for (int off = 0; off < rlen; off++) {
-            const int64_t col = col_hi[off];
-            const int ho = static_cast<int>(col / nlon_out);
-            const int wo = scatter_wo(static_cast<int>(col - int64_t(ho) * nlon_out), wi, pscale_out, nlon_out);
-            const int64_t cell = int64_t(ho) * nlon_out + wo;
-            const STORAGE_T *_qy = qy + cell * ldi;
+        for (int sg = seg_beg; sg < seg_end; sg++) {
 
-            float qd = 0.f;
-            for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { qd += sh_k[chan] * vload(_qy, chan); }
-            qd = __warp_sum(qd);
+            const int ho = seg[3 * sg + 0];
+            const int seg_lo = seg[3 * sg + 1];
+            const int seg_len = seg[3 * sg + 2];
 
-            const float alpha = expf(qd - maxbuf[cell]) * qw;
-            if (tidx == 0) { atomicAdd(&denom[cell], alpha); }
-            float *_numer = numer + cell * nchan_out;
-            for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { atomicAdd(&_numer[chan], alpha * sh_v[chan]); }
+            // one shift at the arc start, then a counted walk: no modulus inside
+            int wo = scatter_wo(seg_lo, wi, pscale_out, nlon_out);
+
+            for (int j = 0; j < seg_len; j++) {
+                const int64_t cell = int64_t(ho) * nlon_out + wo;
+                const STORAGE_T *_qy = qy + cell * ldi;
+
+                float qd = 0.f;
+                for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { qd += sh_k[chan] * vload(_qy, chan); }
+                qd = __warp_sum(qd);
+
+                const float alpha = expf(qd - maxbuf[cell]) * qw;
+                if (tidx == 0) { atomicAdd(&denom[cell], alpha); }
+                float *_numer = numer + cell * nchan_out;
+                for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
+                    atomicAdd(&_numer[chan], alpha * sh_v[chan]);
+                }
+                if (++wo == nlon_out) { wo = 0; }
+            }
         }
     }
 
@@ -249,7 +285,7 @@ namespace attention_kernels
     template <typename STORAGE_T>
     static void launch_attn_fwd_upsample_scatter(int batch_size, int nheads, int nchans_in, int nchans_out, int nlat_in,
                                                  int nlon_in, int nlat_out, int nlon_out, STORAGE_T *_kxp,
-                                                 STORAGE_T *_vxp, STORAGE_T *_qyp, int64_t *_row_off, int64_t *_col_idx,
+                                                 STORAGE_T *_vxp, STORAGE_T *_qyp, int32_t *_seg, int32_t *_seg_off,
                                                  float *_quad_weights, STORAGE_T *_yp, cudaStream_t stream)
     {
         // Reduction scratch carries (batch, head) as its leading index rather than
@@ -275,12 +311,12 @@ namespace attention_kernels
         const size_t sh2 = sizeof(float) * (nchans_in + nchans_out) * block.y;
 
         s2_attn_fwd_upsample_scatter_max_k<THREADS><<<grid_in, block, sh1, stream>>>(
-            nheads, nchans_in, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _qyp, _row_off, _col_idx, _maxbuf);
+            nheads, nchans_in, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _qyp, _seg, _seg_off, _maxbuf);
         CHECK_ERROR("s2_attn_fwd_upsample_scatter_max_k");
 
         s2_attn_fwd_upsample_scatter_acc_k<THREADS>
             <<<grid_in, block, sh2, stream>>>(nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp,
-                                              _vxp, _qyp, _row_off, _col_idx, _quad_weights, _maxbuf, _numer, _denom);
+                                              _vxp, _qyp, _seg, _seg_off, _quad_weights, _maxbuf, _numer, _denom);
         CHECK_ERROR("s2_attn_fwd_upsample_scatter_acc_k");
 
         s2_attn_fwd_upsample_scatter_final_k<THREADS>
@@ -298,14 +334,14 @@ namespace attention_kernels
     // -----------------------------------------------------------------------------
     void s2_attn_fwd_upsample_dispatch(int batch_size, int64_t num_heads, size_t nchans_in, size_t nchans_out,
                                        int64_t nlon_in, int64_t nlat_in, int64_t nlat_out, int64_t nlon_out,
-                                       torch::Tensor kxP, torch::Tensor vxP, torch::Tensor qyP, torch::Tensor psi_row_off,
-                                       torch::Tensor psi_col_idx, torch::Tensor quad_weights, torch::Tensor yP)
+                                       torch::Tensor kxP, torch::Tensor vxP, torch::Tensor qyP, torch::Tensor psi_seg,
+                                       torch::Tensor psi_seg_off, torch::Tensor quad_weights, torch::Tensor yP)
     {
 
         auto stream = at::cuda::getCurrentCUDAStream().stream();
 
-        int64_t *_row_off = reinterpret_cast<int64_t *>(psi_row_off.data_ptr());
-        int64_t *_col_idx = reinterpret_cast<int64_t *>(psi_col_idx.data_ptr());
+        int32_t *_seg = reinterpret_cast<int32_t *>(psi_seg.data_ptr());
+        int32_t *_seg_off = reinterpret_cast<int32_t *>(psi_seg_off.data_ptr());
         float *_quad_weights = reinterpret_cast<float *>(quad_weights.data_ptr());
 
         AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, qyP.scalar_type(), "s2_attn_fwd_upsample", [&] {
@@ -317,7 +353,7 @@ namespace attention_kernels
             launch_attn_fwd_upsample_scatter(
                 batch_size, static_cast<int>(num_heads), static_cast<int>(nchans_in), static_cast<int>(nchans_out),
                 static_cast<int>(nlat_in), static_cast<int>(nlon_in), static_cast<int>(nlat_out),
-                static_cast<int>(nlon_out), _kxp, _vxp, _qyp, _row_off, _col_idx, _quad_weights, _yp, stream);
+                static_cast<int>(nlon_out), _kxp, _vxp, _qyp, _seg, _seg_off, _quad_weights, _yp, stream);
         });
 
         C10_CUDA_KERNEL_LAUNCH_CHECK();
