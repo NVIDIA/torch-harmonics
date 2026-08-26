@@ -148,9 +148,12 @@ namespace attention_kernels
         // against the output grid here (attention.py sets nlon_decode = nlon_out when the
         // layer upsamples), so this needs no extra precompute.
         //
-        // Unlike the gather kernels this one is bound by atomic throughput -- pass 1
-        // atomicMaxf per neighbor, pass 2 atomicAdd into numer/denom -- so the win is
-        // consistency and one representation of psi, not speed.
+        // This kernel is atomics-heavy -- atomicMaxf per neighbor in pass 1, atomicAdd
+        // into numer/denom in pass 2 -- which was long taken to mean the divide could not
+        // be on the critical path, so the conversion was skipped. Measured, that was
+        // wrong: 180x360 -> 360x720 fp32 C=64 forward went 6.69 -> 5.88 ms (acc) and
+        // 5.32 -> 4.20 ms (max), about -14% overall. "Bound by X" did not imply "Y cannot
+        // help".
         const int seg_beg = seg_off[hi];
         const int seg_end = seg_off[hi + 1];
 
@@ -222,9 +225,12 @@ namespace attention_kernels
         // against the output grid here (attention.py sets nlon_decode = nlon_out when the
         // layer upsamples), so this needs no extra precompute.
         //
-        // Unlike the gather kernels this one is bound by atomic throughput -- pass 1
-        // atomicMaxf per neighbor, pass 2 atomicAdd into numer/denom -- so the win is
-        // consistency and one representation of psi, not speed.
+        // This kernel is atomics-heavy -- atomicMaxf per neighbor in pass 1, atomicAdd
+        // into numer/denom in pass 2 -- which was long taken to mean the divide could not
+        // be on the critical path, so the conversion was skipped. Measured, that was
+        // wrong: 180x360 -> 360x720 fp32 C=64 forward went 6.69 -> 5.88 ms (acc) and
+        // 5.32 -> 4.20 ms (max), about -14% overall. "Bound by X" did not imply "Y cannot
+        // help".
         const int seg_beg = seg_off[hi];
         const int seg_end = seg_off[hi + 1];
 

@@ -231,10 +231,8 @@ namespace attention_kernels
         for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { sh_v[chan] = vload(vx, chan); }
 
         const float qw = quad_weights[hi];
-        // Arc segments instead of the flat column list: a neighbor's (output lat, output
-        // lon) is derived by counting along a contiguous arc, so the 64-bit division that
-        // decoded col / nlon_out per neighbor is gone. The GPU has no integer-divide
-        // instruction, so each cost ~70-100 emulated ones.
+        // Arc segments instead of the flat column list; see the note on the first
+        // neighbor loop above.
         const int seg_beg = seg_off[hi];
         const int seg_end = seg_off[hi + 1];
 
@@ -360,10 +358,8 @@ namespace attention_kernels
         }
 
         const float qw = quad_weights[hi];
-        // Arc segments instead of the flat column list: a neighbor's (output lat, output
-        // lon) is derived by counting along a contiguous arc, so the 64-bit division that
-        // decoded col / nlon_out per neighbor is gone. The GPU has no integer-divide
-        // instruction, so each cost ~70-100 emulated ones.
+        // Arc segments instead of the flat column list; see the note on the first
+        // neighbor loop above.
         const int seg_beg = seg_off[hi];
         const int seg_end = seg_off[hi + 1];
 
