@@ -166,17 +166,19 @@ def truncate_support(grid: GridS2, theta_cutoff: Optional[float] = None, scale: 
         used. Must be positive.
     scale : float, optional
         Multiplier applied to the default spacing, by default 1.0. Ignored when
-        *theta_cutoff* is given, which is already a final value.
+        *theta_cutoff* is given, which is already a final value. Must leave the
+        resulting radius positive.
 
     Returns
     -------
     float
-        Cutoff angle in radians.
+        Cutoff angle in radians, always positive.
 
     Raises
     ------
     ValueError
-        If *theta_cutoff* is not positive.
+        If the resulting radius is not positive, whether it came from an explicit
+        *theta_cutoff* or from a non-positive *scale* applied to the default.
 
     Warns
     -----
@@ -202,9 +204,15 @@ def truncate_support(grid: GridS2, theta_cutoff: Optional[float] = None, scale: 
     if theta_cutoff is None:
         # a support radius taken from a shard would differ between ranks
         grid = require_grid(grid)
-        return scale * compute_theta_cutoff(grid.nlat, grid=grid.grid_type)
+        radius = scale * compute_theta_cutoff(grid.nlat, grid=grid.grid_type)
+        origin = f"scale={scale} times the grid spacing"
+    else:
+        radius = theta_cutoff
+        origin = f"theta_cutoff={theta_cutoff}"
 
-    if theta_cutoff <= 0.0:
-        raise ValueError(f"Error, theta_cutoff has to be positive, got {theta_cutoff}.")
+    # guard the value that is returned rather than the argument it came from: a
+    # non-positive radius reaches the kernels the same way whichever route made it
+    if radius <= 0.0:
+        raise ValueError(f"Error, the angular support radius has to be positive, got {radius} from {origin}.")
 
-    return theta_cutoff
+    return radius

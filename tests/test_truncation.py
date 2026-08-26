@@ -238,6 +238,13 @@ class TestTruncateSupport(unittest.TestCase):
         with self.assertRaises(ValueError):
             truncate_support(g, theta_cutoff=bad)
 
+    @parameterized.expand([(g, s) for g in th.grid_types() for s in (0.0, -1.0)])
+    def test_non_positive_scale_is_rejected(self, grid, bad):
+        """The guard is on the radius returned, not on the argument it came from."""
+        g = as_grid(grid, (32, 64))
+        with self.assertRaises(ValueError):
+            truncate_support(g, scale=bad)
+
     def test_a_shard_is_rejected(self):
         """A radius from a shard's own spacing would differ between ranks."""
         g = as_grid("equiangular", (64, 128))
