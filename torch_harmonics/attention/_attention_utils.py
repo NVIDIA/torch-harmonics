@@ -92,12 +92,11 @@ def _check_dtypes_match(tensors) -> None:
 # Shared backward-context helper used by both the torch reference kernels
 # (in kernels_torch/) and the optimized custom_op path (in optimized/).
 def _setup_context_attention_backward(ctx, inputs, output):
-    # seg / seg_off are unpacked but not saved: the backward op still consumes the
-    # column list, so only col_idx and row_off need to survive into backward. They
-    # appear here because the unpack is positional and must match the forward op's
-    # argument list exactly.
+    # col_idx / row_off are saved alongside seg / seg_off. The CUDA backward walks the
+    # arc segments, but the CPU backward still consumes the column list, and both reach
+    # backward through the same op schema.
     kw, vw, qw, quad_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out = inputs
-    ctx.save_for_backward(col_idx, row_off, quad_weights, kw, vw, qw)
+    ctx.save_for_backward(col_idx, row_off, seg, seg_off, quad_weights, kw, vw, qw)
     ctx.nh = nh
     ctx.nlon_in = nlon_in
     ctx.nlat_out = nlat_out
