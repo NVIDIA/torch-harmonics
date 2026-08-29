@@ -70,6 +70,8 @@ if optimized_kernels_is_available():
         quad_weights: torch.Tensor,
         col_idx: torch.Tensor,
         row_off: torch.Tensor,
+        seg: torch.Tensor,
+        seg_off: torch.Tensor,
         num_heads: int,
         nlon_in: int,
         nlat_out: int,
@@ -278,7 +280,7 @@ if optimized_kernels_is_available():
 
 
 def _neighborhood_s2_attention_bwd_optimized(ctx, grad_output):
-    col_idx, row_off, quad_weights, kw, vw, qw = ctx.saved_tensors
+    col_idx, row_off, seg, seg_off, quad_weights, kw, vw, qw = ctx.saved_tensors
     nh = ctx.nh
     nlon_in = ctx.nlon_in
     nlat_out = ctx.nlat_out
@@ -292,7 +294,7 @@ def _neighborhood_s2_attention_bwd_optimized(ctx, grad_output):
     qw = qw.contiguous()
     grad_output = grad_output.contiguous()
 
-    dkw, dvw, dqw = attention_kernels.backward.default(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out)
+    dkw, dvw, dqw = attention_kernels.backward.default(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out)
 
     # one gradient per forward input: kw, vw, qw, then None for quad_weights,
     # col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out

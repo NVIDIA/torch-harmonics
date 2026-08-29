@@ -58,8 +58,8 @@ namespace attention_kernels
     // called by s2_attention_fwd_cuda when nlon_out % nlon_in == 0.
     void s2_attn_fwd_upsample_dispatch(int batch_size, int64_t num_heads, size_t nchans_in, size_t nchans_out,
                                        int64_t nlon_in, int64_t nlat_in, int64_t nlat_out, int64_t nlon_out,
-                                       torch::Tensor kxP, torch::Tensor vxP, torch::Tensor qyP, torch::Tensor psi_row_off,
-                                       torch::Tensor psi_col_idx, torch::Tensor quad_weights, torch::Tensor yP);
+                                       torch::Tensor kxP, torch::Tensor vxP, torch::Tensor qyP, torch::Tensor psi_seg,
+                                       torch::Tensor psi_seg_off, torch::Tensor quad_weights, torch::Tensor yP);
 
     // called with (blockDim.x=32 and blockDim.y>1, BDIM_X=blockDim.x*blockDim.y)
     //
@@ -808,7 +808,7 @@ namespace attention_kernels
                 // AT_DISPATCH and widens fp16/bf16 at load (fp32 compute), narrowing
                 // the output at store — same as the gather path.
                 s2_attn_fwd_upsample_dispatch(batch_size, num_heads, nchans_in, nchans_out, nlon_in, nlat_in, nlat_out,
-                                              nlon_out, kx, vx, qy, psi_row_off, psi_col_idx, quad_weights, y_nhwc);
+                                              nlon_out, kx, vx, qy, psi_seg, psi_seg_off, quad_weights, y_nhwc);
             }
 
             y = y_nhwc;
