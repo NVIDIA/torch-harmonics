@@ -32,6 +32,8 @@
 
 import torch
 
+from torch_harmonics._checks import check
+
 # Input validation helpers.
 #
 # These exist because torch._check messages have to survive dynamo: the message
@@ -51,7 +53,7 @@ def _check_ndim(tensor: torch.Tensor, ndim: int, name: str) -> None:
 
     # hoisted to a local int so the closure below captures a constant
     actual = tensor.dim()
-    torch._check(actual == ndim, lambda: f"Expected {ndim}-dimensional {name} tensor, got {actual} dimensions")
+    check(actual == ndim, lambda: f"Expected {ndim}-dimensional {name} tensor, got {actual} dimensions")
 
 
 def _check_extent(tensor: torch.Tensor, dim: int, expected: int, name: str) -> None:
@@ -61,7 +63,7 @@ def _check_extent(tensor: torch.Tensor, dim: int, expected: int, name: str) -> N
     # value; the actual extent is deliberately absent from the message, since it
     # is a SymInt whenever shapes are dynamic
     expected = int(expected)
-    torch._check(tensor.shape[dim] == expected, lambda: f"Expected {name} shape[{dim}] == {expected}")
+    check(tensor.shape[dim] == expected, lambda: f"Expected {name} shape[{dim}] == {expected}")
 
 
 def _check_dtypes_match(tensors) -> None:

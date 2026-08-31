@@ -140,7 +140,9 @@ class ResampleS2(nn.Module):
 
         # in the case where some points lie outside of the range spanned by lats_in,
         # we need to expand the solution to the poles before interpolating
-        self.expand_poles = (self.lats_out > self.lats_in[-1]).any() or (self.lats_out < self.lats_in[0]).any()
+        # bool(), not a 0-dim tensor: this is branched on in forward, and a tensor
+        # there is data-dependent control flow that breaks torch.compile(fullgraph=True)
+        self.expand_poles = bool((self.lats_out > self.lats_in[-1]).any() or (self.lats_out < self.lats_in[0]).any())
         if self.expand_poles:
             self.lats_in = torch.cat(
                 [torch.as_tensor([0.0], dtype=torch.float64, device=self.lats_in.device), self.lats_in, torch.as_tensor([math.pi], dtype=torch.float64, device=self.lats_in.device)]

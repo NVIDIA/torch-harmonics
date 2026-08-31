@@ -66,6 +66,8 @@ from typing import Tuple
 import torch
 from attention_helpers import optimized_kernels_is_available
 
+from torch_harmonics._checks import check
+
 __all__ = ["to_nhwc", "to_nchw"]
 
 _OPTIMIZED = optimized_kernels_is_available()
@@ -151,7 +153,7 @@ def to_nhwc(x: torch.Tensor) -> torch.Tensor:
 
     # the message must not close over x: dynamo rejects a torch._check message
     # closure that captures anything other than Python constants
-    torch._check(x.dim() == 4, lambda: "to_nhwc expects a 4-dimensional (B, C, H, W) tensor")
+    check(x.dim() == 4, lambda: "to_nhwc expects a 4-dimensional (B, C, H, W) tensor")
 
     if _OPTIMIZED:
         return torch.ops.attention_kernels.permute_to_nhwc.default(x.contiguous())
@@ -176,7 +178,7 @@ def to_nchw(x: torch.Tensor) -> torch.Tensor:
         Contiguous tensor of shape ``(B, C, H, W)`` holding the same values.
     """
 
-    torch._check(x.dim() == 4, lambda: "to_nchw expects a 4-dimensional (B, H, W, C) tensor")
+    check(x.dim() == 4, lambda: "to_nchw expects a 4-dimensional (B, H, W, C) tensor")
 
     if _OPTIMIZED:
         return torch.ops.attention_kernels.permute_to_nchw.default(x.contiguous())

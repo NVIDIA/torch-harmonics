@@ -45,6 +45,8 @@ optimized paths.
 
 import torch
 
+from torch_harmonics._checks import check
+
 from .._attention_utils import _setup_context_attention_backward
 
 
@@ -76,7 +78,7 @@ def _neighborhood_s2_attention_fwd_torch(
 ) -> torch.Tensor:
 
     # one output lon step corresponds to pscale input lon steps; require an integer ratio
-    torch._check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
+    check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
     pscale = nlon_in // nlon_out
 
     # prepare result tensor
@@ -149,7 +151,7 @@ def _neighborhood_s2_attention_bwd_dv_torch(
     # output
     # dvx: B, Cout, Hi, Wi
 
-    torch._check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
+    check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
     pscale = nlon_in // nlon_out
 
     dvx = torch.zeros_like(vx)
@@ -230,7 +232,7 @@ def _neighborhood_s2_attention_bwd_dk_torch(
     # output
     # dkx: B, C, Hi, Wi
 
-    torch._check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
+    check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
     pscale = nlon_in // nlon_out
 
     dkx = torch.zeros_like(kx)
@@ -325,7 +327,7 @@ def _neighborhood_s2_attention_bwd_dq_torch(
     # output
     # dq: B, C, Ho, Wo
 
-    torch._check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
+    check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
     pscale = nlon_in // nlon_out
 
     batch_size = dy.shape[0]
@@ -600,7 +602,7 @@ def _neighborhood_s2_attention_upsample_fwd_torch(
     col_idx/row_off: psi built with swapped shapes; rows=nlat_in, cols=(ho*nlon_out + wo)
     """
 
-    torch._check(nlon_out % nlon_in == 0, lambda: f"nlon_out ({nlon_out}) must be an integer multiple of nlon_in ({nlon_in})")
+    check(nlon_out % nlon_in == 0, lambda: f"nlon_out ({nlon_out}) must be an integer multiple of nlon_in ({nlon_in})")
     pscale_out = nlon_out // nlon_in
 
     B = qy.shape[0]
@@ -666,7 +668,7 @@ def _neighborhood_s2_attention_upsample_bwd_dv_torch(
     where alpha_norm = alpha[ho,wop,hi,wi] / alpha_sum[ho,wop].
     """
 
-    torch._check(nlon_out % nlon_in == 0, lambda: f"nlon_out ({nlon_out}) must be an integer multiple of nlon_in ({nlon_in})")
+    check(nlon_out % nlon_in == 0, lambda: f"nlon_out ({nlon_out}) must be an integer multiple of nlon_in ({nlon_in})")
     pscale_out = nlon_out // nlon_in
 
     B = qy.shape[0]
@@ -735,7 +737,7 @@ def _neighborhood_s2_attention_upsample_bwd_dk_torch(
     where integral[ho, wop] = sum_j alpha_norm_j * (dy . v_j).
     """
 
-    torch._check(nlon_out % nlon_in == 0, lambda: f"nlon_out ({nlon_out}) must be an integer multiple of nlon_in ({nlon_in})")
+    check(nlon_out % nlon_in == 0, lambda: f"nlon_out ({nlon_out}) must be an integer multiple of nlon_in ({nlon_in})")
     pscale_out = nlon_out // nlon_in
 
     B = qy.shape[0]
@@ -811,7 +813,7 @@ def _neighborhood_s2_attention_upsample_bwd_dq_torch(
     We accumulate them per output cell by scattering from all (hi, wi) inputs.
     """
 
-    torch._check(nlon_out % nlon_in == 0, lambda: f"nlon_out ({nlon_out}) must be an integer multiple of nlon_in ({nlon_in})")
+    check(nlon_out % nlon_in == 0, lambda: f"nlon_out ({nlon_out}) must be an integer multiple of nlon_in ({nlon_in})")
     pscale_out = nlon_out // nlon_in
 
     B = qy.shape[0]
