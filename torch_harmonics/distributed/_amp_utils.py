@@ -43,27 +43,116 @@
 # PyTorch maintainers (soulitzer in #132388) said they'd accept as the fix:
 # it sets the same attributes on ctx at setup_context time, bridging the gap.
 #
+# Because ``_custom_setup_context`` supplies the ctx state that ``custom_bwd``
+# reads, ``custom_fwd`` has nothing left to do on a new-style ``forward``: with
+# ``cast_inputs=None`` its whole body is those two assignments, which land on a
+# tensor nobody reads.
+#
+# That dead store is not merely wasteful: ``args[0]._dtype = ...`` is a
+# ``setattr`` on a Tensor, which Dynamo cannot trace, so it graph-breaks
+# ``torch.compile(fullgraph=True)``. This module therefore also provides
+# ``_custom_fwd``, a drop-in replacement that keeps the half of ``custom_fwd``
+# that still has a job on the new-style API (``cast_inputs``) and drops the half
+# that does not (recording state on a ctx that ``forward`` never receives).
+#
 # Remove this module and the imports once upstream lands the real
 # ``torch.amp.custom_setup_context``.
 
+import collections.abc
 import functools
 
 import torch
 
 
-def _custom_setup_context(setup_context_fn=None, *, device_type: str):
-    """Bridge for new-style autograd.Function + @torch.amp.custom_fwd/custom_bwd.
+def _cast(value, device_type: str, dtype: torch.dtype):
+    """Recursively cast autocast-eligible tensors in ``value`` to ``dtype``.
+
+    Mirrors ``torch.amp.autocast_mode._cast`` (which is private, hence the
+    copy): only floating-point tensors on ``device_type`` are cast, and float64
+    is left alone so double-precision code paths are never silently narrowed.
+    """
+    if isinstance(value, torch.Tensor):
+        eligible = value.is_floating_point() and value.device.type == device_type and value.dtype is not torch.float64
+        return value.to(dtype) if eligible else value
+    elif isinstance(value, (str, bytes)):
+        return value
+    elif isinstance(value, collections.abc.Mapping):
+        return {k: _cast(v, device_type, dtype) for k, v in value.items()}
+    elif isinstance(value, (list, tuple)):
+        return type(value)(_cast(v, device_type, dtype) for v in value)
+    else:
+        return value
+
+
+def _custom_fwd(fwd=None, *, device_type: str, cast_inputs=None):
+    """Compile-safe ``torch.amp.custom_fwd`` for new-style autograd Functions.
+
+    ``torch.amp.custom_fwd`` does two things: it records the autocast state on
+    ``args[0]``, and -- if ``cast_inputs`` is given -- casts floating-point
+    inputs and runs ``forward`` with autocast disabled.
+
+    On the new-style API only the second job is still meaningful. ``forward``
+    has no ``ctx`` parameter, so ``args[0]`` is the first input tensor and the
+    recorded state is never read; :func:`_custom_setup_context` records it on
+    the real ``ctx`` instead. Dropping that write is what makes this decorator
+    traceable under ``torch.compile(fullgraph=True)``.
+
+    With ``cast_inputs=None`` this returns ``fwd`` unchanged, so the common case
+    adds no wrapper and no overhead at all.
+
+    Parameters
+    ----------
+    device_type : str
+        Autocast device type, e.g. ``"cuda"``.
+    cast_inputs : torch.dtype, optional
+        If given, floating-point inputs are cast to this dtype and ``forward``
+        runs with autocast disabled, by default ``None``.
+
+    Notes
+    -----
+    When ``cast_inputs`` is used, the matching :func:`_custom_setup_context`
+    must be given the same ``cast_inputs`` so that ``backward`` does not
+    re-enter an autocast region that ``forward`` never ran in.
+    """
+    if fwd is None:
+        return functools.partial(_custom_fwd, device_type=device_type, cast_inputs=cast_inputs)
+
+    # nothing left to do: the state-recording half is _custom_setup_context's job
+    if cast_inputs is None:
+        return fwd
+
+    @functools.wraps(fwd)
+    def decorate_fwd(*args, **kwargs):
+        if torch.is_autocast_enabled(device_type):
+            with torch.amp.autocast(device_type=device_type, enabled=False):
+                return fwd(*_cast(args, device_type, cast_inputs), **_cast(kwargs, device_type, cast_inputs))
+        return fwd(*args, **kwargs)
+
+    return decorate_fwd
+
+
+def _custom_setup_context(setup_context_fn=None, *, device_type: str, cast_inputs=None):
+    """Bridge for new-style autograd.Function + :func:`_custom_fwd`/custom_bwd.
 
     Records the current autocast state on ``ctx`` at setup_context time, so
     that the ``custom_bwd`` decorator on ``backward`` can find
     ``ctx._fwd_used_autocast`` / ``ctx._dtype`` and re-enter the same autocast
     context as ``forward`` was in.
 
+    Parameters
+    ----------
+    device_type : str
+        Autocast device type, e.g. ``"cuda"``.
+    cast_inputs : torch.dtype, optional
+        Must match the ``cast_inputs`` passed to :func:`_custom_fwd`. When it is
+        given, ``forward`` ran with autocast disabled, so ``backward`` must not
+        re-enter autocast and ``_fwd_used_autocast`` is recorded as ``False``.
+
     Usage::
 
         class MyFn(torch.autograd.Function):
             @staticmethod
-            @torch.amp.custom_fwd(device_type="cuda")
+            @_custom_fwd(device_type="cuda")
             def forward(x, ...):
                 ...
 
@@ -78,12 +167,12 @@ def _custom_setup_context(setup_context_fn=None, *, device_type: str):
                 ...
     """
     if setup_context_fn is None:
-        return functools.partial(_custom_setup_context, device_type=device_type)
+        return functools.partial(_custom_setup_context, device_type=device_type, cast_inputs=cast_inputs)
 
     @functools.wraps(setup_context_fn)
     def decorate_setup_context(ctx, *args, **kwargs):
         ctx._dtype = torch.get_autocast_dtype(device_type)
-        ctx._fwd_used_autocast = torch.is_autocast_enabled(device_type)
+        ctx._fwd_used_autocast = torch.is_autocast_enabled(device_type) if cast_inputs is None else False
         return setup_context_fn(ctx, *args, **kwargs)
 
     return decorate_setup_context
