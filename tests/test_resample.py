@@ -272,6 +272,74 @@ class TestResampleS2(unittest.TestCase):
         self.assertLess((pole - pole[0]).abs().max().item(), 1e-6, "pole value must not depend on longitude")
         self.assertLess(wrap(pole - math.pi).abs().max().item(), 1e-3, f"pole must point at pi, got {pole[0].item()}")
 
+    # In "bilinear" mode resampling is a linear operator: the gather indices and the
+    # interpolation weights are fixed at construction, and the pole extension is a mean.
+    # That admits exact gradient checks instead of finite differences -- the Jacobian is
+    # the operator itself, so backward has to be precisely its transpose.
+
+    @parameterized.expand(
+        [
+            [32, 64, 16, 32, "equiangular", "equiangular"],
+            [16, 32, 24, 48, "legendre-gauss", "equiangular"],  # expand_poles=True: covers _expand_poles
+            [32, 64, 16, 32, "lobatto", "legendre-gauss"],
+        ]
+    )
+    def test_bilinear_adjoint(self, nlat_in, nlon_in, nlat_out, nlon_out, grid_in, grid_out):
+        """``<R x, y> == <x, R^T y>``: backward must be the exact adjoint of forward.
+
+        A transposed operator is pinned down by this identity for random ``x`` and ``y``,
+        so it catches any mis-mapped index or weight in the backward pass without needing
+        a finite-difference tolerance.
+        """
+        set_seed(999)
+        resample = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out, grid_in=grid_in, grid_out=grid_out).to(self.device)
+
+        x = torch.randn(1, 1, nlat_in, nlon_in, dtype=torch.float64, device=self.device, requires_grad=True)
+        y = torch.randn(1, 1, nlat_out, nlon_out, dtype=torch.float64, device=self.device)
+
+        lhs = (resample(x) * y).sum()  # <R x, y>
+        lhs.backward()
+        rhs = (x.grad * x.detach()).sum()  # <x, R^T y>, since x.grad == R^T y for linear R
+
+        scale = max(1.0, abs(lhs.item()))
+        self.assertLess(abs(lhs.item() - rhs.item()) / scale, 1e-12, f"adjoint mismatch: <Rx,y>={lhs.item()} vs <x,R^T y>={rhs.item()}")
+
+    @parameterized.expand(
+        [
+            [32, 64, 16, 32, "equiangular", "equiangular"],
+            [16, 32, 24, 48, "legendre-gauss", "equiangular"],
+            [32, 64, 16, 32, "lobatto", "legendre-gauss"],
+        ]
+    )
+    def test_bilinear_jacobian_is_constant(self, nlat_in, nlon_in, nlat_out, nlon_out, grid_in, grid_out):
+        """The Jacobian may not depend on the input, and forward must obey superposition.
+
+        Probed through a vector-Jacobian product rather than the full Jacobian: for a fixed
+        cotangent, ``R^T y`` has to come out identical at unrelated inputs. Any data
+        dependence sneaking into forward -- a value-dependent branch or index -- breaks
+        one of the two checks.
+        """
+        set_seed(1001)
+        resample = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out, grid_in=grid_in, grid_out=grid_out).to(self.device)
+        shape_in = (1, 1, nlat_in, nlon_in)
+        kw = dict(dtype=torch.float64, device=self.device)
+
+        y = torch.randn(1, 1, nlat_out, nlon_out, **kw)
+
+        def vjp(x0):
+            x = x0.clone().requires_grad_(True)
+            (resample(x) * y).sum().backward()
+            return x.grad
+
+        xa = torch.randn(*shape_in, **kw)
+        xb = torch.randn(*shape_in, **kw) * 7.0 + 3.0
+        self.assertTrue(compare_tensors("constant Jacobian", vjp(xa), vjp(xb), atol=1e-14, rtol=1e-14))
+
+        # superposition: R(a*x1 + b*x2) == a*R(x1) + b*R(x2)
+        a, b = 2.5, -1.75
+        x1, x2 = torch.randn(*shape_in, **kw), torch.randn(*shape_in, **kw)
+        self.assertTrue(compare_tensors("superposition", resample(a * x1 + b * x2), a * resample(x1) + b * resample(x2), atol=1e-12, rtol=1e-12))
+
 
 if __name__ == "__main__":
     unittest.main()
