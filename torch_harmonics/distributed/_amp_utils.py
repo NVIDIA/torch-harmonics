@@ -93,7 +93,7 @@ def _custom_fwd(fwd=None, *, device_type: str, cast_inputs=None):
 
     On the new-style API only the second job is still meaningful. ``forward``
     has no ``ctx`` parameter, so ``args[0]`` is the first input tensor and the
-    recorded state is never read; :func:`_custom_setup_context` records it on
+    recorded state is never read; ``_custom_setup_context`` records it on
     the real ``ctx`` instead. Dropping that write is what makes this decorator
     traceable under ``torch.compile(fullgraph=True)``.
 
@@ -110,7 +110,7 @@ def _custom_fwd(fwd=None, *, device_type: str, cast_inputs=None):
 
     Notes
     -----
-    When ``cast_inputs`` is used, the matching :func:`_custom_setup_context`
+    When ``cast_inputs`` is used, the matching ``_custom_setup_context``
     must be given the same ``cast_inputs`` so that ``backward`` does not
     re-enter an autocast region that ``forward`` never ran in.
     """
@@ -132,7 +132,7 @@ def _custom_fwd(fwd=None, *, device_type: str, cast_inputs=None):
 
 
 def _custom_setup_context(setup_context_fn=None, *, device_type: str, cast_inputs=None):
-    """Bridge for new-style autograd.Function + :func:`_custom_fwd`/custom_bwd.
+    """Bridge for new-style autograd.Function + ``_custom_fwd``/custom_bwd.
 
     Records the current autocast state on ``ctx`` at setup_context time, so
     that the ``custom_bwd`` decorator on ``backward`` can find
@@ -144,7 +144,7 @@ def _custom_setup_context(setup_context_fn=None, *, device_type: str, cast_input
     device_type : str
         Autocast device type, e.g. ``"cuda"``.
     cast_inputs : torch.dtype, optional
-        Must match the ``cast_inputs`` passed to :func:`_custom_fwd`. When it is
+        Must match the ``cast_inputs`` passed to ``_custom_fwd``. When it is
         given, ``forward`` ran with autocast disabled, so ``backward`` must not
         re-enter autocast and ``_fwd_used_autocast`` is recorded as ``False``.
 

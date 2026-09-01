@@ -140,8 +140,8 @@ class ResampleS2(nn.Module):
           f(t) = f_0 + t \cdot \mathrm{wrap}_\pi(f_1 - f_0),
           \qquad \mathrm{wrap}_\pi(\delta) \in (-\pi, \pi]
 
-      This is the two-dimensional closed form of slerp; see
-      :func:`_slerp_shortest_arc` for the derivation.  Since
+      This is the two-dimensional closed form of slerp; see the
+      ``_slerp_shortest_arc`` helper in this module for the derivation.  Since
       :math:`\mathrm{wrap}_\pi` is the identity whenever
       :math:`|f_1 - f_0| \le \pi`, this mode is **identical to** ``"bilinear"``
       except across a :math:`2\pi` phase wrap -- precisely the discontinuity it
