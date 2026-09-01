@@ -45,8 +45,8 @@ optimized paths.
 
 import torch
 
-from torch_harmonics._checks import check
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
+from torch_harmonics.utils import check
 
 from .._attention_utils import _setup_context_attention_backward
 

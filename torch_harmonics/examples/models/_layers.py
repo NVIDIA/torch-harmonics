@@ -39,7 +39,7 @@ import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
 from torch_harmonics import InverseRealSHT
-from torch_harmonics._checks import check
+from torch_harmonics.utils import check
 
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):

@@ -66,7 +66,7 @@ from typing import Tuple
 import torch
 from attention_helpers import optimized_kernels_is_available
 
-from torch_harmonics._checks import check
+from torch_harmonics.utils import check
 
 __all__ = ["to_nhwc", "to_nchw"]
 

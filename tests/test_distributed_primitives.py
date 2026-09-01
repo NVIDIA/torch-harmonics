@@ -597,11 +597,17 @@ class TestRingExchange(unittest.TestCase):
         set_seed(333)
         # Use different channel counts for kw and vw to catch any accidental
         # cross-tensor bleed (e.g. wrong send/recv ordering inside _ring_kv).
-        kw_full = torch.randn(B, C, H, nlon_global, device=self.device, dtype=torch.float32)
-        vw_full = torch.randn(B, C + 1, H, nlon_global, device=self.device, dtype=torch.float32)
+        #
+        # _ring_kv exchanges the tensors in the NHWC layout the kernels consume,
+        # so the chunks here are [B, H, W, C] and the ring splits along W (dim 2),
+        # not along the last axis. Feeding it channels-first instead sizes the
+        # receive buffer from the wrong axes, and the resulting send/recv element
+        # count mismatch hangs the p2p exchange rather than failing.
+        kw_full = torch.randn(B, H, nlon_global, C, device=self.device, dtype=torch.float32)
+        vw_full = torch.randn(B, H, nlon_global, C + 1, device=self.device, dtype=torch.float32)
 
-        kw_ref = split_tensor_along_dim(kw_full, dim=-1, num_chunks=az_size)
-        vw_ref = split_tensor_along_dim(vw_full, dim=-1, num_chunks=az_size)
+        kw_ref = split_tensor_along_dim(kw_full, dim=2, num_chunks=az_size)
+        vw_ref = split_tensor_along_dim(vw_full, dim=2, num_chunks=az_size)
 
         # Each rank starts holding its own chunk.
         kw_chunk = kw_ref[az_rank].clone()
@@ -629,9 +635,10 @@ class TestRingExchange(unittest.TestCase):
                 break
 
             # Next source rank determines the receive-buffer width because
-            # the global split can be uneven.
+            # the global split can be uneven. W is dim 2 in NHWC; the last axis
+            # is the channel count, which is not what the ring is sizing.
             next_src = (az_rank + step + 1) % az_size
-            next_nlon = kw_ref[next_src].shape[-1]
+            next_nlon = kw_ref[next_src].shape[2]
             recv_kw, recv_vw, reqs = _ring_kv(
                 kw_chunk,
                 vw_chunk,

@@ -42,7 +42,7 @@ shifted multiplication.
 
 import torch
 
-from torch_harmonics._checks import check
+from torch_harmonics.utils import check
 
 from .._disco_utils import _compute_dtype
 

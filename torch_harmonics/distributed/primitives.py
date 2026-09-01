@@ -33,7 +33,7 @@ from typing import List
 import torch
 import torch.distributed as dist
 
-from torch_harmonics._checks import check
+from torch_harmonics.utils import check
 
 from ._amp_utils import _custom_fwd, _custom_setup_context
 from .utils import azimuth_group, azimuth_group_size, is_distributed_azimuth, is_distributed_polar, polar_group, polar_group_rank, polar_group_size

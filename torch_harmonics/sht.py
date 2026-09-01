@@ -32,11 +32,11 @@
 import torch
 import torch.nn as nn
 
-from torch_harmonics._checks import check
 from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.quadrature import clenshaw_curtiss_weights, legendre_gauss_weights, lobatto_weights
 from torch_harmonics.truncation import truncate_sht
+from torch_harmonics.utils import check
 
 
 class RealSHT(nn.Module):

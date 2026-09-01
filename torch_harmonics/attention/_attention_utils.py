@@ -32,7 +32,7 @@
 
 import torch
 
-from torch_harmonics._checks import check
+from torch_harmonics.utils import check
 
 # Input validation helpers.
 #

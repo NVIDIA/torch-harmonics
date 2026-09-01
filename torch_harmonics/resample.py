@@ -39,6 +39,75 @@ import torch.nn as nn
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
 
 
+def _slerp_shortest_arc(start: torch.Tensor, end: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    r"""Interpolate angle-valued samples along the shorter arc of the circle.
+
+    Spherical linear interpolation of two unit vectors
+    :math:`\mathbf{u}_i = (\cos f_i, \sin f_i)` separated by
+    :math:`\Omega = \arccos(\mathbf{u}_0 \cdot \mathbf{u}_1)` is
+
+    .. math::
+
+        \mathrm{slerp}(t) = \frac{\sin((1-t)\Omega)}{\sin\Omega}\,\mathbf{u}_0
+                          + \frac{\sin(t\Omega)}{\sin\Omega}\,\mathbf{u}_1
+
+    In two dimensions the angle of that interpolant collapses to a much simpler
+    closed form -- walking a fraction :math:`t` along the shorter arc:
+
+    .. math::
+
+        f(t) = f_0 + t \cdot \mathrm{wrap}_\pi(f_1 - f_0),
+        \qquad \mathrm{wrap}_\pi(\delta) \in (-\pi, \pi]
+
+    so no trigonometry, no division, and no singularity are needed. Note the
+    weights of the vector form are deliberately *not* a partition of unity --
+    that is what re-normalises the interpolant back onto the sphere -- so they
+    must never be applied to scalar samples directly.
+
+    Because :math:`\mathrm{wrap}_\pi` is the identity whenever
+    :math:`|f_1 - f_0| \le \pi`, this agrees exactly with plain linear
+    interpolation everywhere except across a phase wrap, which is the case this
+    mode exists to handle. It is exactly shift-equivariant, reproduces both
+    endpoints, and never returns a value outside the range spanned by the arc.
+
+    Parameters
+    ----------
+    start, end : torch.Tensor
+        Angle-valued samples at the two ends of the arc, in radians.
+    weight : torch.Tensor
+        Interpolation weight :math:`t \in [0, 1]`.
+
+    Returns
+    -------
+    torch.Tensor
+        Interpolated angles, expressed as a continuous lift from ``start``
+        (i.e. not re-wrapped), so the result stays adjacent to ``start``.
+    """
+    # antipodal samples (delta = +-pi) are a genuine tie: both arcs are equally
+    # short. remainder() resolves it consistently towards -pi.
+    delta = torch.remainder(end - start + math.pi, 2.0 * math.pi) - math.pi
+    return start + weight * delta
+
+
+def _circular_mean(x: torch.Tensor, dim: int = -1, keepdim: bool = False) -> torch.Tensor:
+    r"""Mean *direction* of angle-valued samples, in radians.
+
+    .. math::
+
+        \bar{f} = \mathrm{atan2}\bigl(\overline{\sin f},\; \overline{\cos f}\bigr)
+
+    The arithmetic mean is meaningless for angles: averaging :math:`+\pi` and
+    :math:`-\pi`, which denote the same direction, gives :math:`0` -- the
+    opposite one. Averaging the unit vectors instead and recovering the angle is
+    invariant to where the branch cut is placed.
+
+    If the samples are spread uniformly around the circle the resultant vector
+    vanishes and the mean direction is genuinely undefined (a phase defect);
+    ``atan2(0, 0)`` returns ``0`` in that case.
+    """
+    return torch.atan2(torch.sin(x).mean(dim=dim, keepdim=keepdim), torch.cos(x).mean(dim=dim, keepdim=keepdim))
+
+
 class ResampleS2(nn.Module):
     r"""
     Resampling module for signals on the 2-sphere :math:`S^2`.
@@ -61,20 +130,30 @@ class ResampleS2(nn.Module):
       This is applied first along the latitudinal (:math:`\theta`) and then
       along the longitudinal (:math:`\lambda`) direction.
 
-    * ``"bilinear-spherical"`` -- Spherical linear interpolation (slerp).
-      Instead of a straight line in value space, neighbouring samples are
-      interpolated along a great-circle arc:
+    * ``"bilinear-spherical"`` -- Spherical linear interpolation (slerp) for
+      fields whose *values* are angles (e.g.\ directions or phases, in
+      radians).  Neighbouring samples are interpolated along the shorter arc of
+      the circle rather than along a straight line in value space:
 
       .. math::
 
-          f(t) = \frac{\sin\!\bigl((1-t)\,\omega\bigr)}{\sin\omega}\, f_0
-               + \frac{\sin(t\,\omega)}{\sin\omega}\, f_1
+          f(t) = f_0 + t \cdot \mathrm{wrap}_\pi(f_1 - f_0),
+          \qquad \mathrm{wrap}_\pi(\delta) \in (-\pi, \pi]
 
-      where :math:`\omega = f_1 - f_0` is the angular difference.  This mode is
-      better suited for fields that represent angular quantities (e.g.\
-      directions or phases) and falls back to linear interpolation when
-      :math:`\omega \approx 0` by applying the approximation
-      :math:`\sin(x) \approx x` for small :math:`x` to the above expression.
+      This is the two-dimensional closed form of slerp; see
+      :func:`_slerp_shortest_arc` for the derivation.  Since
+      :math:`\mathrm{wrap}_\pi` is the identity whenever
+      :math:`|f_1 - f_0| \le \pi`, this mode is **identical to** ``"bilinear"``
+      except across a :math:`2\pi` phase wrap -- precisely the discontinuity it
+      exists to handle.  Interpolating :math:`f_0 = 3` and :math:`f_1 = -3`
+      (nearly the same direction, either side of the branch cut) gives
+      :math:`\pi` here, whereas ``"bilinear"`` gives :math:`0`, the opposite
+      direction.
+
+      The result is expressed as a continuous lift from :math:`f_0` and is not
+      re-wrapped, so it stays adjacent to :math:`f_0` and may leave
+      :math:`(-\pi, \pi]`.  Apply :func:`torch.remainder` afterwards if a
+      canonical range is required.
 
     Parameters
     ----------
@@ -189,17 +268,26 @@ class ResampleS2(nn.Module):
         if self.mode == "bilinear":
             x = torch.lerp(x[..., self.lon_idx_left], x[..., self.lon_idx_right], lwgt)
         else:
-            omega = x[..., self.lon_idx_right] - x[..., self.lon_idx_left]
-            somega = torch.sin(omega)
-            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - lwgt) * omega) / somega, (1.0 - lwgt))
-            end_prefac = torch.where(somega > 1e-4, torch.sin(lwgt * omega) / somega, lwgt)
-            x = start_prefac * x[..., self.lon_idx_left] + end_prefac * x[..., self.lon_idx_right]
+            x = _slerp_shortest_arc(x[..., self.lon_idx_left], x[..., self.lon_idx_right], lwgt)
 
         return x
 
     def _expand_poles(self, x: torch.Tensor):
-        x_north = x[..., 0, :].mean(dim=-1, keepdims=True)
-        x_south = x[..., -1, :].mean(dim=-1, keepdims=True)
+        # A pole is a single point, so its value cannot depend on longitude: reduce the
+        # adjacent ring over phi. That reduction annihilates every m != 0 mode exactly,
+        # which is the right answer there, since every m != 0 mode vanishes at the pole.
+        #
+        # Do NOT replace this with an f(theta, phi) -> f(-theta, phi + pi) continuation.
+        # That is the correct way to reach *through* a pole (as a neighbourhood stencil
+        # does), but here it would leave a phi-dependent -- i.e. multivalued -- value
+        # *at* the pole: odd m cancels, but even m reinforces.
+        if self.mode == "bilinear":
+            x_north = x[..., 0, :].mean(dim=-1, keepdims=True)
+            x_south = x[..., -1, :].mean(dim=-1, keepdims=True)
+        else:
+            # angle-valued field: must reduce as directions, not as numbers
+            x_north = _circular_mean(x[..., 0, :], dim=-1, keepdim=True)
+            x_south = _circular_mean(x[..., -1, :], dim=-1, keepdim=True)
         x = nn.functional.pad(x, pad=[0, 0, 1, 1], mode="constant")
         x[..., 0, :] = x_north[...]
         x[..., -1, :] = x_south[...]
@@ -212,11 +300,7 @@ class ResampleS2(nn.Module):
         if self.mode == "bilinear":
             x = torch.lerp(x[..., self.lat_idx, :], x[..., self.lat_idx + 1, :], lwgt)
         else:
-            omega = x[..., self.lat_idx + 1, :] - x[..., self.lat_idx, :]
-            somega = torch.sin(omega)
-            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - lwgt) * omega) / somega, (1.0 - lwgt))
-            end_prefac = torch.where(somega > 1e-4, torch.sin(lwgt * omega) / somega, lwgt)
-            x = start_prefac * x[..., self.lat_idx, :] + end_prefac * x[..., self.lat_idx + 1, :]
+            x = _slerp_shortest_arc(x[..., self.lat_idx, :], x[..., self.lat_idx + 1, :], lwgt)
 
         return x
 

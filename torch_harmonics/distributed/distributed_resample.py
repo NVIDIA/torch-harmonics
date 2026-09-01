@@ -36,6 +36,7 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
+from torch_harmonics.resample import _slerp_shortest_arc
 
 from .primitives import compute_split_shapes, copy_to_azimuth_region, distributed_transpose_azimuth, distributed_transpose_polar, reduce_from_azimuth_region
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -166,26 +167,44 @@ class DistributedResampleS2(nn.Module):
         if self.mode == "bilinear":
             x = torch.lerp(x[..., self.lon_idx_left], x[..., self.lon_idx_right], lwgt)
         else:
-            omega = x[..., self.lon_idx_right] - x[..., self.lon_idx_left]
-            somega = torch.sin(omega)
-            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - lwgt) * omega) / somega, (1.0 - lwgt))
-            end_prefac = torch.where(somega > 1e-4, torch.sin(lwgt * omega) / somega, lwgt)
-            x = start_prefac * x[..., self.lon_idx_left] + end_prefac * x[..., self.lon_idx_right]
+            x = _slerp_shortest_arc(x[..., self.lon_idx_left], x[..., self.lon_idx_right], lwgt)
 
         return x
 
     def _expand_poles(self, x: torch.Tensor):
         """Expand the data to include pole values for interpolation."""
-        x_north = x[..., 0, :].sum(dim=-1, keepdims=True)
-        x_south = x[..., -1, :].sum(dim=-1, keepdims=True)
-        x_count = torch.tensor([x.shape[-1]], dtype=torch.long, device=x.device, requires_grad=False)
+        # A pole is a single point, so its value cannot depend on longitude: reduce the
+        # adjacent ring over phi. That reduction annihilates every m != 0 mode exactly,
+        # which is the right answer there, since every m != 0 mode vanishes at the pole.
+        # Longitude is sharded across the azimuth group, so the reduction is collective.
+        #
+        # Do NOT replace this with an f(theta, phi) -> f(-theta, phi + pi) continuation.
+        # That is the correct way to reach *through* a pole (as a neighbourhood stencil
+        # does), but here it would leave a phi-dependent -- i.e. multivalued -- value
+        # *at* the pole: odd m cancels, but even m reinforces.
+        if self.mode == "bilinear":
+            north = [x[..., 0, :].sum(dim=-1, keepdims=True)]
+            south = [x[..., -1, :].sum(dim=-1, keepdims=True)]
+        else:
+            # angle-valued field: reduce as directions (sum the unit vectors), not as
+            # numbers, otherwise the ring mean of +pi and -pi comes out as 0
+            north = [torch.sin(x[..., 0, :]).sum(dim=-1, keepdims=True), torch.cos(x[..., 0, :]).sum(dim=-1, keepdims=True)]
+            south = [torch.sin(x[..., -1, :]).sum(dim=-1, keepdims=True), torch.cos(x[..., -1, :]).sum(dim=-1, keepdims=True)]
 
         if self.comm_size_azimuth > 1:
-            x_north = reduce_from_azimuth_region(x_north.contiguous())
-            x_south = reduce_from_azimuth_region(x_south.contiguous())
-            x_count = reduce_from_azimuth_region(x_count)
-        x_north = x_north / x_count
-        x_south = x_south / x_count
+            north = [reduce_from_azimuth_region(t.contiguous()) for t in north]
+            south = [reduce_from_azimuth_region(t.contiguous()) for t in south]
+
+        if self.mode == "bilinear":
+            x_count = torch.tensor([x.shape[-1]], dtype=torch.long, device=x.device, requires_grad=False)
+            if self.comm_size_azimuth > 1:
+                x_count = reduce_from_azimuth_region(x_count)
+            x_north = north[0] / x_count
+            x_south = south[0] / x_count
+        else:
+            # atan2 is scale invariant, so the 1/count normalisation cancels here
+            x_north = torch.atan2(*north)
+            x_south = torch.atan2(*south)
 
         if self.comm_size_azimuth > 1:
             x_north = copy_to_azimuth_region(x_north)
@@ -204,11 +223,7 @@ class DistributedResampleS2(nn.Module):
         if self.mode == "bilinear":
             x = torch.lerp(x[..., self.lat_idx, :], x[..., self.lat_idx + 1, :], lwgt)
         else:
-            omega = x[..., self.lat_idx + 1, :] - x[..., self.lat_idx, :]
-            somega = torch.sin(omega)
-            start_prefac = torch.where(somega > 1e-4, torch.sin((1.0 - lwgt) * omega) / somega, (1.0 - lwgt))
-            end_prefac = torch.where(somega > 1e-4, torch.sin(lwgt * omega) / somega, lwgt)
-            x = start_prefac * x[..., self.lat_idx, :] + end_prefac * x[..., self.lat_idx + 1, :]
+            x = _slerp_shortest_arc(x[..., self.lat_idx, :], x[..., self.lat_idx + 1, :], lwgt)
 
         return x
 
