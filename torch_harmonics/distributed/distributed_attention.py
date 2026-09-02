@@ -40,7 +40,7 @@ from torch_harmonics.attention import attention_kernels
 from torch_harmonics.attention._attention_utils import _check_extent, _check_ndim
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
-from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_setup_context
+from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_fwd, _custom_setup_context
 
 from .primitives import compute_split_shapes, get_group_neighbors, polar_halo_exchange
 from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -89,7 +89,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
     """
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda")
+    @_custom_fwd(device_type="cuda")
     def forward(
         kw,
         vw,
@@ -234,7 +234,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, dy, _dalpha_sum, _dqdotk_max):
         # _dalpha_sum and _dqdotk_max are always None (non-differentiable outputs)
-        (kw, vw, qw, psi_col_idx, psi_roff_idx, psi_row_idx, quad_weights, fwd_alpha_sum, fwd_qdotk_max) = ctx.saved_tensors
+        kw, vw, qw, psi_col_idx, psi_roff_idx, psi_row_idx, quad_weights, fwd_alpha_sum, fwd_qdotk_max = ctx.saved_tensors
 
         nlon_in = ctx.nlon_in
         pscale = ctx.pscale
@@ -479,7 +479,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
     """
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda")
+    @_custom_fwd(device_type="cuda")
     def forward(
         kw,
         vw,
@@ -610,7 +610,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, dy, _dalpha_sum, _dqdotk_max):
         # _dalpha_sum and _dqdotk_max are always None (non-differentiable outputs)
-        (kw, vw, qw, psi_col_idx, psi_roff_idx, quad_weights, fwd_alpha_sum, fwd_qdotk_max) = ctx.saved_tensors
+        kw, vw, qw, psi_col_idx, psi_roff_idx, quad_weights, fwd_alpha_sum, fwd_qdotk_max = ctx.saved_tensors
 
         nlon_in = ctx.nlon_in
         nlon_out_global = ctx.nlon_out_global
