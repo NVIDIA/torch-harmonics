@@ -184,9 +184,9 @@ class TestResampleS2(unittest.TestCase):
         floating point (``torch.lerp(a, b, t)`` vs ``a + t * (b - a)``).
         """
         set_seed(444)
-        kw = dict(grid_in=grid_in, grid_out=grid_out)
-        lin = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out, mode="bilinear", **kw).to(self.device)
-        sph = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out, mode="bilinear-spherical", **kw).to(self.device)
+        grid_in, grid_out = as_grid(grid_in, (nlat_in, nlon_in)), as_grid(grid_out, (nlat_out, nlon_out))
+        lin = ResampleS2(grid_in, grid_out, mode="bilinear").to(self.device)
+        sph = ResampleS2(grid_in, grid_out, mode="bilinear-spherical").to(self.device)
 
         # small amplitude keeps every neighbouring difference far below pi
         data = 0.2 * torch.randn(2, 3, nlat_in, nlon_in, dtype=torch.float64, device=self.device)
@@ -201,9 +201,9 @@ class TestResampleS2(unittest.TestCase):
         shortest-arc interpolation does not.
         """
         set_seed(555)
-        kw = dict(grid_in=grid_in, grid_out=grid_out)
-        lin = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out, mode="bilinear", **kw).to(self.device)
-        sph = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out, mode="bilinear-spherical", **kw).to(self.device)
+        grid_in, grid_out = as_grid(grid_in, (nlat_in, nlon_in)), as_grid(grid_out, (nlat_out, nlon_out))
+        lin = ResampleS2(grid_in, grid_out, mode="bilinear").to(self.device)
+        sph = ResampleS2(grid_in, grid_out, mode="bilinear-spherical").to(self.device)
 
         wrap = lambda t: torch.remainder(t + math.pi, 2 * math.pi) - math.pi
         lons_in = precompute_longitudes(nlon_in).to(self.device)
@@ -225,7 +225,7 @@ class TestResampleS2(unittest.TestCase):
         moved the output by ~11.7), because those weights are not a partition of unity.
         """
         set_seed(666)
-        sph = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out, grid_in=grid_in, grid_out=grid_out, mode="bilinear-spherical").to(self.device)
+        sph = ResampleS2(as_grid(grid_in, (nlat_in, nlon_in)), as_grid(grid_out, (nlat_out, nlon_out)), mode="bilinear-spherical").to(self.device)
 
         data = (torch.rand(2, 3, nlat_in, nlon_in, dtype=torch.float64, device=self.device) * 2 - 1) * math.pi
         base = sph(data)
@@ -241,7 +241,7 @@ class TestResampleS2(unittest.TestCase):
         (latitude then longitude) -- but never by more.
         """
         set_seed(777)
-        sph = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out, grid_in=grid_in, grid_out=grid_out, mode="bilinear-spherical").to(self.device)
+        sph = ResampleS2(as_grid(grid_in, (nlat_in, nlon_in)), as_grid(grid_out, (nlat_out, nlon_out)), mode="bilinear-spherical").to(self.device)
 
         data = (torch.rand(2, 3, nlat_in, nlon_in, dtype=torch.float32, device=self.device) * 2 - 1) * math.pi
         out = sph(data)
@@ -258,7 +258,7 @@ class TestResampleS2(unittest.TestCase):
         same direction, is ``0`` -- the opposite one.
         """
         set_seed(888)
-        sph = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out, grid_in=grid_in, grid_out=grid_out, mode="bilinear-spherical").to(self.device)
+        sph = ResampleS2(as_grid(grid_in, (nlat_in, nlon_in)), as_grid(grid_out, (nlat_out, nlon_out)), mode="bilinear-spherical").to(self.device)
         self.assertTrue(sph.expand_poles, "this grid pair must exercise the pole extension")
 
         wrap = lambda t: torch.remainder(t + math.pi, 2 * math.pi) - math.pi
@@ -292,7 +292,7 @@ class TestResampleS2(unittest.TestCase):
         a finite-difference tolerance.
         """
         set_seed(999)
-        resample = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out, grid_in=grid_in, grid_out=grid_out).to(self.device)
+        resample = ResampleS2(as_grid(grid_in, (nlat_in, nlon_in)), as_grid(grid_out, (nlat_out, nlon_out))).to(self.device)
 
         x = torch.randn(1, 1, nlat_in, nlon_in, dtype=torch.float64, device=self.device, requires_grad=True)
         y = torch.randn(1, 1, nlat_out, nlon_out, dtype=torch.float64, device=self.device)
@@ -320,7 +320,7 @@ class TestResampleS2(unittest.TestCase):
         one of the two checks.
         """
         set_seed(1001)
-        resample = ResampleS2(nlat_in, nlon_in, nlat_out, nlon_out, grid_in=grid_in, grid_out=grid_out).to(self.device)
+        resample = ResampleS2(as_grid(grid_in, (nlat_in, nlon_in)), as_grid(grid_out, (nlat_out, nlon_out))).to(self.device)
         shape_in = (1, 1, nlat_in, nlon_in)
         kw = dict(dtype=torch.float64, device=self.device)
 
