@@ -45,10 +45,21 @@ RUN pip install cartopy
 RUN pip install h5py
 
 # natten
+# Pinned to an immutable commit rather than tracking the default branch: an
+# unpinned clone resolves to whatever upstream HEAD happens to be at build time,
+# so two builds of the same Dockerfile can ship different code, and a compromise
+# of the upstream repository would land in the image unreviewed. A commit SHA is
+# used instead of the tag alone because a tag can be moved; git verifies the
+# object hash on checkout, so the SHA fixes the tree exactly.
+#
+# This SHA is v0.21.7, which is what HEAD resolved to when the pin was added, so
+# it does not change what this image builds today. Bump both values together.
+ARG NATTEN_VERSION=v0.21.7
+ARG NATTEN_COMMIT=39375ea1d2f3b1bb284315fa5f79f6ecbebb6382
 RUN cd /opt && git clone https://github.com/SHI-Labs/NATTEN natten  && \
     cd natten && \
-    make WITH_CUDA=1 \
-        CUDA_ARCH="8.0;8.6;8.7;9.0a;10.0a" \
+    git checkout ${NATTEN_COMMIT} && \
+    make CUDA_ARCH="8.0;8.6;8.7;9.0a;10.0a" \
         WORKERS=4
 
 # install torch harmonics

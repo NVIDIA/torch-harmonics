@@ -86,13 +86,14 @@ void preprocess_psi_kernel(int64_t nnz, int64_t K, int64_t Ho, int64_t *ker_h, i
     for (int64_t i = 1; i < nnz; i++) {
 
         if (row_h[i - 1] == row_h[i]) continue;
-        roff_h[nrows++] = i;
 
-        if (nrows > Ho * K) {
-            fprintf(stderr, "%s:%d: error, found more rows in the K COOs than Ho*K (%ld)\n", __FILE__, __LINE__,
-                    int64_t(Ho) * K);
-            exit(EXIT_FAILURE);
-        }
+        // Checked before the store, not after: roff_h holds Ho*K+1 entries, so writing at
+        // index Ho*K is the last legal slot and anything beyond it is out of bounds. Raise
+        // rather than exit() -- this runs inside a Python extension, and terminating the
+        // interpreter over malformed input takes the caller's process down with it.
+        TORCH_CHECK(nrows <= Ho * K, "found more rows in the K COOs than Ho*K (", int64_t(Ho) * K,
+                    "); row_idx is expected to be grouped by (ker_idx, row_idx)");
+        roff_h[nrows++] = i;
     }
     roff_h[nrows] = nnz;
 
