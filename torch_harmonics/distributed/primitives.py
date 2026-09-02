@@ -33,8 +33,9 @@ import torch
 import torch.distributed as dist
 
 from torch_harmonics.partition import compute_split_shapes
+from torch_harmonics.utils import check
 
-from ._amp_utils import _custom_setup_context
+from ._amp_utils import _custom_fwd, _custom_setup_context
 from .utils import azimuth_group, azimuth_group_size, is_distributed_azimuth, is_distributed_polar, polar_group, polar_group_rank, polar_group_size
 from .utils import config as thd_config
 
@@ -109,10 +110,8 @@ def split_tensor_along_dim(tensor, dim, num_chunks):
     [4, 3, 3]
     """
 
-    torch._check(dim < tensor.dim(), lambda: f"Error, tensor dimension is {tensor.dim()} which cannot be split along {dim}")
-    torch._check(
-        tensor.shape[dim] >= num_chunks, lambda: f"Error, cannot split dim {dim} of size {tensor.shape[dim]} into {num_chunks} chunks. Empty slices are currently not supported."
-    )
+    check(dim < tensor.dim(), lambda: f"Error, tensor dimension is {tensor.dim()} which cannot be split along {dim}")
+    check(tensor.shape[dim] >= num_chunks, lambda: f"Error, cannot split dim {dim} of size {tensor.shape[dim]} into {num_chunks} chunks. Empty slices are currently not supported.")
 
     # get split
     sections = compute_split_shapes(tensor.shape[dim], num_chunks)
@@ -233,7 +232,7 @@ def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False,
 class _DistributeTransposeAzimuth(torch.autograd.Function):
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda")
+    @_custom_fwd(device_type="cuda")
     def forward(x, dims, dim1_split_sizes):
         x = x.contiguous()
 
@@ -269,7 +268,7 @@ class _DistributeTransposeAzimuth(torch.autograd.Function):
 class _DistributeTransposePolar(torch.autograd.Function):
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda")
+    @_custom_fwd(device_type="cuda")
     def forward(x, dims, dim1_split_sizes):
         x = x.contiguous()
 
@@ -465,7 +464,7 @@ class _CopyToPolarRegion(torch.autograd.Function):
         return input_
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda")
+    @_custom_fwd(device_type="cuda")
     def forward(input_):
         return input_
 
@@ -490,7 +489,7 @@ class _CopyToAzimuthRegion(torch.autograd.Function):
         return input_
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda")
+    @_custom_fwd(device_type="cuda")
     def forward(input_):
         return input_
 
@@ -515,7 +514,7 @@ class _ScatterToPolarRegion(torch.autograd.Function):
         return _split(input_, dim_, group=polar_group())
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda")
+    @_custom_fwd(device_type="cuda")
     def forward(input_, dim_):
         if is_distributed_polar():
             return _split(input_, dim_, group=polar_group())
@@ -546,7 +545,7 @@ class _GatherFromPolarRegion(torch.autograd.Function):
         return _gather(input_, dim_, shapes_, polar_group())
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda")
+    @_custom_fwd(device_type="cuda")
     def forward(input_, dim_, shapes_):
         if is_distributed_polar():
             return _gather(input_, dim_, shapes_, group=polar_group())
@@ -578,7 +577,7 @@ class _ReduceFromPolarRegion(torch.autograd.Function):
             return input_
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda")
+    @_custom_fwd(device_type="cuda")
     def forward(input_):
         if is_distributed_polar():
             return _reduce(input_, group=polar_group())
@@ -606,7 +605,7 @@ class _ReduceFromAzimuthRegion(torch.autograd.Function):
             return input_
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda")
+    @_custom_fwd(device_type="cuda")
     def forward(input_):
         if is_distributed_azimuth():
             return _reduce(input_, group=azimuth_group())
@@ -634,7 +633,7 @@ class _ReduceFromScatterToPolarRegion(torch.autograd.Function):
             return input_
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda")
+    @_custom_fwd(device_type="cuda")
     def forward(input_, dim_):
         if is_distributed_polar():
             return _reduce_scatter(input_, dim_, group=polar_group())
@@ -670,7 +669,7 @@ class _ReduceFromScatterToAzimuthRegion(torch.autograd.Function):
             return input_
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda")
+    @_custom_fwd(device_type="cuda")
     def forward(input_, dim_):
         if is_distributed_azimuth():
             return _reduce_scatter(input_, dim_, group=azimuth_group())
@@ -704,7 +703,7 @@ class _GatherFromCopyToPolarRegion(torch.autograd.Function):
             return input_
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda")
+    @_custom_fwd(device_type="cuda")
     def forward(input_, dim_, shapes_):
         if is_distributed_polar():
             return _gather(input_, dim_, shapes_, group=polar_group())
@@ -989,7 +988,7 @@ class _PolarHaloExchangeFn(torch.autograd.Function):
     """
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda")
+    @_custom_fwd(device_type="cuda")
     def forward(x, r_lat):
 
         if not is_distributed_polar():

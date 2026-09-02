@@ -119,3 +119,32 @@ class _EnsureContiguous(torch.autograd.Function):
 def ensure_contiguous(x: torch.Tensor) -> torch.Tensor:
     """Ensures the tensor is contiguous in both the forward and backward pass."""
     return _EnsureContiguous.apply(x)
+
+
+def check(cond: bool, message) -> None:
+    """
+    ``torch._check`` with a deferred message, without blocking full-graph compilation.
+
+    ``torch._check(cond, lambda: ...)`` is the documented way to keep an error
+    message off the hot path, but it cannot be traced: Dynamo has no ``as_proxy()``
+    for a closure, so a callable message fails ``torch.compile(fullgraph=True)`` with
+    *Failed to convert args/kwargs to proxy*. That is true of any callable, including
+    one returning a constant string, so keeping symbolic values out of the message is
+    not enough to make it traceable.
+
+    Eager execution keeps the deferred message. While tracing, the condition is
+    checked without one: the check still fires, it just reports less.
+
+    Parameters
+    ----------
+    cond : bool
+        Condition to assert. May be a symbolic bool under dynamic shapes.
+    message : callable
+        Zero-argument callable returning the message, evaluated only on failure and
+        only outside tracing.
+    """
+
+    if torch.compiler.is_compiling():
+        torch._check(cond)
+    else:
+        torch._check(cond, message)

@@ -40,7 +40,7 @@ from torch_harmonics.attention import attention_kernels
 from torch_harmonics.attention._attention_utils import _check_extent, _check_ndim
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
-from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_setup_context
+from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_fwd, _custom_setup_context
 from torch_harmonics.grid import GridS2
 
 from .primitives import get_group_neighbors, polar_halo_exchange
@@ -90,7 +90,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
     """
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda")
+    @_custom_fwd(device_type="cuda")
     def forward(
         kw,
         vw,
@@ -480,7 +480,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
     """
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type="cuda")
+    @_custom_fwd(device_type="cuda")
     def forward(
         kw,
         vw,

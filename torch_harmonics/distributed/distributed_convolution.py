@@ -411,6 +411,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 nlon_out=self.nlon_out,
                 groups=self.groups,
                 groupsize=self.groupsize,
+                comm_size_polar=self.comm_size_polar,
                 comm_size_azimuth=self.comm_size_azimuth,
                 comm_rank_azimuth=self.comm_rank_azimuth,
                 lon_in_shapes=self.lon_in_shapes,
@@ -438,6 +439,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 nlon_out=self.nlon_out,
                 groups=self.groups,
                 groupsize=self.groupsize,
+                comm_size_polar=self.comm_size_polar,
                 comm_size_azimuth=self.comm_size_azimuth,
                 lon_in_shapes=self.lon_in_shapes,
             )
@@ -622,7 +624,11 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         # all_gather along nlat that gather_from_polar_region performed;
         # backward replaces all_reduce + slice with a single reduce_scatter
         # (half the backward comm volume on the K-expanded tensor).
-        x = gather_from_copy_to_polar_region(x, -2, self.lat_in_shapes)
+        # Guarded like the azimuth transposes above: at size 1 both directions
+        # are identities, and skipping keeps the `torch.compiler.disable()`d
+        # wrapper out of the graph so this path stays fullgraph-compilable.
+        if self.comm_size_polar > 1:
+            x = gather_from_copy_to_polar_region(x, -2, self.lat_in_shapes)
 
         if self.optimized_kernel:
             out = _disco_s2_transpose_contraction_optimized(

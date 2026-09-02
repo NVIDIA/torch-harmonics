@@ -117,6 +117,7 @@ def _distributed_disco_fwd_a2a(
     nlon_out: int,
     groups: int,
     groupsize: int,
+    comm_size_polar: int,
     comm_size_azimuth: int,
     lon_in_shapes: List[int],
 ) -> torch.Tensor:
@@ -125,7 +126,7 @@ def _distributed_disco_fwd_a2a(
     Pattern:
       1. (optional) channel <-> azimuth A2A so W is local.
       2. Sparse psi contraction → K-expanded (B, C, K, H_out, W).
-      3. Polar reduce_scatter on H (split H_out across polar group).
+      3. (optional) polar reduce_scatter on H (split H_out across polar group).
       4. (optional) azimuth <-> channel A2A back so W is split, C is local.
       5. Local einsum (C, K) × (O, C, K) → (B, O, H_out_local, W_out_local).
 
@@ -171,7 +172,11 @@ def _distributed_disco_fwd_a2a(
     # Fused reduce_scatter on the polar group — half the comm of
     # reduce_from_polar_region + scatter_to_polar_region; pads short
     # chunks for uneven splits along nlat_out across the polar group.
-    x = reduce_from_scatter_to_polar_region(x, -2)
+    # Guarded like the azimuth collectives below: at size 1 the primitive is
+    # an identity, and skipping it keeps the `torch.compiler.disable()`d
+    # wrapper out of the graph so this path stays fullgraph-compilable.
+    if comm_size_polar > 1:
+        x = reduce_from_scatter_to_polar_region(x, -2)
 
     # Transpose back: lon split, channels local.
     if comm_size_azimuth > 1:
@@ -224,6 +229,7 @@ def _distributed_disco_fwd_a2a_reordered(
     nlon_out: int,
     groups: int,
     groupsize: int,
+    comm_size_polar: int,
     comm_size_azimuth: int,
     comm_rank_azimuth: int,
     lon_in_shapes: List[int],
@@ -359,7 +365,8 @@ def _distributed_disco_fwd_a2a_reordered(
         out[:, out_channel_offset : out_channel_offset + n_local_groups * out_per_group] = local_out
 
     # 5. collectives on the small K-less output.
-    out = reduce_from_scatter_to_polar_region(out, -2)
+    if comm_size_polar > 1:
+        out = reduce_from_scatter_to_polar_region(out, -2)
 
     if comm_size_azimuth > 1:
         out = reduce_from_scatter_to_azimuth_region(out, -1)

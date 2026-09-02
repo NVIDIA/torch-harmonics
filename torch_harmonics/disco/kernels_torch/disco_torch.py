@@ -42,6 +42,8 @@ shifted multiplication.
 
 import torch
 
+from torch_harmonics.utils import check
+
 from .._disco_utils import _compute_dtype
 
 
@@ -53,16 +55,16 @@ def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: in
     on GPU, make sure to use the custom kernel written in CUDA.
     """
 
-    torch._check(psi.dim() == 3, lambda: f"Expected 3-dimensional psi tensor, got {psi.dim()} dimensions")
-    torch._check(x.dim() == 4, lambda: f"Expected 4-dimensional input tensor, got {x.dim()} dimensions")
+    check(psi.dim() == 3, lambda: f"Expected 3-dimensional psi tensor, got {psi.dim()} dimensions")
+    check(x.dim() == 4, lambda: f"Expected 4-dimensional input tensor, got {x.dim()} dimensions")
     psi = psi.to(x.device)
 
     batch_size, n_chans, nlat_in, nlon_in = x.shape
     kernel_size, nlat_out, _ = psi.shape
 
-    torch._check(psi.shape[-1] == nlat_in * nlon_in, lambda: f"Expected psi.shape[-1]=={nlat_in * nlon_in}, got {psi.shape[-1]}")
-    torch._check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
-    torch._check(nlon_in >= nlat_out, lambda: f"Expected nlon_in ({nlon_in}) >= nlat_out ({nlat_out})")
+    check(psi.shape[-1] == nlat_in * nlon_in, lambda: f"Expected psi.shape[-1]=={nlat_in * nlon_in}, got {psi.shape[-1]}")
+    check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
+    check(nlon_in >= nlat_out, lambda: f"Expected nlon_in ({nlon_in}) >= nlat_out ({nlat_out})")
     pscale = nlon_in // nlon_out
 
     # add a dummy dimension for nkernel and move the batch and channel dims to the end
@@ -92,15 +94,15 @@ def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: in
 
 # transpose convolution
 def _disco_s2_transpose_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
-    torch._check(psi.dim() == 3, lambda: f"Expected 3-dimensional psi tensor, got {psi.dim()} dimensions")
-    torch._check(x.dim() == 5, lambda: f"Expected 5-dimensional input tensor, got {x.dim()} dimensions")
+    check(psi.dim() == 3, lambda: f"Expected 3-dimensional psi tensor, got {psi.dim()} dimensions")
+    check(x.dim() == 5, lambda: f"Expected 5-dimensional input tensor, got {x.dim()} dimensions")
     psi = psi.to(x.device)
 
     batch_size, n_chans, kernel_size, nlat_in, nlon_in = x.shape
     kernel_size, nlat_out, n_out = psi.shape
 
-    torch._check(n_out % nlon_out == 0, lambda: f"Expected n_out ({n_out}) to be an integer multiple of nlon_out ({nlon_out})")
-    torch._check(nlon_out >= nlon_in, lambda: f"Expected nlon_out ({nlon_out}) >= nlon_in ({nlon_in})")
+    check(n_out % nlon_out == 0, lambda: f"Expected n_out ({n_out}) to be an integer multiple of nlon_out ({nlon_out})")
+    check(nlon_out >= nlon_in, lambda: f"Expected nlon_out ({nlon_out}) >= nlon_in ({nlon_in})")
     pscale = nlon_out // nlon_in
 
     # interleave zeros along the longitude dimension to allow for fractional offsets to be considered

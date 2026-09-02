@@ -45,6 +45,9 @@ optimized paths.
 
 import torch
 
+from torch_harmonics.attention._layout import to_nchw, to_nhwc
+from torch_harmonics.utils import check
+
 from .._attention_utils import _setup_context_attention_backward
 
 
@@ -76,7 +79,7 @@ def _neighborhood_s2_attention_fwd_torch(
 ) -> torch.Tensor:
 
     # one output lon step corresponds to pscale input lon steps; require an integer ratio
-    torch._check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
+    check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
     pscale = nlon_in // nlon_out
 
     # prepare result tensor
@@ -149,7 +152,7 @@ def _neighborhood_s2_attention_bwd_dv_torch(
     # output
     # dvx: B, Cout, Hi, Wi
 
-    torch._check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
+    check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
     pscale = nlon_in // nlon_out
 
     dvx = torch.zeros_like(vx)
@@ -230,7 +233,7 @@ def _neighborhood_s2_attention_bwd_dk_torch(
     # output
     # dkx: B, C, Hi, Wi
 
-    torch._check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
+    check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
     pscale = nlon_in // nlon_out
 
     dkx = torch.zeros_like(kx)
@@ -325,7 +328,7 @@ def _neighborhood_s2_attention_bwd_dq_torch(
     # output
     # dq: B, C, Ho, Wo
 
-    torch._check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
+    check(nlon_in % nlon_out == 0, lambda: f"nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out})")
     pscale = nlon_in // nlon_out
 
     batch_size = dy.shape[0]
@@ -417,11 +420,11 @@ def _neighborhood_s2_attention_torch(
     # fold heads into the batch dimension (all free in channels-first), run, and
     # invert on the way out.
     B, H, W, _ = kw.shape
-    kw = kw.reshape(B, H, W, nh, -1).permute(0, 3, 4, 1, 2).reshape(B * nh, -1, H, W)
+    kw = to_nchw(kw).reshape(B * nh, -1, H, W)
     B, H, W, _ = vw.shape
-    vw = vw.reshape(B, H, W, nh, -1).permute(0, 3, 4, 1, 2).reshape(B * nh, -1, H, W)
+    vw = to_nchw(vw).reshape(B * nh, -1, H, W)
     B, H, W, _ = qw.shape
-    qw = qw.reshape(B, H, W, nh, -1).permute(0, 3, 4, 1, 2).reshape(B * nh, -1, H, W)
+    qw = to_nchw(qw).reshape(B * nh, -1, H, W)
 
     # Promote to fp32 internally for softmax numerics; cast back to the input
     # dtype on return so the op is faithful to its declared output dtype
@@ -442,9 +445,20 @@ def _neighborhood_s2_attention_torch(
     else:
         raise ValueError(f"either nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out}), or vice versa")
 
-    # back to packed NHWC: (B*nh, C, H, W) -> (B, H, W, nh*C)
+    # back to packed NHWC: (B*nh, C, H, W) -> (B, H, W, nh*C).
+    #
+    # Unfolding heads is a free view -- (B*nh, C, H, W) and (B, nh*C, H, W) are the
+    # same bytes -- so this is one 4-D transpose rather than a 5-D permute, and
+    # to_nhwc's kernel does it several times faster than permute().contiguous().
+    #
+    # Going through to_nhwc also guarantees a contiguous result. The 5-D chain did
+    # not: its trailing reshape found a valid view, so the output was logically NHWC
+    # while still physically NCHW-strided, contradicting the torch.empty() that
+    # register_fake promises. The compiler believed the promise, emitted aten.view,
+    # and that view failed on the real strides. Eager never noticed, and autocast hid
+    # it further, since the dtype cast below copies and thereby compacts.
     _, C, H, W = output.shape
-    output = output.reshape(B, nh, C, H, W).permute(0, 3, 4, 1, 2).reshape(B, H, W, nh * C)
+    output = to_nhwc(output.reshape(B, nh * C, H, W))
 
     return output.to(dtype=inp_dtype)
 
@@ -486,11 +500,11 @@ def _neighborhood_s2_attention_bwd_torch(ctx, grad_output):
     # NHWC -> channels-first with heads folded into batch (see the forward op)
     def _to_cf(t):
         b, h, w, _ = t.shape
-        return t.reshape(b, h, w, nh, -1).permute(0, 3, 4, 1, 2).reshape(b * nh, -1, h, w)
+        return to_nchw(t).reshape(b * nh, -1, h, w)
 
     def _to_nhwc(t):
         bh, c, h, w = t.shape
-        return t.reshape(bh // nh, nh, c, h, w).permute(0, 3, 4, 1, 2).reshape(bh // nh, h, w, nh * c)
+        return to_nhwc(t.reshape(bh // nh, nh * c, h, w))
 
     kw = _to_cf(kw)
     vw = _to_cf(vw)
@@ -600,7 +614,7 @@ def _neighborhood_s2_attention_upsample_fwd_torch(
     col_idx/row_off: psi built with swapped shapes; rows=nlat_in, cols=(ho*nlon_out + wo)
     """
 
-    torch._check(nlon_out % nlon_in == 0, lambda: f"nlon_out ({nlon_out}) must be an integer multiple of nlon_in ({nlon_in})")
+    check(nlon_out % nlon_in == 0, lambda: f"nlon_out ({nlon_out}) must be an integer multiple of nlon_in ({nlon_in})")
     pscale_out = nlon_out // nlon_in
 
     B = qy.shape[0]
@@ -666,7 +680,7 @@ def _neighborhood_s2_attention_upsample_bwd_dv_torch(
     where alpha_norm = alpha[ho,wop,hi,wi] / alpha_sum[ho,wop].
     """
 
-    torch._check(nlon_out % nlon_in == 0, lambda: f"nlon_out ({nlon_out}) must be an integer multiple of nlon_in ({nlon_in})")
+    check(nlon_out % nlon_in == 0, lambda: f"nlon_out ({nlon_out}) must be an integer multiple of nlon_in ({nlon_in})")
     pscale_out = nlon_out // nlon_in
 
     B = qy.shape[0]
@@ -735,7 +749,7 @@ def _neighborhood_s2_attention_upsample_bwd_dk_torch(
     where integral[ho, wop] = sum_j alpha_norm_j * (dy . v_j).
     """
 
-    torch._check(nlon_out % nlon_in == 0, lambda: f"nlon_out ({nlon_out}) must be an integer multiple of nlon_in ({nlon_in})")
+    check(nlon_out % nlon_in == 0, lambda: f"nlon_out ({nlon_out}) must be an integer multiple of nlon_in ({nlon_in})")
     pscale_out = nlon_out // nlon_in
 
     B = qy.shape[0]
@@ -811,7 +825,7 @@ def _neighborhood_s2_attention_upsample_bwd_dq_torch(
     We accumulate them per output cell by scattering from all (hi, wi) inputs.
     """
 
-    torch._check(nlon_out % nlon_in == 0, lambda: f"nlon_out ({nlon_out}) must be an integer multiple of nlon_in ({nlon_in})")
+    check(nlon_out % nlon_in == 0, lambda: f"nlon_out ({nlon_out}) must be an integer multiple of nlon_in ({nlon_in})")
     pscale_out = nlon_out // nlon_in
 
     B = qy.shape[0]

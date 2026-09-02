@@ -40,6 +40,7 @@ from torch.utils.checkpoint import checkpoint
 
 from torch_harmonics import InverseRealSHT
 from torch_harmonics.grid import as_grid
+from torch_harmonics.utils import check
 
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
@@ -195,8 +196,8 @@ class PatchEmbed(nn.Module):
 
         # gather input
         B, C, H, W = x.shape
-        torch._check(H == self.img_size[0], lambda: f"Input image height ({H}) doesn't match model ({self.img_size[0]}).")
-        torch._check(W == self.img_size[1], lambda: f"Input image width ({W}) doesn't match model ({self.img_size[1]}).")
+        check(H == self.img_size[0], lambda: f"Input image height ({H}) doesn't match model ({self.img_size[0]}).")
+        check(W == self.img_size[1], lambda: f"Input image width ({W}) doesn't match model ({self.img_size[1]}).")
         # new: B, C, H*W
         x = self.proj(x).flatten(2)
         return x

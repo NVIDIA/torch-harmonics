@@ -38,7 +38,7 @@
 
 from typing import List
 
-import torch
+from torch_harmonics.utils import check
 
 
 def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
@@ -81,7 +81,7 @@ def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
     [3, 3, 2, 2]
     """
 
-    torch._check(size >= num_chunks, lambda: f"Cannot split {size} elements into {num_chunks} chunks; every chunk must be non-empty.")
+    check(size >= num_chunks, lambda: f"Cannot split {size} elements into {num_chunks} chunks; every chunk must be non-empty.")
 
     base, remainder = divmod(size, num_chunks)
     return [base + 1] * remainder + [base] * (num_chunks - remainder)

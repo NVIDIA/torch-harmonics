@@ -41,6 +41,11 @@ torch::Tensor preprocess_psi(const int64_t K, const int64_t Ho, torch::Tensor ke
     CHECK_CONTIGUOUS_TENSOR(col_idx);
     CHECK_CONTIGUOUS_TENSOR(val);
 
+    TORCH_CHECK(ker_idx.dtype() == torch::kInt64, "ker_idx must be int64");
+    TORCH_CHECK(row_idx.dtype() == torch::kInt64, "row_idx must be int64");
+    TORCH_CHECK(col_idx.dtype() == torch::kInt64, "col_idx must be int64");
+    TORCH_CHECK(K > 0 && Ho > 0, "K and Ho must be positive");
+
     // get the input device and make sure all tensors are on the same device
     auto device = ker_idx.device();
     TORCH_INTERNAL_ASSERT(device.type() == row_idx.device().type() && (device.type() == col_idx.device().type())
@@ -53,6 +58,27 @@ torch::Tensor preprocess_psi(const int64_t K, const int64_t Ho, torch::Tensor ke
     val = val.to(torch::kCPU);
 
     int64_t nnz = val.size(0);
+
+    // The kernel below walks all four buffers to nnz and uses ker_idx as an index into a
+    // K-sized histogram, so both the lengths and the value range have to be established
+    // here: unchecked, a short index tensor reads past its allocation and an out-of-range
+    // ker_idx writes past the histogram, corrupting the heap rather than raising.
+    TORCH_CHECK(ker_idx.dim() == 1 && row_idx.dim() == 1 && col_idx.dim() == 1 && val.dim() == 1,
+                "ker_idx, row_idx, col_idx and val must be 1-D");
+    TORCH_CHECK(ker_idx.size(0) == nnz && row_idx.size(0) == nnz && col_idx.size(0) == nnz,
+                "ker_idx, row_idx and col_idx must all have the same length as val (got ", ker_idx.size(0), ", ",
+                row_idx.size(0), ", ", col_idx.size(0), " vs nnz=", nnz, ")");
+
+    if (nnz > 0) {
+        const auto ker_min = ker_idx.min().item<int64_t>();
+        const auto ker_max = ker_idx.max().item<int64_t>();
+        TORCH_CHECK(ker_min >= 0 && ker_max < K, "ker_idx values must lie in [0, K) (got [", ker_min, ", ", ker_max,
+                    "] for K=", K, ")");
+        const auto row_min = row_idx.min().item<int64_t>();
+        const auto row_max = row_idx.max().item<int64_t>();
+        TORCH_CHECK(row_min >= 0 && row_max < Ho, "row_idx values must lie in [0, Ho) (got [", row_min, ", ", row_max,
+                    "] for Ho=", Ho, ")");
+    }
     int64_t *ker_h = ker_idx.data_ptr<int64_t>();
     int64_t *row_h = row_idx.data_ptr<int64_t>();
     int64_t *col_h = col_idx.data_ptr<int64_t>();
