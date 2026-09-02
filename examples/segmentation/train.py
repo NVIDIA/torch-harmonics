@@ -513,7 +513,7 @@ def main(
             os.makedirs(exp_dir, exist_ok=True)
 
         if load_checkpoint:
-            model.load_state_dict(torch.load(os.path.join(exp_dir, "checkpoint.pt")))
+            model.load_state_dict(torch.load(os.path.join(exp_dir, "checkpoint.pt"), weights_only=True))
 
         # run the training
         if train:
