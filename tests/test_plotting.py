@@ -31,13 +31,13 @@
 
 
 import unittest
-from unittest import mock
+from dataclasses import dataclass
 
 import numpy as np
 import torch
 from parameterized import parameterized
 
-from torch_harmonics import as_grid
+from torch_harmonics import GridS2, as_grid, grid_types
 
 try:
     import matplotlib
@@ -114,11 +114,49 @@ class TestPlotSphereGrid(unittest.TestCase):
             plot_sphere(self.data, fig=plt.figure(), grid=grid)
 
     def test_non_regular_grid_is_rejected(self):
-        """A reduced grid has no single longitude vector, so pcolormesh cannot draw it."""
-        grid = as_grid("legendre-gauss", nlat=self.nlat, nlon=self.nlon)
-        with mock.patch.object(type(grid), "is_regular", False):
-            with self.assertRaises(NotImplementedError):
-                plot_sphere(self.data, fig=plt.figure(), grid=grid)
+        """
+        A ragged grid has no single longitude vector, so pcolormesh cannot draw it.
+
+        Regularity is a property of the *type* rather than a runtime flag: every
+        grid that carries one longitude vector per ring is a :class:`RegularGridS2`,
+        and ``plot_sphere`` demands one through :func:`require_regular_grid`. So this
+        builds an actual ragged grid rather than patching ``is_regular`` on a regular
+        one, which would no longer reach the guard.
+        """
+
+        @dataclass(frozen=True, eq=False)
+        class _RaggedGrid(GridS2):
+            """Rings of unequal length; stands in for a reduced Gaussian or HEALPix grid."""
+
+            @property
+            def nrings(self):
+                return 3
+
+            @property
+            def nlon_per_lat(self):
+                return torch.tensor([4, 8, 4], dtype=torch.int64)
+
+            @property
+            def shape(self):
+                return (self.npoints,)
+
+            @property
+            def lats(self):
+                return torch.linspace(0.25, np.pi - 0.25, 3)
+
+        # Assigned after the class body rather than in it: __init_subclass__ enters
+        # a class into the grid registry only when the class body declares its own
+        # grid_type, so this makes the stand-in instantiable without publishing it
+        # to as_grid(). Tests elsewhere build every registered type with
+        # (nlat, nlon), which a ragged grid does not take.
+        _RaggedGrid.grid_type = "test-ragged-plotting"
+
+        grid = _RaggedGrid()
+        self.assertFalse(grid.is_regular)
+        self.assertNotIn(_RaggedGrid.grid_type, grid_types())
+        with self.assertRaises(TypeError) as ctx:
+            plot_sphere(self.data, fig=plt.figure(), grid=grid)
+        self.assertIn("RegularGridS2", str(ctx.exception))
 
 
 if __name__ == "__main__":

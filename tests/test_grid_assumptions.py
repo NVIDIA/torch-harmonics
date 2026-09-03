@@ -59,7 +59,7 @@ from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.distributed.primitives import split_tensor_along_dim
 from torch_harmonics.filter_basis import get_filter_basis
 from torch_harmonics.grid import (
-    _GRID_REGISTRY,  # noqa: F401  (used by the ragged-grid stand-in)
+    _GRID_REGISTRY,
     EquiangularGrid,
     EquiangularTrapezoidalGrid,
     GridS2,
@@ -789,23 +789,24 @@ class TestRaggedGridContract(unittest.TestCase):
     grows a regular-grid assumption back.
     """
 
-    @staticmethod
-    def _ragged_cls():
-        # defined lazily so the registry is not polluted at import time, and
-        # re-registration across test runs cannot collide
+    # These tests exercise as_grid() and grid_params() by name, so the stand-in has
+    # to be registered. It is entered and removed around this class alone: other
+    # suites build every registered type with (nlat, nlon), which a ragged grid does
+    # not take, and one test asserts the registry holds exactly the shipped grids.
+    # Leaving it in would make those pass or fail on test ordering.
+    _NAME = "test-ragged"
+
+    @classmethod
+    def setUpClass(cls):
         from dataclasses import dataclass
         from typing import ClassVar
-
-        name = "test-ragged"
-        if name in grid_types():
-            return _GRID_REGISTRY[name]
 
         @dataclass(frozen=True, eq=False)
         class _RaggedGrid(GridS2):
             """Three rings carrying 4, 8 and 4 longitudes."""
 
             level: int
-            grid_type: ClassVar[str] = name
+            grid_type: ClassVar[str] = cls._NAME
 
             @property
             def nrings(self):
@@ -823,10 +824,14 @@ class TestRaggedGridContract(unittest.TestCase):
             def lats(self):
                 return torch.linspace(0.25, math.pi - 0.25, 3)
 
-        return _RaggedGrid
+        cls.ragged_cls = _RaggedGrid
+
+    @classmethod
+    def tearDownClass(cls):
+        _GRID_REGISTRY.pop(cls._NAME, None)
 
     def setUp(self):
-        self.grid = self._ragged_cls()(level=1)
+        self.grid = self.ragged_cls(level=1)
 
     def test_it_is_parameterized_by_its_own_fields(self):
         self.assertEqual(grid_params("test-ragged"), ("level",))
