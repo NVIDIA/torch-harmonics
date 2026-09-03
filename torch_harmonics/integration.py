@@ -78,7 +78,8 @@ class QuadratureS2(nn.Module):
     * ``"equiangular"`` -- Clenshaw--Curtis quadrature on equiangular nodes.
       Nodes are equally spaced in :math:`\theta`.  Exact for polynomials of
       degree up to approximately :math:`N - 1`.
-    * ``"equiangular-trapezoidal"`` -- Trapezoidal rule on equiangular nodes.
+    * ``"trapezoidal"`` -- Trapezoidal rule on the :math:`\cos\theta` interval.
+      Nodes are equally spaced in :math:`\cos\theta`, not in :math:`\theta`.
 
     When ``normalize=True``, the weights are divided by :math:`4\pi` so that
     the output represents the spherical mean rather than the integral:

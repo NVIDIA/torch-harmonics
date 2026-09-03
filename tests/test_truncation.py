@@ -58,11 +58,11 @@ _EXACT_DEGREE = {
     "legendre-gauss": lambda nlat: nlat,
     "lobatto": lambda nlat: nlat - 1,
     "equiangular": lambda nlat: (nlat + 1) // 2,
-    "equiangular-trapezoidal": lambda nlat: (nlat + 1) // 2,
+    "trapezoidal": lambda nlat: (nlat + 1) // 2,
 }
 
 # grids whose default lmax changed in v0.9.0 and therefore still announce it
-_WARNING_GRIDS = ["equiangular", "equiangular-trapezoidal"]
+_WARNING_GRIDS = ["equiangular", "trapezoidal"]
 _QUIET_GRIDS = ["legendre-gauss", "lobatto"]
 
 _NLATS = [32, 33, 128, 129]
@@ -109,7 +109,7 @@ class TestTruncateSht(unittest.TestCase):
             ["legendre-gauss", (128, 256), (128, 128)],
             ["lobatto", (128, 256), (127, 127)],
             ["equiangular", (128, 256), (64, 64)],
-            ["equiangular-trapezoidal", (128, 256), (64, 64)],
+            ["trapezoidal", (128, 256), (64, 64)],
         ]
     )
     def test_documented_defaults(self, grid, shape, expected):
@@ -266,7 +266,7 @@ class TestTruncateSupport(unittest.TestCase):
             warnings.simplefilter("error", UserWarning)
             truncate_support(g, theta_cutoff=0.3)
 
-    @parameterized.expand([("lobatto",), ("equiangular-trapezoidal",), ("legendre-gauss",)])
+    @parameterized.expand([("lobatto",), ("trapezoidal",), ("legendre-gauss",)])
     def test_the_default_warns_on_non_uniform_grids(self, grid):
         with self.assertWarns(UserWarning):
             truncate_support(as_grid(grid, nlat=32, nlon=64))

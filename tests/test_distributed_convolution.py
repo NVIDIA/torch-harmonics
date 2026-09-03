@@ -214,10 +214,10 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "lobatto", "lobatto", torch.float32, False, False, 1e-6, 1e-5],
             [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "legendre-gauss", torch.float32, False, False, 1e-6, 1e-5],
             [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "lobatto", "lobatto", torch.float32, True, False, 1e-6, 1e-5],
-            # equiangular-trapezoidal is equispaced in cos(theta), so its default cutoff is
+            # trapezoidal is equispaced in cos(theta), so its default cutoff is
             # ~5x wider than the other grids at the same nlat and psi is correspondingly
             # denser. batch_size/num_chan dialed down to keep the working set bounded.
-            [64, 128, 64, 128, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular-trapezoidal", "equiangular-trapezoidal", torch.float32, False, False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 2, 8, (3), "piecewise linear", "mean", 1, "trapezoidal", "trapezoidal", torch.float32, False, False, 1e-6, 1e-5],
             # ERA5-like grids, gated behind TORCH_HARMONICS_RUN_SLOW_TESTS=1.
             # batch_size and num_chan dialed down (2, 8) vs the rest of the suite (32, 8)
             # to keep the working set under a few GB at these resolutions.

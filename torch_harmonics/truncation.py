@@ -62,7 +62,7 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
          - Yes
          - :math:`2 N_\theta - 3`
          - :math:`N_\theta - 1`
-       * - ``"equiangular"`` / ``"equiangular-trapezoidal"``
+       * - ``"equiangular"`` / ``"trapezoidal"``
          - Yes
          - :math:`\approx N_\theta - 1`
          - :math:`\lfloor (N_\theta + 1) / 2 \rfloor`
@@ -120,9 +120,9 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
     # falsy test: lmax=0 is meaningless but should not silently become the default.
     if lmax is None:
         lmax = grid.max_exact_degree
-        if grid.grid_type in ("equiangular", "equiangular-trapezoidal"):
+        if grid.grid_type in ("equiangular", "trapezoidal"):
             warnings.warn(
-                "Default SHT truncation changed in v0.9.0: equiangular/equiangular-trapezoidal grids now truncate to (nlat+1)//2. " "Specify lmax explicitly to override.",
+                "Default SHT truncation changed in v0.9.0: equiangular/trapezoidal grids now truncate to (nlat+1)//2. " "Specify lmax explicitly to override.",
                 UserWarning,
                 stacklevel=2,
             )

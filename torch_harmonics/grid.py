@@ -46,7 +46,7 @@ __all__ = [
     "EquiangularGrid",
     "LegendreGaussGrid",
     "LobattoGrid",
-    "EquiangularTrapezoidalGrid",
+    "TrapezoidalGrid",
     "as_grid",
     "grid_params",
     "grid_types",
@@ -400,7 +400,7 @@ class RegularGridS2(GridS2):
 
     Still abstract: the latitudinal rule is chosen by the concrete subclasses
     (:class:`EquiangularGrid`, :class:`LegendreGaussGrid`, :class:`LobattoGrid`,
-    :class:`EquiangularTrapezoidalGrid`).
+    :class:`TrapezoidalGrid`).
 
     Parameters
     ----------
@@ -775,18 +775,22 @@ class LobattoGrid(RegularGridS2):
 
 
 @dataclass(frozen=True, eq=False)
-class EquiangularTrapezoidalGrid(RegularGridS2):
+class TrapezoidalGrid(RegularGridS2):
     r"""
     Trapezoidal rule applied on the :math:`\cos\theta` interval :math:`[-1, 1]`.
 
-    Despite the name, the nodes are **not** equiangular in :math:`\theta`: they are
-    equispaced in :math:`\cos\theta`, which makes the spacing in :math:`\theta`
-    strongly non-uniform. The polar spacing is a factor :math:`\sqrt{N_\theta - 1}`
-    coarser than the equatorial one, so the disparity grows with resolution instead
-    of staying fixed.
+    The nodes are equispaced in :math:`\cos\theta`, **not** in :math:`\theta`, which
+    makes the spacing in :math:`\theta` strongly non-uniform: the polar spacing is a
+    factor :math:`\sqrt{N_\theta - 1}` coarser than the equatorial one, so the
+    disparity grows with resolution instead of staying fixed. At
+    :math:`N_\theta = 17` the nodes sit up to 19 degrees away from
+    :class:`EquiangularGrid`'s.
+
+    Previously called ``"equiangular-trapezoidal"``, which named it after nodes it
+    does not have. That string is no longer accepted.
     """
 
-    grid_type: ClassVar[str] = "equiangular-trapezoidal"
+    grid_type: ClassVar[str] = "trapezoidal"
 
     @property
     def max_exact_degree(self) -> int:

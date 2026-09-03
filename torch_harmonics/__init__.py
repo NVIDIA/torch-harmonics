@@ -42,13 +42,13 @@ from .attention import AttentionS2, NeighborhoodAttentionS2
 from .disco import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 from .grid import (
     EquiangularGrid,
-    EquiangularTrapezoidalGrid,
     GridS2,
     GridShardS2,
     LegendreGaussGrid,
     LobattoGrid,
     RegularGridS2,
     RegularGridShardS2,
+    TrapezoidalGrid,
     as_grid,
     grid_params,
     grid_types,

@@ -137,7 +137,7 @@ class RealSHT(nn.Module):
         # compute quadrature points and lmax based on the exactness of the quadrature
         # nodes and weights come from the grid descriptor, which supports every
         # grid precompute_latitudes does -- the switch this replaced silently
-        # rejected "equiangular-trapezoidal".
+        # rejected "trapezoidal".
         tq = self.grid.lats
         weights = self.grid.quad_weights
 
@@ -434,7 +434,7 @@ class RealVectorSHT(nn.Module):
         # compute quadrature points
         # nodes and weights come from the grid descriptor, which supports every
         # grid precompute_latitudes does -- the switch this replaced silently
-        # rejected "equiangular-trapezoidal".
+        # rejected "trapezoidal".
         tq = self.grid.lats
         weights = self.grid.quad_weights
 

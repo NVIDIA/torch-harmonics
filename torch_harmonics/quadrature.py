@@ -50,13 +50,13 @@ def _precompute_quadrature_weights(
     n : int
         Number of grid points
     grid : str, optional
-        Grid type (``"equiangular-trapezoidal"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular"``), by default ``"equiangular"``
+        Grid type (``"trapezoidal"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular"``), by default ``"equiangular"``
     a : float, optional
         Lower bound of interval, by default 0.0
     b : float, optional
         Upper bound of interval, by default 1.0
     periodic : bool, optional
-        Whether the grid is periodic (only for equiangular-trapezoidal), by default False
+        Whether the grid is periodic (only for trapezoidal), by default False
 
     Returns
     -------
@@ -66,14 +66,14 @@ def _precompute_quadrature_weights(
     Raises
     ------
     ValueError
-        If periodic is True for non-equiangular-trapezoidal grids or unknown grid type
+        If periodic is True for a non-trapezoidal grid, or the grid type is unknown
     """
 
-    if (grid != "equiangular-trapezoidal") and periodic:
-        raise ValueError("Periodic grid is only supported on equiangular-trapezoidal grids.")
+    if (grid != "trapezoidal") and periodic:
+        raise ValueError(f"Periodic grid is only supported on trapezoidal grids, got {grid!r}.")
 
     # compute coordinates
-    if grid == "equiangular-trapezoidal":
+    if grid == "trapezoidal":
         xlg, wlg = trapezoidal_weights(n, a=a, b=b, periodic=periodic)
     elif grid == "legendre-gauss":
         xlg, wlg = legendre_gauss_weights(n, a=a, b=b)
@@ -117,7 +117,7 @@ def precompute_latitudes(nlat: int, grid: Optional[str] = "equiangular") -> Tupl
         Number of latitudinal nodes.
     grid : str, optional
         Quadrature grid type. One of ``"equiangular"`` (Clenshaw–Curtis),
-        ``"legendre-gauss"``, ``"lobatto"``, or ``"equiangular-trapezoidal"``.
+        ``"legendre-gauss"``, ``"lobatto"``, or ``"trapezoidal"``.
         Default is ``"equiangular"``.
 
     Returns
@@ -146,7 +146,7 @@ def compute_latitude_spacing(nlat: int, grid: Optional[str] = "equiangular") -> 
     This is the grid's own notion of "one latitudinal grid spacing". Only the
     ``equiangular`` grid has uniform spacing, in which case this reduces to the
     familiar :math:`\pi / (N_\theta - 1)`. Gauss--Lobatto nodes cluster towards
-    the equator, and ``equiangular-trapezoidal`` nodes are equispaced in
+    the equator, and ``trapezoidal`` nodes are equispaced in
     :math:`\cos\theta` rather than in :math:`\theta`, so both are considerably
     coarser near the poles than a node count alone would suggest.
 
@@ -179,7 +179,7 @@ def compute_theta_cutoff(nlat: int, grid: Optional[str] = "equiangular", scale: 
     The spacing is taken from the grid's actual node distribution
     (:func:`compute_latitude_spacing`) rather than from ``nlat`` alone. Using
     :math:`\pi / (N_\theta - 1)` is only correct for equiangular grids; on
-    ``lobatto`` and ``equiangular-trapezoidal`` grids it underestimates the polar
+    ``lobatto`` and ``trapezoidal`` grids it underestimates the polar
     spacing by ~21% and ~5x respectively, which collapses the stencil of the
     polar output latitudes to a single latitude ring.
 
@@ -246,7 +246,7 @@ def compute_theta_cutoff(nlat: int, grid: Optional[str] = "equiangular", scale: 
 
 def trapezoidal_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 1.0, periodic: Optional[bool] = False) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Helper routine which returns equiangular-trapezoidal nodes with trapezoidal weights
+    Helper routine which returns nodes equispaced in the integration variable, with trapezoidal weights
     on the interval [a, b]
 
     Parameters

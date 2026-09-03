@@ -52,7 +52,7 @@ try:
 except ImportError:
     _PLOTTING_AVAILABLE = False
 
-_GRIDS = ["equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"]
+_GRIDS = ["equiangular", "legendre-gauss", "lobatto", "trapezoidal"]
 
 
 @unittest.skipUnless(_PLOTTING_AVAILABLE, "matplotlib and cartopy are required for the plotting tests")

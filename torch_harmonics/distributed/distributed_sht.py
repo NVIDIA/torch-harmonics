@@ -147,7 +147,7 @@ class DistributedRealSHT(nn.Module):
 
         # nodes and weights come from the grid descriptor, which supports every grid
         # precompute_latitudes does -- the switch this replaced silently rejected
-        # "equiangular-trapezoidal".
+        # "trapezoidal".
         tq = self.grid.lats
         weights = self.grid.quad_weights
 
@@ -481,7 +481,7 @@ class DistributedRealVectorSHT(nn.Module):
 
         # nodes and weights come from the grid descriptor, which supports every grid
         # precompute_latitudes does -- the switch this replaced silently rejected
-        # "equiangular-trapezoidal".
+        # "trapezoidal".
         tq = self.grid.lats
         weights = self.grid.quad_weights
 

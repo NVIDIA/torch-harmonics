@@ -295,12 +295,12 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "equiangular", "legendre-gauss"],
             # non-equiangular output grids, where the default theta_cutoff is driven by a
             # node distribution that is not uniform in theta (lobatto clusters towards the
-            # equator, equiangular-trapezoidal is equispaced in cos(theta))
+            # equator, trapezoidal is equispaced in cos(theta))
             [(16, 32), (16, 32), (3, 3), "harmonic", "mean", "lobatto", "lobatto"],
             [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "lobatto", "lobatto"],
             [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "equiangular", "lobatto"],
-            [(16, 32), (16, 32), (3, 3), "harmonic", "mean", "equiangular-trapezoidal", "equiangular-trapezoidal"],
-            [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "equiangular", "equiangular-trapezoidal"],
+            [(16, 32), (16, 32), (3, 3), "harmonic", "mean", "trapezoidal", "trapezoidal"],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "equiangular", "trapezoidal"],
         ],
         skip_on_empty=True,
     )

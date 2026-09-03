@@ -847,7 +847,7 @@ class TestUnsuitableGridWarning(unittest.TestCase):
     """
     The SHT must object loudly when handed a grid whose quadrature cannot support it.
 
-    ``equiangular-trapezoidal`` is the only such grid today: it converges as
+    ``trapezoidal`` is the only such grid today: it converges as
     :math:`O(h^2)` rather than spectrally, so the associated Legendre polynomials are
     not discretely orthogonal under its quadrature and the transform does not
     round-trip. Its numerical behaviour is deliberately *not* covered here -- it is not
@@ -861,7 +861,7 @@ class TestUnsuitableGridWarning(unittest.TestCase):
     @parameterized.expand([[cls_name] for cls_name in ["RealSHT", "InverseRealSHT", "RealVectorSHT", "InverseRealVectorSHT"]])
     def test_unsuitable_grid_warns(self, cls_name):
         with self.assertWarns(UserWarning) as ctx:
-            getattr(th, cls_name)(th.as_grid("equiangular-trapezoidal", nlat=32, nlon=64))
+            getattr(th, cls_name)(th.as_grid("trapezoidal", nlat=32, nlon=64))
         self.assertIn("must not be used", str(ctx.warning))
 
     @parameterized.expand([[cls_name, grid] for cls_name in ["RealSHT", "InverseRealSHT"] for grid in ["equiangular", "legendre-gauss", "lobatto"]])

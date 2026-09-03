@@ -61,12 +61,12 @@ from torch_harmonics.filter_basis import get_filter_basis
 from torch_harmonics.grid import (
     _GRID_REGISTRY,
     EquiangularGrid,
-    EquiangularTrapezoidalGrid,
     GridS2,
     GridShardS2,
     LegendreGaussGrid,
     LobattoGrid,
     RegularGridS2,
+    TrapezoidalGrid,
     as_grid,
     grid_params,
     grid_types,
@@ -76,17 +76,17 @@ from torch_harmonics.grid import (
 from torch_harmonics.partition import compute_split_shapes
 from torch_harmonics.quadrature import compute_latitude_spacing, compute_theta_cutoff, precompute_latitudes, precompute_longitudes
 
-_ALL_GRIDS = ["equiangular", "legendre-gauss", "lobatto", "equiangular-trapezoidal"]
+_ALL_GRIDS = ["equiangular", "legendre-gauss", "lobatto", "trapezoidal"]
 
 # grids on which the superseded pi / (nlat - 1) heuristic was too narrow near the poles
-_IRREGULAR_THETA_GRIDS = ["lobatto", "equiangular-trapezoidal"]
+_IRREGULAR_THETA_GRIDS = ["lobatto", "trapezoidal"]
 
 # the class a caller would instantiate directly, against the name as_grid resolves
 _DIRECT_CLASSES = {
     "equiangular": EquiangularGrid,
     "legendre-gauss": LegendreGaussGrid,
     "lobatto": LobattoGrid,
-    "equiangular-trapezoidal": EquiangularTrapezoidalGrid,
+    "trapezoidal": TrapezoidalGrid,
 }
 
 
@@ -131,7 +131,7 @@ class TestThetaCutoffContract(unittest.TestCase):
     latitudinal grid spacing from the grid's actual node distribution. It replaced
     a hardcoded ``pi / (nlat - 1)``, which is the exact node spacing of an
     *equiangular* (Clenshaw-Curtis) grid but a significant underestimate near the
-    poles for ``lobatto`` and ``equiangular-trapezoidal``.
+    poles for ``lobatto`` and ``trapezoidal``.
     """
 
     @parameterized.expand([[nlat, grid] for nlat in _NLATS for grid in _ALL_GRIDS])
@@ -171,7 +171,7 @@ class TestThetaCutoffContract(unittest.TestCase):
         """
         The actual fix: on these two grids the legacy heuristic was too narrow, so
         the new cutoff must be strictly wider. Lobatto by ~21%, and
-        equiangular-trapezoidal by ~5x since its nodes are equispaced in cos(theta).
+        trapezoidal by ~5x since its nodes are equispaced in cos(theta).
         """
         self.assertGreater(_default_theta_cutoff(nlat, grid), _legacy_theta_cutoff(nlat))
 
@@ -246,16 +246,16 @@ class TestGridNodeDistribution(unittest.TestCase):
     @parameterized.expand([[nlat] for nlat in _NLATS])
     def test_equiangular_trapezoidal_nodes_are_equispaced_in_cos_theta(self, nlat, verbose=False):
         """
-        Despite its name, ``equiangular-trapezoidal`` is *not* equiangular in theta:
+        Despite its name, ``trapezoidal`` is *not* equiangular in theta:
         ``precompute_latitudes`` builds it via ``trapezoidal_weights`` on the
         cos(theta) interval [-1, 1], so the nodes are equispaced in cos(theta)
         instead. This is the root cause of the polar under-coverage above, and it is
         exactly the kind of fact a grid descriptor should carry rather than a name.
         """
-        lats, _ = precompute_latitudes(nlat, grid="equiangular-trapezoidal")
+        lats, _ = precompute_latitudes(nlat, grid="trapezoidal")
         cost = torch.cos(lats)
         dcos = cost[1:] - cost[:-1]
-        self.assertTrue(compare_tensors(f"equiangular-trapezoidal dcos(theta) (nlat={nlat})", dcos, dcos.mean().expand_as(dcos), atol=1e-12, rtol=0.0, verbose=verbose))
+        self.assertTrue(compare_tensors(f"trapezoidal dcos(theta) (nlat={nlat})", dcos, dcos.mean().expand_as(dcos), atol=1e-12, rtol=0.0, verbose=verbose))
 
         # ... and correspondingly it is strongly non-uniform in theta
         dlat = lats[1:] - lats[:-1]
@@ -311,7 +311,7 @@ class TestQuadratureOrderingContract(unittest.TestCase):
 
         A pole-asymmetric, monotone integrand, so this exercises the node/weight
         pairing rather than just the total mass. The tolerance is loose because
-        equiangular-trapezoidal is only second-order accurate here.
+        trapezoidal is only second-order accurate here.
         """
         lats, w = precompute_latitudes(nlat, grid=grid)
         integral = 2.0 * math.pi * torch.sum(w * torch.exp(torch.cos(lats)))
@@ -373,6 +373,33 @@ class TestGridDescriptor(unittest.TestCase):
                 with self.assertRaises(ValueError) as ctx:
                     as_grid(spec, **params)
                 self.assertIn(expected, str(ctx.exception))
+
+    def test_the_superseded_trapezoidal_name_is_rejected(self):
+        """
+        ``"equiangular-trapezoidal"`` named the rule after nodes it does not have --
+        they are equispaced in cos(theta), up to 19 degrees from the equiangular
+        grid's -- so it was renamed ``"trapezoidal"`` and the old string dropped
+        outright rather than aliased. The error should still point at the new name.
+        """
+        with self.assertRaises(ValueError) as ctx:
+            as_grid("equiangular-trapezoidal", nlat=64, nlon=128)
+        self.assertIn("trapezoidal", str(ctx.exception))
+        self.assertNotIn("equiangular-trapezoidal", grid_types())
+
+    def test_trapezoidal_nodes_are_not_equiangular(self):
+        """
+        The fact the rename records: same nlat, materially different grids. If these
+        ever coincided, one class would do for both and the old name would have been
+        accurate.
+        """
+        eq = as_grid("equiangular", nlat=17, nlon=32)
+        tr = as_grid("trapezoidal", nlat=17, nlon=32)
+        self.assertIs(type(tr), TrapezoidalGrid)
+        self.assertTrue(eq.is_uniform_in_theta)
+        self.assertFalse(tr.is_uniform_in_theta)
+        self.assertGreater((eq.lats - tr.lats).abs().max().item(), 0.3)
+        # trapezoidal nodes are equispaced in cos(theta), not theta
+        self.assertTrue(torch.allclose(torch.cos(tr.lats).diff(), torch.cos(tr.lats).diff()[0].expand(16), atol=1e-12))
 
     @parameterized.expand([[grid] for grid in _ALL_GRIDS])
     def test_grid_params_reports_the_parameterization(self, grid):
