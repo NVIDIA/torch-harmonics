@@ -208,9 +208,23 @@ def compute_theta_cutoff(nlat: int, grid: Optional[str] = "equiangular", scale: 
 
     Notes
     -----
-    This routine is the single place where the cutoff heuristic lives; it is
-    intended to take a grid descriptor once the descriptor-based API lands, at
-    which point ``nlat`` and ``grid`` collapse into a single argument.
+    This routine is the *rule*: it reports one latitudinal node spacing and
+    nothing more. The *policy* on top of it -- applying an explicit
+    ``theta_cutoff`` override, rejecting a non-positive radius, and refusing a
+    shard, whose own node spacing would differ between ranks -- lives in
+    :func:`torch_harmonics.truncate_support`, which is what the layers call.
+    Prefer that over calling this directly.
+
+    It keeps taking ``nlat`` and a grid string rather than a
+    :class:`~torch_harmonics.grid.GridS2` because it sits *below* the descriptors
+    in the layering: :mod:`torch_harmonics.grid` imports from this module, so a
+    descriptor argument here would close an import cycle. Descriptor-based
+    callers get the same quantity from
+    :attr:`~torch_harmonics.grid.GridS2.max_latitude_spacing`, which derives it
+    from the descriptor's own nodes instead of re-deriving it here. That leaves
+    two routes to one number, so
+    ``test_grid_assumptions.test_theta_cutoff_matches_the_free_function`` pins
+    them to agree exactly.
     """
     dlat_max = compute_latitude_spacing(nlat, grid=grid)
 
