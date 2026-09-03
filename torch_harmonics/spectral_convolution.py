@@ -159,6 +159,8 @@ class SpectralConvS2(nn.Module):
         # copy inputs
         self.grid_in = require_regular_grid(grid_in, "grid_in")
         self.grid_out = require_regular_grid(grid_out, "grid_out")
+        self.nlat_in, self.nlon_in = self.grid_in.shape
+        self.nlat_out, self.nlon_out = self.grid_out.shape
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.num_groups = num_groups
