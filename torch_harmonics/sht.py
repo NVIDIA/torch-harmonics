@@ -87,11 +87,11 @@ class RealSHT(nn.Module):
     >>> import torch
     >>> import torch_harmonics as th
     >>> nlat, nlon = 128, 256
-    >>> sht = th.RealSHT(nlat, nlon).cuda()
-    >>> signal = torch.randn(1, nlat, nlon, device="cuda")
+    >>> sht = th.RealSHT(nlat, nlon)
+    >>> signal = torch.randn(1, nlat, nlon)
     >>> coeffs = sht(signal)   # shape (1, lmax, mmax), complex
     >>> coeffs.shape
-    torch.Size([1, 128, 129])
+    torch.Size([1, 64, 64])
 
     .. note::
         This module uses **cuFFT** (via :func:`torch.fft.rfft`) to compute the
@@ -231,8 +231,8 @@ class InverseRealSHT(nn.Module):
     >>> import torch
     >>> import torch_harmonics as th
     >>> nlat, nlon = 128, 256
-    >>> isht = th.InverseRealSHT(nlat, nlon).cuda()
-    >>> coeffs = torch.randn(1, 128, 129, dtype=torch.cfloat, device="cuda")
+    >>> isht = th.InverseRealSHT(nlat, nlon)
+    >>> coeffs = torch.randn(1, isht.lmax, isht.mmax, dtype=torch.cfloat)
     >>> signal = isht(coeffs)   # shape (1, 128, 256), real
     >>> signal.shape
     torch.Size([1, 128, 256])
@@ -385,11 +385,11 @@ class RealVectorSHT(nn.Module):
     >>> import torch
     >>> import torch_harmonics as th
     >>> nlat, nlon = 128, 256
-    >>> vsht = th.RealVectorSHT(nlat, nlon).cuda()
-    >>> vector_field = torch.randn(1, 2, nlat, nlon, device="cuda")
+    >>> vsht = th.RealVectorSHT(nlat, nlon)
+    >>> vector_field = torch.randn(1, 2, nlat, nlon)
     >>> coeffs = vsht(vector_field)   # shape (1, 2, lmax, mmax), complex
     >>> coeffs.shape
-    torch.Size([1, 2, 128, 129])
+    torch.Size([1, 2, 64, 64])
 
     .. note::
         This module uses **cuFFT** (via :func:`torch.fft.rfft`) to compute the
@@ -536,8 +536,8 @@ class InverseRealVectorSHT(nn.Module):
     >>> import torch
     >>> import torch_harmonics as th
     >>> nlat, nlon = 128, 256
-    >>> ivsht = th.InverseRealVectorSHT(nlat, nlon).cuda()
-    >>> coeffs = torch.randn(1, 2, 128, 129, dtype=torch.cfloat, device="cuda")
+    >>> ivsht = th.InverseRealVectorSHT(nlat, nlon)
+    >>> coeffs = torch.randn(1, 2, ivsht.lmax, ivsht.mmax, dtype=torch.cfloat)
     >>> vector_field = ivsht(coeffs)   # shape (1, 2, 128, 256), real
     >>> vector_field.shape
     torch.Size([1, 2, 128, 256])

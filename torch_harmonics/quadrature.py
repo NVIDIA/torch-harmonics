@@ -478,8 +478,8 @@ class QuadratureS2(torch.nn.Module):
     >>> nlat, nlon = 128, 256
     >>> quad = th.QuadratureS2(img_shape=(nlat, nlon), grid="legendre-gauss")
     >>> ones = torch.ones(1, 1, nlat, nlon)
-    >>> quad(ones).item()  # ≈ 4π
-    12.566370614359172
+    >>> round(quad(ones).item(), 5)  # ≈ 4π; the weights buffer is float32
+    12.56637
 
     Compute the spherical mean of a field:
 
