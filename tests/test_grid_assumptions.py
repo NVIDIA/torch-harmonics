@@ -58,8 +58,8 @@ from testutils import compare_tensors
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.distributed.primitives import split_tensor_along_dim
 from torch_harmonics.filter_basis import get_filter_basis
-from torch_harmonics.grid import _GRID_REGISTRY  # noqa: F401  (used by the ragged-grid stand-in)
 from torch_harmonics.grid import (
+    _GRID_REGISTRY,  # noqa: F401  (used by the ragged-grid stand-in)
     EquiangularGrid,
     EquiangularTrapezoidalGrid,
     GridS2,
@@ -67,7 +67,6 @@ from torch_harmonics.grid import (
     LegendreGaussGrid,
     LobattoGrid,
     RegularGridS2,
-    RegularGridShardS2,
     as_grid,
     grid_params,
     grid_types,

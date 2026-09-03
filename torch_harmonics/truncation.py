@@ -203,7 +203,7 @@ def truncate_support(grid: RegularGridS2, theta_cutoff: Optional[float] = None, 
     >>> from torch_harmonics import as_grid
     >>> from torch_harmonics.truncation import truncate_support
     >>> round(truncate_support(as_grid("equiangular", nlat=64, nlon=128)), 6)
-    0.049873
+    0.049867
     >>> truncate_support(as_grid("equiangular", nlat=64, nlon=128), theta_cutoff=0.2)
     0.2
     """

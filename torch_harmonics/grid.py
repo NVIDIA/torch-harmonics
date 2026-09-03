@@ -866,7 +866,9 @@ def require_grid(grid: Any, name: Optional[str] = "grid") -> GridS2:
         )
     if isinstance(grid, (tuple, list)) and len(grid) == 2:
         nlat, nlon = grid
-        raise TypeError(f"{name} must be a GridS2, not a shape {tuple(grid)!r}. The descriptor carries the shape, so pass " f"as_grid(<grid name>, nlat={nlat!r}, nlon={nlon!r}) instead.")
+        raise TypeError(
+            f"{name} must be a GridS2, not a shape {tuple(grid)!r}. The descriptor carries the shape, so pass " f"as_grid(<grid name>, nlat={nlat!r}, nlon={nlon!r}) instead."
+        )
     raise TypeError(f"{name} must be a GridS2, got {type(grid).__name__}. Build one with as_grid(<grid name>, nlat=..., nlon=...).")
 
 

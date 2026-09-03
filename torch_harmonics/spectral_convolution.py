@@ -122,8 +122,8 @@ class SpectralConvS2(nn.Module):
     >>> import torch
     >>> import torch_harmonics as th
     >>> grid = th.as_grid("equiangular", nlat=128, nlon=256)
-    >>> conv = th.SpectralConvS2(grid, grid, in_channels=16, out_channels=32).cuda()
-    >>> x = torch.randn(4, 16, 128, 256, device="cuda")
+    >>> conv = th.SpectralConvS2(grid, grid, in_channels=16, out_channels=32)
+    >>> x = torch.randn(4, 16, 128, 256)
     >>> y = conv(x)
     >>> y.shape
     torch.Size([4, 32, 128, 256])

@@ -570,12 +570,22 @@ class TestNeighborhoodAttentionS2(unittest.TestCase):
         # reference input and model (use default local theta_cutoff so the test is sensitive
         # to the (wi + pscale*wo) % nlon_in shift; a global cutoff makes every input a neighbor
         # of every output and collapses the shift to a permutation the result is invariant to)
-        att_host = NeighborhoodAttentionS2(grid_in=as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]), grid_out=as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]), in_channels=channels, num_heads=heads, bias=True)
+        att_host = NeighborhoodAttentionS2(
+            grid_in=as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            grid_out=as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
+            in_channels=channels,
+            num_heads=heads,
+            bias=True,
+        )
 
         # Device model and inputs
-        att_device = NeighborhoodAttentionS2(grid_in=as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]), grid_out=as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]), in_channels=channels, num_heads=heads, bias=True).to(
-            self.device
-        )
+        att_device = NeighborhoodAttentionS2(
+            grid_in=as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            grid_out=as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
+            in_channels=channels,
+            num_heads=heads,
+            bias=True,
+        ).to(self.device)
 
         # Synchronize parameters of model
         att_device.load_state_dict(att_host.state_dict())

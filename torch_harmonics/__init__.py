@@ -40,7 +40,21 @@ except ImportError:  # pragma: no cover - source tree that was never built
 from . import examples, grid, integration, partition, quadrature, random_fields
 from .attention import AttentionS2, NeighborhoodAttentionS2
 from .disco import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
-from .grid import EquiangularGrid, EquiangularTrapezoidalGrid, GridS2, GridShardS2, LegendreGaussGrid, LobattoGrid, RegularGridS2, RegularGridShardS2, as_grid, grid_params, grid_types, require_grid, require_regular_grid
+from .grid import (
+    EquiangularGrid,
+    EquiangularTrapezoidalGrid,
+    GridS2,
+    GridShardS2,
+    LegendreGaussGrid,
+    LobattoGrid,
+    RegularGridS2,
+    RegularGridShardS2,
+    as_grid,
+    grid_params,
+    grid_types,
+    require_grid,
+    require_regular_grid,
+)
 from .integration import QuadratureS2
 from .resample import ResampleS2
 from .sht import InverseRealSHT, InverseRealVectorSHT, RealSHT, RealVectorSHT
