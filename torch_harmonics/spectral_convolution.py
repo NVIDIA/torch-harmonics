@@ -36,7 +36,7 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics import InverseRealSHT, RealSHT
-from torch_harmonics.grid import GridS2, require_grid
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
 from torch_harmonics.integration import QuadratureS2
 from torch_harmonics.truncation import truncate_sht
 
@@ -102,10 +102,10 @@ class SpectralConvS2(nn.Module):
 
     Parameters
     ----------
-    grid_in : GridS2
+    grid_in : RegularGridS2
         Descriptor of the input grid. It carries the resolution as well as the
         quadrature rule, so no separate shape argument is needed.
-    grid_out : GridS2
+    grid_out : RegularGridS2
         Descriptor of the output grid.
     in_channels : int
         Number of input channels.
@@ -121,7 +121,7 @@ class SpectralConvS2(nn.Module):
     --------
     >>> import torch
     >>> import torch_harmonics as th
-    >>> grid = th.as_grid("equiangular", (128, 256))
+    >>> grid = th.as_grid("equiangular", nlat=128, nlon=256)
     >>> conv = th.SpectralConvS2(grid, grid, in_channels=16, out_channels=32).cuda()
     >>> x = torch.randn(4, 16, 128, 256, device="cuda")
     >>> y = conv(x)
@@ -142,8 +142,8 @@ class SpectralConvS2(nn.Module):
 
     def __init__(
         self,
-        grid_in: GridS2,
-        grid_out: GridS2,
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         in_channels: int,
         out_channels: int,
         num_groups: Optional[int] = 1,
@@ -157,8 +157,8 @@ class SpectralConvS2(nn.Module):
             raise ValueError(f"out_channels ({out_channels}) must be divisible by num_groups ({num_groups})")
 
         # copy inputs
-        self.grid_in = require_grid(grid_in, "grid_in")
-        self.grid_out = require_grid(grid_out, "grid_out")
+        self.grid_in = require_regular_grid(grid_in, "grid_in")
+        self.grid_out = require_regular_grid(grid_out, "grid_out")
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.num_groups = num_groups

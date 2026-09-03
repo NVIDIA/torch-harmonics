@@ -40,7 +40,7 @@ from disco_helpers import optimized_kernels_is_available, pack_psi_dense, prepro
 
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
-from torch_harmonics.grid import GridS2, require_grid
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
 from torch_harmonics.truncation import truncate_support
 
 from ._disco_utils import _get_psi
@@ -235,8 +235,8 @@ def _normalize_convolution_tensor_s2(
 
 @lru_cache(typed=True, copy=True)
 def _precompute_convolution_tensor_s2(
-    grid_in: GridS2,
-    grid_out: GridS2,
+    grid_in: RegularGridS2,
+    grid_out: RegularGridS2,
     filter_basis: FilterBasis,
     theta_cutoff: Optional[float] = 0.01 * math.pi,
     theta_eps: Optional[float] = 1e-3,
@@ -261,9 +261,9 @@ def _precompute_convolution_tensor_s2(
 
     Parameters
     ----------
-    grid_in : GridS2
+    grid_in : RegularGridS2
         Descriptor of the input grid
-    grid_out : GridS2
+    grid_out : RegularGridS2
         Descriptor of the output grid
     filter_basis : FilterBasis
         Filter basis functions
@@ -289,8 +289,8 @@ def _precompute_convolution_tensor_s2(
 
     # the descriptors carry the shapes, so the old 2-tuple validation is gone; what
     # is still worth rejecting is a shard, whose latitudes are only part of the sphere
-    input_grid = require_grid(grid_in, "grid_in")
-    output_grid = require_grid(grid_out, "grid_out")
+    input_grid = require_regular_grid(grid_in, "grid_in")
+    output_grid = require_regular_grid(grid_out, "grid_out")
     in_shape, out_shape = input_grid.shape, output_grid.shape
 
     kernel_size = filter_basis.kernel_size
@@ -490,10 +490,10 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
     Parameters
     ----------
-    grid_in : GridS2
+    grid_in : RegularGridS2
         Descriptor of the input grid; it carries the resolution as well as the
         quadrature rule.
-    grid_out : GridS2
+    grid_out : RegularGridS2
         Descriptor of the output grid.
     in_channels : int
         Number of input channels
@@ -526,8 +526,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
     def __init__(
         self,
-        grid_in: GridS2,
-        grid_out: GridS2,
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         in_channels: int,
         out_channels: int,
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
@@ -542,8 +542,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
         self.fused = fused and self.optimized_kernel
-        self.grid_in = require_grid(grid_in, "grid_in")
-        self.grid_out = require_grid(grid_out, "grid_out")
+        self.grid_in = require_regular_grid(grid_in, "grid_in")
+        self.grid_out = require_regular_grid(grid_out, "grid_out")
         self.nlat_in, self.nlon_in = self.grid_in.shape
         self.nlat_out, self.nlon_out = self.grid_out.shape
         self.kpacked_device_supported = False
@@ -849,10 +849,10 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
     Parameters
     ----------
-    grid_in : GridS2
+    grid_in : RegularGridS2
         Descriptor of the input grid; it carries the resolution as well as the
         quadrature rule.
-    grid_out : GridS2
+    grid_out : RegularGridS2
         Descriptor of the output grid.
     in_channels : int
         Number of input channels
@@ -880,8 +880,8 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
     def __init__(
         self,
-        grid_in: GridS2,
-        grid_out: GridS2,
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         in_channels: int,
         out_channels: int,
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
@@ -894,8 +894,8 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     ):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
-        self.grid_in = require_grid(grid_in, "grid_in")
-        self.grid_out = require_grid(grid_out, "grid_out")
+        self.grid_in = require_regular_grid(grid_in, "grid_in")
+        self.grid_out = require_regular_grid(grid_out, "grid_out")
         self.nlat_in, self.nlon_in = self.grid_in.shape
         self.nlat_out, self.nlon_out = self.grid_out.shape
 

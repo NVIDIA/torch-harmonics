@@ -36,7 +36,7 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics.fft import irfft, rfft
-from torch_harmonics.grid import GridS2, require_grid
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.truncation import truncate_sht
 from torch_harmonics.utils import check
@@ -92,7 +92,7 @@ class DistributedRealSHT(nn.Module):
 
     Parameters
     ----------
-    grid : GridS2
+    grid : RegularGridS2
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
@@ -116,11 +116,11 @@ class DistributedRealSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
+    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.grid = require_grid(grid)
+        self.grid = require_regular_grid(grid)
         self.nlat, self.nlon = self.grid.shape
         if not self.grid.is_spectrally_accurate:
             warnings.warn(
@@ -272,7 +272,7 @@ class DistributedInverseRealSHT(nn.Module):
 
     Parameters
     ----------
-    grid : GridS2
+    grid : RegularGridS2
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
@@ -296,11 +296,11 @@ class DistributedInverseRealSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
+    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.grid = require_grid(grid)
+        self.grid = require_regular_grid(grid)
         self.nlat, self.nlon = self.grid.shape
         if not self.grid.is_spectrally_accurate:
             warnings.warn(
@@ -428,7 +428,7 @@ class DistributedRealVectorSHT(nn.Module):
 
     Parameters
     ----------
-    grid : GridS2
+    grid : RegularGridS2
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
@@ -452,11 +452,11 @@ class DistributedRealVectorSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
+    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.grid = require_grid(grid)
+        self.grid = require_regular_grid(grid)
         self.nlat, self.nlon = self.grid.shape
         if not self.grid.is_spectrally_accurate:
             warnings.warn(
@@ -600,7 +600,7 @@ class DistributedInverseRealVectorSHT(nn.Module):
 
     Parameters
     ----------
-    grid : GridS2
+    grid : RegularGridS2
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
@@ -624,11 +624,11 @@ class DistributedInverseRealVectorSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
+    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.grid = require_grid(grid)
+        self.grid = require_regular_grid(grid)
         self.nlat, self.nlon = self.grid.shape
         if not self.grid.is_spectrally_accurate:
             warnings.warn(

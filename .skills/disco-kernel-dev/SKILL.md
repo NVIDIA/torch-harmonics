@@ -209,13 +209,13 @@ The code base currently does not have a benchmark. For writing profiling scripts
 from torch_harmonics import as_grid
 
 CONFIGS = {
-    "self_256x360x720":  dict(grid_in=as_grid("legendre-gauss", (360, 720)), grid_out=as_grid("legendre-gauss", (360, 720)),
+    "self_256x360x720":  dict(grid_in=as_grid("legendre-gauss", nlat=360, nlon=720), grid_out=as_grid("legendre-gauss", nlat=360, nlon=720),
                               in_channels=256, out_channels=256, kernel_shape=(3, 3), basis_type="harmonic",
                               basis_norm_mode="mean", theta_cutoff=0.017),
-    "self_512x360x720":  dict(grid_in=as_grid("legendre-gauss", (360, 720)), grid_out=as_grid("legendre-gauss", (360, 720)),
+    "self_512x360x720":  dict(grid_in=as_grid("legendre-gauss", nlat=360, nlon=720), grid_out=as_grid("legendre-gauss", nlat=360, nlon=720),
                               in_channels=512, out_channels=512, kernel_shape=(3, 3), basis_type="harmonic",
                               basis_norm_mode="mean", theta_cutoff=0.017),
-    "down_73x721x1440":  dict(grid_in=as_grid("equiangular", (721, 1440)), grid_out=as_grid("legendre-gauss", (360, 720)),
+    "down_73x721x1440":  dict(grid_in=as_grid("equiangular", nlat=721, nlon=1440), grid_out=as_grid("legendre-gauss", nlat=360, nlon=720),
                               in_channels=80, out_channels=512, kernel_shape=(3, 3), basis_type="harmonic",
                               basis_norm_mode="mean", theta_cutoff=0.017),
 }

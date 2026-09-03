@@ -104,7 +104,7 @@ compute_split_shapes(128, 3)
 ```
 
 The distributed modules no longer call this directly for their own geometry.
-They ask the grid instead: {meth}`~torch_harmonics.grid.GridS2.shard` returns a
+They ask the grid instead: {meth}`~torch_harmonics.grid.RegularGridS2.shard` returns a
 {class}`~torch_harmonics.grid.GridShardS2` describing one rank's piece, and the
 modules read their extents off that. How a grid decomposes is a property of the
 grid, which matters once a grid has no single `nlon` to split, as a reduced
@@ -113,7 +113,7 @@ Gaussian grid does not.
 ```python
 import torch_harmonics as th
 
-grid = th.as_grid("equiangular", (128, 256))
+grid = th.as_grid("equiangular", nlat=128, nlon=256)
 shard = grid.shard(polar=(polar_rank, num_polar), azimuth=(azimuth_rank, num_azimuth))
 
 shard.nlat, shard.nlon          # this rank's extent
@@ -162,7 +162,7 @@ nlat, nlon = 512, 1024
 polar_rank = thd.polar_group_rank()
 azimuth_rank = thd.azimuth_group_rank()
 
-grid = th.as_grid("equiangular", (nlat, nlon))
+grid = th.as_grid("equiangular", nlat=nlat, nlon=nlon)
 shard = grid.shard(polar=(polar_rank, num_polar), azimuth=(azimuth_rank, num_azimuth))
 
 lat_shapes = list(shard.lat_shapes)     # e.g. [256, 256]
@@ -196,7 +196,7 @@ batch, channels = 4, 16
 x_local = torch.randn(batch, channels, nlat_local, nlon_local, device="cuda")
 
 # the descriptor is the *global* grid; each rank derives its own shard from it
-grid = th.as_grid("equiangular", (nlat, nlon))
+grid = th.as_grid("equiangular", nlat=nlat, nlon=nlon)
 
 sht  = thd.DistributedRealSHT(grid).cuda()
 isht = thd.DistributedInverseRealSHT(grid).cuda()
@@ -286,7 +286,7 @@ def main():
 
     # --- 2. Prepare local data ---
     nlat, nlon = 512, 1024
-    grid = th.as_grid("equiangular", (nlat, nlon))
+    grid = th.as_grid("equiangular", nlat=nlat, nlon=nlon)
     shard = grid.shard(
         polar=(thd.polar_group_rank(), num_polar),
         azimuth=(thd.azimuth_group_rank(), num_azimuth),

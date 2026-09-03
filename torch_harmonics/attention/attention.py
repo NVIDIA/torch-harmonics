@@ -43,7 +43,7 @@ from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhoo
 from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_optimized
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.filter_basis import get_filter_basis
-from torch_harmonics.grid import GridS2, require_grid
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
 from torch_harmonics.truncation import truncate_support
 
 
@@ -71,10 +71,10 @@ class AttentionS2(nn.Module):
 
     Parameters
     ----------
-    grid_in : GridS2
+    grid_in : RegularGridS2
         Descriptor of the input grid; it carries the resolution as well as the
         quadrature rule.
-    grid_out : GridS2
+    grid_out : RegularGridS2
         Descriptor of the output grid.
     in_channels : int
         number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
@@ -103,8 +103,8 @@ class AttentionS2(nn.Module):
 
     def __init__(
         self,
-        grid_in: GridS2,
-        grid_out: GridS2,
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         in_channels: int,
         num_heads: int,
         scale: Optional[Union[torch.Tensor, float]] = None,
@@ -116,8 +116,8 @@ class AttentionS2(nn.Module):
     ):
         super().__init__()
 
-        self.grid_in = require_grid(grid_in, "grid_in")
-        self.grid_out = require_grid(grid_out, "grid_out")
+        self.grid_in = require_regular_grid(grid_in, "grid_in")
+        self.grid_out = require_regular_grid(grid_out, "grid_out")
         self.nlat_in, self.nlon_in = self.grid_in.shape
         self.nlat_out, self.nlon_out = self.grid_out.shape
 
@@ -289,10 +289,10 @@ class NeighborhoodAttentionS2(nn.Module):
 
     Parameters
     ----------
-    grid_in : GridS2
+    grid_in : RegularGridS2
         Descriptor of the input grid; it carries the resolution as well as the
         quadrature rule.
-    grid_out : GridS2
+    grid_out : RegularGridS2
         Descriptor of the output grid.
     in_channels : int
         number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
@@ -326,8 +326,8 @@ class NeighborhoodAttentionS2(nn.Module):
 
     def __init__(
         self,
-        grid_in: GridS2,
-        grid_out: GridS2,
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         in_channels: int,
         num_heads: Optional[int] = 1,
         scale: Optional[Union[torch.Tensor, float]] = None,
@@ -340,8 +340,8 @@ class NeighborhoodAttentionS2(nn.Module):
     ):
         super().__init__()
 
-        self.grid_in = require_grid(grid_in, "grid_in")
-        self.grid_out = require_grid(grid_out, "grid_out")
+        self.grid_in = require_regular_grid(grid_in, "grid_in")
+        self.grid_out = require_regular_grid(grid_out, "grid_out")
         self.nlat_in, self.nlon_in = self.grid_in.shape
         self.nlat_out, self.nlon_out = self.grid_out.shape
 

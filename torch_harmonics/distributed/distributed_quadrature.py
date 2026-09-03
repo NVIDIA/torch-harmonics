@@ -33,7 +33,7 @@ from typing import Optional
 
 import torch
 
-from torch_harmonics.grid import GridS2, require_grid
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
 
 from .primitives import reduce_from_azimuth_region, reduce_from_polar_region
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -52,7 +52,7 @@ class DistributedQuadratureS2(torch.nn.Module):
 
     Parameters
     ----------
-    grid : GridS2
+    grid : RegularGridS2
         Descriptor of the *global* grid to integrate on. It carries both the
         resolution and the quadrature rule; the local shard is derived from it.
     normalize : bool, optional
@@ -67,11 +67,11 @@ class DistributedQuadratureS2(torch.nn.Module):
 
     """
 
-    def __init__(self, grid: GridS2, normalize: Optional[bool] = False):
+    def __init__(self, grid: RegularGridS2, normalize: Optional[bool] = False):
         super().__init__()
 
         # copy input
-        self.grid = require_grid(grid)
+        self.grid = require_regular_grid(grid)
         self.img_shape = grid.shape
         self.nlat, self.nlon = grid.shape
         self.normalize = normalize

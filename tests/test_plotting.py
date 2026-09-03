@@ -77,13 +77,13 @@ class TestPlotSphereGrid(unittest.TestCase):
 
     @parameterized.expand(_GRIDS)
     def test_grid_places_samples_at_the_grid_latitudes(self, grid_type):
-        grid = as_grid(grid_type, (self.nlat, self.nlon))
+        grid = as_grid(grid_type, nlat=self.nlat, nlon=self.nlon)
         expected = self._latitudes(lat=(np.pi / 2.0 - grid.lats).numpy())
         self.assertTrue(np.allclose(self._latitudes(grid=grid), expected))
 
     @parameterized.expand(_GRIDS)
     def test_grid_accepts_a_string(self, grid_type):
-        grid = as_grid(grid_type, (self.nlat, self.nlon))
+        grid = as_grid(grid_type, nlat=self.nlat, nlon=self.nlon)
         self.assertTrue(np.allclose(self._latitudes(grid=grid_type), self._latitudes(grid=grid)))
 
     @parameterized.expand(_GRIDS)
@@ -103,19 +103,19 @@ class TestPlotSphereGrid(unittest.TestCase):
                 self.assertGreater(lats[0], lats[-1], msg=f"grid={grid_type}: row 0 must be the northernmost")
 
     def test_grid_and_explicit_coordinates_are_mutually_exclusive(self):
-        grid = as_grid("legendre-gauss", (self.nlat, self.nlon))
+        grid = as_grid("legendre-gauss", nlat=self.nlat, nlon=self.nlon)
         for coords in ({"lat": np.zeros(self.nlat)}, {"lon": np.zeros(self.nlon)}):
             with self.subTest(**coords), self.assertRaises(ValueError):
                 plot_sphere(self.data, fig=plt.figure(), grid=grid, **coords)
 
     def test_grid_must_match_the_data_shape(self):
-        grid = as_grid("legendre-gauss", (self.nlat // 2, self.nlon // 2))
+        grid = as_grid("legendre-gauss", nlat=self.nlat // 2, nlon=self.nlon // 2)
         with self.assertRaises(ValueError):
             plot_sphere(self.data, fig=plt.figure(), grid=grid)
 
     def test_non_regular_grid_is_rejected(self):
         """A reduced grid has no single longitude vector, so pcolormesh cannot draw it."""
-        grid = as_grid("legendre-gauss", (self.nlat, self.nlon))
+        grid = as_grid("legendre-gauss", nlat=self.nlat, nlon=self.nlon)
         with mock.patch.object(type(grid), "is_regular", False):
             with self.assertRaises(NotImplementedError):
                 plot_sphere(self.data, fig=plt.figure(), grid=grid)

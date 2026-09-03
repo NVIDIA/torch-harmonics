@@ -82,8 +82,8 @@ class SphereSolver(nn.Module):
         self.register_buffer("coeff", torch.as_tensor(coeff, dtype=torch.float64))
 
         # SHT
-        self.sht = th.RealSHT(as_grid(grid, (nlat, nlon)), lmax=lmax, mmax=mmax, csphase=False)
-        self.isht = th.InverseRealSHT(as_grid(grid, (nlat, nlon)), lmax=lmax, mmax=mmax, csphase=False)
+        self.sht = th.RealSHT(as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=mmax, csphase=False)
+        self.isht = th.InverseRealSHT(as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=mmax, csphase=False)
 
         self.lmax = lmax or self.sht.lmax
         self.mmax = lmax or self.sht.mmax
@@ -91,7 +91,7 @@ class SphereSolver(nn.Module):
         # compute gridpoints. The descriptor returns colatitudes already ordered north
         # to south, matching the layout the transforms use, so the latitudes follow by
         # complement rather than by relying on the node set being pole-symmetric.
-        quadrature_grid = as_grid(self.grid, (self.nlat, self.nlon))
+        quadrature_grid = as_grid(self.grid, nlat=self.nlat, nlon=self.nlon)
         lats = torch.pi / 2 - quadrature_grid.lats
         lons = quadrature_grid.lons()
 

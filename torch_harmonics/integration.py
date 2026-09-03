@@ -44,7 +44,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from torch_harmonics.grid import GridS2, require_grid
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
 
 
 class QuadratureS2(nn.Module):
@@ -89,7 +89,7 @@ class QuadratureS2(nn.Module):
 
     Parameters
     ----------
-    grid : GridS2
+    grid : RegularGridS2
         Descriptor of the grid to integrate on. It carries both the resolution and
         the quadrature rule, so no separate shape argument is needed. Build one with
         :func:`torch_harmonics.grid.as_grid`.
@@ -103,7 +103,7 @@ class QuadratureS2(nn.Module):
 
     >>> import torch
     >>> import torch_harmonics as th
-    >>> grid = th.as_grid("legendre-gauss", (128, 256))
+    >>> grid = th.as_grid("legendre-gauss", nlat=128, nlon=256)
     >>> quad = th.QuadratureS2(grid)
     >>> ones = torch.ones(1, 1, grid.nlat, grid.nlon)
     >>> quad(ones).item()  # ≈ 4π
@@ -116,10 +116,10 @@ class QuadratureS2(nn.Module):
     1.0
     """
 
-    def __init__(self, grid: GridS2, normalize: Optional[bool] = False):
+    def __init__(self, grid: RegularGridS2, normalize: Optional[bool] = False):
         super().__init__()
 
-        self.grid = require_grid(grid)
+        self.grid = require_regular_grid(grid)
         self.nlat, self.nlon = grid.shape
         self.normalize = normalize
 

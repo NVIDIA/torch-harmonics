@@ -548,7 +548,7 @@ class SpectralPositionEmbedding(PositionEmbedding):
         super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
 
         # compute maximum required frequency and prepare isht
-        isht = InverseRealSHT(as_grid(grid, (self.img_shape[0], self.img_shape[1])), lmax=lmax, mmax=mmax)
+        isht = InverseRealSHT(as_grid(grid, nlat=self.img_shape[0], nlon=self.img_shape[1]), lmax=lmax, mmax=mmax)
 
         # fill position embedding
         with torch.no_grad():

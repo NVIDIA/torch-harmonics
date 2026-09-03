@@ -42,8 +42,8 @@ def _disco_setup(batch, in_ch, out_ch, nlat_in, nlon_in, nlat_out, nlon_out, ker
         use_autocast = dtype in (torch.float16, torch.bfloat16)
         module_dtype = torch.float32 if use_autocast else dtype
         conv = DiscreteContinuousConvS2(
-            grid_in=as_grid("equiangular", (nlat_in, nlon_in)),
-            grid_out=as_grid("equiangular", (nlat_out, nlon_out)),
+            grid_in=as_grid("equiangular", nlat=nlat_in, nlon=nlon_in),
+            grid_out=as_grid("equiangular", nlat=nlat_out, nlon=nlon_out),
             in_channels=in_ch,
             out_channels=out_ch,
             kernel_shape=kernel_shape,
@@ -87,8 +87,8 @@ def _disco_backward(state, out):
 
 def _disco_reference(state):
     conv_ref = DiscreteContinuousConvS2(
-        grid_in=as_grid("equiangular", (state["nlat_in"], state["nlon_in"])),
-        grid_out=as_grid("equiangular", (state["nlat_out"], state["nlon_out"])),
+        grid_in=as_grid("equiangular", nlat=state["nlat_in"], nlon=state["nlon_in"]),
+        grid_out=as_grid("equiangular", nlat=state["nlat_out"], nlon=state["nlon_out"]),
         in_channels=state["in_ch"],
         out_channels=state["out_ch"],
         kernel_shape=state["kernel_shape"],

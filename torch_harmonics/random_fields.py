@@ -31,7 +31,7 @@
 
 import torch
 
-from torch_harmonics.grid import GridS2, require_grid
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
 
 from .sht import InverseRealSHT
 
@@ -59,7 +59,7 @@ class GaussianRandomFieldS2(torch.nn.Module):
 
     Parameters
     ----------
-    grid : GridS2
+    grid : RegularGridS2
         Descriptor of the grid the field is sampled on. It carries both extents, so
         the longitudinal resolution is whatever the grid says rather than being
         assumed to be twice the latitudinal one.
@@ -81,17 +81,17 @@ class GaussianRandomFieldS2(torch.nn.Module):
     >>> import torch
     >>> from torch_harmonics.random_fields import GaussianRandomFieldS2
     >>> import torch_harmonics as th
-    >>> grf = GaussianRandomFieldS2(th.as_grid("equiangular", (128, 256)), alpha=2.5, tau=5.0)
+    >>> grf = GaussianRandomFieldS2(th.as_grid("equiangular", nlat=128, nlon=256), alpha=2.5, tau=5.0)
     >>> samples = grf(4)          # 4 independent realisations
     >>> samples.shape
     torch.Size([4, 128, 256])
     """
 
-    def __init__(self, grid: GridS2, alpha=2.0, tau=3.0, sigma=None, radius=1.0, dtype=torch.float32):
+    def __init__(self, grid: RegularGridS2, alpha=2.0, tau=3.0, sigma=None, radius=1.0, dtype=torch.float32):
         super().__init__()
 
         # both extents come from the descriptor; nlon is no longer assumed to be 2*nlat
-        self.grid = require_grid(grid)
+        self.grid = require_regular_grid(grid)
         self.nlat, self.nlon = self.grid.shape
 
         # Default value of sigma if None is given.

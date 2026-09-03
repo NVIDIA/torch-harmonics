@@ -368,7 +368,7 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
     grid = "legendre-gauss"
     nlat, nlon = (128, 256)
     dataset = PdeDataset(dt=dt, nsteps=nsteps, dims=(nlat, nlon), device=device, grid=grid, normalize=True)
-    dataset.sht = RealSHT(as_grid(grid, (nlat, nlon))).to(device=device)
+    dataset.sht = RealSHT(as_grid(grid, nlat=nlat, nlon=nlon)).to(device=device)
     # There is still an issue with parallel dataloading. Do NOT use it at the moment
     # dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4, persistent_workers=True)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0, persistent_workers=False)

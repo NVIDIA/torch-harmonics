@@ -323,8 +323,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         theta_cutoff = compute_theta_cutoff(nlat_out, grid=grid_out)
 
         idx, vals, _ = _precompute_convolution_tensor_s2(
-            as_grid(grid_in, in_shape),
-            as_grid(grid_out, out_shape),
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             filter_basis=filter_basis,
             theta_cutoff=theta_cutoff,
             transpose_normalization=False,
@@ -500,8 +500,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # fused is only supported for forward (non-transpose) convolution
         fused_kwarg = {"fused": fused} if (fused and not transpose) else {}
         conv = Conv(
-            as_grid(grid_in, in_shape),
-            as_grid(grid_out, out_shape),
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_channels,
             out_channels,
             kernel_shape,
@@ -699,8 +699,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
 
         conv_naive = Conv(
-            as_grid(grid_in, in_shape),
-            as_grid(grid_out, out_shape),
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_channels,
             out_channels,
             kernel_shape,
@@ -715,8 +715,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # fused is only supported for forward (non-transpose) convolution
         fused_kwarg = {"fused": fused} if (fused and not transpose) else {}
         conv_opt = Conv(
-            as_grid(grid_in, in_shape),
-            as_grid(grid_out, out_shape),
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_channels,
             out_channels,
             kernel_shape,
@@ -790,8 +790,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         theta_cutoff = 4 * torch.pi / float(nlat_in - 1)
 
         conv = Conv(
-            grid_in=as_grid("equiangular", in_shape),
-            grid_out=as_grid("equiangular", out_shape),
+            grid_in=as_grid("equiangular", nlat=in_shape[0], nlon=in_shape[1]),
+            grid_out=as_grid("equiangular", nlat=out_shape[0], nlon=out_shape[1]),
             in_channels=4,
             out_channels=4,
             kernel_shape=(3,),
@@ -844,8 +844,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # init on cpu
         conv_host = Conv(
-            as_grid(grid_in, in_shape),
-            as_grid(grid_out, out_shape),
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_channels,
             out_channels,
             kernel_shape,
@@ -859,8 +859,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # torch.set_default_device(self.device)
         with torch.device(self.device):
             conv_device = Conv(
-                as_grid(grid_in, in_shape),
-                as_grid(grid_out, out_shape),
+                as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+                as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
                 in_channels,
                 out_channels,
                 kernel_shape,
@@ -926,8 +926,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
         fused_kwarg = {"fused": fused} if (fused and not transpose) else {}
         conv = Conv(
-            as_grid(grid_in, in_shape),
-            as_grid(grid_out, out_shape),
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_channels,
             out_channels,
             kernel_shape,
@@ -1008,8 +1008,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
         conv = Conv(
-            as_grid("equiangular", in_shape),
-            as_grid("equiangular", out_shape),
+            as_grid("equiangular", nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid("equiangular", nlat=out_shape[0], nlon=out_shape[1]),
             in_channels,
             out_channels,
             kernel_shape,
@@ -1068,8 +1068,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # init on cpu
         conv_optimized = Conv(
-            as_grid(grid_in, in_shape),
-            as_grid(grid_out, out_shape),
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_channels,
             out_channels,
             kernel_shape,
@@ -1148,8 +1148,8 @@ class TestKpackedPath(unittest.TestCase):
         if out_shape is None:
             out_shape = in_shape
         conv = DiscreteContinuousConvS2(
-            grid_in=as_grid(grid_in, in_shape),
-            grid_out=as_grid(grid_out, out_shape),
+            grid_in=as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            grid_out=as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_channels=channels,
             out_channels=channels,
             kernel_shape=(3, 3),
@@ -1244,8 +1244,8 @@ class TestKpackedPath(unittest.TestCase):
                 set_seed(0)
                 conv_bf16 = self._make_conv(batch, channels, in_shape)
                 conv_fp32 = DiscreteContinuousConvS2(
-                    grid_in=as_grid("legendre-gauss", in_shape),
-                    grid_out=as_grid("legendre-gauss", in_shape),
+                    grid_in=as_grid("legendre-gauss", nlat=in_shape[0], nlon=in_shape[1]),
+                    grid_out=as_grid("legendre-gauss", nlat=in_shape[0], nlon=in_shape[1]),
                     in_channels=channels,
                     out_channels=channels,
                     kernel_shape=(3, 3),

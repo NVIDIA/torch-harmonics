@@ -188,8 +188,8 @@ class TestGridDescriptorCaching(unittest.TestCase):
         for grid_type in grid_types():
             with self.subTest(grid=grid_type):
                 calls.clear()
-                first = _expensive(as_grid(grid_type, (64, 128)))
-                second = _expensive(as_grid(grid_type, (64, 128)))
+                first = _expensive(as_grid(grid_type, nlat=64, nlon=128))
+                second = _expensive(as_grid(grid_type, nlat=64, nlon=128))
                 self.assertEqual(first, second)
                 self.assertEqual(len(calls), 1, msg=f"grid={grid_type}: an equal-but-distinct descriptor missed the cache")
 
@@ -202,10 +202,10 @@ class TestGridDescriptorCaching(unittest.TestCase):
             return grid.max_latitude_spacing
 
         distinct = [
-            as_grid("equiangular", (64, 128)),
-            as_grid("equiangular", (65, 128)),
-            as_grid("equiangular", (64, 256)),
-            as_grid("lobatto", (64, 128)),
+            as_grid("equiangular", nlat=64, nlon=128),
+            as_grid("equiangular", nlat=65, nlon=128),
+            as_grid("equiangular", nlat=64, nlon=256),
+            as_grid("lobatto", nlat=64, nlon=128),
         ]
         for grid in distinct:
             _expensive(grid)
@@ -219,7 +219,7 @@ class TestGridDescriptorCaching(unittest.TestCase):
         """``lru_cache(copy=True)`` deep-copies its return value, so a cached descriptor must remain a valid key."""
         for grid_type in grid_types():
             with self.subTest(grid=grid_type):
-                grid = as_grid(grid_type, (64, 128))
+                grid = as_grid(grid_type, nlat=64, nlon=128)
                 clone = deepcopy(grid)
                 self.assertIsNot(clone, grid)
                 self.assertEqual(clone, grid)
@@ -236,7 +236,7 @@ class TestGridDescriptorCaching(unittest.TestCase):
         with torch.no_grad():
             for grid_type in grid_types():
                 with self.subTest(grid=grid_type):
-                    grid = as_grid(grid_type, (32, 64))
+                    grid = as_grid(grid_type, nlat=32, nlon=64)
                     pristine_lats, pristine_weights = grid.lats.clone(), grid.quad_weights.clone()
 
                     grid.lats.mul_(-1.0)
@@ -253,7 +253,7 @@ class TestGridDescriptorCaching(unittest.TestCase):
         """Two accesses must not alias, otherwise one consumer's in-place op leaks into another's."""
         for grid_type in grid_types():
             with self.subTest(grid=grid_type):
-                grid = as_grid(grid_type, (32, 64))
+                grid = as_grid(grid_type, nlat=32, nlon=64)
                 first, second = grid.lats, grid.lats
                 self.assertIsNot(first, second)
                 self.assertNotEqual(first.data_ptr(), second.data_ptr(), msg=f"grid={grid_type}: repeated access to lats returned aliased storage")
@@ -262,7 +262,7 @@ class TestGridDescriptorCaching(unittest.TestCase):
         """``max_latitude_spacing`` is itself cached; repeated access must be stable and match the nodes."""
         for grid_type in grid_types():
             with self.subTest(grid=grid_type):
-                grid = as_grid(grid_type, (65, 128))
+                grid = as_grid(grid_type, nlat=65, nlon=128)
                 first = grid.max_latitude_spacing
                 _ = grid.lats.mul_(-1.0)  # try to poison the underlying node cache
                 self.assertEqual(grid.max_latitude_spacing, first)

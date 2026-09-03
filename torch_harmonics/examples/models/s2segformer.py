@@ -93,8 +93,8 @@ class OverlapPatchMerging(nn.Module):
         # convolution for patches, curtoff radius inferred from kernel shape
         theta_cutoff = _compute_cutoff_radius(out_shape[0], kernel_shape, basis_type)
         self.conv = DiscreteContinuousConvS2(
-            as_grid(grid_in, in_shape),
-            as_grid(grid_out, out_shape),
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_channels,
             out_channels,
             kernel_shape=kernel_shape,
@@ -192,8 +192,8 @@ class MixFFN(nn.Module):
         # convolution for patches, curtoff radius inferred from kernel shape
         theta_cutoff = _compute_cutoff_radius(shape[0], kernel_shape, basis_type)
         self.conv = DiscreteContinuousConvS2(
-            as_grid(grid, shape),
-            as_grid(grid, shape),
+            as_grid(grid, nlat=shape[0], nlon=shape[1]),
+            as_grid(grid, nlat=shape[0], nlon=shape[1]),
             inout_channels,
             inout_channels,
             kernel_shape=kernel_shape,
@@ -286,8 +286,8 @@ class AttentionWrapper(nn.Module):
             if theta_cutoff is None:
                 theta_cutoff = (7.0 / math.sqrt(math.pi)) * math.pi / (shape[0] - 1)
             self.att = NeighborhoodAttentionS2(
-                grid_in=as_grid(grid, shape),
-                grid_out=as_grid(grid, shape),
+                grid_in=as_grid(grid, nlat=shape[0], nlon=shape[1]),
+                grid_out=as_grid(grid, nlat=shape[0], nlon=shape[1]),
                 in_channels=channels,
                 num_heads=heads,
                 bias=bias,
@@ -297,8 +297,8 @@ class AttentionWrapper(nn.Module):
             )
         else:
             self.att = AttentionS2(
-                grid_in=as_grid(grid, shape),
-                grid_out=as_grid(grid, shape),
+                grid_in=as_grid(grid, nlat=shape[0], nlon=shape[1]),
+                grid_out=as_grid(grid, nlat=shape[0], nlon=shape[1]),
                 in_channels=channels,
                 num_heads=heads,
                 bias=bias,
@@ -550,8 +550,8 @@ class Upsampling(nn.Module):
         if upsampling_method == "conv":
             theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
             self.upsample = DiscreteContinuousConvTransposeS2(
-                as_grid(grid_in, in_shape),
-                as_grid(grid_out, out_shape),
+                as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+                as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
                 out_channels,
                 out_channels,
                 kernel_shape=kernel_shape,
@@ -560,7 +560,7 @@ class Upsampling(nn.Module):
                 theta_cutoff=theta_cutoff,
             )
         elif upsampling_method == "bilinear":
-            self.upsample = ResampleS2(as_grid(grid_in, in_shape), as_grid(grid_out, out_shape))
+            self.upsample = ResampleS2(as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]), as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]))
         else:
             raise ValueError(f"Unknown upsampling method {upsampling_method}")
 

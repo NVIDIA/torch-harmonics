@@ -309,8 +309,8 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             basis_norm_mode=basis_norm_mode,
             kernel_shape=kernel_shape,
             groups=groups,
-            grid_in=th.as_grid(grid_in, (nlat_in, nlon_in)),
-            grid_out=th.as_grid(grid_out, (nlat_out, nlon_out)),
+            grid_in=th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
+            grid_out=th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
             bias=True,
         )
 
@@ -421,8 +421,8 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             basis_norm_mode="mean",
             kernel_shape=(3,),
             groups=1,
-            grid_in=th.as_grid("equiangular", (nlat, nlon)),
-            grid_out=th.as_grid("equiangular", (nlat, nlon)),
+            grid_in=th.as_grid("equiangular", nlat=nlat, nlon=nlon),
+            grid_out=th.as_grid("equiangular", nlat=nlat, nlon=nlon),
             bias=True,
         )
 

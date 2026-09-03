@@ -41,7 +41,7 @@ from torch_harmonics.attention._attention_utils import _check_extent, _check_ndi
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
 from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_fwd, _custom_setup_context
-from torch_harmonics.grid import GridS2
+from torch_harmonics.grid import RegularGridS2
 
 from .primitives import get_group_neighbors, polar_halo_exchange
 from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -841,8 +841,8 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
 
     def __init__(
         self,
-        grid_in: GridS2,
-        grid_out: GridS2,
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         in_channels: int,
         num_heads: Optional[int] = 1,
         scale: Optional[Union[torch.Tensor, float]] = None,

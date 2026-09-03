@@ -102,8 +102,8 @@ class DiscreteContinuousEncoder(nn.Module):
 
         # set up local convolution
         self.conv = DiscreteContinuousConvS2(
-            as_grid(grid_in, in_shape),
-            as_grid(grid_out, out_shape),
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             inp_chans,
             out_chans,
             kernel_shape=kernel_shape,
@@ -176,16 +176,16 @@ class DiscreteContinuousDecoder(nn.Module):
 
         # set up upsampling
         if upsample_sht:
-            self.sht = RealSHT(as_grid(grid_in, in_shape)).float()
-            self.isht = InverseRealSHT(as_grid(grid_out, out_shape), lmax=self.sht.lmax, mmax=self.sht.mmax).float()
+            self.sht = RealSHT(as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1])).float()
+            self.isht = InverseRealSHT(as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]), lmax=self.sht.lmax, mmax=self.sht.mmax).float()
             self.upsample = nn.Sequential(self.sht, self.isht)
         else:
-            self.upsample = ResampleS2(as_grid(grid_in, in_shape), as_grid(grid_out, out_shape))
+            self.upsample = ResampleS2(as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]), as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]))
 
         # set up DISCO convolution
         self.conv = DiscreteContinuousConvS2(
-            as_grid(grid_out, out_shape),
-            as_grid(grid_out, out_shape),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             inp_chans,
             out_chans,
             kernel_shape=kernel_shape,
@@ -286,8 +286,8 @@ class SphericalNeuralOperatorBlock(nn.Module):
         if conv_type == "local":
             theta_cutoff = 2.0 * _compute_cutoff_radius(forward_transform.nlat, disco_kernel_shape, disco_basis_type)
             self.local_conv = DiscreteContinuousConvS2(
-                as_grid(forward_transform.grid, (forward_transform.nlat, forward_transform.nlon)),
-                as_grid(inverse_transform.grid, (inverse_transform.nlat, inverse_transform.nlon)),
+                as_grid(forward_transform.grid, nlat=forward_transform.nlat, nlon=forward_transform.nlon),
+                as_grid(inverse_transform.grid, nlat=inverse_transform.nlat, nlon=inverse_transform.nlon),
                 input_dim,
                 output_dim,
                 kernel_shape=disco_kernel_shape,
@@ -547,8 +547,8 @@ class LocalSphericalNeuralOperator(nn.Module):
 
         modes_lat = modes_lon = int(min(modes_lat, modes_lon) * self.hard_thresholding_fraction)
 
-        self.trans = RealSHT(as_grid(grid_internal, (self.h, self.w)), lmax=modes_lat, mmax=modes_lon).float()
-        self.itrans = InverseRealSHT(as_grid(grid_internal, (self.h, self.w)), lmax=modes_lat, mmax=modes_lon).float()
+        self.trans = RealSHT(as_grid(grid_internal, nlat=self.h, nlon=self.w), lmax=modes_lat, mmax=modes_lon).float()
+        self.itrans = InverseRealSHT(as_grid(grid_internal, nlat=self.h, nlon=self.w), lmax=modes_lat, mmax=modes_lon).float()
 
         self.blocks = nn.ModuleList([])
         for i in range(self.num_layers):

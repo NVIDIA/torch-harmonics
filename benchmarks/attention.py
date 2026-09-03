@@ -43,8 +43,8 @@ def _attn_setup(batch, channels, num_heads, nlat, nlon):
         # (casting the full model to fp16 produces NaN from softmax overflow)
         model_dtype = torch.float32
         attn = AttentionS2(
-            grid_in=as_grid("equiangular", (nlat, nlon)),
-            grid_out=as_grid("equiangular", (nlat, nlon)),
+            grid_in=as_grid("equiangular", nlat=nlat, nlon=nlon),
+            grid_out=as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=channels,
             num_heads=num_heads,
         ).to(device=device, dtype=model_dtype)
@@ -71,8 +71,8 @@ def _attn_backward(state, out):
 def _nattn_setup(batch, channels, num_heads, nlat_in, nlon_in, nlat_out, nlon_out, theta_cutoff, optimized):
     def setup(device, dtype):
         attn = NeighborhoodAttentionS2(
-            grid_in=as_grid("equiangular", (nlat_in, nlon_in)),
-            grid_out=as_grid("equiangular", (nlat_out, nlon_out)),
+            grid_in=as_grid("equiangular", nlat=nlat_in, nlon=nlon_in),
+            grid_out=as_grid("equiangular", nlat=nlat_out, nlon=nlon_out),
             in_channels=channels,
             num_heads=num_heads,
             theta_cutoff=theta_cutoff,
@@ -114,8 +114,8 @@ def _nattn_backward(state, out):
 
 def _nattn_reference(state):
     attn_ref = NeighborhoodAttentionS2(
-        grid_in=as_grid("equiangular", (state["nlat_in"], state["nlon_in"])),
-        grid_out=as_grid("equiangular", (state["nlat_out"], state["nlon_out"])),
+        grid_in=as_grid("equiangular", nlat=state["nlat_in"], nlon=state["nlon_in"]),
+        grid_out=as_grid("equiangular", nlat=state["nlat_out"], nlon=state["nlon_out"]),
         in_channels=state["channels"],
         num_heads=state["num_heads"],
         theta_cutoff=state["theta_cutoff"],

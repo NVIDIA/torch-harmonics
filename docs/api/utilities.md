@@ -6,24 +6,40 @@ Grids, plotting, quadrature, and helper functions.
 
 ## Grids
 
-A `GridS2` describes a latitude--longitude grid on the sphere: where its nodes
-sit, what quadrature weights go with them, and the quantities derived from that
-node distribution, such as the default angular cutoff and the spectral bounds an
-SHT can be truncated to. It is the single argument that replaces a
+A `GridS2` describes a grid on the sphere: where its nodes sit, what quadrature
+weights go with them, and the quantities derived from that node distribution,
+such as the default angular cutoff and the spectral bounds an SHT can be
+truncated to. It is the single argument that replaces a
 `(nlat, nlon, grid_string)` triple, so a new grid type can be added without
 editing every consumer.
 
-Use `as_grid` to build one, either from a grid type name and a shape or from an
-existing descriptor:
+The hierarchy has two levels. `GridS2` describes a stack of latitude rings and
+says nothing about how many longitudes each ring carries, so it covers ragged
+grids such as reduced Gaussian or HEALPix. `RegularGridS2` adds the assumption
+that every ring is sampled alike, which is what makes a field a dense
+`(nlat, nlon)` array, makes the SHT separable, and makes a 2D process
+decomposition meaningful. Every grid implemented today is a `RegularGridS2`, and
+routines that rely on that call `require_regular_grid`.
+
+Use `as_grid` to build one, from a grid type name and the parameters that type
+takes:
 
 ```python
-from torch_harmonics import as_grid
+from torch_harmonics import as_grid, grid_params
 
-grid = as_grid("legendre-gauss", (128, 256))
+grid = as_grid("legendre-gauss", nlat=128, nlon=256)
 grid.lats, grid.quad_weights     # nodes and weights
 grid.theta_cutoff()              # default support radius for localized operators
 grid.max_exact_degree            # highest degree the quadrature integrates exactly
+
+grid_params("legendre-gauss")    # ('nlat', 'nlon') -- what this grid type takes
 ```
+
+The parameters are validated against the grid type, so a parameter that is
+meaningless for a grid family is rejected rather than ignored. A grid family
+parameterized by a refinement level instead of `(nlat, nlon)` therefore needs no
+changes here: identity, hashing, `to_dict`/`from_dict` and the error messages are
+all derived from its own fields.
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics.grid
@@ -33,10 +49,14 @@ grid.max_exact_degree            # highest degree the quadrature integrates exac
    :nosignatures:
 
    as_grid
+   grid_params
    grid_types
    require_grid
+   require_regular_grid
    GridS2
+   RegularGridS2
    GridShardS2
+   RegularGridShardS2
    EquiangularGrid
    LegendreGaussGrid
    LobattoGrid

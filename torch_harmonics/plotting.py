@@ -32,7 +32,7 @@
 
 import numpy as np
 
-from torch_harmonics.grid import as_grid
+from torch_harmonics.grid import as_grid, require_regular_grid
 
 # guarded imports
 try:
@@ -141,7 +141,7 @@ def plot_sphere(
         Longitude coordinates in radians. Ignored when ``grid`` is given.
     lat : numpy.ndarray, optional
         Latitude coordinates in radians. Ignored when ``grid`` is given.
-    grid : GridS2 or str, optional
+    grid : RegularGridS2 or str, optional
         Descriptor of the grid the data lives on, used to place the samples.
         A string is coerced with :func:`torch_harmonics.grid.as_grid` against
         the shape of ``data``. Prefer this over ``lat``/``lon``: only the
@@ -175,13 +175,14 @@ def plot_sphere(
     if grid is not None:
         if lat is not None or lon is not None:
             raise ValueError("pass either grid or lat/lon, not both: the grid descriptor already carries both coordinate vectors")
-        grid = as_grid(grid, (nlat, nlon))
+        # a name is resolved against the shape of the data; a descriptor carries
+        # its own parameters and is taken as given
+        grid = as_grid(grid, nlat=nlat, nlon=nlon) if isinstance(grid, str) else grid
+        # pcolormesh needs a rectangular mesh; a ragged grid has a different number
+        # of longitudes per latitude and cannot be expressed as one
+        grid = require_regular_grid(grid)
         if grid.shape != (nlat, nlon):
             raise ValueError(f"grid {grid!r} does not match the shape of the data, which is {(nlat, nlon)}")
-        if not grid.is_regular:
-            # pcolormesh needs a rectangular mesh; a reduced grid has a different
-            # number of longitudes per latitude and cannot be expressed as one
-            raise NotImplementedError(f"plot_sphere cannot draw the non-regular grid {grid!r}; it needs one longitude vector shared by all latitudes")
         # GridS2 stores co-latitudes measured from the north pole
         lat = (np.pi / 2.0 - grid.lats).numpy()
         lon = grid.lons().numpy()

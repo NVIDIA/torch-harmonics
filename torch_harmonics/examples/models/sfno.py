@@ -338,10 +338,10 @@ class SphericalFourierNeuralOperator(nn.Module):
 
         modes_lat = modes_lon = int(min(modes_lat, modes_lon) * self.hard_thresholding_fraction)
 
-        self.trans_down = RealSHT(as_grid(self.grid, self.img_size), lmax=modes_lat, mmax=modes_lon).float()
-        self.itrans_up = InverseRealSHT(as_grid(self.grid, self.img_size), lmax=modes_lat, mmax=modes_lon).float()
-        self.trans = RealSHT(as_grid(grid_internal, (self.h, self.w)), lmax=modes_lat, mmax=modes_lon).float()
-        self.itrans = InverseRealSHT(as_grid(grid_internal, (self.h, self.w)), lmax=modes_lat, mmax=modes_lon).float()
+        self.trans_down = RealSHT(as_grid(self.grid, nlat=self.img_size[0], nlon=self.img_size[1]), lmax=modes_lat, mmax=modes_lon).float()
+        self.itrans_up = InverseRealSHT(as_grid(self.grid, nlat=self.img_size[0], nlon=self.img_size[1]), lmax=modes_lat, mmax=modes_lon).float()
+        self.trans = RealSHT(as_grid(grid_internal, nlat=self.h, nlon=self.w), lmax=modes_lat, mmax=modes_lon).float()
+        self.itrans = InverseRealSHT(as_grid(grid_internal, nlat=self.h, nlon=self.w), lmax=modes_lat, mmax=modes_lon).float()
 
         self.blocks = nn.ModuleList([])
         for i in range(self.num_layers):

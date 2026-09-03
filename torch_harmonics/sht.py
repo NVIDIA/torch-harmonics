@@ -36,7 +36,7 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics.fft import irfft, rfft
-from torch_harmonics.grid import GridS2, require_grid
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.truncation import truncate_sht
 from torch_harmonics.utils import check
@@ -67,7 +67,7 @@ class RealSHT(nn.Module):
 
     Parameters
     ----------
-    grid : GridS2
+    grid : RegularGridS2
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
@@ -86,7 +86,7 @@ class RealSHT(nn.Module):
     --------
     >>> import torch
     >>> import torch_harmonics as th
-    >>> grid = th.as_grid("equiangular", (128, 256))
+    >>> grid = th.as_grid("equiangular", nlat=128, nlon=256)
     >>> sht = th.RealSHT(grid).cuda()
     >>> signal = torch.randn(1, grid.nlat, grid.nlon, device="cuda")
     >>> coeffs = sht(signal)   # shape (1, lmax, mmax), complex
@@ -111,11 +111,11 @@ class RealSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
+    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.grid = require_grid(grid)
+        self.grid = require_regular_grid(grid)
         self.nlat, self.nlon = self.grid.shape
         if not self.grid.is_spectrally_accurate:
             warnings.warn(
@@ -213,7 +213,7 @@ class InverseRealSHT(nn.Module):
 
     Parameters
     ----------
-    grid : GridS2
+    grid : RegularGridS2
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
@@ -232,7 +232,7 @@ class InverseRealSHT(nn.Module):
     --------
     >>> import torch
     >>> import torch_harmonics as th
-    >>> grid = th.as_grid("equiangular", (128, 256))
+    >>> grid = th.as_grid("equiangular", nlat=128, nlon=256)
     >>> isht = th.InverseRealSHT(grid).cuda()
     >>> coeffs = torch.randn(1, 128, 129, dtype=torch.cfloat, device="cuda")
     >>> signal = isht(coeffs)   # shape (1, 128, 256), real
@@ -269,11 +269,11 @@ class InverseRealSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
+    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.grid = require_grid(grid)
+        self.grid = require_regular_grid(grid)
         self.nlat, self.nlon = self.grid.shape
         if not self.grid.is_spectrally_accurate:
             warnings.warn(
@@ -366,7 +366,7 @@ class RealVectorSHT(nn.Module):
 
     Parameters
     ----------
-    grid : GridS2
+    grid : RegularGridS2
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
@@ -385,7 +385,7 @@ class RealVectorSHT(nn.Module):
     --------
     >>> import torch
     >>> import torch_harmonics as th
-    >>> grid = th.as_grid("equiangular", (128, 256))
+    >>> grid = th.as_grid("equiangular", nlat=128, nlon=256)
     >>> vsht = th.RealVectorSHT(grid).cuda()
     >>> vector_field = torch.randn(1, 2, grid.nlat, grid.nlon, device="cuda")
     >>> coeffs = vsht(vector_field)   # shape (1, 2, lmax, mmax), complex
@@ -410,11 +410,11 @@ class RealVectorSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
+    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.grid = require_grid(grid)
+        self.grid = require_regular_grid(grid)
         self.nlat, self.nlon = self.grid.shape
         if not self.grid.is_spectrally_accurate:
             warnings.warn(
@@ -519,7 +519,7 @@ class InverseRealVectorSHT(nn.Module):
 
     Parameters
     ----------
-    grid : GridS2
+    grid : RegularGridS2
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
@@ -538,7 +538,7 @@ class InverseRealVectorSHT(nn.Module):
     --------
     >>> import torch
     >>> import torch_harmonics as th
-    >>> grid = th.as_grid("equiangular", (128, 256))
+    >>> grid = th.as_grid("equiangular", nlat=128, nlon=256)
     >>> ivsht = th.InverseRealVectorSHT(grid).cuda()
     >>> coeffs = torch.randn(1, 2, 128, 129, dtype=torch.cfloat, device="cuda")
     >>> vector_field = ivsht(coeffs)   # shape (1, 2, 128, 256), real
@@ -570,11 +570,11 @@ class InverseRealVectorSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
+    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.grid = require_grid(grid)
+        self.grid = require_regular_grid(grid)
         self.nlat, self.nlon = self.grid.shape
         if not self.grid.is_spectrally_accurate:
             warnings.warn(

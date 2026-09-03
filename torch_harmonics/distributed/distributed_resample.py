@@ -35,7 +35,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from torch_harmonics.grid import GridS2, require_grid
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
 from torch_harmonics.resample import _slerp_shortest_arc
 
 from .primitives import compute_split_shapes, copy_to_azimuth_region, distributed_transpose_azimuth, distributed_transpose_polar, reduce_from_azimuth_region
@@ -58,10 +58,10 @@ class DistributedResampleS2(nn.Module):
 
     Parameters
     ----------
-    grid_in : GridS2
+    grid_in : RegularGridS2
         Descriptor of the **global** input grid, not this rank's shard; each rank
         derives its own slice.
-    grid_out : GridS2
+    grid_out : RegularGridS2
         Descriptor of the **global** output grid.
     mode : str, optional
         Interpolation mode (``"bilinear"`` or ``"bilinear-spherical"``), by default ``"bilinear"``
@@ -69,8 +69,8 @@ class DistributedResampleS2(nn.Module):
 
     def __init__(
         self,
-        grid_in: GridS2,
-        grid_out: GridS2,
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         mode: Optional[str] = "bilinear",
     ):
 
@@ -82,8 +82,8 @@ class DistributedResampleS2(nn.Module):
         else:
             raise NotImplementedError(f"unknown interpolation mode {mode}")
 
-        self.grid_in = require_grid(grid_in, "grid_in")
-        self.grid_out = require_grid(grid_out, "grid_out")
+        self.grid_in = require_regular_grid(grid_in, "grid_in")
+        self.grid_out = require_regular_grid(grid_out, "grid_out")
         self.nlat_in, self.nlon_in = self.grid_in.shape
         self.nlat_out, self.nlon_out = self.grid_out.shape
 

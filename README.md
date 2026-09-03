@@ -227,7 +227,7 @@ batch_size = 32
 signal = torch.randn(batch_size, nlat, nlon, device=device)
 
 # transform data on an equiangular grid
-grid = th.as_grid("equiangular", (nlat, nlon))
+grid = th.as_grid("equiangular", nlat=nlat, nlon=nlon)
 sht = th.RealSHT(grid).to(device)
 
 coeffs = sht(signal)
@@ -297,7 +297,7 @@ Note that torch-harmonics uses Fourier transforms from `torch.fft` which in turn
 import torch
 import torch_harmonics as th
 
-sht = th.RealSHT(th.as_grid("equiangular", (512, 1024))).cuda()
+sht = th.RealSHT(th.as_grid("equiangular", nlat=512, nlon=1024)).cuda()
 
 with torch.autocast(device_type="cuda", enabled = True):
    # do some AMP converted math here

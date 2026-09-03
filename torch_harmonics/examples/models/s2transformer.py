@@ -95,8 +95,8 @@ class DiscreteContinuousEncoder(nn.Module):
 
         # set up local convolution
         self.conv = DiscreteContinuousConvS2(
-            as_grid(grid_in, in_shape),
-            as_grid(grid_out, out_shape),
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_chans,
             out_chans,
             kernel_shape=kernel_shape,
@@ -169,16 +169,16 @@ class DiscreteContinuousDecoder(nn.Module):
 
         # set up upsampling
         if upsample_sht:
-            self.sht = RealSHT(as_grid(grid_in, in_shape)).float()
-            self.isht = InverseRealSHT(as_grid(grid_out, out_shape), lmax=self.sht.lmax, mmax=self.sht.mmax).float()
+            self.sht = RealSHT(as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1])).float()
+            self.isht = InverseRealSHT(as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]), lmax=self.sht.lmax, mmax=self.sht.mmax).float()
             self.upsample = nn.Sequential(self.sht, self.isht)
         else:
-            self.upsample = ResampleS2(as_grid(grid_in, in_shape), as_grid(grid_out, out_shape))
+            self.upsample = ResampleS2(as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]), as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]))
 
         # set up DISCO convolution
         self.conv = DiscreteContinuousConvS2(
-            as_grid(grid_out, out_shape),
-            as_grid(grid_out, out_shape),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_chans,
             out_chans,
             kernel_shape=kernel_shape,
@@ -284,8 +284,8 @@ class SphericalAttentionBlock(nn.Module):
             if theta_cutoff is None:
                 theta_cutoff = (7.0 / math.sqrt(math.pi)) * math.pi / (in_shape[0] - 1)
             self.self_attn = NeighborhoodAttentionS2(
-                grid_in=as_grid(grid_in, in_shape),
-                grid_out=as_grid(grid_out, out_shape),
+                grid_in=as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+                grid_out=as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
                 in_channels=in_chans,
                 num_heads=num_heads,
                 bias=bias,
@@ -295,8 +295,8 @@ class SphericalAttentionBlock(nn.Module):
             )
         else:
             self.self_attn = AttentionS2(
-                grid_in=as_grid(grid_in, in_shape),
-                grid_out=as_grid(grid_out, out_shape),
+                grid_in=as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+                grid_out=as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
                 in_channels=in_chans,
                 num_heads=num_heads,
                 bias=bias,

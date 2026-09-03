@@ -47,7 +47,7 @@ from torch_harmonics.disco.optimized.disco_optimized import (
     _maybe_kpack_psi,
     _split_csr_python_offsets,
 )
-from torch_harmonics.grid import GridS2, require_grid
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
 from torch_harmonics.truncation import truncate_support
 
 # a2a forward orchestration: standard (fused=False) and reordered (fused=True).
@@ -74,8 +74,8 @@ from .utils import (
 def _split_distributed_convolution_tensor_s2(
     idx: torch.Tensor,
     vals: torch.Tensor,
-    grid_in: GridS2,
-    grid_out: GridS2,
+    grid_in: RegularGridS2,
+    grid_out: RegularGridS2,
 ):
     """
     Splits a pre-computed convolution tensor along the latitude dimension for distributed processing.
@@ -90,10 +90,10 @@ def _split_distributed_convolution_tensor_s2(
         Indices of the pre-computed convolution tensor
     vals : torch.Tensor
         Values of the pre-computed convolution tensor
-    grid_in : GridS2
+    grid_in : RegularGridS2
         Descriptor of the **global** input grid, not this rank's shard: the local
         latitude range is derived here from the polar process group.
-    grid_out : GridS2
+    grid_out : RegularGridS2
         Descriptor of the **global** output grid.
 
     Returns
@@ -104,13 +104,13 @@ def _split_distributed_convolution_tensor_s2(
         Filtered values corresponding to the local latitude slice
     """
 
-    # these must be the global grids; require_grid rejects a GridShardS2, since
+    # these must be the global grids; require_regular_grid rejects a GridShardS2, since
     # sharding an already-sharded grid would silently select the wrong latitudes
-    nlon_in = require_grid(grid_in, "grid_in").nlon
-    require_grid(grid_out, "grid_out")
+    nlon_in = require_regular_grid(grid_in, "grid_in").nlon
+    require_regular_grid(grid_out, "grid_out")
 
     # the grid locates this rank's latitude range; sharding the global grid here is
-    # why require_grid above rejects a shard, which would offset into an offset
+    # why require_regular_grid above rejects a shard, which would offset into an offset
     shard_in = grid_in.shard(polar=(polar_group_rank(), polar_group_size()))
     start_idx = shard_in.lat_offset
     end_idx = start_idx + shard_in.nlat
@@ -157,10 +157,10 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
     Parameters
     ----------
-    grid_in : GridS2
+    grid_in : RegularGridS2
         Descriptor of the input grid; it carries the resolution as well as the
         quadrature rule.
-    grid_out : GridS2
+    grid_out : RegularGridS2
         Descriptor of the output grid.
         Both are the **global** grids; each rank derives its own slice.
     in_channels : int
@@ -201,8 +201,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
     def __init__(
         self,
-        grid_in: GridS2,
-        grid_out: GridS2,
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         in_channels: int,
         out_channels: int,
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
@@ -226,8 +226,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 "K-expanded recompute in backward). Use fused=False otherwise."
             )
 
-        self.grid_in = require_grid(grid_in, "grid_in")
-        self.grid_out = require_grid(grid_out, "grid_out")
+        self.grid_in = require_regular_grid(grid_in, "grid_in")
+        self.grid_out = require_regular_grid(grid_out, "grid_out")
         self.nlat_in, self.nlon_in = self.grid_in.shape
         self.nlat_out, self.nlon_out = self.grid_out.shape
 
@@ -460,10 +460,10 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
     Parameters
     ----------
-    grid_in : GridS2
+    grid_in : RegularGridS2
         Descriptor of the input grid; it carries the resolution as well as the
         quadrature rule.
-    grid_out : GridS2
+    grid_out : RegularGridS2
         Descriptor of the output grid.
         Both are the **global** grids; each rank derives its own slice.
     in_channels : int
@@ -497,8 +497,8 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
     def __init__(
         self,
-        grid_in: GridS2,
-        grid_out: GridS2,
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         in_channels: int,
         out_channels: int,
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
@@ -511,8 +511,8 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     ):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
-        self.grid_in = require_grid(grid_in, "grid_in")
-        self.grid_out = require_grid(grid_out, "grid_out")
+        self.grid_in = require_regular_grid(grid_in, "grid_in")
+        self.grid_out = require_regular_grid(grid_out, "grid_out")
         self.nlat_in, self.nlon_in = self.grid_in.shape
         self.nlat_out, self.nlon_out = self.grid_out.shape
 

@@ -49,7 +49,7 @@ import torch
 import torch_harmonics as th
 
 # the grid descriptor carries the resolution and the quadrature rule together
-grid = th.as_grid("equiangular", (128, 256))
+grid = th.as_grid("equiangular", nlat=128, nlon=256)
 
 # forward / inverse real spherical harmonic transform on that grid
 sht = th.RealSHT(grid)

@@ -64,7 +64,7 @@ class TestQuadrature(unittest.TestCase):
 
         set_seed(333)
 
-        quad = th.QuadratureS2(th.as_grid(grid, (nlat, nlon)), normalize=normalize).to(self.device)
+        quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=normalize).to(self.device)
 
         data = torch.ones((batch_size, num_chan, nlat, nlon), dtype=torch.float32, device=self.device)
         out = quad(data)
@@ -91,7 +91,7 @@ class TestQuadrature(unittest.TestCase):
         """
         set_seed(333)
 
-        quad = th.QuadratureS2(th.as_grid(grid, (nlat, nlon)), normalize=False).to(self.device)
+        quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=False).to(self.device)
 
         # cos(theta) on the grid: precompute_latitudes returns colatitude angles
         # theta in [0, pi], so cos(theta) in [-1, 1]
@@ -128,7 +128,7 @@ class TestQuadrature(unittest.TestCase):
         f = cos2_theta.view(1, 1, nlat, 1).expand(1, 1, nlat, nlon)
 
         for normalize, expected_val in [(False, 4.0 * math.pi / 3.0), (True, 1.0 / 3.0)]:
-            quad = th.QuadratureS2(th.as_grid(grid, (nlat, nlon)), normalize=normalize).to(self.device)
+            quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=normalize).to(self.device)
             out = quad(f)
             expected = torch.full((1, 1), expected_val, device=self.device)
             self.assertTrue(
@@ -160,7 +160,7 @@ class TestQuadrature(unittest.TestCase):
         """
         set_seed(333)
 
-        quad = th.QuadratureS2(th.as_grid(grid, (nlat, nlon)), normalize=False).to(self.device)
+        quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=False).to(self.device)
 
         lons = precompute_longitudes(nlon).to(self.device)  # shape [nlon], in [0, 2*pi)
         cos_phi = torch.cos(lons).to(torch.float32)
@@ -185,8 +185,8 @@ class TestQuadrature(unittest.TestCase):
         """
         set_seed(333)
 
-        quad_raw = th.QuadratureS2(th.as_grid(grid, (nlat, nlon)), normalize=False).to(self.device)
-        quad_norm = th.QuadratureS2(th.as_grid(grid, (nlat, nlon)), normalize=True).to(self.device)
+        quad_raw = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=False).to(self.device)
+        quad_norm = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=True).to(self.device)
 
         data = torch.randn(batch_size, num_chan, nlat, nlon, device=self.device)
 
@@ -221,7 +221,7 @@ class TestQuadratureS2Constructor(unittest.TestCase):
     def test_takes_a_directly_constructed_grid(self):
         """as_grid is a convenience, not the only way in."""
         direct = th.LegendreGaussGrid(nlat=32, nlon=64)
-        via_helper = th.as_grid("legendre-gauss", (32, 64))
+        via_helper = th.as_grid("legendre-gauss", nlat=32, nlon=64)
         self.assertTrue(compare_tensors("direct vs as_grid", th.QuadratureS2(direct).quad_weight, th.QuadratureS2(via_helper).quad_weight))
 
     @parameterized.expand(

@@ -80,8 +80,8 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            as_grid("equiangular", (nlat, nlon)),
-            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,
@@ -130,8 +130,8 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv_grouped = SpectralConvS2(
-            as_grid("equiangular", (nlat, nlon)),
-            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,
@@ -145,8 +145,8 @@ class TestSpectralConvS2(unittest.TestCase):
         group_convs = []
         for g in range(num_groups):
             gc = SpectralConvS2(
-                as_grid("equiangular", (nlat, nlon)),
-                as_grid("equiangular", (nlat, nlon)),
+                as_grid("equiangular", nlat=nlat, nlon=nlon),
+                as_grid("equiangular", nlat=nlat, nlon=nlon),
                 in_channels=ic_per_group,
                 out_channels=oc_per_group,
                 num_groups=1,
@@ -197,8 +197,8 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            as_grid("equiangular", (nlat, nlon)),
-            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=in_channels,
             out_channels=out_channels,
         ).to(self.device)
@@ -240,8 +240,8 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            as_grid("equiangular", (nlat, nlon)),
-            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,
@@ -283,8 +283,8 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            as_grid("equiangular", (nlat, nlon)),
-            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,
@@ -335,8 +335,8 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv_no_bias = SpectralConvS2(
-            as_grid("equiangular", (nlat, nlon)),
-            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
@@ -345,8 +345,8 @@ class TestSpectralConvS2(unittest.TestCase):
 
         set_seed(333)
         conv_bias = SpectralConvS2(
-            as_grid("equiangular", (nlat, nlon)),
-            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
@@ -377,8 +377,8 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            as_grid("equiangular", (nlat, nlon)),
-            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
@@ -411,8 +411,8 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            as_grid("equiangular", (nlat, nlon)),
-            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
@@ -447,8 +447,8 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            as_grid("equiangular", (nlat, nlon)),
-            as_grid("equiangular", (nlat, nlon)),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,

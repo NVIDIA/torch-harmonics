@@ -36,7 +36,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from torch_harmonics.grid import GridS2, require_grid
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
 
 
 def _slerp_shortest_arc(start: torch.Tensor, end: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
@@ -157,10 +157,10 @@ class ResampleS2(nn.Module):
 
     Parameters
     ----------
-    grid_in : GridS2
+    grid_in : RegularGridS2
         Descriptor of the input grid; it carries the resolution as well as the
         quadrature rule.
-    grid_out : GridS2
+    grid_out : RegularGridS2
         Descriptor of the output grid.
     mode : str, optional
         Interpolation mode (``"bilinear"``, ``"bilinear-spherical"``), by default
@@ -170,7 +170,7 @@ class ResampleS2(nn.Module):
     --------
     >>> import torch
     >>> import torch_harmonics as th
-    >>> resample = th.ResampleS2(th.as_grid("equiangular", (64, 128)), th.as_grid("equiangular", (128, 256))).cuda()
+    >>> resample = th.ResampleS2(th.as_grid("equiangular", nlat=64, nlon=128), th.as_grid("equiangular", nlat=128, nlon=256)).cuda()
     >>> x = torch.randn(1, 64, 128, device="cuda")
     >>> y = resample(x)
     >>> y.shape
@@ -179,8 +179,8 @@ class ResampleS2(nn.Module):
 
     def __init__(
         self,
-        grid_in: GridS2,
-        grid_out: GridS2,
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         mode: Optional[str] = "bilinear",
     ):
 
@@ -192,8 +192,8 @@ class ResampleS2(nn.Module):
         else:
             raise NotImplementedError(f"unknown interpolation mode {mode}")
 
-        self.grid_in = require_grid(grid_in, "grid_in")
-        self.grid_out = require_grid(grid_out, "grid_out")
+        self.grid_in = require_regular_grid(grid_in, "grid_in")
+        self.grid_out = require_regular_grid(grid_out, "grid_out")
         self.nlat_in, self.nlon_in = self.grid_in.shape
         self.nlat_out, self.nlon_out = self.grid_out.shape
 

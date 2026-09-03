@@ -32,11 +32,11 @@
 import warnings
 from typing import Optional, Tuple
 
-from torch_harmonics.grid import GridS2, require_grid
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
 from torch_harmonics.quadrature import compute_theta_cutoff
 
 
-def truncate_sht(grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] = None) -> Tuple[int, int]:
+def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None) -> Tuple[int, int]:
     r"""
     Determine the maximum spherical harmonic degree and order for an SHT based
     on the spatial grid.
@@ -76,14 +76,14 @@ def truncate_sht(grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] =
 
     The bounds themselves come from the grid descriptor
     (:attr:`~torch_harmonics.grid.GridS2.max_exact_degree` and
-    :attr:`~torch_harmonics.grid.GridS2.max_azimuthal_order`), which reports what
+    :attr:`~torch_harmonics.grid.RegularGridS2.max_azimuthal_order`), which reports what
     the grid can represent. This routine owns the *policy* on top of that: applying
     user overrides, enforcing the triangular truncation, and warning where the
     default changed.
 
     Parameters
     ----------
-    grid : GridS2
+    grid : RegularGridS2
         Descriptor of the spatial grid the transform operates on.
     lmax : int, optional
         User-defined maximum spherical harmonic degree (non-inclusive).
@@ -104,17 +104,17 @@ def truncate_sht(grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] =
     Examples
     --------
     >>> from torch_harmonics import as_grid, truncate_sht
-    >>> truncate_sht(as_grid("legendre-gauss", (128, 256)))
+    >>> truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=256))
     (128, 128)
-    >>> truncate_sht(as_grid("lobatto", (128, 256)))
+    >>> truncate_sht(as_grid("lobatto", nlat=128, nlon=256))
     (127, 127)
-    >>> truncate_sht(as_grid("legendre-gauss", (128, 256)), lmax=32)
+    >>> truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=256), lmax=32)
     (32, 32)
     """
 
     # a shard has no spectral bounds of its own; say so with the migration message
     # rather than letting an AttributeError surface from deeper in
-    grid = require_grid(grid)
+    grid = require_regular_grid(grid)
 
     # fall back to what the grid can actually represent. `is None` rather than a
     # falsy test: lmax=0 is meaningless but should not silently become the default.
@@ -136,7 +136,7 @@ def truncate_sht(grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] =
     return lmax, mmax
 
 
-def truncate_support(grid: GridS2, theta_cutoff: Optional[float] = None, scale: Optional[float] = 1.0) -> float:
+def truncate_support(grid: RegularGridS2, theta_cutoff: Optional[float] = None, scale: Optional[float] = 1.0) -> float:
     r"""
     Determine the angular support radius of a localized operator on a grid.
 
@@ -162,7 +162,7 @@ def truncate_support(grid: GridS2, theta_cutoff: Optional[float] = None, scale: 
 
     Parameters
     ----------
-    grid : GridS2
+    grid : RegularGridS2
         Descriptor of the grid that sets the cutoff. This is the output grid of a
         forward transform and the input grid of a transpose one, mirroring which
         of the two is the coarser. It must be the global grid: a cutoff taken
@@ -202,15 +202,15 @@ def truncate_support(grid: GridS2, theta_cutoff: Optional[float] = None, scale: 
     --------
     >>> from torch_harmonics import as_grid
     >>> from torch_harmonics.truncation import truncate_support
-    >>> round(truncate_support(as_grid("equiangular", (64, 128))), 6)
+    >>> round(truncate_support(as_grid("equiangular", nlat=64, nlon=128)), 6)
     0.049873
-    >>> truncate_support(as_grid("equiangular", (64, 128)), theta_cutoff=0.2)
+    >>> truncate_support(as_grid("equiangular", nlat=64, nlon=128), theta_cutoff=0.2)
     0.2
     """
 
     if theta_cutoff is None:
         # a support radius taken from a shard would differ between ranks
-        grid = require_grid(grid)
+        grid = require_regular_grid(grid)
         radius = scale * compute_theta_cutoff(grid.nlat, grid=grid.grid_type)
         origin = f"scale={scale} times the grid spacing"
     else:

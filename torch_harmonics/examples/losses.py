@@ -42,7 +42,7 @@ from torch_harmonics.grid import as_grid
 
 def get_quadrature_weights(nlat: int, nlon: int, grid: str, tile: bool = False, normalized: bool = True) -> torch.Tensor:
     # area weights
-    q = as_grid(grid, (nlat, nlon)).quad_weights
+    q = as_grid(grid, nlat=nlat, nlon=nlon).quad_weights
     q = q.reshape(-1, 1) * 2 * torch.pi / nlon
 
     # numerical precision can be an issue here, make sure it sums to 1:
