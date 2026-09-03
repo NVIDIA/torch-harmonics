@@ -37,6 +37,7 @@ import torch.nn as nn
 
 from torch_harmonics import AttentionS2, DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2, NeighborhoodAttentionS2, ResampleS2
 from torch_harmonics.examples.models._layers import MLP, DropPath
+from torch_harmonics.grid import as_grid
 
 
 # heuristic for finding theta_cutoff
@@ -92,14 +93,12 @@ class OverlapPatchMerging(nn.Module):
         # convolution for patches, curtoff radius inferred from kernel shape
         theta_cutoff = _compute_cutoff_radius(out_shape[0], kernel_shape, basis_type)
         self.conv = DiscreteContinuousConvS2(
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_channels,
             out_channels,
-            in_shape=in_shape,
-            out_shape=out_shape,
             kernel_shape=kernel_shape,
             basis_type=basis_type,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=bias,
             theta_cutoff=theta_cutoff,
         )
@@ -193,14 +192,12 @@ class MixFFN(nn.Module):
         # convolution for patches, curtoff radius inferred from kernel shape
         theta_cutoff = _compute_cutoff_radius(shape[0], kernel_shape, basis_type)
         self.conv = DiscreteContinuousConvS2(
+            as_grid(grid, nlat=shape[0], nlon=shape[1]),
+            as_grid(grid, nlat=shape[0], nlon=shape[1]),
             inout_channels,
             inout_channels,
-            in_shape=shape,
-            out_shape=shape,
             kernel_shape=kernel_shape,
             basis_type=basis_type,
-            grid_in=grid,
-            grid_out=grid,
             groups=inout_channels,
             bias=conv_bias,
             theta_cutoff=theta_cutoff,
@@ -289,20 +286,24 @@ class AttentionWrapper(nn.Module):
             if theta_cutoff is None:
                 theta_cutoff = (7.0 / math.sqrt(math.pi)) * math.pi / (shape[0] - 1)
             self.att = NeighborhoodAttentionS2(
+                grid_in=as_grid(grid, nlat=shape[0], nlon=shape[1]),
+                grid_out=as_grid(grid, nlat=shape[0], nlon=shape[1]),
                 in_channels=channels,
-                in_shape=shape,
-                out_shape=shape,
-                grid_in=grid,
-                grid_out=grid,
-                theta_cutoff=theta_cutoff,
-                out_channels=channels,
                 num_heads=heads,
                 bias=bias,
+                theta_cutoff=theta_cutoff,
+                out_channels=channels,
                 # drop_rate=attention_drop_rate,
             )
         else:
             self.att = AttentionS2(
-                in_channels=channels, num_heads=heads, in_shape=shape, out_shape=shape, grid_in=grid, grid_out=grid, out_channels=channels, drop_rate=attention_drop_rate, bias=bias
+                grid_in=as_grid(grid, nlat=shape[0], nlon=shape[1]),
+                grid_out=as_grid(grid, nlat=shape[0], nlon=shape[1]),
+                in_channels=channels,
+                num_heads=heads,
+                bias=bias,
+                out_channels=channels,
+                drop_rate=attention_drop_rate,
             )
 
         self.norm = None
@@ -549,19 +550,17 @@ class Upsampling(nn.Module):
         if upsampling_method == "conv":
             theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
             self.upsample = DiscreteContinuousConvTransposeS2(
+                as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+                as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
                 out_channels,
                 out_channels,
-                in_shape=in_shape,
-                out_shape=out_shape,
                 kernel_shape=kernel_shape,
                 basis_type=basis_type,
-                grid_in=grid_in,
-                grid_out=grid_out,
                 bias=conv_bias,
                 theta_cutoff=theta_cutoff,
             )
         elif upsampling_method == "bilinear":
-            self.upsample = ResampleS2(*in_shape, *out_shape, grid_in=grid_in, grid_out=grid_out)
+            self.upsample = ResampleS2(as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]), as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]))
         else:
             raise ValueError(f"Unknown upsampling method {upsampling_method}")
 

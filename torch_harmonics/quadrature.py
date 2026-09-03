@@ -50,13 +50,13 @@ def _precompute_quadrature_weights(
     n : int
         Number of grid points
     grid : str, optional
-        Grid type (``"equiangular-trapezoidal"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular"``), by default ``"equiangular"``
+        Grid type (``"trapezoidal"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular"``), by default ``"equiangular"``
     a : float, optional
         Lower bound of interval, by default 0.0
     b : float, optional
         Upper bound of interval, by default 1.0
     periodic : bool, optional
-        Whether the grid is periodic (only for equiangular-trapezoidal), by default False
+        Whether the grid is periodic (only for trapezoidal), by default False
 
     Returns
     -------
@@ -66,14 +66,14 @@ def _precompute_quadrature_weights(
     Raises
     ------
     ValueError
-        If periodic is True for non-equiangular-trapezoidal grids or unknown grid type
+        If periodic is True for a non-trapezoidal grid, or the grid type is unknown
     """
 
-    if (grid != "equiangular-trapezoidal") and periodic:
-        raise ValueError("Periodic grid is only supported on equiangular-trapezoidal grids.")
+    if (grid != "trapezoidal") and periodic:
+        raise ValueError(f"Periodic grid is only supported on trapezoidal grids, got {grid!r}.")
 
     # compute coordinates
-    if grid == "equiangular-trapezoidal":
+    if grid == "trapezoidal":
         xlg, wlg = trapezoidal_weights(n, a=a, b=b, periodic=periodic)
     elif grid == "legendre-gauss":
         xlg, wlg = legendre_gauss_weights(n, a=a, b=b)
@@ -117,7 +117,7 @@ def precompute_latitudes(nlat: int, grid: Optional[str] = "equiangular") -> Tupl
         Number of latitudinal nodes.
     grid : str, optional
         Quadrature grid type. One of ``"equiangular"`` (Clenshaw–Curtis),
-        ``"legendre-gauss"``, ``"lobatto"``, or ``"equiangular-trapezoidal"``.
+        ``"legendre-gauss"``, ``"lobatto"``, or ``"trapezoidal"``.
         Default is ``"equiangular"``.
 
     Returns
@@ -146,7 +146,7 @@ def compute_latitude_spacing(nlat: int, grid: Optional[str] = "equiangular") -> 
     This is the grid's own notion of "one latitudinal grid spacing". Only the
     ``equiangular`` grid has uniform spacing, in which case this reduces to the
     familiar :math:`\pi / (N_\theta - 1)`. Gauss--Lobatto nodes cluster towards
-    the equator, and ``equiangular-trapezoidal`` nodes are equispaced in
+    the equator, and ``trapezoidal`` nodes are equispaced in
     :math:`\cos\theta` rather than in :math:`\theta`, so both are considerably
     coarser near the poles than a node count alone would suggest.
 
@@ -179,7 +179,7 @@ def compute_theta_cutoff(nlat: int, grid: Optional[str] = "equiangular", scale: 
     The spacing is taken from the grid's actual node distribution
     (:func:`compute_latitude_spacing`) rather than from ``nlat`` alone. Using
     :math:`\pi / (N_\theta - 1)` is only correct for equiangular grids; on
-    ``lobatto`` and ``equiangular-trapezoidal`` grids it underestimates the polar
+    ``lobatto`` and ``trapezoidal`` grids it underestimates the polar
     spacing by ~21% and ~5x respectively, which collapses the stencil of the
     polar output latitudes to a single latitude ring.
 
@@ -208,9 +208,23 @@ def compute_theta_cutoff(nlat: int, grid: Optional[str] = "equiangular", scale: 
 
     Notes
     -----
-    This routine is the single place where the cutoff heuristic lives; it is
-    intended to take a grid descriptor once the descriptor-based API lands, at
-    which point ``nlat`` and ``grid`` collapse into a single argument.
+    This routine is the *rule*: it reports one latitudinal node spacing and
+    nothing more. The *policy* on top of it -- applying an explicit
+    ``theta_cutoff`` override, rejecting a non-positive radius, and refusing a
+    shard, whose own node spacing would differ between ranks -- lives in
+    :func:`torch_harmonics.truncate_support`, which is what the layers call.
+    Prefer that over calling this directly.
+
+    It keeps taking ``nlat`` and a grid string rather than a
+    :class:`~torch_harmonics.grid.GridS2` because it sits *below* the descriptors
+    in the layering: ``torch_harmonics.grid`` imports from this module, so a
+    descriptor argument here would close an import cycle. Descriptor-based
+    callers get the same quantity from
+    :attr:`~torch_harmonics.grid.GridS2.max_latitude_spacing`, which derives it
+    from the descriptor's own nodes instead of re-deriving it here. That leaves
+    two routes to one number, so
+    ``test_grid_assumptions.test_theta_cutoff_matches_the_free_function`` pins
+    them to agree exactly.
     """
     dlat_max = compute_latitude_spacing(nlat, grid=grid)
 
@@ -232,7 +246,7 @@ def compute_theta_cutoff(nlat: int, grid: Optional[str] = "equiangular", scale: 
 
 def trapezoidal_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 1.0, periodic: Optional[bool] = False) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Helper routine which returns equiangular-trapezoidal nodes with trapezoidal weights
+    Helper routine which returns nodes equispaced in the integration variable, with trapezoidal weights
     on the interval [a, b]
 
     Parameters
@@ -416,141 +430,3 @@ def clenshaw_curtiss_weights(n: int, a: Optional[float] = -1.0, b: Optional[floa
     wcc = wcc * (b - a) * 0.5
 
     return tcc, wcc
-
-
-class QuadratureS2(torch.nn.Module):
-    r"""
-    Scalar quadrature on :math:`S^2` for integrating spherical fields defined on a
-    latitude/longitude grid.
-
-    Given a signal :math:`f(\theta, \lambda)` sampled on a latitude--longitude
-    grid, this module approximates the surface integral over the sphere:
-
-    .. math::
-
-        I[f] = \int_0^{2\pi}\!\int_0^{\pi}
-            f(\theta, \lambda)\,\sin\theta\; d\theta\; d\lambda
-        \;\approx\; \sum_{k=0}^{N_\theta - 1} \sum_{j=0}^{N_\lambda - 1}
-            f(\theta_k, \lambda_j)\, q_k\, \Delta\lambda
-
-    where :math:`q_k` are the latitudinal quadrature weights (which absorb the
-    :math:`\sin\theta` Jacobian via the change of variable to
-    :math:`\cos\theta`) and :math:`\Delta\lambda = 2\pi / N_\lambda` is the
-    uniform longitudinal spacing.
-
-    The choice of ``grid`` determines how the nodes :math:`\theta_k` and weights
-    :math:`q_k` are computed:
-
-    * ``"legendre-gauss"`` -- Gauss--Legendre quadrature.  Nodes are the roots
-      of the Legendre polynomial :math:`P_N(\cos\theta)`.  Exact for
-      polynomials of degree up to :math:`2N - 1`.
-    * ``"lobatto"`` -- Gauss--Lobatto quadrature.  Nodes include both endpoints
-      (poles).  Exact for polynomials of degree up to :math:`2N - 3`.
-    * ``"equiangular"`` -- Clenshaw--Curtis quadrature on equiangular nodes.
-      Nodes are equally spaced in :math:`\theta`.  Exact for polynomials of
-      degree up to approximately :math:`N - 1`.
-    * ``"equiangular-trapezoidal"`` -- Trapezoidal rule on equiangular nodes.
-
-    When ``normalize=True``, the weights are divided by :math:`4\pi` so that
-    the output represents the spherical mean rather than the integral:
-
-    .. math::
-
-        \bar{f} = \frac{1}{4\pi} \int_{S^2} f\; dA
-
-    Parameters
-    ----------
-    img_shape : Tuple[int]
-        Spatial grid shape ``(nlat, nlon)``.
-    grid : str, optional
-        Quadrature grid type (``"equiangular"``, ``"legendre-gauss"``,
-        ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``.
-    normalize : bool, optional
-        If ``True``, divides weights by :math:`4\pi` to return a spherical mean
-        instead of an integral, by default ``False``.
-
-    Examples
-    --------
-    Compute the surface area of the unit sphere (:math:`\int_{S^2} 1\,dA = 4\pi`):
-
-    >>> import torch
-    >>> import torch_harmonics as th
-    >>> nlat, nlon = 128, 256
-    >>> quad = th.QuadratureS2(img_shape=(nlat, nlon), grid="legendre-gauss")
-    >>> ones = torch.ones(1, 1, nlat, nlon)
-    >>> round(quad(ones).item(), 5)  # ≈ 4π; the weights buffer is float32
-    12.56637
-
-    Compute the spherical mean of a field:
-
-    >>> quad_norm = th.QuadratureS2(img_shape=(nlat, nlon), grid="legendre-gauss", normalize=True)
-    >>> quad_norm(ones).item()  # ≈ 1.0
-    1.0
-
-    Raises
-    ------
-    ValueError
-        If an unknown ``grid`` type is provided.
-    """
-
-    def __init__(self, img_shape: Tuple[int], grid: Optional[str] = "equiangular", normalize: Optional[bool] = False):
-        super().__init__()
-
-        self.grid = grid
-        self.normalize = normalize
-
-        if self.grid == "legendre-gauss":
-            _, weights = legendre_gauss_weights(img_shape[0], -1, 1)
-            dlambda = 2 * torch.pi / img_shape[1]
-            quad_weight = dlambda * weights.unsqueeze(1)
-            quad_weight = quad_weight.tile(1, img_shape[1])
-        elif self.grid == "lobatto":
-            _, weights = lobatto_weights(img_shape[0], -1, 1)
-            dlambda = 2 * torch.pi / img_shape[1]
-            quad_weight = dlambda * weights.unsqueeze(1)
-            quad_weight = quad_weight.tile(1, img_shape[1])
-        elif self.grid == "equiangular":
-            _, weights = clenshaw_curtiss_weights(img_shape[0], -1, 1)
-            dlambda = 2 * torch.pi / img_shape[1]
-            quad_weight = dlambda * weights.unsqueeze(1)
-            quad_weight = quad_weight.tile(1, img_shape[1])
-        elif self.grid == "equiangular-trapezoidal":
-            _, weights = trapezoidal_weights(img_shape[0], -1, 1)
-            dlambda = 2 * torch.pi / img_shape[1]
-            quad_weight = dlambda * weights.unsqueeze(1)
-            quad_weight = quad_weight.tile(1, img_shape[1])
-        else:
-            raise (ValueError("Unknown quadrature mode"))
-
-        # apply normalization
-        if normalize:
-            quad_weight = quad_weight / (4.0 * torch.pi)
-
-        # make it contiguous
-        quad_weight = quad_weight.contiguous()
-
-        # reshape
-        quad_weight = quad_weight.reshape(1, 1, *img_shape).to(torch.float32).contiguous()
-
-        # register buffer
-        self.register_buffer("quad_weight", quad_weight, persistent=False)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Integrate a signal over the sphere using the precomputed quadrature.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input signal of shape ``(..., nlat, nlon)``. Integration is over the last two
-            (spatial) dimensions.
-
-        Returns
-        -------
-        torch.Tensor
-            Integral of shape ``(...)`` (the input with its last two dimensions reduced).
-        """
-        # integrate over last two axes only:
-        quad = torch.sum(x * self.quad_weight, dim=(-2, -1))
-
-        return quad

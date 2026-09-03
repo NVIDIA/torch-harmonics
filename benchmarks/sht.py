@@ -30,7 +30,7 @@
 import torch
 from bench import BenchmarkEntry, register
 
-from torch_harmonics import InverseRealSHT, RealSHT
+from torch_harmonics import InverseRealSHT, RealSHT, as_grid
 
 # ------------------------------------------------------------------------------
 # Setup / forward / backward / reference
@@ -40,7 +40,7 @@ from torch_harmonics import InverseRealSHT, RealSHT
 def _sht_setup(nlat, nlon, batch):
     def setup(device, dtype):
         x = torch.randn(batch, nlat, nlon, dtype=dtype, device=device, requires_grad=True)
-        sht = RealSHT(nlat=nlat, nlon=nlon).to(device=device, dtype=dtype)
+        sht = RealSHT(as_grid("equiangular", nlat=nlat, nlon=nlon)).to(device=device, dtype=dtype)
         return {"x": x, "sht": sht, "nlat": nlat, "nlon": nlon}
 
     return setup
@@ -55,7 +55,7 @@ def _sht_backward(state, out):
 
 
 def _sht_reference(state):
-    sht_ref = RealSHT(nlat=state["nlat"], nlon=state["nlon"]).to(dtype=torch.float64)
+    sht_ref = RealSHT(as_grid("equiangular", nlat=state["nlat"], nlon=state["nlon"])).to(dtype=torch.float64)
     return sht_ref(state["x"].detach().cpu().double())
 
 
@@ -69,9 +69,9 @@ _REAL_TO_COMPLEX = {
 def _isht_setup(nlat, nlon, batch):
     def setup(device, dtype):
         complex_dtype = _REAL_TO_COMPLEX[dtype]
-        sht_ref = RealSHT(nlat=nlat, nlon=nlon)
+        sht_ref = RealSHT(as_grid("equiangular", nlat=nlat, nlon=nlon))
         x_hat = sht_ref(torch.randn(batch, nlat, nlon, dtype=torch.float64)).to(dtype=complex_dtype, device=device).detach().requires_grad_(True)
-        isht = InverseRealSHT(nlat=nlat, nlon=nlon).to(device=device, dtype=dtype)
+        isht = InverseRealSHT(as_grid("equiangular", nlat=nlat, nlon=nlon)).to(device=device, dtype=dtype)
         return {"x_hat": x_hat, "isht": isht, "nlat": nlat, "nlon": nlon}
 
     return setup
@@ -86,7 +86,7 @@ def _isht_backward(state, out):
 
 
 def _isht_reference(state):
-    isht_ref = InverseRealSHT(nlat=state["nlat"], nlon=state["nlon"]).to(dtype=torch.float64)
+    isht_ref = InverseRealSHT(as_grid("equiangular", nlat=state["nlat"], nlon=state["nlon"])).to(dtype=torch.float64)
     return isht_ref(state["x_hat"].detach().cpu().cdouble())
 
 

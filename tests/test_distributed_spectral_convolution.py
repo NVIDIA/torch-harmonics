@@ -127,24 +127,20 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
         B, C = batch_size, num_chan
 
         conv_local = th.SpectralConvS2(
-            in_shape=in_shape,
-            out_shape=out_shape,
+            th.as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            th.as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_channels=C,
             out_channels=C,
             num_groups=num_groups,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=bias,
         ).to(self.device)
 
         conv_dist = thd.DistributedSpectralConvS2(
-            in_shape=in_shape,
-            out_shape=out_shape,
+            th.as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            th.as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_channels=C,
             out_channels=C,
             num_groups=num_groups,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=bias,
         ).to(self.device)
 
