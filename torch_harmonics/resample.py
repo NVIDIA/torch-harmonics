@@ -179,8 +179,8 @@ class ResampleS2(nn.Module):
     --------
     >>> import torch
     >>> import torch_harmonics as th
-    >>> resample = th.ResampleS2(64, 128, 128, 256).cuda()
-    >>> x = torch.randn(1, 64, 128, device="cuda")
+    >>> resample = th.ResampleS2(64, 128, 128, 256)
+    >>> x = torch.randn(1, 64, 128)
     >>> y = resample(x)
     >>> y.shape
     torch.Size([1, 128, 256])

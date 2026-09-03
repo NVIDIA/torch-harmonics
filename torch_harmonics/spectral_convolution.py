@@ -127,8 +127,8 @@ class SpectralConvS2(nn.Module):
     >>> conv = th.SpectralConvS2(
     ...     in_shape=(128, 256), out_shape=(128, 256),
     ...     in_channels=16, out_channels=32,
-    ... ).cuda()
-    >>> x = torch.randn(4, 16, 128, 256, device="cuda")
+    ... )
+    >>> x = torch.randn(4, 16, 128, 256)
     >>> y = conv(x)
     >>> y.shape
     torch.Size([4, 32, 128, 256])
