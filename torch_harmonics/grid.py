@@ -86,7 +86,7 @@ class GridS2:
     Four properties of this type are load-bearing rather than incidental.
 
     The dataclass fields *are* the parameterization. :meth:`params`, :attr:`key`,
-    :meth:`to_dict` and :meth:`__repr__` are all derived from them, so a grid
+    :meth:`to_dict` and ``__repr__`` are all derived from them, so a grid
     family parameterized by something other than ``(nlat, nlon)`` -- a HEALPix
     ``nside``, an icosahedral refinement level -- gets correct construction,
     identity and serialization without registering anything. A subclass cannot
@@ -517,8 +517,9 @@ class GridShardS2:
     A shard is deliberately **not** a :class:`GridS2`, because it is not a grid on the
     sphere. A band of latitudes does not cover :math:`S^2`, so:
 
-    * its :attr:`quad_weights` do not sum to 2 -- they are the local contribution to
-      an integral that a collective reduction completes;
+    * its quadrature weights -- ``quad_weights`` on :class:`RegularGridShardS2` --
+      do not sum to 2; they are the local contribution to an integral that a
+      collective reduction completes;
     * quantities that describe the quadrature *rule* rather than this piece of it --
       the spectral bounds, the angular support radius -- are global, and a shard does
       not define them at all. Ask :attr:`global_grid` for them. Absent is a stronger

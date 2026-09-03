@@ -217,7 +217,7 @@ def compute_theta_cutoff(nlat: int, grid: Optional[str] = "equiangular", scale: 
 
     It keeps taking ``nlat`` and a grid string rather than a
     :class:`~torch_harmonics.grid.GridS2` because it sits *below* the descriptors
-    in the layering: :mod:`torch_harmonics.grid` imports from this module, so a
+    in the layering: ``torch_harmonics.grid`` imports from this module, so a
     descriptor argument here would close an import cycle. Descriptor-based
     callers get the same quantity from
     :attr:`~torch_harmonics.grid.GridS2.max_latitude_spacing`, which derives it
