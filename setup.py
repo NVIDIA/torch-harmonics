@@ -172,6 +172,10 @@ def get_ext_modules():
                 "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd.cu",
                 "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_dense_kpacked_sm90.cu",
                 "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_dense_kpacked_sm100.cu",
+                # Experimental staging variants behind disco_kernels::forward_kpacked_exp.
+                # Not reachable from any module forward; driven only by
+                # performance/disco/ncu_disco.py. Drop this line to build it out.
+                "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_dense_kpacked_sm90_exp.cu",
             ]
         )
         ext_modules.append(CUDAExtension("torch_harmonics.disco._C", disco_sources, extra_compile_args=get_compile_args("disco")))
