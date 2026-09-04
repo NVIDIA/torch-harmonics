@@ -122,6 +122,10 @@ namespace disco_kernels
         IDX_VEC = 1,
         IDX_SHFL = 2,
         IDX_SMEM = 3,
+        // Fixes pack_idx staging at its best setting (VEC) and changes the A-tile
+        // *store* instead, so 1 vs 4 isolates the shared-memory side of l1tex from
+        // the global side. See the A-staging block below.
+        IDX_VEC_ASTORE = 4,
     };
 
     // Load the (hi, wi_base) pair for neighbour nzg as one vector access. The two
@@ -154,6 +158,7 @@ namespace disco_kernels
         static_assert(N_PAD == 8 || N_PAD == 16, "WGMMA path: only K_PAD in {8, 16} supported");
         static_assert(BC_TILE == 8 && WO_TILE == 8, "WGMMA path: tile must be 8x8 for M=64");
         static_assert(NZ_CHUNK == 16, "the SHFL variant assumes nz_local == (lane & 15)");
+        static_assert(sizeof(T) == 2, "MERGE_A_STORE packs two elements per uint32");
 
         constexpr int N_ACC = N_PAD / 2;
 
@@ -192,17 +197,23 @@ namespace disco_kernels
             const int nz_global = nz_chunk_off + nz_local;
             const int bc = bc_start + bc_local;
 
+            // Variant 4 reuses VEC's pack_idx staging and differs only in the
+            // A-tile store below, so that 1 vs 4 is a clean single-variable
+            // comparison of the shared-memory side.
+            constexpr int IDX_STAGE = (IDX_MODE == IDX_VEC_ASTORE) ? (int)IDX_VEC : IDX_MODE;
+            constexpr bool MERGE_A_STORE = (IDX_MODE == IDX_VEC_ASTORE);
+
             // -- Stage pack_idx: this is the whole point of the file --
             int hi = 0;
             int wi_base = 0;
-            if constexpr (IDX_MODE == IDX_DIRECT) {
+            if constexpr (IDX_STAGE == IDX_DIRECT) {
                 if (nz_global < cnt) {
                     hi = (int)idx_ho[nz_global * 2 + 0];
                     wi_base = (int)idx_ho[nz_global * 2 + 1];
                 }
-            } else if constexpr (IDX_MODE == IDX_VEC) {
+            } else if constexpr (IDX_STAGE == IDX_VEC) {
                 if (nz_global < cnt) { load_idx_pair<IDX_T>(idx_ho, nz_global, hi, wi_base); }
-            } else if constexpr (IDX_MODE == IDX_SHFL) {
+            } else if constexpr (IDX_STAGE == IDX_SHFL) {
                 // nz_local == (lane & 15), so lanes l and l+16 of a warp want the same
                 // pair. Lanes 0..15 fetch the warp's 16 pairs; everyone else shuffles.
                 int hi_r = 0, wb_r = 0;
@@ -227,15 +238,43 @@ namespace disco_kernels
                 wi_base = v.y;
             }
 
-            // -- Stage A_tile (128 cells = 1 per thread) -- unchanged from production
+            // -- Stage A_tile (128 cells = 1 per thread) --
+            //
+            // dst is 8 contiguous 2-byte cells = 16 B, and nz_local * 8 elements is
+            // a 16 B multiple, so the destination is always 16 B aligned. The
+            // production form still emits 8 separate STS.U16 because each store
+            // depends on its own outstanding load, and those stores go through
+            // l1tex alongside the global loads.
+            //
+            // MERGE_A_STORE collects the 8 values into one int4 first, so the tile
+            // is written with a single STS.128. The loads are untouched, which is
+            // the point: 1 vs 4 measures the shared-memory store side in isolation.
+            // Packing through uint32 rather than casting a local T[8] keeps the
+            // values in registers -- taking the address of a local array tends to
+            // push it to local memory and would swamp what we are trying to see.
             T *dst = A_tile + bc_local * (8 * NZ_CHUNK) + nz_local * 8;
             if (nz_global < cnt && bc < BC_total) {
                 const int64_t inp_row_base = (int64_t)bc * Hi * Wi + (int64_t)hi * Wi;
+                if constexpr (MERGE_A_STORE) {
+                    auto elem = [&](int i) -> uint32_t {
+                        int wi_full = wi_base + (wo_base + i) * pscale;
+                        if (wi_full >= Wi) wi_full -= Wi;
+                        const uint16_t raw = *reinterpret_cast<const uint16_t *>(inp + inp_row_base + wi_full);
+                        return (uint32_t)raw;
+                    };
+                    int4 v;
+                    v.x = (int)(elem(0) | (elem(1) << 16));
+                    v.y = (int)(elem(2) | (elem(3) << 16));
+                    v.z = (int)(elem(4) | (elem(5) << 16));
+                    v.w = (int)(elem(6) | (elem(7) << 16));
+                    *reinterpret_cast<int4 *>(dst) = v;
+                } else {
 #pragma unroll
-                for (int i = 0; i < 8; i++) {
-                    int wi_full = wi_base + (wo_base + i) * pscale;
-                    if (wi_full >= Wi) wi_full -= Wi;
-                    dst[i] = inp[inp_row_base + wi_full];
+                    for (int i = 0; i < 8; i++) {
+                        int wi_full = wi_base + (wo_base + i) * pscale;
+                        if (wi_full >= Wi) wi_full -= Wi;
+                        dst[i] = inp[inp_row_base + wi_full];
+                    }
                 }
             } else {
                 *reinterpret_cast<int4 *>(dst) = make_int4(0, 0, 0, 0);
@@ -366,8 +405,8 @@ namespace disco_kernels
         const auto idx_dtype = pack_idx.scalar_type();
         TORCH_CHECK(idx_dtype == at::ScalarType::Long || idx_dtype == at::ScalarType::Int,
                     "pack_idx must be int64 or int32");
-        TORCH_CHECK(variant >= 0 && variant <= 3, "variant must be 0 (direct), 1 (vec), 2 (shfl) or 3 (smem); got ",
-                    variant);
+        TORCH_CHECK(variant >= 0 && variant <= 4,
+                    "variant must be 0 (direct), 1 (vec), 2 (shfl), 3 (smem) or 4 (vec + merged A store); got ", variant);
 
         const int64_t B = inp.size(0);
         const int64_t C = inp.size(1);
@@ -419,7 +458,8 @@ namespace disco_kernels
         case IDX_DIRECT: TH_LAUNCH_EXP(T_, IDX_T_, NPAD_, IDX_DIRECT); break;                                          \
         case IDX_VEC: TH_LAUNCH_EXP(T_, IDX_T_, NPAD_, IDX_VEC); break;                                                \
         case IDX_SHFL: TH_LAUNCH_EXP(T_, IDX_T_, NPAD_, IDX_SHFL); break;                                              \
-        default: TH_LAUNCH_EXP(T_, IDX_T_, NPAD_, IDX_SMEM); break;                                                    \
+        case IDX_SMEM: TH_LAUNCH_EXP(T_, IDX_T_, NPAD_, IDX_SMEM); break;                                              \
+        default: TH_LAUNCH_EXP(T_, IDX_T_, NPAD_, IDX_VEC_ASTORE); break;                                              \
         }                                                                                                              \
     } while (0)
 

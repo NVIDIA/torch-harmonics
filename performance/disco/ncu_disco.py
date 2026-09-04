@@ -83,7 +83,33 @@ load instructions but ~27% of L1 sectors, and L1 is the measured ceiling.
     --variant 1   vec    — one vector load of the (hi, wi) pair per thread
     --variant 2   shfl   — 16 lanes load, rest shuffle; no extra barrier
     --variant 3   smem   — 16 threads load per CTA; +1 __syncthreads per chunk
+    --variant 4   astore — vec idx + A tile as one STS.128 instead of 8 STS.U16
     --idx-dtype {int64,int32}   orthogonal; int32 halves sectors for all variants
+
+Measured on H100, hdeg_self_tc003, bf16, BC=64, int32 idx:
+
+    variant        inst      sectors    L1 %   duration
+    production  113.3M       650.8M     79.9   3.22 ms
+    0 direct    113.3M       567.8M     79.9   3.25 ms
+    1 vec       102.3M       525.6M     79.3   3.13 ms
+    2 shfl      102.3M       525.6M     79.6   3.34 ms
+    3 smem       94.1M       494.0M     81.8   3.24 ms
+
+Instruction counts matched the model exactly (v1 saves 4 x 2,737,440, v3 a
+further 3 x 2,737,440). Time did not follow: sectors fell 19%, duration 2.8%.
+
+Two things that says. shfl saves no sectors at all -- the memory system already
+deduplicates repeated addresses across lanes within a warp, so 32 lanes hitting
+16 distinct entries touch the same lines as 16 lanes do; it only pays for the
+shuffles. And smem's extra barrier converts long-scoreboard stall into barrier
+stall almost one for one (4.51 -> 2.46 vs 2.54 -> 4.73), for no net gain.
+
+More important: L1 throughput stayed pinned at ~80% while global sectors fell
+24%. If global-load sectors were the saturated resource that number would have
+dropped. So the saturated l1tex sub-pipe is one these variants do not touch --
+and l1tex serves shared memory too. The A staging issues 8 STS.U16 per thread
+per chunk alongside its 8 LDG.U16. Variant 4 and the shared-memory metrics
+above exist to test exactly that.
 
 Verify before believing any timing — the variants must be bit-identical:
 
@@ -153,6 +179,15 @@ METRICS = [
     "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum",
     "l1tex__t_sectors_pipe_lsu_mem_global_op_ld_lookup_hit.sum",
     "l1tex__t_sectors_pipe_lsu_mem_global_op_ld_lookup_miss.sum",
+    # shared-memory side of l1tex. The A-tile staging issues 8 STS.U16 per thread
+    # per chunk alongside its 8 LDG.U16, and both go through l1tex — so the global
+    # counters above only see half the traffic. L1 throughput stayed pinned at
+    # ~80% across every pack_idx variant while global sectors fell 24%, which says
+    # the saturated sub-pipe is one those variants do not touch.
+    "smsp__inst_executed_op_shared_st.sum",
+    "smsp__inst_executed_op_shared_ld.sum",
+    "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum",
+    "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum",
     # is L1 the ceiling?
     "l1tex__throughput.avg.pct_of_peak_sustained_active",
     "lts__throughput.avg.pct_of_peak_sustained_active",
@@ -440,6 +475,7 @@ VARIANTS = {
     1: "vec    — one vector load of the (hi, wi) pair per thread",
     2: "shfl   — lanes 0..15 load, rest take it by shuffle; no extra barrier",
     3: "smem   — threads 0..15 load for the whole CTA; +1 __syncthreads/chunk",
+    4: "astore — vec idx staging + A tile written as one STS.128 instead of 8 STS.U16",
 }
 
 
