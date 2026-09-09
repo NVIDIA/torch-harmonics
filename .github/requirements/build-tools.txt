@@ -3,7 +3,7 @@
 # setuptools-scm is needed on the host too, to read the release version off the
 # git tag (see "Determine base version from git"); keep it pinned in lockstep
 # with wheel-build-env.txt so host and container agree on the version.
-cibuildwheel==4.2.0
+cibuildwheel==4.2.1
 setuptools-scm==10.2.1
 twine==7.0.0
 auditwheel==6.8.2
