@@ -4,6 +4,9 @@
 
 ### v0.9.3b1 (unreleased)
 
+* Improved DISCO CUDA kernel performance: kpacked forward up to 1.28x, backward up to 2.1x on H100 and GB200. No API change.
+* Reduced DISCO psi memory footprint by packing the sparsity into a blocked-CSR layout instead of padding every row to the global maximum.
+* Fixed a DISCO backward launch failure for shapes with `nlon_in > 2048` and an integer scale factor of 3 or more, which exceeded the static shared memory limit.
 * Added `torch.compile(fullgraph=True)` support to the serial and distributed layers, which previously broke on assertion helpers and on control flow that branched on tensor values.
 * Removed a redundant autocast decorator from the distributed autograd Functions, where it recorded its state somewhere nothing reads it and blocked full-graph compilation.
 * Distributed DISCO convolution now skips its polar collectives when the polar group holds a single rank, as the azimuth path already did.

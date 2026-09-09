@@ -69,8 +69,9 @@
 // -----------------------
 // 1. Stage A_tile: for each (bc_local, nz_local) ∈ [0,8)×[0,16) — 128 cells —
 //    each thread reads 8 narrow values (one wo_local strip at fixed bc, nz)
-//    from gmem inp into shmem A_tile. Strided per-element gmem reads when
-//    pscale > 1; otherwise a vector-friendly contiguous range.
+//    from gmem inp into shmem A_tile. For pscale ∈ {1, 2} those 8 values are
+//    gathered from one aligned window of 32-bit words (see gather_window_rt);
+//    pscale ≥ 3 and windows crossing the longitude seam use per-element reads.
 // 2. Stage B_tile: 32 * N_PAD bytes total, in 16-byte chunks of 8 narrow values.
 //    Each chunk is one (k_row, n-group) pair. Total chunks = NZ_CHUNK * (N_PAD/8):
 //    16 for N=8, 32 for N=16. Distributed 1 chunk per active staging thread.
@@ -93,6 +94,48 @@
 //    Our N dim is n = k_kern.
 // =====================================================================================
 
+// TRIED AND REJECTED
+// ------------------
+// Measured on H100 (bf16, BC=64, 360x720 self-conv unless noted) through
+// experimental kernels that used to sit alongside this file; all were verified
+// bit-identical before timing. Recorded here so they are not re-derived.
+//
+//  - Warp-shuffle pack_idx sharing (16 lanes load, rest take it by shuffle):
+//    saves no sectors at all. The memory system already deduplicates repeated
+//    addresses across lanes within a warp, so 32 lanes hitting 16 distinct
+//    entries touch the same lines as 16 lanes do. Pays for the shuffles and
+//    gets nothing. 3.34 vs 3.13 ms.
+//
+//  - Shared-memory pack_idx staging: fewest instructions and fewest sectors of
+//    any variant tried, and slower. The extra __syncthreads converted
+//    long-scoreboard stall into barrier stall almost one for one (4.51 -> 2.46
+//    against 2.54 -> 4.73). 3.24 vs 3.13 ms.
+//
+//  - Merging the A-tile stores into one STS.128: a no-op. Every counter
+//    identical to the plain vector-load variant, because ptxas already
+//    vectorizes those stores. The shared side was never a plausible ceiling
+//    regardless -- 27.4M shared-store instructions against 102.3M global loads.
+//
+//  - Windowed gather at pscale 3: needs 12 words to deliver 8 halfwords, so
+//    loads rise ~45% while instructions fall ~23%. That trades well only where
+//    L1 has slack: -1% at 540x1080 -> 180x360 (L1 68.7%) but +13% at
+//    1080x2160 -> 360x720 (L1 82.2%). Same code, opposite sign -- hence the
+//    pscale <= 2 gate on the fast path below.
+//
+//  - Cross-thread run staging: load the covering run once per (bc, chunk) into
+//    shared memory and have each thread gather its window from there, removing
+//    the ~13x cross-thread redundancy. It works -- sectors -22% at pscale 1 and
+//    -36% at pscale 2 -- but costs +24% instructions, leaving it neutral at
+//    pscale 1 and worth 7% at pscale 2 only. Also structurally capped: just
+//    50-60% of chunks have all 16 neighbours inside one arc, the rest fall back.
+//
+// Not worth attacking: K_PAD=16 against K=9 wastes 44% of every WGMMA, but the
+// tensor pipe runs at 4.4% of peak, so eliminating all of it would save ~2% of
+// cycles. It is structural anyway -- inp carries (bc, wo) and val carries k, so
+// M must come from {bc, wo} and N from {k}, and there is no wgmma n shape
+// between 8 and 16.
+// =====================================================================================
+
 #include "../disco.h"
 #include "disco_cuda.cuh"
 #include "disco_cuda_ptx.cuh"
@@ -106,6 +149,8 @@
 namespace disco_kernels
 {
 
+    // gather_window_rt now lives in disco_cuda.cuh, shared with the SM_100a kernel.
+
     // Kernel symbol exists on all archs so the host launcher compiles cleanly;
     // the body is empty for non-Hopper builds (and that path is never launched —
     // see the runtime CC check in disco_cuda_fwd_dense_kpacked_sm90_try).
@@ -118,12 +163,12 @@ namespace disco_kernels
     // writeback.
     template <int BC_TILE, int WO_TILE, int NZ_CHUNK, int N_PAD, typename T>
     __global__ __launch_bounds__(128) void disco_fwd_dense_kpacked_wgmma_blk_k(
-        int Hi, int Wi, int K, int Ho, int Wo, int NBR_PAD, int pscale, int BC_total,
-        const int64_t *__restrict__ pack_idx,   // [Ho, NBR_PAD, 2]
-        const T *__restrict__ pack_val,         // [Ho, NBR_PAD, N_PAD]  (=K_PAD)
-        const int64_t *__restrict__ pack_count, // [Ho]
-        const T *__restrict__ inp,              // [B, C, Hi, Wi]
-        T *__restrict__ out)                    // [B, C, K, Ho, Wo]
+        int Hi, int Wi, int K, int Ho, int Wo, int pscale, int BC_total,
+        const int64_t *__restrict__ pack_idx,    // [nnz, 2]
+        const T *__restrict__ pack_val,          // [nnz, N_PAD]  (=K_PAD)
+        const int64_t *__restrict__ pack_offset, // [Ho + 1]
+        const T *__restrict__ inp,               // [B, C, Hi, Wi]
+        T *__restrict__ out)                     // [B, C, K, Ho, Wo]
     {
 #if defined(__CUDA_ARCH_FEAT_SM90_ALL)
         static_assert(N_PAD == 8 || N_PAD == 16, "WGMMA path: only K_PAD ∈ {8, 16} supported");
@@ -141,9 +186,13 @@ namespace disco_kernels
         const int wo_base = wo_strip * WO_TILE;
         const int bc_start = blockIdx.y * BC_TILE;
 
-        const int64_t *idx_ho = pack_idx + (int64_t)ho * NBR_PAD * 2;
-        const T *val_ho = pack_val + (int64_t)ho * NBR_PAD * N_PAD;
-        const int cnt = (int)pack_count[ho];
+        // Blocked CSR: rows are packed back to back, so the base comes from the
+        // offset array rather than a constant NBR_PAD stride, and cnt is the gap
+        // between consecutive offsets. Both loads are CTA-uniform broadcasts.
+        const int64_t off_beg = pack_offset[ho];
+        const int cnt = (int)(pack_offset[ho + 1] - off_beg);
+        const int64_t *idx_ho = pack_idx + off_beg * 2;
+        const T *val_ho = pack_val + off_beg * N_PAD;
 
         // Per-thread accumulator: N_PAD/2 fp32 cells for m64nNk16.
         float acc[N_ACC];
@@ -173,23 +222,73 @@ namespace disco_kernels
             const int bc = bc_start + bc_local;
 
             if (nz_global < cnt && bc < BC_total) {
-                const int hi = (int)idx_ho[nz_global * 2 + 0];
-                const int wi_base = (int)idx_ho[nz_global * 2 + 1];
+                // (hi, wi_base) are adjacent in pack_idx, and idx_ho = pack_idx +
+                // off_beg*2 int64 is 16-byte aligned for any offset, so the pair can
+                // be fetched with one vector load rather than two scalar ones. Both
+                // scalar loads span the same 256 B the warp touches (16 distinct nz
+                // at stride 16 B), so merging them halves the sectors as well as the
+                // instructions: measured 113.3M -> 102.3M global load instructions
+                // and 567.8M -> 525.6M sectors on H100 at 360x720 self-conv, worth
+                // ~3% (3.22 -> 3.13 ms). Verified bit-identical.
+                const longlong2 idx_pair = reinterpret_cast<const longlong2 *>(idx_ho)[nz_global];
+                const int hi = (int)idx_pair.x;
+                const int wi_base = (int)idx_pair.y;
                 const int64_t inp_row_base = (int64_t)bc * Hi * Wi + (int64_t)hi * Wi;
                 T *dst = A_tile + bc_local * (8 * NZ_CHUNK) // bc_local * 128 elements
                     + nz_local * 8;                         // nz_local * 8 elements (= 16 bytes)
-// wi_full wraps at most once: with wi_base ≤ Wi-1 and (wo_base+i)
-// ≤ Wo-1, wi_full ≤ (Wi-1) + (Wo-1)*pscale ≤ 2*Wi - 1 - pscale.
-// Relies on Wi == pscale*Wo (enforced by the host wrapper).
-// Per-element scalar reads here: with pscale > 1 the 8 wi
-// positions are no longer contiguous, so a single 16-byte vector
-// load isn't possible. The compiler issues 8 × 2-byte loads and
-// L1/L2 sectoring partially mitigates the strided access.
+                // Fetch the eight elements as one aligned window instead of eight
+                // scalar loads, each with its own IMAD / add / compare / select /
+                // 64-bit-add chain. That address arithmetic dominated: the kernel is
+                // instruction-issue bound (1.70G instructions at 71% of issue
+                // capacity, only 6% of them loads). Measured on H100, bf16, BC=64,
+                // bit-identical throughout:
+                //   pscale 1   360x720 self          3.19 -> 2.65 ms   1.20x
+                //   pscale 2   720x1440 -> 360x720  11.04 -> 10.61 ms  1.04x
+                //
+                // s is reduced into [0, Wi) FIRST. wi_base < Wi and wo_base*pscale <
+                // Wi, so s < 2*Wi and one subtract suffices -- the same argument the
+                // scalar loop below makes per element, hoisted. Skipping this leaves
+                // s in [0, 2*Wi), where the guard rejects about half of all threads,
+                // and a rejected lane makes its whole warp run the fallback *as well
+                // as* the fast path.
+                //
+                // The guard needs the window to clear the longitude seam and the
+                // trailing word read to stay in-row; s + 8P + 2 <= Wi covers both. It
+                // rejects only genuine seam crossings, ~1.3% of threads, which fall
+                // through to the scalar loop -- so correctness never depends on it.
+                //
+                // Word-aligned access needs the row base 4-byte aligned:
+                // inp_row_base = Wi * (bc*Hi + hi), and Wi = pscale * Wo with Wo a
+                // multiple of 8, so Wi is always even.
+                int s = wi_base + wo_base * pscale;
+                if (s >= Wi) s -= Wi;
+                const uint32_t *p = reinterpret_cast<const uint32_t *>(inp + inp_row_base) + (s >> 1);
+                int4 *dst4 = reinterpret_cast<int4 *>(dst);
+                bool staged = true;
+
+#define TH_KP_WINDOW(P_)                                                                                               \
+    (pscale == (P_) && s + 8 * (P_) + 2 <= Wi) { *dst4 = gather_window_rt<(P_)>(p, s & 1); }
+
+                if TH_KP_WINDOW (1) else if TH_KP_WINDOW (2) else
+                    {
+                        staged = false;
+                    }
+
+#undef TH_KP_WINDOW
+
+                if (!staged) {
+                    // pscale >= 3, or a window crossing the seam.
+                    //
+                    // wi_full wraps at most once: with wi_base <= Wi-1 and
+                    // (wo_base+i) <= Wo-1, wi_full <= (Wi-1) + (Wo-1)*pscale
+                    // <= 2*Wi - 1 - pscale. Relies on Wi == pscale*Wo, enforced by
+                    // the host wrapper.
 #pragma unroll
-                for (int i = 0; i < 8; i++) {
-                    int wi_full = wi_base + (wo_base + i) * pscale;
-                    if (wi_full >= Wi) wi_full -= Wi;
-                    dst[i] = inp[inp_row_base + wi_full];
+                    for (int i = 0; i < 8; i++) {
+                        int wi_full = wi_base + (wo_base + i) * pscale;
+                        if (wi_full >= Wi) wi_full -= Wi;
+                        dst[i] = inp[inp_row_base + wi_full];
+                    }
                 }
             } else {
                 // Zero pad for nz_global >= cnt — shmem dst is 16-byte aligned, so
@@ -327,12 +426,11 @@ namespace disco_kernels
         (void)K;
         (void)Ho;
         (void)Wo;
-        (void)NBR_PAD;
         (void)pscale;
         (void)BC_total;
         (void)pack_idx;
         (void)pack_val;
-        (void)pack_count;
+        (void)pack_offset;
         (void)inp;
         (void)out;
 #endif
@@ -340,21 +438,21 @@ namespace disco_kernels
 
     // Forward declaration of the SM_100a launcher (defined in disco_cuda_fwd_dense_kpacked_sm100.cu).
     torch::Tensor disco_cuda_fwd_kpacked_sm100(torch::Tensor inp, torch::Tensor pack_idx, torch::Tensor pack_val,
-                                               torch::Tensor pack_count, int64_t K, int64_t Ho, int64_t Wo);
+                                               torch::Tensor pack_offset, int64_t K, int64_t Ho, int64_t Wo);
 
     // Torch op: runtime-dispatches to SM_90a (WGMMA) or SM_100a (tcgen05) based on
     // the current device's compute capability. Falls back with TORCH_CHECK on
     // unsupported architectures.
     torch::Tensor disco_cuda_fwd_kpacked(torch::Tensor inp,
-                                         torch::Tensor pack_idx, // [Ho, NBR_PAD, 2]     int64
-                                         torch::Tensor pack_val, // [Ho, NBR_PAD, K_PAD] fp16/bf16 (or fp32; cast below)
-                                         torch::Tensor pack_count, // [Ho]                 int64
+                                         torch::Tensor pack_idx,    // [nnz, 2]             int64
+                                         torch::Tensor pack_val,    // [nnz, K_PAD] fp16/bf16
+                                         torch::Tensor pack_offset, // [Ho]                 int64
                                          int64_t K, int64_t Ho, int64_t Wo)
     {
         CHECK_CUDA_INPUT_TENSOR(inp);
         CHECK_CUDA_INPUT_TENSOR(pack_idx);
         CHECK_CUDA_INPUT_TENSOR(pack_val);
-        CHECK_CUDA_INPUT_TENSOR(pack_count);
+        CHECK_CUDA_INPUT_TENSOR(pack_offset);
 
         cudaDeviceProp props;
         cudaGetDeviceProperties(&props, inp.get_device());
@@ -363,7 +461,7 @@ namespace disco_kernels
                     props.major, ".", props.minor);
 
         // Dispatch to SM_100a (tcgen05) path on Blackwell.
-        if (props.major == 10) { return disco_cuda_fwd_kpacked_sm100(inp, pack_idx, pack_val, pack_count, K, Ho, Wo); }
+        if (props.major == 10) { return disco_cuda_fwd_kpacked_sm100(inp, pack_idx, pack_val, pack_offset, K, Ho, Wo); }
 
         const auto inp_dtype = inp.scalar_type();
         TORCH_CHECK(inp_dtype == at::ScalarType::BFloat16 || inp_dtype == at::ScalarType::Half,
@@ -377,14 +475,12 @@ namespace disco_kernels
         TORCH_CHECK(Wi % Wo == 0, "Wi (", Wi, ") must be divisible by Wo (", Wo, ")");
         TORCH_CHECK(Wo % 8 == 0, "Wo (", Wo, ") must be divisible by 8");
 
-        const int64_t K_PAD = pack_val.size(2);
+        const int64_t K_PAD = pack_val.size(1); // pack_val is [nnz, K_PAD]
         TORCH_CHECK(K_PAD == 8 || K_PAD == 16, "K_PAD must be 8 or 16, got ", K_PAD);
 
         constexpr int BC_TILE = 8;
         constexpr int WO_TILE = 8;
         constexpr int NZ_CHUNK = 16;
-
-        const int NBR_PAD = (int)pack_idx.size(1);
 
         int64_t out_dims[] = {B, C, K, Ho, Wo};
         auto out = torch::zeros(out_dims, torch::TensorOptions().device(inp.device()).dtype(inp_dtype));
@@ -404,8 +500,8 @@ namespace disco_kernels
             cudaFuncSetAttribute(reinterpret_cast<const void *>(fn), cudaFuncAttributeMaxDynamicSharedMemorySize,
                                  (int)shmem_bytes);
             fn<<<grid, 128, shmem_bytes, stream>>>(
-                (int)Hi, (int)Wi, (int)K, (int)Ho, (int)Wo, NBR_PAD, pscale, BC_total, pack_idx.data_ptr<int64_t>(),
-                reinterpret_cast<const T *>(pack_val_cast.data_ptr()), pack_count.data_ptr<int64_t>(),
+                (int)Hi, (int)Wi, (int)K, (int)Ho, (int)Wo, pscale, BC_total, pack_idx.data_ptr<int64_t>(),
+                reinterpret_cast<const T *>(pack_val_cast.data_ptr()), pack_offset.data_ptr<int64_t>(),
                 reinterpret_cast<const T *>(inp.data_ptr()), reinterpret_cast<T *>(out.data_ptr()));
         };
 
