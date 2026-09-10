@@ -223,20 +223,27 @@ class SpectralConvS2(nn.Module):
             if hasattr(self, "spectral_bias"):
                 integral = self.quadrature(x)
 
-            # perform SHT
-            x = self.sht(x).contiguous()
+            # perform SHT. The result is contiguous by construction, so no .contiguous() here:
+            # a copy over a complex buffer cannot be codegen'd by inductor, as triton has no
+            # complex type and the kernel signature then fails with KeyError: 'complex64'.
+            x = self.sht(x)
 
         # store the shapes
         B, C, H, W = x.shape
 
-        # deal with bias
+        # deal with bias. `integral` is computed from the real-valued input above, so it is a
+        # real tensor and broadcasts over the re/im axis: applying the bias on the real view is
+        # exact and keeps this pointwise op off the complex dtype (see above).
         if hasattr(self, "spectral_bias"):
-            x = x + integral.reshape(B, C, 1, 1) * self.spectral_bias
+            bias = integral.reshape(B, C, 1, 1, 1) * torch.view_as_real(self.spectral_bias)
+            x = torch.view_as_complex(torch.view_as_real(x) + bias)
 
         # perform contraction
         x = x.reshape(B, self.num_groups, C // self.num_groups, H, W)
         xp = self._contract_lwise(x, self.weight)
-        x = xp.reshape(B, self.out_channels, H, W).contiguous()
+        # merge the group axes on the real view: the einsum output can be non-contiguous, in
+        # which case this reshape copies, and that copy must not be over a complex buffer
+        x = torch.view_as_complex(torch.view_as_real(xp).reshape(B, self.out_channels, H, W, 2).contiguous())
 
         with torch.amp.autocast(device_type=x.device.type, enabled=False):
             x = self.isht(x)

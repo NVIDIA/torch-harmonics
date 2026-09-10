@@ -6,6 +6,7 @@
 
 * Added `torch.compile(fullgraph=True)` support to the serial and distributed layers, which previously broke on assertion helpers and on control flow that branched on tensor values.
 * The forward SHTs now fold the `2*pi` longitudinal scale factor into their precomputed quadrature weights instead of scaling the FFT output on every call, which removes a pointwise multiply over a complex tensor from the hot path.
+* `SpectralConvS2` and `DistributedSpectralConvS2` now apply the spectral bias and the post-contraction reshape on the real view of their coefficients. The bias factor is real-valued, so this is exact, and it removes the last complex-typed pointwise ops from the layer.
 * Fixed `torch.compile` of the SHT layers failing in inductor codegen with `KeyError: 'complex64'`. Triton has no complex type, so a pointwise kernel over a complex buffer cannot be generated; the transforms now keep scaling, stacking and contiguity in real space and assemble the complex result with a single `torch.complex` over contiguous operands. The vector transforms additionally fed that call non-contiguous einsum outputs, which tripped `assert_size_stride`.
 * Removed a redundant autocast decorator from the distributed autograd Functions, where it recorded its state somewhere nothing reads it and blocked full-graph compilation.
 * Distributed DISCO convolution now skips its polar collectives when the polar group holds a single rank, as the azimuth path already did.
