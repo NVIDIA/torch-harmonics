@@ -175,6 +175,14 @@ class DistributedRealSHT(nn.Module):
     def extra_repr(self):
         return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
+    # This transform cannot be captured in a single graph: the redistribution collectives it
+    # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
+    # every one of them and inductor only ever sees the slivers in between. Those slivers hold
+    # complex intermediates, which triton cannot type (KeyError: 'complex64' in codegen), and
+    # compiling them buys nothing next to the all-to-alls surrounding them. Disabling the whole
+    # forward costs no fusion that the breaks had not already cost, and keeps the complex
+    # spectral data out of inductor entirely. The serial transforms are compiled as usual.
+    @torch.compiler.disable()
     def forward(self, x: torch.Tensor):
 
         check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
@@ -345,6 +353,14 @@ class DistributedInverseRealSHT(nn.Module):
     def extra_repr(self):
         return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
+    # This transform cannot be captured in a single graph: the redistribution collectives it
+    # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
+    # every one of them and inductor only ever sees the slivers in between. Those slivers hold
+    # complex intermediates, which triton cannot type (KeyError: 'complex64' in codegen), and
+    # compiling them buys nothing next to the all-to-alls surrounding them. Disabling the whole
+    # forward costs no fusion that the breaks had not already cost, and keeps the complex
+    # spectral data out of inductor entirely. The serial transforms are compiled as usual.
+    @torch.compiler.disable()
     def forward(self, x: torch.Tensor):
 
         check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
@@ -506,6 +522,14 @@ class DistributedRealVectorSHT(nn.Module):
     def extra_repr(self):
         return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
+    # This transform cannot be captured in a single graph: the redistribution collectives it
+    # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
+    # every one of them and inductor only ever sees the slivers in between. Those slivers hold
+    # complex intermediates, which triton cannot type (KeyError: 'complex64' in codegen), and
+    # compiling them buys nothing next to the all-to-alls surrounding them. Disabling the whole
+    # forward costs no fusion that the breaks had not already cost, and keeps the complex
+    # spectral data out of inductor entirely. The serial transforms are compiled as usual.
+    @torch.compiler.disable()
     def forward(self, x: torch.Tensor):
 
         check(x.dim() >= 4, lambda: f"Expected tensor with at least 4 dimensions but got {x.dim()} instead")
@@ -666,6 +690,14 @@ class DistributedInverseRealVectorSHT(nn.Module):
     def extra_repr(self):
         return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
+    # This transform cannot be captured in a single graph: the redistribution collectives it
+    # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
+    # every one of them and inductor only ever sees the slivers in between. Those slivers hold
+    # complex intermediates, which triton cannot type (KeyError: 'complex64' in codegen), and
+    # compiling them buys nothing next to the all-to-alls surrounding them. Disabling the whole
+    # forward costs no fusion that the breaks had not already cost, and keeps the complex
+    # spectral data out of inductor entirely. The serial transforms are compiled as usual.
+    @torch.compiler.disable()
     def forward(self, x: torch.Tensor):
 
         check(x.dim() >= 4, lambda: f"Expected tensor with at least 4 dimensions but got {x.dim()} instead")
