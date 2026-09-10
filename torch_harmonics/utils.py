@@ -100,12 +100,31 @@ def load_mola_elevation(
     return data
 
 
+def _contiguous(x: torch.Tensor) -> torch.Tensor:
+    """
+    ``x.contiguous()``, performed in real space for complex inputs.
+
+    Inductor cannot generate a Triton kernel that reads or writes a complex buffer: complex
+    dtypes have no Triton type, so the copy that ``contiguous()`` lowers to dies in codegen
+    with ``KeyError: 'complex64'``. ``view_as_real``/``view_as_complex`` are pure views (the
+    former is the one consumer for which inductor's complex-tensor check makes an exception),
+    so routing the copy through them yields a bit-identical result from a real-dtype kernel.
+
+    Nothing is written in place, so this does not reintroduce the autograd breakage that the
+    old ``xout[..., 0] = ...`` / ``view_as_complex`` pattern caused.
+    """
+
+    if x.is_complex():
+        return torch.view_as_complex(torch.view_as_real(x).contiguous())
+    return x.contiguous()
+
+
 class _EnsureContiguous(torch.autograd.Function):
     """Ensures the tensor is contiguous in both the forward and backward pass."""
 
     @staticmethod
     def forward(x):
-        return x.contiguous()
+        return _contiguous(x)
 
     @staticmethod
     def setup_context(ctx, inputs, output):
@@ -113,7 +132,9 @@ class _EnsureContiguous(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad):
-        return grad.contiguous()
+        # load-bearing: an upstream layer can hand back a non-contiguous gradient, and the
+        # CPU/MKL FFT backward rejects the resulting stride pattern (DftiCommitDescriptor).
+        return _contiguous(grad)
 
 
 def ensure_contiguous(x: torch.Tensor) -> torch.Tensor:

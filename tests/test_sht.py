@@ -565,6 +565,53 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         self.assertTrue(compare_tensors("sht weights", sht_host.weights.cpu(), sht_device.weights.cpu(), atol=atol, rtol=rtol, verbose=verbose))
         self.assertTrue(compare_tensors("isht weights", isht_host.pct.cpu(), isht_device.pct.cpu(), atol=atol, rtol=rtol, verbose=verbose))
 
+    @parameterized.expand(
+        [
+            [12, 24, 2, "equiangular"],
+            [12, 24, 2, "legendre-gauss"],
+            [11, 22, 2, "equiangular"],
+        ],
+        skip_on_empty=True,
+    )
+    def test_compile(self, nlat, nlon, batch_size, grid, verbose=False):
+        """The scalar round trip compiles into a single graph and matches eager.
+
+        The round trip is compiled as one function so the complex spectral coefficients
+        are an *intermediate* buffer rather than a graph output -- that is the case
+        inductor has to generate code for.  Triton has no complex type, so any pointwise
+        kernel over a complex buffer fails codegen with ``KeyError: 'complex64'``; on CPU
+        the C++ backend is used instead, where the exposure is a layout mismatch on
+        ``aten.complex`` caught by ``assert_size_stride``.  Both are worth covering, which
+        the CPU/CUDA parameterization of this class does.
+
+        Backward is included deliberately: ``_EnsureContiguous.backward`` copies a complex
+        gradient, and that copy only appears in the joint graph.
+        """
+
+        if verbose:
+            print(f"Testing fullgraph compilation of real-valued SHT on {nlat}x{nlon} {grid} grid on {self.device.type}")
+
+        set_seed(333)
+
+        sht = th.RealSHT(nlat, nlon, grid=grid).to(self.device)
+        isht = th.InverseRealSHT(nlat, nlon, grid=grid).to(self.device)
+
+        def fn(t):
+            return isht(sht(t))
+
+        x = torch.randn(batch_size, nlat, nlon, device=self.device, dtype=torch.float32, requires_grad=True)
+        gradient = torch.randn_like(x)
+
+        expected = fn(x)
+        (expected_grad,) = torch.autograd.grad(expected, x, grad_outputs=gradient)
+
+        compiled = torch.compile(fn, fullgraph=True, dynamic=False)
+        actual = compiled(x)
+        (actual_grad,) = torch.autograd.grad(actual, x, grad_outputs=gradient)
+
+        self.assertTrue(compare_tensors("compiled forward", actual, expected, atol=1e-5, rtol=1e-5, verbose=verbose))
+        self.assertTrue(compare_tensors("compiled backward", actual_grad, expected_grad, atol=1e-5, rtol=1e-5, verbose=verbose))
+
 
 @parameterized_class(("device"), _devices)
 class TestSphericalHarmonicsFunctions(unittest.TestCase):
@@ -881,6 +928,47 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         spectral_energy = torch.einsum("blm,lm->b", c_s.abs() ** 2 + c_t.abs() ** 2, W)  # (batch,)
 
         self.assertTrue(compare_tensors("vector Parseval's theorem", spatial_energy, spectral_energy, atol=atol, rtol=rtol, verbose=verbose))
+
+    @parameterized.expand(
+        [
+            [12, 24, 2, "equiangular"],
+            [12, 24, 2, "legendre-gauss"],
+            [11, 22, 2, "equiangular"],
+        ],
+        skip_on_empty=True,
+    )
+    def test_compile(self, nlat, nlon, batch_size, grid, verbose=False):
+        """The vector round trip compiles into a single graph and matches eager.
+
+        Same rationale as the scalar case, see
+        ``TestSphericalHarmonicTransform.test_compile``.  The vector transforms assemble
+        their spheroidal and toroidal components separately, so they exercise a code path
+        the scalar test does not reach.
+        """
+
+        if verbose:
+            print(f"Testing fullgraph compilation of vector SHT on {nlat}x{nlon} {grid} grid on {self.device.type}")
+
+        set_seed(333)
+
+        vsht = th.RealVectorSHT(nlat, nlon, grid=grid).to(self.device)
+        ivsht = th.InverseRealVectorSHT(nlat, nlon, grid=grid).to(self.device)
+
+        def fn(t):
+            return ivsht(vsht(t))
+
+        x = torch.randn(batch_size, 2, nlat, nlon, device=self.device, dtype=torch.float32, requires_grad=True)
+        gradient = torch.randn_like(x)
+
+        expected = fn(x)
+        (expected_grad,) = torch.autograd.grad(expected, x, grad_outputs=gradient)
+
+        compiled = torch.compile(fn, fullgraph=True, dynamic=False)
+        actual = compiled(x)
+        (actual_grad,) = torch.autograd.grad(actual, x, grad_outputs=gradient)
+
+        self.assertTrue(compare_tensors("compiled forward", actual, expected, atol=1e-5, rtol=1e-5, verbose=verbose))
+        self.assertTrue(compare_tensors("compiled backward", actual_grad, expected_grad, atol=1e-5, rtol=1e-5, verbose=verbose))
 
 
 if __name__ == "__main__":

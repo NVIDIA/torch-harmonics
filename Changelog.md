@@ -5,6 +5,8 @@
 ### v0.9.3b1 (unreleased)
 
 * Added `torch.compile(fullgraph=True)` support to the serial and distributed layers, which previously broke on assertion helpers and on control flow that branched on tensor values.
+* The forward SHTs now fold the `2*pi` longitudinal scale factor into their precomputed quadrature weights instead of scaling the FFT output on every call, which removes a pointwise multiply over a complex tensor from the hot path.
+* Fixed `torch.compile` of the SHT layers failing in inductor codegen with `KeyError: 'complex64'`. Triton has no complex type, so a pointwise kernel over a complex buffer cannot be generated; the transforms now keep scaling, stacking and contiguity in real space and assemble the complex result with a single `torch.complex` over contiguous operands. The vector transforms additionally fed that call non-contiguous einsum outputs, which tripped `assert_size_stride`.
 * Removed a redundant autocast decorator from the distributed autograd Functions, where it recorded its state somewhere nothing reads it and blocked full-graph compilation.
 * Distributed DISCO convolution now skips its polar collectives when the polar group holds a single rank, as the azimuth path already did.
 * Attention's channel-layout conversions now use the dedicated 4-D helpers, which fixes a stride mismatch against the registered fake kernel and makes the conversion faster.
