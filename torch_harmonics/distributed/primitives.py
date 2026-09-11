@@ -33,6 +33,7 @@ from typing import List
 import torch
 import torch.distributed as dist
 
+from torch_harmonics.quadrature import latitude_support_band
 from torch_harmonics.utils import check
 
 from ._amp_utils import _custom_fwd, _custom_setup_context
@@ -372,18 +373,39 @@ class _DistributeTransposePolar(torch.autograd.Function):
 
 
 # we need those additional primitives for distributed matrix multiplications
+# dtypes whose accumulation error a cross-rank reduction would make worse than the local
+# one, so the collective is run in fp32 instead
+_LOW_PRECISION_DTYPES = (torch.float16, torch.bfloat16)
+
+
+def _reduction_dtype(dtype, use_fp32):
+    """Working dtype for a collective reduction.
+
+    ``use_fp32`` promotes low-precision inputs so that accumulating across ranks does not
+    lose precision the local reduction had kept. It must only ever *promote*: reducing an
+    fp64 tensor in fp32 would silently cap the result at fp32 accuracy, which is the
+    opposite of what the flag is for. Anything already at fp32 or wider is left alone.
+    """
+
+    if use_fp32 and dtype in _LOW_PRECISION_DTYPES:
+        return torch.float32
+    return dtype
+
+
 def _reduce(input_, use_fp32=True, group=None):
 
     # Bypass the function if we are using only 1 GPU.
     if dist.get_world_size(group=group) == 1:
         return input_
 
+    dtype = input_.dtype
+    work_dtype = _reduction_dtype(dtype, use_fp32)
+
     # dist.all_reduce is in-place on its tensor argument; the .clone() forces a fresh
     # buffer so we never mutate the caller's tensor (which would alias an autograd-
     # tracked value when the input is fp32 + contiguous).
-    if use_fp32:
-        dtype = input_.dtype
-        inputf_ = input_.float().contiguous().clone()
+    if work_dtype != dtype:
+        inputf_ = input_.to(work_dtype).contiguous().clone()
         dist.all_reduce(inputf_, group=group)
         input_ = inputf_.to(dtype)
     else:
@@ -472,6 +494,9 @@ def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
     would silently read past short chunks' allocations, which manifests as
     corruption that surfaces many steps later as ``invalid memory address``
     errors in unrelated kernels.
+
+    ``use_fp32`` promotes fp16/bf16 inputs for the reduction, see
+    :func:`_reduction_dtype`; wider dtypes are reduced as-is.
     """
 
     # Bypass the function if we are using only 1 GPU.
@@ -488,7 +513,7 @@ def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
     is_even = min(orig_shapes) == max_chunk
 
     dtype = input_.dtype
-    work_dtype = torch.float32 if (use_fp32 and dtype != torch.float32) else dtype
+    work_dtype = _reduction_dtype(dtype, use_fp32)
 
     if is_even:
         # Fast path: all chunks the same size; call reduce_scatter directly.
@@ -1164,6 +1189,102 @@ class _PolarHaloExchangeFn(torch.autograd.Function):
 
 
 @torch.compiler.disable()
+def compute_polar_halo_radius(
+    lats_in: torch.Tensor,
+    lats_out: torch.Tensor,
+    theta_cutoff: float,
+    lat_in_shapes: List[int],
+    lat_out_shapes: List[int],
+) -> int:
+    r"""
+    Latitude halo radius a polar shard needs from its neighbours, derived analytically.
+
+    A localized operator couples an output latitude only to input latitudes within
+    ``theta_cutoff``, a contiguous band given by :func:`~torch_harmonics.quadrature.latitude_support_band`.
+    A polar rank owns a contiguous range of both axes, so the rows it must borrow are exactly
+    those where the band of its output range runs past its own input range. This returns the
+    largest such overhang over all ranks, which is the halo width
+    :func:`polar_halo_exchange` has to move.
+
+    The band bounds are monotone in the output latitude, so only the two ends of each rank's
+    output range are examined, and the whole thing costs a pair of binary searches rather than
+    a pass over a sparsity pattern. Computing it from the geometry rather than by measuring a
+    precomputed pattern is also what lets the pattern itself be built on the band -- otherwise
+    the radius would depend on the very tensor it is supposed to bound.
+
+    It is evaluated identically on every rank, so no communication is involved.
+
+    Parameters
+    ----------
+    lats_in : torch.Tensor
+        Input colatitudes in radians, ascending, shape ``(nlat_in,)``.
+    lats_out : torch.Tensor
+        Output colatitudes in radians, ascending, shape ``(nlat_out,)``.
+    theta_cutoff : float
+        Effective angular support radius, i.e. including the widening the sparsity pattern is
+        built with, see :func:`~torch_harmonics.quadrature.effective_theta_cutoff`.
+    lat_in_shapes : List[int]
+        Input latitudes held by each polar rank, ordered by rank.
+    lat_out_shapes : List[int]
+        Output latitudes held by each polar rank, ordered by rank.
+
+    Returns
+    -------
+    int
+        Halo radius in latitude rows; ``0`` when the polar group holds a single rank.
+
+    Raises
+    ------
+    ValueError
+        If the radius exceeds the smallest local input chunk. :func:`polar_halo_exchange`
+        only communicates with immediate neighbours, so a halo wider than a neighbour's entire
+        share would have to reach past it to the next rank out.
+    """
+
+    comm_size = len(lat_out_shapes)
+    if comm_size <= 1:
+        return 0
+
+    lo, hi = latitude_support_band(lats_in, lats_out, theta_cutoff)
+
+    in_starts = [0]
+    out_starts = [0]
+    for n in lat_in_shapes[:-1]:
+        in_starts.append(in_starts[-1] + n)
+    for n in lat_out_shapes[:-1]:
+        out_starts.append(out_starts[-1] + n)
+
+    r_lat = 0
+    for rank in range(comm_size):
+        out_lo, out_n = out_starts[rank], lat_out_shapes[rank]
+        if out_n <= 0:
+            continue
+        in_lo, in_n = in_starts[rank], lat_in_shapes[rank]
+
+        # the band is monotone in the output latitude, so the extremes of this rank's output
+        # range bracket every input latitude it can reach
+        need_lo = int(lo[out_lo])
+        need_hi = int(hi[out_lo + out_n - 1])
+        if need_hi < need_lo:
+            continue
+
+        r_lat = max(r_lat, in_lo - need_lo, need_hi - (in_lo + in_n - 1))
+
+    r_lat = max(r_lat, 0)
+
+    min_chunk = min(lat_in_shapes)
+    if r_lat > min_chunk:
+        raise ValueError(
+            f"Latitude halo of {r_lat} rows exceeds the smallest local input chunk of {min_chunk} rows "
+            f"(input latitudes split as {list(lat_in_shapes)} over {comm_size} polar ranks). The halo is "
+            "exchanged with immediate neighbours only, so a halo this wide would have to reach past a "
+            "neighbour to the rank beyond it. This means the polar decomposition is too fine for the "
+            "angular cutoff: use fewer polar ranks, more latitudes, or a smaller theta_cutoff."
+        )
+
+    return r_lat
+
+
 def polar_halo_exchange(x, r_lat):
     """Exchange ``r_lat`` halo rows with neighbouring polar ranks.
 

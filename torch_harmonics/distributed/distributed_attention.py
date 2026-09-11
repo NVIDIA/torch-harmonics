@@ -41,8 +41,9 @@ from torch_harmonics.attention._attention_utils import _check_extent, _check_ndi
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
 from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_fwd, _custom_setup_context
+from torch_harmonics.quadrature import effective_theta_cutoff, precompute_latitudes
 
-from .primitives import compute_split_shapes, get_group_neighbors, polar_halo_exchange
+from .primitives import compute_polar_halo_radius, compute_split_shapes, get_group_neighbors, polar_halo_exchange
 from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 # ---------------------------------------------------------------------------
@@ -932,17 +933,32 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         self.lon_lo_out = self.lon_out_starts[self.comm_rank_azimuth]
         self.lat_lo_out = self.lat_out_starts[self.comm_rank_polar]
 
-        if self.upsample:
-            # ---- lat halo size ----
-            # For the scatter direction psi rows are keyed by hi, so the halo
-            # radius must be known BEFORE the local psi (whose rows span the
-            # halo-padded input range) can be built.
-            self.r_lat = self._compute_r_lat_upsample()
+        # ---- lat halo size ----
+        # Derived from the grid geometry rather than measured off the psi: an output latitude
+        # can only reach input latitudes within theta_cutoff of it, and the halo is how far
+        # that band runs past a rank's own input range. The criterion is symmetric in the two
+        # grids, so the same call covers the gather and scatter directions -- the upsample path
+        # builds its psi with the shapes swapped, but the latitudes it needs are the same ones.
+        # It also raises if the halo outgrows a local chunk, which the immediate-neighbour
+        # exchange could not serve.
+        # the grid types are constructor arguments the base class does not retain, so they are
+        # read from the local parameters rather than off self
+        lats_in, _ = precompute_latitudes(self.nlat_in, grid=grid_in)
+        lats_out, _ = precompute_latitudes(self.nlat_out, grid=grid_out)
+        self.r_lat = compute_polar_halo_radius(
+            lats_in,
+            lats_out,
+            effective_theta_cutoff(self.theta_cutoff),
+            self.lat_in_shapes,
+            self.lat_out_shapes,
+        )
 
+        if self.upsample:
             # ---- build local psi ----
             # Rows are re-keyed to the halo-padded local input lat range, cols
             # are filtered to the local output lat rows and the wo component is
-            # pre-shifted by -lon_lo_out (see _build_local_psi_upsample).
+            # pre-shifted by -lon_lo_out (see _build_local_psi_upsample). This needs r_lat,
+            # which is why the halo size is settled above rather than after the build.
             self._build_local_psi_upsample()
         else:
             # ---- build local psi ----
@@ -951,12 +967,6 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
             # component of col_idx by lon_lo_out so that the kernel can use
             # local wo directly without knowing the global lon offset.
             self._build_local_psi()  # also precomputes self.psi_{n_long_rows,max_row_len,mid_row_len}
-
-            # ---- lat halo size ----
-            # Compute r_lat from the global psi: maximum |hi_global - ho_global|
-            # over all (ho, hi) pairs in the neighbourhood.
-            # Use the lat_out_lo of our polar rank to compute ho_global.
-            self.r_lat = self._compute_r_lat()
 
     # -----------------------------------------------------------------------
 
@@ -1017,86 +1027,9 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         self.psi_max_row_len = int(max_row_len)
         self.psi_mid_row_len = int(mid_row_len)
 
-    def _compute_r_lat(self) -> int:
-        """Max lat halo radius needed across all polar ranks.
-
-        Computed locally from the global psi (built identically on every rank
-        by the base class), so no communication is required.
-        """
-
-        if polar_group_size() == 1:
-            return 0
-
-        col_idx = self.psi_col_idx  # global, all nlat_out rows
-        if col_idx.numel() == 0:
-            return 0
-
-        roff = self.psi_roff_idx
-
-        r = 0
-        for rank in range(self.comm_size_polar):
-            lat_in_lo = self.lat_in_starts[rank]
-            lat_in_hi = lat_in_lo + self.lat_in_shapes[rank]
-            lat_out_lo = self.lat_out_starts[rank]
-            lat_out_hi = lat_out_lo + self.lat_out_shapes[rank]
-
-            start = roff[lat_out_lo].item()
-            end = roff[lat_out_hi].item()
-            if start == end:
-                continue
-
-            hi = (col_idx[start:end] // self.nlon_in).long()
-            r_top = max(0, lat_in_lo - int(hi.min().item()))
-            r_bot = max(0, int(hi.max().item()) - (lat_in_hi - 1))
-            r = max(r, r_top, r_bot)
-
-        return r
-
     # -----------------------------------------------------------------------
     # upsample (scatter) direction helpers
     # -----------------------------------------------------------------------
-
-    def _compute_r_lat_upsample(self) -> int:
-        """Max lat halo radius needed across all polar ranks, upsample direction.
-
-        In the scatter psi (rows keyed by input lat hi, cols encoding output
-        cells), the entries relevant to a polar rank are those whose OUTPUT row
-        ho falls into its local output shard; the halo is then determined by how
-        far the corresponding INPUT rows hi reach outside its local input shard.
-        Computed locally from the global psi (built identically on every rank
-        by the base class), so no communication is required.
-        """
-
-        if polar_group_size() == 1:
-            return 0
-
-        col_idx = self.psi_col_idx  # global, rows = nlat_in, cols = ho * nlon_out + wo
-        if col_idx.numel() == 0:
-            return 0
-
-        roff = self.psi_roff_idx
-        # input-lat row index of every nonzero entry
-        nnz_per_row = roff[1:] - roff[:-1]
-        hi_of_nz = torch.repeat_interleave(torch.arange(self.nlat_in, dtype=torch.int64, device=col_idx.device), nnz_per_row)
-        ho = (col_idx // self.nlon_out).long()
-
-        r = 0
-        for rank in range(self.comm_size_polar):
-            lat_in_lo = self.lat_in_starts[rank]
-            lat_in_hi = lat_in_lo + self.lat_in_shapes[rank]
-            lat_out_lo = self.lat_out_starts[rank]
-            lat_out_hi = lat_out_lo + self.lat_out_shapes[rank]
-
-            mask = (ho >= lat_out_lo) & (ho < lat_out_hi)
-            if not bool(mask.any()):
-                continue
-
-            hi = hi_of_nz[mask]
-            r_top = max(0, lat_in_lo - int(hi.min().item()))
-            r_bot = max(0, int(hi.max().item()) - (lat_in_hi - 1))
-            r = max(r, r_top, r_bot)
-
-        return r
 
     def _build_local_psi_upsample(self):
         """Build the local scatter psi for the upsample ring kernels.
