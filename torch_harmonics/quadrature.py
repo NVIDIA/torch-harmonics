@@ -289,14 +289,25 @@ def latitude_support_band(lats_in: torch.Tensor, lats_out: torch.Tensor, theta_c
         Last input-latitude index in the band, inclusive, shape ``(nlat_out,)``. ``hi < lo``
         marks an output latitude that no input latitude can reach.
 
+    Notes
+    -----
+    The bound is compared inclusively, but only up to floating point: a node sitting exactly
+    ``theta_cutoff`` away falls on whichever side the arithmetic rounds to, and that can differ
+    between platforms. It does not matter for the cutoffs in use, which come from the grid's
+    node spacing widened by :data:`THETA_CUTOFF_EPS` and so land between nodes rather than on
+    one. A cutoff chosen to coincide exactly with a node separation is the case to avoid.
+
     Examples
     --------
     >>> import torch
     >>> from torch_harmonics.quadrature import latitude_support_band, precompute_latitudes
     >>> lats, _ = precompute_latitudes(16)
-    >>> lo, hi = latitude_support_band(lats, lats, float(lats[1] - lats[0]))
+    >>> cutoff = 1.5 * float(lats[1] - lats[0])   # one and a half grid spacings
+    >>> lo, hi = latitude_support_band(lats, lats, cutoff)
     >>> int(lo[8]), int(hi[8])
     (7, 9)
+    >>> int(lo[0]), int(hi[0])                    # clamped at the pole
+    (0, 1)
     """
 
     lo = torch.searchsorted(lats_in, lats_out - theta_cutoff, right=False)
