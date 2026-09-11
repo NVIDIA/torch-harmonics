@@ -43,7 +43,6 @@ from .primitives import (
     distributed_transpose_azimuth,
     flatten_and_pad_leading_dims,
     reduce_from_scatter_to_polar_region,
-    split_tensor_along_dim,
     unpad_and_unflatten_leading_dims,
 )
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -162,22 +161,25 @@ class DistributedRealSHT(nn.Module):
         self.lmax_local = self.l_shapes[self.comm_rank_polar]
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
+        self.lat_offset = sum(self.lat_shapes[: self.comm_rank_polar])
+        self.mmax_offset = sum(self.m_shapes[: self.comm_rank_azimuth])
 
         # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
         # quadrature weights. It is a constant prefactor of a linear transform, so folding it
         # here is exact and saves a pointwise multiply on a complex tensor in every forward.
         weights = 2.0 * torch.pi * weights
 
-        # combine quadrature weights with the legendre weights
-        pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
-        weights = torch.einsum("mlk,k->mlk", pct, weights)
+        # build only the block this rank keeps, rather than the whole table. The contraction
+        # over k is a distributed matmul completed by a reduce-scatter in the forward, so only
+        # the local latitudes are needed; l is contracted in full. Latitudes restrict by simply
+        # passing fewer evaluation points -- they are independent of each other -- whereas the
+        # order range needs mmin, since reaching P^m_m means walking the seed up from m=0.
+        tq_local = tq[self.lat_offset : self.lat_offset + self.nlat_local]
+        weights = weights[self.lat_offset : self.lat_offset + self.nlat_local]
 
-        # split the weights along m (azimuth group) and along the quadrature axis k=nlat
-        # (polar group). The contraction over k is a distributed matmul completed by a
-        # reduce-scatter in the forward, so a rank only ever needs the latitudes it owns:
-        # the weight tensor is fully partitioned rather than replicated across polar ranks.
-        weights = split_tensor_along_dim(weights, dim=0, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]
-        weights = split_tensor_along_dim(weights, dim=2, num_chunks=self.comm_size_polar)[self.comm_rank_polar].contiguous()
+        # combine quadrature weights with the legendre weights
+        pct = _precompute_legpoly(self.mmax_offset + self.mmax_local, self.lmax, tq_local, norm=self.norm, csphase=self.csphase, mmin=self.mmax_offset)
+        weights = torch.einsum("mlk,k->mlk", pct, weights).contiguous()
 
         # remember quadrature weights
         self.register_buffer("weights", weights, persistent=False)
@@ -352,17 +354,26 @@ class DistributedInverseRealSHT(nn.Module):
         self.lmax_local = self.l_shapes[self.comm_rank_polar]
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
+        self.lmax_offset = sum(self.l_shapes[: self.comm_rank_polar])
+        self.mmax_offset = sum(self.m_shapes[: self.comm_rank_azimuth])
 
-        # compute legendre polynomials
-        # store as (mmax, nlat, lmax) so the contraction dim l is stride-1
-        pct = _precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        # build only the block this rank keeps. The synthesis over l is a distributed matmul
+        # completed by a reduce-scatter in the forward, so only the local degrees are needed,
+        # while all latitudes are produced. Both ranges need an explicit offset: the sectoral
+        # seed couples orders and the three-term recurrence couples degrees, so each has to be
+        # walked from the start even though only the local window is stored.
+        # store as (mmax_local, nlat, lmax_local) so the contraction dim l is stride-1
+        pct = _precompute_legpoly(
+            self.mmax_offset + self.mmax_local,
+            self.lmax_offset + self.lmax_local,
+            t,
+            norm=self.norm,
+            inverse=True,
+            csphase=self.csphase,
+            mmin=self.mmax_offset,
+            lmin=self.lmax_offset,
+        )
         pct = pct.permute(0, 2, 1).contiguous()
-
-        # split along m (azimuth group) and along the contraction axis l (polar group). The
-        # synthesis over l is a distributed matmul completed by a reduce-scatter in the
-        # forward, so the tensor is fully partitioned rather than replicated across polar ranks.
-        pct = split_tensor_along_dim(pct, dim=0, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]
-        pct = split_tensor_along_dim(pct, dim=2, num_chunks=self.comm_size_polar)[self.comm_rank_polar].contiguous()
 
         # register
         self.register_buffer("pct", pct, persistent=False)
@@ -513,9 +524,16 @@ class DistributedRealVectorSHT(nn.Module):
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
+        self.lat_offset = sum(self.lat_shapes[: self.comm_rank_polar])
+        self.mmax_offset = sum(self.m_shapes[: self.comm_rank_azimuth])
+
+        # build only the block this rank keeps: local latitudes, local orders, all degrees,
+        # see DistributedRealSHT.__init__
+        tq_local = tq[self.lat_offset : self.lat_offset + self.nlat_local]
+        weights = weights[self.lat_offset : self.lat_offset + self.nlat_local]
 
         # compute weights
-        dpct = _precompute_dlegpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
+        dpct = _precompute_dlegpoly(self.mmax_offset + self.mmax_local, self.lmax, tq_local, norm=self.norm, csphase=self.csphase, mmin=self.mmax_offset)
 
         # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
         # quadrature weights (see DistributedRealSHT.__init__)
@@ -525,14 +543,9 @@ class DistributedRealVectorSHT(nn.Module):
         l = torch.arange(0, self.lmax)
         norm_factor = 1.0 / l / (l + 1)
         norm_factor[0] = 1.0
-        weights = torch.einsum("dmlk,k,l->dmlk", dpct, weights, norm_factor)
+        weights = torch.einsum("dmlk,k,l->dmlk", dpct, weights, norm_factor).contiguous()
         # since the second component is imaginary, we need to take complex conjugation into account
         weights[1] = -1 * weights[1]
-
-        # split along m (azimuth group) and along the quadrature axis k=nlat (polar group),
-        # see DistributedRealSHT.__init__
-        weights = split_tensor_along_dim(weights, dim=1, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]
-        weights = split_tensor_along_dim(weights, dim=3, num_chunks=self.comm_size_polar)[self.comm_rank_polar].contiguous()
 
         # remember quadrature weights
         self.register_buffer("weights", weights, persistent=False)
@@ -691,15 +704,23 @@ class DistributedInverseRealVectorSHT(nn.Module):
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
 
-        # compute legendre polynomials
-        # store as (2, mmax, nlat, lmax) so the contraction dim l is stride-1
-        dpct = _precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
-        dpct = dpct.permute(0, 1, 3, 2).contiguous()
+        self.lmax_offset = sum(self.l_shapes[: self.comm_rank_polar])
+        self.mmax_offset = sum(self.m_shapes[: self.comm_rank_azimuth])
 
-        # split along m (azimuth group) and along the contraction axis l (polar group),
+        # build only the block this rank keeps: local orders, local degrees, all latitudes,
         # see DistributedInverseRealSHT.__init__
-        dpct = split_tensor_along_dim(dpct, dim=1, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]
-        dpct = split_tensor_along_dim(dpct, dim=3, num_chunks=self.comm_size_polar)[self.comm_rank_polar].contiguous()
+        # store as (2, mmax_local, nlat, lmax_local) so the contraction dim l is stride-1
+        dpct = _precompute_dlegpoly(
+            self.mmax_offset + self.mmax_local,
+            self.lmax_offset + self.lmax_local,
+            t,
+            norm=self.norm,
+            inverse=True,
+            csphase=self.csphase,
+            mmin=self.mmax_offset,
+            lmin=self.lmax_offset,
+        )
+        dpct = dpct.permute(0, 1, 3, 2).contiguous()
 
         # register buffer
         self.register_buffer("dpct", dpct, persistent=False)
