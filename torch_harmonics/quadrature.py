@@ -230,6 +230,82 @@ def compute_theta_cutoff(nlat: int, grid: Optional[str] = "equiangular", scale: 
     return scale * dlat_max
 
 
+#: Fractional widening applied to ``theta_cutoff`` when a sparsity pattern is built, to keep the
+#: support from aliasing against the grid width near the poles. Anything deriving a latitude band
+#: or a halo from the cutoff has to apply the same widening, or it will come out narrower than the
+#: pattern it is supposed to bound.
+THETA_CUTOFF_EPS = 1e-3
+
+
+def effective_theta_cutoff(theta_cutoff: float, theta_eps: Optional[float] = THETA_CUTOFF_EPS) -> float:
+    """The cutoff a sparsity pattern is actually built with, see :data:`THETA_CUTOFF_EPS`."""
+    return (1.0 + theta_eps) * theta_cutoff
+
+
+def latitude_support_band(lats_in: torch.Tensor, lats_out: torch.Tensor, theta_cutoff: float) -> Tuple[torch.Tensor, torch.Tensor]:
+    r"""
+    Inclusive range of input latitudes that can lie within ``theta_cutoff`` of each output latitude.
+
+    The localized operators on the sphere -- the DISCO convolutions and neighborhood
+    attention -- only couple points closer than an angular cutoff. A colatitude difference is
+    bounded by the great-circle distance between the two points, so
+
+    .. math::
+        |\theta_\mathrm{in} - \theta_\mathrm{out}| \le \theta_c
+
+    is a *necessary* condition for a pair to interact, and the latitudes satisfying it form a
+    contiguous band around each output latitude. Everything outside the band is known to be
+    zero without evaluating it.
+
+    That band is what makes these operators cheap to build and to distribute. The sparsity
+    pattern only has to be evaluated inside it, which is the difference between
+    :math:`O(N_\theta^2 N_\lambda)` and :math:`O(N_\theta N_\lambda b)` work; and a polar shard
+    only ever needs latitudes inside it from its neighbours, which is what bounds the halo.
+
+    The band is a superset of the true support, since it ignores longitude and so admits points
+    that are close in latitude but far apart on the sphere. It is tight in the sense that it
+    cannot be narrowed without knowing the longitudes: a point at the output's own longitude
+    attains the bound.
+
+    Because the criterion is symmetric in the two grids, it does not matter which of them the
+    caller regards as the input -- the transpose direction may pass them the other way round.
+
+    Parameters
+    ----------
+    lats_in : torch.Tensor
+        Input colatitudes in radians, ascending, shape ``(nlat_in,)``.
+    lats_out : torch.Tensor
+        Output colatitudes in radians, ascending, shape ``(nlat_out,)``.
+    theta_cutoff : float
+        Angular support radius of the filter basis. Pass the same effective value the sparsity
+        pattern is built with, including any widening factor, or the band may exclude entries
+        the pattern would keep.
+
+    Returns
+    -------
+    lo : torch.Tensor
+        First input-latitude index in the band, per output latitude, shape ``(nlat_out,)``.
+    hi : torch.Tensor
+        Last input-latitude index in the band, inclusive, shape ``(nlat_out,)``. ``hi < lo``
+        marks an output latitude that no input latitude can reach.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from torch_harmonics.quadrature import latitude_support_band, precompute_latitudes
+    >>> lats, _ = precompute_latitudes(16)
+    >>> lo, hi = latitude_support_band(lats, lats, float(lats[1] - lats[0]))
+    >>> int(lo[8]), int(hi[8])
+    (7, 9)
+    """
+
+    lo = torch.searchsorted(lats_in, lats_out - theta_cutoff, right=False)
+    hi = torch.searchsorted(lats_in, lats_out + theta_cutoff, right=True) - 1
+
+    # lo may run one past the end and hi one before the start; both encode an empty band
+    return lo.clamp(0, lats_in.numel()), hi.clamp(-1, lats_in.numel() - 1)
+
+
 def trapezoidal_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 1.0, periodic: Optional[bool] = False) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Helper routine which returns equiangular-trapezoidal nodes with trapezoidal weights
