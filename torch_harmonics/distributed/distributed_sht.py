@@ -41,8 +41,8 @@ from torch_harmonics.utils import check
 from .primitives import (
     compute_split_shapes,
     distributed_transpose_azimuth,
-    distributed_transpose_polar,
     flatten_and_pad_leading_dims,
+    reduce_from_scatter_to_polar_region,
     split_tensor_along_dim,
     unpad_and_unflatten_leading_dims,
 )
@@ -60,7 +60,7 @@ class DistributedRealSHT(nn.Module):
     and longitudes are split across the polar and azimuth process groups
     respectively.  All leading dimensions are flattened into a single axis
     ``N = B * C`` which is used as the redistribution currency during the
-    all-to-all transposes.  The forward pass proceeds as follows:
+    azimuth all-to-all transposes.  The forward pass proceeds as follows:
 
     1. **Azimuth transpose** (``nlon`` ↔ ``N``) — each rank trades its local
        longitude chunk for a slice of the channel axis, making ``nlon`` fully
@@ -68,19 +68,24 @@ class DistributedRealSHT(nn.Module):
     2. **Real FFT** along the (now local) longitude dimension.
     3. **Azimuth transpose** (``N`` ↔ ``mmax``) — redistribute so that spectral
        orders ``m`` are split across azimuth ranks and channels are local again.
-    4. **Polar transpose** (``N`` ↔ ``nlat``) — trade channel slices for the
-       full latitude axis, making ``nlat`` local for the Legendre contraction.
-    5. **Legendre contraction** — local matrix multiply with the quadrature
-       weights, producing spectral degrees ``l``.
-    6. **Polar transpose** (``l`` ↔ ``N``) — redistribute so that degrees ``l``
-       are split across polar ranks.
+    4. **Legendre contraction** — a *distributed* matrix multiply: latitudes stay
+       split across the polar group and each rank contracts only the latitudes it
+       owns, producing a partial sum over all degrees ``l``.
+    5. **Reduce-scatter** over the polar group along ``l`` — completes the
+       quadrature sum and leaves the degrees partitioned in one collective.
 
     The output has shape ``(B, C, lmax_local, mmax_local)`` with spectral modes
     partitioned in the same way as the spatial grid.
 
-    If ``N < max(polar_group_size, azimuth_group_size)``, the leading axis is
-    zero-padded before the transposes and the padding is removed afterwards;
-    since the transform is linear this is exact.
+    Keeping ``nlat`` distributed is what makes the precomputed Legendre weights
+    scale: they are partitioned as ``(mmax_local, lmax, nlat_local)``, so the
+    tensor is split across the full process grid rather than replicated over the
+    polar group.  The cost is that the quadrature sum is now accumulated across
+    ranks, so results are not bitwise identical to the serial transform.
+
+    If ``N < azimuth_group_size``, the leading axis is zero-padded before the
+    transposes and the padding is removed afterwards; since the transform is
+    linear this is exact.
 
     .. seealso::
         :class:`torch_harmonics.RealSHT`
@@ -154,6 +159,7 @@ class DistributedRealSHT(nn.Module):
         self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
         self.nlon_local = self.lon_shapes[self.comm_rank_azimuth]
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
+        self.lmax_local = self.l_shapes[self.comm_rank_polar]
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
 
@@ -166,8 +172,12 @@ class DistributedRealSHT(nn.Module):
         pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
         weights = torch.einsum("mlk,k->mlk", pct, weights)
 
-        # split weights
-        weights = split_tensor_along_dim(weights, dim=0, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth].contiguous()
+        # split the weights along m (azimuth group) and along the quadrature axis k=nlat
+        # (polar group). The contraction over k is a distributed matmul completed by a
+        # reduce-scatter in the forward, so a rank only ever needs the latitudes it owns:
+        # the weight tensor is fully partitioned rather than replicated across polar ranks.
+        weights = split_tensor_along_dim(weights, dim=0, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]
+        weights = split_tensor_along_dim(weights, dim=2, num_chunks=self.comm_size_polar)[self.comm_rank_polar].contiguous()
 
         # remember quadrature weights
         self.register_buffer("weights", weights, persistent=False)
@@ -189,11 +199,12 @@ class DistributedRealSHT(nn.Module):
         check(x.shape[-2] == self.nlat_local, lambda: f"Expected latitudes shape[-2]=={self.nlat_local}, got {x.shape[-2]}")
         check(x.shape[-1] == self.nlon_local, lambda: f"Expected longitudes shape[-1]=={self.nlon_local}, got {x.shape[-1]}")
 
-        # the transposes below redistribute the leading (channel/batch) axis across the
-        # process grid, so it must be at least as large as the larger comm group. Flatten
-        # all leading dims into that axis and zero-pad it if needed (linear transform, so
-        # padding stays zero); restore the original layout before returning.
-        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, max(self.comm_size_polar, self.comm_size_azimuth))
+        # the azimuth transposes below redistribute the leading (channel/batch) axis, so it
+        # must be at least as large as the azimuth group. Flatten all leading dims into that
+        # axis and zero-pad it if needed (linear transform, so padding stays zero); restore
+        # the original layout before returning. The polar group never touches this axis --
+        # the latitude contraction is a distributed matmul, not a transpose.
+        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, self.comm_size_azimuth)
         num_chans = x.shape[-3]
 
         # h and w is split. First we make w local by transposing into channel dim
@@ -209,27 +220,25 @@ class DistributedRealSHT(nn.Module):
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
             x = distributed_transpose_azimuth(x, (-1, -3), chan_shapes)
 
-        # transpose: after this, c is split and h is local
-        if self.comm_size_polar > 1:
-            x = distributed_transpose_polar(x, (-3, -2), self.lat_shapes)
-
-        # transpose to put the contraction dim (nlat) on the fast axis
+        # transpose to put the contraction dim (nlat) on the fast axis. nlat stays split across
+        # the polar group: each rank contracts the latitudes it owns and the reduce-scatter
+        # below completes the sum.
         x = x.transpose(-1, -2)
         x_re = x.real.contiguous()
         x_im = x.imag.contiguous()
 
-        # Legendre-Gauss quadrature: contract over k=nlat (stride-1 in both operands)
+        # Legendre-Gauss quadrature: partial contraction over the local k=nlat chunk
         w = self.weights.to(x_re.dtype)
         out_re = torch.einsum("...mk,mlk->...lm", x_re, w)
         out_im = torch.einsum("...mk,mlk->...lm", x_im, w)
-        # force contiguous: the ...lm einsum output is non-contiguous and inductor's aten.complex
-        # meta predicts a contiguous layout, tripping assert_size_stride under torch.compile.
-        x = torch.complex(out_re.contiguous(), out_im.contiguous())
 
-        # transpose: after this, l is split and c is local
+        # complete the quadrature sum and split l in a single collective. This runs on the real
+        # view: the reduce-scatter reduces in fp32, which would discard the imaginary part of a
+        # complex tensor, and NCCL has no complex reduction to begin with.
+        out = torch.stack((out_re, out_im), dim=-1)
         if self.comm_size_polar > 1:
-            chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
-            x = distributed_transpose_polar(x, (-2, -3), chan_shapes)
+            out = reduce_from_scatter_to_polar_region(out, -3)
+        x = torch.view_as_complex(out.contiguous())
 
         # drop padding and restore the original leading dims
         x = unpad_and_unflatten_leading_dims(x, lead_shape, lead_size)
@@ -248,24 +257,29 @@ class DistributedInverseRealSHT(nn.Module):
     All leading dimensions are flattened into ``N = B * C`` for redistribution.
     The forward pass proceeds as follows:
 
-    1. **Polar transpose** (``N`` ↔ ``lmax``) — trade channel slices for the
-       full degree axis, making ``l`` local for the Legendre synthesis.
-    2. **Legendre synthesis** — local matrix multiply with the associated
-       Legendre polynomials, producing latitude points.
-    3. **Polar transpose** (``nlat`` ↔ ``N``) — redistribute so that latitudes
-       are split across polar ranks and channels are local.
-    4. **Azimuth transpose** (``N`` ↔ ``mmax``) — make spectral orders ``m``
+    1. **Legendre synthesis** — a *distributed* matrix multiply: degrees stay
+       split across the polar group and each rank synthesizes from the degrees it
+       owns, producing a partial sum over all latitudes.
+    2. **Reduce-scatter** over the polar group along ``nlat`` — completes the
+       synthesis sum and leaves the latitudes partitioned in one collective.
+    3. **Azimuth transpose** (``N`` ↔ ``mmax``) — make spectral orders ``m``
        fully local for the inverse FFT.
-    5. **Inverse real FFT** along the (now local) ``m`` / longitude dimension.
-    6. **Azimuth transpose** (``nlon`` ↔ ``N``) — redistribute so that
+    4. **Inverse real FFT** along the (now local) ``m`` / longitude dimension.
+    5. **Azimuth transpose** (``nlon`` ↔ ``N``) — redistribute so that
        longitudes are split across azimuth ranks.
 
     The output has shape ``(B, C, nlat_local, nlon_local)`` with the spatial
     grid partitioned in the same way as the input spectral modes.
 
-    If ``N < max(polar_group_size, azimuth_group_size)``, the leading axis is
-    zero-padded before the transposes and the padding is removed afterwards;
-    since the transform is linear this is exact.
+    Keeping ``l`` distributed is what makes the precomputed Legendre polynomials
+    scale: they are partitioned as ``(mmax_local, nlat, lmax_local)``, so the
+    tensor is split across the full process grid rather than replicated over the
+    polar group.  The cost is that the synthesis sum is now accumulated across
+    ranks, so results are not bitwise identical to the serial transform.
+
+    If ``N < azimuth_group_size``, the leading axis is zero-padded before the
+    transposes and the padding is removed afterwards; since the transform is
+    linear this is exact.
 
     .. seealso::
         :class:`torch_harmonics.InverseRealSHT`
@@ -344,8 +358,11 @@ class DistributedInverseRealSHT(nn.Module):
         pct = _precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
         pct = pct.permute(0, 2, 1).contiguous()
 
-        # split in m
-        pct = split_tensor_along_dim(pct, dim=0, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth].contiguous()
+        # split along m (azimuth group) and along the contraction axis l (polar group). The
+        # synthesis over l is a distributed matmul completed by a reduce-scatter in the
+        # forward, so the tensor is fully partitioned rather than replicated across polar ranks.
+        pct = split_tensor_along_dim(pct, dim=0, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]
+        pct = split_tensor_along_dim(pct, dim=2, num_chunks=self.comm_size_polar)[self.comm_rank_polar].contiguous()
 
         # register
         self.register_buffer("pct", pct, persistent=False)
@@ -367,34 +384,33 @@ class DistributedInverseRealSHT(nn.Module):
         check(x.shape[-2] == self.lmax_local, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax_local}, got {x.shape[-2]}")
         check(x.shape[-1] == self.mmax_local, lambda: f"Expected spherical harmonic orders (mmax) shape[-1]=={self.mmax_local}, got {x.shape[-1]}")
 
-        # the transposes below redistribute the leading (channel/batch) axis across the
-        # process grid, so it must be at least as large as the larger comm group. Flatten
-        # all leading dims into that axis and zero-pad it if needed (linear transform, so
-        # padding stays zero); restore the original layout before returning.
-        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, max(self.comm_size_polar, self.comm_size_azimuth))
+        # the azimuth transposes below redistribute the leading (channel/batch) axis, so it
+        # must be at least as large as the azimuth group. Flatten all leading dims into that
+        # axis and zero-pad it if needed (linear transform, so padding stays zero); restore
+        # the original layout before returning. The polar group never touches this axis --
+        # the degree contraction is a distributed matmul, not a transpose.
+        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, self.comm_size_azimuth)
         num_chans = x.shape[-3]
 
-        # transpose: after that, channels are split, l is local:
-        if self.comm_size_polar > 1:
-            x = distributed_transpose_polar(x, (-3, -2), self.l_shapes)
-
-        # transpose to put the contraction dim (lmax) on the fast axis
+        # transpose to put the contraction dim (lmax) on the fast axis. l stays split across
+        # the polar group: each rank synthesizes from the degrees it owns and the
+        # reduce-scatter below completes the sum.
         x = x.transpose(-1, -2)
         x_re = x.real.contiguous()
         x_im = x.imag.contiguous()
 
-        # legendre transformation: contract over l=lmax (stride-1 in both operands)
-        # pct layout: (mmax_local, nlat, lmax)
+        # legendre transformation: partial contraction over the local l chunk
+        # pct layout: (mmax_local, nlat, lmax_local)
         w = self.pct.to(x_re.dtype)
         out_re = torch.einsum("...ml,mkl->...km", x_re, w)
         out_im = torch.einsum("...ml,mkl->...km", x_im, w)
-        # force contiguous: the einsum output is non-contiguous and inductor's aten.complex meta
-        # predicts a contiguous layout, tripping assert_size_stride under torch.compile.
-        x = torch.complex(out_re.contiguous(), out_im.contiguous())
 
+        # complete the synthesis sum and split nlat in a single collective, on the real view
+        # (see DistributedRealSHT.forward for why the collective cannot take complex input).
+        out = torch.stack((out_re, out_im), dim=-1)
         if self.comm_size_polar > 1:
-            chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
-            x = distributed_transpose_polar(x, (-2, -3), chan_shapes)
+            out = reduce_from_scatter_to_polar_region(out, -3)
+        x = torch.view_as_complex(out.contiguous())
 
         # transpose: after this, channels are split and m is local
         if self.comm_size_azimuth > 1:
@@ -513,8 +529,10 @@ class DistributedRealVectorSHT(nn.Module):
         # since the second component is imaginary, we need to take complex conjugation into account
         weights[1] = -1 * weights[1]
 
-        # we need to split in m, pad before:
-        weights = split_tensor_along_dim(weights, dim=1, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth].contiguous()
+        # split along m (azimuth group) and along the quadrature axis k=nlat (polar group),
+        # see DistributedRealSHT.__init__
+        weights = split_tensor_along_dim(weights, dim=1, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]
+        weights = split_tensor_along_dim(weights, dim=3, num_chunks=self.comm_size_polar)[self.comm_rank_polar].contiguous()
 
         # remember quadrature weights
         self.register_buffer("weights", weights, persistent=False)
@@ -542,7 +560,7 @@ class DistributedRealVectorSHT(nn.Module):
         # all leading dims into that axis -- keeping the trailing (2, nlat, nlon) intact --
         # and zero-pad it if needed (linear transform, so padding stays zero); restore the
         # original layout before returning.
-        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, max(self.comm_size_polar, self.comm_size_azimuth), num_trailing_dims=3)
+        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, self.comm_size_azimuth, num_trailing_dims=3)
         num_chans = x.shape[-4]
 
         # h and w is split. First we make w local by transposing into channel dim
@@ -558,11 +576,8 @@ class DistributedRealVectorSHT(nn.Module):
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
             x = distributed_transpose_azimuth(x, (-1, -4), chan_shapes)
 
-        # transpose: after this, c is split and h is local
-        if self.comm_size_polar > 1:
-            x = distributed_transpose_polar(x, (-4, -2), self.lat_shapes)
-
-        # transpose to put the contraction dim (nlat) on the fast axis
+        # transpose to put the contraction dim (nlat) on the fast axis. nlat stays split across
+        # the polar group, see DistributedRealSHT.forward.
         x = x.transpose(-1, -2)
         x_re = x.real.contiguous()
         x_im = x.imag.contiguous()
@@ -578,16 +593,16 @@ class DistributedRealVectorSHT(nn.Module):
         t_re = -torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w0)
         t_im = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w0)
 
-        # stack the components in real space, see RealVectorSHT.forward. The result is contiguous
-        # by construction, so the .contiguous() this replaces was a no-op.
+        # stack the components in real space, see RealVectorSHT.forward
         out_re = torch.stack((s_re, t_re), dim=-3)
         out_im = torch.stack((s_im, t_im), dim=-3)
-        x = torch.complex(out_re, out_im)
 
-        # transpose: after this, l is split and c is local
+        # complete the quadrature sum and split l in a single collective, on the real view
+        # (see DistributedRealSHT.forward for why the collective cannot take complex input).
+        out = torch.stack((out_re, out_im), dim=-1)
         if self.comm_size_polar > 1:
-            chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
-            x = distributed_transpose_polar(x, (-2, -4), chan_shapes)
+            out = reduce_from_scatter_to_polar_region(out, -3)
+        x = torch.view_as_complex(out.contiguous())
 
         # drop padding and restore the original leading dims
         x = unpad_and_unflatten_leading_dims(x, lead_shape, lead_size, num_trailing_dims=3)
@@ -681,8 +696,10 @@ class DistributedInverseRealVectorSHT(nn.Module):
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
         dpct = dpct.permute(0, 1, 3, 2).contiguous()
 
-        # split in m
-        dpct = split_tensor_along_dim(dpct, dim=1, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth].contiguous()
+        # split along m (azimuth group) and along the contraction axis l (polar group),
+        # see DistributedInverseRealSHT.__init__
+        dpct = split_tensor_along_dim(dpct, dim=1, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]
+        dpct = split_tensor_along_dim(dpct, dim=3, num_chunks=self.comm_size_polar)[self.comm_rank_polar].contiguous()
 
         # register buffer
         self.register_buffer("dpct", dpct, persistent=False)
@@ -710,19 +727,16 @@ class DistributedInverseRealVectorSHT(nn.Module):
         # all leading dims into that axis -- keeping the trailing (2, lmax, mmax) intact --
         # and zero-pad it if needed (linear transform, so padding stays zero); restore the
         # original layout before returning.
-        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, max(self.comm_size_polar, self.comm_size_azimuth), num_trailing_dims=3)
+        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, self.comm_size_azimuth, num_trailing_dims=3)
         num_chans = x.shape[-4]
 
-        # transpose: after that, channels are split, l is local:
-        if self.comm_size_polar > 1:
-            x = distributed_transpose_polar(x, (-4, -2), self.l_shapes)
-
-        # transpose to put the contraction dim (lmax) on the fast axis
+        # transpose to put the contraction dim (lmax) on the fast axis. l stays split across
+        # the polar group, see DistributedInverseRealSHT.forward.
         x = x.transpose(-1, -2)
         x_re = x.real.contiguous()
         x_im = x.imag.contiguous()
 
-        # dpct layout: (2, mmax_local, nlat, lmax) — contract over l (stride-1 in both operands)
+        # dpct layout: (2, mmax_local, nlat, lmax_local) — contract over l (stride-1 in both operands)
         d0 = self.dpct[0].to(x_re.dtype)
         d1 = self.dpct[1].to(x_re.dtype)
 
@@ -734,15 +748,16 @@ class DistributedInverseRealVectorSHT(nn.Module):
         trl = -torch.einsum("...ml,mkl->...km", x_im[..., 0, :, :], d1) - torch.einsum("...ml,mkl->...km", x_re[..., 1, :, :], d0)
         tim = torch.einsum("...ml,mkl->...km", x_re[..., 0, :, :], d1) - torch.einsum("...ml,mkl->...km", x_im[..., 1, :, :], d0)
 
-        # reassemble in real space, see RealVectorSHT.forward. The result is contiguous by
-        # construction, so the .contiguous() this replaces was a no-op.
+        # reassemble in real space, see RealVectorSHT.forward
         out_re = torch.stack((srl, trl), dim=-3)
         out_im = torch.stack((sim, tim), dim=-3)
-        x = torch.complex(out_re, out_im)
 
+        # complete the synthesis sum and split nlat in a single collective, on the real view
+        # (see DistributedRealSHT.forward for why the collective cannot take complex input).
+        out = torch.stack((out_re, out_im), dim=-1)
         if self.comm_size_polar > 1:
-            chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
-            x = distributed_transpose_polar(x, (-2, -4), chan_shapes)
+            out = reduce_from_scatter_to_polar_region(out, -3)
+        x = torch.view_as_complex(out.contiguous())
 
         # transpose: after this, channels are split and m is local
         if self.comm_size_azimuth > 1:
