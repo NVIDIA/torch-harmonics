@@ -36,7 +36,15 @@ import torch.amp as amp
 import torch.nn as nn
 
 from torch_harmonics import DiscreteContinuousConvS2, InverseRealSHT, RealSHT, ResampleS2
-from torch_harmonics.examples.models._layers import MLP, DropPath, LearnablePositionEmbedding, SequencePositionEmbedding, SpectralConvS2, SpectralPositionEmbedding
+from torch_harmonics.examples.models._layers import (
+    MLP,
+    DropPath,
+    LearnablePositionEmbedding,
+    SequencePositionEmbedding,
+    SpectralConvS2,
+    SpectralPositionEmbedding,
+)
+from torch_harmonics.grid import as_grid
 
 
 # heuristic for finding theta_cutoff
@@ -94,14 +102,12 @@ class DiscreteContinuousEncoder(nn.Module):
 
         # set up local convolution
         self.conv = DiscreteContinuousConvS2(
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             inp_chans,
             out_chans,
-            in_shape=in_shape,
-            out_shape=out_shape,
             kernel_shape=kernel_shape,
             basis_type=basis_type,
-            grid_in=grid_in,
-            grid_out=grid_out,
             groups=groups,
             bias=bias,
             theta_cutoff=_compute_cutoff_radius(in_shape[0], kernel_shape, basis_type),
@@ -170,22 +176,20 @@ class DiscreteContinuousDecoder(nn.Module):
 
         # set up upsampling
         if upsample_sht:
-            self.sht = RealSHT(*in_shape, grid=grid_in).float()
-            self.isht = InverseRealSHT(*out_shape, lmax=self.sht.lmax, mmax=self.sht.mmax, grid=grid_out).float()
+            self.sht = RealSHT(as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1])).float()
+            self.isht = InverseRealSHT(as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]), lmax=self.sht.lmax, mmax=self.sht.mmax).float()
             self.upsample = nn.Sequential(self.sht, self.isht)
         else:
-            self.upsample = ResampleS2(*in_shape, *out_shape, grid_in=grid_in, grid_out=grid_out)
+            self.upsample = ResampleS2(as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]), as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]))
 
         # set up DISCO convolution
         self.conv = DiscreteContinuousConvS2(
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             inp_chans,
             out_chans,
-            in_shape=out_shape,
-            out_shape=out_shape,
             kernel_shape=kernel_shape,
             basis_type=basis_type,
-            grid_in=grid_out,
-            grid_out=grid_out,
             groups=groups,
             bias=False,
             theta_cutoff=_compute_cutoff_radius(in_shape[0], kernel_shape, basis_type),
@@ -282,14 +286,12 @@ class SphericalNeuralOperatorBlock(nn.Module):
         if conv_type == "local":
             theta_cutoff = 2.0 * _compute_cutoff_radius(forward_transform.nlat, disco_kernel_shape, disco_basis_type)
             self.local_conv = DiscreteContinuousConvS2(
+                as_grid(forward_transform.grid, nlat=forward_transform.nlat, nlon=forward_transform.nlon),
+                as_grid(inverse_transform.grid, nlat=inverse_transform.nlat, nlon=inverse_transform.nlon),
                 input_dim,
                 output_dim,
-                in_shape=(forward_transform.nlat, forward_transform.nlon),
-                out_shape=(inverse_transform.nlat, inverse_transform.nlon),
                 kernel_shape=disco_kernel_shape,
                 basis_type=disco_basis_type,
-                grid_in=forward_transform.grid,
-                grid_out=inverse_transform.grid,
                 bias=bias,
                 theta_cutoff=theta_cutoff,
             )
@@ -545,8 +547,8 @@ class LocalSphericalNeuralOperator(nn.Module):
 
         modes_lat = modes_lon = int(min(modes_lat, modes_lon) * self.hard_thresholding_fraction)
 
-        self.trans = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
-        self.itrans = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
+        self.trans = RealSHT(as_grid(grid_internal, nlat=self.h, nlon=self.w), lmax=modes_lat, mmax=modes_lon).float()
+        self.itrans = InverseRealSHT(as_grid(grid_internal, nlat=self.h, nlon=self.w), lmax=modes_lat, mmax=modes_lon).float()
 
         self.blocks = nn.ModuleList([])
         for i in range(self.num_layers):

@@ -86,6 +86,16 @@ docs = [
     "h5py",
 ]
 
+[tool.pytest.ini_options]
+# The suite exercises the post-0.9 defaults deliberately, so the migration
+# notices announcing them are expected here and would otherwise account for
+# most of the warning summary. The tests that assert the notices still fire
+# use assertWarns / catch_warnings, which override these filters.
+filterwarnings = [
+    "ignore:Default SHT truncation changed:UserWarning",
+    "ignore:Default theta_cutoff changed:UserWarning",
+]
+
 [tool.black]
 line-length = 180
 

@@ -29,13 +29,13 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 
-from torch_harmonics.quadrature import clenshaw_curtiss_weights, legendre_gauss_weights, lobatto_weights
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
 
-from .primitives import compute_split_shapes, reduce_from_azimuth_region, reduce_from_polar_region, split_tensor_along_dim
+from .primitives import reduce_from_azimuth_region, reduce_from_polar_region
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 
@@ -52,11 +52,9 @@ class DistributedQuadratureS2(torch.nn.Module):
 
     Parameters
     ----------
-    img_shape : Tuple[int]
-        Spatial grid shape ``(nlat, nlon)``.
-    grid : str, optional
-        Quadrature grid type (``"equiangular"``, ``"legendre-gauss"``,
-        ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``.
+    grid : RegularGridS2
+        Descriptor of the *global* grid to integrate on. It carries both the
+        resolution and the quadrature rule; the local shard is derived from it.
     normalize : bool, optional
         If ``True``, divides weights by ``4π`` to return an average instead of
         an integral, by default ``False``.
@@ -67,18 +65,15 @@ class DistributedQuadratureS2(torch.nn.Module):
         Tensor of shape ``(..., channels)`` containing the global integral over
         the last two spatial dimensions (reduced across communicator groups).
 
-    Raises
-    ------
-    ValueError
-        If an unknown ``grid`` type is provided.
     """
 
-    def __init__(self, img_shape: Tuple[int], grid: Optional[str] = "equiangular", normalize: Optional[bool] = False):
+    def __init__(self, grid: RegularGridS2, normalize: Optional[bool] = False):
         super().__init__()
 
         # copy input
-        self.grid = grid
-        self.img_shape = img_shape
+        self.grid = require_regular_grid(grid)
+        self.img_shape = grid.shape
+        self.nlat, self.nlon = grid.shape
         self.normalize = normalize
 
         # get the comms grid:
@@ -87,46 +82,35 @@ class DistributedQuadratureS2(torch.nn.Module):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
-        if self.grid == "legendre-gauss":
-            _, weights = legendre_gauss_weights(img_shape[0], -1, 1)
-            dlambda = 2 * torch.pi / img_shape[1]
-            quad_weight = dlambda * weights.unsqueeze(1)
-            quad_weight = quad_weight.tile(1, img_shape[1])
-        elif self.grid == "lobatto":
-            _, weights = lobatto_weights(img_shape[0], -1, 1)
-            dlambda = 2 * torch.pi / img_shape[1]
-            quad_weight = dlambda * weights.unsqueeze(1)
-            quad_weight = quad_weight.tile(1, img_shape[1])
-        elif self.grid == "equiangular":
-            _, weights = clenshaw_curtiss_weights(img_shape[0], -1, 1)
-            dlambda = 2 * torch.pi / img_shape[1]
-            quad_weight = dlambda * weights.unsqueeze(1)
-            quad_weight = quad_weight.tile(1, img_shape[1])
-        else:
-            raise (ValueError("Unknown quadrature mode"))
+        # the grid decomposes itself; the shard carries this rank's extent and its
+        # slice of the latitudes, and knows the shapes every other rank holds
+        self.shard = self.grid.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.lat_shapes = list(self.shard.lat_shapes)
+        self.lon_shapes = list(self.shard.lon_shapes)
+
+        # Build the local weights directly rather than materialising the global
+        # tensor and slicing it. dlambda is the global longitude spacing, and the
+        # weight of a point does not depend on its longitude, so tiling to the
+        # local width is exactly this rank's slice.
+        dlambda = 2 * torch.pi / self.nlon
+        quad_weight = dlambda * self.shard.quad_weights.unsqueeze(1)
+        quad_weight = quad_weight.tile(1, self.shard.nlon)
 
         # apply normalization
         if normalize:
             quad_weight = quad_weight / (4.0 * torch.pi)
 
-        # store lat and lon shapes:
-        self.lat_shapes = compute_split_shapes(img_shape[0], self.comm_size_polar)
-        self.lon_shapes = compute_split_shapes(img_shape[1], self.comm_size_azimuth)
-
-        # make it contiguous
-        quad_weight = quad_weight.contiguous().reshape(1, 1, *img_shape)
-
-        # split across latitude and longitude
-        if self.comm_size_polar > 1:
-            quad_weight = split_tensor_along_dim(quad_weight, dim=-2, num_chunks=self.comm_size_polar)[self.comm_rank_polar]
-        if self.comm_size_azimuth > 1:
-            quad_weight = split_tensor_along_dim(quad_weight, dim=-1, num_chunks=self.comm_size_azimuth)[self.comm_rank_azimuth]
-
         # cast to fp32
-        quad_weight = quad_weight.to(torch.float32).contiguous()
+        quad_weight = quad_weight.reshape(1, 1, *self.shard.shape).to(torch.float32).contiguous()
 
         # register buffer
         self.register_buffer("quad_weight", quad_weight, persistent=False)
+
+    def extra_repr(self):
+        return f"grid={self.grid!r},\nnormalize={self.normalize}"
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # integrate over last two axes only:

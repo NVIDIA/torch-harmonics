@@ -56,15 +56,15 @@ class TestQuadrature(unittest.TestCase):
             [65, 128, 1, 1, "legendre-gauss", True, 1e-6, 1e-6],
             [65, 128, 2, 2, "lobatto", False, 1e-6, 1e-6],
             [65, 128, 2, 2, "lobatto", True, 1e-6, 1e-6],
-            [64, 128, 2, 3, "equiangular-trapezoidal", False, 1e-6, 1e-6],
-            [64, 128, 2, 3, "equiangular-trapezoidal", True, 1e-6, 1e-6],
+            [64, 128, 2, 3, "trapezoidal", False, 1e-6, 1e-6],
+            [64, 128, 2, 3, "trapezoidal", True, 1e-6, 1e-6],
         ]
     )
     def test_constant_integral(self, nlat, nlon, batch_size, num_chan, grid, normalize, atol, rtol, verbose=False):
 
         set_seed(333)
 
-        quad = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=normalize).to(self.device)
+        quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=normalize).to(self.device)
 
         data = torch.ones((batch_size, num_chan, nlat, nlon), dtype=torch.float32, device=self.device)
         out = quad(data)
@@ -80,7 +80,7 @@ class TestQuadrature(unittest.TestCase):
             [64, 128, "equiangular"],
             [65, 128, "legendre-gauss"],
             [65, 128, "lobatto"],
-            [64, 128, "equiangular-trapezoidal"],
+            [64, 128, "trapezoidal"],
         ]
     )
     def test_odd_latitude_integral(self, nlat, nlon, grid, verbose=False):
@@ -91,7 +91,7 @@ class TestQuadrature(unittest.TestCase):
         """
         set_seed(333)
 
-        quad = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=False).to(self.device)
+        quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=False).to(self.device)
 
         # cos(theta) on the grid: precompute_latitudes returns colatitude angles
         # theta in [0, pi], so cos(theta) in [-1, 1]
@@ -111,7 +111,7 @@ class TestQuadrature(unittest.TestCase):
             [64, 128, "equiangular", 1e-5, 1e-5],
             [65, 128, "legendre-gauss", 1e-5, 1e-5],
             [65, 128, "lobatto", 1e-5, 1e-5],
-            [64, 128, "equiangular-trapezoidal", 1e-2, 1e-2],
+            [64, 128, "trapezoidal", 1e-2, 1e-2],
         ]
     )
     def test_polynomial_latitude_integral(self, nlat, nlon, grid, atol, rtol, verbose=False):
@@ -119,7 +119,7 @@ class TestQuadrature(unittest.TestCase):
 
         Analytically: 2*pi * integral_{-1}^{1} t^2 dt = 2*pi * 2/3 = 4*pi/3.
         Gauss-type quadrature rules integrate quadratic polynomials in cos-theta
-        exactly; the trapezoidal rule (equiangular-trapezoidal) has O(h^2) error.
+        exactly; the trapezoidal rule (trapezoidal) has O(h^2) error.
         """
         set_seed(333)
 
@@ -128,7 +128,7 @@ class TestQuadrature(unittest.TestCase):
         f = cos2_theta.view(1, 1, nlat, 1).expand(1, 1, nlat, nlon)
 
         for normalize, expected_val in [(False, 4.0 * math.pi / 3.0), (True, 1.0 / 3.0)]:
-            quad = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=normalize).to(self.device)
+            quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=normalize).to(self.device)
             out = quad(f)
             expected = torch.full((1, 1), expected_val, device=self.device)
             self.assertTrue(
@@ -148,7 +148,7 @@ class TestQuadrature(unittest.TestCase):
             [64, 128, "equiangular"],
             [65, 128, "legendre-gauss"],
             [65, 128, "lobatto"],
-            [64, 128, "equiangular-trapezoidal"],
+            [64, 128, "trapezoidal"],
         ]
     )
     def test_zero_longitude_mean(self, nlat, nlon, grid, verbose=False):
@@ -160,7 +160,7 @@ class TestQuadrature(unittest.TestCase):
         """
         set_seed(333)
 
-        quad = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=False).to(self.device)
+        quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=False).to(self.device)
 
         lons = precompute_longitudes(nlon).to(self.device)  # shape [nlon], in [0, 2*pi)
         cos_phi = torch.cos(lons).to(torch.float32)
@@ -185,8 +185,8 @@ class TestQuadrature(unittest.TestCase):
         """
         set_seed(333)
 
-        quad_raw = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=False).to(self.device)
-        quad_norm = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=True).to(self.device)
+        quad_raw = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=False).to(self.device)
+        quad_norm = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=True).to(self.device)
 
         data = torch.randn(batch_size, num_chan, nlat, nlon, device=self.device)
 
@@ -205,6 +205,40 @@ class TestQuadrature(unittest.TestCase):
         )
 
 
+class TestQuadratureS2Constructor(unittest.TestCase):
+    """
+    The constructor contract after the switch to grid descriptors.
+
+    The numerical tests above all build their grid with :func:`as_grid`, so two
+    things go unexercised there: that a directly constructed grid works just as
+    well, and that the arguments the old signature took now fail with an error
+    that says what to write instead. The latter matters because this is a
+    breaking change -- without it a caller passing the old ``(nlat, nlon)`` shape
+    gets ``AttributeError: 'tuple' object has no attribute 'shape'`` from deep
+    inside the constructor.
+    """
+
+    def test_takes_a_directly_constructed_grid(self):
+        """as_grid is a convenience, not the only way in."""
+        direct = th.LegendreGaussGrid(nlat=32, nlon=64)
+        via_helper = th.as_grid("legendre-gauss", nlat=32, nlon=64)
+        self.assertTrue(compare_tensors("direct vs as_grid", th.QuadratureS2(direct).quad_weight, th.QuadratureS2(via_helper).quad_weight))
+
+    @parameterized.expand(
+        [
+            [(32, 64), "not a shape (32, 64)"],
+            ["legendre-gauss", "not the grid name 'legendre-gauss'"],
+            [32, "got int"],
+        ]
+    )
+    def test_old_style_arguments_explain_themselves(self, bad_grid, expected_fragment):
+        with self.assertRaises(TypeError) as ctx:
+            th.QuadratureS2(bad_grid)
+        message = str(ctx.exception)
+        self.assertIn(expected_fragment, message)
+        self.assertIn("as_grid", message, msg="the error should name the replacement")
+
+
 class TestQuadratureWeightPrecision(unittest.TestCase):
     """Every quadrature rule must carry its weights in the same precision as its nodes."""
 
@@ -213,7 +247,7 @@ class TestQuadratureWeightPrecision(unittest.TestCase):
             ["equiangular"],
             ["legendre-gauss"],
             ["lobatto"],
-            ["equiangular-trapezoidal"],
+            ["trapezoidal"],
         ]
     )
     def test_latitude_weight_dtype(self, grid):

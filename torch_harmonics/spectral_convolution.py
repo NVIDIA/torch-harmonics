@@ -30,13 +30,14 @@
 #
 
 import math
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
 
 from torch_harmonics import InverseRealSHT, RealSHT
-from torch_harmonics.quadrature import QuadratureS2
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.integration import QuadratureS2
 from torch_harmonics.truncation import truncate_sht
 
 
@@ -101,21 +102,17 @@ class SpectralConvS2(nn.Module):
 
     Parameters
     ----------
-    in_shape : Tuple[int]
-        Spatial input grid shape ``(nlat, nlon)``.
-    out_shape : Tuple[int]
-        Spatial output grid shape ``(nlat, nlon)``.
+    grid_in : RegularGridS2
+        Descriptor of the input grid. It carries the resolution as well as the
+        quadrature rule, so no separate shape argument is needed.
+    grid_out : RegularGridS2
+        Descriptor of the output grid.
     in_channels : int
         Number of input channels.
     out_channels : int
         Number of output channels.
     num_groups : int, optional
         Number of channel groups for grouped spectral weights, by default 1.
-    grid_in : str, optional
-        Grid used for the forward SHT (``"equiangular"``, ``"legendre-gauss"``,
-        ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``.
-    grid_out : str, optional
-        Grid used for the inverse SHT, same options as ``grid_in``.
     bias : bool, optional
         If ``True``, adds a learnable spectral bias computed from the spatial
         integral, by default ``False``.
@@ -124,10 +121,8 @@ class SpectralConvS2(nn.Module):
     --------
     >>> import torch
     >>> import torch_harmonics as th
-    >>> conv = th.SpectralConvS2(
-    ...     in_shape=(128, 256), out_shape=(128, 256),
-    ...     in_channels=16, out_channels=32,
-    ... )
+    >>> grid = th.as_grid("equiangular", nlat=128, nlon=256)
+    >>> conv = th.SpectralConvS2(grid, grid, in_channels=16, out_channels=32)
     >>> x = torch.randn(4, 16, 128, 256)
     >>> y = conv(x)
     >>> y.shape
@@ -147,13 +142,11 @@ class SpectralConvS2(nn.Module):
 
     def __init__(
         self,
-        in_shape: Tuple[int],
-        out_shape: Tuple[int],
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         in_channels: int,
         out_channels: int,
         num_groups: Optional[int] = 1,
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
         bias: Optional[bool] = False,
     ):
         super().__init__()
@@ -164,13 +157,17 @@ class SpectralConvS2(nn.Module):
             raise ValueError(f"out_channels ({out_channels}) must be divisible by num_groups ({num_groups})")
 
         # copy inputs
+        self.grid_in = require_regular_grid(grid_in, "grid_in")
+        self.grid_out = require_regular_grid(grid_out, "grid_out")
+        self.nlat_in, self.nlon_in = self.grid_in.shape
+        self.nlat_out, self.nlon_out = self.grid_out.shape
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.num_groups = num_groups
 
         # compute truncation
-        lmax_in, mmax_in = truncate_sht(in_shape[0], in_shape[1], grid=grid_in)
-        lmax_out, mmax_out = truncate_sht(out_shape[0], out_shape[1], grid=grid_out)
+        lmax_in, mmax_in = truncate_sht(self.grid_in)
+        lmax_out, mmax_out = truncate_sht(self.grid_out)
 
         # compute lmax and lmin
         lmax = min(lmax_in, lmax_out)
@@ -179,8 +176,8 @@ class SpectralConvS2(nn.Module):
         self.mmax = self.lmax
 
         # set up sht layers
-        self.sht = RealSHT(*in_shape, grid=grid_in, lmax=self.lmax, mmax=self.mmax)
-        self.isht = InverseRealSHT(*out_shape, grid=grid_out, lmax=self.lmax, mmax=self.mmax)
+        self.sht = RealSHT(self.grid_in, lmax=self.lmax, mmax=self.mmax)
+        self.isht = InverseRealSHT(self.grid_out, lmax=self.lmax, mmax=self.mmax)
 
         # weight shape
         weight_shape = [num_groups, in_channels // num_groups, out_channels // num_groups, self.lmax]
@@ -193,7 +190,10 @@ class SpectralConvS2(nn.Module):
 
         if bias:
             self.spectral_bias = nn.Parameter(torch.zeros(1, self.in_channels, self.lmax, self.mmax, dtype=torch.complex64))
-            self.quadrature = QuadratureS2(img_shape=in_shape, grid=grid_in, normalize=False)
+            self.quadrature = QuadratureS2(self.grid_in, normalize=False)
+
+    def extra_repr(self):
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.in_channels}, out_channels={self.out_channels}, lmax={self.lmax}, mmax={self.mmax}, num_groups={self.num_groups}"
 
     @torch.compile
     def _contract_lwise(self, ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:

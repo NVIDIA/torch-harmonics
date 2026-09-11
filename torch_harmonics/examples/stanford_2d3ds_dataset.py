@@ -38,7 +38,7 @@ import torch
 from torch.utils.data import Dataset, Subset
 
 from torch_harmonics.examples.losses import get_quadrature_weights
-from torch_harmonics.quadrature import precompute_latitudes
+from torch_harmonics.grid import as_grid
 
 # some specifiers where to find the dataset
 DEFAULT_BASE_URL = "https://cvg-data.inf.ethz.ch/2d3ds/no_xyz/"
@@ -367,7 +367,7 @@ class Stanford2D3DSDownloader:
 
             # prepare computation of the class histogram
             class_histogram = np.zeros(num_classes)
-            _, quad_weights = precompute_latitudes(nlat=img_shape[0], grid="equiangular")
+            quad_weights = as_grid("equiangular", nlat=tuple(img_shape)[0], nlon=tuple(img_shape)[1]).quad_weights
             quad_weights = quad_weights.reshape(-1, 1) * 2 * torch.pi / float(img_shape[1])
             quad_weights = quad_weights.tile(1, img_shape[1])
             quad_weights /= torch.sum(quad_weights)
@@ -522,8 +522,6 @@ class StanfordSegmentationDataset(Dataset):
         Path to the HDF5 dataset file
     ignore_alpha_channel : bool, optional
         Whether to ignore the alpha channel in the RGB images, by default True
-    log_depth : bool, optional
-        Whether to log the depth values, by default False
     exclude_polar_fraction : float, optional
         Fraction of polar points to exclude, by default 0.0
 

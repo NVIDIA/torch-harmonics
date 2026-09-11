@@ -37,7 +37,7 @@ import torch
 import torch.nn as nn
 
 import torch_harmonics as th
-from torch_harmonics.quadrature import precompute_longitudes
+from torch_harmonics.grid import as_grid
 
 
 class ShallowWaterSolver(nn.Module):
@@ -92,27 +92,21 @@ class ShallowWaterSolver(nn.Module):
         self.register_buffer("hamp", torch.as_tensor(hamp, dtype=torch.float64))
 
         # SHT
-        self.sht = th.RealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.isht = th.InverseRealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.vsht = th.RealVectorSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.ivsht = th.InverseRealVectorSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
+        self.sht = th.RealSHT(as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=mmax, csphase=False)
+        self.isht = th.InverseRealSHT(as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=mmax, csphase=False)
+        self.vsht = th.RealVectorSHT(as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=mmax, csphase=False)
+        self.ivsht = th.InverseRealVectorSHT(as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=mmax, csphase=False)
 
         self.lmax = lmax or self.sht.lmax
         self.mmax = lmax or self.sht.mmax
 
-        # compute gridpoints
-        if self.grid == "legendre-gauss":
-            cost, quad_weights = th.quadrature.legendre_gauss_weights(self.nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, quad_weights = th.quadrature.lobatto_weights(self.nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, quad_weights = th.quadrature.clenshaw_curtiss_weights(self.nlat, -1, 1)
-
-        quad_weights = quad_weights.reshape(-1, 1)
-
-        # apply cosine transform and flip them
-        lats = -torch.arcsin(cost)
-        lons = precompute_longitudes(self.nlon)
+        # compute gridpoints. Nodes and weights come from the same descriptor call, so
+        # they are ordered consistently -- north to south -- instead of pairing an
+        # unflipped weight with a flipped node and relying on the rule being symmetric.
+        quadrature_grid = as_grid(self.grid, nlat=self.nlat, nlon=self.nlon)
+        quad_weights = quadrature_grid.quad_weights.reshape(-1, 1)
+        lats = torch.pi / 2 - quadrature_grid.lats
+        lons = quadrature_grid.lons()
 
         self.lmax = self.sht.lmax
         self.mmax = self.sht.mmax

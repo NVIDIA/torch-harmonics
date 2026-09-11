@@ -36,7 +36,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
 
 
 def _slerp_shortest_arc(start: torch.Tensor, end: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
@@ -157,20 +157,11 @@ class ResampleS2(nn.Module):
 
     Parameters
     ----------
-    nlat_in : int
-        Number of latitude points in the input grid
-    nlon_in : int
-        Number of longitude points in the input grid
-    nlat_out : int
-        Number of latitude points in the output grid
-    nlon_out : int
-        Number of longitude points in the output grid
-    grid_in : str, optional
-        Input grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``),
-        by default ``"equiangular"``
-    grid_out : str, optional
-        Output grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``),
-        by default ``"equiangular"``
+    grid_in : RegularGridS2
+        Descriptor of the input grid; it carries the resolution as well as the
+        quadrature rule.
+    grid_out : RegularGridS2
+        Descriptor of the output grid.
     mode : str, optional
         Interpolation mode (``"bilinear"``, ``"bilinear-spherical"``), by default
         ``"bilinear"``.  See above for a description of each mode.
@@ -179,7 +170,7 @@ class ResampleS2(nn.Module):
     --------
     >>> import torch
     >>> import torch_harmonics as th
-    >>> resample = th.ResampleS2(64, 128, 128, 256)
+    >>> resample = th.ResampleS2(th.as_grid("equiangular", nlat=64, nlon=128), th.as_grid("equiangular", nlat=128, nlon=256))
     >>> x = torch.randn(1, 64, 128)
     >>> y = resample(x)
     >>> y.shape
@@ -188,12 +179,8 @@ class ResampleS2(nn.Module):
 
     def __init__(
         self,
-        nlat_in: int,
-        nlon_in: int,
-        nlat_out: int,
-        nlon_out: int,
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         mode: Optional[str] = "bilinear",
     ):
 
@@ -205,17 +192,16 @@ class ResampleS2(nn.Module):
         else:
             raise NotImplementedError(f"unknown interpolation mode {mode}")
 
-        self.nlat_in, self.nlon_in = nlat_in, nlon_in
-        self.nlat_out, self.nlon_out = nlat_out, nlon_out
-
-        self.grid_in = grid_in
-        self.grid_out = grid_out
+        self.grid_in = require_regular_grid(grid_in, "grid_in")
+        self.grid_out = require_regular_grid(grid_out, "grid_out")
+        self.nlat_in, self.nlon_in = self.grid_in.shape
+        self.nlat_out, self.nlon_out = self.grid_out.shape
 
         # for upscaling the latitudes we will use interpolation
-        self.lats_in, _ = precompute_latitudes(nlat_in, grid=grid_in)
-        self.lons_in = precompute_longitudes(nlon_in)
-        self.lats_out, _ = precompute_latitudes(nlat_out, grid=grid_out)
-        self.lons_out = precompute_longitudes(nlon_out)
+        self.lats_in = self.grid_in.lats
+        self.lons_in = self.grid_in.lons()
+        self.lats_out = self.grid_out.lats
+        self.lons_out = self.grid_out.lons()
 
         # in the case where some points lie outside of the range spanned by lats_in,
         # we need to expand the solution to the poles before interpolating
@@ -257,10 +243,12 @@ class ResampleS2(nn.Module):
         self.register_buffer("lon_idx_right", lon_idx_right, persistent=False)
         self.register_buffer("lon_weights", lon_weights, persistent=False)
 
-        self.skip_resampling = (nlon_in == nlon_out) and (nlat_in == nlat_out) and (grid_in == grid_out)
+        # descriptor equality covers the grid type and both extents, which is exactly
+        # the conjunction this used to spell out
+        self.skip_resampling = self.grid_in == self.grid_out
 
     def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}"
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nmode={self.mode}"
 
     def _upscale_longitudes(self, x: torch.Tensor):
         # do the interpolation in precision of x

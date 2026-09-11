@@ -39,6 +39,7 @@ import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
 from torch_harmonics import InverseRealSHT
+from torch_harmonics.grid import as_grid
 from torch_harmonics.utils import check
 
 
@@ -532,6 +533,12 @@ class SpectralPositionEmbedding(PositionEmbedding):
     ----------
     img_shape : tuple, optional
         Image shape (height, width), by default (480, 960)
+    lmax : int, optional
+        Maximum spherical harmonic degree of the embedding. If None (default),
+        the truncation is derived from the grid.
+    mmax : int, optional
+        Maximum azimuthal order of the embedding. If None (default), the
+        truncation is derived from the grid.
     grid : str, optional
         Grid type, by default "equiangular"
     num_chans : int, optional
@@ -542,7 +549,7 @@ class SpectralPositionEmbedding(PositionEmbedding):
         super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
 
         # compute maximum required frequency and prepare isht
-        isht = InverseRealSHT(nlat=self.img_shape[0], nlon=self.img_shape[1], lmax=lmax, mmax=mmax, grid=grid)
+        isht = InverseRealSHT(as_grid(grid, nlat=self.img_shape[0], nlon=self.img_shape[1]), lmax=lmax, mmax=mmax)
 
         # fill position embedding
         with torch.no_grad():
