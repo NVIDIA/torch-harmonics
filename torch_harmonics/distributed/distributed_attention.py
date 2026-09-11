@@ -941,8 +941,10 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         # builds its psi with the shapes swapped, but the latitudes it needs are the same ones.
         # It also raises if the halo outgrows a local chunk, which the immediate-neighbour
         # exchange could not serve.
-        lats_in, _ = precompute_latitudes(self.nlat_in, grid=self.grid_in)
-        lats_out, _ = precompute_latitudes(self.nlat_out, grid=self.grid_out)
+        # the grid types are constructor arguments the base class does not retain, so they are
+        # read from the local parameters rather than off self
+        lats_in, _ = precompute_latitudes(self.nlat_in, grid=grid_in)
+        lats_out, _ = precompute_latitudes(self.nlat_out, grid=grid_out)
         self.r_lat = compute_polar_halo_radius(
             lats_in,
             lats_out,
