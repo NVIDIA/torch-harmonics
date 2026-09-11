@@ -201,16 +201,25 @@ def flatten_and_pad_leading_dims(tensor: torch.Tensor, min_leading_size: int, nu
     lead_size : int
         The true (pre-pad) flattened leading size, used to slice off the padding.
     """
+    # complex inputs (the inverse SHTs call this on their spectral input) are processed as
+    # their real view, see unpad_and_unflatten_leading_dims for the rationale
+    is_complex = tensor.is_complex()
+    if is_complex:
+        tensor = torch.view_as_real(tensor)
+        num_trailing_dims += 1
+
     lead_shape = tensor.shape[:-num_trailing_dims]
     tensor = tensor.reshape(-1, *tensor.shape[-num_trailing_dims:])
     lead_size = tensor.shape[0]
 
     if lead_size < min_leading_size:
-        # new_zeros preserves dtype (incl. complex) and device
+        # new_zeros preserves dtype and device
         zeros = tensor.new_zeros((min_leading_size - lead_size, *tensor.shape[1:]))
         tensor = torch.cat([tensor, zeros], dim=0)
 
-    return tensor.contiguous(), lead_shape, lead_size
+    tensor = tensor.contiguous()
+
+    return (torch.view_as_complex(tensor) if is_complex else tensor), lead_shape, lead_size
 
 
 def unpad_and_unflatten_leading_dims(tensor: torch.Tensor, lead_shape, lead_size: int, num_trailing_dims: int = 2) -> torch.Tensor:
@@ -219,9 +228,24 @@ def unpad_and_unflatten_leading_dims(tensor: torch.Tensor, lead_shape, lead_size
     The trailing ``num_trailing_dims`` dims are taken from ``tensor`` as-is, so this is
     valid even when the transform changed them (e.g. ``nlat, nlon`` -> ``lmax, mmax``).
     ``num_trailing_dims`` must match the value passed to the flatten call.
+
+    Complex inputs (the forward SHTs call this on their spectral output) are processed as
+    their real view: this is pure layout code touching only the leading dims, and a copy
+    over a complex buffer cannot be codegen'd by inductor -- triton has no complex type,
+    so it fails with ``KeyError: 'complex64'``. ``view_as_real`` appends the re/im pair as
+    a trailing dim, which is simply carried along; the ``contiguous()`` right before the
+    ``view_as_complex`` supplies the unit last-dim stride the latter requires.
     """
+
+    is_complex = tensor.is_complex()
+    if is_complex:
+        tensor = torch.view_as_real(tensor)
+        num_trailing_dims += 1
+
     tensor = tensor.narrow(0, 0, lead_size)
-    return tensor.reshape(*lead_shape, *tensor.shape[-num_trailing_dims:]).contiguous()
+    out = tensor.reshape(*lead_shape, *tensor.shape[-num_trailing_dims:]).contiguous()
+
+    return torch.view_as_complex(out) if is_complex else out
 
 
 def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False, verify_shapes=None):

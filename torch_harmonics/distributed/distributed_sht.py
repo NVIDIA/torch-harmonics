@@ -157,6 +157,11 @@ class DistributedRealSHT(nn.Module):
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
 
+        # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
+        # quadrature weights. It is a constant prefactor of a linear transform, so folding it
+        # here is exact and saves a pointwise multiply on a complex tensor in every forward.
+        weights = 2.0 * torch.pi * weights
+
         # combine quadrature weights with the legendre weights
         pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
         weights = torch.einsum("mlk,k->mlk", pct, weights)
@@ -170,6 +175,14 @@ class DistributedRealSHT(nn.Module):
     def extra_repr(self):
         return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
+    # This transform cannot be captured in a single graph: the redistribution collectives it
+    # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
+    # every one of them and inductor only ever sees the slivers in between. Those slivers hold
+    # complex intermediates, which triton cannot type (KeyError: 'complex64' in codegen), and
+    # compiling them buys nothing next to the all-to-alls surrounding them. Disabling the whole
+    # forward costs no fusion that the breaks had not already cost, and keeps the complex
+    # spectral data out of inductor entirely. The serial transforms are compiled as usual.
+    @torch.compiler.disable()
     def forward(self, x: torch.Tensor):
 
         check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
@@ -187,8 +200,9 @@ class DistributedRealSHT(nn.Module):
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth(x, (-3, -1), self.lon_shapes)
 
-        # apply real fft in the longitudinal direction: make sure to truncate to nlon
-        x = 2.0 * torch.pi * rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
+        # apply real fft in the longitudinal direction: make sure to truncate to nlon. The 2*pi
+        # scale factor is folded into the quadrature weights, so no scaling is needed here.
+        x = rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
 
         # transpose: after this, m is split and c is local
         if self.comm_size_azimuth > 1:
@@ -339,6 +353,14 @@ class DistributedInverseRealSHT(nn.Module):
     def extra_repr(self):
         return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
+    # This transform cannot be captured in a single graph: the redistribution collectives it
+    # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
+    # every one of them and inductor only ever sees the slivers in between. Those slivers hold
+    # complex intermediates, which triton cannot type (KeyError: 'complex64' in codegen), and
+    # compiling them buys nothing next to the all-to-alls surrounding them. Disabling the whole
+    # forward costs no fusion that the breaks had not already cost, and keeps the complex
+    # spectral data out of inductor entirely. The serial transforms are compiled as usual.
+    @torch.compiler.disable()
     def forward(self, x: torch.Tensor):
 
         check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
@@ -479,6 +501,10 @@ class DistributedRealVectorSHT(nn.Module):
         # compute weights
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
 
+        # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
+        # quadrature weights (see DistributedRealSHT.__init__)
+        weights = 2.0 * torch.pi * weights
+
         # combine integration weights, normalization factor in to one:
         l = torch.arange(0, self.lmax)
         norm_factor = 1.0 / l / (l + 1)
@@ -496,6 +522,14 @@ class DistributedRealVectorSHT(nn.Module):
     def extra_repr(self):
         return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
+    # This transform cannot be captured in a single graph: the redistribution collectives it
+    # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
+    # every one of them and inductor only ever sees the slivers in between. Those slivers hold
+    # complex intermediates, which triton cannot type (KeyError: 'complex64' in codegen), and
+    # compiling them buys nothing next to the all-to-alls surrounding them. Disabling the whole
+    # forward costs no fusion that the breaks had not already cost, and keeps the complex
+    # spectral data out of inductor entirely. The serial transforms are compiled as usual.
+    @torch.compiler.disable()
     def forward(self, x: torch.Tensor):
 
         check(x.dim() >= 4, lambda: f"Expected tensor with at least 4 dimensions but got {x.dim()} instead")
@@ -515,8 +549,9 @@ class DistributedRealVectorSHT(nn.Module):
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth(x, (-4, -1), self.lon_shapes)
 
-        # apply real fft in the longitudinal direction: make sure to truncate to nlon
-        x = 2.0 * torch.pi * rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
+        # apply real fft in the longitudinal direction: make sure to truncate to nlon. The 2*pi
+        # scale factor is folded into the quadrature weights, so no scaling is needed here.
+        x = rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
 
         # transpose: after this, m is split and c is local
         if self.comm_size_azimuth > 1:
@@ -543,7 +578,11 @@ class DistributedRealVectorSHT(nn.Module):
         t_re = -torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w0)
         t_im = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w0)
 
-        x = torch.stack((torch.complex(s_re, s_im), torch.complex(t_re, t_im)), dim=-3).contiguous()
+        # stack the components in real space, see RealVectorSHT.forward. The result is contiguous
+        # by construction, so the .contiguous() this replaces was a no-op.
+        out_re = torch.stack((s_re, t_re), dim=-3)
+        out_im = torch.stack((s_im, t_im), dim=-3)
+        x = torch.complex(out_re, out_im)
 
         # transpose: after this, l is split and c is local
         if self.comm_size_polar > 1:
@@ -651,6 +690,14 @@ class DistributedInverseRealVectorSHT(nn.Module):
     def extra_repr(self):
         return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
 
+    # This transform cannot be captured in a single graph: the redistribution collectives it
+    # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
+    # every one of them and inductor only ever sees the slivers in between. Those slivers hold
+    # complex intermediates, which triton cannot type (KeyError: 'complex64' in codegen), and
+    # compiling them buys nothing next to the all-to-alls surrounding them. Disabling the whole
+    # forward costs no fusion that the breaks had not already cost, and keeps the complex
+    # spectral data out of inductor entirely. The serial transforms are compiled as usual.
+    @torch.compiler.disable()
     def forward(self, x: torch.Tensor):
 
         check(x.dim() >= 4, lambda: f"Expected tensor with at least 4 dimensions but got {x.dim()} instead")
@@ -687,8 +734,11 @@ class DistributedInverseRealVectorSHT(nn.Module):
         trl = -torch.einsum("...ml,mkl->...km", x_im[..., 0, :, :], d1) - torch.einsum("...ml,mkl->...km", x_re[..., 1, :, :], d0)
         tim = torch.einsum("...ml,mkl->...km", x_re[..., 0, :, :], d1) - torch.einsum("...ml,mkl->...km", x_im[..., 1, :, :], d0)
 
-        # reassemble
-        x = torch.stack((torch.complex(srl, sim), torch.complex(trl, tim)), dim=-3).contiguous()
+        # reassemble in real space, see RealVectorSHT.forward. The result is contiguous by
+        # construction, so the .contiguous() this replaces was a no-op.
+        out_re = torch.stack((srl, trl), dim=-3)
+        out_im = torch.stack((sim, tim), dim=-3)
+        x = torch.complex(out_re, out_im)
 
         if self.comm_size_polar > 1:
             chan_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
