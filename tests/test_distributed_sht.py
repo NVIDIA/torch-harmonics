@@ -384,6 +384,80 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
 
+    @parameterized.expand(
+        [
+            # nlat, nlon, lmax, grid, vector
+            [32, 64, None, "equiangular", False],
+            [32, 64, None, "legendre-gauss", False],
+            [33, 64, None, "equiangular", False],
+            [32, 64, 8, "equiangular", False],
+            [32, 64, None, "equiangular", True],
+            [33, 64, None, "legendre-gauss", True],
+            [32, 64, 8, "equiangular", True],
+        ],
+        skip_on_empty=True,
+    )
+    def test_legendre_blocks(self, nlat, nlon, lmax, grid, vector, verbose=False):
+        """Each rank's precomputed Legendre buffer equals its slice of the serial one.
+
+        The distributed transforms build only the block they keep rather than the whole
+        table and discarding most of it, which means the recurrences are entered at an
+        offset: the sectoral seed is walked up to the rank's first order and the three-term
+        recurrence up to its first degree, storing nothing until then. This test isolates
+        that from the transform itself, so an off-by-one in the offsets shows up here rather
+        than as a diffuse accuracy failure in the round trip.
+
+        Each rank checks only its own block against the corresponding cut-out of the serial
+        construction, so there is no collective involved and a failure identifies the rank.
+
+        Agreement is expected to be exact -- the restricted build performs the same
+        elementwise operations on the same values -- so the tolerance is only insurance
+        against a last-bit difference, far tighter than anything an indexing error survives.
+        """
+
+        set_seed(333)
+
+        if vector:
+            fwd_dist = thd.DistributedRealVectorSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            fwd_local = th.RealVectorSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            inv_dist = thd.DistributedInverseRealVectorSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            inv_local = th.InverseRealVectorSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            fwd_buf, inv_buf = "weights", "dpct"
+        else:
+            fwd_dist = thd.DistributedRealSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            fwd_local = th.RealSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            inv_dist = thd.DistributedInverseRealSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            inv_local = th.InverseRealSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            fwd_buf, inv_buf = "weights", "pct"
+
+        # offsets are recomputed here from the per-rank shape lists rather than read off the
+        # transform, so a wrong offset in the construction is not masked by reusing it
+        lat_off = sum(fwd_dist.lat_shapes[: self.hrank])
+        lat_loc = fwd_dist.lat_shapes[self.hrank]
+        l_off = sum(inv_dist.l_shapes[: self.hrank])
+        l_loc = inv_dist.l_shapes[self.hrank]
+        m_off = sum(fwd_dist.m_shapes[: self.wrank])
+        m_loc = fwd_dist.m_shapes[self.wrank]
+
+        # forward: local orders, all degrees, local latitudes -- (..., m, l, k)
+        got = getattr(fwd_dist, fwd_buf)
+        ref = getattr(fwd_local, fwd_buf)[..., m_off : m_off + m_loc, :, lat_off : lat_off + lat_loc]
+
+        if verbose:
+            print(f"forward block on rank ({self.hrank},{self.wrank}): {tuple(got.shape)} vs {tuple(ref.shape)}")
+
+        self.assertEqual(tuple(got.shape), tuple(ref.shape), "forward block shape")
+        ok = compare_tensors("forward legendre block", got, ref.contiguous(), atol=1e-14, rtol=1e-14, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "forward legendre block")
+
+        # inverse: local orders, all latitudes, local degrees -- (..., m, k, l)
+        got = getattr(inv_dist, inv_buf)
+        ref = getattr(inv_local, inv_buf)[..., m_off : m_off + m_loc, :, l_off : l_off + l_loc]
+
+        self.assertEqual(tuple(got.shape), tuple(ref.shape), "inverse block shape")
+        ok = compare_tensors("inverse legendre block", got, ref.contiguous(), atol=1e-14, rtol=1e-14, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "inverse legendre block")
+
 
 if __name__ == "__main__":
     unittest.main()
