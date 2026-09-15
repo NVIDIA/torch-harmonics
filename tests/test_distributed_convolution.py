@@ -50,6 +50,8 @@ from testutils import (
 
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
+from torch_harmonics.distributed import compute_polar_halo_radius, compute_split_shapes
+from torch_harmonics.quadrature import compute_theta_cutoff, effective_theta_cutoff, precompute_latitudes
 
 # Opt-in gate for slow / large-grid parameterized cases (e.g. 721x1440 ERA5-like
 # shapes). Mirrors the TORCH_HARMONICS_RUN_PERF_TESTS pattern in
@@ -481,32 +483,42 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, grid_in, grid_out, transpose
+            # nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, grid_in, grid_out, transpose, polar_mode, theta_cutoff_scale
             # even resolutions, where every rank gets the same number of latitudes
-            [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", False],
-            [32, 64, 32, 64, (3, 3), "legendre-gauss", "legendre-gauss", False],
-            [32, 64, 16, 32, (3, 3), "equiangular", "equiangular", False],
-            [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", True],
-            [16, 32, 32, 64, (3, 3), "equiangular", "equiangular", True],
+            [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", False, "halo-exchange", 1.0],
+            [32, 64, 32, 64, (3, 3), "legendre-gauss", "legendre-gauss", False, "halo-exchange", 1.0],
+            [32, 64, 16, 32, (3, 3), "equiangular", "equiangular", False, "halo-exchange", 1.0],
+            [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", True, "halo-exchange", 1.0],
+            [16, 32, 32, 64, (3, 3), "equiangular", "equiangular", True, "halo-exchange", 1.0],
             # odd nlat, so compute_split_shapes hands ranks different counts and the two axes
             # are skewed against each other -- e.g. 33 and 32 over 4 ranks split [9,8,8,8] and
             # [8,8,8,8], which puts every rank's input and output bands at a different offset
-            [33, 64, 33, 64, (3, 3), "equiangular", "equiangular", False],
-            [33, 64, 33, 64, (3, 3), "legendre-gauss", "legendre-gauss", False],
-            [33, 64, 32, 64, (3, 3), "equiangular", "equiangular", False],
-            [32, 64, 33, 64, (3, 3), "equiangular", "equiangular", False],
-            [33, 64, 33, 64, (3, 3), "equiangular", "equiangular", True],
-            [17, 64, 33, 64, (3, 3), "equiangular", "equiangular", True],
+            [33, 64, 33, 64, (3, 3), "equiangular", "equiangular", False, "halo-exchange", 1.0],
+            [33, 64, 33, 64, (3, 3), "legendre-gauss", "legendre-gauss", False, "halo-exchange", 1.0],
+            [33, 64, 32, 64, (3, 3), "equiangular", "equiangular", False, "halo-exchange", 1.0],
+            [32, 64, 33, 64, (3, 3), "equiangular", "equiangular", False, "halo-exchange", 1.0],
+            [33, 64, 33, 64, (3, 3), "equiangular", "equiangular", True, "halo-exchange", 1.0],
+            [17, 64, 33, 64, (3, 3), "equiangular", "equiangular", True, "halo-exchange", 1.0],
             # coarse, odd resolution ratios: the support then spans more than one input ring per
             # output ring, so these are the rows where the latitude band is genuinely wider than
             # the nearest neighbour and an off-by-one in it would not cancel out
-            [33, 64, 17, 64, (3, 3), "equiangular", "equiangular", False],
-            [33, 64, 11, 64, (3, 3), "equiangular", "equiangular", False],
-            [33, 64, 17, 64, (3, 3), "legendre-gauss", "legendre-gauss", False],
+            [33, 64, 17, 64, (3, 3), "equiangular", "equiangular", False, "halo-exchange", 1.0],
+            [33, 64, 11, 64, (3, 3), "equiangular", "equiangular", False, "halo-exchange", 1.0],
+            [33, 64, 17, 64, (3, 3), "legendre-gauss", "legendre-gauss", False, "halo-exchange", 1.0],
+            # the reduce-scatter fallback keys psi the other way round; it stays reachable for
+            # cutoffs a halo cannot serve, so it needs to stay covered
+            [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", False, "reduce-scatter", 1.0],
+            [33, 64, 17, 64, (3, 3), "equiangular", "equiangular", False, "reduce-scatter", 1.0],
+            # a cutoff far wider than the grid spacing: the support reaches past a neighbour once
+            # the polar group is fine enough, so halo-exchange must refuse and reduce-scatter must
+            # still work. Whether it actually refuses depends on the grid size at runtime, so the
+            # test derives the expectation from the geometry rather than asserting it here.
+            [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", False, "halo-exchange", 12.0],
+            [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", False, "reduce-scatter", 12.0],
         ],
         skip_on_empty=True,
     )
-    def test_psi_blocks(self, nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, grid_in, grid_out, transpose, verbose=False):
+    def test_psi_blocks(self, nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, grid_in, grid_out, transpose, polar_mode, theta_cutoff_scale, verbose=False):
         """Each rank's local psi equals the serial psi restricted to its input latitudes.
 
         The sparsity pattern is built from the latitude band that can fall inside the angular
@@ -523,21 +535,73 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
         set_seed(333)
 
-        if transpose:
-            conv_local = th.DiscreteContinuousConvTransposeS2(1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out).to(
-                self.device
+        # the transpose convolution still reduces via all-gather and has no polar_mode, so only
+        # the halo rows are meaningful for it
+        if transpose and polar_mode != "halo-exchange":
+            self.skipTest("the transpose convolution has no polar_mode")
+
+        theta_cutoff = theta_cutoff_scale * compute_theta_cutoff(nlat_out if not transpose else nlat_in, grid=grid_out if not transpose else grid_in)
+
+        # Whether a halo can serve this configuration is a property of the geometry and the
+        # decomposition, so derive it rather than hard-coding it per row: the same cutoff is
+        # servable on a coarse polar split and not on a fine one. The assertion is then that the
+        # constructor agrees -- refusing exactly when the support outruns a neighbour, and saying
+        # which mode to use instead.
+        lats_in, _ = precompute_latitudes(nlat_in, grid=grid_in)
+        lats_out, _ = precompute_latitudes(nlat_out, grid=grid_out)
+        try:
+            compute_polar_halo_radius(
+                lats_in,
+                lats_out,
+                effective_theta_cutoff(theta_cutoff),
+                compute_split_shapes(nlat_in, self.grid_size_h),
+                compute_split_shapes(nlat_out, self.grid_size_h),
             )
+            halo_servable = True
+        except ValueError:
+            halo_servable = False
+
+        if not transpose and polar_mode == "halo-exchange" and not halo_servable:
+            with self.assertRaises(ValueError) as ctx:
+                thd.DistributedDiscreteContinuousConvS2(
+                    1,
+                    1,
+                    (nlat_in, nlon_in),
+                    (nlat_out, nlon_out),
+                    kernel_shape=kernel_shape,
+                    grid_in=grid_in,
+                    grid_out=grid_out,
+                    theta_cutoff=theta_cutoff,
+                    polar_mode=polar_mode,
+                )
+            self.assertIn("reduce-scatter", str(ctx.exception), "the refusal must name the mode that does work")
+            return
+
+        if transpose:
+            conv_local = th.DiscreteContinuousConvTransposeS2(
+                1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
+            ).to(self.device)
             conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(
-                1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out
+                1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
             ).to(self.device)
             # the transpose module's psi indexes the output grid along the split axis
             nlon_split = nlon_out
             shapes = conv_dist.lat_out_shapes
         else:
-            conv_local = th.DiscreteContinuousConvS2(1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out).to(self.device)
-            conv_dist = thd.DistributedDiscreteContinuousConvS2(1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out).to(
-                self.device
-            )
+            conv_local = th.DiscreteContinuousConvS2(
+                1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
+            ).to(self.device)
+            conv_dist = thd.DistributedDiscreteContinuousConvS2(
+                1,
+                1,
+                (nlat_in, nlon_in),
+                (nlat_out, nlon_out),
+                kernel_shape=kernel_shape,
+                grid_in=grid_in,
+                grid_out=grid_out,
+                theta_cutoff=theta_cutoff,
+                polar_mode=polar_mode,
+            ).to(self.device)
             nlon_split = nlon_in
             shapes = conv_dist.lat_in_shapes
 
@@ -596,6 +660,12 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         if self.grid_size_h > 1:
             dist.all_reduce(local_nnz, group=self.h_group)
         self.assertEqual(int(local_nnz.item()), int(conv_local.psi_vals.numel()), "polar ranks together must hold every serial psi entry exactly once")
+
+    def test_polar_mode_rejects_unknown_value(self):
+        """An unrecognised mode is a typo, not a request for a default."""
+        with self.assertRaises(ValueError) as ctx:
+            thd.DistributedDiscreteContinuousConvS2(1, 1, (32, 64), (32, 64), kernel_shape=(3, 3), polar_mode="halo")
+        self.assertIn("halo-exchange", str(ctx.exception))
 
 
 if __name__ == "__main__":

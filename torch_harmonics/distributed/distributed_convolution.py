@@ -72,6 +72,9 @@ from .utils import (
     polar_group_size,
 )
 
+#: Strategies for combining the polar ranks' contributions, see DistributedDiscreteContinuousConvS2.
+_POLAR_MODES = frozenset({"halo-exchange", "reduce-scatter"})
+
 
 def _split_distributed_convolution_tensor_s2(
     idx: torch.Tensor,
@@ -128,20 +131,6 @@ def _split_distributed_convolution_tensor_s2(
     vals = vals.contiguous()
 
     return idx, vals
-
-
-def _polar_halo_radius_or_none(lats_in, lats_out, theta_cutoff, lat_in_shapes, lat_out_shapes):
-    """``compute_polar_halo_radius``, returning ``None`` instead of raising when it is too wide.
-
-    For attention a halo wider than a local chunk is a configuration error, because that layer
-    has no other way to get the rows. The DISCO convolutions do: the reduce-scatter path places
-    no bound on the angular reach, so here an over-wide halo is simply a reason to take that
-    path rather than a failure.
-    """
-    try:
-        return compute_polar_halo_radius(lats_in, lats_out, theta_cutoff, lat_in_shapes, lat_out_shapes)
-    except ValueError:
-        return None
 
 
 def _split_halo_convolution_tensor_s2(
@@ -293,6 +282,20 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         on the local azimuth channel shard and the K-expanded is recomputed
         in backward instead of saved, for K× lower activation memory and K×
         less collective volume (CUDA + optimized kernels only).
+    polar_mode : Optional[str]
+        How the polar ranks obtain their output latitudes.
+
+        ``"halo-exchange"`` (default): each rank borrows the input rows its own output rows
+        reach into and computes them outright. The K-expanded intermediate is then
+        ``(B, C, K, nlat_out / polar_group_size, nlon_out)``, i.e. it shrinks as polar ranks
+        are added. Requires the filter support to reach no further than the neighbouring
+        rank; when it does not, construction raises and says so, rather than quietly
+        selecting the other mode and leaving the memory problem in place.
+
+        ``"reduce-scatter"``: every rank computes a partial sum over *all* output latitudes
+        and a reduce-scatter completes and splits it. No bound on the angular reach, so this
+        is the mode for cutoffs wide enough that a halo cannot serve them -- at the cost of an
+        intermediate that stays at the full ``nlat_out`` however many polar ranks are used.
 
     Returns
     -------
@@ -320,8 +323,13 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         theta_cutoff: Optional[float] = None,
         optimized_kernel: Optional[bool] = True,
         fused: bool = False,
+        polar_mode: Optional[str] = "halo-exchange",
     ):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
+
+        if polar_mode not in _POLAR_MODES:
+            raise ValueError(f"Unknown polar_mode '{polar_mode}', expected one of {sorted(_POLAR_MODES)}")
+        self.polar_mode = polar_mode
 
         # fused=True uses the reordered a2a (fused contraction+einsum op with
         # K-expanded recompute in backward); it is CUDA + optimized-kernel only.
@@ -372,14 +380,21 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         # fall back to computing every output latitude and reduce-scattering, which has no such
         # restriction.
         self.r_lat = 0
-        self.use_halo = False
-        if self.comm_size_polar > 1:
+        self.use_halo = self.polar_mode == "halo-exchange"
+        if self.use_halo:
             lats_in, _ = precompute_latitudes(self.nlat_in, grid=grid_in)
             lats_out, _ = precompute_latitudes(self.nlat_out, grid=grid_out)
-            r_lat = _polar_halo_radius_or_none(lats_in, lats_out, effective_theta_cutoff(self.theta_cutoff), self.lat_in_shapes, self.lat_out_shapes)
-            if r_lat is not None:
-                self.r_lat = r_lat
-                self.use_halo = True
+            try:
+                self.r_lat = compute_polar_halo_radius(lats_in, lats_out, effective_theta_cutoff(self.theta_cutoff), self.lat_in_shapes, self.lat_out_shapes)
+            except ValueError as err:
+                raise ValueError(
+                    f"{err}\n\n"
+                    "This convolution therefore cannot use polar_mode='halo-exchange'. Either reduce the "
+                    "polar group size or theta_cutoff so the support fits within one neighbour, or pass "
+                    "polar_mode='reduce-scatter', which places no bound on the angular reach but computes "
+                    "every output latitude on every polar rank -- so its intermediate does not shrink as "
+                    "polar ranks are added."
+                ) from err
 
         # set local shapes according to distributed mode
         self.nlat_in_local = self.lat_in_shapes[self.comm_rank_polar]
