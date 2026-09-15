@@ -232,10 +232,13 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             Serial counterpart with full mathematical description and parameter
             documentation.
 
-    The algorithm is all-to-all (azimuth <-> channel swap so the sparse psi
-    contraction runs against the full nlon_in row, polar reduce_scatter
-    completes the H sum, then back to channel-distributed). The ``fused=``
-    flag mirrors the serial conv:
+    The azimuth direction is all-to-all: a channel swap so the sparse psi contraction
+    runs against the full ``nlon_in`` row, then back to channel-distributed. The polar
+    direction is chosen by ``polar_mode=``, which decides whether a rank computes only
+    the output latitudes it owns (borrowing a halo) or all of them (and reduce-scatters
+    the partial sums). That choice governs how the K-expanded intermediate scales, so it
+    is usually the one that decides whether a large model fits. The ``fused=`` flag is
+    orthogonal to it and mirrors the serial conv:
 
       ``fused=False`` (default) — standard a2a: einsum after the
         transpose-back; the K-expanded intermediate is saved for backward.
