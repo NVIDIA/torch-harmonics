@@ -615,6 +615,13 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         # for "which serial entries should this rank hold" differ. Lift the local tensor back to
         # global coordinates and select the matching serial entries, then compare entry for entry.
         use_halo = getattr(conv_dist, "use_halo", False)
+
+        # Assert the mode rather than only reading it back: everything below adapts to whichever
+        # keying the constructor chose, so a silent fall back to reduce-scatter would satisfy the
+        # comparison while leaving the halo path untested. The transpose class has no polar_mode.
+        if not transpose:
+            self.assertEqual(use_halo, polar_mode == "halo-exchange", f"constructor did not honour polar_mode={polar_mode!r}")
+
         if use_halo:
             # rows are this rank's own output latitudes, columns index a halo-padded input band
             r_lat = conv_dist.r_lat
