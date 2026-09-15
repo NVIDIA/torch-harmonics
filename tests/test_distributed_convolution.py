@@ -541,34 +541,61 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             nlon_split = nlon_in
             shapes = conv_dist.lat_in_shapes
 
-        lat_start = sum(shapes[: self.hrank])
-        lat_local = shapes[self.hrank]
-
         def sorted_entries(ker, row, col, vals):
             """Canonical ordering so the two builds are comparable regardless of CSR layout."""
             key = (ker.to(torch.int64) * (nlat_out + nlat_in) + row.to(torch.int64)) * (nlat_in * nlat_out * nlon_split) + col.to(torch.int64)
             order = torch.argsort(key)
             return ker[order], row[order], col[order], vals[order]
 
-        # distributed: columns are keyed to the local latitude slice, lift them back to global
-        lat_loc = conv_dist.psi_col_idx // nlon_split
-        lon_loc = conv_dist.psi_col_idx % nlon_split
-        col_global = (lat_loc + lat_start) * nlon_split + lon_loc
-        got = sorted_entries(conv_dist.psi_ker_idx, conv_dist.psi_row_idx, col_global, conv_dist.psi_vals)
+        # The two polar strategies key psi differently, so both the un-keying and the predicate
+        # for "which serial entries should this rank hold" differ. Lift the local tensor back to
+        # global coordinates and select the matching serial entries, then compare entry for entry.
+        use_halo = getattr(conv_dist, "use_halo", False)
+        if use_halo:
+            # rows are this rank's own output latitudes, columns index a halo-padded input band
+            r_lat = conv_dist.r_lat
+            out_start = sum(conv_dist.lat_out_shapes[: self.hrank])
+            halo_start = sum(conv_dist.lat_in_shapes[: self.hrank]) - r_lat
 
-        # serial: keep the entries this rank owns
-        lat_ser = conv_local.psi_col_idx // nlon_split
-        keep = (lat_ser >= lat_start) & (lat_ser < lat_start + lat_local)
+            lat_loc = conv_dist.psi_col_idx // nlon_split
+            lon_loc = conv_dist.psi_col_idx % nlon_split
+            col_global = (lat_loc + halo_start) * nlon_split + lon_loc
+            row_global = conv_dist.psi_row_idx + out_start
+
+            keep = (conv_local.psi_row_idx >= out_start) & (conv_local.psi_row_idx < out_start + conv_dist.nlat_out_local)
+        else:
+            # rows stay global, columns index the local input slice
+            lat_start = sum(shapes[: self.hrank])
+            lat_local = shapes[self.hrank]
+
+            lat_loc = conv_dist.psi_col_idx // nlon_split
+            lon_loc = conv_dist.psi_col_idx % nlon_split
+            col_global = (lat_loc + lat_start) * nlon_split + lon_loc
+            row_global = conv_dist.psi_row_idx
+
+            lat_ser = conv_local.psi_col_idx // nlon_split
+            keep = (lat_ser >= lat_start) & (lat_ser < lat_start + lat_local)
+
+        got = sorted_entries(conv_dist.psi_ker_idx, row_global, col_global, conv_dist.psi_vals)
         ref = sorted_entries(conv_local.psi_ker_idx[keep], conv_local.psi_row_idx[keep], conv_local.psi_col_idx[keep], conv_local.psi_vals[keep])
 
         if verbose:
-            print(f"psi block on rank ({self.hrank},{self.wrank}): {got[0].numel()} vs {ref[0].numel()} entries")
+            print(f"psi block on rank ({self.hrank},{self.wrank}), use_halo={use_halo}: {got[0].numel()} vs {ref[0].numel()} entries")
 
         self.assertEqual(got[0].numel(), ref[0].numel(), "number of local psi entries")
         names = ("kernel index", "row index", "column index", "values")
         for name, g, r in zip(names, got, ref):
             ok = compare_tensors(f"psi {name}", g, r, atol=1e-14, rtol=1e-14, verbose=verbose)
             self.assertTrue(reduce_success(ok, self.device), f"psi {name}")
+
+        # Completeness. The per-rank check above compares against a predicate, so a predicate
+        # wrong in the same way as the implementation would pass it; summing the local entry
+        # counts over the polar group and comparing to the serial total catches a partition that
+        # drops or duplicates entries, which is the failure that would quietly change results.
+        local_nnz = torch.tensor([conv_dist.psi_vals.numel()], device=self.device, dtype=torch.int64)
+        if self.grid_size_h > 1:
+            dist.all_reduce(local_nnz, group=self.h_group)
+        self.assertEqual(int(local_nnz.item()), int(conv_local.psi_vals.numel()), "polar ranks together must hold every serial psi entry exactly once")
 
 
 if __name__ == "__main__":

@@ -123,7 +123,6 @@ def _distributed_disco_fwd_a2a(
     lon_in_shapes: List[int],
     use_halo: bool = False,
     r_lat: int = 0,
-    nlat_in_local: int = 0,
 ) -> torch.Tensor:
     """A2A-based distributed DISCO forward.
 

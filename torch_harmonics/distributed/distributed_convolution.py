@@ -566,7 +566,6 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 lon_in_shapes=self.lon_in_shapes,
                 use_halo=self.use_halo,
                 r_lat=self.r_lat,
-                nlat_in_local=self.nlat_in_local,
             )
 
         if self.bias is not None:
