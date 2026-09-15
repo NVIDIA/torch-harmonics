@@ -35,6 +35,7 @@ from typing import Optional
 import torch
 
 from torch_harmonics.cache import lru_cache
+from torch_harmonics.quadrature import precompute_latitudes
 
 
 def clm(l: int, m: int) -> float:
@@ -184,17 +185,27 @@ def legpoly(
 def _precompute_legpoly(
     mmax: int,
     lmax: int,
-    t: torch.Tensor,
+    nlat: int,
+    grid: Optional[str] = "equiangular",
     norm: Optional[str] = "ortho",
     inverse: Optional[bool] = False,
     csphase: Optional[bool] = True,
     *,
     mmin: Optional[int] = 0,
     lmin: Optional[int] = 0,
+    kmin: Optional[int] = 0,
+    kmax: Optional[int] = None,
 ) -> torch.Tensor:
     r"""
-    Computes the values of (-1)^m c^l_m P^l_m(\cos \theta) at the positions specified by t (theta).
-    The resulting tensor has shape (mmax - mmin, lmax - lmin, len(t)).
+    Computes the values of (-1)^m c^l_m P^l_m(\cos \theta) on the colatitudes of a grid.
+    The resulting tensor has shape (mmax - mmin, lmax - lmin, kmax - kmin).
+
+    This is the cached entry point, and it is keyed on the *grid* rather than on a tensor of
+    nodes. That is deliberate: tensors hash by identity, so a table built for one layer could
+    never be reused by the next one, which rebuilds an equal-valued but distinct node tensor.
+    Describing the nodes by ``(nlat, grid)`` makes the key a tuple of scalars, so layers that
+    share a resolution share the table. Use :func:`legpoly` directly to evaluate at nodes that
+    are not a grid's colatitudes.
 
     Parameters
     ----------
@@ -202,10 +213,10 @@ def _precompute_legpoly(
         Maximum order of the spherical harmonics (exclusive)
     lmax : int
         Maximum degree of the spherical harmonics (exclusive)
-    t : torch.Tensor
-        Tensor of positions at which to evaluate the Legendre polynomials. Restricting the
-        evaluation points is done by passing a shorter tensor -- they are independent of one
-        another, unlike the order and degree ranges below.
+    nlat : int
+        Number of latitudinal nodes of the grid
+    grid : Optional[str]
+        Quadrature grid type, see :func:`~torch_harmonics.quadrature.precompute_latitudes`
     norm : Optional[str]
         Normalization of the Legendre polynomials
     inverse : Optional[bool]
@@ -216,18 +227,27 @@ def _precompute_legpoly(
         First order to store, by default 0
     lmin : Optional[int]
         First degree to store, by default 0
+    kmin : Optional[int]
+        First latitude to evaluate, by default 0
+    kmax : Optional[int]
+        One past the last latitude to evaluate, by default ``nlat``. Unlike the order and
+        degree ranges, restricting latitudes costs nothing: they are independent of one
+        another, so the excluded ones are never computed in the first place.
 
     Returns
     -------
     torch.Tensor
         Tensor of Legendre polynomial values
     """
-    return legpoly(mmax, lmax, torch.cos(t), norm=norm, inverse=inverse, csphase=csphase, mmin=mmin, lmin=lmin)
+
+    lats, _ = precompute_latitudes(nlat, grid=grid)
+    kmax = nlat if kmax is None else kmax
+
+    return legpoly(mmax, lmax, torch.cos(lats[kmin:kmax]), norm=norm, inverse=inverse, csphase=csphase, mmin=mmin, lmin=lmin)
 
 
-@lru_cache(typed=True, copy=True)
 @torch.no_grad()
-def _precompute_dlegpoly(
+def dlegpoly(
     mmax: int,
     lmax: int,
     t: torch.Tensor,
@@ -282,7 +302,7 @@ def _precompute_dlegpoly(
 
     # halo of one order below and above; the degree halo is the extra column at lmax
     pmin = max(0, mmin - 1)
-    pct = _precompute_legpoly(mmax + 1, lmax + 1, t, norm=norm, inverse=inverse, csphase=False, mmin=pmin, lmin=lmin)
+    pct = legpoly(mmax + 1, lmax + 1, torch.cos(t), norm=norm, inverse=inverse, csphase=False, mmin=pmin, lmin=lmin)
 
     nm = mmax - mmin
     nl = lmax - lmin
@@ -342,3 +362,63 @@ def _precompute_dlegpoly(
         dpct[:, (1 if mmin % 2 == 0 else 0) :: 2, :] *= -1
 
     return dpct
+
+
+@lru_cache(typed=True, copy=True)
+@torch.no_grad()
+def _precompute_dlegpoly(
+    mmax: int,
+    lmax: int,
+    nlat: int,
+    grid: Optional[str] = "equiangular",
+    norm: Optional[str] = "ortho",
+    inverse: Optional[bool] = False,
+    csphase: Optional[bool] = True,
+    *,
+    mmin: Optional[int] = 0,
+    lmin: Optional[int] = 0,
+    kmin: Optional[int] = 0,
+    kmax: Optional[int] = None,
+) -> torch.Tensor:
+    r"""
+    Cached, grid-keyed counterpart of :func:`dlegpoly`, mirroring :func:`_precompute_legpoly`.
+
+    See :func:`_precompute_legpoly` for why the key is the grid rather than a tensor of nodes,
+    and :func:`dlegpoly` for the quantities computed and the meaning of the order and degree
+    ranges.
+
+    Parameters
+    ----------
+    mmax : int
+        Maximum order of the spherical harmonics (exclusive)
+    lmax : int
+        Maximum degree of the spherical harmonics (exclusive)
+    nlat : int
+        Number of latitudinal nodes of the grid
+    grid : Optional[str]
+        Quadrature grid type, see :func:`~torch_harmonics.quadrature.precompute_latitudes`
+    norm : Optional[str]
+        Normalization of the Legendre polynomials
+    inverse : Optional[bool]
+        Whether to compute the inverse Legendre polynomials
+    csphase : Optional[bool]
+        Whether to apply the Condon-Shortley phase (-1)^m
+    mmin : Optional[int]
+        First order to store, by default 0
+    lmin : Optional[int]
+        First degree to store, by default 0
+    kmin : Optional[int]
+        First latitude to evaluate, by default 0
+    kmax : Optional[int]
+        One past the last latitude to evaluate, by default ``nlat``
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor of derivative Legendre polynomial values
+    """
+
+    lats, _ = precompute_latitudes(nlat, grid=grid)
+    kmax = nlat if kmax is None else kmax
+
+    return dlegpoly(mmax, lmax, lats[kmin:kmax], norm=norm, inverse=inverse, csphase=csphase, mmin=mmin, lmin=lmin)

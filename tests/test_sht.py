@@ -122,7 +122,9 @@ class TestLegendrePolynomials(unittest.TestCase):
 
         t, _ = precompute_latitudes(2 * lmax, grid="legendre-gauss")
         t = t.to(self.device)
-        pct = th.legendre._precompute_legpoly(lmax, lmax, t, norm=norm, csphase=csphase)
+        # the tensor-based core, so the nodes can stay on the test device; the cached
+        # grid-keyed wrapper is exercised by test_range_restriction
+        pct = th.legendre.legpoly(lmax, lmax, torch.cos(t), norm=norm, csphase=csphase)
 
         # the normalization scales every entry, so it scales the sum by a known constant
         for l in range(lmax):
@@ -159,7 +161,7 @@ class TestLegendrePolynomials(unittest.TestCase):
 
         t, w = precompute_latitudes(nlat, grid=grid)
         t, w = t.to(self.device), w.to(self.device)
-        pct = th.legendre._precompute_legpoly(lmax, lmax, t, norm="ortho", csphase=False)
+        pct = th.legendre.legpoly(lmax, lmax, torch.cos(t), norm="ortho", csphase=False)
 
         for m in [0, 1, lmax // 2, lmax - 1]:
             # only degrees l >= m are supported; the rest are identically zero
@@ -198,8 +200,8 @@ class TestLegendrePolynomials(unittest.TestCase):
         t = t.to(self.device)
 
         kwargs = dict(norm=norm, inverse=inverse, csphase=csphase)
-        pct = th.legendre._precompute_legpoly(lmax, lmax, t, **kwargs)
-        dpct = th.legendre._precompute_dlegpoly(lmax, lmax, t, **kwargs)
+        pct = th.legendre.legpoly(lmax, lmax, torch.cos(t), **kwargs)
+        dpct = th.legendre.dlegpoly(lmax, lmax, t, **kwargs)
 
         # entries outside the triangular support are zero by construction and carry no information
         m_g = torch.arange(lmax, device=self.device).view(lmax, 1, 1)
@@ -213,7 +215,7 @@ class TestLegendrePolynomials(unittest.TestCase):
 
         # central difference; truncation dominates the comparison, hence the looser tolerance
         h = 1e-5
-        fd = (th.legendre._precompute_legpoly(lmax, lmax, t + h, **kwargs) - th.legendre._precompute_legpoly(lmax, lmax, t - h, **kwargs)) / (2 * h)
+        fd = (th.legendre.legpoly(lmax, lmax, torch.cos(t + h), **kwargs) - th.legendre.legpoly(lmax, lmax, torch.cos(t - h), **kwargs)) / (2 * h)
         ok = compare_tensors("dpct[0] vs central difference", dpct[0][support], fd[support], atol=1e-5, rtol=1e-6, verbose=verbose)
         self.assertTrue(ok, msg="dpct[0] does not match d/dtheta P")
 
@@ -242,25 +244,41 @@ class TestLegendrePolynomials(unittest.TestCase):
         goes through the same code.
         """
 
-        t, _ = precompute_latitudes(2 * max(mmax, lmax), grid="legendre-gauss")
+        nlat = 2 * max(mmax, lmax)
+        t, _ = precompute_latitudes(nlat, grid="legendre-gauss")
         t = t.to(self.device)
 
-        for fn in (th.legendre._precompute_legpoly, th.legendre._precompute_dlegpoly):
+        # legpoly evaluates at cos(theta), dlegpoly at theta itself
+        nodes = lambda fn: torch.cos(t) if fn is th.legendre.legpoly else t
+
+        for fn in (th.legendre.legpoly, th.legendre.dlegpoly):
             for norm in ["ortho", "four-pi", "schmidt"]:
                 for inverse in [False, True]:
                     for csphase in [False, True]:
                         kwargs = dict(norm=norm, inverse=inverse, csphase=csphase)
-                        full = fn(mmax, lmax, t, **kwargs)
+                        full = fn(mmax, lmax, nodes(fn), **kwargs)
 
                         for mmin in sorted({0, 1, mmax // 2, mmax - 1} & set(range(mmax))):
                             for lmin in sorted({0, 1, lmax // 2, lmax - 1} & set(range(lmax))):
-                                block = fn(mmax, lmax, t, mmin=mmin, lmin=lmin, **kwargs)
+                                block = fn(mmax, lmax, nodes(fn), mmin=mmin, lmin=lmin, **kwargs)
                                 ref = full[..., mmin:, lmin:, :]
                                 case = f"{fn.__name__} mmax={mmax} lmax={lmax} mmin={mmin} lmin={lmin} {norm} inverse={inverse} csphase={csphase}"
                                 self.assertEqual(tuple(block.shape), tuple(ref.shape), msg=f"shape mismatch: {case}")
                                 # atol=rtol=0: bitwise, see the docstring
                                 ok = compare_tensors(case, block, ref.contiguous(), atol=0.0, rtol=0.0, verbose=verbose)
                                 self.assertTrue(ok, msg=f"values differ from the full-table slice: {case}")
+
+        # the latitude range is only reachable through the cached, grid-keyed wrappers, since
+        # the tensor-based core restricts latitudes by simply being handed fewer nodes
+        for fn in (th.legendre._precompute_legpoly, th.legendre._precompute_dlegpoly):
+            full = fn(mmax, lmax, nlat, "legendre-gauss")
+            for kmin, kmax in [(0, None), (1, None), (0, nlat - 1), (2, nlat - 2), (nlat // 2, nlat)]:
+                block = fn(mmax, lmax, nlat, "legendre-gauss", kmin=kmin, kmax=kmax)
+                ref = full[..., kmin : (nlat if kmax is None else kmax)]
+                case = f"{fn.__name__} mmax={mmax} lmax={lmax} kmin={kmin} kmax={kmax}"
+                self.assertEqual(tuple(block.shape), tuple(ref.shape), msg=f"shape mismatch: {case}")
+                ok = compare_tensors(case, block, ref.contiguous(), atol=0.0, rtol=0.0, verbose=verbose)
+                self.assertTrue(ok, msg=f"values differ from the full-table slice: {case}")
 
 
 @parameterized_class(("device"), _devices)

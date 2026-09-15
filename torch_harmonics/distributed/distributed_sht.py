@@ -34,7 +34,7 @@ import torch.nn as nn
 
 from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
-from torch_harmonics.quadrature import clenshaw_curtiss_weights, legendre_gauss_weights, lobatto_weights
+from torch_harmonics.quadrature import precompute_latitudes
 from torch_harmonics.truncation import truncate_sht
 from torch_harmonics.utils import check
 
@@ -130,24 +130,15 @@ class DistributedRealSHT(nn.Module):
 
         # TODO: include assertions regarding the dimensions
 
-        # compute quadrature points
-        if self.grid == "legendre-gauss":
-            cost, weights = legendre_gauss_weights(nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, weights = lobatto_weights(nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, weights = clenshaw_curtiss_weights(nlat, -1, 1)
-        else:
-            raise (ValueError("Unknown quadrature mode"))
+        # quadrature weights; the grid switch and the cosine transform live in
+        # precompute_latitudes, which is cached on (nlat, grid)
+        _, weights = precompute_latitudes(nlat, grid=self.grid)
 
         # get the comms grid:
         self.comm_size_polar = polar_group_size()
         self.comm_rank_polar = polar_group_rank()
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
-
-        # apply cosine transform and flip them
-        tq = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
@@ -171,14 +162,23 @@ class DistributedRealSHT(nn.Module):
 
         # build only the block this rank keeps, rather than the whole table. The contraction
         # over k is a distributed matmul completed by a reduce-scatter in the forward, so only
-        # the local latitudes are needed; l is contracted in full. Latitudes restrict by simply
-        # passing fewer evaluation points -- they are independent of each other -- whereas the
-        # order range needs mmin, since reaching P^m_m means walking the seed up from m=0.
-        tq_local = tq[self.lat_offset : self.lat_offset + self.nlat_local]
+        # the local latitudes are needed; l is contracted in full. Latitudes restrict for free
+        # via kmin/kmax -- they are independent of each other -- whereas the order range needs
+        # mmin, since reaching P^m_m means walking the seed up from m=0.
         weights = weights[self.lat_offset : self.lat_offset + self.nlat_local]
 
         # combine quadrature weights with the legendre weights
-        pct = _precompute_legpoly(self.mmax_offset + self.mmax_local, self.lmax, tq_local, norm=self.norm, csphase=self.csphase, mmin=self.mmax_offset)
+        pct = _precompute_legpoly(
+            self.mmax_offset + self.mmax_local,
+            self.lmax,
+            self.nlat,
+            self.grid,
+            norm=self.norm,
+            csphase=self.csphase,
+            mmin=self.mmax_offset,
+            kmin=self.lat_offset,
+            kmax=self.lat_offset + self.nlat_local,
+        )
         weights = torch.einsum("mlk,k->mlk", pct, weights).contiguous()
 
         # remember quadrature weights
@@ -325,24 +325,11 @@ class DistributedInverseRealSHT(nn.Module):
         self.norm = norm
         self.csphase = csphase
 
-        # compute quadrature points
-        if self.grid == "legendre-gauss":
-            cost, _ = legendre_gauss_weights(nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, _ = lobatto_weights(nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, _ = clenshaw_curtiss_weights(nlat, -1, 1)
-        else:
-            raise (ValueError("Unknown quadrature mode"))
-
         # get the comms grid:
         self.comm_size_polar = polar_group_size()
         self.comm_rank_polar = polar_group_rank()
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
-
-        # apply cosine transform and flip them
-        t = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
@@ -366,7 +353,8 @@ class DistributedInverseRealSHT(nn.Module):
         pct = _precompute_legpoly(
             self.mmax_offset + self.mmax_local,
             self.lmax_offset + self.lmax_local,
-            t,
+            self.nlat,
+            self.grid,
             norm=self.norm,
             inverse=True,
             csphase=self.csphase,
@@ -494,24 +482,15 @@ class DistributedRealVectorSHT(nn.Module):
         self.norm = norm
         self.csphase = csphase
 
-        # compute quadrature points
-        if self.grid == "legendre-gauss":
-            cost, weights = legendre_gauss_weights(nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, weights = lobatto_weights(nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, weights = clenshaw_curtiss_weights(nlat, -1, 1)
-        else:
-            raise (ValueError("Unknown quadrature mode"))
+        # quadrature weights; the grid switch and the cosine transform live in
+        # precompute_latitudes, which is cached on (nlat, grid)
+        _, weights = precompute_latitudes(nlat, grid=self.grid)
 
         # get the comms grid:
         self.comm_size_polar = polar_group_size()
         self.comm_rank_polar = polar_group_rank()
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
-
-        # apply cosine transform and flip them
-        tq = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
@@ -529,11 +508,20 @@ class DistributedRealVectorSHT(nn.Module):
 
         # build only the block this rank keeps: local latitudes, local orders, all degrees,
         # see DistributedRealSHT.__init__
-        tq_local = tq[self.lat_offset : self.lat_offset + self.nlat_local]
         weights = weights[self.lat_offset : self.lat_offset + self.nlat_local]
 
         # compute weights
-        dpct = _precompute_dlegpoly(self.mmax_offset + self.mmax_local, self.lmax, tq_local, norm=self.norm, csphase=self.csphase, mmin=self.mmax_offset)
+        dpct = _precompute_dlegpoly(
+            self.mmax_offset + self.mmax_local,
+            self.lmax,
+            self.nlat,
+            self.grid,
+            norm=self.norm,
+            csphase=self.csphase,
+            mmin=self.mmax_offset,
+            kmin=self.lat_offset,
+            kmax=self.lat_offset + self.nlat_local,
+        )
 
         # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
         # quadrature weights (see DistributedRealSHT.__init__)
@@ -675,23 +663,10 @@ class DistributedInverseRealVectorSHT(nn.Module):
         self.norm = norm
         self.csphase = csphase
 
-        # compute quadrature points
-        if self.grid == "legendre-gauss":
-            cost, _ = legendre_gauss_weights(nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, _ = lobatto_weights(nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, _ = clenshaw_curtiss_weights(nlat, -1, 1)
-        else:
-            raise (ValueError("Unknown quadrature mode"))
-
         self.comm_size_polar = polar_group_size()
         self.comm_rank_polar = polar_group_rank()
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
-
-        # apply cosine transform and flip them
-        t = torch.flip(torch.arccos(cost), dims=(0,))
 
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
@@ -713,7 +688,8 @@ class DistributedInverseRealVectorSHT(nn.Module):
         dpct = _precompute_dlegpoly(
             self.mmax_offset + self.mmax_local,
             self.lmax_offset + self.lmax_local,
-            t,
+            self.nlat,
+            self.grid,
             norm=self.norm,
             inverse=True,
             csphase=self.csphase,
