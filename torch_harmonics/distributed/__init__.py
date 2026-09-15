@@ -37,6 +37,7 @@ from .distributed_resample import DistributedResampleS2
 from .distributed_sht import DistributedInverseRealSHT, DistributedInverseRealVectorSHT, DistributedRealSHT, DistributedRealVectorSHT
 from .distributed_spectral_convolution import DistributedSpectralConvS2
 from .primitives import (
+    compute_polar_halo_radius,
     compute_split_shapes,
     copy_to_azimuth_region,
     copy_to_polar_region,
