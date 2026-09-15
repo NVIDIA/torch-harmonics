@@ -87,6 +87,7 @@ else:
 from torch_harmonics.distributed.primitives import (
     compute_split_shapes,
     distributed_transpose_azimuth,
+    polar_halo_exchange,
     reduce_from_scatter_to_azimuth_region,
     reduce_from_scatter_to_polar_region,
 )
@@ -120,23 +121,43 @@ def _distributed_disco_fwd_a2a(
     comm_size_polar: int,
     comm_size_azimuth: int,
     lon_in_shapes: List[int],
+    use_halo: bool = False,
+    r_lat: int = 0,
+    nlat_in_local: int = 0,
 ) -> torch.Tensor:
     """A2A-based distributed DISCO forward.
 
     Pattern:
       1. (optional) channel <-> azimuth A2A so W is local.
-      2. Sparse psi contraction → K-expanded (B, C, K, H_out, W).
-      3. (optional) polar reduce_scatter on H (split H_out across polar group).
-      4. (optional) azimuth <-> channel A2A back so W is split, C is local.
-      5. Local einsum (C, K) × (O, C, K) → (B, O, H_out_local, W_out_local).
+      2. (halo) borrow r_lat input rows from each polar neighbour.
+      3. Sparse psi contraction → K-expanded (B, C, K, H_out, W).
+      4. (reduce-scatter only) polar reduce_scatter on H.
+      5. (optional) azimuth <-> channel A2A back so W is split, C is local.
+      6. Local einsum (C, K) × (O, C, K) → (B, O, H_out_local, W_out_local).
 
-    Returns the polar-reduced output WITHOUT bias.
+    Two polar strategies, chosen by the caller:
+
+    * ``use_halo``: psi is keyed to this rank's own output rows over a halo-padded input
+      band, so step 3 already produces the final rows and step 4 is skipped. The K-expanded
+      intermediate is then (B, C, K, H_out/P_polar, W) -- it scales with the polar group,
+      which is the whole point: with the reduce-scatter it is pinned at the full H_out no
+      matter how many ranks are used, and that is what runs a large model out of memory.
+    * otherwise: psi is keyed to the local *input* rows over all output rows, so step 3 is a
+      partial sum that step 4 completes. Unrestricted in angular reach, hence the fallback
+      when the halo would have to span more than one neighbour.
+
+    Returns the output WITHOUT bias.
     """
     num_chans = x.shape[1]
 
     # h and w split; make w local by transposing into channel dim.
     if comm_size_azimuth > 1:
         x = distributed_transpose_azimuth(x, (1, -1), lon_in_shapes)
+
+    # Borrow the input rows this rank's output rows reach into. psi's columns were keyed to
+    # the padded band at construction, so the contraction below reads it directly.
+    if use_halo and comm_size_polar > 1:
+        x = polar_halo_exchange(x, r_lat)
 
     _kpacked_ok = optimized_kernel and psi_kpacked_K_pad in (8, 16) and x.dtype in (torch.float16, torch.bfloat16) and x.is_cuda and kpacked_device_supported
     if _kpacked_ok:
@@ -175,7 +196,8 @@ def _distributed_disco_fwd_a2a(
     # Guarded like the azimuth collectives below: at size 1 the primitive is
     # an identity, and skipping it keeps the `torch.compiler.disable()`d
     # wrapper out of the graph so this path stays fullgraph-compilable.
-    if comm_size_polar > 1:
+    # On the halo path the rows are already complete and already local -- nothing to reduce.
+    if comm_size_polar > 1 and not use_halo:
         x = reduce_from_scatter_to_polar_region(x, -2)
 
     # Transpose back: lon split, channels local.
@@ -233,6 +255,8 @@ def _distributed_disco_fwd_a2a_reordered(
     comm_size_azimuth: int,
     comm_rank_azimuth: int,
     lon_in_shapes: List[int],
+    use_halo: bool = False,
+    r_lat: int = 0,
 ) -> torch.Tensor:
     """Reordered + fused A2A DISCO forward (the ``fused=True`` path).
 
@@ -273,6 +297,11 @@ def _distributed_disco_fwd_a2a_reordered(
 
     # 1. azimuth transpose W->C: full W, even channel shard.
     x = distributed_transpose_azimuth(x, (1, -1), lon_in_shapes) if comm_size_azimuth > 1 else x
+
+    # (halo) borrow the input rows this rank's output rows reach into; psi's columns were
+    # keyed to the padded band at construction. See _distributed_disco_fwd_a2a.
+    if use_halo and comm_size_polar > 1:
+        x = polar_halo_exchange(x, r_lat)
     local_in_channels = x.shape[1]
     chan_start = ([0] + list(accumulate(compute_split_shapes(in_channels, comm_size_azimuth)[:-1])))[comm_rank_azimuth] if comm_size_azimuth > 1 else 0
     chan_end = chan_start + local_in_channels
@@ -364,8 +393,10 @@ def _distributed_disco_fwd_a2a_reordered(
         out = local_out.new_zeros(local_out.shape[0], out_channels, local_out.shape[-2], local_out.shape[-1])
         out[:, out_channel_offset : out_channel_offset + n_local_groups * out_per_group] = local_out
 
-    # 5. collectives on the small K-less output.
-    if comm_size_polar > 1:
+    # 5. collectives on the small K-less output. On the halo path the polar rows are already
+    # complete and local; the azimuth reduce-scatter still runs, since it sums the channel
+    # groups a rank holds only part of.
+    if comm_size_polar > 1 and not use_halo:
         out = reduce_from_scatter_to_polar_region(out, -2)
 
     if comm_size_azimuth > 1:

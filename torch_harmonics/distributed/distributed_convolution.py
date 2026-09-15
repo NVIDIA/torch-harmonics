@@ -49,7 +49,7 @@ from torch_harmonics.disco.optimized.disco_optimized import (
     _maybe_kpack_psi,
     _split_csr_python_offsets,
 )
-from torch_harmonics.quadrature import compute_theta_cutoff
+from torch_harmonics.quadrature import compute_theta_cutoff, effective_theta_cutoff, precompute_latitudes
 
 # a2a forward orchestration: standard (fused=False) and reordered (fused=True).
 from .kernels import (
@@ -60,6 +60,7 @@ from .kernels import (
 # distributed stuff — relative imports to avoid the circular dependency
 # through torch_harmonics.distributed.__init__.
 from .primitives import (
+    compute_polar_halo_radius,
     compute_split_shapes,
     distributed_transpose_azimuth,
     gather_from_copy_to_polar_region,
@@ -127,6 +128,109 @@ def _split_distributed_convolution_tensor_s2(
     vals = vals.contiguous()
 
     return idx, vals
+
+
+def _polar_halo_radius_or_none(lats_in, lats_out, theta_cutoff, lat_in_shapes, lat_out_shapes):
+    """``compute_polar_halo_radius``, returning ``None`` instead of raising when it is too wide.
+
+    For attention a halo wider than a local chunk is a configuration error, because that layer
+    has no other way to get the rows. The DISCO convolutions do: the reduce-scatter path places
+    no bound on the angular reach, so here an over-wide halo is simply a reason to take that
+    path rather than a failure.
+    """
+    try:
+        return compute_polar_halo_radius(lats_in, lats_out, theta_cutoff, lat_in_shapes, lat_out_shapes)
+    except ValueError:
+        return None
+
+
+def _split_halo_convolution_tensor_s2(
+    idx: torch.Tensor,
+    vals: torch.Tensor,
+    in_shape: Tuple[int],
+    out_shape: Tuple[int],
+    r_lat: int,
+):
+    r"""
+    Restrict a convolution tensor to this rank's **output** latitudes over a halo-padded input.
+
+    The counterpart of :func:`_split_distributed_convolution_tensor_s2` for the halo path, and
+    the mirror of what it does: that one keeps the local *input* latitudes and leaves the output
+    axis global, so the rank computes a partial sum over every output latitude which a
+    reduce-scatter then completes. Here the rank keeps the output latitudes it *owns* and reads
+    from a halo-padded input band, so its result is already complete and no reduction follows.
+
+    Rows are re-keyed to ``[0, nlat_out_local)`` and columns to the halo-padded local input
+    range ``[lat_in_start - r_lat, lat_in_start + nlat_in_local + r_lat)``. Rows at the poles
+    are padded on the missing side by :func:`~torch_harmonics.distributed.polar_halo_exchange`,
+    so their column indices stay in range; entries pointing outside the padded band cannot occur
+    when ``r_lat`` comes from :func:`~torch_harmonics.distributed.compute_polar_halo_radius`,
+    and are dropped defensively if they somehow do.
+
+    Normalization is unaffected: it is applied to the global tensor before this filter runs, and
+    it sums over the *input* points of each ``(kernel, output latitude)`` group -- all of which
+    lie inside the halo for the rows this rank keeps.
+
+    Parameters
+    ----------
+    idx : torch.Tensor
+        Indices of the pre-computed (global, normalized) convolution tensor.
+    vals : torch.Tensor
+        Values of the pre-computed convolution tensor.
+    in_shape : Tuple[int]
+        Global input shape ``(nlat_in, nlon_in)``.
+    out_shape : Tuple[int]
+        Global output shape ``(nlat_out, nlon_out)``.
+    r_lat : int
+        Halo radius in latitude rows.
+
+    Returns
+    -------
+    idx : torch.Tensor
+        Indices re-keyed to local output rows and halo-padded input columns.
+    vals : torch.Tensor
+        The corresponding values.
+    """
+
+    nlat_in, nlon_in = in_shape
+    nlat_out, nlon_out = out_shape
+
+    comm_size_polar = polar_group_size()
+    comm_rank_polar = polar_group_rank()
+
+    in_shapes = compute_split_shapes(nlat_in, num_chunks=comm_size_polar)
+    out_shapes = compute_split_shapes(nlat_out, num_chunks=comm_size_polar)
+    in_start = sum(in_shapes[:comm_rank_polar])
+    out_start = sum(out_shapes[:comm_rank_polar])
+    nlat_out_local = out_shapes[comm_rank_polar]
+
+    # the halo-padded input band, clipped at the poles where there is no neighbour to borrow
+    # from -- polar_halo_exchange zero-pads those rows, so the padded tensor still has
+    # 2 * r_lat extra rows and the offset below is uniform across ranks
+    halo_start = in_start - r_lat
+
+    lats = idx[2] // nlon_in
+    lons = idx[2] % nlon_in
+
+    keep = (idx[1] >= out_start) & (idx[1] < out_start + nlat_out_local)
+    # defensive: with a correctly derived r_lat every kept entry already lies in the band
+    keep = keep & (lats >= halo_start) & (lats < halo_start + nlat_in_local_padded(in_shapes, comm_rank_polar, r_lat))
+    sel = torch.argwhere(keep).squeeze(-1)
+
+    vals = vals[sel]
+    idx = torch.stack([idx[0, sel], idx[1, sel] - out_start, (lats[sel] - halo_start) * nlon_in + lons[sel]], dim=0)
+
+    return idx.contiguous(), vals.contiguous()
+
+
+def nlat_in_local_padded(in_shapes, rank: int, r_lat: int) -> int:
+    """Rows of the halo-padded local input band: the local share plus a halo on each side.
+
+    Uniform across ranks, including at the poles: ``polar_halo_exchange`` zero-pads the side
+    with no neighbour rather than shortening the tensor, so every rank sees the same layout and
+    the psi column offset does not need a per-rank special case.
+    """
+    return in_shapes[rank] + 2 * r_lat
 
 
 class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
@@ -259,9 +363,27 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         # input dim because this reduces the number of atomic reduction
         # calls inside the actual kernel.
 
+        # The operator is local: an output latitude only reads input latitudes within
+        # theta_cutoff of it. When that reach fits inside a neighbouring rank's share, each rank
+        # can borrow a halo and compute its own output rows outright -- no partial sums, so no
+        # polar reduction, and the K-expanded intermediate shrinks with the polar group instead
+        # of staying pinned at the full nlat_out. When the cutoff is wide enough that the reach
+        # spans more than a neighbour, the immediate-neighbour exchange cannot serve it and we
+        # fall back to computing every output latitude and reduce-scattering, which has no such
+        # restriction.
+        self.r_lat = 0
+        self.use_halo = False
+        if self.comm_size_polar > 1:
+            lats_in, _ = precompute_latitudes(self.nlat_in, grid=grid_in)
+            lats_out, _ = precompute_latitudes(self.nlat_out, grid=grid_out)
+            r_lat = _polar_halo_radius_or_none(lats_in, lats_out, effective_theta_cutoff(self.theta_cutoff), self.lat_in_shapes, self.lat_out_shapes)
+            if r_lat is not None:
+                self.r_lat = r_lat
+                self.use_halo = True
+
         # set local shapes according to distributed mode
         self.nlat_in_local = self.lat_in_shapes[self.comm_rank_polar]
-        self.nlat_out_local = self.nlat_out
+        self.nlat_out_local = self.lat_out_shapes[self.comm_rank_polar] if self.use_halo else self.nlat_out
         self.nlon_in_local = self.lon_in_shapes[self.comm_rank_azimuth]
         self.nlon_out_local = self.lon_out_shapes[self.comm_rank_azimuth]
         self.kpacked_device_supported = False
@@ -278,7 +400,10 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             basis_norm_mode=basis_norm_mode,
             merge_quadrature=True,
         )
-        idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, in_shape, out_shape)
+        if self.use_halo:
+            idx, vals = _split_halo_convolution_tensor_s2(idx, vals, in_shape, out_shape, self.r_lat)
+        else:
+            idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, in_shape, out_shape)
         self._build_local_psi(idx, vals)
 
     def _build_local_psi(self, idx: torch.Tensor, vals: torch.Tensor):
@@ -410,6 +535,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 comm_size_azimuth=self.comm_size_azimuth,
                 comm_rank_azimuth=self.comm_rank_azimuth,
                 lon_in_shapes=self.lon_in_shapes,
+                use_halo=self.use_halo,
+                r_lat=self.r_lat,
             )
         else:
             # standard a2a: contraction then einsum after the transpose-back;
@@ -437,6 +564,9 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 comm_size_polar=self.comm_size_polar,
                 comm_size_azimuth=self.comm_size_azimuth,
                 lon_in_shapes=self.lon_in_shapes,
+                use_halo=self.use_halo,
+                r_lat=self.r_lat,
+                nlat_in_local=self.nlat_in_local,
             )
 
         if self.bias is not None:
