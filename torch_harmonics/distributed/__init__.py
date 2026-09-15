@@ -47,6 +47,7 @@ from .primitives import (
     gather_from_polar_region,
     get_group_neighbors,
     polar_halo_exchange,
+    polar_halo_reduce,
     reduce_from_azimuth_region,
     reduce_from_polar_region,
     reduce_from_scatter_to_azimuth_region,
