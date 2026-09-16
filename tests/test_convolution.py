@@ -45,6 +45,7 @@ from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_i
 from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
 )
+from torch_harmonics.disco.optimized.disco_optimized import _kpacked_supported_on_device
 from torch_harmonics.filter_basis import get_filter_basis
 from torch_harmonics.quadrature import compute_theta_cutoff, precompute_latitudes, precompute_longitudes
 
@@ -1156,9 +1157,32 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         self.assertTrue(duration <= _perf_test_thresholds[self.device.type]["bwd_ms"])
 
 
+# A supported device is not sufficient: the kpacked buffers are only built when
+# this build actually contains the matching kernel (BUILD_KPACKED_SM90 / SM100,
+# set from TORCH_CUDA_ARCH_LIST). A build targeting an architecture newer than
+# the ones with kpacked kernels reports e.g. major == 10 while carrying no
+# sm_100a cubin, so a device-only guard runs these tests against buffers that
+# were deliberately never constructed. Ask the same question the library asks.
+def _kpacked_built_for_sm90():
+    """Hopper device AND an sm_90a kpacked kernel this device can load."""
+    return _is_sm90() and _kpacked_runnable_here()
+
+
+def _kpacked_built_for_sm100():
+    """Blackwell device AND an sm_100a kpacked kernel this device can load."""
+    return _is_sm100() and _kpacked_runnable_here()
+
+
+def _kpacked_runnable_here():
+    """Defer to the library, so the tests and the dispatch cannot disagree."""
+    if not torch.cuda.is_available():
+        return False
+    return _kpacked_supported_on_device(torch.cuda.current_device())
+
+
 def _is_kpacked_supported():
-    """Return True when the device supports the kpacked forward kernel (SM 9.x or SM 10.x)."""
-    return _is_sm90() or _is_sm100()
+    """Return True when the kpacked forward can actually run here (device AND build)."""
+    return _kpacked_built_for_sm90() or _kpacked_built_for_sm100()
 
 
 @unittest.skipUnless(
@@ -1190,7 +1214,7 @@ class TestKpackedPath(unittest.TestCase):
         ).to(device=self.device, dtype=torch.bfloat16)
         return conv
 
-    @unittest.skipUnless(_is_sm90(), "kpacked forward requires SM_90a (Hopper)")
+    @unittest.skipUnless(_kpacked_built_for_sm90(), "kpacked forward requires SM_90a (Hopper) and an sm_90a build")
     def test_kpacked_forward_activates_on_sm90(self):
         """forward_kpacked is chosen for bf16/fp16 on Hopper."""
         conv = self._make_conv(1, 8, (16, 32))
@@ -1200,7 +1224,7 @@ class TestKpackedPath(unittest.TestCase):
         out = conv(inp)
         self.assertEqual(out.dtype, torch.bfloat16)
 
-    @unittest.skipUnless(_is_sm100(), "kpacked forward on Blackwell requires SM_100a (GB200/B200)")
+    @unittest.skipUnless(_kpacked_built_for_sm100(), "kpacked forward on Blackwell requires SM_100a (GB200/B200) and an sm_100a build")
     def test_kpacked_forward_activates_on_sm100(self):
         """tcgen05 kpacked path is chosen for bf16/fp16 on Blackwell."""
         conv = self._make_conv(1, 8, (16, 32))
@@ -1344,7 +1368,7 @@ class TestKpackedPath(unittest.TestCase):
             inp,
             conv.psi_kpacked_idx,
             conv.psi_kpacked_vals,
-            conv.psi_kpacked_count,
+            conv.psi_kpacked_offset,
             conv.kernel_size,
             conv.nlat_out,
             conv.nlon_out,

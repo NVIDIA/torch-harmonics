@@ -78,12 +78,12 @@ namespace disco_kernels
 
     template <int BC_TILE, int WO_TILE, int NZ_CHUNK, int N_PAD, typename T>
     __global__ __launch_bounds__(128) void disco_fwd_dense_kpacked_tcgen05_blk_k(
-        int Hi, int Wi, int K, int Ho, int Wo, int NBR_PAD, int pscale, int BC_total,
-        const int64_t *__restrict__ pack_idx,   // [Ho, NBR_PAD, 2]
-        const T *__restrict__ pack_val,         // [Ho, NBR_PAD, N_PAD]
-        const int64_t *__restrict__ pack_count, // [Ho]
-        const T *__restrict__ inp,              // [B, C, Hi, Wi]
-        T *__restrict__ out)                    // [B, C, K, Ho, Wo]
+        int Hi, int Wi, int K, int Ho, int Wo, int pscale, int BC_total,
+        const int64_t *__restrict__ pack_idx,    // [nnz, 2]
+        const T *__restrict__ pack_val,          // [nnz, N_PAD]
+        const int64_t *__restrict__ pack_offset, // [Ho + 1]
+        const T *__restrict__ inp,               // [B, C, Hi, Wi]
+        T *__restrict__ out)                     // [B, C, K, Ho, Wo]
     {
 #if DISCO_TCGEN05_SUPPORTED
         static_assert(N_PAD == 8 || N_PAD == 16, "tcgen05 path: only K_PAD ∈ {8, 16} supported");
@@ -101,9 +101,13 @@ namespace disco_kernels
         const int wo_base = wo_strip * WO_TILE;
         const int bc_start = blockIdx.y * BC_TILE;
 
-        const int64_t *idx_ho = pack_idx + (int64_t)ho * NBR_PAD * 2;
-        const T *val_ho = pack_val + (int64_t)ho * NBR_PAD * N_PAD;
-        const int cnt = (int)pack_count[ho];
+        // Blocked CSR: rows are packed back to back, so the base comes from the
+        // offset array rather than a constant NBR_PAD stride, and cnt is the gap
+        // between consecutive offsets. Both loads are CTA-uniform broadcasts.
+        const int64_t off_beg = pack_offset[ho];
+        const int cnt = (int)(pack_offset[ho + 1] - off_beg);
+        const int64_t *idx_ho = pack_idx + off_beg * 2;
+        const T *val_ho = pack_val + off_beg * N_PAD;
 
         // ─── Shared memory layout ──────────────────────────────────────────────
         // tcgen05.mma requires 128-byte aligned SMEM descriptors on SM100.
@@ -153,15 +157,49 @@ namespace disco_kernels
             const int bc = bc_start + bc_local;
 
             if (nz_global < cnt && bc < BC_total) {
-                const int hi = (int)idx_ho[nz_global * 2 + 0];
-                const int wi_base = (int)idx_ho[nz_global * 2 + 1];
+                // One vector load of the adjacent (hi, wi_base) pair instead of two
+                // scalar loads; see disco_cuda.cuh for the alignment argument.
+                const longlong2 idx_pair = reinterpret_cast<const longlong2 *>(idx_ho)[nz_global];
+                const int hi = (int)idx_pair.x;
+                const int wi_base = (int)idx_pair.y;
                 const int64_t inp_row_base = (int64_t)bc * Hi * Wi + (int64_t)hi * Wi;
                 T *dst = A_tile + bc_local * (8 * NZ_CHUNK) + nz_local * 8;
+
+                // The windowed gather (gather_window_rt, disco_cuda.cuh), ported from
+                // the SM_90a kernel after measuring it here rather than assuming it
+                // carried over. Measured on GB200, bf16, BC=64, bit-identical:
+                //
+                //   pscale 1   360x720 self          2.38 -> 1.855 ms  1.28x
+                //   pscale 2   720x1440 -> 360x720   6.94 -> 6.21 ms   1.12x
+                //
+                // Both larger than the Hopper wins (1.20x / 1.04x): this baseline had
+                // more L1 headroom (66.9% vs 79.9% at pscale 1), so the ~31% fewer
+                // instructions converted instead of being absorbed by a saturated L1.
+                //
+                // At pscale 2 the win is *entirely* instruction count -- global loads
+                // and sectors are flat (+1.8%, +0.6%, which is the seam fallback) --
+                // confirming issue pressure rather than memory was the constraint.
+                bool staged = false;
+                {
+                    int s = wi_base + wo_base * pscale;
+                    if (s >= Wi) s -= Wi;
+                    const uint32_t *p = reinterpret_cast<const uint32_t *>(inp + inp_row_base) + (s >> 1);
+                    int4 *dst4 = reinterpret_cast<int4 *>(dst);
+                    if (pscale == 1 && s + 10 <= Wi) {
+                        *dst4 = gather_window_rt<1>(p, s & 1);
+                        staged = true;
+                    } else if (pscale == 2 && s + 18 <= Wi) {
+                        *dst4 = gather_window_rt<2>(p, s & 1);
+                        staged = true;
+                    }
+                }
+                if (!staged) {
 #pragma unroll
-                for (int i = 0; i < 8; i++) {
-                    int wi_full = wi_base + (wo_base + i) * pscale;
-                    if (wi_full >= Wi) wi_full -= Wi;
-                    dst[i] = inp[inp_row_base + wi_full];
+                    for (int i = 0; i < 8; i++) {
+                        int wi_full = wi_base + (wo_base + i) * pscale;
+                        if (wi_full >= Wi) wi_full -= Wi;
+                        dst[i] = inp[inp_row_base + wi_full];
+                    }
                 }
             } else {
                 T *dst = A_tile + bc_local * (8 * NZ_CHUNK) + nz_local * 8;
@@ -268,12 +306,11 @@ namespace disco_kernels
         (void)K;
         (void)Ho;
         (void)Wo;
-        (void)NBR_PAD;
         (void)pscale;
         (void)BC_total;
         (void)pack_idx;
         (void)pack_val;
-        (void)pack_count;
+        (void)pack_offset;
         (void)inp;
         (void)out;
 #endif
@@ -281,7 +318,7 @@ namespace disco_kernels
 
     // Host launcher — called from the dispatcher in disco_interface.cpp.
     torch::Tensor disco_cuda_fwd_kpacked_sm100(torch::Tensor inp, torch::Tensor pack_idx, torch::Tensor pack_val,
-                                               torch::Tensor pack_count, int64_t K, int64_t Ho, int64_t Wo)
+                                               torch::Tensor pack_offset, int64_t K, int64_t Ho, int64_t Wo)
     {
         const auto inp_dtype = inp.scalar_type();
         TORCH_CHECK(inp_dtype == at::ScalarType::BFloat16 || inp_dtype == at::ScalarType::Half,
@@ -295,14 +332,13 @@ namespace disco_kernels
         TORCH_CHECK(Wi % Wo == 0, "Wi (", Wi, ") must be divisible by Wo (", Wo, ")");
         TORCH_CHECK(Wo % 8 == 0, "Wo (", Wo, ") must be divisible by 8");
 
-        const int64_t K_PAD = pack_val.size(2);
+        const int64_t K_PAD = pack_val.size(1); // pack_val is [nnz, K_PAD]
         TORCH_CHECK(K_PAD == 8 || K_PAD == 16, "K_PAD must be 8 or 16, got ", K_PAD);
 
         constexpr int BC_TILE = 8;
         constexpr int WO_TILE = 8;
         constexpr int NZ_CHUNK = 16;
 
-        const int NBR_PAD = (int)pack_idx.size(1);
         int64_t out_dims[] = {B, C, K, Ho, Wo};
         auto out = torch::zeros(out_dims, torch::TensorOptions().device(inp.device()).dtype(inp_dtype));
 
@@ -329,8 +365,8 @@ namespace disco_kernels
             cudaFuncSetAttribute(reinterpret_cast<const void *>(fn), cudaFuncAttributeMaxDynamicSharedMemorySize,
                                  (int)shmem_bytes);
             fn<<<grid, 128, shmem_bytes, stream>>>(
-                (int)Hi, (int)Wi, (int)K, (int)Ho, (int)Wo, NBR_PAD, pscale, BC_total, pack_idx.data_ptr<int64_t>(),
-                reinterpret_cast<const T *>(pack_val_cast.data_ptr()), pack_count.data_ptr<int64_t>(),
+                (int)Hi, (int)Wi, (int)K, (int)Ho, (int)Wo, pscale, BC_total, pack_idx.data_ptr<int64_t>(),
+                reinterpret_cast<const T *>(pack_val_cast.data_ptr()), pack_offset.data_ptr<int64_t>(),
                 reinterpret_cast<const T *>(inp.data_ptr()), reinterpret_cast<T *>(out.data_ptr()));
         };
 

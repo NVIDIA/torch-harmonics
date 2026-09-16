@@ -53,6 +53,7 @@ from .optimized.disco_optimized import (
     _disco_s2_fused_conv_kpacked,
     _disco_s2_fused_conv_optimized,
     _disco_s2_transpose_contraction_optimized,
+    _kpacked_build_available,
     _kpacked_supported_on_device,
     _maybe_kpack_psi,
     _split_csr_python_offsets,
@@ -603,47 +604,34 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             self.register_buffer("psi_split_col_idx", split_col_idx, persistent=False)
             self.register_buffer("psi_split_vals", split_vals, persistent=False)
 
-            # optional K-packed dense layout for the WGMMA path (Hopper bf16/fp16).
-            # precompute here so it's available at forward time.
-            psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(
-                self.kernel_size,
-                self.nlat_out,
-                self.nlon_in,
-                0,
-                ker_idx,
-                row_idx,
-                col_idx,
-                vals,
-                roff_idx,
-            )
-            kpack = _maybe_kpack_psi(psi_packed_idx.contiguous(), psi_packed_vals.contiguous(), psi_packed_count.contiguous())
-            if kpack is not None:
-                kpacked_idx, kpacked_vals, kpacked_count, K_pad = kpack
-                self.register_buffer("psi_kpacked_idx", kpacked_idx, persistent=False)
-                self.register_buffer("psi_kpacked_vals", kpacked_vals, persistent=False)
-                self.register_buffer("psi_kpacked_count", kpacked_count, persistent=False)
-                self.psi_kpacked_K_pad = K_pad
-
-            # optional K-packed dense layout for the WGMMA path (Hopper bf16/fp16).
-            # precompute here so it's available at forward time.
-            psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(
-                self.kernel_size,
-                self.nlat_out,
-                self.nlon_in,
-                0,
-                ker_idx,
-                row_idx,
-                col_idx,
-                vals,
-                roff_idx,
-            )
-            kpack = _maybe_kpack_psi(psi_packed_idx.contiguous(), psi_packed_vals.contiguous(), psi_packed_count.contiguous())
-            if kpack is not None:
-                kpacked_idx, kpacked_vals, kpacked_count, K_pad = kpack
-                self.register_buffer("psi_kpacked_idx", kpacked_idx, persistent=False)
-                self.register_buffer("psi_kpacked_vals", kpacked_vals, persistent=False)
-                self.register_buffer("psi_kpacked_count", kpacked_count, persistent=False)
-                self.psi_kpacked_K_pad = K_pad
+            # Optional K-packed dense layout for the WGMMA / tcgen05 path.
+            #
+            # Skipped when the build contains no kpacked kernel: these buffers are
+            # padded to NBR_PAD, the longest neighbour row, which the polar rows set
+            # far above the mean -- ~33 MB at half degree, ~274 MB at 1080x2160 ->
+            # 360x720 -- for a kernel that could then never launch. The check is
+            # build-time rather than device-time on purpose: modules are normally
+            # constructed on CPU and moved afterwards, so the runtime device is not
+            # known here. See _kpacked_build_available.
+            if _kpacked_build_available():
+                psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(
+                    self.kernel_size,
+                    self.nlat_out,
+                    self.nlon_in,
+                    0,
+                    ker_idx,
+                    row_idx,
+                    col_idx,
+                    vals,
+                    roff_idx,
+                )
+                kpack = _maybe_kpack_psi(psi_packed_idx.contiguous(), psi_packed_vals.contiguous(), psi_packed_count.contiguous())
+                if kpack is not None:
+                    kpacked_idx, kpacked_vals, kpacked_offset, K_pad = kpack
+                    self.register_buffer("psi_kpacked_idx", kpacked_idx, persistent=False)
+                    self.register_buffer("psi_kpacked_vals", kpacked_vals, persistent=False)
+                    self.register_buffer("psi_kpacked_offset", kpacked_offset, persistent=False)
+                    self.psi_kpacked_K_pad = K_pad
 
         # save all datastructures
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
@@ -714,7 +702,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                 weight_r,
                 self.psi_kpacked_idx,
                 self.psi_kpacked_vals,
-                self.psi_kpacked_count,
+                self.psi_kpacked_offset,
                 self.psi_roff_idx,
                 self.psi_ker_idx,
                 self.psi_row_idx,
@@ -764,7 +752,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                     weight_r,
                     self.psi_kpacked_idx,
                     self.psi_kpacked_vals,
-                    self.psi_kpacked_count,
+                    self.psi_kpacked_offset,
                     self.psi_roff_idx,
                     self.psi_ker_idx,
                     self.psi_row_idx,
@@ -812,7 +800,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                     x.to(kpacked_dtype),
                     self.psi_kpacked_idx,
                     self.psi_kpacked_vals,
-                    self.psi_kpacked_count,
+                    self.psi_kpacked_offset,
                     self.psi_roff_idx,
                     self.psi_ker_idx,
                     self.psi_row_idx,

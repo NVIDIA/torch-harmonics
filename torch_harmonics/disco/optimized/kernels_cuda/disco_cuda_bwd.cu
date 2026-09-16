@@ -149,6 +149,137 @@ namespace disco_kernels
         return;
     }
 
+    // =================================================================================
+    // Transposed-ownership backward ("the swap"), for pscale 1 and 2.
+    //
+    // disco_bwd_d above gives each thread a slice of the INPUT row in registers and
+    // accumulates into a shared-memory output row. Every nonzero is therefore a
+    // shared read-modify-write plus a __syncthreads to keep consecutive nonzeros
+    // from racing.
+    //
+    // This swaps the two. Shared holds the input row, written once and read-only
+    // thereafter; registers hold the accumulator. Same sum, transposed ownership:
+    //
+    //   disco_bwd_d : __sh[w_mod][w_div + q] += val * inp[q]     q owned by thread
+    //   here        : acc[w_mod][t]          += val * inp[t - w_div]  t owned by thread
+    //
+    // The inner loop becomes LDS + FFMA instead of LDS + FADD + STS, and the only
+    // barrier left is the one after the shared fill. Measured (bf16, BC=64):
+    //
+    //             prod_decoder (ps 1)      prod_encoder (ps 2)
+    //   H100      121.6 -> 59.19 ms 2.05x   40.20 -> 21.97 ms 1.83x
+    //   GB200      83.21 -> 39.94 ms 2.08x   27.38 -> 14.20 ms 1.93x
+    //
+    // Gated to PSCALE <= 2. The accumulator costs PSCALE*ELXTH registers, and at
+    // pscale 3 (36 registers for Wi=720) occupancy drops far enough that the kernel
+    // loses despite executing ~10% fewer instructions. pscale >= 3 is not a shape
+    // the models use, so it keeps the original body.
+    // =================================================================================
+    template <int BDIM_X, int ELXTH, int PSCALE, typename STORAGE_T, typename COMPUTE_T>
+    __device__ void disco_bwd_swap_d(const int Hi, const int Wi, const int K, const int Ho, const int Wo,
+                                     const int64_t *__restrict__ roff, const int64_t *__restrict__ kers,
+                                     const int64_t *__restrict__ rows, const int64_t *__restrict__ cols,
+                                     const COMPUTE_T *__restrict__ vals, const STORAGE_T *__restrict__ inp,
+                                     COMPUTE_T *__restrict__ out)
+    {
+        const int tid = threadIdx.x;
+        const int64_t bidx = blockIdx.x;
+        const int64_t bidy = blockIdx.y;
+
+        int64_t soff = roff[bidx];
+        int64_t eoff = roff[bidx + 1];
+
+        const int64_t ker = kers[soff];
+        const int64_t row = rows[soff];
+
+        inp += bidy * K * Hi * Wi + ker * Hi * Wi + row * Wi;
+        out += bidy * Ho * Wo;
+
+        // Shared holds the input row, duplicated so the wraparound is an offset
+        // rather than a modulo -- the same trick disco_cuda_fwd.cu uses.
+        extern __shared__ __align__(sizeof(double)) unsigned char __sh_ptr[];
+        COMPUTE_T *sh_inp = reinterpret_cast<COMPUTE_T *>(__sh_ptr);
+
+        constexpr int SH_LEN = 2 * BDIM_X * ELXTH;
+        for (int j = tid; j < Wi; j += BDIM_X) {
+            const COMPUTE_T v = static_cast<COMPUTE_T>(inp[j]);
+            sh_inp[j] = v;
+            sh_inp[Wi + j] = v;
+        }
+        // Lanes with t >= Wi still issue their read, at Wi + t - w_div, which can run
+        // past 2*Wi. BDIM_X*ELXTH >= Wi so SH_LEN covers it, but the tail would
+        // otherwise be uninitialised. Zeroing once keeps the inner loop branch-free;
+        // those lanes' accumulators are discarded at flush anyway.
+        for (int j = 2 * Wi + tid; j < SH_LEN; j += BDIM_X) { sh_inp[j] = static_cast<COMPUTE_T>(0); }
+        __syncthreads(); // the only barrier in the kernel
+
+        COMPUTE_T acc[PSCALE][ELXTH];
+#pragma unroll
+        for (int m = 0; m < PSCALE; m++) {
+#pragma unroll
+            for (int i = 0; i < ELXTH; i++) acc[m][i] = static_cast<COMPUTE_T>(0);
+        }
+
+        int col_prev = cols[soff];
+        int h_prev = col_prev / Wo;
+        int w_prev = col_prev % Wo;
+
+        for (int64_t nz = soff; nz < eoff; nz++) {
+
+            const int col = cols[nz];
+            const COMPUTE_T val = vals[nz];
+
+            if (col >= col_prev - w_prev + Wo) {
+                // Row change: flush straight from registers. No barrier needed --
+                // acc is private and sh_inp is read-only.
+#pragma unroll
+                for (int m = 0; m < PSCALE; m++) {
+#pragma unroll
+                    for (int i = 0; i < ELXTH; i++) {
+                        const int t = i * BDIM_X + tid;
+                        if (t < Wi) { atomicAdd(&out[h_prev * Wo + t * PSCALE + m], acc[m][i]); }
+                        acc[m][i] = static_cast<COMPUTE_T>(0);
+                    }
+                }
+
+                col_prev = col;
+                h_prev = col / Wo;
+                w_prev = col % Wo;
+            }
+
+            const int w = w_prev + (col - col_prev);
+            const int w_mod_ps = w % PSCALE;
+            const int w_div_ps = w / PSCALE;
+
+            // The bank select is the OUTER loop, with the whole element loop inside
+            // it. w_mod_ps derives only from cols[nz] and w_prev -- never from tid --
+            // so it is CTA-uniform and this compiles to a branch, not predication.
+            //
+            // The nesting matters. With the element loop outside and a
+            // one-instruction body (acc[m][i] += x) inside, ptxas predicates rather
+            // than branches -- correctly, for a body that small -- and the kernel
+            // then issues PSCALE adds per element instead of one. That measured +28%
+            // instructions at pscale 2 and turned a memory-bound kernel into an
+            // issue-bound one (42.25 ms, against 24.45 ms for this form).
+#pragma unroll
+            for (int m = 0; m < PSCALE; m++) {
+                if (m == w_mod_ps) {
+#pragma unroll
+                    for (int i = 0; i < ELXTH; i++) { acc[m][i] += val * sh_inp[Wi + (i * BDIM_X + tid) - w_div_ps]; }
+                }
+            }
+        }
+
+#pragma unroll
+        for (int m = 0; m < PSCALE; m++) {
+#pragma unroll
+            for (int i = 0; i < ELXTH; i++) {
+                const int t = i * BDIM_X + tid;
+                if (t < Wi) { atomicAdd(&out[h_prev * Wo + t * PSCALE + m], acc[m][i]); }
+            }
+        }
+    }
+
     template <int BDIM_X, int ELXTH, int PSCALE, typename STORAGE_T, typename COMPUTE_T>
     __global__
     __launch_bounds__(BDIM_X) void disco_bwd_blk_k(const int Hi, const int Wi, const int K, const int Ho, const int Wo,
@@ -158,7 +289,10 @@ namespace disco_kernels
                                                    const STORAGE_T *__restrict__ inp, COMPUTE_T *__restrict__ out)
     {
 
-        if constexpr (PSCALE != 0) {
+        if constexpr (PSCALE != 0 && PSCALE <= 2) {
+            disco_bwd_swap_d<BDIM_X, ELXTH, PSCALE, STORAGE_T, COMPUTE_T>(Hi, Wi, K, Ho, Wo, roff, kers, rows, cols,
+                                                                          vals, inp, out);
+        } else if constexpr (PSCALE != 0) {
             disco_bwd_d<BDIM_X, ELXTH, STORAGE_T, COMPUTE_T>(Hi, Wi, K, Ho, Wo, PSCALE, roff, kers, rows, cols, vals,
                                                              inp, out);
         } else {
@@ -182,7 +316,25 @@ namespace disco_kernels
                 dim3 grid(nrows, BC);
 
                 const int pscale = Wo / Wi;
-                size_t shmem = sizeof(*out_d) * (2 * (NTH * ELXTH) * pscale);
+                // The swap (pscale <= 2) stores the input row, so it needs 2*NTH*ELXTH
+                // regardless of pscale; the original body stores the pscale-way output
+                // accumulator and needs the full 2*NTH*ELXTH*pscale.
+                const int sh_banks = (pscale <= 2) ? 1 : pscale;
+                size_t shmem = sizeof(*out_d) * (2 * (NTH * ELXTH) * sh_banks);
+
+                // A bare over-limit launch surfaces only as cudaErrorInvalidValue
+                // from the next API call, with nothing pointing at shared memory.
+                int shmem_max = 0;
+                int dev = 0;
+                cudaGetDevice(&dev);
+                cudaDeviceGetAttribute(&shmem_max, cudaDevAttrMaxSharedMemoryPerBlock, dev);
+                if (shmem > static_cast<size_t>(shmem_max)) {
+                    fprintf(stderr,
+                            "%s:%d: error, shared memory request (%zu B) for Wi=%d Wo=%d pscale=%d "
+                            "NTH=%d ELXTH=%d exceeds the per-block limit (%d B)\n",
+                            __FILE__, __LINE__, shmem, Wi, Wo, pscale, NTH, ELXTH, shmem_max);
+                    exit(EXIT_FAILURE);
+                }
 
                 switch (pscale) {
                 case 1:
@@ -248,7 +400,22 @@ namespace disco_kernels
         // as (ELXTH_MAX / 2) + 1, so ELXTH_MAX must be even for the partition to be exact
         static_assert(0 == (ELXTH_MAX % 2));
 
-        if (Wo <= 64 * ELXTH_MAX) {
+        // NOTE: the block shape is chosen from Wi, not Wo. The only geometric
+        // requirement the kernel has is NTH*ELXTH >= Wi: __reg[ELXTH] holds the
+        // input row, the flush loops run to Wi, and Wo enters only through the
+        // global index h_prev*Wo + j*pscale + i, which is block-shape agnostic.
+        //
+        // Keying this off Wo (inherited from the forward, where the *output* row
+        // does live in shared) overshoots whenever Wo > 64*ELXTH_MAX >= Wi: the
+        // NTH=128 branch starts ELXTH at (ELXTH_MAX/2)+1 = 17, so a shape with
+        // Wi=720 got NTH*ELXTH = 2176 -- 3x more than it needs. Multiplied by
+        // pscale that overran the 48 KB static shared limit and the launch failed
+        // with cudaErrorInvalidValue for Wo > 2048 && pscale >= 3 (e.g.
+        // 1080x2160 -> 360x720). Sizing from Wi both fixes that and cuts shared
+        // usage for every Wo > 2048 shape; for Wo <= 64*ELXTH_MAX it is a no-op,
+        // since Wi <= Wo puts both on the NTH=64 branch with identical growth.
+
+        if (Wi <= 64 * ELXTH_MAX) {
             AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, inp.scalar_type(), "disco_backward_cuda", ([&] {
                                                 using storage_t = scalar_t;
                                                 using compute_t = typename at::opmath_type<storage_t>;
@@ -258,7 +425,7 @@ namespace disco_kernels
                                                     col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
                                                     inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
                                             }));
-        } else if (Wo <= 128 * ELXTH_MAX) {
+        } else if (Wi <= 128 * ELXTH_MAX) {
             AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, inp.scalar_type(), "disco_backward_cuda", ([&] {
                                                 using storage_t = scalar_t;
                                                 using compute_t = typename at::opmath_type<storage_t>;
@@ -268,7 +435,7 @@ namespace disco_kernels
                                                     col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
                                                     inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
                                             }));
-        } else if (Wo <= 256 * ELXTH_MAX) {
+        } else if (Wi <= 256 * ELXTH_MAX) {
             AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, inp.scalar_type(), "disco_backward_cuda", ([&] {
                                                 using storage_t = scalar_t;
                                                 using compute_t = typename at::opmath_type<storage_t>;
@@ -278,7 +445,7 @@ namespace disco_kernels
                                                     col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
                                                     inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
                                             }));
-        } else if (Wo <= 512 * ELXTH_MAX) {
+        } else if (Wi <= 512 * ELXTH_MAX) {
             AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, inp.scalar_type(), "disco_backward_cuda", ([&] {
                                                 using storage_t = scalar_t;
                                                 using compute_t = typename at::opmath_type<storage_t>;
@@ -288,7 +455,7 @@ namespace disco_kernels
                                                     col_idx.data_ptr<int64_t>(), val.data_ptr<compute_t>(),
                                                     inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
                                             }));
-        } else if (Wo <= 1024 * ELXTH_MAX) {
+        } else if (Wi <= 1024 * ELXTH_MAX) {
             AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, inp.scalar_type(), "disco_backward_cuda", ([&] {
                                                 using storage_t = scalar_t;
                                                 using compute_t = typename at::opmath_type<storage_t>;
@@ -299,7 +466,7 @@ namespace disco_kernels
                                                     inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
                                             }));
         } else {
-            fprintf(stderr, "%s:%d: error, unsupported Wo value (%ld), max supported is %d\n", __FILE__, __LINE__, Wo,
+            fprintf(stderr, "%s:%d: error, unsupported Wi value (%ld), max supported is %d\n", __FILE__, __LINE__, Wi,
                     1024 * ELXTH_MAX);
             exit(EXIT_FAILURE);
         }
