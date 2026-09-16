@@ -427,11 +427,13 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                 lon_lo_kx = lon_chunk_starts[src_rank]
                 nlon_kx = nlon_kx_list[src_rank]
 
-                # The kernel accumulates into its gradient outputs with atomicAdd and never
+                # This kernel accumulates into its gradient outputs with atomicAdd and never
                 # clears them, so the accumulator goes in directly -- no per-step temp and
                 # no add_ afterwards. Its width is the current chunk's by construction.
                 # Both arguments are required by the fused signature, so a branch that needs
                 # no gradient still gets a scratch buffer, which is then discarded.
+                # NOTE: the upsample direction's kernel assigns rather than accumulates, so
+                # it must keep the per-step temp; do not mirror this there.
                 dkw_out = dkw_acc if kw_needs_grad else torch.zeros(B, H_halo, nlon_kx, C_k, device=device, dtype=torch.float32)
                 dvw_out = dvw_acc if vw_needs_grad else torch.zeros(B, H_halo, nlon_kx, C_v, device=device, dtype=torch.float32)
 
@@ -788,9 +790,14 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                 lon_lo_kx = lon_chunk_starts[src_rank]
                 nlon_kx = nlon_kx_list[src_rank]
 
-                # Accumulated into directly by the kernel; see the gather-direction pass 2.
-                dkw_out = dkw_acc if kw_needs_grad else torch.zeros(B, H_halo, nlon_kx, C_k, device=device, dtype=torch.float32)
-                dvw_out = dvw_acc if vw_needs_grad else torch.zeros(B, H_halo, nlon_kx, C_v, device=device, dtype=torch.float32)
+                # Unlike the gather direction, this kernel *assigns* its gradient outputs
+                # (`dkx[chan] = sh_dk[chan]` in attention_cuda_bwd_ring_upsample.cu) rather
+                # than accumulating with atomicAdd: in the scatter direction each input cell
+                # is written by exactly one row, so it can store instead of reduce. The
+                # accumulator therefore cannot be passed in directly -- each step would
+                # overwrite the previous ones -- so it keeps a zeroed per-step temp and adds.
+                dkw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_k, device=device, dtype=torch.float32)
+                dvw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_v, device=device, dtype=torch.float32)
 
                 attention_kernels.backward_ring_step_upsample_pass2.default(
                     kw_chunk,
@@ -800,8 +807,8 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                     fwd_alpha_sum,
                     fwd_qdotk_max,
                     integral_norm,
-                    dkw_out,
-                    dvw_out,
+                    dkw_chunk_cl,
+                    dvw_chunk_cl,
                     quad_weights,
                     psi_col_idx,
                     psi_roff_idx,
@@ -813,6 +820,11 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                     nlat_out_local,
                     nlon_out_local,
                 )
+
+                if kw_needs_grad:
+                    dkw_acc.add_(dkw_chunk_cl)
+                if vw_needs_grad:
+                    dvw_acc.add_(dvw_chunk_cl)
 
                 if step < az_size - 1:
                     next_src = (az_rank + step + 1) % az_size
@@ -826,8 +838,8 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                     kw_chunk = recv_kw.clone()
                     vw_chunk = recv_vw.clone()
                     # Cloned for the same reason as kw/vw, and with more at stake: the next
-                    # step's kernel atomicAdds *into* the accumulator, so handing it the
-                    # irecv destination directly would mutate a buffer the collective owns.
+                    # step's add_ writes *into* the accumulator, so keeping the irecv
+                    # destination would mutate a buffer the collective owns.
                     # The clone is chunk-sized, so it does not give back the saving above.
                     dkw_acc = recv_dkw.clone() if recv_dkw is not None else None
                     dvw_acc = recv_dvw.clone() if recv_dvw is not None else None
