@@ -408,10 +408,9 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # reduce-scatter carries each chunk's accumulator back to the rank owning it
         # (see _ring_grad). The accumulator is chunk-sized, so this is the whole local
         # gradient at the end -- no allreduce and no slice.
-        # Skip entirely if neither kw nor vw needs grad. The fused kernel
-        # writes both dkw_chunk_cl and dvw_chunk_cl in one call, so the
-        # per-chunk allocations stay; we just gate the accumulation /
-        # rotation per branch.
+        # Skip entirely if neither kw nor vw needs grad; a branch that does not
+        # need one still gets a scratch output, since the fused kernel writes
+        # both in a single call.
         # ----------------------------------------------------------------
         if kw_needs_grad or vw_needs_grad:
             # pass 1 rotated kw_chunk/vw_chunk; reset to the local chunk, which is
@@ -428,10 +427,13 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                 lon_lo_kx = lon_chunk_starts[src_rank]
                 nlon_kx = nlon_kx_list[src_rank]
 
-                # Channels-last gradient buffers for this chunk (both required by the
-                # fused kernel signature; we discard the one we don't need).
-                dkw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_k, device=device, dtype=torch.float32)
-                dvw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_v, device=device, dtype=torch.float32)
+                # The kernel accumulates into its gradient outputs with atomicAdd and never
+                # clears them, so the accumulator goes in directly -- no per-step temp and
+                # no add_ afterwards. Its width is the current chunk's by construction.
+                # Both arguments are required by the fused signature, so a branch that needs
+                # no gradient still gets a scratch buffer, which is then discarded.
+                dkw_out = dkw_acc if kw_needs_grad else torch.zeros(B, H_halo, nlon_kx, C_k, device=device, dtype=torch.float32)
+                dvw_out = dvw_acc if vw_needs_grad else torch.zeros(B, H_halo, nlon_kx, C_v, device=device, dtype=torch.float32)
 
                 attention_kernels.backward_ring_step_pass2.default(
                     kw_chunk,
@@ -441,8 +443,8 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                     fwd_alpha_sum,
                     fwd_qdotk_max,
                     integral_norm,
-                    dkw_chunk_cl,
-                    dvw_chunk_cl,
+                    dkw_out,
+                    dvw_out,
                     quad_weights,
                     psi_col_idx,
                     psi_roff_idx,
@@ -458,11 +460,6 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                     psi_mid_row_len,
                 )
 
-                if kw_needs_grad:
-                    dkw_acc.add_(dkw_chunk_cl)
-                if vw_needs_grad:
-                    dvw_acc.add_(dvw_chunk_cl)
-
                 if step < az_size - 1:
                     next_src = (az_rank + step + 1) % az_size
                     recv_kw, recv_vw, reqs = _ring_kv(kw_chunk, vw_chunk, az_group, nlon_kx_list[next_src], nlon_kx_list[next_src])
@@ -475,7 +472,12 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                         req.wait()
                     kw_chunk = recv_kw.clone()
                     vw_chunk = recv_vw.clone()
-                    dkw_acc, dvw_acc = recv_dkw, recv_dvw
+                    # Cloned for the same reason as kw/vw, and with more at stake: the next
+                    # step's kernel atomicAdds *into* the accumulator, so handing it the
+                    # irecv destination directly would mutate a buffer the collective owns.
+                    # The clone is chunk-sized, so it does not give back the saving above.
+                    dkw_acc = recv_dkw.clone() if recv_dkw is not None else None
+                    dvw_acc = recv_dvw.clone() if recv_dvw is not None else None
 
             # One final hop returns each accumulator to the rank owning its chunk: after the
             # loop a rank carries the accumulator for chunk az_rank - 1, which is send_to.
@@ -483,6 +485,9 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                 recv_dkw, recv_dvw, grad_reqs = _ring_grad(dkw_acc, dvw_acc, az_group, my_nlon)
                 for req in grad_reqs:
                     req.wait()
+                # No clone here, deliberately: nothing writes into these again. The only
+                # remaining use is to_nchw, which always materializes a new tensor, so the
+                # returned gradient never aliases the irecv destination.
                 dkw_acc, dvw_acc = recv_dkw, recv_dvw
 
             # The accumulator IS the local chunk now, so only the layout conversion is left.
@@ -783,10 +788,9 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                 lon_lo_kx = lon_chunk_starts[src_rank]
                 nlon_kx = nlon_kx_list[src_rank]
 
-                # Channels-last gradient buffers for this chunk (both required by the
-                # fused kernel signature; we discard the one we don't need).
-                dkw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_k, device=device, dtype=torch.float32)
-                dvw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_v, device=device, dtype=torch.float32)
+                # Accumulated into directly by the kernel; see the gather-direction pass 2.
+                dkw_out = dkw_acc if kw_needs_grad else torch.zeros(B, H_halo, nlon_kx, C_k, device=device, dtype=torch.float32)
+                dvw_out = dvw_acc if vw_needs_grad else torch.zeros(B, H_halo, nlon_kx, C_v, device=device, dtype=torch.float32)
 
                 attention_kernels.backward_ring_step_upsample_pass2.default(
                     kw_chunk,
@@ -796,8 +800,8 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                     fwd_alpha_sum,
                     fwd_qdotk_max,
                     integral_norm,
-                    dkw_chunk_cl,
-                    dvw_chunk_cl,
+                    dkw_out,
+                    dvw_out,
                     quad_weights,
                     psi_col_idx,
                     psi_roff_idx,
@@ -810,11 +814,6 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                     nlon_out_local,
                 )
 
-                if kw_needs_grad:
-                    dkw_acc.add_(dkw_chunk_cl)
-                if vw_needs_grad:
-                    dvw_acc.add_(dvw_chunk_cl)
-
                 if step < az_size - 1:
                     next_src = (az_rank + step + 1) % az_size
                     recv_kw, recv_vw, reqs = _ring_kv(kw_chunk, vw_chunk, az_group, nlon_kx_list[next_src], nlon_kx_list[next_src])
@@ -826,7 +825,12 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                         req.wait()
                     kw_chunk = recv_kw.clone()
                     vw_chunk = recv_vw.clone()
-                    dkw_acc, dvw_acc = recv_dkw, recv_dvw
+                    # Cloned for the same reason as kw/vw, and with more at stake: the next
+                    # step's kernel atomicAdds *into* the accumulator, so handing it the
+                    # irecv destination directly would mutate a buffer the collective owns.
+                    # The clone is chunk-sized, so it does not give back the saving above.
+                    dkw_acc = recv_dkw.clone() if recv_dkw is not None else None
+                    dvw_acc = recv_dvw.clone() if recv_dvw is not None else None
 
             # Final hop home: after the loop a rank carries the accumulator for chunk
             # az_rank - 1, which is exactly send_to.
@@ -834,6 +838,9 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                 recv_dkw, recv_dvw, grad_reqs = _ring_grad(dkw_acc, dvw_acc, az_group, my_nlon)
                 for req in grad_reqs:
                     req.wait()
+                # No clone here, deliberately: nothing writes into these again. The only
+                # remaining use is to_nchw, which always materializes a new tensor, so the
+                # returned gradient never aliases the irecv destination.
                 dkw_acc, dvw_acc = recv_dkw, recv_dvw
 
             # The accumulator IS the local chunk now, so only the layout conversion is left.
