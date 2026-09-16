@@ -77,6 +77,50 @@ def _ring_kv(kw_chunk, vw_chunk, az_group, next_nlon_kw, next_nlon_kv):
     return recv_kw, recv_vw, reqs
 
 
+@torch.compiler.disable()
+def _ring_grad(dkw_acc, dvw_acc, az_group, next_nlon):
+    """Rotate the dkw/dvw accumulators one hop along the same ring as :func:`_ring_kv`.
+
+    Each accumulator travels *with* the lon chunk it belongs to. At step ``s`` rank ``r``
+    holds chunk ``(r + s) % P`` and adds its contribution to the accumulator it currently
+    carries; the next hop goes to ``send_to == r - 1``, which holds that same chunk at step
+    ``s + 1``. So after the ``P - 1`` in-loop hops plus one final hop, every accumulator is
+    back at the rank owning its chunk, fully reduced.
+
+    This is a ring reduce-scatter, and it replaces accumulating into a buffer spanning the
+    *whole global longitude axis* and all-reducing that. The buffer was the one allocation
+    here that did not shrink as azimuth ranks were added -- ``B x H_halo x nlon_global x C``
+    in fp32, twice -- so per-rank cost went up with the group size while the slice actually
+    kept went down. It also moves less: ``P`` chunk-sized hops against the all_reduce's
+    ``2 (P - 1)`` chunk-equivalents.
+
+    A ``None`` accumulator (that branch needs no gradient) is skipped, so the rotation costs
+    nothing for branches that were pruned by the autograd contract.
+
+    Shapes follow ``_ring_kv`` exactly: the accumulator's ``W`` is always the current
+    chunk's ``nlon``, so ``next_nlon`` is the same value passed there.
+    """
+    send_to, recv_from = get_group_neighbors(az_group)
+    ops = []
+    recv_dkw = recv_dvw = None
+    if dkw_acc is not None:
+        B, H, _, C_k = dkw_acc.shape
+        recv_dkw = torch.empty(B, H, next_nlon, C_k, device=dkw_acc.device, dtype=dkw_acc.dtype)
+        ops += [
+            dist.P2POp(dist.isend, dkw_acc, send_to, az_group),
+            dist.P2POp(dist.irecv, recv_dkw, recv_from, az_group),
+        ]
+    if dvw_acc is not None:
+        B, H, _, C_v = dvw_acc.shape
+        recv_dvw = torch.empty(B, H, next_nlon, C_v, device=dvw_acc.device, dtype=dvw_acc.dtype)
+        ops += [
+            dist.P2POp(dist.isend, dvw_acc, send_to, az_group),
+            dist.P2POp(dist.irecv, recv_dvw, recv_from, az_group),
+        ]
+    reqs = dist.batch_isend_irecv(ops) if ops else []
+    return recv_dkw, recv_dvw, reqs
+
+
 class _RingNeighborhoodAttentionFn(torch.autograd.Function):
     """Forward ring attention + backward ring for one attention head group.
 
@@ -274,7 +318,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # — instead of upcasting to fp32 here — also keeps the backward ring
         # exchange at 16-bit under AMP (halved K/V comm volume), matching the
         # forward ring. The fp32 accumulators (integral_buf, alpha_k/kvw_buf,
-        # dkw/dvw_full_cl) are unaffected; the returned grads are cast back to the
+        # dkw/dvw_acc) are unaffected; the returned grads are cast back to the
         # captured input dtypes at the end.
         kw_dtype = kw.dtype
         vw_dtype = vw.dtype
@@ -360,21 +404,24 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
 
         # ----------------------------------------------------------------
         # Backward pass 2: scatter dkw/dvw contributions.
-        # Each GPU computes its contribution to every lon chunk it visits;
-        # then allreduce across azimuth ranks, extract local chunk.
+        # Each GPU computes its contribution to every lon chunk it visits, and a ring
+        # reduce-scatter carries each chunk's accumulator back to the rank owning it
+        # (see _ring_grad). The accumulator is chunk-sized, so this is the whole local
+        # gradient at the end -- no allreduce and no slice.
         # Skip entirely if neither kw nor vw needs grad. The fused kernel
         # writes both dkw_chunk_cl and dvw_chunk_cl in one call, so the
         # per-chunk allocations stay; we just gate the accumulation /
-        # allreduce / extract per branch.
-        # TODO: replace allreduce with ring reduce-scatter for efficiency.
+        # rotation per branch.
         # ----------------------------------------------------------------
         if kw_needs_grad or vw_needs_grad:
             # pass 1 rotated kw_chunk/vw_chunk; reset to the local chunk, which is
             # already converted -- no second conversion needed.
             kw_chunk, vw_chunk = kw_nhwc, vw_nhwc
-            nlon_in_total = sum(nlon_kx_list)
-            dkw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_k, device=device, dtype=torch.float32) if kw_needs_grad else None
-            dvw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_v, device=device, dtype=torch.float32) if vw_needs_grad else None
+            # the accumulator starts on this rank's own chunk, which is the one it holds
+            # at step 0, and is re-sized by each hop to match the chunk it then carries
+            my_nlon = nlon_kx_list[az_rank]
+            dkw_acc = torch.zeros(B, H_halo, my_nlon, C_k, device=device, dtype=torch.float32) if kw_needs_grad else None
+            dvw_acc = torch.zeros(B, H_halo, my_nlon, C_v, device=device, dtype=torch.float32) if vw_needs_grad else None
 
             for step in range(az_size):
                 src_rank = (az_rank + step) % az_size
@@ -412,41 +459,38 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                 )
 
                 if kw_needs_grad:
-                    dkw_full_cl[:, :, lon_lo_kx : lon_lo_kx + nlon_kx, :].add_(dkw_chunk_cl)
+                    dkw_acc.add_(dkw_chunk_cl)
                 if vw_needs_grad:
-                    dvw_full_cl[:, :, lon_lo_kx : lon_lo_kx + nlon_kx, :].add_(dvw_chunk_cl)
+                    dvw_acc.add_(dvw_chunk_cl)
 
                 if step < az_size - 1:
                     next_src = (az_rank + step + 1) % az_size
                     recv_kw, recv_vw, reqs = _ring_kv(kw_chunk, vw_chunk, az_group, nlon_kx_list[next_src], nlon_kx_list[next_src])
+                    # the accumulators follow the chunks they belong to, so they rotate in
+                    # the same direction and to the same per-chunk width
+                    recv_dkw, recv_dvw, grad_reqs = _ring_grad(dkw_acc, dvw_acc, az_group, nlon_kx_list[next_src])
                     for req in reqs:
+                        req.wait()
+                    for req in grad_reqs:
                         req.wait()
                     kw_chunk = recv_kw.clone()
                     vw_chunk = recv_vw.clone()
+                    dkw_acc, dvw_acc = recv_dkw, recv_dvw
 
-            # Per-branch allreduce — only the branches we'll return.
-            if az_size > 1 and az_group is not None:
-                if kw_needs_grad:
-                    dist.all_reduce(dkw_full_cl, group=az_group)
-                if vw_needs_grad:
-                    dist.all_reduce(dvw_full_cl, group=az_group)
+            # One final hop returns each accumulator to the rank owning its chunk: after the
+            # loop a rank carries the accumulator for chunk az_rank - 1, which is send_to.
+            if az_size > 1:
+                recv_dkw, recv_dvw, grad_reqs = _ring_grad(dkw_acc, dvw_acc, az_group, my_nlon)
+                for req in grad_reqs:
+                    req.wait()
+                dkw_acc, dvw_acc = recv_dkw, recv_dvw
 
-            my_lo = lon_chunk_starts[az_rank]
-            my_nlon = nlon_kx_list[az_rank]
-            # Extract local chunk and convert channels-last → channels-first.
+            # The accumulator IS the local chunk now, so only the layout conversion is left.
             # No halo stripping: dkw/dvw must match kw/vw shape (= key_halo/value_halo).
             # The autograd through torch.cat in _exchange_lat_halo extracts the
             # middle H_in rows as the gradient for key_proj/value_proj.
-            if kw_needs_grad:
-                dkw_cl = dkw_full_cl[:, :, my_lo : my_lo + my_nlon, :].contiguous()
-                dkw = to_nchw(dkw_cl).to(dtype=kw_dtype)  # [B, C_k, H_halo, W_local]
-            else:
-                dkw = None
-            if vw_needs_grad:
-                dvw_cl = dvw_full_cl[:, :, my_lo : my_lo + my_nlon, :].contiguous()
-                dvw = to_nchw(dvw_cl).to(dtype=vw_dtype)  # [B, C_v, H_halo, W_local]
-            else:
-                dvw = None
+            dkw = to_nchw(dkw_acc).to(dtype=kw_dtype) if kw_needs_grad else None  # [B, C_k, H_halo, W_local]
+            dvw = to_nchw(dvw_acc).to(dtype=vw_dtype) if vw_needs_grad else None  # [B, C_v, H_halo, W_local]
         else:
             dkw = None
             dvw = None
@@ -721,17 +765,18 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
 
         # ----------------------------------------------------------------
         # Backward pass 2: accumulate dkw/dvw contributions per chunk.
-        # Each GPU computes its LOCAL outputs' contribution to every lon chunk
-        # it visits; then allreduce across azimuth ranks, extract local chunk.
-        # TODO: replace allreduce with ring reduce-scatter for efficiency.
+        # Each GPU computes its LOCAL outputs' contribution to every lon chunk it visits,
+        # and a ring reduce-scatter carries each chunk's accumulator back to its owner
+        # (see _ring_grad) -- chunk-sized throughout, so no allreduce and no slice.
         # ----------------------------------------------------------------
         if kw_needs_grad or vw_needs_grad:
             # pass 1 rotated kw_chunk/vw_chunk; reset to the local chunk, which is
             # already converted -- no second conversion needed.
             kw_chunk, vw_chunk = kw_nhwc, vw_nhwc
-            nlon_in_total = sum(nlon_kx_list)
-            dkw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_k, device=device, dtype=torch.float32) if kw_needs_grad else None
-            dvw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_v, device=device, dtype=torch.float32) if vw_needs_grad else None
+            # starts on this rank's own chunk (the one held at step 0), re-sized by each hop
+            my_nlon = nlon_kx_list[az_rank]
+            dkw_acc = torch.zeros(B, H_halo, my_nlon, C_k, device=device, dtype=torch.float32) if kw_needs_grad else None
+            dvw_acc = torch.zeros(B, H_halo, my_nlon, C_v, device=device, dtype=torch.float32) if vw_needs_grad else None
 
             for step in range(az_size):
                 src_rank = (az_rank + step) % az_size
@@ -766,39 +811,35 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                 )
 
                 if kw_needs_grad:
-                    dkw_full_cl[:, :, lon_lo_kx : lon_lo_kx + nlon_kx, :].add_(dkw_chunk_cl)
+                    dkw_acc.add_(dkw_chunk_cl)
                 if vw_needs_grad:
-                    dvw_full_cl[:, :, lon_lo_kx : lon_lo_kx + nlon_kx, :].add_(dvw_chunk_cl)
+                    dvw_acc.add_(dvw_chunk_cl)
 
                 if step < az_size - 1:
                     next_src = (az_rank + step + 1) % az_size
                     recv_kw, recv_vw, reqs = _ring_kv(kw_chunk, vw_chunk, az_group, nlon_kx_list[next_src], nlon_kx_list[next_src])
+                    # accumulators follow the chunks they belong to: same direction, same width
+                    recv_dkw, recv_dvw, grad_reqs = _ring_grad(dkw_acc, dvw_acc, az_group, nlon_kx_list[next_src])
                     for req in reqs:
+                        req.wait()
+                    for req in grad_reqs:
                         req.wait()
                     kw_chunk = recv_kw.clone()
                     vw_chunk = recv_vw.clone()
+                    dkw_acc, dvw_acc = recv_dkw, recv_dvw
 
-            # Per-branch allreduce — only the branches we'll return.
-            if az_size > 1 and az_group is not None:
-                if kw_needs_grad:
-                    dist.all_reduce(dkw_full_cl, group=az_group)
-                if vw_needs_grad:
-                    dist.all_reduce(dvw_full_cl, group=az_group)
+            # Final hop home: after the loop a rank carries the accumulator for chunk
+            # az_rank - 1, which is exactly send_to.
+            if az_size > 1:
+                recv_dkw, recv_dvw, grad_reqs = _ring_grad(dkw_acc, dvw_acc, az_group, my_nlon)
+                for req in grad_reqs:
+                    req.wait()
+                dkw_acc, dvw_acc = recv_dkw, recv_dvw
 
-            my_lo = lon_chunk_starts[az_rank]
-            my_nlon = nlon_kx_list[az_rank]
-            # Extract local chunk and convert channels-last → channels-first.
+            # The accumulator IS the local chunk now, so only the layout conversion is left.
             # No halo stripping: dkw/dvw must match kw/vw shape (= key_halo/value_halo).
-            if kw_needs_grad:
-                dkw_cl = dkw_full_cl[:, :, my_lo : my_lo + my_nlon, :].contiguous()
-                dkw = to_nchw(dkw_cl).to(dtype=kw_dtype)  # [B, C_k, H_halo, W_local]
-            else:
-                dkw = None
-            if vw_needs_grad:
-                dvw_cl = dvw_full_cl[:, :, my_lo : my_lo + my_nlon, :].contiguous()
-                dvw = to_nchw(dvw_cl).to(dtype=vw_dtype)  # [B, C_v, H_halo, W_local]
-            else:
-                dvw = None
+            dkw = to_nchw(dkw_acc).to(dtype=kw_dtype) if kw_needs_grad else None  # [B, C_k, H_halo, W_local]
+            dvw = to_nchw(dvw_acc).to(dtype=vw_dtype) if vw_needs_grad else None  # [B, C_v, H_halo, W_local]
         else:
             dkw = None
             dvw = None
