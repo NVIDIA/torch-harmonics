@@ -41,6 +41,7 @@ from .utils import azimuth_group, azimuth_group_size, is_distributed_azimuth, is
 from .utils import config as thd_config
 
 
+@torch.compiler.disable()
 def get_group_neighbors(group):
     """Return the ``(prev_rank, next_rank)`` global ranks of the immediate neighbours in ``group``.
 
@@ -1352,6 +1353,7 @@ def compute_polar_halo_radius(
     return r_lat
 
 
+@torch.compiler.disable()
 def polar_halo_exchange(x, r_lat):
     """Exchange ``r_lat`` halo rows with neighbouring polar ranks.
 
