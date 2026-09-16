@@ -1028,6 +1028,37 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
             # local wo directly without knowing the global lon offset.
             self._build_local_psi()  # also precomputes self.psi_{n_long_rows,max_row_len,mid_row_len}
 
+        # the local psi supersedes the global one the base class built; drop it
+        self._drop_global_psi()
+
+    # -----------------------------------------------------------------------
+
+    def _drop_global_psi(self):
+        """Free the global sparsity buffers registered by the serial base class.
+
+        ``_build_local_psi`` / ``_build_local_psi_upsample`` are their only readers and both
+        run during ``__init__``; the ring kernels take the ``*_local`` buffers exclusively.
+        Left in place they would sit on the device for the lifetime of the module alongside
+        the local copies that replace them -- and being keyed to the *global* grid, they do
+        not shrink as ranks are added. ``psi_row_idx``, ``psi_seg`` and ``psi_seg_off`` are
+        never read here at all: the local row order is rebuilt in ``_build_local_psi`` and
+        the arc segments are only consumed by the serial kernels.
+
+        All five are ``persistent=False``, so no checkpoint content changes -- only
+        ``named_buffers()`` differs from the serial module. Deleting rather than setting
+        them to ``None`` means a stale read raises ``AttributeError`` naming the buffer,
+        instead of a ``None`` propagating into index arithmetic and failing a frame later.
+
+        ``del`` is the supported route: ``nn.Module.__delattr__`` removes the entry from
+        ``_buffers`` and discards the name from ``_non_persistent_buffers_set``. The base
+        class registers all five unconditionally, so none of these can be missing.
+        """
+        del self.psi_row_idx
+        del self.psi_col_idx
+        del self.psi_roff_idx
+        del self.psi_seg
+        del self.psi_seg_off
+
     # -----------------------------------------------------------------------
 
     def _build_local_psi(self):
