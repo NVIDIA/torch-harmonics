@@ -372,18 +372,39 @@ class _DistributeTransposePolar(torch.autograd.Function):
 
 
 # we need those additional primitives for distributed matrix multiplications
+# dtypes whose accumulation error a cross-rank reduction would make worse than the local
+# one, so the collective is run in fp32 instead
+_LOW_PRECISION_DTYPES = (torch.float16, torch.bfloat16)
+
+
+def _reduction_dtype(dtype, use_fp32):
+    """Working dtype for a collective reduction.
+
+    ``use_fp32`` promotes low-precision inputs so that accumulating across ranks does not
+    lose precision the local reduction had kept. It must only ever *promote*: reducing an
+    fp64 tensor in fp32 would silently cap the result at fp32 accuracy, which is the
+    opposite of what the flag is for. Anything already at fp32 or wider is left alone.
+    """
+
+    if use_fp32 and dtype in _LOW_PRECISION_DTYPES:
+        return torch.float32
+    return dtype
+
+
 def _reduce(input_, use_fp32=True, group=None):
 
     # Bypass the function if we are using only 1 GPU.
     if dist.get_world_size(group=group) == 1:
         return input_
 
+    dtype = input_.dtype
+    work_dtype = _reduction_dtype(dtype, use_fp32)
+
     # dist.all_reduce is in-place on its tensor argument; the .clone() forces a fresh
     # buffer so we never mutate the caller's tensor (which would alias an autograd-
     # tracked value when the input is fp32 + contiguous).
-    if use_fp32:
-        dtype = input_.dtype
-        inputf_ = input_.float().contiguous().clone()
+    if work_dtype != dtype:
+        inputf_ = input_.to(work_dtype).contiguous().clone()
         dist.all_reduce(inputf_, group=group)
         input_ = inputf_.to(dtype)
     else:
@@ -472,6 +493,9 @@ def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
     would silently read past short chunks' allocations, which manifests as
     corruption that surfaces many steps later as ``invalid memory address``
     errors in unrelated kernels.
+
+    ``use_fp32`` promotes fp16/bf16 inputs for the reduction, see
+    :func:`_reduction_dtype`; wider dtypes are reduced as-is.
     """
 
     # Bypass the function if we are using only 1 GPU.
@@ -488,7 +512,7 @@ def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
     is_even = min(orig_shapes) == max_chunk
 
     dtype = input_.dtype
-    work_dtype = torch.float32 if (use_fp32 and dtype != torch.float32) else dtype
+    work_dtype = _reduction_dtype(dtype, use_fp32)
 
     if is_even:
         # Fast path: all chunks the same size; call reduce_scatter directly.

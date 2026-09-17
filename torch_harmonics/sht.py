@@ -34,7 +34,7 @@ import torch.nn as nn
 
 from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
-from torch_harmonics.quadrature import clenshaw_curtiss_weights, legendre_gauss_weights, lobatto_weights
+from torch_harmonics.quadrature import precompute_latitudes
 from torch_harmonics.truncation import truncate_sht
 from torch_harmonics.utils import check
 
@@ -123,18 +123,9 @@ class RealSHT(nn.Module):
 
         # TODO: include assertions regarding the dimensions
 
-        # compute quadrature points and lmax based on the exactness of the quadrature
-        if self.grid == "legendre-gauss":
-            cost, weights = legendre_gauss_weights(nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, weights = lobatto_weights(nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, weights = clenshaw_curtiss_weights(nlat, -1, 1)
-        else:
-            raise (ValueError("Unknown quadrature mode"))
-
-        # apply cosine transform and flip them
-        tq = torch.flip(torch.arccos(cost), dims=(0,))
+        # nodes and quadrature weights; the grid switch and the cosine transform live in
+        # precompute_latitudes, which is cached on (nlat, grid)
+        _, weights = precompute_latitudes(nlat, grid=self.grid)
 
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
@@ -145,7 +136,7 @@ class RealSHT(nn.Module):
         weights = 2.0 * torch.pi * weights
 
         # combine quadrature weights with the legendre weights
-        pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
+        pct = _precompute_legpoly(self.mmax, self.lmax, self.nlat, self.grid, norm=self.norm, csphase=self.csphase)
         weights = torch.einsum("mlk,k->mlk", pct, weights).contiguous()
 
         # remember quadrature weights
@@ -283,25 +274,12 @@ class InverseRealSHT(nn.Module):
         self.norm = norm
         self.csphase = csphase
 
-        # compute quadrature points
-        if self.grid == "legendre-gauss":
-            cost, _ = legendre_gauss_weights(nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, _ = lobatto_weights(nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, _ = clenshaw_curtiss_weights(nlat, -1, 1)
-        else:
-            raise (ValueError("Unknown quadrature mode"))
-
-        # apply cosine transform and flip them
-        t = torch.flip(torch.arccos(cost), dims=(0,))
-
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
 
         # precompute associated Legendre polynomials
         # store as (mmax, nlat, lmax) so the contraction dim l is stride-1
-        pct = _precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        pct = _precompute_legpoly(self.mmax, self.lmax, self.nlat, self.grid, norm=self.norm, inverse=True, csphase=self.csphase)
         pct = pct.permute(0, 2, 1).contiguous()
 
         # register buffer
@@ -425,24 +403,15 @@ class RealVectorSHT(nn.Module):
         self.norm = norm
         self.csphase = csphase
 
-        # compute quadrature points
-        if self.grid == "legendre-gauss":
-            cost, weights = legendre_gauss_weights(nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, weights = lobatto_weights(nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, weights = clenshaw_curtiss_weights(nlat, -1, 1)
-        else:
-            raise (ValueError("Unknown quadrature mode"))
-
-        # apply cosine transform and flip them
-        tq = torch.flip(torch.arccos(cost), dims=(0,))
+        # nodes and quadrature weights; the grid switch and the cosine transform live in
+        # precompute_latitudes, which is cached on (nlat, grid)
+        _, weights = precompute_latitudes(nlat, grid=self.grid)
 
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
 
         # precompute associated Legendre polynomials
-        dpct = _precompute_dlegpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
+        dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.nlat, self.grid, norm=self.norm, csphase=self.csphase)
 
         # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
         # quadrature weights (see RealSHT.__init__)
@@ -597,25 +566,12 @@ class InverseRealVectorSHT(nn.Module):
         self.norm = norm
         self.csphase = csphase
 
-        # compute quadrature points
-        if self.grid == "legendre-gauss":
-            cost, _ = legendre_gauss_weights(nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, _ = lobatto_weights(nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, _ = clenshaw_curtiss_weights(nlat, -1, 1)
-        else:
-            raise (ValueError("Unknown quadrature mode"))
-
-        # apply cosine transform and flip them
-        t = torch.flip(torch.arccos(cost), dims=(0,))
-
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
 
         # precompute associated Legendre polynomials
         # store as (2, mmax, nlat, lmax) so the contraction dim l is stride-1
-        dpct = _precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.nlat, self.grid, norm=self.norm, inverse=True, csphase=self.csphase)
         dpct = dpct.permute(0, 1, 3, 2).contiguous()
 
         # register weights
