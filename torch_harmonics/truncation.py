@@ -124,9 +124,10 @@ def truncate_sht(nlat: int, nlon: int, lmax: Optional[int] = None, mmax: Optiona
     The default longitudinal truncation is the Nyquist limit of the uniform
     longitude grid: :math:`m_{\max} = \lfloor N_\lambda / 2 \rfloor + 1`.
 
-    Finally, a **triangular truncation** is applied:
-    :math:`l_{\max} = m_{\max} = \min(l_{\max},\, m_{\max})`, so that every
-    retained degree has a full set of orders.
+    If either limit is omitted, a **triangular truncation** is applied:
+    :math:`l_{\\max} = m_{\\max} = \\min(l_{\\max},\\, m_{\\max})`, so that every
+    retained degree has a full set of orders. When both limits are provided,
+    ``lmax`` and ``mmax`` are used independently, with ``mmax`` capped at ``lmax``.
 
     Parameters
     ----------
@@ -162,14 +163,20 @@ def truncate_sht(nlat: int, nlon: int, lmax: Optional[int] = None, mmax: Optiona
     (127, 127)
     >>> truncate_sht(128, 256, grid="equiangular")
     (64, 64)
+    >>> truncate_sht(128, 256, lmax=96, mmax=48, grid="legendre-gauss")
+    (96, 48)
     """
 
-    # determine the maximum degrees based on user-defined values or the default values based on the grid type
-    lmax = lmax or _truncate_lmax(nlat, grid)
-    mmax = mmax or _truncate_mmax(nlon)
+    if lmax is not None and mmax is not None:
+        # use independent degree and order limits
+        mmax = min(mmax, lmax)
+    else:
+        # determine the maximum degrees based on user-defined values or the default values based on the grid type
+        lmax = lmax or _truncate_lmax(nlat, grid)
+        mmax = mmax or _truncate_mmax(nlon)
 
-    # perform triangular truncation
-    lmax = min(lmax, mmax)
-    mmax = lmax
+        # perform triangular truncation
+        lmax = min(lmax, mmax)
+        mmax = lmax
 
     return lmax, mmax
