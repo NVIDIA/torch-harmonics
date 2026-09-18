@@ -479,6 +479,97 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         """fp16 + kpacked disabled (K_PAD=24) → CSR path, fused=False."""
         self._run_kpacked_fallback(fused=False, dtype=torch.float16, atol=2e-2, rtol=1e-2)
 
+    @parameterized.expand(
+        [
+            # nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, grid_in, grid_out, transpose
+            # even resolutions, where every rank gets the same number of latitudes
+            [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", False],
+            [32, 64, 32, 64, (3, 3), "legendre-gauss", "legendre-gauss", False],
+            [32, 64, 16, 32, (3, 3), "equiangular", "equiangular", False],
+            [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", True],
+            [16, 32, 32, 64, (3, 3), "equiangular", "equiangular", True],
+            # odd nlat, so compute_split_shapes hands ranks different counts and the two axes
+            # are skewed against each other -- e.g. 33 and 32 over 4 ranks split [9,8,8,8] and
+            # [8,8,8,8], which puts every rank's input and output bands at a different offset
+            [33, 64, 33, 64, (3, 3), "equiangular", "equiangular", False],
+            [33, 64, 33, 64, (3, 3), "legendre-gauss", "legendre-gauss", False],
+            [33, 64, 32, 64, (3, 3), "equiangular", "equiangular", False],
+            [32, 64, 33, 64, (3, 3), "equiangular", "equiangular", False],
+            [33, 64, 33, 64, (3, 3), "equiangular", "equiangular", True],
+            [17, 64, 33, 64, (3, 3), "equiangular", "equiangular", True],
+            # coarse, odd resolution ratios: the support then spans more than one input ring per
+            # output ring, so these are the rows where the latitude band is genuinely wider than
+            # the nearest neighbour and an off-by-one in it would not cancel out
+            [33, 64, 17, 64, (3, 3), "equiangular", "equiangular", False],
+            [33, 64, 11, 64, (3, 3), "equiangular", "equiangular", False],
+            [33, 64, 17, 64, (3, 3), "legendre-gauss", "legendre-gauss", False],
+        ],
+        skip_on_empty=True,
+    )
+    def test_psi_blocks(self, nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, grid_in, grid_out, transpose, verbose=False):
+        """Each rank's local psi equals the serial psi restricted to its input latitudes.
+
+        The sparsity pattern is built from the latitude band that can fall inside the angular
+        cutoff, and the distributed module keeps only the entries whose input latitude it owns.
+        This checks the two agree entry for entry, which isolates the pattern from the
+        convolution: an off-by-one in the band or in the index remapping shows up here rather
+        than as a diffuse accuracy failure in the forward.
+
+        Each rank compares against its own slice of the serial construction, so no collective
+        is involved and a failure identifies the rank. The comparison is order-insensitive --
+        the local build re-keys and re-sorts into CSR -- so entries are sorted by
+        (kernel, output latitude, global input index) on both sides first.
+        """
+
+        set_seed(333)
+
+        if transpose:
+            conv_local = th.DiscreteContinuousConvTransposeS2(1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out).to(
+                self.device
+            )
+            conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(
+                1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out
+            ).to(self.device)
+            # the transpose module's psi indexes the output grid along the split axis
+            nlon_split = nlon_out
+            shapes = conv_dist.lat_out_shapes
+        else:
+            conv_local = th.DiscreteContinuousConvS2(1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out).to(self.device)
+            conv_dist = thd.DistributedDiscreteContinuousConvS2(1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out).to(
+                self.device
+            )
+            nlon_split = nlon_in
+            shapes = conv_dist.lat_in_shapes
+
+        lat_start = sum(shapes[: self.hrank])
+        lat_local = shapes[self.hrank]
+
+        def sorted_entries(ker, row, col, vals):
+            """Canonical ordering so the two builds are comparable regardless of CSR layout."""
+            key = (ker.to(torch.int64) * (nlat_out + nlat_in) + row.to(torch.int64)) * (nlat_in * nlat_out * nlon_split) + col.to(torch.int64)
+            order = torch.argsort(key)
+            return ker[order], row[order], col[order], vals[order]
+
+        # distributed: columns are keyed to the local latitude slice, lift them back to global
+        lat_loc = conv_dist.psi_col_idx // nlon_split
+        lon_loc = conv_dist.psi_col_idx % nlon_split
+        col_global = (lat_loc + lat_start) * nlon_split + lon_loc
+        got = sorted_entries(conv_dist.psi_ker_idx, conv_dist.psi_row_idx, col_global, conv_dist.psi_vals)
+
+        # serial: keep the entries this rank owns
+        lat_ser = conv_local.psi_col_idx // nlon_split
+        keep = (lat_ser >= lat_start) & (lat_ser < lat_start + lat_local)
+        ref = sorted_entries(conv_local.psi_ker_idx[keep], conv_local.psi_row_idx[keep], conv_local.psi_col_idx[keep], conv_local.psi_vals[keep])
+
+        if verbose:
+            print(f"psi block on rank ({self.hrank},{self.wrank}): {got[0].numel()} vs {ref[0].numel()} entries")
+
+        self.assertEqual(got[0].numel(), ref[0].numel(), "number of local psi entries")
+        names = ("kernel index", "row index", "column index", "values")
+        for name, g, r in zip(names, got, ref):
+            ok = compare_tensors(f"psi {name}", g, r, atol=1e-14, rtol=1e-14, verbose=verbose)
+            self.assertTrue(reduce_success(ok, self.device), f"psi {name}")
+
 
 if __name__ == "__main__":
     unittest.main()
