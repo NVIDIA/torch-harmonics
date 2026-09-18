@@ -238,7 +238,7 @@ THETA_CUTOFF_EPS = 1e-3
 
 
 def effective_theta_cutoff(theta_cutoff: float, theta_eps: Optional[float] = THETA_CUTOFF_EPS) -> float:
-    """The cutoff a sparsity pattern is actually built with, see :data:`THETA_CUTOFF_EPS`."""
+    """The cutoff a sparsity pattern is actually built with, see ``THETA_CUTOFF_EPS``."""
     return (1.0 + theta_eps) * theta_cutoff
 
 
@@ -294,7 +294,7 @@ def latitude_support_band(lats_in: torch.Tensor, lats_out: torch.Tensor, theta_c
     The bound is compared inclusively, but only up to floating point: a node sitting exactly
     ``theta_cutoff`` away falls on whichever side the arithmetic rounds to, and that can differ
     between platforms. It does not matter for the cutoffs in use, which come from the grid's
-    node spacing widened by :data:`THETA_CUTOFF_EPS` and so land between nodes rather than on
+    node spacing widened by ``THETA_CUTOFF_EPS`` and so land between nodes rather than on
     one. A cutoff chosen to coincide exactly with a node separation is the case to avoid.
 
     Examples
