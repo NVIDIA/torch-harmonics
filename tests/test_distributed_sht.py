@@ -178,22 +178,40 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, 64, 32, 8, "legendre-gauss", True, 1e-5, 1e-6],
             [33, 64, 65, 1, 10, "equiangular", True, 1e-5, 1e-6],
             [33, 64, 64, 1, 10, "legendre-gauss", True, 1e-5, 1e-6],
+            # trapezoidal truncation
+            [32, 64, 24, 32, 8, "legendre-gauss", False, 1e-5, 1e-6, 8, "trapezoidal"],
+            [32, 64, 24, 32, 8, "legendre-gauss", True, 1e-5, 1e-6, 8, "trapezoidal"],
         ],
         skip_on_empty=True,
     )
-    def test_distributed_sht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, verbose=False):
+    def test_distributed_sht(
+        self,
+        nlat,
+        nlon,
+        lmax,
+        batch_size,
+        num_chan,
+        grid,
+        vector,
+        atol,
+        rtol,
+        mmax=None,
+        truncation="triangular",
+        verbose=False,
+    ):
 
         set_seed(333)
 
         B, C, H, W = batch_size, num_chan, nlat, nlon
+        mmax = lmax if mmax is None else mmax
 
         # set up handles
         if vector:
-            forward_transform_local = th.RealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            forward_transform_dist = thd.DistributedRealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            forward_transform_local = th.RealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=mmax, grid=grid, truncation=truncation).to(self.device)
+            forward_transform_dist = thd.DistributedRealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=mmax, grid=grid, truncation=truncation).to(self.device)
         else:
-            forward_transform_local = th.RealSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            forward_transform_dist = thd.DistributedRealSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            forward_transform_local = th.RealSHT(nlat=H, nlon=W, lmax=lmax, mmax=mmax, grid=grid, truncation=truncation).to(self.device)
+            forward_transform_dist = thd.DistributedRealSHT(nlat=H, nlon=W, lmax=lmax, mmax=mmax, grid=grid, truncation=truncation).to(self.device)
 
         # create tensors
         if vector:
@@ -312,23 +330,41 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, 8, 32, 8, "legendre-gauss", True, 1e-5, 1e-6],
             [33, 64, 9, 1, 10, "equiangular", True, 1e-5, 1e-6],
             [33, 64, 8, 1, 10, "legendre-gauss", True, 1e-5, 1e-6],
+            # trapezoidal truncation
+            [32, 64, 24, 32, 8, "legendre-gauss", False, 1e-5, 1e-6, 8, "trapezoidal"],
+            [32, 64, 24, 32, 8, "legendre-gauss", True, 1e-5, 1e-6, 8, "trapezoidal"],
         ],
         skip_on_empty=True,
     )
-    def test_distributed_isht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, verbose=True):
+    def test_distributed_isht(
+        self,
+        nlat,
+        nlon,
+        lmax,
+        batch_size,
+        num_chan,
+        grid,
+        vector,
+        atol,
+        rtol,
+        mmax=None,
+        truncation="triangular",
+        verbose=True,
+    ):
 
         set_seed(333)
 
         B, C, H, W = batch_size, num_chan, nlat, nlon
+        mmax = lmax if mmax is None else mmax
 
         if vector:
-            forward_transform_local = th.RealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            backward_transform_local = th.InverseRealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            backward_transform_dist = thd.DistributedInverseRealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            forward_transform_local = th.RealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=mmax, grid=grid, truncation=truncation).to(self.device)
+            backward_transform_local = th.InverseRealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=mmax, grid=grid, truncation=truncation).to(self.device)
+            backward_transform_dist = thd.DistributedInverseRealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=mmax, grid=grid, truncation=truncation).to(self.device)
         else:
-            forward_transform_local = th.RealSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            backward_transform_local = th.InverseRealSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            backward_transform_dist = thd.DistributedInverseRealSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            forward_transform_local = th.RealSHT(nlat=H, nlon=W, lmax=lmax, mmax=mmax, grid=grid, truncation=truncation).to(self.device)
+            backward_transform_local = th.InverseRealSHT(nlat=H, nlon=W, lmax=lmax, mmax=mmax, grid=grid, truncation=truncation).to(self.device)
+            backward_transform_dist = thd.DistributedInverseRealSHT(nlat=H, nlon=W, lmax=lmax, mmax=mmax, grid=grid, truncation=truncation).to(self.device)
 
         # create tensors
         if vector:
