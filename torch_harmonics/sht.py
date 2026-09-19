@@ -81,6 +81,10 @@ class RealSHT(nn.Module):
     csphase : bool
         Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
         by default ``True``.
+    truncation : str
+        Truncation mode (``"triangular"`` or ``"trapezoidal"``), by default
+        ``"triangular"``. Trapezoidal truncation keeps independent degree
+        and order limits.
 
     Examples
     --------
@@ -111,7 +115,7 @@ class RealSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
+    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True, truncation="triangular"):
 
         super().__init__()
 
@@ -120,6 +124,7 @@ class RealSHT(nn.Module):
         self.grid = grid
         self.norm = norm
         self.csphase = csphase
+        self.truncation = truncation
 
         # TODO: include assertions regarding the dimensions
 
@@ -127,8 +132,8 @@ class RealSHT(nn.Module):
         # precompute_latitudes, which is cached on (nlat, grid)
         _, weights = precompute_latitudes(nlat, grid=self.grid)
 
-        # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        # determine spectral truncation
+        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid, truncation=self.truncation)
 
         # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
         # quadrature weights. It is a constant prefactor of a linear transform, so folding it
@@ -143,7 +148,7 @@ class RealSHT(nn.Module):
         self.register_buffer("weights", weights, persistent=False)
 
     def extra_repr(self):
-        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
+        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}, truncation={self.truncation}"
 
     def forward(self, x: torch.Tensor):
         """
@@ -222,6 +227,10 @@ class InverseRealSHT(nn.Module):
     csphase : bool
         Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
         by default ``True``.
+    truncation : str
+        Truncation mode (``"triangular"`` or ``"trapezoidal"``), by default
+        ``"triangular"``. Trapezoidal truncation keeps independent degree
+        and order limits.
 
     Examples
     --------
@@ -264,7 +273,7 @@ class InverseRealSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
+    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True, truncation="triangular"):
 
         super().__init__()
 
@@ -273,9 +282,10 @@ class InverseRealSHT(nn.Module):
         self.grid = grid
         self.norm = norm
         self.csphase = csphase
+        self.truncation = truncation
 
-        # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        # determine spectral truncation
+        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid, truncation=self.truncation)
 
         # precompute associated Legendre polynomials
         # store as (mmax, nlat, lmax) so the contraction dim l is stride-1
@@ -286,7 +296,7 @@ class InverseRealSHT(nn.Module):
         self.register_buffer("pct", pct, persistent=False)
 
     def extra_repr(self):
-        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
+        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}, truncation={self.truncation}"
 
     def forward(self, x: torch.Tensor):
         """
@@ -363,6 +373,10 @@ class RealVectorSHT(nn.Module):
     csphase : bool
         Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
         by default ``True``.
+    truncation : str
+        Truncation mode (``"triangular"`` or ``"trapezoidal"``), by default
+        ``"triangular"``. Trapezoidal truncation keeps independent degree
+        and order limits.
 
     Examples
     --------
@@ -393,7 +407,7 @@ class RealVectorSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
+    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True, truncation="triangular"):
 
         super().__init__()
 
@@ -402,13 +416,14 @@ class RealVectorSHT(nn.Module):
         self.grid = grid
         self.norm = norm
         self.csphase = csphase
+        self.truncation = truncation
 
         # nodes and quadrature weights; the grid switch and the cosine transform live in
         # precompute_latitudes, which is cached on (nlat, grid)
         _, weights = precompute_latitudes(nlat, grid=self.grid)
 
-        # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        # determine spectral truncation
+        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid, truncation=self.truncation)
 
         # precompute associated Legendre polynomials
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.nlat, self.grid, norm=self.norm, csphase=self.csphase)
@@ -429,7 +444,7 @@ class RealVectorSHT(nn.Module):
         self.register_buffer("weights", weights, persistent=False)
 
     def extra_repr(self):
-        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
+        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}, truncation={self.truncation}"
 
     def forward(self, x: torch.Tensor):
         """
@@ -519,6 +534,10 @@ class InverseRealVectorSHT(nn.Module):
     csphase : bool
         Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
         by default ``True``.
+    truncation : str
+        Truncation mode (``"triangular"`` or ``"trapezoidal"``), by default
+        ``"triangular"``. Trapezoidal truncation keeps independent degree
+        and order limits.
 
     Examples
     --------
@@ -556,7 +575,7 @@ class InverseRealVectorSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
+    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True, truncation="triangular"):
 
         super().__init__()
 
@@ -565,9 +584,10 @@ class InverseRealVectorSHT(nn.Module):
         self.grid = grid
         self.norm = norm
         self.csphase = csphase
+        self.truncation = truncation
 
-        # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        # determine spectral truncation
+        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid, truncation=self.truncation)
 
         # precompute associated Legendre polynomials
         # store as (2, mmax, nlat, lmax) so the contraction dim l is stride-1
@@ -578,7 +598,7 @@ class InverseRealVectorSHT(nn.Module):
         self.register_buffer("dpct", dpct, persistent=False)
 
     def extra_repr(self):
-        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
+        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}, truncation={self.truncation}"
 
     def forward(self, x: torch.Tensor):
         """
