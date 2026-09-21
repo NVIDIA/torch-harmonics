@@ -88,6 +88,10 @@ by a factor of about $2\sqrt{N_\theta - 1} / \pi$ — roughly $5\times$ at
 $N_\theta = 65$ and $17\times$ at $N_\theta = 721$. For `"lobatto"` the excess is
 a resolution-independent ~21%.
 
+The localized operators additionally need to know which latitudes a cutoff can
+reach, which is what `latitude_support_band` returns; `effective_theta_cutoff`
+applies the widening that the sparsity patterns are actually built with.
+
 ```{eval-rst}
 .. currentmodule:: torch_harmonics.quadrature
 
@@ -99,6 +103,8 @@ a resolution-independent ~21%.
    precompute_latitudes
    compute_latitude_spacing
    compute_theta_cutoff
+   effective_theta_cutoff
+   latitude_support_band
    legendre_gauss_weights
    lobatto_weights
    clenshaw_curtiss_weights

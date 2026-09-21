@@ -95,6 +95,191 @@ class TestLegendrePolynomials(unittest.TestCase):
                 diff = vdm[m, l] / self.cml(m, l) - self.pml[(m, l)](t)
                 self.assertTrue(diff.max() <= self.tol)
 
+    @parameterized.expand(
+        [
+            # lmax, norm, csphase
+            [16, "ortho", True],
+            [16, "ortho", False],
+            [16, "four-pi", True],
+            [16, "schmidt", True],
+            [48, "ortho", True],
+            [48, "schmidt", False],
+        ],
+        skip_on_empty=True,
+    )
+    def test_addition_theorem(self, lmax, norm, csphase, verbose=False):
+        r"""The degree-l harmonics sum to a constant at every latitude.
+
+        :math:`\sum_{m=-l}^{l} |Y_l^m|^2 = (2l+1)/4\pi` holds pointwise in :math:`\theta`,
+        so this needs no quadrature, no transform and no reference table -- and at each
+        degree it constrains every order at once. That makes it the one cheap check that
+        reaches arbitrary ``lmax``, where the closed forms in ``test_legendre`` stop at
+        degree 3. A drifted recurrence, a mis-seeded diagonal or a lost normalization all
+        break it.
+
+        The Condon-Shortley phase is squared away, so the identity is insensitive to it.
+        """
+
+        t, _ = precompute_latitudes(2 * lmax, grid="legendre-gauss")
+        t = t.to(self.device)
+        # the tensor-based core, so the nodes can stay on the test device; the cached
+        # grid-keyed wrapper is exercised by test_range_restriction
+        pct = th.legendre.legpoly(lmax, lmax, torch.cos(t), norm=norm, csphase=csphase)
+
+        # the normalization scales every entry, so it scales the sum by a known constant
+        for l in range(lmax):
+            if norm == "ortho":
+                expected = (2 * l + 1) / (4 * math.pi)
+            elif norm == "four-pi":
+                expected = 2.0 * l + 1.0
+            else:  # schmidt carries an extra 1/sqrt(2l+1) on top of the four-pi factor
+                expected = 1.0
+
+            # m and -m contribute equally, so orders above zero are counted twice
+            total = pct[0, l] ** 2 + 2.0 * (pct[1 : l + 1, l] ** 2).sum(dim=0)
+            ok = compare_tensors(f"addition theorem at l={l}", total, torch.full_like(total, expected), atol=1e-12, rtol=1e-12, verbose=verbose)
+            self.assertTrue(ok, msg=f"addition theorem violated at l={l}")
+
+    @parameterized.expand(
+        [
+            # nlat, lmax, grid
+            [48, 24, "equiangular"],
+            [48, 24, "legendre-gauss"],
+            [48, 24, "lobatto"],
+            [96, 48, "legendre-gauss"],
+        ],
+        skip_on_empty=True,
+    )
+    def test_discrete_orthogonality(self, nlat, lmax, grid, verbose=False):
+        r"""The polynomials are discretely orthonormal under the grid's own quadrature.
+
+        :math:`2\pi \sum_k w_k P_l^m P_{l'}^m = \delta_{l l'}` for each fixed order. This
+        is the property the transform actually relies on for round-tripping, checked here
+        as a full Gram matrix per order rather than a handful of entries, and without
+        going through the SHT -- so a failure points at the polynomials, not the transform.
+        """
+
+        t, w = precompute_latitudes(nlat, grid=grid)
+        t, w = t.to(self.device), w.to(self.device)
+        pct = th.legendre.legpoly(lmax, lmax, torch.cos(t), norm="ortho", csphase=False)
+
+        for m in [0, 1, lmax // 2, lmax - 1]:
+            # only degrees l >= m are supported; the rest are identically zero
+            block = pct[m, m:lmax]
+            gram = 2.0 * math.pi * torch.einsum("lk,jk,k->lj", block, block, w)
+            eye = torch.eye(gram.shape[0], dtype=gram.dtype, device=gram.device)
+            ok = compare_tensors(f"gram matrix at m={m}", gram, eye, atol=1e-11, rtol=1e-11, verbose=verbose)
+            self.assertTrue(ok, msg=f"orthogonality violated at m={m}")
+
+    @parameterized.expand(
+        [
+            # lmax, norm, inverse, csphase
+            [20, "ortho", False, True],
+            [20, "ortho", True, False],
+            [20, "four-pi", False, True],
+            [20, "schmidt", False, True],
+            [20, "schmidt", True, True],
+        ],
+        skip_on_empty=True,
+    )
+    def test_dlegpoly_consistency(self, lmax, norm, inverse, csphase, verbose=False):
+        r"""The derivative table agrees with the base table it is supposed to differentiate.
+
+        Two independent checks on ``_precompute_dlegpoly``, which is computed from its own
+        recurrences rather than by differentiating anything:
+
+        * ``dpct[1]`` must equal :math:`m P_l^m / \sin\theta` exactly (to roundoff). It is
+          built from a different three-term relation, so agreement is real corroboration
+          rather than a restatement of the same arithmetic.
+        * ``dpct[0]`` must equal :math:`d P_l^m / d\theta`, checked against a central
+          difference of the base table. Truncation dominates here, hence the looser
+          tolerance -- it is still orders of magnitude tighter than any sign or index error.
+        """
+
+        t, _ = precompute_latitudes(2 * lmax, grid="legendre-gauss")
+        t = t.to(self.device)
+
+        kwargs = dict(norm=norm, inverse=inverse, csphase=csphase)
+        pct = th.legendre.legpoly(lmax, lmax, torch.cos(t), **kwargs)
+        dpct = th.legendre.dlegpoly(lmax, lmax, t, **kwargs)
+
+        # entries outside the triangular support are zero by construction and carry no information
+        m_g = torch.arange(lmax, device=self.device).view(lmax, 1, 1)
+        l_g = torch.arange(lmax, device=self.device).view(1, lmax, 1)
+        support = (m_g <= l_g).expand_as(pct)
+
+        m_f = torch.arange(lmax, dtype=torch.float64, device=self.device).view(lmax, 1, 1)
+        expected = m_f * pct / torch.sin(t).view(1, 1, -1)
+        ok = compare_tensors("dpct[1] vs m P/sin(theta)", dpct[1][support], expected[support], atol=1e-10, rtol=1e-10, verbose=verbose)
+        self.assertTrue(ok, msg="dpct[1] does not match m P/sin(theta)")
+
+        # central difference; truncation dominates the comparison, hence the looser tolerance
+        h = 1e-5
+        fd = (th.legendre.legpoly(lmax, lmax, torch.cos(t + h), **kwargs) - th.legendre.legpoly(lmax, lmax, torch.cos(t - h), **kwargs)) / (2 * h)
+        ok = compare_tensors("dpct[0] vs central difference", dpct[0][support], fd[support], atol=1e-5, rtol=1e-6, verbose=verbose)
+        self.assertTrue(ok, msg="dpct[0] does not match d/dtheta P")
+
+    @parameterized.expand(
+        [
+            # mmax, lmax
+            [12, 12],
+            [16, 10],
+            [10, 16],
+            [1, 1],
+        ],
+        skip_on_empty=True,
+    )
+    def test_range_restriction(self, mmax, lmax, verbose=False):
+        """Restricting the stored range returns exactly the corresponding slice.
+
+        ``mmin``/``lmin`` control which orders and degrees are *stored*, not which are
+        *computed*: both recurrences still have to be walked from the start, since
+        ``P^m_m`` is reached from ``P^{m-1}_{m-1}`` and ``P^m_l`` from ``P^m_{l-1}``. The
+        distributed transforms rely on this to build only the block they keep, so the
+        restricted result has to be indistinguishable from slicing the full one.
+
+        Agreement is exact, not approximate -- the same elementwise operations are applied
+        to the same values either way -- so this asserts bitwise equality. Note this also
+        pins the ``mmin=lmin=0`` default as the serial path: every other test in this file
+        goes through the same code.
+        """
+
+        nlat = 2 * max(mmax, lmax)
+        t, _ = precompute_latitudes(nlat, grid="legendre-gauss")
+        t = t.to(self.device)
+
+        # legpoly evaluates at cos(theta), dlegpoly at theta itself
+        nodes = lambda fn: torch.cos(t) if fn is th.legendre.legpoly else t
+
+        for fn in (th.legendre.legpoly, th.legendre.dlegpoly):
+            for norm in ["ortho", "four-pi", "schmidt"]:
+                for inverse in [False, True]:
+                    for csphase in [False, True]:
+                        kwargs = dict(norm=norm, inverse=inverse, csphase=csphase)
+                        full = fn(mmax, lmax, nodes(fn), **kwargs)
+
+                        for mmin in sorted({0, 1, mmax // 2, mmax - 1} & set(range(mmax))):
+                            for lmin in sorted({0, 1, lmax // 2, lmax - 1} & set(range(lmax))):
+                                block = fn(mmax, lmax, nodes(fn), mmin=mmin, lmin=lmin, **kwargs)
+                                ref = full[..., mmin:, lmin:, :]
+                                case = f"{fn.__name__} mmax={mmax} lmax={lmax} mmin={mmin} lmin={lmin} {norm} inverse={inverse} csphase={csphase}"
+                                self.assertEqual(tuple(block.shape), tuple(ref.shape), msg=f"shape mismatch: {case}")
+                                # atol=rtol=0: bitwise, see the docstring
+                                ok = compare_tensors(case, block, ref.contiguous(), atol=0.0, rtol=0.0, verbose=verbose)
+                                self.assertTrue(ok, msg=f"values differ from the full-table slice: {case}")
+
+        # the latitude range is only reachable through the cached, grid-keyed wrappers, since
+        # the tensor-based core restricts latitudes by simply being handed fewer nodes
+        for fn in (th.legendre._precompute_legpoly, th.legendre._precompute_dlegpoly):
+            full = fn(mmax, lmax, nlat, "legendre-gauss")
+            for kmin, kmax in [(0, None), (1, None), (0, nlat - 1), (2, nlat - 2), (nlat // 2, nlat)]:
+                block = fn(mmax, lmax, nlat, "legendre-gauss", kmin=kmin, kmax=kmax)
+                ref = full[..., kmin : (nlat if kmax is None else kmax)]
+                case = f"{fn.__name__} mmax={mmax} lmax={lmax} kmin={kmin} kmax={kmax}"
+                self.assertEqual(tuple(block.shape), tuple(ref.shape), msg=f"shape mismatch: {case}")
+                ok = compare_tensors(case, block, ref.contiguous(), atol=0.0, rtol=0.0, verbose=verbose)
+                self.assertTrue(ok, msg=f"values differ from the full-table slice: {case}")
+
 
 @parameterized_class(("device"), _devices)
 class TestSphericalHarmonicTransform(unittest.TestCase):
@@ -539,6 +724,50 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         self.assertTrue(compare_tensors("sht weights", sht_host.weights.cpu(), sht_device.weights.cpu(), atol=atol, rtol=rtol, verbose=verbose))
         self.assertTrue(compare_tensors("isht weights", isht_host.pct.cpu(), isht_device.pct.cpu(), atol=atol, rtol=rtol, verbose=verbose))
 
+    @parameterized.expand(
+        [
+            [12, 24, 2, "equiangular"],
+            [12, 24, 2, "legendre-gauss"],
+            [11, 22, 2, "equiangular"],
+        ],
+        skip_on_empty=True,
+    )
+    def test_compile(self, nlat, nlon, batch_size, grid, verbose=False):
+        """The scalar round trip compiles into a single graph and matches eager.
+
+        The round trip is compiled as one function so the complex spectral coefficients
+        are an *intermediate* buffer rather than a graph output -- that is the case
+        inductor has to generate code for.  Triton has no complex type, so any pointwise
+        kernel over a complex buffer fails codegen with ``KeyError: 'complex64'``; on CPU
+        the C++ backend is used instead, where the exposure is a layout mismatch on
+        ``aten.complex`` caught by ``assert_size_stride``.  Both are worth covering, which
+        the CPU/CUDA parameterization of this class does.
+
+        Backward is included deliberately: ``_EnsureContiguous.backward`` copies a complex
+        gradient, and that copy only appears in the joint graph.
+        """
+
+        set_seed(333)
+
+        sht = th.RealSHT(th.as_grid(grid, nlat=nlat, nlon=nlon)).to(self.device)
+        isht = th.InverseRealSHT(th.as_grid(grid, nlat=nlat, nlon=nlon)).to(self.device)
+
+        def fn(t):
+            return isht(sht(t))
+
+        x = torch.randn(batch_size, nlat, nlon, device=self.device, dtype=torch.float32, requires_grad=True)
+        gradient = torch.randn_like(x)
+
+        expected = fn(x)
+        (expected_grad,) = torch.autograd.grad(expected, x, grad_outputs=gradient)
+
+        compiled = torch.compile(fn, fullgraph=True, dynamic=False)
+        actual = compiled(x)
+        (actual_grad,) = torch.autograd.grad(actual, x, grad_outputs=gradient)
+
+        self.assertTrue(compare_tensors("compiled forward", actual, expected, atol=1e-5, rtol=1e-5, verbose=verbose))
+        self.assertTrue(compare_tensors("compiled backward", actual_grad, expected_grad, atol=1e-5, rtol=1e-5, verbose=verbose))
+
 
 @parameterized_class(("device"), _devices)
 class TestSphericalHarmonicsFunctions(unittest.TestCase):
@@ -840,6 +1069,44 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         spectral_energy = torch.einsum("blm,lm->b", c_s.abs() ** 2 + c_t.abs() ** 2, W)  # (batch,)
 
         self.assertTrue(compare_tensors("vector Parseval's theorem", spatial_energy, spectral_energy, atol=atol, rtol=rtol, verbose=verbose))
+
+    @parameterized.expand(
+        [
+            [12, 24, 2, "equiangular"],
+            [12, 24, 2, "legendre-gauss"],
+            [11, 22, 2, "equiangular"],
+        ],
+        skip_on_empty=True,
+    )
+    def test_compile(self, nlat, nlon, batch_size, grid, verbose=False):
+        """The vector round trip compiles into a single graph and matches eager.
+
+        Same rationale as the scalar case, see
+        ``TestSphericalHarmonicTransform.test_compile``.  The vector transforms assemble
+        their spheroidal and toroidal components separately, so they exercise a code path
+        the scalar test does not reach.
+        """
+
+        set_seed(333)
+
+        vsht = th.RealVectorSHT(th.as_grid(grid, nlat=nlat, nlon=nlon)).to(self.device)
+        ivsht = th.InverseRealVectorSHT(th.as_grid(grid, nlat=nlat, nlon=nlon)).to(self.device)
+
+        def fn(t):
+            return ivsht(vsht(t))
+
+        x = torch.randn(batch_size, 2, nlat, nlon, device=self.device, dtype=torch.float32, requires_grad=True)
+        gradient = torch.randn_like(x)
+
+        expected = fn(x)
+        (expected_grad,) = torch.autograd.grad(expected, x, grad_outputs=gradient)
+
+        compiled = torch.compile(fn, fullgraph=True, dynamic=False)
+        actual = compiled(x)
+        (actual_grad,) = torch.autograd.grad(actual, x, grad_outputs=gradient)
+
+        self.assertTrue(compare_tensors("compiled forward", actual, expected, atol=1e-5, rtol=1e-5, verbose=verbose))
+        self.assertTrue(compare_tensors("compiled backward", actual_grad, expected_grad, atol=1e-5, rtol=1e-5, verbose=verbose))
 
 
 @parameterized_class(("device"), _devices)

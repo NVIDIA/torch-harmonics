@@ -106,60 +106,78 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         return tensor_gather
 
+    # Tolerances are atol=1e-5, rtol=1e-6, loosened from the near-exact agreement these rows
+    # used to demand. The Legendre contraction is a distributed matmul: each polar rank
+    # contracts the latitudes (forward) or degrees (inverse) it owns, and the partial sums are
+    # combined by a reduce-scatter. Reassociating a float32 sum across ranks perturbs the result
+    # by a couple of ULP of the *summands*.
+    #
+    # atol is what carries this, not rtol, and the reason matters: the worst offenders are
+    # near-cancellation outputs -- elements of magnitude ~0.015 in a tensor whose scale is ~2,
+    # produced by summing terms two orders larger. Their error is inherited from those terms,
+    # so relative to the element itself it is ~1e-4 no matter how the sum is arranged. No rtol
+    # can cover that without also asserting something false about small outputs. The criterion
+    # that does match the numerics is absolute and scaled to the tensor's dynamic range,
+    # eps_fp32 * max|x|, which is ~1e-6 here; 1e-5 leaves roughly 8x headroom over the largest
+    # difference measured at H=2.
+    #
+    # This is a ULP-level allowance, not a general loosening: a genuine defect in the splitting
+    # or the collective shows up as O(1e-3) or worse, far outside this band. Worth re-measuring
+    # at large polar counts, since the spread grows slowly with the number of partial sums.
     @parameterized.expand(
         [
             # lmax automatically determined
             # Scalar SHT
-            [32, 64, None, 32, 8, "equiangular", False, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "equiangular", False, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "equiangular", False, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
-            [33, 64, None, 1, 10, "equiangular", False, 1e-6, 1e-6],
-            [33, 64, None, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
-            [8, 16, None, 1, 10, "equiangular", False, 1e-6, 1e-6],
+            [32, 64, None, 32, 8, "equiangular", False, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "equiangular", False, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "equiangular", False, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-5, 1e-6],
+            [33, 64, None, 1, 10, "equiangular", False, 1e-5, 1e-6],
+            [33, 64, None, 1, 10, "legendre-gauss", False, 1e-5, 1e-6],
+            [8, 16, None, 1, 10, "equiangular", False, 1e-5, 1e-6],
             # fewer channels than the polar group size (gh #207): B*C must be padded
             # up to the group size before the channel-axis transposes. Looser tolerance
             # here: padding pushes the (inert) channel GEMM from the batch-1 algorithm the
             # serial reference uses into the batch>=2 regime, a ~1e-6 fp32 rounding shift.
-            # Divisible-channel cases never cross that boundary, so they stay at 1e-7.
+            # Divisible-channel cases never cross that boundary, so they keep the default rtol.
             [32, 64, None, 1, 1, "equiangular", False, 1e-5, 1e-5],
             [32, 64, None, 1, 1, "legendre-gauss", False, 1e-5, 1e-5],
             [32, 64, None, 1, 2, "equiangular", False, 1e-5, 1e-5],
             [32, 64, None, 1, 1, "equiangular", True, 1e-5, 1e-5],
             [32, 64, None, 1, 2, "equiangular", True, 1e-5, 1e-5],
             # Vector SHT
-            [32, 64, None, 32, 8, "equiangular", True, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "equiangular", True, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "equiangular", True, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
-            [32, 64, None, 1, 10, "equiangular", True, 1e-6, 1e-6],
-            [33, 64, None, 1, 10, "legendre-gauss", True, 1e-6, 1e-6],
+            [32, 64, None, 32, 8, "equiangular", True, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "legendre-gauss", True, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "equiangular", True, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "legendre-gauss", True, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "equiangular", True, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "legendre-gauss", True, 1e-5, 1e-6],
+            [32, 64, None, 1, 10, "equiangular", True, 1e-5, 1e-6],
+            [33, 64, None, 1, 10, "legendre-gauss", True, 1e-5, 1e-6],
             # downsampling:
             # Scalar SHT
-            [32, 64, 8, 32, 8, "equiangular", False, 1e-7, 1e-9],
-            [32, 64, 8, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
-            [33, 64, 9, 1, 10, "equiangular", False, 1e-6, 1e-6],
-            [33, 64, 8, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
+            [32, 64, 8, 32, 8, "equiangular", False, 1e-5, 1e-6],
+            [32, 64, 8, 32, 8, "legendre-gauss", False, 1e-5, 1e-6],
+            [33, 64, 9, 1, 10, "equiangular", False, 1e-5, 1e-6],
+            [33, 64, 8, 1, 10, "legendre-gauss", False, 1e-5, 1e-6],
             # Vector SHT
-            [32, 64, 8, 32, 8, "equiangular", True, 1e-7, 1e-9],
-            [32, 64, 8, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
-            [33, 64, 9, 1, 10, "equiangular", True, 1e-6, 1e-6],
-            [33, 64, 8, 1, 10, "legendre-gauss", True, 1e-6, 1e-6],
+            [32, 64, 8, 32, 8, "equiangular", True, 1e-5, 1e-6],
+            [32, 64, 8, 32, 8, "legendre-gauss", True, 1e-5, 1e-6],
+            [33, 64, 9, 1, 10, "equiangular", True, 1e-5, 1e-6],
+            [33, 64, 8, 1, 10, "legendre-gauss", True, 1e-5, 1e-6],
             # upsampling
             # Scalar SHT
-            [32, 64, 64, 32, 8, "equiangular", False, 1e-7, 1e-9],
-            [32, 64, 64, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
-            [33, 64, 65, 1, 10, "equiangular", False, 1e-6, 1e-6],
-            [33, 64, 64, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
+            [32, 64, 64, 32, 8, "equiangular", False, 1e-5, 1e-6],
+            [32, 64, 64, 32, 8, "legendre-gauss", False, 1e-5, 1e-6],
+            [33, 64, 65, 1, 10, "equiangular", False, 1e-5, 1e-6],
+            [33, 64, 64, 1, 10, "legendre-gauss", False, 1e-5, 1e-6],
             # Vector SHT
-            [32, 64, 64, 32, 8, "equiangular", True, 1e-7, 1e-9],
-            [32, 64, 64, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
-            [33, 64, 65, 1, 10, "equiangular", True, 1e-6, 1e-6],
-            [33, 64, 64, 1, 10, "legendre-gauss", True, 1e-6, 1e-6],
+            [32, 64, 64, 32, 8, "equiangular", True, 1e-5, 1e-6],
+            [32, 64, 64, 32, 8, "legendre-gauss", True, 1e-5, 1e-6],
+            [33, 64, 65, 1, 10, "equiangular", True, 1e-5, 1e-6],
+            [33, 64, 64, 1, 10, "legendre-gauss", True, 1e-5, 1e-6],
         ],
         skip_on_empty=True,
     )
@@ -223,59 +241,77 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
 
+    # Tolerances are atol=1e-5, rtol=1e-6, loosened from the near-exact agreement these rows
+    # used to demand. The Legendre contraction is a distributed matmul: each polar rank
+    # contracts the latitudes (forward) or degrees (inverse) it owns, and the partial sums are
+    # combined by a reduce-scatter. Reassociating a float32 sum across ranks perturbs the result
+    # by a couple of ULP of the *summands*.
+    #
+    # atol is what carries this, not rtol, and the reason matters: the worst offenders are
+    # near-cancellation outputs -- elements of magnitude ~0.015 in a tensor whose scale is ~2,
+    # produced by summing terms two orders larger. Their error is inherited from those terms,
+    # so relative to the element itself it is ~1e-4 no matter how the sum is arranged. No rtol
+    # can cover that without also asserting something false about small outputs. The criterion
+    # that does match the numerics is absolute and scaled to the tensor's dynamic range,
+    # eps_fp32 * max|x|, which is ~1e-6 here; 1e-5 leaves roughly 8x headroom over the largest
+    # difference measured at H=2.
+    #
+    # This is a ULP-level allowance, not a general loosening: a genuine defect in the splitting
+    # or the collective shows up as O(1e-3) or worse, far outside this band. Worth re-measuring
+    # at large polar counts, since the spread grows slowly with the number of partial sums.
     @parameterized.expand(
         [
             # lmax automatically determined
             # Scalar SHT
-            [32, 64, None, 32, 8, "equiangular", False, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "equiangular", False, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "equiangular", False, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
-            [33, 64, None, 1, 10, "equiangular", False, 1e-6, 1e-6],
-            [33, 64, None, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
+            [32, 64, None, 32, 8, "equiangular", False, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "equiangular", False, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "equiangular", False, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-5, 1e-6],
+            [33, 64, None, 1, 10, "equiangular", False, 1e-5, 1e-6],
+            [33, 64, None, 1, 10, "legendre-gauss", False, 1e-5, 1e-6],
             # fewer channels than the polar group size (gh #207): B*C must be padded
             # up to the group size before the channel-axis transposes. Looser tolerance
             # here: padding pushes the (inert) channel GEMM from the batch-1 algorithm the
             # serial reference uses into the batch>=2 regime, a ~1e-6 fp32 rounding shift.
-            # Divisible-channel cases never cross that boundary, so they stay at 1e-7.
+            # Divisible-channel cases never cross that boundary, so they keep the default rtol.
             [32, 64, None, 1, 1, "equiangular", False, 1e-5, 1e-5],
             [32, 64, None, 1, 1, "legendre-gauss", False, 1e-5, 1e-5],
             [32, 64, None, 1, 2, "equiangular", False, 1e-5, 1e-5],
             [32, 64, None, 1, 1, "equiangular", True, 1e-5, 1e-5],
             [32, 64, None, 1, 2, "equiangular", True, 1e-5, 1e-5],
             # Vector SHT
-            [32, 64, None, 32, 8, "equiangular", True, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "equiangular", True, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "equiangular", True, 1e-7, 1e-9],
-            [32, 64, None, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
-            [33, 64, None, 1, 10, "equiangular", True, 1e-6, 1e-6],
-            [33, 64, None, 1, 10, "legendre-gauss", True, 1e-6, 1e-6],
+            [32, 64, None, 32, 8, "equiangular", True, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "legendre-gauss", True, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "equiangular", True, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "legendre-gauss", True, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "equiangular", True, 1e-5, 1e-6],
+            [32, 64, None, 32, 8, "legendre-gauss", True, 1e-5, 1e-6],
+            [33, 64, None, 1, 10, "equiangular", True, 1e-5, 1e-6],
+            [33, 64, None, 1, 10, "legendre-gauss", True, 1e-5, 1e-6],
             # downsampling (SHT is upsampling)
             # Scalar SHT
-            [32, 64, 64, 32, 8, "equiangular", False, 1e-7, 1e-9],
-            [32, 64, 64, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
-            [33, 64, 65, 1, 10, "equiangular", False, 1e-6, 1e-6],
-            [33, 64, 64, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
+            [32, 64, 64, 32, 8, "equiangular", False, 1e-5, 1e-6],
+            [32, 64, 64, 32, 8, "legendre-gauss", False, 1e-5, 1e-6],
+            [33, 64, 65, 1, 10, "equiangular", False, 1e-5, 1e-6],
+            [33, 64, 64, 1, 10, "legendre-gauss", False, 1e-5, 1e-6],
             # Vector SHT
-            [32, 64, 64, 32, 8, "equiangular", True, 1e-7, 1e-9],
-            [32, 64, 64, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
-            [33, 64, 65, 1, 10, "equiangular", True, 1e-6, 1e-6],
-            [33, 64, 64, 1, 10, "legendre-gauss", True, 1e-6, 1e-6],
+            [32, 64, 64, 32, 8, "equiangular", True, 1e-5, 1e-6],
+            [32, 64, 64, 32, 8, "legendre-gauss", True, 1e-5, 1e-6],
+            [33, 64, 65, 1, 10, "equiangular", True, 1e-5, 1e-6],
+            [33, 64, 64, 1, 10, "legendre-gauss", True, 1e-5, 1e-6],
             # upsampling (SHT is downsampling)
             # Scalar SHT
-            [32, 64, 8, 32, 8, "equiangular", False, 1e-7, 1e-9],
-            [32, 64, 8, 32, 8, "legendre-gauss", False, 1e-7, 1e-9],
-            [33, 64, 9, 1, 10, "equiangular", False, 1e-6, 1e-6],
-            [33, 64, 8, 1, 10, "legendre-gauss", False, 1e-6, 1e-6],
+            [32, 64, 8, 32, 8, "equiangular", False, 1e-5, 1e-6],
+            [32, 64, 8, 32, 8, "legendre-gauss", False, 1e-5, 1e-6],
+            [33, 64, 9, 1, 10, "equiangular", False, 1e-5, 1e-6],
+            [33, 64, 8, 1, 10, "legendre-gauss", False, 1e-5, 1e-6],
             # Vector SHT
-            [32, 64, 8, 32, 8, "equiangular", True, 1e-7, 1e-9],
-            [32, 64, 8, 32, 8, "legendre-gauss", True, 1e-7, 1e-9],
-            [33, 64, 9, 1, 10, "equiangular", True, 1e-6, 1e-6],
-            [33, 64, 8, 1, 10, "legendre-gauss", True, 1e-6, 1e-6],
+            [32, 64, 8, 32, 8, "equiangular", True, 1e-5, 1e-6],
+            [32, 64, 8, 32, 8, "legendre-gauss", True, 1e-5, 1e-6],
+            [33, 64, 9, 1, 10, "equiangular", True, 1e-5, 1e-6],
+            [33, 64, 8, 1, 10, "legendre-gauss", True, 1e-5, 1e-6],
         ],
         skip_on_empty=True,
     )
@@ -347,6 +383,80 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         igrad_gather_full = self._gather_helper_fwd(igrad_local, backward_transform_dist)
         ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
+
+    @parameterized.expand(
+        [
+            # nlat, nlon, lmax, grid, vector
+            [32, 64, None, "equiangular", False],
+            [32, 64, None, "legendre-gauss", False],
+            [33, 64, None, "equiangular", False],
+            [32, 64, 8, "equiangular", False],
+            [32, 64, None, "equiangular", True],
+            [33, 64, None, "legendre-gauss", True],
+            [32, 64, 8, "equiangular", True],
+        ],
+        skip_on_empty=True,
+    )
+    def test_legendre_blocks(self, nlat, nlon, lmax, grid, vector, verbose=False):
+        """Each rank's precomputed Legendre buffer equals its slice of the serial one.
+
+        The distributed transforms build only the block they keep rather than the whole
+        table and discarding most of it, which means the recurrences are entered at an
+        offset: the sectoral seed is walked up to the rank's first order and the three-term
+        recurrence up to its first degree, storing nothing until then. This test isolates
+        that from the transform itself, so an off-by-one in the offsets shows up here rather
+        than as a diffuse accuracy failure in the round trip.
+
+        Each rank checks only its own block against the corresponding cut-out of the serial
+        construction, so there is no collective involved and a failure identifies the rank.
+
+        Agreement is expected to be exact -- the restricted build performs the same
+        elementwise operations on the same values -- so the tolerance is only insurance
+        against a last-bit difference, far tighter than anything an indexing error survives.
+        """
+
+        set_seed(333)
+
+        if vector:
+            fwd_dist = thd.DistributedRealVectorSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            fwd_local = th.RealVectorSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            inv_dist = thd.DistributedInverseRealVectorSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            inv_local = th.InverseRealVectorSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            fwd_buf, inv_buf = "weights", "dpct"
+        else:
+            fwd_dist = thd.DistributedRealSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            fwd_local = th.RealSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            inv_dist = thd.DistributedInverseRealSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            inv_local = th.InverseRealSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            fwd_buf, inv_buf = "weights", "pct"
+
+        # offsets are recomputed here from the per-rank shape lists rather than read off the
+        # transform, so a wrong offset in the construction is not masked by reusing it
+        lat_off = sum(fwd_dist.lat_shapes[: self.hrank])
+        lat_loc = fwd_dist.lat_shapes[self.hrank]
+        l_off = sum(inv_dist.l_shapes[: self.hrank])
+        l_loc = inv_dist.l_shapes[self.hrank]
+        m_off = sum(fwd_dist.m_shapes[: self.wrank])
+        m_loc = fwd_dist.m_shapes[self.wrank]
+
+        # forward: local orders, all degrees, local latitudes -- (..., m, l, k)
+        got = getattr(fwd_dist, fwd_buf)
+        ref = getattr(fwd_local, fwd_buf)[..., m_off : m_off + m_loc, :, lat_off : lat_off + lat_loc]
+
+        if verbose:
+            print(f"forward block on rank ({self.hrank},{self.wrank}): {tuple(got.shape)} vs {tuple(ref.shape)}")
+
+        self.assertEqual(tuple(got.shape), tuple(ref.shape), "forward block shape")
+        ok = compare_tensors("forward legendre block", got, ref.contiguous(), atol=1e-14, rtol=1e-14, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "forward legendre block")
+
+        # inverse: local orders, all latitudes, local degrees -- (..., m, k, l)
+        got = getattr(inv_dist, inv_buf)
+        ref = getattr(inv_local, inv_buf)[..., m_off : m_off + m_loc, :, l_off : l_off + l_loc]
+
+        self.assertEqual(tuple(got.shape), tuple(ref.shape), "inverse block shape")
+        ok = compare_tensors("inverse legendre block", got, ref.contiguous(), atol=1e-14, rtol=1e-14, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "inverse legendre block")
 
 
 if __name__ == "__main__":

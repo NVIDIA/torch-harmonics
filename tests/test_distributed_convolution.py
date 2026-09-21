@@ -50,6 +50,8 @@ from testutils import (
 
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
+from torch_harmonics.distributed import compute_polar_halo_radius, compute_split_shapes
+from torch_harmonics.quadrature import compute_theta_cutoff, effective_theta_cutoff, precompute_latitudes
 
 # Opt-in gate for slow / large-grid parameterized cases (e.g. 721x1440 ERA5-like
 # shapes). Mirrors the TORCH_HARMONICS_RUN_PERF_TESTS pattern in
@@ -184,80 +186,107 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         [
             # ---- fused=False : standard a2a (K-expanded saved for backward) ----
             # fp32
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, 1e-6, 1e-5],
-            [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, 1e-6, 1e-5],
-            [65, 128, 33, 64, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
+            # a channel count that is not a multiple of the azimuth split, so the a2a has to
+            # cope with unequal per-rank shares. 10 rather than a smaller odd number because
+            # the split has to stay non-empty on every rank: 6 over 8 azimuth ranks leaves the
+            # last two with nothing and the split itself raises.
+            [64, 128, 64, 128, 32, 10, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, "halo-exchange", 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, "halo-exchange", 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, "halo-exchange", 1e-6, 1e-5],
+            [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, "halo-exchange", 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, "halo-exchange", 1e-6, 1e-5],
+            [65, 128, 33, 64, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
             # group coverage: depthwise (groups == n_channels) and a groupsize>1
             # split (C=12, groups=3 -> groupsize=4).
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 8, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 12, (3), "piecewise linear", "mean", 3, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 8, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 12, (3), "piecewise linear", "mean", 3, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
             # fp64
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, False, 1e-6, 1e-6],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, False, 1e-6, 1e-6],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, False, 1e-6, 1e-6],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float64, False, False, 1e-6, 1e-6],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, False, "halo-exchange", 1e-6, 1e-6],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, False, False, "halo-exchange", 1e-6, 1e-6],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float64, True, False, "halo-exchange", 1e-6, 1e-6],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float64, False, False, "halo-exchange", 1e-6, 1e-6],
             # non-equiangular grids at regular resolution. These are the rows where the
             # default theta_cutoff is derived from a node distribution that is not uniform
             # in theta, so the polar halo differs from the pi/(nlat-1) assumption. The only
             # other non-equiangular case in this file is ERA5-sized and slow-gated, which
             # left the distributed halo/split bookkeeping untested on these grids.
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "lobatto", "lobatto", torch.float32, False, False, 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "lobatto", "lobatto", torch.float32, False, False, 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "legendre-gauss", torch.float32, False, False, 1e-6, 1e-5],
-            [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "lobatto", "lobatto", torch.float32, True, False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "lobatto", "lobatto", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "lobatto", "lobatto", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "legendre-gauss", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
+            [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "lobatto", "lobatto", torch.float32, True, False, "halo-exchange", 1e-6, 1e-5],
             # trapezoidal is equispaced in cos(theta), so its default cutoff is
             # ~5x wider than the other grids at the same nlat and psi is correspondingly
             # denser. batch_size/num_chan dialed down to keep the working set bounded.
-            [64, 128, 64, 128, 2, 8, (3), "piecewise linear", "mean", 1, "trapezoidal", "trapezoidal", torch.float32, False, False, 1e-6, 1e-5],
+            [64, 128, 64, 128, 2, 8, (3), "piecewise linear", "mean", 1, "trapezoidal", "trapezoidal", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
             # ERA5-like grids, gated behind TORCH_HARMONICS_RUN_SLOW_TESTS=1.
             # batch_size and num_chan dialed down (2, 8) vs the rest of the suite (32, 8)
             # to keep the working set under a few GB at these resolutions.
-            [721, 1440, 721, 1440, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, 1e-6, 1e-5],
-            [721, 1440, 360, 720, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular", "legendre-gauss", torch.float32, False, False, 1e-6, 1e-5],
+            [721, 1440, 721, 1440, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
+            [721, 1440, 360, 720, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular", "legendre-gauss", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
             # ---- fused=True : reordered a2a (CUDA + optimized kernels) ----
             # non-transpose only; downsample + harmonic.
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
-            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
-            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
-            [65, 128, 33, 64, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, "halo-exchange", 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, "halo-exchange", 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, "halo-exchange", 1e-6, 1e-5],
+            [65, 128, 65, 128, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, "halo-exchange", 1e-6, 1e-5],
+            [65, 128, 33, 64, 32, 8, (3, 4), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, "halo-exchange", 1e-6, 1e-5],
             # group coverage for the padded grouped path:
             #  groups=1            -> within-group channel split (no padding)
             #  groups=2 (gs=4)     -> split cuts a group at az>=4 (padding)
             #  groups=3,C=12 (gs=4)-> split cuts a group at az=2 and az=4 (padding)
             #  groups=C (gs=1)     -> depthwise; every channel a group (no-pad fast path)
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 12, (3), "piecewise linear", "mean", 3, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 8, "equiangular", "equiangular", torch.float32, False, True, 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, False, True, "halo-exchange", 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 12, (3), "piecewise linear", "mean", 3, "equiangular", "equiangular", torch.float32, False, True, "halo-exchange", 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 8, "equiangular", "equiangular", torch.float32, False, True, "halo-exchange", 1e-6, 1e-5],
             # ---- AMP (fp16/bf16) ----
             # Each dtype runs fused off AND on (non-transpose). The transpose
             # class has no ``fused`` argument, so it runs fused=False only
             # (fused=True there would be an identical duplicate).
             # fp16
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, False, False, 2e-2, 1e-2],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, False, False, "halo-exchange", 2e-2, 1e-2],
             # Harmonic AMP rows exercise distributed kpacked tensor-core paths:
             # (2,2) -> K=4 -> K_PAD=8; (3,3) -> K=9 -> K_PAD=16.
-            [64, 128, 64, 128, 8, 8, (2, 2), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float16, False, False, 5e-2, 1e-2],
-            [64, 128, 64, 128, 8, 8, (3, 3), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float16, False, False, 5e-2, 1e-2],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, False, True, 2e-2, 1e-2],
-            [64, 128, 64, 128, 8, 8, (2, 2), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float16, False, True, 5e-2, 1e-2],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, True, False, 2e-2, 1e-2],
+            [64, 128, 64, 128, 8, 8, (2, 2), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float16, False, False, "halo-exchange", 5e-2, 1e-2],
+            [64, 128, 64, 128, 8, 8, (3, 3), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float16, False, False, "halo-exchange", 5e-2, 1e-2],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, False, True, "halo-exchange", 2e-2, 1e-2],
+            [64, 128, 64, 128, 8, 8, (2, 2), "harmonic", "mean", 1, "equiangular", "equiangular", torch.float16, False, True, "halo-exchange", 5e-2, 1e-2],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float16, True, False, "halo-exchange", 2e-2, 1e-2],
             # bf16
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, False, 5e-2, 5e-2],
-            [64, 128, 64, 128, 8, 8, (2, 2), "harmonic", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 5e-2],
-            [64, 128, 64, 128, 8, 8, (3, 3), "harmonic", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 5e-2],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, True, 5e-2, 5e-2],
-            [64, 128, 64, 128, 8, 8, (2, 2), "harmonic", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, True, 3e-1, 5e-2],
-            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, True, False, 5e-2, 5e-2],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, False, "halo-exchange", 5e-2, 5e-2],
+            [64, 128, 64, 128, 8, 8, (2, 2), "harmonic", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, False, "halo-exchange", 3e-1, 5e-2],
+            [64, 128, 64, 128, 8, 8, (3, 3), "harmonic", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, False, "halo-exchange", 3e-1, 5e-2],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, True, "halo-exchange", 5e-2, 5e-2],
+            [64, 128, 64, 128, 8, 8, (2, 2), "harmonic", "mean", 1, "equiangular", "equiangular", torch.bfloat16, False, True, "halo-exchange", 3e-1, 5e-2],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.bfloat16, True, False, "halo-exchange", 5e-2, 5e-2],
+            # The reduce-scatter fallback needs forward/backward coverage of its own: it is the
+            # mode a wide cutoff forces, and before the halo became the default these rows were
+            # the only thing exercising it end to end.
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "reduce-scatter", 1e-6, 1e-5],
+            [64, 128, 32, 64, 32, 8, (3, 3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "reduce-scatter", 1e-6, 1e-5],
+            [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, "reduce-scatter", 1e-6, 1e-5],
+            # ---- optimized_kernel=False : the pure-PyTorch fallback ----
+            # Every row above runs with the extension built, so the fallback is untested in CI
+            # even though the base class selects it automatically on any install without the
+            # extension. It is also the only consumer that builds a torch.sparse_coo_tensor and
+            # therefore has to declare psi's column extent, which the halo mode re-keys onto a
+            # padded input band -- a mismatch the CSR and kpacked kernels cannot see because they
+            # just index into whatever x they are handed. One row per polar mode: halo-exchange
+            # for the padded extent, reduce-scatter to pin that r_lat=0 still yields the
+            # unpadded one.
+            #
+            # Resolution and batch_size/num_chan are dialed down relative to the rest of the
+            # suite: the fallback contracts a torch.sparse_coo_tensor instead of the CSR kernel
+            # and is orders of magnitude slower. What these rows check is index bookkeeping,
+            # which is resolution-independent, so the smallest grid that still splits across
+            # polar ranks is enough.
+            [32, 64, 16, 32, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5, False],
+            [32, 64, 32, 64, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "reduce-scatter", 1e-6, 1e-5, False],
         ],
         skip_on_empty=True,
     )
@@ -278,8 +307,10 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         dtype,
         transpose,
         fused,
+        polar_mode,
         atol,
         rtol,
+        optimized_kernel=True,
         verbose=True,
     ):
         if (nlat_in, nlon_in, nlat_out, nlon_out) in _SLOW_DISCO_SHAPES and not _run_slow_tests:
@@ -312,6 +343,9 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             grid_in=th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
             grid_out=th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
             bias=True,
+            # applied to the reference too, so the comparison stays between the same two
+            # algorithms and a fallback row is not silently checking the CSR kernel
+            optimized_kernel=optimized_kernel,
         )
 
         # set up handles
@@ -324,6 +358,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             conv_dist = thd.DistributedDiscreteContinuousConvS2(
                 **disco_args,
                 fused=fused,
+                polar_mode=polar_mode,
             ).to(dtype=module_dtype, device=self.device)
 
         # copy the weights from the local conv into the dist conv
@@ -474,6 +509,199 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
     def test_kpacked_fallback_fp16_unfused(self):
         """fp16 + kpacked disabled (K_PAD=24) → CSR path, fused=False."""
         self._run_kpacked_fallback(fused=False, dtype=torch.float16, atol=2e-2, rtol=1e-2)
+
+    @parameterized.expand(
+        [
+            # nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, grid_in, grid_out, transpose, polar_mode, theta_cutoff_scale
+            # even resolutions, where every rank gets the same number of latitudes
+            [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", False, "halo-exchange", 1.0],
+            [32, 64, 32, 64, (3, 3), "legendre-gauss", "legendre-gauss", False, "halo-exchange", 1.0],
+            [32, 64, 16, 32, (3, 3), "equiangular", "equiangular", False, "halo-exchange", 1.0],
+            [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", True, "halo-exchange", 1.0],
+            [16, 32, 32, 64, (3, 3), "equiangular", "equiangular", True, "halo-exchange", 1.0],
+            # odd nlat, so compute_split_shapes hands ranks different counts and the two axes
+            # are skewed against each other -- e.g. 33 and 32 over 4 ranks split [9,8,8,8] and
+            # [8,8,8,8], which puts every rank's input and output bands at a different offset
+            [33, 64, 33, 64, (3, 3), "equiangular", "equiangular", False, "halo-exchange", 1.0],
+            [33, 64, 33, 64, (3, 3), "legendre-gauss", "legendre-gauss", False, "halo-exchange", 1.0],
+            [33, 64, 32, 64, (3, 3), "equiangular", "equiangular", False, "halo-exchange", 1.0],
+            [32, 64, 33, 64, (3, 3), "equiangular", "equiangular", False, "halo-exchange", 1.0],
+            [33, 64, 33, 64, (3, 3), "equiangular", "equiangular", True, "halo-exchange", 1.0],
+            [17, 64, 33, 64, (3, 3), "equiangular", "equiangular", True, "halo-exchange", 1.0],
+            # coarse, odd resolution ratios: the support then spans more than one input ring per
+            # output ring, so these are the rows where the latitude band is genuinely wider than
+            # the nearest neighbour and an off-by-one in it would not cancel out
+            [33, 64, 17, 64, (3, 3), "equiangular", "equiangular", False, "halo-exchange", 1.0],
+            [33, 64, 11, 64, (3, 3), "equiangular", "equiangular", False, "halo-exchange", 1.0],
+            [33, 64, 17, 64, (3, 3), "legendre-gauss", "legendre-gauss", False, "halo-exchange", 1.0],
+            # the reduce-scatter fallback keys psi the other way round; it stays reachable for
+            # cutoffs a halo cannot serve, so it needs to stay covered
+            [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", False, "reduce-scatter", 1.0],
+            [33, 64, 17, 64, (3, 3), "equiangular", "equiangular", False, "reduce-scatter", 1.0],
+            # a cutoff far wider than the grid spacing: the support reaches past a neighbour once
+            # the polar group is fine enough, so halo-exchange must refuse and reduce-scatter must
+            # still work. Whether it actually refuses depends on the grid size at runtime, so the
+            # test derives the expectation from the geometry rather than asserting it here.
+            [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", False, "halo-exchange", 12.0],
+            [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", False, "reduce-scatter", 12.0],
+        ],
+        skip_on_empty=True,
+    )
+    def test_psi_blocks(self, nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, grid_in, grid_out, transpose, polar_mode, theta_cutoff_scale, verbose=False):
+        """Each rank's local psi equals the serial psi restricted to its input latitudes.
+
+        The sparsity pattern is built from the latitude band that can fall inside the angular
+        cutoff, and the distributed module keeps only the entries whose input latitude it owns.
+        This checks the two agree entry for entry, which isolates the pattern from the
+        convolution: an off-by-one in the band or in the index remapping shows up here rather
+        than as a diffuse accuracy failure in the forward.
+
+        Each rank compares against its own slice of the serial construction, so no collective
+        is involved and a failure identifies the rank. The comparison is order-insensitive --
+        the local build re-keys and re-sorts into CSR -- so entries are sorted by
+        (kernel, output latitude, global input index) on both sides first.
+        """
+
+        set_seed(333)
+
+        # the transpose convolution still reduces via all-gather and has no polar_mode, so only
+        # the halo rows are meaningful for it
+        if transpose and polar_mode != "halo-exchange":
+            self.skipTest("the transpose convolution has no polar_mode")
+
+        theta_cutoff = theta_cutoff_scale * compute_theta_cutoff(nlat_out if not transpose else nlat_in, grid=grid_out if not transpose else grid_in)
+
+        # Whether a halo can serve this configuration is a property of the geometry and the
+        # decomposition, so derive it rather than hard-coding it per row: the same cutoff is
+        # servable on a coarse polar split and not on a fine one. The assertion is then that the
+        # constructor agrees -- refusing exactly when the support outruns a neighbour, and saying
+        # which mode to use instead.
+        lats_in, _ = precompute_latitudes(nlat_in, grid=grid_in)
+        lats_out, _ = precompute_latitudes(nlat_out, grid=grid_out)
+        try:
+            compute_polar_halo_radius(
+                lats_in,
+                lats_out,
+                effective_theta_cutoff(theta_cutoff),
+                compute_split_shapes(nlat_in, self.grid_size_h),
+                compute_split_shapes(nlat_out, self.grid_size_h),
+            )
+            halo_servable = True
+        except ValueError:
+            halo_servable = False
+
+        if not transpose and polar_mode == "halo-exchange" and not halo_servable:
+            with self.assertRaises(ValueError) as ctx:
+                thd.DistributedDiscreteContinuousConvS2(
+                    1,
+                    1,
+                    (nlat_in, nlon_in),
+                    (nlat_out, nlon_out),
+                    kernel_shape=kernel_shape,
+                    grid_in=grid_in,
+                    grid_out=grid_out,
+                    theta_cutoff=theta_cutoff,
+                    polar_mode=polar_mode,
+                )
+            self.assertIn("reduce-scatter", str(ctx.exception), "the refusal must name the mode that does work")
+            return
+
+        if transpose:
+            conv_local = th.DiscreteContinuousConvTransposeS2(
+                1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
+            ).to(self.device)
+            conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(
+                1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
+            ).to(self.device)
+            # the transpose module's psi indexes the output grid along the split axis
+            nlon_split = nlon_out
+            shapes = conv_dist.lat_out_shapes
+        else:
+            conv_local = th.DiscreteContinuousConvS2(
+                1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
+            ).to(self.device)
+            conv_dist = thd.DistributedDiscreteContinuousConvS2(
+                1,
+                1,
+                (nlat_in, nlon_in),
+                (nlat_out, nlon_out),
+                kernel_shape=kernel_shape,
+                grid_in=grid_in,
+                grid_out=grid_out,
+                theta_cutoff=theta_cutoff,
+                polar_mode=polar_mode,
+            ).to(self.device)
+            nlon_split = nlon_in
+            shapes = conv_dist.lat_in_shapes
+
+        def sorted_entries(ker, row, col, vals):
+            """Canonical ordering so the two builds are comparable regardless of CSR layout."""
+            key = (ker.to(torch.int64) * (nlat_out + nlat_in) + row.to(torch.int64)) * (nlat_in * nlat_out * nlon_split) + col.to(torch.int64)
+            order = torch.argsort(key)
+            return ker[order], row[order], col[order], vals[order]
+
+        # The two polar strategies key psi differently, so both the un-keying and the predicate
+        # for "which serial entries should this rank hold" differ. Lift the local tensor back to
+        # global coordinates and select the matching serial entries, then compare entry for entry.
+        use_halo = getattr(conv_dist, "use_halo", False)
+
+        # Assert the mode rather than only reading it back: everything below adapts to whichever
+        # keying the constructor chose, so a silent fall back to reduce-scatter would satisfy the
+        # comparison while leaving the halo path untested. The transpose class has no polar_mode.
+        if not transpose:
+            self.assertEqual(use_halo, polar_mode == "halo-exchange", f"constructor did not honour polar_mode={polar_mode!r}")
+
+        if use_halo:
+            # rows are this rank's own output latitudes, columns index a halo-padded input band
+            r_lat = conv_dist.r_lat
+            out_start = sum(conv_dist.lat_out_shapes[: self.hrank])
+            halo_start = sum(conv_dist.lat_in_shapes[: self.hrank]) - r_lat
+
+            lat_loc = conv_dist.psi_col_idx // nlon_split
+            lon_loc = conv_dist.psi_col_idx % nlon_split
+            col_global = (lat_loc + halo_start) * nlon_split + lon_loc
+            row_global = conv_dist.psi_row_idx + out_start
+
+            keep = (conv_local.psi_row_idx >= out_start) & (conv_local.psi_row_idx < out_start + conv_dist.nlat_out_local)
+        else:
+            # rows stay global, columns index the local input slice
+            lat_start = sum(shapes[: self.hrank])
+            lat_local = shapes[self.hrank]
+
+            lat_loc = conv_dist.psi_col_idx // nlon_split
+            lon_loc = conv_dist.psi_col_idx % nlon_split
+            col_global = (lat_loc + lat_start) * nlon_split + lon_loc
+            row_global = conv_dist.psi_row_idx
+
+            lat_ser = conv_local.psi_col_idx // nlon_split
+            keep = (lat_ser >= lat_start) & (lat_ser < lat_start + lat_local)
+
+        got = sorted_entries(conv_dist.psi_ker_idx, row_global, col_global, conv_dist.psi_vals)
+        ref = sorted_entries(conv_local.psi_ker_idx[keep], conv_local.psi_row_idx[keep], conv_local.psi_col_idx[keep], conv_local.psi_vals[keep])
+
+        if verbose:
+            print(f"psi block on rank ({self.hrank},{self.wrank}), use_halo={use_halo}: {got[0].numel()} vs {ref[0].numel()} entries")
+
+        self.assertEqual(got[0].numel(), ref[0].numel(), "number of local psi entries")
+        names = ("kernel index", "row index", "column index", "values")
+        for name, g, r in zip(names, got, ref):
+            ok = compare_tensors(f"psi {name}", g, r, atol=1e-14, rtol=1e-14, verbose=verbose)
+            self.assertTrue(reduce_success(ok, self.device), f"psi {name}")
+
+        # Completeness. The per-rank check above compares against a predicate, so a predicate
+        # wrong in the same way as the implementation would pass it; summing the local entry
+        # counts over the polar group and comparing to the serial total catches a partition that
+        # drops or duplicates entries, which is the failure that would quietly change results.
+        local_nnz = torch.tensor([conv_dist.psi_vals.numel()], device=self.device, dtype=torch.int64)
+        if self.grid_size_h > 1:
+            dist.all_reduce(local_nnz, group=self.h_group)
+        self.assertEqual(int(local_nnz.item()), int(conv_local.psi_vals.numel()), "polar ranks together must hold every serial psi entry exactly once")
+
+    def test_polar_mode_rejects_unknown_value(self):
+        """An unrecognised mode is a typo, not a request for a default."""
+        with self.assertRaises(ValueError) as ctx:
+            thd.DistributedDiscreteContinuousConvS2(1, 1, (32, 64), (32, 64), kernel_shape=(3, 3), polar_mode="halo")
+        self.assertIn("halo-exchange", str(ctx.exception))
 
 
 if __name__ == "__main__":

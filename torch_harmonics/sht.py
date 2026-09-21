@@ -134,18 +134,22 @@ class RealSHT(nn.Module):
 
         # TODO: include assertions regarding the dimensions
 
-        # compute quadrature points and lmax based on the exactness of the quadrature
-        # nodes and weights come from the grid descriptor, which supports every
-        # grid precompute_latitudes does -- the switch this replaced silently
-        # rejected "trapezoidal".
-        tq = self.grid.lats
+        # quadrature weights come from the grid descriptor, which supports every grid
+        # precompute_latitudes does -- the switch this replaced silently rejected
+        # "trapezoidal". The nodes are not needed here: _precompute_legpoly takes the
+        # descriptor and reads them itself, which is also what keys its cache.
         weights = self.grid.quad_weights
 
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
+        # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
+        # quadrature weights. It is a constant prefactor of a linear transform, so folding it
+        # here is exact and saves a pointwise multiply on a complex tensor in every forward.
+        weights = 2.0 * torch.pi * weights
+
         # combine quadrature weights with the legendre weights
-        pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
+        pct = _precompute_legpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase)
         weights = torch.einsum("mlk,k->mlk", pct, weights).contiguous()
 
         # remember quadrature weights
@@ -173,8 +177,9 @@ class RealSHT(nn.Module):
         check(x.shape[-2] == self.nlat, lambda: f"Expected latitudes shape[-2]=={self.nlat}, got {x.shape[-2]}")
         check(x.shape[-1] == self.nlon, lambda: f"Expected longitudes shape[-1]=={self.nlon}, got {x.shape[-1]}")
 
-        # apply real fft in the longitudinal direction
-        x = 2.0 * torch.pi * rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
+        # apply real fft in the longitudinal direction. The 2*pi scale factor is folded into
+        # the quadrature weights, so no scaling of the complex output is needed here.
+        x = rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
 
         # transpose to put the contraction dim (nlat) on the fast axis
         x = x.transpose(-1, -2)
@@ -290,16 +295,12 @@ class InverseRealSHT(nn.Module):
         self.norm = norm
         self.csphase = csphase
 
-        # compute quadrature points
-        # see the note in the forward transform: the descriptor covers every grid
-        t = self.grid.lats
-
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # precompute associated Legendre polynomials
         # store as (mmax, nlat, lmax) so the contraction dim l is stride-1
-        pct = _precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        pct = _precompute_legpoly(self.mmax, self.lmax, self.grid, norm=self.norm, inverse=True, csphase=self.csphase)
         pct = pct.permute(0, 2, 1).contiguous()
 
         # register buffer
@@ -431,18 +432,18 @@ class RealVectorSHT(nn.Module):
         self.norm = norm
         self.csphase = csphase
 
-        # compute quadrature points
-        # nodes and weights come from the grid descriptor, which supports every
-        # grid precompute_latitudes does -- the switch this replaced silently
-        # rejected "trapezoidal".
-        tq = self.grid.lats
+        # quadrature weights come from the grid descriptor; see the note in RealSHT
         weights = self.grid.quad_weights
 
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # precompute associated Legendre polynomials
-        dpct = _precompute_dlegpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
+        dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase)
+
+        # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
+        # quadrature weights (see RealSHT.__init__)
+        weights = 2.0 * torch.pi * weights
 
         # combine integration weights, normalization factor in to one:
         l = torch.arange(0, self.lmax)
@@ -480,8 +481,9 @@ class RealVectorSHT(nn.Module):
         check(x.shape[-2] == self.nlat, lambda: f"Expected latitudes shape[-2]=={self.nlat}, got {x.shape[-2]}")
         check(x.shape[-1] == self.nlon, lambda: f"Expected longitudes shape[-1]=={self.nlon}, got {x.shape[-1]}")
 
-        # apply real fft in the longitudinal direction
-        x = 2.0 * torch.pi * rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
+        # apply real fft in the longitudinal direction. The 2*pi scale factor is folded into
+        # the quadrature weights, so no scaling of the complex output is needed here.
+        x = rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
 
         # transpose to put the contraction dim (nlat) on the fast axis
         x = x.transpose(-1, -2)
@@ -499,7 +501,16 @@ class RealVectorSHT(nn.Module):
         t_re = -torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w0)
         t_im = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w0)
 
-        return torch.stack((torch.complex(s_re, s_im), torch.complex(t_re, t_im)), dim=-3)
+        # stack the spheroidal and toroidal components in real space, so the only complex-typed
+        # op is a single aten.complex over contiguous operands. Stacking complex tensors instead
+        # would leave a complex cat, which inductor cannot codegen (triton has no complex type),
+        # and feeding aten.complex the non-contiguous ...lm einsum outputs directly trips
+        # assert_size_stride, as its meta predicts a contiguous layout. torch.stack allocates a
+        # fresh contiguous buffer, which is exactly what that meta expects.
+        out_re = torch.stack((s_re, t_re), dim=-3)
+        out_im = torch.stack((s_im, t_im), dim=-3)
+
+        return torch.complex(out_re, out_im)
 
 
 class InverseRealVectorSHT(nn.Module):
@@ -591,16 +602,12 @@ class InverseRealVectorSHT(nn.Module):
         self.norm = norm
         self.csphase = csphase
 
-        # compute quadrature points
-        # see the note in the forward transform: the descriptor covers every grid
-        t = self.grid.lats
-
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # precompute associated Legendre polynomials
         # store as (2, mmax, nlat, lmax) so the contraction dim l is stride-1
-        dpct = _precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.grid, norm=self.norm, inverse=True, csphase=self.csphase)
         dpct = dpct.permute(0, 1, 3, 2).contiguous()
 
         # register weights
@@ -648,8 +655,10 @@ class InverseRealVectorSHT(nn.Module):
         trl = -torch.einsum("...ml,mkl->...km", x_im[..., 0, :, :], d1) - torch.einsum("...ml,mkl->...km", x_re[..., 1, :, :], d0)
         tim = torch.einsum("...ml,mkl->...km", x_re[..., 0, :, :], d1) - torch.einsum("...ml,mkl->...km", x_im[..., 1, :, :], d0)
 
-        # reassemble and apply inverse FFT
-        xs = torch.stack((torch.complex(srl, sim), torch.complex(trl, tim)), dim=-3)
+        # reassemble in real space and apply inverse FFT, see RealVectorSHT.forward
+        out_re = torch.stack((srl, trl), dim=-3)
+        out_im = torch.stack((sim, tim), dim=-3)
+        xs = torch.complex(out_re, out_im)
         x = irfft(xs, n=self.nlon, dim=-1, norm="forward")
 
         return x
