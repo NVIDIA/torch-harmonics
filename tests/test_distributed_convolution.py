@@ -285,6 +285,23 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "reduce-scatter", 1e-6, 1e-5],
             [64, 128, 32, 64, 32, 8, (3, 3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "reduce-scatter", 1e-6, 1e-5],
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, "reduce-scatter", 1e-6, 1e-5],
+            # ---- optimized_kernel=False : the pure-PyTorch fallback ----
+            # Every row above runs with the extension built, so the fallback is untested in CI
+            # even though the base class selects it automatically on any install without the
+            # extension. It is also the only consumer that builds a torch.sparse_coo_tensor and
+            # therefore has to declare psi's column extent, which the halo mode re-keys onto a
+            # padded input band -- a mismatch the CSR and kpacked kernels cannot see because they
+            # just index into whatever x they are handed. One row per polar mode: halo-exchange
+            # for the padded extent, reduce-scatter to pin that r_lat=0 still yields the
+            # unpadded one.
+            #
+            # Resolution and batch_size/num_chan are dialed down relative to the rest of the
+            # suite: the fallback contracts a torch.sparse_coo_tensor instead of the CSR kernel
+            # and is orders of magnitude slower. What these rows check is index bookkeeping,
+            # which is resolution-independent, so the smallest grid that still splits across
+            # polar ranks is enough.
+            [32, 64, 16, 32, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5, False],
+            [32, 64, 32, 64, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "reduce-scatter", 1e-6, 1e-5, False],
         ],
         skip_on_empty=True,
     )
@@ -308,6 +325,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         polar_mode,
         atol,
         rtol,
+        optimized_kernel=True,
         verbose=True,
     ):
         if (nlat_in, nlon_in, nlat_out, nlon_out) in _SLOW_DISCO_SHAPES and not _run_slow_tests:
@@ -342,6 +360,9 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             grid_in=grid_in,
             grid_out=grid_out,
             bias=True,
+            # applied to the reference too, so the comparison stays between the same two
+            # algorithms and a fallback row is not silently checking the CSR kernel
+            optimized_kernel=optimized_kernel,
         )
 
         # set up handles

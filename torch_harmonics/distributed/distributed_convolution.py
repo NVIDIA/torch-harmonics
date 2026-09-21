@@ -480,6 +480,9 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.register_buffer("psi_vals", vals, persistent=False)
 
         if not self.optimized_kernel:
+            # halo mode keys psi's columns onto the halo-padded input band, so the sparse
+            # tensor's column extent has to be the padded row count. r_lat is 0 under
+            # reduce-scatter, where the band is just the local share.
             self.psi = _get_psi(
                 self.kernel_size,
                 self.psi_idx,
@@ -488,7 +491,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 self.nlon_in,
                 self.nlat_out,
                 self.nlon_out,
-                self.nlat_in_local,
+                self.nlat_in_local + 2 * self.r_lat,
                 self.nlat_out_local,
             )
 
