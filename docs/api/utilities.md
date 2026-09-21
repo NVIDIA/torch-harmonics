@@ -21,7 +21,10 @@ The longitudinal direction always uses equispaced nodes (see
 Because only `"equiangular"` has uniform spacing in $\theta$, quantities derived
 from "one latitudinal grid spacing" must come from the grid's actual node
 distribution rather than from $\pi / (N_\theta - 1)$; see
-`compute_latitude_spacing` and `compute_theta_cutoff`.
+`compute_latitude_spacing` and `compute_theta_cutoff`. The localized operators
+additionally need to know which latitudes a cutoff can reach, which is what
+`latitude_support_band` returns; `effective_theta_cutoff` applies the widening
+that the sparsity patterns are actually built with.
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics.quadrature
@@ -34,6 +37,8 @@ distribution rather than from $\pi / (N_\theta - 1)$; see
    precompute_latitudes
    compute_latitude_spacing
    compute_theta_cutoff
+   effective_theta_cutoff
+   latitude_support_band
    legendre_gauss_weights
    lobatto_weights
    clenshaw_curtiss_weights

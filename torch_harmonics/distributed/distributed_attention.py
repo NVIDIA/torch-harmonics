@@ -77,6 +77,50 @@ def _ring_kv(kw_chunk, vw_chunk, az_group, next_nlon_kw, next_nlon_kv):
     return recv_kw, recv_vw, reqs
 
 
+@torch.compiler.disable()
+def _ring_grad(dkw_acc, dvw_acc, az_group, next_nlon):
+    """Rotate the dkw/dvw accumulators one hop along the same ring as :func:`_ring_kv`.
+
+    Each accumulator travels *with* the lon chunk it belongs to. At step ``s`` rank ``r``
+    holds chunk ``(r + s) % P`` and adds its contribution to the accumulator it currently
+    carries; the next hop goes to ``send_to == r - 1``, which holds that same chunk at step
+    ``s + 1``. So after the ``P - 1`` in-loop hops plus one final hop, every accumulator is
+    back at the rank owning its chunk, fully reduced.
+
+    This is a ring reduce-scatter, and it replaces accumulating into a buffer spanning the
+    *whole global longitude axis* and all-reducing that. The buffer was the one allocation
+    here that did not shrink as azimuth ranks were added -- ``B x H_halo x nlon_global x C``
+    in fp32, twice -- so per-rank cost went up with the group size while the slice actually
+    kept went down. It also moves less: ``P`` chunk-sized hops against the all_reduce's
+    ``2 (P - 1)`` chunk-equivalents.
+
+    A ``None`` accumulator (that branch needs no gradient) is skipped, so the rotation costs
+    nothing for branches that were pruned by the autograd contract.
+
+    Shapes follow ``_ring_kv`` exactly: the accumulator's ``W`` is always the current
+    chunk's ``nlon``, so ``next_nlon`` is the same value passed there.
+    """
+    send_to, recv_from = get_group_neighbors(az_group)
+    ops = []
+    recv_dkw = recv_dvw = None
+    if dkw_acc is not None:
+        B, H, _, C_k = dkw_acc.shape
+        recv_dkw = torch.empty(B, H, next_nlon, C_k, device=dkw_acc.device, dtype=dkw_acc.dtype)
+        ops += [
+            dist.P2POp(dist.isend, dkw_acc, send_to, az_group),
+            dist.P2POp(dist.irecv, recv_dkw, recv_from, az_group),
+        ]
+    if dvw_acc is not None:
+        B, H, _, C_v = dvw_acc.shape
+        recv_dvw = torch.empty(B, H, next_nlon, C_v, device=dvw_acc.device, dtype=dvw_acc.dtype)
+        ops += [
+            dist.P2POp(dist.isend, dvw_acc, send_to, az_group),
+            dist.P2POp(dist.irecv, recv_dvw, recv_from, az_group),
+        ]
+    reqs = dist.batch_isend_irecv(ops) if ops else []
+    return recv_dkw, recv_dvw, reqs
+
+
 class _RingNeighborhoodAttentionFn(torch.autograd.Function):
     """Forward ring attention + backward ring for one attention head group.
 
@@ -274,7 +318,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # — instead of upcasting to fp32 here — also keeps the backward ring
         # exchange at 16-bit under AMP (halved K/V comm volume), matching the
         # forward ring. The fp32 accumulators (integral_buf, alpha_k/kvw_buf,
-        # dkw/dvw_full_cl) are unaffected; the returned grads are cast back to the
+        # dkw/dvw_acc) are unaffected; the returned grads are cast back to the
         # captured input dtypes at the end.
         kw_dtype = kw.dtype
         vw_dtype = vw.dtype
@@ -360,31 +404,38 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
 
         # ----------------------------------------------------------------
         # Backward pass 2: scatter dkw/dvw contributions.
-        # Each GPU computes its contribution to every lon chunk it visits;
-        # then allreduce across azimuth ranks, extract local chunk.
-        # Skip entirely if neither kw nor vw needs grad. The fused kernel
-        # writes both dkw_chunk_cl and dvw_chunk_cl in one call, so the
-        # per-chunk allocations stay; we just gate the accumulation /
-        # allreduce / extract per branch.
-        # TODO: replace allreduce with ring reduce-scatter for efficiency.
+        # Each GPU computes its contribution to every lon chunk it visits, and a ring
+        # reduce-scatter carries each chunk's accumulator back to the rank owning it
+        # (see _ring_grad). The accumulator is chunk-sized, so this is the whole local
+        # gradient at the end -- no allreduce and no slice.
+        # Skip entirely if neither kw nor vw needs grad; a branch that does not
+        # need one still gets a scratch output, since the fused kernel writes
+        # both in a single call.
         # ----------------------------------------------------------------
         if kw_needs_grad or vw_needs_grad:
             # pass 1 rotated kw_chunk/vw_chunk; reset to the local chunk, which is
             # already converted -- no second conversion needed.
             kw_chunk, vw_chunk = kw_nhwc, vw_nhwc
-            nlon_in_total = sum(nlon_kx_list)
-            dkw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_k, device=device, dtype=torch.float32) if kw_needs_grad else None
-            dvw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_v, device=device, dtype=torch.float32) if vw_needs_grad else None
+            # the accumulator starts on this rank's own chunk, which is the one it holds
+            # at step 0, and is re-sized by each hop to match the chunk it then carries
+            my_nlon = nlon_kx_list[az_rank]
+            dkw_acc = torch.zeros(B, H_halo, my_nlon, C_k, device=device, dtype=torch.float32) if kw_needs_grad else None
+            dvw_acc = torch.zeros(B, H_halo, my_nlon, C_v, device=device, dtype=torch.float32) if vw_needs_grad else None
 
             for step in range(az_size):
                 src_rank = (az_rank + step) % az_size
                 lon_lo_kx = lon_chunk_starts[src_rank]
                 nlon_kx = nlon_kx_list[src_rank]
 
-                # Channels-last gradient buffers for this chunk (both required by the
-                # fused kernel signature; we discard the one we don't need).
-                dkw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_k, device=device, dtype=torch.float32)
-                dvw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_v, device=device, dtype=torch.float32)
+                # This kernel accumulates into its gradient outputs with atomicAdd and never
+                # clears them, so the accumulator goes in directly -- no per-step temp and
+                # no add_ afterwards. Its width is the current chunk's by construction.
+                # Both arguments are required by the fused signature, so a branch that needs
+                # no gradient still gets a scratch buffer, which is then discarded.
+                # NOTE: the upsample direction's kernel assigns rather than accumulates, so
+                # it must keep the per-step temp; do not mirror this there.
+                dkw_out = dkw_acc if kw_needs_grad else torch.zeros(B, H_halo, nlon_kx, C_k, device=device, dtype=torch.float32)
+                dvw_out = dvw_acc if vw_needs_grad else torch.zeros(B, H_halo, nlon_kx, C_v, device=device, dtype=torch.float32)
 
                 attention_kernels.backward_ring_step_pass2.default(
                     kw_chunk,
@@ -394,8 +445,8 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                     fwd_alpha_sum,
                     fwd_qdotk_max,
                     integral_norm,
-                    dkw_chunk_cl,
-                    dvw_chunk_cl,
+                    dkw_out,
+                    dvw_out,
                     quad_weights,
                     psi_col_idx,
                     psi_roff_idx,
@@ -411,42 +462,42 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                     psi_mid_row_len,
                 )
 
-                if kw_needs_grad:
-                    dkw_full_cl[:, :, lon_lo_kx : lon_lo_kx + nlon_kx, :].add_(dkw_chunk_cl)
-                if vw_needs_grad:
-                    dvw_full_cl[:, :, lon_lo_kx : lon_lo_kx + nlon_kx, :].add_(dvw_chunk_cl)
-
                 if step < az_size - 1:
                     next_src = (az_rank + step + 1) % az_size
                     recv_kw, recv_vw, reqs = _ring_kv(kw_chunk, vw_chunk, az_group, nlon_kx_list[next_src], nlon_kx_list[next_src])
+                    # the accumulators follow the chunks they belong to, so they rotate in
+                    # the same direction and to the same per-chunk width
+                    recv_dkw, recv_dvw, grad_reqs = _ring_grad(dkw_acc, dvw_acc, az_group, nlon_kx_list[next_src])
                     for req in reqs:
+                        req.wait()
+                    for req in grad_reqs:
                         req.wait()
                     kw_chunk = recv_kw.clone()
                     vw_chunk = recv_vw.clone()
+                    # Cloned for the same reason as kw/vw, and with more at stake: the next
+                    # step's kernel atomicAdds *into* the accumulator, so handing it the
+                    # irecv destination directly would mutate a buffer the collective owns.
+                    # The clone is chunk-sized, so it does not give back the saving above.
+                    dkw_acc = recv_dkw.clone() if recv_dkw is not None else None
+                    dvw_acc = recv_dvw.clone() if recv_dvw is not None else None
 
-            # Per-branch allreduce — only the branches we'll return.
-            if az_size > 1 and az_group is not None:
-                if kw_needs_grad:
-                    dist.all_reduce(dkw_full_cl, group=az_group)
-                if vw_needs_grad:
-                    dist.all_reduce(dvw_full_cl, group=az_group)
+            # One final hop returns each accumulator to the rank owning its chunk: after the
+            # loop a rank carries the accumulator for chunk az_rank - 1, which is send_to.
+            if az_size > 1:
+                recv_dkw, recv_dvw, grad_reqs = _ring_grad(dkw_acc, dvw_acc, az_group, my_nlon)
+                for req in grad_reqs:
+                    req.wait()
+                # No clone here, deliberately: nothing writes into these again. The only
+                # remaining use is to_nchw, which always materializes a new tensor, so the
+                # returned gradient never aliases the irecv destination.
+                dkw_acc, dvw_acc = recv_dkw, recv_dvw
 
-            my_lo = lon_chunk_starts[az_rank]
-            my_nlon = nlon_kx_list[az_rank]
-            # Extract local chunk and convert channels-last → channels-first.
+            # The accumulator IS the local chunk now, so only the layout conversion is left.
             # No halo stripping: dkw/dvw must match kw/vw shape (= key_halo/value_halo).
             # The autograd through torch.cat in _exchange_lat_halo extracts the
             # middle H_in rows as the gradient for key_proj/value_proj.
-            if kw_needs_grad:
-                dkw_cl = dkw_full_cl[:, :, my_lo : my_lo + my_nlon, :].contiguous()
-                dkw = to_nchw(dkw_cl).to(dtype=kw_dtype)  # [B, C_k, H_halo, W_local]
-            else:
-                dkw = None
-            if vw_needs_grad:
-                dvw_cl = dvw_full_cl[:, :, my_lo : my_lo + my_nlon, :].contiguous()
-                dvw = to_nchw(dvw_cl).to(dtype=vw_dtype)  # [B, C_v, H_halo, W_local]
-            else:
-                dvw = None
+            dkw = to_nchw(dkw_acc).to(dtype=kw_dtype) if kw_needs_grad else None  # [B, C_k, H_halo, W_local]
+            dvw = to_nchw(dvw_acc).to(dtype=vw_dtype) if vw_needs_grad else None  # [B, C_v, H_halo, W_local]
         else:
             dkw = None
             dvw = None
@@ -721,25 +772,30 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
 
         # ----------------------------------------------------------------
         # Backward pass 2: accumulate dkw/dvw contributions per chunk.
-        # Each GPU computes its LOCAL outputs' contribution to every lon chunk
-        # it visits; then allreduce across azimuth ranks, extract local chunk.
-        # TODO: replace allreduce with ring reduce-scatter for efficiency.
+        # Each GPU computes its LOCAL outputs' contribution to every lon chunk it visits,
+        # and a ring reduce-scatter carries each chunk's accumulator back to its owner
+        # (see _ring_grad) -- chunk-sized throughout, so no allreduce and no slice.
         # ----------------------------------------------------------------
         if kw_needs_grad or vw_needs_grad:
             # pass 1 rotated kw_chunk/vw_chunk; reset to the local chunk, which is
             # already converted -- no second conversion needed.
             kw_chunk, vw_chunk = kw_nhwc, vw_nhwc
-            nlon_in_total = sum(nlon_kx_list)
-            dkw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_k, device=device, dtype=torch.float32) if kw_needs_grad else None
-            dvw_full_cl = torch.zeros(B, H_halo, nlon_in_total, C_v, device=device, dtype=torch.float32) if vw_needs_grad else None
+            # starts on this rank's own chunk (the one held at step 0), re-sized by each hop
+            my_nlon = nlon_kx_list[az_rank]
+            dkw_acc = torch.zeros(B, H_halo, my_nlon, C_k, device=device, dtype=torch.float32) if kw_needs_grad else None
+            dvw_acc = torch.zeros(B, H_halo, my_nlon, C_v, device=device, dtype=torch.float32) if vw_needs_grad else None
 
             for step in range(az_size):
                 src_rank = (az_rank + step) % az_size
                 lon_lo_kx = lon_chunk_starts[src_rank]
                 nlon_kx = nlon_kx_list[src_rank]
 
-                # Channels-last gradient buffers for this chunk (both required by the
-                # fused kernel signature; we discard the one we don't need).
+                # Unlike the gather direction, this kernel *assigns* its gradient outputs
+                # (`dkx[chan] = sh_dk[chan]` in attention_cuda_bwd_ring_upsample.cu) rather
+                # than accumulating with atomicAdd: in the scatter direction each input cell
+                # is written by exactly one row, so it can store instead of reduce. The
+                # accumulator therefore cannot be passed in directly -- each step would
+                # overwrite the previous ones -- so it keeps a zeroed per-step temp and adds.
                 dkw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_k, device=device, dtype=torch.float32)
                 dvw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_v, device=device, dtype=torch.float32)
 
@@ -766,39 +822,43 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                 )
 
                 if kw_needs_grad:
-                    dkw_full_cl[:, :, lon_lo_kx : lon_lo_kx + nlon_kx, :].add_(dkw_chunk_cl)
+                    dkw_acc.add_(dkw_chunk_cl)
                 if vw_needs_grad:
-                    dvw_full_cl[:, :, lon_lo_kx : lon_lo_kx + nlon_kx, :].add_(dvw_chunk_cl)
+                    dvw_acc.add_(dvw_chunk_cl)
 
                 if step < az_size - 1:
                     next_src = (az_rank + step + 1) % az_size
                     recv_kw, recv_vw, reqs = _ring_kv(kw_chunk, vw_chunk, az_group, nlon_kx_list[next_src], nlon_kx_list[next_src])
+                    # accumulators follow the chunks they belong to: same direction, same width
+                    recv_dkw, recv_dvw, grad_reqs = _ring_grad(dkw_acc, dvw_acc, az_group, nlon_kx_list[next_src])
                     for req in reqs:
+                        req.wait()
+                    for req in grad_reqs:
                         req.wait()
                     kw_chunk = recv_kw.clone()
                     vw_chunk = recv_vw.clone()
+                    # Cloned for the same reason as kw/vw, and with more at stake: the next
+                    # step's add_ writes *into* the accumulator, so keeping the irecv
+                    # destination would mutate a buffer the collective owns.
+                    # The clone is chunk-sized, so it does not give back the saving above.
+                    dkw_acc = recv_dkw.clone() if recv_dkw is not None else None
+                    dvw_acc = recv_dvw.clone() if recv_dvw is not None else None
 
-            # Per-branch allreduce — only the branches we'll return.
-            if az_size > 1 and az_group is not None:
-                if kw_needs_grad:
-                    dist.all_reduce(dkw_full_cl, group=az_group)
-                if vw_needs_grad:
-                    dist.all_reduce(dvw_full_cl, group=az_group)
+            # Final hop home: after the loop a rank carries the accumulator for chunk
+            # az_rank - 1, which is exactly send_to.
+            if az_size > 1:
+                recv_dkw, recv_dvw, grad_reqs = _ring_grad(dkw_acc, dvw_acc, az_group, my_nlon)
+                for req in grad_reqs:
+                    req.wait()
+                # No clone here, deliberately: nothing writes into these again. The only
+                # remaining use is to_nchw, which always materializes a new tensor, so the
+                # returned gradient never aliases the irecv destination.
+                dkw_acc, dvw_acc = recv_dkw, recv_dvw
 
-            my_lo = lon_chunk_starts[az_rank]
-            my_nlon = nlon_kx_list[az_rank]
-            # Extract local chunk and convert channels-last → channels-first.
+            # The accumulator IS the local chunk now, so only the layout conversion is left.
             # No halo stripping: dkw/dvw must match kw/vw shape (= key_halo/value_halo).
-            if kw_needs_grad:
-                dkw_cl = dkw_full_cl[:, :, my_lo : my_lo + my_nlon, :].contiguous()
-                dkw = to_nchw(dkw_cl).to(dtype=kw_dtype)  # [B, C_k, H_halo, W_local]
-            else:
-                dkw = None
-            if vw_needs_grad:
-                dvw_cl = dvw_full_cl[:, :, my_lo : my_lo + my_nlon, :].contiguous()
-                dvw = to_nchw(dvw_cl).to(dtype=vw_dtype)  # [B, C_v, H_halo, W_local]
-            else:
-                dvw = None
+            dkw = to_nchw(dkw_acc).to(dtype=kw_dtype) if kw_needs_grad else None  # [B, C_k, H_halo, W_local]
+            dvw = to_nchw(dvw_acc).to(dtype=vw_dtype) if vw_needs_grad else None  # [B, C_v, H_halo, W_local]
         else:
             dkw = None
             dvw = None
@@ -967,6 +1027,37 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
             # component of col_idx by lon_lo_out so that the kernel can use
             # local wo directly without knowing the global lon offset.
             self._build_local_psi()  # also precomputes self.psi_{n_long_rows,max_row_len,mid_row_len}
+
+        # the local psi supersedes the global one the base class built; drop it
+        self._drop_global_psi()
+
+    # -----------------------------------------------------------------------
+
+    def _drop_global_psi(self):
+        """Free the global sparsity buffers registered by the serial base class.
+
+        ``_build_local_psi`` / ``_build_local_psi_upsample`` are their only readers and both
+        run during ``__init__``; the ring kernels take the ``*_local`` buffers exclusively.
+        Left in place they would sit on the device for the lifetime of the module alongside
+        the local copies that replace them -- and being keyed to the *global* grid, they do
+        not shrink as ranks are added. ``psi_row_idx``, ``psi_seg`` and ``psi_seg_off`` are
+        never read here at all: the local row order is rebuilt in ``_build_local_psi`` and
+        the arc segments are only consumed by the serial kernels.
+
+        All five are ``persistent=False``, so no checkpoint content changes -- only
+        ``named_buffers()`` differs from the serial module. Deleting rather than setting
+        them to ``None`` means a stale read raises ``AttributeError`` naming the buffer,
+        instead of a ``None`` propagating into index arithmetic and failing a frame later.
+
+        ``del`` is the supported route: ``nn.Module.__delattr__`` removes the entry from
+        ``_buffers`` and discards the name from ``_non_persistent_buffers_set``. The base
+        class registers all five unconditionally, so none of these can be missing.
+        """
+        del self.psi_row_idx
+        del self.psi_col_idx
+        del self.psi_roff_idx
+        del self.psi_seg
+        del self.psi_seg_off
 
     # -----------------------------------------------------------------------
 

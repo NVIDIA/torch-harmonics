@@ -62,6 +62,8 @@ through distributed computations.
    :nosignatures:
 
    polar_halo_exchange
+   polar_halo_reduce
+   compute_polar_halo_radius
    get_group_neighbors
 ```
 
