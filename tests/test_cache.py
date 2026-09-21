@@ -44,10 +44,10 @@ class TestCacheConsistency(unittest.TestCase):
         from torch_harmonics.legendre import _precompute_legpoly
 
         with torch.no_grad():
-            leg1 = _precompute_legpoly(10, 10, as_grid("legendre-gauss", (10, 20)))
+            leg1 = _precompute_legpoly(10, 10, as_grid("legendre-gauss", nlat=10, nlon=20))
             # perform in-place modification of leg1
             leg1 *= -1.0
-            leg2 = _precompute_legpoly(10, 10, as_grid("legendre-gauss", (10, 20)))
+            leg2 = _precompute_legpoly(10, 10, as_grid("legendre-gauss", nlat=10, nlon=20))
             self.assertFalse(torch.allclose(leg1, leg2))
 
     def test_cache_tensor(self, verbose=False):
@@ -55,8 +55,8 @@ class TestCacheConsistency(unittest.TestCase):
 
         with torch.no_grad():
             # the grid is part of the key, so two grids of equal size must not collide
-            leg1 = _precompute_legpoly(10, 10, as_grid("legendre-gauss", (10, 20)))
-            leg2 = _precompute_legpoly(10, 10, as_grid("equiangular", (10, 20)))
+            leg1 = _precompute_legpoly(10, 10, as_grid("legendre-gauss", nlat=10, nlon=20))
+            leg2 = _precompute_legpoly(10, 10, as_grid("equiangular", nlat=10, nlon=20))
             self.assertFalse(torch.allclose(leg1, leg2))
 
     def test_cache_hits(self, verbose=False):
@@ -95,16 +95,16 @@ class TestCacheConsistency(unittest.TestCase):
         with torch.no_grad():
             # distinct grids per assertion so a warm cache from another test cannot
             # mask a miss, and so the two assertions cannot warm each other
-            n = count_builds("legpoly", lambda: legendre._precompute_legpoly(8, 8, as_grid("legendre-gauss", (14, 28))))
+            n = count_builds("legpoly", lambda: legendre._precompute_legpoly(8, 8, as_grid("legendre-gauss", nlat=14, nlon=28)))
             self.assertEqual(n, 1, msg=f"_precompute_legpoly rebuilt the table {n} times instead of caching it")
 
-            n = count_builds("dlegpoly", lambda: legendre._precompute_dlegpoly(8, 8, as_grid("legendre-gauss", (18, 36))))
+            n = count_builds("dlegpoly", lambda: legendre._precompute_dlegpoly(8, 8, as_grid("legendre-gauss", nlat=18, nlon=36)))
             self.assertEqual(n, 1, msg=f"_precompute_dlegpoly rebuilt the table {n} times instead of caching it")
 
             # ...and the key must still discriminate: a different resolution is a real miss,
             # so a cache that returned everything unconditionally would fail here
             calls = iter((22, 22, 26, 26, 22))
-            n = count_builds("legpoly", lambda: legendre._precompute_legpoly(8, 8, as_grid("lobatto", (next(calls), 44))), repeats=5)
+            n = count_builds("legpoly", lambda: legendre._precompute_legpoly(8, 8, as_grid("lobatto", nlat=next(calls), nlon=44)), repeats=5)
             self.assertEqual(n, 2, msg=f"expected one build per distinct grid, got {n}")
 
 

@@ -271,9 +271,9 @@ class TestLegendrePolynomials(unittest.TestCase):
         # the latitude range is only reachable through the cached, grid-keyed wrappers, since
         # the tensor-based core restricts latitudes by simply being handed fewer nodes
         for fn in (th.legendre._precompute_legpoly, th.legendre._precompute_dlegpoly):
-            full = fn(mmax, lmax, nlat, "legendre-gauss")
+            full = fn(mmax, lmax, th.as_grid("legendre-gauss", nlat=nlat, nlon=2 * nlat))
             for kmin, kmax in [(0, None), (1, None), (0, nlat - 1), (2, nlat - 2), (nlat // 2, nlat)]:
-                block = fn(mmax, lmax, nlat, "legendre-gauss", kmin=kmin, kmax=kmax)
+                block = fn(mmax, lmax, th.as_grid("legendre-gauss", nlat=nlat, nlon=2 * nlat), kmin=kmin, kmax=kmax)
                 ref = full[..., kmin : (nlat if kmax is None else kmax)]
                 case = f"{fn.__name__} mmax={mmax} lmax={lmax} kmin={kmin} kmax={kmax}"
                 self.assertEqual(tuple(block.shape), tuple(ref.shape), msg=f"shape mismatch: {case}")
