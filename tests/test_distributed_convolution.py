@@ -190,7 +190,11 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
             [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 2, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
-            [64, 128, 64, 128, 32, 6, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
+            # a channel count that is not a multiple of the azimuth split, so the a2a has to
+            # cope with unequal per-rank shares. 10 rather than a smaller odd number because
+            # the split has to stay non-empty on every rank: 6 over 8 azimuth ranks leaves the
+            # last two with nothing and the split itself raises.
+            [64, 128, 64, 128, 32, 10, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
             [64, 128, 64, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, "halo-exchange", 1e-6, 1e-5],
             [65, 128, 65, 128, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, "halo-exchange", 1e-6, 1e-5],
             [64, 128, 64, 128, 32, 8, (3, 2), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, True, False, "halo-exchange", 1e-6, 1e-5],
