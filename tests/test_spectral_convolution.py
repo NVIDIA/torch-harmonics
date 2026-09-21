@@ -501,13 +501,11 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=bias,
         ).to(self.device)
         conv.eval()

@@ -418,16 +418,16 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         set_seed(333)
 
         if vector:
-            fwd_dist = thd.DistributedRealVectorSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            fwd_local = th.RealVectorSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            inv_dist = thd.DistributedInverseRealVectorSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            inv_local = th.InverseRealVectorSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            fwd_dist = thd.DistributedRealVectorSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device)
+            fwd_local = th.RealVectorSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device)
+            inv_dist = thd.DistributedInverseRealVectorSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device)
+            inv_local = th.InverseRealVectorSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device)
             fwd_buf, inv_buf = "weights", "dpct"
         else:
-            fwd_dist = thd.DistributedRealSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            fwd_local = th.RealSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            inv_dist = thd.DistributedInverseRealSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            inv_local = th.InverseRealSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            fwd_dist = thd.DistributedRealSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device)
+            fwd_local = th.RealSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device)
+            inv_dist = thd.DistributedInverseRealSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device)
+            inv_local = th.InverseRealSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device)
             fwd_buf, inv_buf = "weights", "pct"
 
         # offsets are recomputed here from the per-rank shape lists rather than read off the
