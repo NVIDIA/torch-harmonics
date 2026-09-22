@@ -1024,8 +1024,9 @@ class RegularGridShardS2(GridShardS2):
         r"""
         This rank's per-point solid-angle weights, shape ``(nlat * nlon,)``.
 
-        Built from the *global* ring lengths and the *local* point counts; see
-        :func:`_shard_quad_weights`. Sums to :math:`4\pi` only across all ranks.
+        Built from the *global* ring lengths and the *local* point counts: splitting a
+        ring across azimuth ranks divides its points up without changing how much solid
+        angle each one covers. Sums to :math:`4\pi` only across all ranks.
         """
         return _shard_quad_weights(self)
 

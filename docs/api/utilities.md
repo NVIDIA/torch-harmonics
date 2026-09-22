@@ -6,20 +6,31 @@ Grids, plotting, quadrature, and helper functions.
 
 ## Grids
 
-A `GridS2` describes a grid on the sphere: where its nodes sit, what quadrature
-weights go with them, and the quantities derived from that node distribution,
-such as the default angular cutoff and the spectral bounds an SHT can be
-truncated to. It is the single argument that replaces a
-`(nlat, nlon, grid_string)` triple, so a new grid type can be added without
-editing every consumer.
+A grid descriptor says where the sample points sit, what quadrature weights go
+with them, and what follows from that node distribution -- the default angular
+cutoff, the spectral bounds an SHT can be truncated to. It is the single argument
+that replaces a `(nlat, nlon, grid_string)` triple, so a new grid type can be
+added without editing every consumer.
 
-The hierarchy has two levels. `GridS2` describes a stack of latitude rings and
-says nothing about how many longitudes each ring carries, so it covers ragged
-grids such as reduced Gaussian or HEALPix. `RegularGridS2` adds the assumption
-that every ring is sampled alike, which is what makes a field a dense
-`(nlat, nlon)` array, makes the SHT separable, and makes a 2D process
-decomposition meaningful. Every grid implemented today is a `RegularGridS2`, and
-routines that rely on that call `require_regular_grid`.
+The hierarchy has three levels, and each one is exactly what some algorithm is
+allowed to assume:
+
+| level           | adds                                       | which buys                                                                                                                      |
+| --------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `PointSetS2`    | points and weights                         | integration                                                                                                                     |
+| `GridS2`        | isolatitude rings, equispaced in longitude | an FFT in longitude (hence a fast SHT), a neighbourhood search bounded by a search over rings, a contiguous polar decomposition |
+| `RegularGridS2` | every ring the same length                 | a dense `(nlat, nlon)` layout, the compiled kernels, a 2D decomposition                                                         |
+
+Every subclass adds a constraint, so every `RegularGridS2` is a `GridS2` is a
+`PointSetS2`. A routine states which contract it needs by calling
+`require_point_set`, `require_grid` or `require_regular_grid`; every grid
+implemented today is a `RegularGridS2`, and the guards are meant to be relaxed
+one routine at a time as backends gain support.
+
+Two weight tensors follow from that split, and they are not interchangeable:
+`PointSetS2.quad_weights` is per point, shape `(npoints,)`, and sums to `4*pi`,
+with the longitudinal factor folded in; `GridS2.colat_weights` is the
+latitudinal factor alone, shape `(nrings,)`, and sums to 2.
 
 Use `as_grid` to build one, from a grid type name and the parameters that type
 takes:
@@ -28,7 +39,9 @@ takes:
 from torch_harmonics import as_grid, grid_params
 
 grid = as_grid("legendre-gauss", nlat=128, nlon=256)
-grid.lats, grid.quad_weights     # nodes and weights
+grid.colats, grid.colat_weights  # per-ring nodes and latitudinal weights
+grid.lats                        # geographic latitude, pi/2 - colat
+grid.coords, grid.quad_weights   # per-point positions and solid-angle weights
 grid.theta_cutoff()              # default support radius for localized operators
 grid.max_exact_degree            # highest degree the quadrature integrates exactly
 
@@ -51,8 +64,10 @@ all derived from its own fields.
    as_grid
    grid_params
    grid_types
+   require_point_set
    require_grid
    require_regular_grid
+   PointSetS2
    GridS2
    RegularGridS2
    GridShardS2

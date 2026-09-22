@@ -75,7 +75,7 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
     retained degree has a full set of orders.
 
     The bounds themselves come from the grid descriptor
-    (:attr:`~torch_harmonics.grid.GridS2.max_exact_degree` and
+    (:attr:`~torch_harmonics.grid.PointSetS2.max_exact_degree` and
     :attr:`~torch_harmonics.grid.RegularGridS2.max_azimuthal_order`), which reports what
     the grid can represent. This routine owns the *policy* on top of that: applying
     user overrides, enforcing the triangular truncation, and warning where the
