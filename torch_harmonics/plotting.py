@@ -183,8 +183,7 @@ def plot_sphere(
         grid = require_regular_grid(grid)
         if grid.shape != (nlat, nlon):
             raise ValueError(f"grid {grid!r} does not match the shape of the data, which is {(nlat, nlon)}")
-        # GridS2 stores co-latitudes measured from the north pole
-        lat = (np.pi / 2.0 - grid.colats).numpy()
+        lat = grid.lats.numpy()
         lon = grid.lons().numpy()
 
     if lon is None:

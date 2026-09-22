@@ -201,6 +201,23 @@ class GridS2:
         raise NotImplementedError(f"{type(self).__name__} does not define colats")
 
     @property
+    def lats(self) -> torch.Tensor:
+        r"""
+        Geographic latitudes :math:`\phi_k = \pi/2 - \theta_k \in [-\pi/2, \pi/2]`, shape ``(nrings,)``.
+
+        Descending, north pole first, because :attr:`colats` ascends from the north
+        pole and latitude is its reflection. Provided because plotting, geographic
+        data and anything user-facing want latitude, and because the conversion was
+        previously open-coded at three call sites -- writing :math:`\pi - \theta`
+        instead of :math:`\pi/2 - \theta` yields a number in :math:`[0, \pi]` that
+        looks like a plausible angle and is wrong everywhere except the equator.
+
+        Derived, never stored: :attr:`colats` is the primitive, so the two cannot
+        drift apart.
+        """
+        return torch.pi / 2 - self.colats
+
+    @property
     def quad_weights(self) -> torch.Tensor:
         r"""
         Latitudinal quadrature weights, shape ``(nrings,)``, paired with :attr:`colats`.
@@ -730,6 +747,11 @@ class RegularGridShardS2(GridShardS2):
     def colats(self) -> torch.Tensor:
         """This rank's slice of the global colatitudes, shape ``(nlat,)``."""
         return self.grid.colats[self.lat_offset : self.lat_offset + self.nlat]
+
+    @property
+    def lats(self) -> torch.Tensor:
+        r"""This rank's slice of the global latitudes :math:`\pi/2 - \theta`, shape ``(nlat,)``."""
+        return torch.pi / 2 - self.colats
 
     @property
     def quad_weights(self) -> torch.Tensor:

@@ -92,7 +92,7 @@ class SphereSolver(nn.Module):
         # to south, matching the layout the transforms use, so the latitudes follow by
         # complement rather than by relying on the node set being pole-symmetric.
         quadrature_grid = as_grid(self.grid, nlat=self.nlat, nlon=self.nlon)
-        lats = torch.pi / 2 - quadrature_grid.colats
+        lats = quadrature_grid.lats
         lons = quadrature_grid.lons()
 
         self.lmax = self.sht.lmax

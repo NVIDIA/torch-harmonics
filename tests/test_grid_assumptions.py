@@ -81,6 +81,10 @@ _ALL_GRIDS = ["equiangular", "legendre-gauss", "lobatto", "trapezoidal"]
 # grids on which the superseded pi / (nlat - 1) heuristic was too narrow near the poles
 _IRREGULAR_THETA_GRIDS = ["lobatto", "trapezoidal"]
 
+# grids whose node set includes both poles, so colat runs the full [0, pi] and the
+# endpoints pin the lat/colat convention exactly. Gauss-Legendre nodes are interior.
+_POLE_INCLUSIVE_GRIDS = ["equiangular", "lobatto", "trapezoidal"]
+
 # the class a caller would instantiate directly, against the name as_grid resolves
 _DIRECT_CLASSES = {
     "equiangular": EquiangularGrid,
@@ -268,6 +272,44 @@ class TestGridNodeDistribution(unittest.TestCase):
         self.assertGreaterEqual(lats[0].item(), 0.0)
         self.assertLessEqual(lats[-1].item(), math.pi)
         self.assertTrue(bool(((lats[1:] - lats[:-1]) > 0).all()), msg=f"grid={grid} nlat={nlat}: latitudes are not strictly ascending")
+
+    @parameterized.expand([[nlat, grid] for nlat in _NLATS for grid in _ALL_GRIDS])
+    def test_lats_is_latitude_and_colats_is_colatitude(self, nlat, grid):
+        r"""
+        ``colats`` is :math:`\theta \in [0, \pi]` from the north pole; ``lats`` is
+        geographic latitude :math:`\pi/2 - \theta \in [-\pi/2, \pi/2]`.
+
+        Pinned per grid rather than left to the docstring because the two have the
+        same shape and dtype and differ only in offset, so confusing them produces
+        plausible numbers rather than an error. The specific trap is
+        :math:`\pi - \theta`, which also lands in a familiar range: it is checked
+        explicitly below so that writing it would fail here rather than in a
+        downstream plot.
+        """
+        g = as_grid(grid, nlat=nlat, nlon=2 * nlat)
+        colats, lats = g.colats, g.lats
+
+        self.assertTrue(torch.allclose(lats, math.pi / 2 - colats))
+        self.assertGreaterEqual(colats[0].item(), 0.0)
+        self.assertLessEqual(colats[-1].item(), math.pi)
+        self.assertGreaterEqual(lats.min().item(), -math.pi / 2 - 1e-12)
+        self.assertLessEqual(lats.max().item(), math.pi / 2 + 1e-12)
+
+        # colatitude ascends from the north pole, so latitude descends
+        self.assertTrue(bool((colats.diff() > 0).all()))
+        self.assertTrue(bool((lats.diff() < 0).all()))
+
+        # the near-miss conversion, rejected explicitly
+        self.assertFalse(torch.allclose(lats, math.pi - colats))
+
+    @parameterized.expand([[grid] for grid in _POLE_INCLUSIVE_GRIDS])
+    def test_the_poles_map_to_plus_and_minus_ninety_degrees(self, grid):
+        """On the grids that carry the poles, the endpoints pin the convention exactly."""
+        g = as_grid(grid, nlat=7, nlon=8)
+        self.assertAlmostEqual(g.colats[0].item(), 0.0, places=12)
+        self.assertAlmostEqual(g.colats[-1].item(), math.pi, places=12)
+        self.assertAlmostEqual(g.lats[0].item(), math.pi / 2, places=12)
+        self.assertAlmostEqual(g.lats[-1].item(), -math.pi / 2, places=12)
 
 
 class TestQuadratureOrderingContract(unittest.TestCase):
