@@ -612,10 +612,19 @@ class TestGridDescriptor(unittest.TestCase):
                 self.assertEqual(g.max_node_spacing, max(g.max_latitude_spacing, g.max_longitude_spacing))
                 self.assertGreaterEqual(g.max_node_spacing, g.max_latitude_spacing)
 
-        # a grid coarse in longitude is bounded by longitude, not latitude
-        narrow = as_grid(grid, nlat=64, nlon=32)
+        # A grid coarse enough in longitude is bounded by longitude rather than latitude.
+        # nlon=16 rather than something milder because trapezoidal needs it: its nodes are
+        # equispaced in cos(theta), so its polar spacing is ~5x the other grids' and still
+        # wins at nlon=32. That is a fact about that grid, not a property of the rule.
+        narrow = as_grid(grid, nlat=64, nlon=16)
         self.assertEqual(narrow.max_node_spacing, narrow.max_longitude_spacing)
         self.assertGreater(narrow.max_node_spacing, narrow.max_latitude_spacing)
+
+        # and the case the release notes promise is unaffected: an equiangular grid at
+        # nlon = 2 nlat is still bounded by latitude, so its default cutoff does not move
+        if grid == "equiangular":
+            square = as_grid(grid, nlat=64, nlon=128)
+            self.assertEqual(square.max_node_spacing, square.max_latitude_spacing)
 
     @parameterized.expand([[grid] for grid in _ALL_GRIDS])
     def test_is_uniform_in_theta_agrees_with_the_actual_nodes(self, grid):
