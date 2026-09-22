@@ -33,7 +33,7 @@ import math
 import warnings
 from typing import Optional, Tuple
 
-from torch_harmonics.grid import GridS2, RegularGridS2, require_grid, require_regular_grid
+from torch_harmonics.grid import PointSetS2, RegularGridS2, require_point_set, require_regular_grid
 
 
 def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None) -> Tuple[int, int]:
@@ -136,7 +136,7 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
     return lmax, mmax
 
 
-def _warn_if_default_moved(grid: GridS2) -> None:
+def _warn_if_default_moved(grid: PointSetS2) -> None:
     r"""
     Announce that the default support radius differs from the pre-v0.9.3 heuristic.
 
@@ -152,26 +152,34 @@ def _warn_if_default_moved(grid: GridS2) -> None:
     if not isinstance(grid, RegularGridS2):
         return
 
-    dlat_max = grid.max_latitude_spacing
+    spacing = grid.max_node_spacing
 
-    # only a grid uniform in theta still agrees with the superseded heuristic (up to
-    # arccos roundoff); compare the numbers rather than trusting the flag, so that a
-    # grid family which sets is_uniform_in_theta wrongly is caught here
+    # compare the numbers rather than trusting is_uniform_in_theta, so that a grid
+    # family which sets that flag wrongly is caught here too
     legacy = math.pi / float(grid.nlat - 1)
-    if abs(dlat_max - legacy) <= 1e-9 * legacy:
+    if abs(spacing - legacy) <= 1e-9 * legacy:
         return
 
-    consequence = "the previous value under-covered the poles" if dlat_max > legacy else "the previous value was slightly wider than the grid warrants"
+    # two independent reasons the default can have moved, and a grid can hit both
+    reasons = []
+    if abs(grid.max_latitude_spacing - legacy) > 1e-9 * legacy:
+        reasons.append(f"its nodes are not uniform in theta, so the latitudinal spacing is {grid.max_latitude_spacing:.6f} rather than pi/(nlat-1)")
+    if grid.max_longitude_spacing > grid.max_latitude_spacing:
+        reasons.append(
+            f"its in-ring spacing ({grid.max_longitude_spacing:.6f}) exceeds its latitudinal spacing ({grid.max_latitude_spacing:.6f}), and the support has to reach the coarser neighbour"
+        )
+
+    consequence = "the previous value under-covered the grid" if spacing > legacy else "the previous value was wider than the grid warrants"
     warnings.warn(
-        f"Default theta_cutoff changed in v0.9.3: the '{grid.grid_type}' grid is not uniform in theta, so the cutoff is now "
-        f"its maximum latitudinal node spacing ({dlat_max:.6f}) rather than pi/(nlat-1) ({legacy:.6f}); "
-        f"{consequence}. Specify theta_cutoff explicitly to override.",
+        f"Default theta_cutoff changed in v0.9.3: on the '{grid.grid_type}' grid at nlat={grid.nlat}, nlon={grid.nlon} it is now "
+        f"one node spacing ({spacing:.6f}) rather than pi/(nlat-1) ({legacy:.6f}), because " + " and ".join(reasons) + f". {consequence}. "
+        "Specify theta_cutoff explicitly to override.",
         UserWarning,
         stacklevel=4,
     )
 
 
-def truncate_support(grid: GridS2, theta_cutoff: Optional[float] = None, scale: Optional[float] = 1.0) -> float:
+def truncate_support(grid: PointSetS2, theta_cutoff: Optional[float] = None, scale: Optional[float] = 1.0) -> float:
     r"""
     Determine the angular support radius of a localized operator on a grid.
 
@@ -181,35 +189,34 @@ def truncate_support(grid: GridS2, theta_cutoff: Optional[float] = None, scale: 
     bound the grid can support, apply a user override if one is given, and warn
     when the default they pick differs from the one a previous release used.
 
-    The default is one latitudinal node spacing of the grid, so that the basis
-    functions of adjacent output points overlap and every output point sees more
-    than the single latitude ring it sits on. That spacing is a fact about the
-    node distribution, which the descriptor also reports as
-    :attr:`~torch_harmonics.grid.GridS2.max_latitude_spacing`; the policy of
-    turning it into a default, of rejecting a non-positive result, and of warning
-    that the default moved, lives here.
+    The default is one node spacing of the grid, so that the basis functions of
+    adjacent output points overlap and every output point sees more than the single
+    node it sits on. That spacing is a fact about the node distribution, which the
+    descriptor reports as
+    :attr:`~torch_harmonics.grid.PointSetS2.max_node_spacing`; the policy of turning
+    it into a default, of rejecting a non-positive result, and of warning that the
+    default moved, lives here.
 
     The spacing comes off the descriptor, via
-    :meth:`~torch_harmonics.grid.GridS2.theta_cutoff`, so that a grid family which
-    knows better than "one latitudinal node spacing" can say so and be heard. The
-    free function :func:`torch_harmonics.quadrature.compute_theta_cutoff` computes
-    the same number for the latitude/longitude grids and remains available, but it
-    is keyed on ``(nlat, grid_type)`` and so cannot express an override;
-    ``test_theta_cutoff_matches_the_free_function`` pins the two to agree wherever
-    both apply.
+    :attr:`~torch_harmonics.grid.PointSetS2.max_node_spacing`, which is the distance
+    to the grid's coarsest *neighbour* -- along a ring or across rings, whichever is
+    further. The free function
+    :func:`torch_harmonics.quadrature.compute_theta_cutoff` reports the latitudinal
+    spacing alone and remains available, but it is keyed on ``(nlat, grid_type)`` and
+    so can neither see the longitudinal direction nor express a family's override.
 
     Parameters
     ----------
-    grid : GridS2
+    grid : PointSetS2
         Descriptor of the grid that sets the cutoff. This is the output grid of a
         forward transform and the input grid of a transpose one, mirroring which
         of the two is the coarser. It must be the global grid: a cutoff taken
         from a shard's own spacing would differ between ranks, and ranks
         disagreeing about the support of an operator is a correctness bug.
 
-        Any :class:`~torch_harmonics.grid.GridS2` is accepted, not only a regular
-        one: a support radius is an angle, and asking for it commits the caller to
-        nothing about how the grid is laid out. The routines that go on to build a
+        Any :class:`~torch_harmonics.grid.PointSetS2` is accepted, not only a ring
+        grid: a support radius is an angle, and asking for it commits the caller to
+        nothing about how the sampling is laid out. The routines that go on to build a
         sparsity pattern from that radius impose their own requirements.
     theta_cutoff : float, optional
         Explicit cutoff in radians. If None (default), the grid's node spacing is
@@ -253,16 +260,13 @@ def truncate_support(grid: GridS2, theta_cutoff: Optional[float] = None, scale: 
 
     if theta_cutoff is None:
         # a support radius taken from a shard would differ between ranks
-        grid = require_grid(grid)
-        # ask the descriptor, not the grid string: the spacing that bounds an operator's
-        # support is a property of the node distribution, and a grid family whose nodes
-        # are not laid out as a latitude/longitude product knows something about its own
-        # that the rule below the descriptors cannot. HEALPix is the case in hand -- its
-        # in-ring spacing exceeds its ring spacing by ~1.8x, so a radius of one
-        # latitudinal spacing collapses every stencil onto the pixel underneath it, and
-        # it overrides theta_cutoff to take the larger of the two. Routing through
-        # compute_theta_cutoff(nlat, grid_type) would silently ignore that override.
-        radius = grid.theta_cutoff(scale)
+        grid = require_point_set(grid)
+        # ask the descriptor, not the grid string. The default is one grid spacing, and
+        # a grid's spacing is the distance to its coarsest *neighbour* -- which may lie
+        # along a ring rather than across rings. It is latitudinal on an equiangular grid
+        # at nlon = 2 nlat, but longitudinal on a Gauss grid at the same resolution, on
+        # anything with nlon < 2 nlat, and on HEALPix by a factor of ~1.8.
+        radius = scale * grid.max_node_spacing
         origin = f"scale={scale} times the grid spacing"
         _warn_if_default_moved(grid)
     else:

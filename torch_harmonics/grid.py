@@ -369,31 +369,23 @@ class PointSetS2:
         """
         return False
 
-    def theta_cutoff(self, scale: Optional[float] = 1.0) -> float:
+    @property
+    def max_node_spacing(self) -> float:
         r"""
-        Angular support radius of one grid spacing.
+        Largest great-circle distance between neighbouring nodes, in radians.
 
-        The radius a localized operator -- a DISCO convolution, neighbourhood
-        attention -- reaches out to, in radians. A fact about the node distribution:
-        it neither applies a user override nor warns that the default moved. That
-        policy lives in :func:`torch_harmonics.truncate_support`, which is what the
-        layers call.
+        The grid's resolution expressed as an angle: how far apart its coarsest pair
+        of adjacent samples sits on the sphere. A *fact* about the node distribution,
+        which is why it is a spacing rather than a cutoff -- it neither applies a user
+        override nor warns that a default moved. Turning it into the support radius of
+        a localized operator is policy and lives in
+        :func:`torch_harmonics.truncate_support`, which is what the layers call.
 
-        Abstract here because "one grid spacing" needs a definition, and an
-        unstructured set has to supply its own -- typically a nearest-neighbour
-        distance. :class:`GridS2` defines it as the largest latitudinal gap.
-
-        Parameters
-        ----------
-        scale : float, optional
-            Multiplier on the grid spacing, by default 1.0.
-
-        Returns
-        -------
-        float
-            Cutoff angle in radians.
+        Abstract here because "neighbouring" needs a definition, and an unstructured
+        set has to supply its own -- typically a nearest-neighbour distance over a
+        spatial index. :class:`GridS2` has rings and defines it in closed form.
         """
-        raise NotImplementedError(f"{type(self).__name__} does not define theta_cutoff")
+        raise NotImplementedError(f"{type(self).__name__} does not define max_node_spacing")
 
     # -- decomposition -------------------------------------------------------
 
@@ -647,30 +639,42 @@ class GridS2(PointSetS2):
         r"""Whether the latitude nodes are equispaced in :math:`\theta`."""
         return False
 
-    def theta_cutoff(self, scale: Optional[float] = 1.0) -> float:
+    @property
+    def max_longitude_spacing(self) -> float:
         r"""
-        Angular support radius of one latitudinal grid spacing.
+        Largest great-circle distance between adjacent nodes *within* a ring, in radians.
 
-        A restatement of :attr:`max_latitude_spacing` in the units localized
-        operators ask for.
+        The great-circle arc, not the coordinate gap :math:`2\pi / N_{\lambda,k}`. The
+        two differ by the :math:`\sin\theta` foreshortening:
 
-        Correct wherever the latitudinal spacing is the coarser of the two, which
-        holds on the product grids because :math:`N_\lambda \approx 2 N_\theta`. A
-        family where that fails -- HEALPix, whose in-ring spacing exceeds its ring
-        spacing by roughly 1.8x -- must override this, or every stencil collapses
-        onto the point underneath it.
+        .. math::
 
-        Parameters
-        ----------
-        scale : float, optional
-            Multiplier on the grid spacing, by default 1.0.
+            d_k = 2 \arcsin\!\left( \sin\theta_k \, \sin\frac{\pi}{N_{\lambda,k}} \right)
 
-        Returns
-        -------
-        float
-            Cutoff angle in radians.
+        Using the coordinate gap instead would report the polar rings as the widest,
+        when their points are in fact nearly coincident -- on a ring at
+        :math:`\theta \to 0` the gap tends to :math:`2\pi / N_\lambda` while the
+        distance tends to 0.
         """
-        return scale * self.max_latitude_spacing
+        colats = self.colats
+        dlambda = 2.0 * torch.pi / self.nlon_per_lat.to(colats.dtype)
+        return float((2.0 * torch.asin(torch.sin(colats) * torch.sin(0.5 * dlambda))).max())
+
+    @property
+    def max_node_spacing(self) -> float:
+        r"""
+        Largest great-circle distance between neighbouring nodes, in radians.
+
+        The coarser of :attr:`max_latitude_spacing` and :attr:`max_longitude_spacing`,
+        because a ring grid's neighbours run in both directions and the support of an
+        operator has to reach the further one.
+
+        Which of the two wins is not a formality. It is latitudinal on an equiangular
+        grid at :math:`N_\lambda = 2 N_\theta`, but longitudinal on a Gauss grid at the
+        same resolution, on any grid with :math:`N_\lambda < 2 N_\theta`, and on
+        HEALPix, whose in-ring spacing exceeds its ring spacing by roughly 1.8x.
+        """
+        return max(self.max_latitude_spacing, self.max_longitude_spacing)
 
     # :meth:`lat_shapes` and :meth:`lon_shapes` are deliberately *not* defined here,
     # even though splitting `nrings` into contiguous chunks is well defined for any

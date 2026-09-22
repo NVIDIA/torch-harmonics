@@ -65,17 +65,20 @@ from torch_harmonics.grid import (
     GridShardS2,
     LegendreGaussGrid,
     LobattoGrid,
+    PointSetS2,
     RegularGridS2,
     TrapezoidalGrid,
     as_grid,
     grid_params,
     grid_types,
     require_grid,
+    require_point_set,
     require_regular_grid,
 )
 from torch_harmonics.integration import QuadratureS2
 from torch_harmonics.partition import compute_split_shapes
 from torch_harmonics.quadrature import compute_latitude_spacing, compute_theta_cutoff, precompute_latitudes, precompute_longitudes
+from torch_harmonics.truncation import truncate_support
 
 _ALL_GRIDS = ["equiangular", "legendre-gauss", "lobatto", "trapezoidal"]
 
@@ -569,9 +572,50 @@ class TestGridDescriptor(unittest.TestCase):
     def test_theta_cutoff_matches_the_free_function(self, nlat, grid):
         """Descriptor-based and legacy call sites must not be able to drift apart."""
         g = as_grid(grid, nlat=nlat, nlon=2 * nlat)
-        self.assertEqual(g.theta_cutoff(), compute_theta_cutoff(nlat, grid=grid))
-        self.assertEqual(g.theta_cutoff(scale=2.5), compute_theta_cutoff(nlat, grid=grid, scale=2.5))
         self.assertEqual(g.max_latitude_spacing, compute_latitude_spacing(nlat, grid=grid))
+        # compute_theta_cutoff reports the latitudinal spacing alone, which is what the
+        # descriptor's max_latitude_spacing is; max_node_spacing may exceed it
+        self.assertEqual(g.max_latitude_spacing, compute_theta_cutoff(nlat, grid=grid))
+        self.assertGreaterEqual(g.max_node_spacing, g.max_latitude_spacing)
+        self.assertEqual(g.max_node_spacing, max(g.max_latitude_spacing, g.max_longitude_spacing))
+
+    @parameterized.expand([[grid] for grid in _ALL_GRIDS])
+    def test_longitude_spacing_is_the_arc_not_the_coordinate_gap(self, grid):
+        """
+        Adjacent points on a ring are ``2*pi/n`` apart *in longitude*, but their
+        great-circle distance is ``2 asin(sin(theta) sin(pi/n))`` -- shorter everywhere
+        but the equator, and tending to 0 at the poles where the coordinate gap does
+        not. Reporting the gap would make the polar rings look like the widest part of
+        the grid when their points are nearly coincident.
+        """
+        g = as_grid(grid, nlat=64, nlon=128)
+        self.assertLess(g.max_longitude_spacing, 2 * math.pi / 128)
+
+        colats, counts = g.colats, g.nlon_per_lat
+        arc = 2 * torch.asin(torch.sin(colats) * torch.sin(math.pi / counts.to(colats.dtype)))
+        self.assertAlmostEqual(g.max_longitude_spacing, arc.max().item(), places=14)
+
+        # the widest ring is the one nearest the equator, not a polar one
+        self.assertLess(abs(colats[int(arc.argmax())].item() - math.pi / 2), 0.1)
+
+    @parameterized.expand([[grid] for grid in _ALL_GRIDS])
+    def test_node_spacing_reaches_the_coarser_neighbour(self, grid):
+        """
+        ``max_node_spacing`` is the coarser of the two directions, because a ring
+        grid's neighbours run both ways and an operator's support has to reach the
+        further one. Which wins is not a formality: it is longitudinal on a Gauss grid
+        even at nlon = 2 nlat, and on anything with nlon < 2 nlat.
+        """
+        for nlat, nlon in [(64, 128), (64, 64), (64, 32)]:
+            with self.subTest(nlat=nlat, nlon=nlon):
+                g = as_grid(grid, nlat=nlat, nlon=nlon)
+                self.assertEqual(g.max_node_spacing, max(g.max_latitude_spacing, g.max_longitude_spacing))
+                self.assertGreaterEqual(g.max_node_spacing, g.max_latitude_spacing)
+
+        # a grid coarse in longitude is bounded by longitude, not latitude
+        narrow = as_grid(grid, nlat=64, nlon=32)
+        self.assertEqual(narrow.max_node_spacing, narrow.max_longitude_spacing)
+        self.assertGreater(narrow.max_node_spacing, narrow.max_latitude_spacing)
 
     @parameterized.expand([[grid] for grid in _ALL_GRIDS])
     def test_is_uniform_in_theta_agrees_with_the_actual_nodes(self, grid):
@@ -732,13 +776,12 @@ class TestDirectConstructionMatchesFactory(unittest.TestCase):
 
     @parameterized.expand([[name, shape] for name in grid_types() for shape in _PAIR_SHAPES])
     def test_methods_match(self, name, shape, verbose=False):
-        """Properties are not the whole surface: lons() and theta_cutoff() are methods."""
+        """Properties are not the whole surface: lons() is a method."""
         direct, factory = self._pair(name, shape)
         self.assertTrue(compare_tensors(f"{name}{shape}.lons()", direct.lons(), factory.lons(), atol=0.0, rtol=0.0, verbose=verbose))
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
-            self.assertEqual(direct.theta_cutoff(), factory.theta_cutoff())
-            self.assertEqual(direct.theta_cutoff(scale=2.5), factory.theta_cutoff(scale=2.5))
+            self.assertEqual(direct.max_node_spacing, factory.max_node_spacing)
         self.assertEqual(direct.to_dict(), factory.to_dict())
 
     @parameterized.expand([[name] for name in grid_types()])
@@ -1009,7 +1052,7 @@ class TestRaggedGridContract(unittest.TestCase):
         self.assertEqual(self.grid.npoints, 16)
         self.assertEqual(self.grid.shape, (16,))
         self.assertEqual(self.grid.lon_offsets.tolist(), [0, 4, 12, 16])
-        self.assertGreater(self.grid.theta_cutoff(), 0.0)  # derived from lats, not nlat
+        self.assertGreater(self.grid.max_node_spacing, 0.0)  # derived from the nodes, not nlat
         self.assertFalse(hasattr(self.grid, "nlat"))
         self.assertFalse(hasattr(self.grid, "max_azimuthal_order"))
 
@@ -1090,6 +1133,130 @@ class TestRaggedGridContract(unittest.TestCase):
 
         mean = QuadratureS2(self.grid, normalize=True)
         self.assertAlmostEqual(mean(ones).item(), 1.0, places=5)
+
+
+class TestPointSetContract(unittest.TestCase):
+    """
+    The point of :class:`PointSetS2`: a sampling with no ring structure at all must be
+    expressible, and the routines that need only points and weights must accept it.
+
+    ``_FibonacciPointSet`` stands in for an ICON-style unstructured mesh. It is defined
+    here rather than shipped: with no rings there is no fast SHT, and its node spacing
+    costs a brute-force O(N^2) sweep, which is the right implementation at 200 points
+    and unusable past a few thousand. What it buys is coverage no ``GridS2`` stand-in
+    can give -- ``_RaggedGrid`` still has rings, so it cannot catch a ring assumption
+    leaking down into the base class.
+    """
+
+    _NAME = "test-fibonacci"
+
+    @classmethod
+    def setUpClass(cls):
+        from dataclasses import dataclass
+        from typing import ClassVar
+
+        @dataclass(frozen=True, eq=False)
+        class _FibonacciPointSet(PointSetS2):
+            """Points on a Fibonacci spiral: equal areas, and no two sharing a colatitude."""
+
+            num_points: int
+            grid_type: ClassVar[str] = cls._NAME
+
+            @property
+            def npoints(self):
+                return self.num_points
+
+            @property
+            def coords(self):
+                i = torch.arange(self.num_points, dtype=torch.float64)
+                z = 1.0 - (2.0 * i + 1.0) / self.num_points
+                lon = torch.remainder(math.pi * (3.0 - math.sqrt(5.0)) * i, 2.0 * math.pi)
+                return torch.stack([torch.arccos(z), lon], dim=-1)
+
+            @property
+            def quad_weights(self):
+                # equal-area construction, so every point carries the same solid angle
+                return torch.full((self.num_points,), 4.0 * math.pi / self.num_points, dtype=torch.float64)
+
+            @property
+            def max_node_spacing(self):
+                # no rings to binary-search, so the honest answer is a nearest-neighbour sweep
+                c = self.coords
+                xyz = torch.stack([torch.sin(c[:, 0]) * torch.cos(c[:, 1]), torch.sin(c[:, 0]) * torch.sin(c[:, 1]), torch.cos(c[:, 0])], dim=-1)
+                arc = torch.arccos(torch.clamp(xyz @ xyz.T, -1.0, 1.0))
+                arc.fill_diagonal_(float("inf"))
+                return float(arc.min(dim=1).values.max())
+
+        cls.point_set_cls = _FibonacciPointSet
+
+    @classmethod
+    def tearDownClass(cls):
+        _GRID_REGISTRY.pop(cls._NAME, None)
+
+    def setUp(self):
+        self.ps = self.point_set_cls(num_points=200)
+
+    def test_the_base_contract_is_coords_and_weights(self):
+        self.assertEqual(self.ps.npoints, 200)
+        self.assertEqual(self.ps.shape, (200,))
+        self.assertEqual(tuple(self.ps.coords.shape), (200, 2))
+        self.assertEqual(tuple(self.ps.quad_weights.shape), (200,))
+        self.assertAlmostEqual(self.ps.quad_weights.sum().item(), 4.0 * math.pi, places=12)
+        self.assertGreaterEqual(self.ps.coords[:, 0].min().item(), 0.0)
+        self.assertLessEqual(self.ps.coords[:, 0].max().item(), math.pi)
+
+    def test_it_has_no_ring_structure(self):
+        """
+        Not merely ragged -- absent. A consumer reaching for rings must fail here, which
+        is what keeps the ring-specific members on ``GridS2`` where they belong.
+        """
+        for name in ("nrings", "colats", "lats", "colat_weights", "lons", "nlon_per_lat", "lon_offsets", "is_regular", "max_latitude_spacing"):
+            with self.subTest(member=name):
+                self.assertFalse(hasattr(self.ps, name), msg=f"PointSetS2 should not expose {name}")
+
+        # and no two points share a colatitude, so there is nothing ring-like to infer
+        self.assertEqual(len(torch.unique(self.ps.coords[:, 0])), self.ps.npoints)
+
+    def test_quadrature_accepts_it(self):
+        """The payoff: a shipped layer runs on a sampling with no rings."""
+        quad = QuadratureS2(self.ps)
+        self.assertEqual(quad.spatial_dims, (-1,))
+        ones = torch.ones(1, 1, self.ps.npoints, dtype=torch.float32)
+        self.assertAlmostEqual(quad(ones).item(), 4.0 * math.pi, places=4)
+        self.assertAlmostEqual(QuadratureS2(self.ps, normalize=True)(ones).item(), 1.0, places=5)
+
+    def test_the_guards_separate_the_three_levels(self):
+        self.assertIs(require_point_set(self.ps), self.ps)
+        with self.assertRaises(TypeError) as ctx:
+            require_grid(self.ps, "grid_in")
+        self.assertIn("grid_in", str(ctx.exception))
+        self.assertIn("isolatitude rings", str(ctx.exception))
+        with self.assertRaises(TypeError):
+            require_regular_grid(self.ps)
+
+    def test_the_support_radius_comes_from_its_own_nodes(self):
+        spacing = self.ps.max_node_spacing
+        self.assertGreater(spacing, 0.0)
+        self.assertEqual(truncate_support(self.ps), spacing)
+        self.assertAlmostEqual(truncate_support(self.ps, scale=2.0), 2.0 * spacing, places=15)
+        # a 200-point equal-area sampling has nearest neighbours of order 3.5 / sqrt(N)
+        self.assertLess(spacing, 0.5)
+
+    def test_identity_follows_its_own_parameterization(self):
+        self.assertEqual(self.point_set_cls.params(), ("num_points",))
+        self.assertEqual(self.ps.key, (self._NAME, 200))
+        self.assertEqual(self.ps.to_dict(), {"grid": self._NAME, "num_points": 200})
+        self.assertEqual(PointSetS2.from_dict(self.ps.to_dict()), self.ps)
+        self.assertNotEqual(self.ps, self.point_set_cls(num_points=201))
+        self.assertNotEqual(self.ps, as_grid("equiangular", nlat=64, nlon=128))
+
+    def test_it_claims_neither_spectral_accuracy_nor_a_decomposition(self):
+        """Both defaults are the conservative ones, so a new family opts in deliberately."""
+        self.assertFalse(self.ps.is_spectrally_accurate)
+        with self.assertRaises(NotImplementedError):
+            self.ps.max_exact_degree
+        with self.assertRaises(NotImplementedError):
+            self.ps.shard()
 
 
 if __name__ == "__main__":

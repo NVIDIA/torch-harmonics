@@ -243,7 +243,7 @@ def _precompute_convolution_tensor_s2(
     grid_in: RegularGridS2,
     grid_out: RegularGridS2,
     filter_basis: FilterBasis,
-    theta_cutoff: Optional[float] = 0.01 * math.pi,
+    theta_cutoff: float,
     theta_eps: Optional[float] = THETA_CUTOFF_EPS,
     transpose_normalization: Optional[bool] = False,
     basis_norm_mode: Optional[str] = "nodal",

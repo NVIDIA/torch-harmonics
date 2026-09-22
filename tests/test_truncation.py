@@ -210,14 +210,21 @@ class TestTruncateSupport(unittest.TestCase):
     warnings.filterwarnings("ignore", message="Default theta_cutoff changed", category=UserWarning)
 
     @parameterized.expand([(g, n) for g in th.grid_types() for n in (16, 33, 64)])
-    def test_default_is_one_grid_spacing(self, grid, nlat):
+    def test_default_is_one_node_spacing(self, grid, nlat):
+        """
+        One *node* spacing, not one latitudinal spacing. The two differ on
+        legendre-gauss even at nlon = 2 nlat, where the in-ring spacing is the coarser
+        of the pair, so asserting against max_latitude_spacing would pin the old
+        behaviour.
+        """
         g = as_grid(grid, nlat=nlat, nlon=2 * nlat)
-        self.assertEqual(truncate_support(g), g.max_latitude_spacing)
+        self.assertEqual(truncate_support(g), g.max_node_spacing)
+        self.assertGreaterEqual(truncate_support(g), g.max_latitude_spacing)
 
     @parameterized.expand([(g,) for g in th.grid_types()])
     def test_default_matches_the_descriptor_property(self, grid):
         g = as_grid(grid, nlat=32, nlon=64)
-        self.assertEqual(truncate_support(g), g.theta_cutoff())
+        self.assertEqual(truncate_support(g), g.max_node_spacing)
 
     @parameterized.expand([(g,) for g in th.grid_types()])
     def test_scale_multiplies_the_default(self, grid):
@@ -257,7 +264,7 @@ class TestTruncateSupport(unittest.TestCase):
         g = as_grid("lobatto", nlat=32, nlon=64)
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
-            g.theta_cutoff()
+            g.max_node_spacing
             g.max_latitude_spacing
 
     def test_an_explicit_value_does_not_warn(self):
@@ -289,7 +296,7 @@ class TestTruncateSupport(unittest.TestCase):
         the policy read the grid string and ignored the descriptor entirely. HEALPix
         is the case in hand -- its in-ring spacing exceeds its ring spacing by ~1.8x,
         so one latitudinal spacing would collapse every stencil onto a single pixel,
-        and it overrides ``theta_cutoff`` to take the larger of the two.
+        and it reports ``max_node_spacing`` as the larger of the two.
         """
 
         class AnisotropicGrid(EquiangularGrid):
@@ -305,13 +312,14 @@ class TestTruncateSupport(unittest.TestCase):
             def colat_weights(self):
                 return precompute_latitudes(self.nlat, grid="equiangular")[1]
 
-            def theta_cutoff(self, scale=1.0):
-                return scale * 7.5 * self.max_latitude_spacing
+            @property
+            def max_node_spacing(self):
+                return 7.5 * self.max_latitude_spacing
 
         try:
             grid = AnisotropicGrid(nlat=32, nlon=64)
-            self.assertEqual(truncate_support(grid), grid.theta_cutoff())
-            self.assertAlmostEqual(truncate_support(grid, scale=2.0), 2.0 * grid.theta_cutoff(), places=15)
+            self.assertEqual(truncate_support(grid), grid.max_node_spacing)
+            self.assertAlmostEqual(truncate_support(grid, scale=2.0), 2.0 * grid.max_node_spacing, places=15)
             # and it is genuinely a different number from the one the superseded
             # string-keyed route would have produced
             self.assertNotAlmostEqual(truncate_support(grid), compute_theta_cutoff(32, grid="equiangular"), places=6)
