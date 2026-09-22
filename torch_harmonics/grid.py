@@ -362,9 +362,15 @@ class GridS2:
         """
         raise NotImplementedError(f"{type(self).__name__} does not define shard")
 
-    def lat_shapes(self, num_chunks: int) -> Tuple[int, ...]:
-        """Ring counts held by each rank of a ``num_chunks``-way polar split."""
-        return tuple(compute_split_shapes(self.nrings, num_chunks))
+    # :meth:`lat_shapes` and :meth:`lon_shapes` are deliberately *not* defined here,
+    # even though splitting `nrings` into contiguous chunks is well defined for any
+    # ring-structured grid. Balancing rings only balances work where the rings are of
+    # equal length, which is what makes it right on a RegularGridS2 and wrong on a
+    # ragged one: HEALPix ring lengths vary by a factor of 4N between the poles and
+    # the equator, so an even split of rings hands ranks badly uneven point counts.
+    # A ragged grid has to balance the flat point range instead. Inheriting a
+    # plausible-but-unbalanced default would not raise, it would just run slowly and
+    # asymmetrically, so the method lives on the class where it is correct.
 
     # -- serialization -------------------------------------------------------
 
@@ -503,6 +509,17 @@ class RegularGridS2(GridS2):
             The local piece, which knows the global grid it came from.
         """
         return RegularGridShardS2(grid=self, polar_rank=polar[0], polar_size=polar[1], azimuth_rank=azimuth[0], azimuth_size=azimuth[1])
+
+    def lat_shapes(self, num_chunks: int) -> Tuple[int, ...]:
+        """
+        Latitude counts held by each rank of a ``num_chunks``-way polar split.
+
+        Balancing rings balances work because every ring is the same length here; see
+        the note on :class:`GridS2` for why that reasoning does not survive contact
+        with a ragged grid, and why this therefore lives on this class rather than on
+        the base.
+        """
+        return tuple(compute_split_shapes(self.nlat, num_chunks))
 
     def lon_shapes(self, num_chunks: int) -> Tuple[int, ...]:
         """Longitude counts held by each rank of a ``num_chunks``-way azimuthal split."""
