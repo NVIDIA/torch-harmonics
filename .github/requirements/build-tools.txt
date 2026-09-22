@@ -4,7 +4,7 @@
 # git tag (see "Determine base version from git"); keep it pinned in lockstep
 # with wheel-build-env.txt so host and container agree on the version.
 cibuildwheel==4.2.0
-setuptools-scm==10.2.1
+setuptools-scm==10.2.3
 twine==7.0.0
 auditwheel==6.8.2
 wheel==0.48.0
