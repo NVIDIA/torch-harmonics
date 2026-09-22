@@ -593,13 +593,11 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         if not transpose and polar_mode == "halo-exchange" and not halo_servable:
             with self.assertRaises(ValueError) as ctx:
                 thd.DistributedDiscreteContinuousConvS2(
+                    th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
+                    th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
                     1,
                     1,
-                    (nlat_in, nlon_in),
-                    (nlat_out, nlon_out),
                     kernel_shape=kernel_shape,
-                    grid_in=grid_in,
-                    grid_out=grid_out,
                     theta_cutoff=theta_cutoff,
                     polar_mode=polar_mode,
                 )
@@ -608,26 +606,39 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
         if transpose:
             conv_local = th.DiscreteContinuousConvTransposeS2(
-                1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
+                th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
+                th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
+                1,
+                1,
+                kernel_shape=kernel_shape,
+                theta_cutoff=theta_cutoff,
             ).to(self.device)
             conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(
-                1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
+                th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
+                th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
+                1,
+                1,
+                kernel_shape=kernel_shape,
+                theta_cutoff=theta_cutoff,
             ).to(self.device)
             # the transpose module's psi indexes the output grid along the split axis
             nlon_split = nlon_out
             shapes = conv_dist.lat_out_shapes
         else:
             conv_local = th.DiscreteContinuousConvS2(
-                1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
+                th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
+                th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
+                1,
+                1,
+                kernel_shape=kernel_shape,
+                theta_cutoff=theta_cutoff,
             ).to(self.device)
             conv_dist = thd.DistributedDiscreteContinuousConvS2(
+                th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
+                th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
                 1,
                 1,
-                (nlat_in, nlon_in),
-                (nlat_out, nlon_out),
                 kernel_shape=kernel_shape,
-                grid_in=grid_in,
-                grid_out=grid_out,
                 theta_cutoff=theta_cutoff,
                 polar_mode=polar_mode,
             ).to(self.device)
@@ -700,7 +711,9 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
     def test_polar_mode_rejects_unknown_value(self):
         """An unrecognised mode is a typo, not a request for a default."""
         with self.assertRaises(ValueError) as ctx:
-            thd.DistributedDiscreteContinuousConvS2(1, 1, (32, 64), (32, 64), kernel_shape=(3, 3), polar_mode="halo")
+            thd.DistributedDiscreteContinuousConvS2(
+                th.as_grid("equiangular", nlat=32, nlon=64), th.as_grid("equiangular", nlat=32, nlon=64), 1, 1, kernel_shape=(3, 3), polar_mode="halo"
+            )
         self.assertIn("halo-exchange", str(ctx.exception))
 
 

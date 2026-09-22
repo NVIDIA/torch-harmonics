@@ -42,7 +42,7 @@ from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
 from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_fwd, _custom_setup_context
 from torch_harmonics.grid import RegularGridS2
-from torch_harmonics.quadrature import effective_theta_cutoff, precompute_latitudes
+from torch_harmonics.quadrature import effective_theta_cutoff
 
 from .primitives import compute_polar_halo_radius, get_group_neighbors, polar_halo_exchange
 from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -1007,10 +1007,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         # builds its psi with the shapes swapped, but the latitudes it needs are the same ones.
         # It also raises if the halo outgrows a local chunk, which the immediate-neighbour
         # exchange could not serve.
-        # the grid types are constructor arguments the base class does not retain, so they are
-        # read from the local parameters rather than off self
-        lats_in, _ = precompute_latitudes(self.nlat_in, grid=grid_in)
-        lats_out, _ = precompute_latitudes(self.nlat_out, grid=grid_out)
+        lats_in, lats_out = self.grid_in.lats, self.grid_out.lats
         self.r_lat = compute_polar_halo_radius(
             lats_in,
             lats_out,

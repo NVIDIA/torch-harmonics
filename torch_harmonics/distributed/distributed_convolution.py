@@ -49,7 +49,7 @@ from torch_harmonics.disco.optimized.disco_optimized import (
     _split_csr_python_offsets,
 )
 from torch_harmonics.grid import RegularGridS2, require_regular_grid
-from torch_harmonics.quadrature import effective_theta_cutoff, precompute_latitudes
+from torch_harmonics.quadrature import effective_theta_cutoff
 from torch_harmonics.truncation import truncate_support
 
 # a2a forward orchestration: standard (fused=False) and reordered (fused=True).
@@ -394,8 +394,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.r_lat = 0
         self.use_halo = self.polar_mode == "halo-exchange"
         if self.use_halo:
-            lats_in, _ = precompute_latitudes(self.nlat_in, grid=grid_in)
-            lats_out, _ = precompute_latitudes(self.nlat_out, grid=grid_out)
+            lats_in, lats_out = self.grid_in.lats, self.grid_out.lats
             try:
                 self.r_lat = compute_polar_halo_radius(lats_in, lats_out, effective_theta_cutoff(self.theta_cutoff), self.lat_in_shapes, self.lat_out_shapes)
             except ValueError as err:
