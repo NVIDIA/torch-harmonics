@@ -49,7 +49,8 @@ import torch
 from parameterized import parameterized
 
 import torch_harmonics as th
-from torch_harmonics.grid import as_grid
+from torch_harmonics.grid import _GRID_REGISTRY, EquiangularGrid, as_grid
+from torch_harmonics.quadrature import compute_theta_cutoff, precompute_latitudes
 from torch_harmonics.truncation import truncate_sht, truncate_support
 
 # grid type -> expected max_exact_degree as a function of nlat, per the table in
@@ -276,6 +277,46 @@ class TestTruncateSupport(unittest.TestCase):
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
             truncate_support(as_grid("equiangular", nlat=32, nlon=64))
+
+    def test_a_grid_that_overrides_the_cutoff_is_obeyed(self):
+        """
+        The default comes off the descriptor, so a grid family that knows better than
+        one latitudinal node spacing can say so and be heard.
+
+        This is the guarantee, and it is not implied by
+        ``test_default_matches_the_descriptor_property``: that one compares two
+        readings of a grid which does *not* override, and passed just as well when
+        the policy read the grid string and ignored the descriptor entirely. HEALPix
+        is the case in hand -- its in-ring spacing exceeds its ring spacing by ~1.8x,
+        so one latitudinal spacing would collapse every stencil onto a single pixel,
+        and it overrides ``theta_cutoff`` to take the larger of the two.
+        """
+
+        class AnisotropicGrid(EquiangularGrid):
+            grid_type = "test-anisotropic-cutoff"
+
+            # lats/quad_weights dispatch on the grid_type string rather than on the
+            # class, so a new family supplies its own nodes even reusing a layout
+            @property
+            def lats(self):
+                return precompute_latitudes(self.nlat, grid="equiangular")[0]
+
+            @property
+            def quad_weights(self):
+                return precompute_latitudes(self.nlat, grid="equiangular")[1]
+
+            def theta_cutoff(self, scale=1.0):
+                return scale * 7.5 * self.max_latitude_spacing
+
+        try:
+            grid = AnisotropicGrid(nlat=32, nlon=64)
+            self.assertEqual(truncate_support(grid), grid.theta_cutoff())
+            self.assertAlmostEqual(truncate_support(grid, scale=2.0), 2.0 * grid.theta_cutoff(), places=15)
+            # and it is genuinely a different number from the one the superseded
+            # string-keyed route would have produced
+            self.assertNotAlmostEqual(truncate_support(grid), compute_theta_cutoff(32, grid="equiangular"), places=6)
+        finally:
+            _GRID_REGISTRY.pop("test-anisotropic-cutoff", None)
 
 
 class TestLayersUseTruncateSupport(unittest.TestCase):

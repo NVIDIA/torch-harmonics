@@ -29,11 +29,11 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import math
 import warnings
 from typing import Optional, Tuple
 
-from torch_harmonics.grid import RegularGridS2, require_regular_grid
-from torch_harmonics.quadrature import compute_theta_cutoff
+from torch_harmonics.grid import GridS2, RegularGridS2, require_grid, require_regular_grid
 
 
 def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None) -> Tuple[int, int]:
@@ -136,7 +136,42 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
     return lmax, mmax
 
 
-def truncate_support(grid: RegularGridS2, theta_cutoff: Optional[float] = None, scale: Optional[float] = 1.0) -> float:
+def _warn_if_default_moved(grid: GridS2) -> None:
+    r"""
+    Announce that the default support radius differs from the pre-v0.9.3 heuristic.
+
+    Lives here rather than in :func:`torch_harmonics.quadrature.compute_theta_cutoff`
+    because it is policy, not a fact about the nodes: the descriptor property stays
+    silent, and only the routine that *chose* to default announces it. That split is
+    pinned by ``test_the_descriptor_does_not_warn``.
+
+    Only the latitude/longitude grids can have moved, since they are the only ones
+    that existed before the change; a ragged grid has no ``pi / (nlat - 1)`` past to
+    differ from and is passed over rather than warned about spuriously.
+    """
+    if not isinstance(grid, RegularGridS2):
+        return
+
+    dlat_max = grid.max_latitude_spacing
+
+    # only a grid uniform in theta still agrees with the superseded heuristic (up to
+    # arccos roundoff); compare the numbers rather than trusting the flag, so that a
+    # grid family which sets is_uniform_in_theta wrongly is caught here
+    legacy = math.pi / float(grid.nlat - 1)
+    if abs(dlat_max - legacy) <= 1e-9 * legacy:
+        return
+
+    consequence = "the previous value under-covered the poles" if dlat_max > legacy else "the previous value was slightly wider than the grid warrants"
+    warnings.warn(
+        f"Default theta_cutoff changed in v0.9.3: the '{grid.grid_type}' grid is not uniform in theta, so the cutoff is now "
+        f"its maximum latitudinal node spacing ({dlat_max:.6f}) rather than pi/(nlat-1) ({legacy:.6f}); "
+        f"{consequence}. Specify theta_cutoff explicitly to override.",
+        UserWarning,
+        stacklevel=4,
+    )
+
+
+def truncate_support(grid: GridS2, theta_cutoff: Optional[float] = None, scale: Optional[float] = 1.0) -> float:
     r"""
     Determine the angular support radius of a localized operator on a grid.
 
@@ -154,20 +189,28 @@ def truncate_support(grid: RegularGridS2, theta_cutoff: Optional[float] = None, 
     turning it into a default, of rejecting a non-positive result, and of warning
     that the default moved, lives here.
 
-    The spacing comes via :func:`torch_harmonics.quadrature.compute_theta_cutoff`
-    rather than off the descriptor property, because the changed-default warning
-    is raised there. The two agree by construction -- both are
-    :func:`~torch_harmonics.quadrature.compute_latitude_spacing` of the same grid
-    -- and ``test_default_is_one_grid_spacing`` pins that they keep agreeing.
+    The spacing comes off the descriptor, via
+    :meth:`~torch_harmonics.grid.GridS2.theta_cutoff`, so that a grid family which
+    knows better than "one latitudinal node spacing" can say so and be heard. The
+    free function :func:`torch_harmonics.quadrature.compute_theta_cutoff` computes
+    the same number for the latitude/longitude grids and remains available, but it
+    is keyed on ``(nlat, grid_type)`` and so cannot express an override;
+    ``test_theta_cutoff_matches_the_free_function`` pins the two to agree wherever
+    both apply.
 
     Parameters
     ----------
-    grid : RegularGridS2
+    grid : GridS2
         Descriptor of the grid that sets the cutoff. This is the output grid of a
         forward transform and the input grid of a transpose one, mirroring which
         of the two is the coarser. It must be the global grid: a cutoff taken
         from a shard's own spacing would differ between ranks, and ranks
         disagreeing about the support of an operator is a correctness bug.
+
+        Any :class:`~torch_harmonics.grid.GridS2` is accepted, not only a regular
+        one: a support radius is an angle, and asking for it commits the caller to
+        nothing about how the grid is laid out. The routines that go on to build a
+        sparsity pattern from that radius impose their own requirements.
     theta_cutoff : float, optional
         Explicit cutoff in radians. If None (default), the grid's node spacing is
         used. Must be positive.
@@ -210,9 +253,18 @@ def truncate_support(grid: RegularGridS2, theta_cutoff: Optional[float] = None, 
 
     if theta_cutoff is None:
         # a support radius taken from a shard would differ between ranks
-        grid = require_regular_grid(grid)
-        radius = scale * compute_theta_cutoff(grid.nlat, grid=grid.grid_type)
+        grid = require_grid(grid)
+        # ask the descriptor, not the grid string: the spacing that bounds an operator's
+        # support is a property of the node distribution, and a grid family whose nodes
+        # are not laid out as a latitude/longitude product knows something about its own
+        # that the rule below the descriptors cannot. HEALPix is the case in hand -- its
+        # in-ring spacing exceeds its ring spacing by ~1.8x, so a radius of one
+        # latitudinal spacing collapses every stencil onto the pixel underneath it, and
+        # it overrides theta_cutoff to take the larger of the two. Routing through
+        # compute_theta_cutoff(nlat, grid_type) would silently ignore that override.
+        radius = grid.theta_cutoff(scale)
         origin = f"scale={scale} times the grid spacing"
+        _warn_if_default_moved(grid)
     else:
         radius = theta_cutoff
         origin = f"theta_cutoff={theta_cutoff}"
