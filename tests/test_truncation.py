@@ -295,14 +295,14 @@ class TestTruncateSupport(unittest.TestCase):
         class AnisotropicGrid(EquiangularGrid):
             grid_type = "test-anisotropic-cutoff"
 
-            # lats/quad_weights dispatch on the grid_type string rather than on the
+            # colats/colat_weights dispatch on the grid_type string rather than on the
             # class, so a new family supplies its own nodes even reusing a layout
             @property
-            def lats(self):
+            def colats(self):
                 return precompute_latitudes(self.nlat, grid="equiangular")[0]
 
             @property
-            def quad_weights(self):
+            def colat_weights(self):
                 return precompute_latitudes(self.nlat, grid="equiangular")[1]
 
             def theta_cutoff(self, scale=1.0):

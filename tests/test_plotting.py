@@ -137,12 +137,16 @@ class TestPlotSphereGrid(unittest.TestCase):
                 return torch.tensor([4, 8, 4], dtype=torch.int64)
 
             @property
-            def shape(self):
-                return (self.npoints,)
+            def colats(self):
+                return torch.linspace(0.25, np.pi - 0.25, 3, dtype=torch.float64)
 
             @property
-            def lats(self):
-                return torch.linspace(0.25, np.pi - 0.25, 3)
+            def colat_weights(self):
+                return torch.tensor([0.4, 1.2, 0.4], dtype=torch.float64)
+
+            def lons(self, ilat=None):
+                n = int(self.nlon_per_lat[ilat])
+                return torch.arange(n, dtype=torch.float64) * (2.0 * np.pi / n)
 
         # Assigned after the class body rather than in it: __init_subclass__ enters
         # a class into the grid registry only when the class body declares its own
