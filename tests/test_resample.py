@@ -118,16 +118,16 @@ class TestResampleS2(unittest.TestCase):
         #                 f"expand_poles must be False for this test ({grid_in}→{grid_out}), "
         #                  f"otherwise pole extrapolation breaks linear exactness")
 
-        lats_in, _ = precompute_latitudes(nlat_in, grid=grid_in)
-        lats_out, _ = precompute_latitudes(nlat_out, grid=grid_out)
+        colats_in, _ = precompute_latitudes(nlat_in, grid=grid_in)
+        colats_out, _ = precompute_latitudes(nlat_out, grid=grid_out)
 
         # f(θ, φ) = θ — constant across longitude, linear in latitude
-        data = lats_in.float().to(self.device).unsqueeze(-1).expand(nlat_in, nlon_in).contiguous()
+        data = colats_in.float().to(self.device).unsqueeze(-1).expand(nlat_in, nlon_in).contiguous()
         data = data.unsqueeze(0).unsqueeze(0)  # (1, 1, nlat_in, nlon_in)
 
         out = resample(data)
 
-        expected = lats_out.float().to(self.device).unsqueeze(-1).expand(nlat_out, nlon_out).contiguous()
+        expected = colats_out.float().to(self.device).unsqueeze(-1).expand(nlat_out, nlon_out).contiguous()
         expected = expected.unsqueeze(0).unsqueeze(0)  # (1, 1, nlat_out, nlon_out)
 
         # the pole value would differ if this is true

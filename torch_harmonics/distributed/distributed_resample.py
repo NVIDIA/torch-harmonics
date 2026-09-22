@@ -109,29 +109,29 @@ class DistributedResampleS2(nn.Module):
         self.lon_out_shapes = list(self.shard_out.lon_shapes)
 
         # for upscaling the latitudes we will use interpolation
-        self.lats_in = self.grid_in.colats
+        self.colats_in = self.grid_in.colats
         self.lons_in = self.grid_in.lons()
-        self.lats_out = self.grid_out.colats
+        self.colats_out = self.grid_out.colats
         self.lons_out = self.grid_out.lons()
 
-        # in the case where some points lie outside of the range spanned by lats_in,
+        # in the case where some points lie outside of the range spanned by colats_in,
         # we need to expand the solution to the poles before interpolating
         # bool(), not a 0-dim tensor: this is branched on in forward, and a tensor
         # there is data-dependent control flow that breaks torch.compile(fullgraph=True)
-        self.expand_poles = bool((self.lats_out > self.lats_in[-1]).any() or (self.lats_out < self.lats_in[0]).any())
+        self.expand_poles = bool((self.colats_out > self.colats_in[-1]).any() or (self.colats_out < self.colats_in[0]).any())
         if self.expand_poles:
-            self.lats_in = torch.cat([torch.tensor([0.0], dtype=torch.float64), self.lats_in, torch.tensor([math.pi], dtype=torch.float64)]).contiguous()
+            self.colats_in = torch.cat([torch.tensor([0.0], dtype=torch.float64), self.colats_in, torch.tensor([math.pi], dtype=torch.float64)]).contiguous()
 
         # prepare the interpolation by computing indices to the left and right of each output latitude
-        lat_idx = torch.searchsorted(self.lats_in, self.lats_out, side="right") - 1
+        lat_idx = torch.searchsorted(self.colats_in, self.colats_out, side="right") - 1
         # make sure that we properly treat the last point if they coincide with the pole
-        lat_idx = torch.where(self.lats_out == self.lats_in[-1], lat_idx - 1, lat_idx)
+        lat_idx = torch.where(self.colats_out == self.colats_in[-1], lat_idx - 1, lat_idx)
 
-        # lat_idx = np.where(self.lats_out > self.lats_in[-1], lat_idx - 1, lat_idx)
-        # lat_idx = np.where(self.lats_out < self.lats_in[0], 0, lat_idx)
+        # lat_idx = np.where(self.colats_out > self.colats_in[-1], lat_idx - 1, lat_idx)
+        # lat_idx = np.where(self.colats_out < self.colats_in[0], 0, lat_idx)
 
         # compute the interpolation weights along the latitude
-        lat_weights = ((self.lats_out - self.lats_in[lat_idx]) / torch.diff(self.lats_in)[lat_idx]).to(torch.float32)
+        lat_weights = ((self.colats_out - self.colats_in[lat_idx]) / torch.diff(self.colats_in)[lat_idx]).to(torch.float32)
         lat_weights = lat_weights.unsqueeze(-1)
 
         # register buffers

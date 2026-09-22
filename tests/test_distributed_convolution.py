@@ -576,12 +576,12 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         # servable on a coarse polar split and not on a fine one. The assertion is then that the
         # constructor agrees -- refusing exactly when the support outruns a neighbour, and saying
         # which mode to use instead.
-        lats_in, _ = precompute_latitudes(nlat_in, grid=grid_in)
-        lats_out, _ = precompute_latitudes(nlat_out, grid=grid_out)
+        colats_in, _ = precompute_latitudes(nlat_in, grid=grid_in)
+        colats_out, _ = precompute_latitudes(nlat_out, grid=grid_out)
         try:
             compute_polar_halo_radius(
-                lats_in,
-                lats_out,
+                colats_in,
+                colats_out,
                 effective_theta_cutoff(theta_cutoff),
                 compute_split_shapes(nlat_in, self.grid_size_h),
                 compute_split_shapes(nlat_out, self.grid_size_h),

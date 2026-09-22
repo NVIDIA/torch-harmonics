@@ -195,8 +195,8 @@ def _precompute_convolution_tensor_dense(
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
 
-    lats_in, win = precompute_latitudes(nlat_in, grid=grid_in)
-    lats_out, wout = precompute_latitudes(nlat_out, grid=grid_out)
+    colats_in, win = precompute_latitudes(nlat_in, grid=grid_in)
+    colats_out, wout = precompute_latitudes(nlat_out, grid=grid_out)
 
     # compute the phi differences.
     lons_in = precompute_longitudes(nlon_in)
@@ -217,9 +217,9 @@ def _precompute_convolution_tensor_dense(
 
     for t in range(nlat_out):
         for p in range(nlon_out):
-            alpha = -lats_out[t]
+            alpha = -colats_out[t]
             beta = lons_in - lons_out[p]
-            gamma = lats_in.reshape(-1, 1)
+            gamma = colats_in.reshape(-1, 1)
 
             # compute latitude of the rotated position
             z = -torch.cos(beta) * torch.sin(alpha) * torch.sin(gamma) + torch.cos(alpha) * torch.cos(gamma)

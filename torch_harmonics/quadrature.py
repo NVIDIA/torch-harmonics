@@ -256,7 +256,7 @@ def effective_theta_cutoff(theta_cutoff: float, theta_eps: Optional[float] = THE
     return (1.0 + theta_eps) * theta_cutoff
 
 
-def latitude_support_band(lats_in: torch.Tensor, lats_out: torch.Tensor, theta_cutoff: float) -> Tuple[torch.Tensor, torch.Tensor]:
+def latitude_support_band(colats_in: torch.Tensor, colats_out: torch.Tensor, theta_cutoff: float) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Inclusive range of input latitudes that can lie within ``theta_cutoff`` of each output latitude.
 
@@ -286,9 +286,9 @@ def latitude_support_band(lats_in: torch.Tensor, lats_out: torch.Tensor, theta_c
 
     Parameters
     ----------
-    lats_in : torch.Tensor
+    colats_in : torch.Tensor
         Input colatitudes in radians, ascending, shape ``(nlat_in,)``.
-    lats_out : torch.Tensor
+    colats_out : torch.Tensor
         Output colatitudes in radians, ascending, shape ``(nlat_out,)``.
     theta_cutoff : float
         Angular support radius of the filter basis. Pass the same effective value the sparsity
@@ -315,20 +315,20 @@ def latitude_support_band(lats_in: torch.Tensor, lats_out: torch.Tensor, theta_c
     --------
     >>> import torch
     >>> from torch_harmonics.quadrature import latitude_support_band, precompute_latitudes
-    >>> lats, _ = precompute_latitudes(16)
-    >>> cutoff = 1.5 * float(lats[1] - lats[0])   # one and a half grid spacings
-    >>> lo, hi = latitude_support_band(lats, lats, cutoff)
+    >>> colats, _ = precompute_latitudes(16)
+    >>> cutoff = 1.5 * float(colats[1] - colats[0])   # one and a half grid spacings
+    >>> lo, hi = latitude_support_band(colats, colats, cutoff)
     >>> int(lo[8]), int(hi[8])
     (7, 9)
     >>> int(lo[0]), int(hi[0])                    # clamped at the pole
     (0, 1)
     """
 
-    lo = torch.searchsorted(lats_in, lats_out - theta_cutoff, right=False)
-    hi = torch.searchsorted(lats_in, lats_out + theta_cutoff, right=True) - 1
+    lo = torch.searchsorted(colats_in, colats_out - theta_cutoff, right=False)
+    hi = torch.searchsorted(colats_in, colats_out + theta_cutoff, right=True) - 1
 
     # lo may run one past the end and hi one before the start; both encode an empty band
-    return lo.clamp(0, lats_in.numel()), hi.clamp(-1, lats_in.numel() - 1)
+    return lo.clamp(0, colats_in.numel()), hi.clamp(-1, colats_in.numel() - 1)
 
 
 def trapezoidal_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 1.0, periodic: Optional[bool] = False) -> Tuple[torch.Tensor, torch.Tensor]:

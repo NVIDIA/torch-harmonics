@@ -1214,8 +1214,8 @@ class _PolarHaloReduceFn(torch.autograd.Function):
 
 @torch.compiler.disable()
 def compute_polar_halo_radius(
-    lats_in: torch.Tensor,
-    lats_out: torch.Tensor,
+    colats_in: torch.Tensor,
+    colats_out: torch.Tensor,
     theta_cutoff: float,
     lat_in_shapes: List[int],
     lat_out_shapes: List[int],
@@ -1240,9 +1240,9 @@ def compute_polar_halo_radius(
 
     Parameters
     ----------
-    lats_in : torch.Tensor
+    colats_in : torch.Tensor
         Input colatitudes in radians, ascending, shape ``(nlat_in,)``.
-    lats_out : torch.Tensor
+    colats_out : torch.Tensor
         Output colatitudes in radians, ascending, shape ``(nlat_out,)``.
     theta_cutoff : float
         Effective angular support radius, i.e. including the widening the sparsity pattern is
@@ -1269,7 +1269,7 @@ def compute_polar_halo_radius(
     if comm_size <= 1:
         return 0
 
-    lo, hi = latitude_support_band(lats_in, lats_out, theta_cutoff)
+    lo, hi = latitude_support_band(colats_in, colats_out, theta_cutoff)
 
     in_starts = [0]
     out_starts = [0]
