@@ -36,11 +36,10 @@ from torch_harmonics.utils import check
 
 # Input validation helpers.
 #
-# These exist because torch._check messages have to survive dynamo: the message
-# argument must be a callable whose closure captures only Python constants. An
-# inline ``lambda: f"... {tensor.dim()} ..."`` captures the tensor (and, when it
-# mentions a module attribute, ``self``), which makes the enclosing function
-# impossible to trace with fullgraph=True.
+# These exist because torch._check messages have to survive dynamo. A *callable*
+# message never traces -- not even one returning a constant -- which is why the
+# codebase routes these through torch_harmonics.utils.check, and why a message
+# that has to interpolate a runtime value cannot simply be inlined here.
 #
 # The two cases differ in what can be reported:
 #   - rank is static under dynamo, so the actual value is safe to interpolate
@@ -88,7 +87,7 @@ def _check_dtypes_match(tensors) -> None:
     # with both actual dtypes, and this check only has to fire first.
     ref = tensors[0].dtype
     for tensor in tensors[1:]:
-        torch._check(tensor.dtype == ref, "all attention inputs must share a single dtype")
+        check(tensor.dtype == ref, "all attention inputs must share a single dtype")
 
 
 # Shared backward-context helper used by both the torch reference kernels

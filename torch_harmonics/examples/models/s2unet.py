@@ -36,6 +36,7 @@ import torch.nn as nn
 
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2, ResampleS2
 from torch_harmonics.examples.models._layers import DropPath
+from torch_harmonics.grid import as_grid
 
 
 # heuristic for finding theta_cutoff
@@ -121,14 +122,12 @@ class DownsamplingBlock(nn.Module):
             theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
             self.fwd.append(
                 DiscreteContinuousConvS2(
+                    grid_in=as_grid(grid_out, nlat=in_shape[0], nlon=in_shape[1]),
+                    grid_out=as_grid(grid_out, nlat=in_shape[0], nlon=in_shape[1]),
                     in_channels=(in_channels if i == 0 else out_channels),
                     out_channels=out_channels,
-                    in_shape=in_shape,
-                    out_shape=in_shape,
                     kernel_shape=kernel_shape,
                     basis_type=basis_type,
-                    grid_in=grid_out,
-                    grid_out=grid_out,
                     bias=False,
                     theta_cutoff=theta_cutoff,
                 )
@@ -148,25 +147,19 @@ class DownsamplingBlock(nn.Module):
         if downsampling_mode == "conv":
             theta_cutoff = _compute_cutoff_radius(out_shape[0], kernel_shape, basis_type)
             self.downsample = DiscreteContinuousConvS2(
+                as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+                as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
                 out_channels,
                 out_channels,
-                in_shape=in_shape,
-                out_shape=out_shape,
                 kernel_shape=kernel_shape,
                 basis_type=basis_type,
-                grid_in=grid_in,
-                grid_out=grid_out,
                 bias=False,
                 theta_cutoff=theta_cutoff,
             )
         else:
             self.downsample = ResampleS2(
-                nlat_in=in_shape[0],
-                nlon_in=in_shape[1],
-                nlat_out=out_shape[0],
-                nlon_out=out_shape[1],
-                grid_in=grid_in,
-                grid_out=grid_out,
+                as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+                as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
                 mode=downsampling_mode,
             )
 
@@ -284,28 +277,24 @@ class UpsamplingBlock(nn.Module):
                 theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
                 self.upsample = nn.Sequential(
                     DiscreteContinuousConvTransposeS2(
+                        grid_in=as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+                        grid_out=as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
                         in_channels=out_channels,
                         out_channels=out_channels,
-                        in_shape=in_shape,
-                        out_shape=out_shape,
                         kernel_shape=kernel_shape,
                         basis_type=basis_type,
-                        grid_in=grid_in,
-                        grid_out=grid_out,
                         bias=False,
                         theta_cutoff=theta_cutoff,
                     ),
                     nn.BatchNorm2d(out_channels, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
                     activation(),
                     DiscreteContinuousConvS2(
+                        grid_in=as_grid(grid_in, nlat=out_shape[0], nlon=out_shape[1]),
+                        grid_out=as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
                         in_channels=out_channels,
                         out_channels=out_channels,
-                        in_shape=out_shape,
-                        out_shape=out_shape,
                         kernel_shape=kernel_shape,
                         basis_type=basis_type,
-                        grid_in=grid_in,
-                        grid_out=grid_out,
                         bias=False,
                         theta_cutoff=theta_cutoff,
                     ),
@@ -313,25 +302,19 @@ class UpsamplingBlock(nn.Module):
 
             else:
                 self.upsample = ResampleS2(
-                    nlat_in=in_shape[0],
-                    nlon_in=in_shape[1],
-                    nlat_out=out_shape[0],
-                    nlon_out=out_shape[1],
-                    grid_in=grid_in,
-                    grid_out=grid_out,
+                    as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+                    as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
                     mode=upsampling_mode,
                 )
         else:
             theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
             self.upsample = DiscreteContinuousConvS2(
+                grid_in=as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+                grid_out=as_grid(grid_out, nlat=in_shape[0], nlon=in_shape[1]),
                 in_channels=out_channels,
                 out_channels=out_channels,
-                in_shape=in_shape,
-                out_shape=in_shape,
                 kernel_shape=kernel_shape,
                 basis_type=basis_type,
-                grid_in=grid_in,
-                grid_out=grid_out,
                 bias=False,
                 theta_cutoff=theta_cutoff,
             )
@@ -342,14 +325,12 @@ class UpsamplingBlock(nn.Module):
             theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
             self.fwd.append(
                 DiscreteContinuousConvS2(
+                    grid_in=as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+                    grid_out=as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
                     in_channels=in_channels,
                     out_channels=(out_channels if i == nrep - 1 else in_channels),
-                    in_shape=in_shape,
-                    out_shape=in_shape,
                     kernel_shape=kernel_shape,
                     basis_type=basis_type,
-                    grid_in=grid_in,
-                    grid_out=grid_in,
                     bias=False,
                     theta_cutoff=theta_cutoff,
                 )

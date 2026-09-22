@@ -28,11 +28,13 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
+
 from typing import List
 
 import torch
 import torch.distributed as dist
 
+from torch_harmonics.partition import compute_split_shapes
 from torch_harmonics.quadrature import latitude_support_band
 from torch_harmonics.utils import check
 
@@ -75,52 +77,6 @@ def _check_shapes(msg, shapes_gather, shapes_expected):
 
 
 # helper routine to compute uneven splitting in balanced way:
-def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
-    r"""
-    Compute balanced chunk sizes for distributing a dimension across ranks.
-
-    Divides ``size`` elements into ``num_chunks`` pieces that differ by at most
-    one element.  The first ``size % num_chunks`` chunks receive one extra
-    element; the remaining chunks get the base size ``size // num_chunks``.
-
-    This is used internally by every distributed module to determine how
-    latitudes, longitudes, and spectral modes are partitioned across process
-    groups.
-
-    Parameters
-    ----------
-    size : int
-        Total number of elements to split (e.g.\ ``nlat`` or ``nlon``).
-    num_chunks : int
-        Number of chunks (typically the process-group size).
-
-    Returns
-    -------
-    List[int]
-        Per-rank chunk sizes, ordered by rank.
-
-    Raises
-    ------
-    RuntimeError
-        If ``size < num_chunks`` (every chunk must be non-empty).
-
-    Examples
-    --------
-    >>> from torch_harmonics.distributed import compute_split_shapes
-    >>> compute_split_shapes(256, 4)
-    [64, 64, 64, 64]
-    >>> compute_split_shapes(128, 3)
-    [43, 43, 42]
-    >>> compute_split_shapes(10, 4)
-    [3, 3, 2, 2]
-    """
-
-    check(size >= num_chunks, lambda: f"Cannot split {size} elements into {num_chunks} chunks; every chunk must be non-empty.")
-
-    base, remainder = divmod(size, num_chunks)
-    return [base + 1] * remainder + [base] * (num_chunks - remainder)
-
-
 def split_tensor_along_dim(tensor, dim, num_chunks):
     r"""
     Split a tensor along a given dimension into balanced chunks.
@@ -1258,8 +1214,8 @@ class _PolarHaloReduceFn(torch.autograd.Function):
 
 @torch.compiler.disable()
 def compute_polar_halo_radius(
-    lats_in: torch.Tensor,
-    lats_out: torch.Tensor,
+    colats_in: torch.Tensor,
+    colats_out: torch.Tensor,
     theta_cutoff: float,
     lat_in_shapes: List[int],
     lat_out_shapes: List[int],
@@ -1284,9 +1240,9 @@ def compute_polar_halo_radius(
 
     Parameters
     ----------
-    lats_in : torch.Tensor
+    colats_in : torch.Tensor
         Input colatitudes in radians, ascending, shape ``(nlat_in,)``.
-    lats_out : torch.Tensor
+    colats_out : torch.Tensor
         Output colatitudes in radians, ascending, shape ``(nlat_out,)``.
     theta_cutoff : float
         Effective angular support radius, i.e. including the widening the sparsity pattern is
@@ -1313,7 +1269,7 @@ def compute_polar_halo_radius(
     if comm_size <= 1:
         return 0
 
-    lo, hi = latitude_support_band(lats_in, lats_out, theta_cutoff)
+    lo, hi = latitude_support_band(colats_in, colats_out, theta_cutoff)
 
     in_starts = [0]
     out_starts = [0]

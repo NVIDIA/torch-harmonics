@@ -178,8 +178,8 @@ def get_filter_basis(kernel_shape: Union[int, Tuple[int], Tuple[int, int]], basi
     --------
     >>> from torch_harmonics.filter_basis import get_filter_basis
     >>> fb = get_filter_basis((5, 4), "piecewise linear")
-    >>> fb.kernel_size
-    16
+    >>> fb.kernel_size  # (n_radial // 2) * n_angular + n_radial % 2
+    9
     """
 
     if basis_type == "piecewise linear":

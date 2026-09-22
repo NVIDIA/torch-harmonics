@@ -103,10 +103,28 @@ compute_split_shapes(128, 3)
 # [43, 43, 42]
 ```
 
-Every distributed module calls this function internally to determine local
-slice sizes, so the user normally does not need to call it directly. It is
-useful however when preparing input data: each rank must hold only its local
-tile.
+The distributed modules no longer call this directly for their own geometry.
+They ask the grid instead: {meth}`~torch_harmonics.grid.RegularGridS2.shard` returns a
+{class}`~torch_harmonics.grid.GridShardS2` describing one rank's piece, and the
+modules read their extents off that. How a grid decomposes is a property of the
+grid, which matters once a grid has no single `nlon` to split, as a reduced
+Gaussian grid does not.
+
+```python
+import torch_harmonics as th
+
+grid = th.as_grid("equiangular", nlat=128, nlon=256)
+shard = grid.shard(polar=(polar_rank, num_polar), azimuth=(azimuth_rank, num_azimuth))
+
+shard.nlat, shard.nlon          # this rank's extent
+shard.lat_offset                # where it starts in the global grid
+shard.lat_shapes                # what every polar rank holds
+shard.lats, shard.quad_weights  # this rank's slice of the geometry
+```
+
+`compute_split_shapes` remains the right tool for splitting your own tensors
+along a dimension that is not grid geometry -- channels, for instance -- and
+for preparing input data, since each rank must hold only its local tile.
 
 ### The `split_tensor_along_dim` helper
 
@@ -140,15 +158,16 @@ needs the sub-tensor that corresponds to its polar and azimuth indices:
 ```python
 nlat, nlon = 512, 1024
 
-# compute per-rank chunk sizes
-lat_shapes = compute_split_shapes(nlat, num_polar)    # e.g. [256, 256]
-lon_shapes = compute_split_shapes(nlon, num_azimuth)   # e.g. [256, 256, 256, 256]
-
-# local sizes for this rank
+# the grid knows how it decomposes; ask it for this rank's piece
 polar_rank = thd.polar_group_rank()
 azimuth_rank = thd.azimuth_group_rank()
-nlat_local = lat_shapes[polar_rank]
-nlon_local = lon_shapes[azimuth_rank]
+
+grid = th.as_grid("equiangular", nlat=nlat, nlon=nlon)
+shard = grid.shard(polar=(polar_rank, num_polar), azimuth=(azimuth_rank, num_azimuth))
+
+lat_shapes = list(shard.lat_shapes)     # e.g. [256, 256]
+lon_shapes = list(shard.lon_shapes)     # e.g. [256, 256, 256, 256]
+nlat_local, nlon_local = shard.shape
 
 # slice the global tensor (only for illustration — in practice each rank
 # typically loads or generates only its own tile)
@@ -170,14 +189,17 @@ Note that the input must have at least three dimensions `(N, nlat_local, nlon_lo
 channel) dimensions:
 
 ```python
+import torch_harmonics as th
 import torch_harmonics.distributed as thd
 
 batch, channels = 4, 16
 x_local = torch.randn(batch, channels, nlat_local, nlon_local, device="cuda")
 
-# create the distributed forward / inverse SHT with *global* grid sizes
-sht  = thd.DistributedRealSHT(nlat, nlon, grid="equiangular").cuda()
-isht = thd.DistributedInverseRealSHT(nlat, nlon, grid="equiangular").cuda()
+# the descriptor is the *global* grid; each rank derives its own shard from it
+grid = th.as_grid("equiangular", nlat=nlat, nlon=nlon)
+
+sht  = thd.DistributedRealSHT(grid).cuda()
+isht = thd.DistributedInverseRealSHT(grid).cuda()
 
 # each rank passes only its local tile
 coeffs  = sht(x_local)           # (4, 16, lmax_local, mmax_local), complex
@@ -231,8 +253,8 @@ Putting it all together as a script that can be launched with
 
 import torch
 import torch.distributed as dist
+import torch_harmonics as th
 import torch_harmonics.distributed as thd
-from torch_harmonics.distributed import compute_split_shapes
 
 def main():
     dist.init_process_group(backend="nccl")
@@ -264,17 +286,19 @@ def main():
 
     # --- 2. Prepare local data ---
     nlat, nlon = 512, 1024
-    lat_shapes = compute_split_shapes(nlat, num_polar)
-    lon_shapes = compute_split_shapes(nlon, num_azimuth)
-    nlat_local = lat_shapes[thd.polar_group_rank()]
-    nlon_local = lon_shapes[thd.azimuth_group_rank()]
+    grid = th.as_grid("equiangular", nlat=nlat, nlon=nlon)
+    shard = grid.shard(
+        polar=(thd.polar_group_rank(), num_polar),
+        azimuth=(thd.azimuth_group_rank(), num_azimuth),
+    )
+    nlat_local, nlon_local = shard.shape
 
     batch, channels = 4, 16
     x_local = torch.randn(batch, channels, nlat_local, nlon_local, device="cuda")
 
     # --- 3. Distributed SHT round-trip ---
-    sht  = thd.DistributedRealSHT(nlat, nlon, grid="equiangular").cuda()
-    isht = thd.DistributedInverseRealSHT(nlat, nlon, grid="equiangular").cuda()
+    sht  = thd.DistributedRealSHT(grid).cuda()
+    isht = thd.DistributedInverseRealSHT(grid).cuda()
 
     coeffs  = sht(x_local)    # (4, 16, lmax_local, mmax_local)
     x_recon = isht(coeffs)    # (4, 16, nlat_local, nlon_local)

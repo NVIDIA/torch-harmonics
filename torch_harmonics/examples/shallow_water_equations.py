@@ -37,7 +37,7 @@ import torch
 import torch.nn as nn
 
 import torch_harmonics as th
-from torch_harmonics.quadrature import precompute_longitudes
+from torch_harmonics.grid import as_grid
 
 
 class ShallowWaterSolver(nn.Module):
@@ -92,27 +92,24 @@ class ShallowWaterSolver(nn.Module):
         self.register_buffer("hamp", torch.as_tensor(hamp, dtype=torch.float64))
 
         # SHT
-        self.sht = th.RealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.isht = th.InverseRealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.vsht = th.RealVectorSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.ivsht = th.InverseRealVectorSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
+        self.sht = th.RealSHT(as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=mmax, csphase=False)
+        self.isht = th.InverseRealSHT(as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=mmax, csphase=False)
+        self.vsht = th.RealVectorSHT(as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=mmax, csphase=False)
+        self.ivsht = th.InverseRealVectorSHT(as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=mmax, csphase=False)
 
         self.lmax = lmax or self.sht.lmax
         self.mmax = lmax or self.sht.mmax
 
-        # compute gridpoints
-        if self.grid == "legendre-gauss":
-            cost, quad_weights = th.quadrature.legendre_gauss_weights(self.nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, quad_weights = th.quadrature.lobatto_weights(self.nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, quad_weights = th.quadrature.clenshaw_curtiss_weights(self.nlat, -1, 1)
-
-        quad_weights = quad_weights.reshape(-1, 1)
-
-        # apply cosine transform and flip them
-        lats = -torch.arcsin(cost)
-        lons = precompute_longitudes(self.nlon)
+        # compute gridpoints. Nodes and weights come from the same descriptor call, so
+        # they are ordered consistently -- north to south -- instead of pairing an
+        # unflipped weight with a flipped node and relying on the rule being symmetric.
+        quadrature_grid = as_grid(self.grid, nlat=self.nlat, nlon=self.nlon)
+        # per-point solid-angle weights, so integrate_grid does not have to reconstruct
+        # the longitudinal factor. Kept in (nlat, nlon) so the polar_opt slicing below
+        # still indexes rings on axis -2.
+        quad_weights = quadrature_grid.quad_weights.reshape(self.nlat, self.nlon)
+        lats = quadrature_grid.lats
+        lons = quadrature_grid.lons()
 
         self.lmax = self.sht.lmax
         self.mmax = self.sht.mmax
@@ -321,12 +318,13 @@ class ShallowWaterSolver(nn.Module):
 
     def integrate_grid(self, ugrid, dimensionless=False, polar_opt=0):
         """Integrate the solution on the grid."""
-        dlon = 2 * torch.pi / self.nlon
+        # no dlon here: self.quad_weights is the per-point solid angle and already
+        # carries the longitudinal factor, per ring
         radius = 1 if dimensionless else self.radius
         if polar_opt > 0:
-            out = torch.sum(ugrid[..., polar_opt:-polar_opt, :] * self.quad_weights[polar_opt:-polar_opt] * dlon * radius**2, dim=(-2, -1))
+            out = torch.sum(ugrid[..., polar_opt:-polar_opt, :] * self.quad_weights[polar_opt:-polar_opt] * radius**2, dim=(-2, -1))
         else:
-            out = torch.sum(ugrid * self.quad_weights * dlon * radius**2, dim=(-2, -1))
+            out = torch.sum(ugrid * self.quad_weights * radius**2, dim=(-2, -1))
         return out
 
     def plot_griddata(self, data, fig, cmap="twilight_shifted", vmax=None, vmin=None, projection="3d", title=None, antialiased=False):

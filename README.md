@@ -227,10 +227,21 @@ batch_size = 32
 signal = torch.randn(batch_size, nlat, nlon, device=device)
 
 # transform data on an equiangular grid
-sht = th.RealSHT(nlat, nlon, grid="equiangular").to(device)
+grid = th.as_grid("equiangular", nlat=nlat, nlon=nlon)
+sht = th.RealSHT(grid).to(device)
 
 coeffs = sht(signal)
 ```
+
+Every layer takes a grid descriptor rather than a resolution and a grid name.
+A `GridS2` holds both, along with everything that follows from where the nodes
+sit: the quadrature weights, the angular cutoff localized operators default to,
+and the degree an SHT can be truncated to without losing orthogonality. Layers
+that map between two grids take `grid_in` and `grid_out` in that first position,
+and the distributed layers take the *global* grid, deriving each rank's shard
+from it. Passing a resolution where a descriptor belongs raises a `TypeError`
+naming the replacement. See [Grids](https://nvidia.github.io/torch-harmonics/api/utilities.html#grids)
+for the full descriptor API.
 
 To enable scalable model-parallelism, `torch-harmonics` implements a distributed variant of the SHT located in `torch_harmonics.distributed`.
 
@@ -286,7 +297,7 @@ Note that torch-harmonics uses Fourier transforms from `torch.fft` which in turn
 import torch
 import torch_harmonics as th
 
-sht = th.RealSHT(512, 1024, grid="equiangular").cuda()
+sht = th.RealSHT(th.as_grid("equiangular", nlat=512, nlon=1024)).cuda()
 
 with torch.autocast(device_type="cuda", enabled = True):
    # do some AMP converted math here

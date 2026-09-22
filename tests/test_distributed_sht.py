@@ -189,11 +189,11 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         # set up handles
         if vector:
-            forward_transform_local = th.RealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            forward_transform_dist = thd.DistributedRealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            forward_transform_local = th.RealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=lmax).to(self.device)
+            forward_transform_dist = thd.DistributedRealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=lmax).to(self.device)
         else:
-            forward_transform_local = th.RealSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            forward_transform_dist = thd.DistributedRealSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            forward_transform_local = th.RealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=lmax).to(self.device)
+            forward_transform_dist = thd.DistributedRealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=lmax).to(self.device)
 
         # create tensors
         if vector:
@@ -322,13 +322,13 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         B, C, H, W = batch_size, num_chan, nlat, nlon
 
         if vector:
-            forward_transform_local = th.RealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            backward_transform_local = th.InverseRealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            backward_transform_dist = thd.DistributedInverseRealVectorSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            forward_transform_local = th.RealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=lmax).to(self.device)
+            backward_transform_local = th.InverseRealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=lmax).to(self.device)
+            backward_transform_dist = thd.DistributedInverseRealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=lmax).to(self.device)
         else:
-            forward_transform_local = th.RealSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            backward_transform_local = th.InverseRealSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            backward_transform_dist = thd.DistributedInverseRealSHT(nlat=H, nlon=W, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            forward_transform_local = th.RealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=lmax).to(self.device)
+            backward_transform_local = th.InverseRealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=lmax).to(self.device)
+            backward_transform_dist = thd.DistributedInverseRealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=lmax).to(self.device)
 
         # create tensors
         if vector:
@@ -418,16 +418,16 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         set_seed(333)
 
         if vector:
-            fwd_dist = thd.DistributedRealVectorSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            fwd_local = th.RealVectorSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            inv_dist = thd.DistributedInverseRealVectorSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            inv_local = th.InverseRealVectorSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            fwd_dist = thd.DistributedRealVectorSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device)
+            fwd_local = th.RealVectorSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device)
+            inv_dist = thd.DistributedInverseRealVectorSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device)
+            inv_local = th.InverseRealVectorSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device)
             fwd_buf, inv_buf = "weights", "dpct"
         else:
-            fwd_dist = thd.DistributedRealSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            fwd_local = th.RealSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            inv_dist = thd.DistributedInverseRealSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
-            inv_local = th.InverseRealSHT(nlat=nlat, nlon=nlon, lmax=lmax, mmax=lmax, grid=grid).to(self.device)
+            fwd_dist = thd.DistributedRealSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device)
+            fwd_local = th.RealSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device)
+            inv_dist = thd.DistributedInverseRealSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device)
+            inv_local = th.InverseRealSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device)
             fwd_buf, inv_buf = "weights", "pct"
 
         # offsets are recomputed here from the per-rank shape lists rather than read off the

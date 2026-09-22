@@ -29,68 +29,14 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import math
 import warnings
 from typing import Optional, Tuple
 
-
-def _truncate_lmax(nlat: int, grid: Optional[str] = "equiangular") -> int:
-    """
-    Truncate the maximum spherical harmonic degree based on the latitude grid. The maximum degree
-    corresponds to the maximum degree of associated Legendre polynomials that can be square-integrated
-    exactly.
-
-    | Grid Type           | Includes Poles? | Exactness       | Heuristic ($L_{\text{max}}$) |
-    | :---                | :---:           | :---:           | :---:                        |
-    | Legendre-Gauss (GL) | No              | $2N - 1$        | $N - 1$                      |
-    | Gauss-Lobatto (GLL) | Yes             | $2N - 3$        | $N - 2$                      |
-    | Equiangular (CC)    | Yes             | $\approx N - 1$ | $\approx N/2$                |
-
-    Parameters
-    ----------
-    nlat : int
-        Number of latitude points
-    grid : str, optional
-        Grid type (``"legendre-gauss"``, ``"lobatto"``, ``"equiangular"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
-
-    Returns
-    -------
-    int
-        Maximum spherical harmonic degree (non-inclusive)
-    """
-    if grid == "legendre-gauss":
-        return nlat
-    elif grid == "lobatto":
-        return nlat - 1
-    elif grid in ["equiangular", "equiangular-trapezoidal"]:
-        warnings.warn(
-            "Default SHT truncation changed in v0.9.0: equiangular/equiangular-trapezoidal grids now truncate to (nlat+1)//2. " "Specify lmax explicitly to override.",
-            UserWarning,
-            stacklevel=2,
-        )
-        return (nlat + 1) // 2
-    else:
-        raise ValueError(f"Unknown grid type {grid}")
+from torch_harmonics.grid import PointSetS2, RegularGridS2, require_point_set, require_regular_grid
 
 
-def _truncate_mmax(nlon: int) -> int:
-    """
-    Truncate the maximum azimuthal harmonic degree based on the longitude grid. This is the same as the
-    Nyquist frequency.
-
-    Parameters
-    ----------
-    nlon : int
-        Number of longitude points
-
-    Returns
-    -------
-    int
-        Maximum azimuthal harmonic degree (non-inclusive)
-    """
-    return nlon // 2 + 1
-
-
-def truncate_sht(nlat: int, nlon: int, lmax: Optional[int] = None, mmax: Optional[int] = None, grid: Optional[str] = "equiangular") -> Tuple[int, int]:
+def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None) -> Tuple[int, int]:
     r"""
     Determine the maximum spherical harmonic degree and order for an SHT based
     on the spatial grid.
@@ -116,7 +62,7 @@ def truncate_sht(nlat: int, nlon: int, lmax: Optional[int] = None, mmax: Optiona
          - Yes
          - :math:`2 N_\theta - 3`
          - :math:`N_\theta - 1`
-       * - ``"equiangular"`` / ``"equiangular-trapezoidal"``
+       * - ``"equiangular"`` / ``"trapezoidal"``
          - Yes
          - :math:`\approx N_\theta - 1`
          - :math:`\lfloor (N_\theta + 1) / 2 \rfloor`
@@ -128,12 +74,17 @@ def truncate_sht(nlat: int, nlon: int, lmax: Optional[int] = None, mmax: Optiona
     :math:`l_{\max} = m_{\max} = \min(l_{\max},\, m_{\max})`, so that every
     retained degree has a full set of orders.
 
+    The bounds themselves come from the grid descriptor
+    (:attr:`~torch_harmonics.grid.PointSetS2.max_exact_degree` and
+    :attr:`~torch_harmonics.grid.RegularGridS2.max_azimuthal_order`), which reports what
+    the grid can represent. This routine owns the *policy* on top of that: applying
+    user overrides, enforcing the triangular truncation, and warning where the
+    default changed.
+
     Parameters
     ----------
-    nlat : int
-        Number of latitude points :math:`N_\theta`.
-    nlon : int
-        Number of longitude points :math:`N_\lambda`.
+    grid : RegularGridS2
+        Descriptor of the spatial grid the transform operates on.
     lmax : int, optional
         User-defined maximum spherical harmonic degree (non-inclusive).
         If not provided, the maximum degree is determined from the latitude
@@ -142,9 +93,6 @@ def truncate_sht(nlat: int, nlon: int, lmax: Optional[int] = None, mmax: Optiona
         User-defined maximum azimuthal harmonic order (non-inclusive).
         If not provided, set to the Nyquist limit
         :math:`\lfloor N_\lambda / 2 \rfloor + 1`.
-    grid : str, optional
-        Grid type (``"legendre-gauss"``, ``"lobatto"``, ``"equiangular"``,
-        ``"equiangular-trapezoidal"``), by default ``"equiangular"``.
 
     Returns
     -------
@@ -155,21 +103,179 @@ def truncate_sht(nlat: int, nlon: int, lmax: Optional[int] = None, mmax: Optiona
 
     Examples
     --------
-    >>> from torch_harmonics import truncate_sht
-    >>> truncate_sht(128, 256, grid="legendre-gauss")
+    >>> from torch_harmonics import as_grid, truncate_sht
+    >>> truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=256))
     (128, 128)
-    >>> truncate_sht(128, 256, grid="lobatto")
+    >>> truncate_sht(as_grid("lobatto", nlat=128, nlon=256))
     (127, 127)
-    >>> truncate_sht(128, 256, grid="equiangular")
-    (64, 64)
+    >>> truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=256), lmax=32)
+    (32, 32)
     """
 
-    # determine the maximum degrees based on user-defined values or the default values based on the grid type
-    lmax = lmax or _truncate_lmax(nlat, grid)
-    mmax = mmax or _truncate_mmax(nlon)
+    # a shard has no spectral bounds of its own; say so with the migration message
+    # rather than letting an AttributeError surface from deeper in
+    grid = require_regular_grid(grid)
+
+    # fall back to what the grid can actually represent. `is None` rather than a
+    # falsy test: lmax=0 is meaningless but should not silently become the default.
+    if lmax is None:
+        lmax = grid.max_exact_degree
+        if grid.grid_type in ("equiangular", "trapezoidal"):
+            warnings.warn(
+                "Default SHT truncation changed in v0.9.0: equiangular/trapezoidal grids now truncate to (nlat+1)//2. " "Specify lmax explicitly to override.",
+                UserWarning,
+                stacklevel=2,
+            )
+    if mmax is None:
+        mmax = grid.max_azimuthal_order
 
     # perform triangular truncation
     lmax = min(lmax, mmax)
     mmax = lmax
 
     return lmax, mmax
+
+
+def _warn_if_default_moved(grid: PointSetS2) -> None:
+    r"""
+    Announce that the default support radius differs from the pre-v0.9.3 heuristic.
+
+    Lives here rather than in :func:`torch_harmonics.quadrature.compute_theta_cutoff`
+    because it is policy, not a fact about the nodes: the descriptor property stays
+    silent, and only the routine that *chose* to default announces it. That split is
+    pinned by ``test_the_descriptor_does_not_warn``.
+
+    Only the latitude/longitude grids can have moved, since they are the only ones
+    that existed before the change; a ragged grid has no ``pi / (nlat - 1)`` past to
+    differ from and is passed over rather than warned about spuriously.
+    """
+    if not isinstance(grid, RegularGridS2):
+        return
+
+    spacing = grid.max_node_spacing
+
+    # compare the numbers rather than trusting is_uniform_in_theta, so that a grid
+    # family which sets that flag wrongly is caught here too
+    legacy = math.pi / float(grid.nlat - 1)
+    if abs(spacing - legacy) <= 1e-9 * legacy:
+        return
+
+    # two independent reasons the default can have moved, and a grid can hit both
+    reasons = []
+    if abs(grid.max_latitude_spacing - legacy) > 1e-9 * legacy:
+        reasons.append(f"its nodes are not uniform in theta, so the latitudinal spacing is {grid.max_latitude_spacing:.6f} rather than pi/(nlat-1)")
+    if grid.max_longitude_spacing > grid.max_latitude_spacing:
+        reasons.append(
+            f"its in-ring spacing ({grid.max_longitude_spacing:.6f}) exceeds its latitudinal spacing ({grid.max_latitude_spacing:.6f}), and the support has to reach the coarser neighbour"
+        )
+
+    consequence = "the previous value under-covered the grid" if spacing > legacy else "the previous value was wider than the grid warrants"
+    warnings.warn(
+        f"Default theta_cutoff changed in v0.9.3: on the '{grid.grid_type}' grid at nlat={grid.nlat}, nlon={grid.nlon} it is now "
+        f"one node spacing ({spacing:.6f}) rather than pi/(nlat-1) ({legacy:.6f}), because " + " and ".join(reasons) + f". {consequence}. "
+        "Specify theta_cutoff explicitly to override.",
+        UserWarning,
+        stacklevel=4,
+    )
+
+
+def truncate_support(grid: PointSetS2, theta_cutoff: Optional[float] = None, scale: Optional[float] = 1.0) -> float:
+    r"""
+    Determine the angular support radius of a localized operator on a grid.
+
+    The spatial counterpart of :func:`truncate_sht`. Where that decides how far
+    up in degree an SHT keeps, this decides how far out in angle the filter basis
+    of a DISCO convolution or of neighborhood attention reaches. Both take the
+    bound the grid can support, apply a user override if one is given, and warn
+    when the default they pick differs from the one a previous release used.
+
+    The default is one node spacing of the grid, so that the basis functions of
+    adjacent output points overlap and every output point sees more than the single
+    node it sits on. That spacing is a fact about the node distribution, which the
+    descriptor reports as
+    :attr:`~torch_harmonics.grid.PointSetS2.max_node_spacing`; the policy of turning
+    it into a default, of rejecting a non-positive result, and of warning that the
+    default moved, lives here.
+
+    The spacing comes off the descriptor, via
+    :attr:`~torch_harmonics.grid.PointSetS2.max_node_spacing`, which is the distance
+    to the grid's coarsest *neighbour* -- along a ring or across rings, whichever is
+    further. The free function
+    :func:`torch_harmonics.quadrature.compute_theta_cutoff` reports the latitudinal
+    spacing alone and remains available, but it is keyed on ``(nlat, grid_type)`` and
+    so can neither see the longitudinal direction nor express a family's override.
+
+    Parameters
+    ----------
+    grid : PointSetS2
+        Descriptor of the grid that sets the cutoff. This is the output grid of a
+        forward transform and the input grid of a transpose one, mirroring which
+        of the two is the coarser. It must be the global grid: a cutoff taken
+        from a shard's own spacing would differ between ranks, and ranks
+        disagreeing about the support of an operator is a correctness bug.
+
+        Any :class:`~torch_harmonics.grid.PointSetS2` is accepted, not only a ring
+        grid: a support radius is an angle, and asking for it commits the caller to
+        nothing about how the sampling is laid out. The routines that go on to build a
+        sparsity pattern from that radius impose their own requirements.
+    theta_cutoff : float, optional
+        Explicit cutoff in radians. If None (default), the grid's node spacing is
+        used. Must be positive.
+    scale : float, optional
+        Multiplier applied to the default spacing, by default 1.0. Ignored when
+        *theta_cutoff* is given, which is already a final value. Must leave the
+        resulting radius positive.
+
+    Returns
+    -------
+    float
+        Cutoff angle in radians, always positive.
+
+    Raises
+    ------
+    ValueError
+        If the resulting radius is not positive, whether it came from an explicit
+        *theta_cutoff* or from a non-positive *scale* applied to the default.
+
+    Warns
+    -----
+    UserWarning
+        On grids whose node spacing is not uniform in :math:`\theta`, where the
+        default differs from the ``pi / (nlat - 1)`` heuristic used before
+        v0.9.3. Equiangular grids are unaffected and do not warn.
+
+    See Also
+    --------
+    truncate_sht : The spectral counterpart.
+
+    Examples
+    --------
+    >>> from torch_harmonics import as_grid
+    >>> from torch_harmonics.truncation import truncate_support
+    >>> round(truncate_support(as_grid("equiangular", nlat=64, nlon=128)), 6)
+    0.049867
+    >>> truncate_support(as_grid("equiangular", nlat=64, nlon=128), theta_cutoff=0.2)
+    0.2
+    """
+
+    if theta_cutoff is None:
+        # a support radius taken from a shard would differ between ranks
+        grid = require_point_set(grid)
+        # ask the descriptor, not the grid string. The default is one grid spacing, and
+        # a grid's spacing is the distance to its coarsest *neighbour* -- which may lie
+        # along a ring rather than across rings. It is latitudinal on an equiangular grid
+        # at nlon = 2 nlat, but longitudinal on a Gauss grid at the same resolution, on
+        # anything with nlon < 2 nlat, and on HEALPix by a factor of ~1.8.
+        radius = scale * grid.max_node_spacing
+        origin = f"scale={scale} times the grid spacing"
+        _warn_if_default_moved(grid)
+    else:
+        radius = theta_cutoff
+        origin = f"theta_cutoff={theta_cutoff}"
+
+    # guard the value that is returned rather than the argument it came from: a
+    # non-positive radius reaches the kernels the same way whichever route made it
+    if radius <= 0.0:
+        raise ValueError(f"Error, the angular support radius has to be positive, got {radius} from {origin}.")
+
+    return radius

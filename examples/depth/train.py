@@ -43,6 +43,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torchvision.transforms import v2
 
+from torch_harmonics import as_grid
 from torch_harmonics.examples import (
     Stanford2D3DSDownloader,
     StanfordDepthDataset,
@@ -454,17 +455,18 @@ def main(
         raise ValueError("No models selected")
 
     # initialize Sobolev W11 loss function
-    loss_w11 = W11LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
-    loss_l1 = L1LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
+    loss_grid = as_grid("equiangular", nlat=img_size[0], nlon=img_size[1])
+    loss_w11 = W11LossS2(loss_grid).to(device=device)
+    loss_l1 = L1LossS2(loss_grid).to(device=device)
     loss_fn = lambda prd, tar, mask: 0.1 * loss_w11(prd, tar, mask) + loss_l1(prd, tar, mask)
 
     # metrics
     metrics = {}
     metrics_fns = {
-        "L2 error": L2LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
-        "L1 error": L1LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
-        "W11 error": W11LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
-        "Normals error": NormalLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
+        "L2 error": L2LossS2(loss_grid).to(device=device),
+        "L1 error": L1LossS2(loss_grid).to(device=device),
+        "W11 error": W11LossS2(loss_grid).to(device=device),
+        "Normals error": NormalLossS2(loss_grid).to(device=device),
     }
 
     # iterate over models and train each model
