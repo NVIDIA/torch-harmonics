@@ -83,7 +83,7 @@ def _normalize_convolution_tensor_s2(
     isotropic_mask=None,
     eps=1e-9,
 ):
-    """Normalizes convolution tensor values based on specified normalization mode.
+    r"""Normalizes convolution tensor values based on specified normalization mode.
 
     This function applies different normalization strategies to the convolution tensor
     values based on the basis_norm_mode parameter. It can normalize individual basis
@@ -108,7 +108,10 @@ def _normalize_convolution_tensor_s2(
     kernel_size : int
         Number of kernel basis functions.
     quad_weights : torch.Tensor
-        Quadrature weights for numerical integration.
+        Per-latitude normalization weights of shape ``(nlat, 1)``, built by the caller as
+        ``colat_weights / nlon_in / 2`` so that they integrate to 1 over the sphere. Not
+        :attr:`~torch_harmonics.grid.PointSetS2.quad_weights`, which is per point and
+        integrates to :math:`4\pi`.
     theta_cutoff : float
         Angular cutoff of the filter support (radians). Required by the "geometric" mode,
         which normalizes by the theoretical area measure of the spherical cap of half-angle

@@ -42,7 +42,10 @@ from torch_harmonics.grid import as_grid
 
 def get_quadrature_weights(nlat: int, nlon: int, grid: str, tile: bool = False, normalized: bool = True) -> torch.Tensor:
     # area weights
-    q = as_grid(grid, nlat=nlat, nlon=nlon).quad_weights
+    # colat_weights, not quad_weights: this builds the per-point weight itself by
+    # applying the longitudinal factor below, so it needs the (nlat,) latitudinal
+    # factor alone. quad_weights is already per-point and would apply 2*pi/nlon twice.
+    q = as_grid(grid, nlat=nlat, nlon=nlon).colat_weights
     q = q.reshape(-1, 1) * 2 * torch.pi / nlon
 
     # numerical precision can be an issue here, make sure it sums to 1:

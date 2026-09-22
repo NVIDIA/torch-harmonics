@@ -493,6 +493,21 @@ class TestGridDescriptor(unittest.TestCase):
         self.assertTrue(torch.equal(GridS2.lon_offsets.fget(g), g.lon_offsets))
         self.assertEqual(g.nrings, g.nlat)
 
+    @parameterized.expand([[grid] for grid in _ALL_GRIDS])
+    def test_the_regular_coords_fast_path_matches_the_ragged_one(self, grid):
+        """
+        ``coords`` tiles the longitudes when every ring is the same length and walks the
+        rings otherwise. Only regular grids reach the first branch and only ragged ones
+        reach the second, so nothing else compares them -- and if they drift, a field
+        would flatten one way on one grid family and another way on the other.
+        """
+        g = as_grid(grid, nlat=16, nlon=32)
+        fast = g.coords
+        walked_lons = torch.cat([g.lons(k) for k in range(g.nrings)])
+        walked_colats = torch.repeat_interleave(g.colats, g.nlon_per_lat)
+        slow = torch.stack([walked_colats, walked_lons.to(walked_colats.dtype)], dim=-1)
+        self.assertTrue(torch.equal(fast, slow))
+
     def test_invalid_resolutions_raise(self):
         for nlat, nlon in [(1, 128), (0, 128), (64, 0), (-4, 128)]:
             with self.subTest(nlat=nlat, nlon=nlon):

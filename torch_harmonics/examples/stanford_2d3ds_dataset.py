@@ -367,7 +367,9 @@ class Stanford2D3DSDownloader:
 
             # prepare computation of the class histogram
             class_histogram = np.zeros(num_classes)
-            quad_weights = as_grid("equiangular", nlat=tuple(img_shape)[0], nlon=tuple(img_shape)[1]).quad_weights
+            # colat_weights: the longitudinal factor is applied on the next line, so this
+            # needs the latitudinal factor alone rather than the per-point weights
+            quad_weights = as_grid("equiangular", nlat=tuple(img_shape)[0], nlon=tuple(img_shape)[1]).colat_weights
             quad_weights = quad_weights.reshape(-1, 1) * 2 * torch.pi / float(img_shape[1])
             quad_weights = quad_weights.tile(1, img_shape[1])
             quad_weights /= torch.sum(quad_weights)

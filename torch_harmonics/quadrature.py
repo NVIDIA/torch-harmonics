@@ -108,8 +108,13 @@ def precompute_longitudes(nlon: int):
 
 @lru_cache(typed=True, copy=True)
 def precompute_latitudes(nlat: int, grid: Optional[str] = "equiangular") -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Return latitude nodes and quadrature weights for the given grid type.
+    r"""
+    Return colatitude nodes and latitudinal quadrature weights for the given grid type.
+
+    Colatitudes, i.e. :math:`\theta \in [0, \pi]` measured from the north pole, despite
+    the name -- which is kept because this is released API. The descriptors draw the
+    distinction explicitly: :attr:`~torch_harmonics.grid.GridS2.colats` is this quantity
+    and :attr:`~torch_harmonics.grid.GridS2.lats` is geographic latitude.
 
     Parameters
     ----------
