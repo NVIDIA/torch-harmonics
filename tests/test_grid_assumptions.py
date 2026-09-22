@@ -508,6 +508,48 @@ class TestGridDescriptor(unittest.TestCase):
         slow = torch.stack([walked_colats, walked_lons.to(walked_colats.dtype)], dim=-1)
         self.assertTrue(torch.equal(fast, slow))
 
+    def test_numpy_integers_are_accepted_and_normalized(self):
+        """
+        ``isinstance(np.int64(9), int)`` is False, which rejected the most ordinary way
+        to write a resolution sweep::
+
+            for nlat in 2 ** np.arange(3, 8) + 1: ...
+
+        A numpy integer is an integer and is accepted, but stored as a plain ``int``.
+        These fields are the descriptor's key, so they reach ``repr`` and ``to_dict``,
+        and a numpy scalar there serializes badly even though it hashes and compares
+        equal to the int.
+        """
+        import json
+
+        import numpy as np
+
+        for nlat in 2 ** np.arange(3, 8) + 1:
+            with self.subTest(nlat=int(nlat)):
+                g = as_grid("equiangular", nlat=nlat, nlon=2 * (nlat - 1))
+                self.assertIs(type(g.nlat), int)
+                self.assertIs(type(g.nlon), int)
+
+        wide = as_grid("equiangular", nlat=np.int64(32), nlon=np.int32(64))
+        plain = as_grid("equiangular", nlat=32, nlon=64)
+        self.assertEqual(wide, plain)
+        self.assertEqual(hash(wide), hash(plain))
+        self.assertEqual(repr(wide), repr(plain))
+        self.assertEqual(json.dumps(wide.to_dict()), json.dumps(plain.to_dict()))
+
+        # the shard's ranks are part of its key for the same reason
+        shard = plain.shard(polar=(np.int64(1), np.int64(2)))
+        self.assertIs(type(shard.polar_rank), int)
+        self.assertEqual(shard, plain.shard(polar=(1, 2)))
+
+    def test_a_bool_is_not_a_resolution(self):
+        """``bool`` is an ``Integral``, but ``nlat=True`` is a mistake, not nlat=1."""
+        for bad in (True, False):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError) as ctx:
+                    as_grid("equiangular", nlat=bad, nlon=64)
+                self.assertIn("must be an integer", str(ctx.exception))
+
     def test_invalid_resolutions_raise(self):
         for nlat, nlon in [(1, 128), (0, 128), (64, 0), (-4, 128)]:
             with self.subTest(nlat=nlat, nlon=nlon):

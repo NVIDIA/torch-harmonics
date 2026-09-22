@@ -99,7 +99,7 @@ class QuadratureS2(nn.Module):
     Parameters
     ----------
     grid : PointSetS2
-        Descriptor of the sampling to integrate on. Any :class:`PointSetS2` is
+        Descriptor of the sampling to integrate on. Any :class:`~torch_harmonics.grid.PointSetS2` is
         accepted: integration needs points and weights, not ring structure. The
         descriptor carries both the resolution and the quadrature rule, so no separate
         shape argument is needed. Build one with :func:`torch_harmonics.grid.as_grid`.

@@ -30,6 +30,7 @@
 #
 
 import difflib
+import numbers
 from dataclasses import MISSING, dataclass, fields
 from typing import Any, ClassVar, Dict, Optional, Tuple, Type, Union
 
@@ -61,6 +62,33 @@ __all__ = [
 # Only concrete classes -- those that define their own `grid_type` -- are entered;
 # abstract intermediates such as RegularGridS2 are not.
 _GRID_REGISTRY: Dict[str, Type["PointSetS2"]] = {}
+
+
+def _as_int(owner: Any, name: str) -> None:
+    r"""
+    Validate a descriptor's integer field in place, accepting any integral type.
+
+    ``isinstance(x, int)`` is False for ``numpy.int64``, which rejects the most ordinary
+    way to write a resolution sweep::
+
+        for nlat in 2 ** np.arange(3, 8) + 1:      # numpy int64, not int
+            grid = as_grid("equiangular", nlat=nlat, nlon=2 * (nlat - 1))
+
+    A numpy integer *is* an integer, so it is accepted -- but normalized to ``int``
+    rather than stored as-is. That matters more here than it would elsewhere: these
+    fields are the descriptor's :attr:`~PointSetS2.key`, so they end up in ``repr`` and
+    in :meth:`~PointSetS2.to_dict`, and a numpy scalar there serializes badly even
+    though it hashes and compares equal to the plain int.
+
+    ``bool`` is excluded deliberately: it is an ``Integral``, but ``nlat=True`` is a
+    mistake rather than a resolution of 1.
+    """
+    value = getattr(owner, name)
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral):
+        raise ValueError(f"{name} must be an integer, got {type(value).__name__}")
+    if type(value) is not int:
+        # frozen dataclass, so normalize through object.__setattr__
+        object.__setattr__(owner, name, int(value))
 
 
 # The per-point tensors are built once per descriptor and cached on it. Caching matters
@@ -683,10 +711,8 @@ class RegularGridS2(GridS2):
 
     def __post_init__(self):
         super().__post_init__()
-        if not isinstance(self.nlat, int) or isinstance(self.nlat, bool):
-            raise ValueError(f"nlat must be an int, got {type(self.nlat).__name__}")
-        if not isinstance(self.nlon, int) or isinstance(self.nlon, bool):
-            raise ValueError(f"nlon must be an int, got {type(self.nlon).__name__}")
+        _as_int(self, "nlat")
+        _as_int(self, "nlon")
         if self.nlat < 2:
             raise ValueError(f"nlat must be at least 2, got {self.nlat}")
         if self.nlon < 1:
@@ -948,6 +974,8 @@ class RegularGridShardS2(GridShardS2):
         super().__post_init__()
         if not isinstance(self.grid, RegularGridS2):
             raise ValueError(f"grid must be a RegularGridS2, got {type(self.grid).__name__}")
+        for field in ("polar_rank", "polar_size", "azimuth_rank", "azimuth_size"):
+            _as_int(self, field)
         for rank, size, name in [(self.polar_rank, self.polar_size, "polar"), (self.azimuth_rank, self.azimuth_size, "azimuth")]:
             if size < 1:
                 raise ValueError(f"{name}_size must be at least 1, got {size}")
