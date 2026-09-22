@@ -782,7 +782,7 @@ def compute_stats_s2(dataset: Dataset, normalize_target: bool = False):
 
         # pre-compute quadrature weights
         if isample == 0:
-            quad_weights = get_quadrature_weights(nlat=inp.shape[1], nlon=inp.shape[2], grid="equiangular", tile=True).numpy().astype(np.float64)
+            quad_weights = get_quadrature_weights(as_grid("equiangular", nlat=inp.shape[1], nlon=inp.shape[2]), tile=True).numpy().astype(np.float64)
 
         # this is a special case for the depth dataset
         # TODO: maybe make this an argument

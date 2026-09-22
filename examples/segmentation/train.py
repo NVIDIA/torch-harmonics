@@ -45,6 +45,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torchvision.transforms import v2
 
+from torch_harmonics import as_grid
 from torch_harmonics.examples import Stanford2D3DSDownloader, StanfordDatasetSubset, StanfordSegmentationDataset, compute_stats_s2
 from torch_harmonics.examples.losses import CrossEntropyLossS2
 from torch_harmonics.examples.metrics import AccuracyS2, IntersectionOverUnionS2
@@ -468,25 +469,16 @@ def main(
         raise ValueError("No models selected")
 
     # create the loss object
-    loss_fn = CrossEntropyLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular", weight=class_weights, smooth=label_smoothing).to(device=device)
-    # loss_fn = DiceLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular",  weight=class_weights, smooth=label_smoothing).to(device=device)
-    # loss_fn = FocalLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
+    loss_grid = as_grid("equiangular", nlat=img_size[0], nlon=img_size[1])
+    loss_fn = CrossEntropyLossS2(loss_grid, weight=class_weights, smooth=label_smoothing).to(device=device)
+    # loss_fn = DiceLossS2(loss_grid, weight=class_weights, smooth=label_smoothing).to(device=device)
+    # loss_fn = FocalLossS2(loss_grid).to(device=device)
 
     # metrics
     metrics = {}
     metrics_fns = {
-        "mean IoU": IntersectionOverUnionS2(
-            nlat=img_size[0],
-            nlon=img_size[1],
-            grid="equiangular",
-            weight=class_weights,
-        ).to(device=device),
-        "mean Accuracy": AccuracyS2(
-            nlat=img_size[0],
-            nlon=img_size[1],
-            grid="equiangular",
-            weight=class_weights,
-        ).to(device=device),
+        "mean IoU": IntersectionOverUnionS2(loss_grid, weight=class_weights).to(device=device),
+        "mean Accuracy": AccuracyS2(loss_grid, weight=class_weights).to(device=device),
     }
 
     # iterate over models and train each model
