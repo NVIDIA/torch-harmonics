@@ -1007,10 +1007,10 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         # builds its psi with the shapes swapped, but the latitudes it needs are the same ones.
         # It also raises if the halo outgrows a local chunk, which the immediate-neighbour
         # exchange could not serve.
-        lats_in, lats_out = self.grid_in.lats, self.grid_out.lats
+        colats_in, colats_out = self.grid_in.colats, self.grid_out.colats
         self.r_lat = compute_polar_halo_radius(
-            lats_in,
-            lats_out,
+            colats_in,
+            colats_out,
             effective_theta_cutoff(self.theta_cutoff),
             self.lat_in_shapes,
             self.lat_out_shapes,

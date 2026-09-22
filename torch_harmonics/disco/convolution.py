@@ -299,8 +299,8 @@ def _precompute_convolution_tensor_s2(
 
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
-    lats_in, win = input_grid.lats, input_grid.quad_weights
-    lats_out, wout = output_grid.lats, output_grid.quad_weights
+    colats_in, win = input_grid.colats, input_grid.quad_weights
+    colats_out, wout = output_grid.colats, output_grid.quad_weights
 
     # compute the phi differences
     # It's imporatant to not include the 2 pi point in the longitudes, as it is equivalent to lon=0
@@ -324,8 +324,8 @@ def _precompute_convolution_tensor_s2(
     # compute trigs
     cbeta = torch.cos(beta)
     sbeta = torch.sin(beta)
-    cgamma_all = torch.cos(lats_in).reshape(-1, 1)
-    sgamma_all = torch.sin(lats_in).reshape(-1, 1)
+    cgamma_all = torch.cos(colats_in).reshape(-1, 1)
+    sgamma_all = torch.sin(colats_in).reshape(-1, 1)
 
     # only input latitudes within the cutoff of an output latitude can land in the support, so
     # the rotation is evaluated on that band alone rather than on the whole input grid. Without
@@ -333,14 +333,14 @@ def _precompute_convolution_tensor_s2(
     # band * nlon_in) -- at the default cutoff the band is a handful of rings wide regardless of
     # resolution, so almost all of that work was discarded. The band is a superset of the
     # support, so the sparsity pattern is unchanged, entry for entry.
-    band_lo, band_hi = latitude_support_band(lats_in, lats_out, theta_cutoff_eff)
+    band_lo, band_hi = latitude_support_band(colats_in, colats_out, theta_cutoff_eff)
 
     # compute row offsets
     out_roff = torch.zeros(nlat_out + 1, dtype=torch.int64, device=lons_in.device)
     out_roff[0] = 0
     for t in range(nlat_out):
         # the last angle has a negative sign as it is a passive rotation, which rotates the filter around the y-axis
-        alpha = -lats_out[t]
+        alpha = -colats_out[t]
 
         lo = int(band_lo[t])
         hi = int(band_hi[t])

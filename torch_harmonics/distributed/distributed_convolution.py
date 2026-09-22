@@ -122,12 +122,12 @@ def _split_distributed_convolution_tensor_s2(
     end_idx = start_idx + shard_in.nlat
 
     # once normalization is done we can throw away the entries which correspond to input latitudes we do not care about
-    lats = idx[2] // nlon_in
+    ilat = idx[2] // nlon_in
     lons = idx[2] % nlon_in
-    ilats = torch.argwhere((lats < end_idx) & (lats >= start_idx)).squeeze()
+    ilats = torch.argwhere((ilat < end_idx) & (ilat >= start_idx)).squeeze()
     vals = vals[ilats]
     # for the indices we need to recompute them to refer to local indices of the input tenor
-    idx = torch.stack([idx[0, ilats], idx[1, ilats], (lats[ilats] - start_idx) * nlon_in + lons[ilats]], dim=0)
+    idx = torch.stack([idx[0, ilats], idx[1, ilats], (ilat[ilats] - start_idx) * nlon_in + lons[ilats]], dim=0)
 
     # make results contiguous
     idx = idx.contiguous()
@@ -205,16 +205,16 @@ def _split_halo_convolution_tensor_s2(
     # 2 * r_lat extra rows and the offset below is uniform across ranks
     halo_start = in_start - r_lat
 
-    lats = idx[2] // nlon_in
+    ilat = idx[2] // nlon_in
     lons = idx[2] % nlon_in
 
     keep = (idx[1] >= out_start) & (idx[1] < out_start + nlat_out_local)
     # defensive: with a correctly derived r_lat every kept entry already lies in the band
-    keep = keep & (lats >= halo_start) & (lats < halo_start + nlat_in_local_padded(in_shapes, comm_rank_polar, r_lat))
+    keep = keep & (ilat >= halo_start) & (ilat < halo_start + nlat_in_local_padded(in_shapes, comm_rank_polar, r_lat))
     sel = torch.argwhere(keep).squeeze(-1)
 
     vals = vals[sel]
-    idx = torch.stack([idx[0, sel], idx[1, sel] - out_start, (lats[sel] - halo_start) * nlon_in + lons[sel]], dim=0)
+    idx = torch.stack([idx[0, sel], idx[1, sel] - out_start, (ilat[sel] - halo_start) * nlon_in + lons[sel]], dim=0)
 
     return idx.contiguous(), vals.contiguous()
 
@@ -394,9 +394,9 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.r_lat = 0
         self.use_halo = self.polar_mode == "halo-exchange"
         if self.use_halo:
-            lats_in, lats_out = self.grid_in.lats, self.grid_out.lats
+            colats_in, colats_out = self.grid_in.colats, self.grid_out.colats
             try:
-                self.r_lat = compute_polar_halo_radius(lats_in, lats_out, effective_theta_cutoff(self.theta_cutoff), self.lat_in_shapes, self.lat_out_shapes)
+                self.r_lat = compute_polar_halo_radius(colats_in, colats_out, effective_theta_cutoff(self.theta_cutoff), self.lat_in_shapes, self.lat_out_shapes)
             except ValueError as err:
                 raise ValueError(
                     f"{err}\n\n"

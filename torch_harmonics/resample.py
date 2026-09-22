@@ -198,9 +198,9 @@ class ResampleS2(nn.Module):
         self.nlat_out, self.nlon_out = self.grid_out.shape
 
         # for upscaling the latitudes we will use interpolation
-        self.lats_in = self.grid_in.lats
+        self.lats_in = self.grid_in.colats
         self.lons_in = self.grid_in.lons()
-        self.lats_out = self.grid_out.lats
+        self.lats_out = self.grid_out.colats
         self.lons_out = self.grid_out.lons()
 
         # in the case where some points lie outside of the range spanned by lats_in,

@@ -277,13 +277,13 @@ class TestGridDescriptorCaching(unittest.TestCase):
             for grid_type in grid_types():
                 with self.subTest(grid=grid_type):
                     grid = as_grid(grid_type, nlat=32, nlon=64)
-                    pristine_lats, pristine_weights = grid.lats.clone(), grid.quad_weights.clone()
+                    pristine_colats, pristine_weights = grid.colats.clone(), grid.quad_weights.clone()
 
-                    grid.lats.mul_(-1.0)
+                    grid.colats.mul_(-1.0)
                     grid.quad_weights.mul_(-1.0)
                     grid.lons().mul_(-1.0)
 
-                    self.assertTrue(compare_tensors(f"lats after external mutation (grid={grid_type})", grid.lats, pristine_lats, atol=0.0, rtol=0.0, verbose=verbose))
+                    self.assertTrue(compare_tensors(f"lats after external mutation (grid={grid_type})", grid.colats, pristine_colats, atol=0.0, rtol=0.0, verbose=verbose))
                     self.assertTrue(
                         compare_tensors(f"weights after external mutation (grid={grid_type})", grid.quad_weights, pristine_weights, atol=0.0, rtol=0.0, verbose=verbose)
                     )
@@ -294,7 +294,7 @@ class TestGridDescriptorCaching(unittest.TestCase):
         for grid_type in grid_types():
             with self.subTest(grid=grid_type):
                 grid = as_grid(grid_type, nlat=32, nlon=64)
-                first, second = grid.lats, grid.lats
+                first, second = grid.colats, grid.colats
                 self.assertIsNot(first, second)
                 self.assertNotEqual(first.data_ptr(), second.data_ptr(), msg=f"grid={grid_type}: repeated access to lats returned aliased storage")
 
@@ -304,7 +304,7 @@ class TestGridDescriptorCaching(unittest.TestCase):
             with self.subTest(grid=grid_type):
                 grid = as_grid(grid_type, nlat=65, nlon=128)
                 first = grid.max_latitude_spacing
-                _ = grid.lats.mul_(-1.0)  # try to poison the underlying node cache
+                _ = grid.colats.mul_(-1.0)  # try to poison the underlying node cache
                 self.assertEqual(grid.max_latitude_spacing, first)
                 self.assertEqual(grid.max_latitude_spacing, grid.latitude_spacing.max().item())
 

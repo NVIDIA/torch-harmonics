@@ -237,10 +237,10 @@ def _precompute_legpoly(
         Tensor of Legendre polynomial values
     """
 
-    lats = grid.lats
-    kmax = len(lats) if kmax is None else kmax
+    colats = grid.colats
+    kmax = len(colats) if kmax is None else kmax
 
-    return legpoly(mmax, lmax, torch.cos(lats[kmin:kmax]), norm=norm, inverse=inverse, csphase=csphase, mmin=mmin, lmin=lmin)
+    return legpoly(mmax, lmax, torch.cos(colats[kmin:kmax]), norm=norm, inverse=inverse, csphase=csphase, mmin=mmin, lmin=lmin)
 
 
 @torch.no_grad()
@@ -412,7 +412,7 @@ def _precompute_dlegpoly(
         Tensor of derivative Legendre polynomial values
     """
 
-    lats = grid.lats
-    kmax = len(lats) if kmax is None else kmax
+    colats = grid.colats
+    kmax = len(colats) if kmax is None else kmax
 
-    return dlegpoly(mmax, lmax, lats[kmin:kmax], norm=norm, inverse=inverse, csphase=csphase, mmin=mmin, lmin=lmin)
+    return dlegpoly(mmax, lmax, colats[kmin:kmax], norm=norm, inverse=inverse, csphase=csphase, mmin=mmin, lmin=lmin)

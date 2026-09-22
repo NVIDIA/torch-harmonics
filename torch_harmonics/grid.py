@@ -189,16 +189,21 @@ class GridS2:
     # -- geometry ------------------------------------------------------------
 
     @property
-    def lats(self) -> torch.Tensor:
+    def colats(self) -> torch.Tensor:
         r"""
         Colatitudes :math:`\theta_k \in [0, \pi]`, ascending (north pole first), shape ``(nrings,)``.
+
+        This is the primitive the library computes with: the associated Legendre
+        functions are naturally expressed in :math:`\cos\theta`, and every quadrature
+        rule here is formulated on that interval. :attr:`lats` converts to geographic
+        latitude for the callers that want it.
         """
-        raise NotImplementedError(f"{type(self).__name__} does not define lats")
+        raise NotImplementedError(f"{type(self).__name__} does not define colats")
 
     @property
     def quad_weights(self) -> torch.Tensor:
         r"""
-        Latitudinal quadrature weights, shape ``(nrings,)``, paired with :attr:`lats`.
+        Latitudinal quadrature weights, shape ``(nrings,)``, paired with :attr:`colats`.
 
         Formulated in the :math:`\cos\theta` domain, so they already absorb the
         :math:`\sin\theta` Jacobian and sum to 2. The longitudinal factor is *not*
@@ -259,9 +264,15 @@ class GridS2:
 
     @property
     def latitude_spacing(self) -> torch.Tensor:
-        r"""Gaps :math:`\theta_{k+1} - \theta_k` between adjacent latitudes, shape ``(nrings - 1,)``."""
-        lats = self.lats
-        return lats[1:] - lats[:-1]
+        r"""
+        Gaps :math:`\theta_{k+1} - \theta_k` between adjacent latitudes, shape ``(nrings - 1,)``.
+
+        Taken on the colatitudes, but the gaps are the same either way: latitude is
+        colatitude reflected, so the differences only change sign, and every consumer
+        here wants the magnitude.
+        """
+        colats = self.colats
+        return colats[1:] - colats[:-1]
 
     @property
     def max_latitude_spacing(self) -> float:
@@ -448,9 +459,9 @@ class RegularGridS2(GridS2):
     # -- geometry ------------------------------------------------------------
 
     @property
-    def lats(self) -> torch.Tensor:
-        lats, _ = precompute_latitudes(self.nlat, grid=self.grid_type)
-        return lats
+    def colats(self) -> torch.Tensor:
+        colats, _ = precompute_latitudes(self.nlat, grid=self.grid_type)
+        return colats
 
     @property
     def quad_weights(self) -> torch.Tensor:
@@ -716,9 +727,9 @@ class RegularGridShardS2(GridShardS2):
     # -- local geometry ------------------------------------------------------
 
     @property
-    def lats(self) -> torch.Tensor:
+    def colats(self) -> torch.Tensor:
         """This rank's slice of the global colatitudes, shape ``(nlat,)``."""
-        return self.grid.lats[self.lat_offset : self.lat_offset + self.nlat]
+        return self.grid.colats[self.lat_offset : self.lat_offset + self.nlat]
 
     @property
     def quad_weights(self) -> torch.Tensor:

@@ -105,7 +105,7 @@ class ShallowWaterSolver(nn.Module):
         # unflipped weight with a flipped node and relying on the rule being symmetric.
         quadrature_grid = as_grid(self.grid, nlat=self.nlat, nlon=self.nlon)
         quad_weights = quadrature_grid.quad_weights.reshape(-1, 1)
-        lats = torch.pi / 2 - quadrature_grid.lats
+        lats = torch.pi / 2 - quadrature_grid.colats
         lons = quadrature_grid.lons()
 
         self.lmax = self.sht.lmax

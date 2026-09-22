@@ -159,7 +159,7 @@ def plot_sphere(
     Notes
     -----
     Rows of ``data`` are ordered north to south, matching the ascending
-    co-latitudes of :attr:`torch_harmonics.grid.GridS2.lats`, so the output of a
+    co-latitudes of :attr:`torch_harmonics.grid.GridS2.colats`, so the output of a
     transform can be handed over directly without flipping.
     """
 
@@ -184,7 +184,7 @@ def plot_sphere(
         if grid.shape != (nlat, nlon):
             raise ValueError(f"grid {grid!r} does not match the shape of the data, which is {(nlat, nlon)}")
         # GridS2 stores co-latitudes measured from the north pole
-        lat = (np.pi / 2.0 - grid.lats).numpy()
+        lat = (np.pi / 2.0 - grid.colats).numpy()
         lon = grid.lons().numpy()
 
     if lon is None:

@@ -78,7 +78,7 @@ class TestPlotSphereGrid(unittest.TestCase):
     @parameterized.expand(_GRIDS)
     def test_grid_places_samples_at_the_grid_latitudes(self, grid_type):
         grid = as_grid(grid_type, nlat=self.nlat, nlon=self.nlon)
-        expected = self._latitudes(lat=(np.pi / 2.0 - grid.lats).numpy())
+        expected = self._latitudes(lat=(np.pi / 2.0 - grid.colats).numpy())
         self.assertTrue(np.allclose(self._latitudes(grid=grid), expected))
 
     @parameterized.expand(_GRIDS)

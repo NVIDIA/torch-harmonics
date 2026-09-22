@@ -397,9 +397,9 @@ class TestGridDescriptor(unittest.TestCase):
         self.assertIs(type(tr), TrapezoidalGrid)
         self.assertTrue(eq.is_uniform_in_theta)
         self.assertFalse(tr.is_uniform_in_theta)
-        self.assertGreater((eq.lats - tr.lats).abs().max().item(), 0.3)
+        self.assertGreater((eq.colats - tr.colats).abs().max().item(), 0.3)
         # trapezoidal nodes are equispaced in cos(theta), not theta
-        self.assertTrue(torch.allclose(torch.cos(tr.lats).diff(), torch.cos(tr.lats).diff()[0].expand(16), atol=1e-12))
+        self.assertTrue(torch.allclose(torch.cos(tr.colats).diff(), torch.cos(tr.colats).diff()[0].expand(16), atol=1e-12))
 
     @parameterized.expand([[grid] for grid in _ALL_GRIDS])
     def test_grid_params_reports_the_parameterization(self, grid):
@@ -461,7 +461,7 @@ class TestGridDescriptor(unittest.TestCase):
         """The descriptor must be a view onto the existing routines, not a reimplementation."""
         g = as_grid(grid, nlat=nlat, nlon=2 * nlat)
         lats, w = precompute_latitudes(nlat, grid=grid)
-        self.assertTrue(compare_tensors(f"lats (grid={grid}, nlat={nlat})", g.lats, lats, atol=0.0, rtol=0.0, verbose=verbose))
+        self.assertTrue(compare_tensors(f"lats (grid={grid}, nlat={nlat})", g.colats, lats, atol=0.0, rtol=0.0, verbose=verbose))
         self.assertTrue(compare_tensors(f"weights (grid={grid}, nlat={nlat})", g.quad_weights, w, atol=0.0, rtol=0.0, verbose=verbose))
         self.assertTrue(compare_tensors(f"lons (grid={grid}, nlat={nlat})", g.lons(), precompute_longitudes(2 * nlat), atol=0.0, rtol=0.0, verbose=verbose))
 
@@ -517,7 +517,7 @@ class TestGridDescriptor(unittest.TestCase):
         """Guards against node/weight tensors ever becoming dataclass fields."""
         g = as_grid(grid, nlat=64, nlon=128)
         before = hash(g)
-        _ = g.lats, g.quad_weights, g.lons(), g.latitude_spacing
+        _ = g.colats, g.quad_weights, g.lons(), g.latitude_spacing
         self.assertEqual(hash(g), before)
 
     def test_descriptor_works_as_an_lru_cache_key(self):
@@ -700,11 +700,11 @@ class TestGridShard(unittest.TestCase):
         if grid.nlat < psize or grid.nlon < asize:
             self.skipTest(f"{shape} cannot be split {psize}x{asize} with every chunk non-empty")
 
-        lats = torch.cat([grid.shard(polar=(r, psize)).lats for r in range(psize)])
+        colats = torch.cat([grid.shard(polar=(r, psize)).colats for r in range(psize)])
         weights = torch.cat([grid.shard(polar=(r, psize)).quad_weights for r in range(psize)])
         lons = torch.cat([grid.shard(azimuth=(r, asize)).lons() for r in range(asize)])
 
-        self.assertTrue(compare_tensors(f"{name}{shape} lats tiled {psize}x", lats, grid.lats, atol=0.0, rtol=0.0, verbose=verbose))
+        self.assertTrue(compare_tensors(f"{name}{shape} colats tiled {psize}x", colats, grid.colats, atol=0.0, rtol=0.0, verbose=verbose))
         self.assertTrue(compare_tensors(f"{name}{shape} weights tiled {psize}x", weights, grid.quad_weights, atol=0.0, rtol=0.0, verbose=verbose))
         self.assertTrue(compare_tensors(f"{name}{shape} lons tiled {asize}x", lons, grid.lons(), atol=0.0, rtol=0.0, verbose=verbose))
 
@@ -725,7 +725,7 @@ class TestGridShard(unittest.TestCase):
         shard = grid.shard()
         self.assertEqual(shard.shape, grid.shape)
         self.assertEqual((shard.lat_offset, shard.lon_offset), (0, 0))
-        self.assertTrue(compare_tensors("trivial shard lats", shard.lats, grid.lats, atol=0.0, rtol=0.0, verbose=verbose))
+        self.assertTrue(compare_tensors("trivial shard lats", shard.colats, grid.colats, atol=0.0, rtol=0.0, verbose=verbose))
 
     @parameterized.expand([[dec] for dec in _DECOMPOSITIONS])
     def test_agrees_with_the_tensor_splitter_the_collectives_use(self, dec, verbose=False):
@@ -741,8 +741,8 @@ class TestGridShard(unittest.TestCase):
             self.skipTest("decomposition too fine for this grid")
         for r in range(psize):
             with self.subTest(polar=r):
-                expected = split_tensor_along_dim(grid.lats, dim=0, num_chunks=psize)[r]
-                self.assertTrue(compare_tensors(f"polar {r}/{psize}", grid.shard(polar=(r, psize)).lats, expected, atol=0.0, rtol=0.0, verbose=verbose))
+                expected = split_tensor_along_dim(grid.colats, dim=0, num_chunks=psize)[r]
+                self.assertTrue(compare_tensors(f"polar {r}/{psize}", grid.shard(polar=(r, psize)).colats, expected, atol=0.0, rtol=0.0, verbose=verbose))
         for r in range(asize):
             with self.subTest(azimuth=r):
                 expected = split_tensor_along_dim(grid.lons(), dim=0, num_chunks=asize)[r]
