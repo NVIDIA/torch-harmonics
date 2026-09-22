@@ -73,6 +73,7 @@ from torch_harmonics.grid import (
     require_grid,
     require_regular_grid,
 )
+from torch_harmonics.integration import QuadratureS2
 from torch_harmonics.partition import compute_split_shapes
 from torch_harmonics.quadrature import compute_latitude_spacing, compute_theta_cutoff, precompute_latitudes, precompute_longitudes
 
@@ -504,7 +505,7 @@ class TestGridDescriptor(unittest.TestCase):
         g = as_grid(grid, nlat=nlat, nlon=2 * nlat)
         lats, w = precompute_latitudes(nlat, grid=grid)
         self.assertTrue(compare_tensors(f"lats (grid={grid}, nlat={nlat})", g.colats, lats, atol=0.0, rtol=0.0, verbose=verbose))
-        self.assertTrue(compare_tensors(f"weights (grid={grid}, nlat={nlat})", g.quad_weights, w, atol=0.0, rtol=0.0, verbose=verbose))
+        self.assertTrue(compare_tensors(f"weights (grid={grid}, nlat={nlat})", g.colat_weights, w, atol=0.0, rtol=0.0, verbose=verbose))
         self.assertTrue(compare_tensors(f"lons (grid={grid}, nlat={nlat})", g.lons(), precompute_longitudes(2 * nlat), atol=0.0, rtol=0.0, verbose=verbose))
 
     @parameterized.expand([[nlat, grid] for nlat in _NLATS for grid in _ALL_GRIDS])
@@ -559,7 +560,7 @@ class TestGridDescriptor(unittest.TestCase):
         """Guards against node/weight tensors ever becoming dataclass fields."""
         g = as_grid(grid, nlat=64, nlon=128)
         before = hash(g)
-        _ = g.colats, g.quad_weights, g.lons(), g.latitude_spacing
+        _ = g.colats, g.colat_weights, g.lons(), g.latitude_spacing
         self.assertEqual(hash(g), before)
 
     def test_descriptor_works_as_an_lru_cache_key(self):
@@ -743,11 +744,11 @@ class TestGridShard(unittest.TestCase):
             self.skipTest(f"{shape} cannot be split {psize}x{asize} with every chunk non-empty")
 
         colats = torch.cat([grid.shard(polar=(r, psize)).colats for r in range(psize)])
-        weights = torch.cat([grid.shard(polar=(r, psize)).quad_weights for r in range(psize)])
+        weights = torch.cat([grid.shard(polar=(r, psize)).colat_weights for r in range(psize)])
         lons = torch.cat([grid.shard(azimuth=(r, asize)).lons() for r in range(asize)])
 
         self.assertTrue(compare_tensors(f"{name}{shape} colats tiled {psize}x", colats, grid.colats, atol=0.0, rtol=0.0, verbose=verbose))
-        self.assertTrue(compare_tensors(f"{name}{shape} weights tiled {psize}x", weights, grid.quad_weights, atol=0.0, rtol=0.0, verbose=verbose))
+        self.assertTrue(compare_tensors(f"{name}{shape} weights tiled {psize}x", weights, grid.colat_weights, atol=0.0, rtol=0.0, verbose=verbose))
         self.assertTrue(compare_tensors(f"{name}{shape} lons tiled {asize}x", lons, grid.lons(), atol=0.0, rtol=0.0, verbose=verbose))
 
     @parameterized.expand([[name, dec] for name in grid_types() for dec in _DECOMPOSITIONS])
@@ -758,8 +759,8 @@ class TestGridShard(unittest.TestCase):
         """
         psize, _ = dec
         grid = as_grid(name, nlat=32, nlon=64)
-        total = sum(grid.shard(polar=(r, psize)).quad_weights.sum().item() for r in range(psize))
-        self.assertAlmostEqual(total, grid.quad_weights.sum().item(), places=14)
+        total = sum(grid.shard(polar=(r, psize)).colat_weights.sum().item() for r in range(psize))
+        self.assertAlmostEqual(total, grid.colat_weights.sum().item(), places=14)
 
     @parameterized.expand([[name, shape] for name in grid_types() for shape in _GLOBAL_SHAPES])
     def test_trivial_shard_is_the_whole_grid(self, name, shape, verbose=False):
@@ -886,12 +887,22 @@ class TestRaggedGridContract(unittest.TestCase):
                 return torch.tensor([4, 8, 4], dtype=torch.int64) * self.level
 
             @property
-            def shape(self):
-                return (self.npoints,)
+            def colats(self):
+                return torch.linspace(0.25, math.pi - 0.25, 3, dtype=torch.float64)
 
             @property
-            def lats(self):
-                return torch.linspace(0.25, math.pi - 0.25, 3)
+            def colat_weights(self):
+                # any latitudinal rule sums to 2. Chosen so that w_k / nlon_k differs
+                # between rings: [0.5, 1.0, 0.5] against counts [4, 8, 4] would make
+                # every per-point weight exactly pi/4, and a test on a fixture that
+                # uniform cannot tell a per-ring factor from a global one.
+                return torch.tensor([0.4, 1.2, 0.4], dtype=torch.float64)
+
+            def lons(self, ilat=None):
+                if ilat is None:
+                    raise ValueError("a ragged grid has no single set of longitudes")
+                n = int(self.nlon_per_lat[ilat])
+                return torch.arange(n, dtype=torch.float64) * (2.0 * math.pi / n)
 
         cls.ragged_cls = _RaggedGrid
 
@@ -944,6 +955,62 @@ class TestRaggedGridContract(unittest.TestCase):
     def test_regular_grids_pass_the_guard(self, grid):
         g = as_grid(grid, nlat=32, nlon=64)
         self.assertIs(require_regular_grid(g), g)
+
+    def test_the_per_point_contract_works_on_a_ragged_grid(self):
+        """
+        ``coords`` and ``quad_weights`` are the PointSetS2 contract, and this is the
+        only grid in the suite that actually exercises the ragged path through them.
+        """
+        grid = self.grid
+        coords, weights = grid.coords, grid.quad_weights
+
+        self.assertEqual(tuple(coords.shape), (16, 2))
+        self.assertEqual(tuple(weights.shape), (16,))
+
+        # row i of coords describes element i of a field flattened to (npoints,), in
+        # ring-major order -- the correspondence the whole contract rests on
+        for k in range(grid.nrings):
+            base = int(grid.lon_offsets[k])
+            for j in range(int(grid.nlon_per_lat[k])):
+                self.assertAlmostEqual(coords[base + j, 0].item(), grid.colats[k].item(), places=14)
+                self.assertAlmostEqual(coords[base + j, 1].item(), grid.lons(k)[j].item(), places=14)
+
+        # the longitudinal factor is applied per ring, not once globally
+        self.assertAlmostEqual(weights.sum().item(), 4.0 * math.pi, places=12)
+        for k in range(grid.nrings):
+            expected = grid.colat_weights[k].item() * 2.0 * math.pi / int(grid.nlon_per_lat[k])
+            lo, hi = int(grid.lon_offsets[k]), int(grid.lon_offsets[k + 1])
+            for i in range(lo, hi):
+                self.assertAlmostEqual(weights[i].item(), expected, places=14)
+
+        # and the rings really do disagree, so the check above has teeth
+        self.assertNotAlmostEqual(weights[0].item(), weights[int(grid.lon_offsets[1])].item(), places=6)
+
+    def test_a_single_dlambda_would_get_the_ragged_integral_wrong(self):
+        """
+        Regression for the assumption QuadratureS2 used to make.
+
+        The old construction took one ``2 * pi / nlon``. Standing in the widest ring's
+        count for every ring is what that amounts to on a ragged grid, and it does not
+        integrate a constant correctly -- which is the cheapest possible check that the
+        per-ring factor is really being applied.
+        """
+        grid = self.grid
+        widest = int(grid.nlon_per_lat.max())
+        naive = torch.repeat_interleave(grid.colat_weights * (2.0 * math.pi / widest), grid.nlon_per_lat)
+
+        self.assertAlmostEqual(grid.quad_weights.sum().item(), 4.0 * math.pi, places=12)
+        self.assertNotAlmostEqual(naive.sum().item(), 4.0 * math.pi, places=2)
+
+    def test_quadrature_integrates_on_a_ragged_grid(self):
+        """QuadratureS2 takes the weakest guard, so a ragged grid goes straight through."""
+        quad = QuadratureS2(self.grid)
+        self.assertEqual(quad.spatial_dims, (-1,))
+        ones = torch.ones(1, 1, self.grid.npoints, dtype=torch.float32)
+        self.assertAlmostEqual(quad(ones).item(), 4.0 * math.pi, places=4)
+
+        mean = QuadratureS2(self.grid, normalize=True)
+        self.assertAlmostEqual(mean(ones).item(), 1.0, places=5)
 
 
 if __name__ == "__main__":

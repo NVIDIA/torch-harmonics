@@ -138,7 +138,7 @@ class RealSHT(nn.Module):
         # precompute_latitudes does -- the switch this replaced silently rejected
         # "trapezoidal". The nodes are not needed here: _precompute_legpoly takes the
         # descriptor and reads them itself, which is also what keys its cache.
-        weights = self.grid.quad_weights
+        weights = self.grid.colat_weights
 
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
@@ -433,7 +433,7 @@ class RealVectorSHT(nn.Module):
         self.csphase = csphase
 
         # quadrature weights come from the grid descriptor; see the note in RealSHT
-        weights = self.grid.quad_weights
+        weights = self.grid.colat_weights
 
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)

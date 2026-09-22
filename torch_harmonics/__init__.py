@@ -46,6 +46,7 @@ from .grid import (
     GridShardS2,
     LegendreGaussGrid,
     LobattoGrid,
+    PointSetS2,
     RegularGridS2,
     RegularGridShardS2,
     TrapezoidalGrid,
@@ -53,6 +54,7 @@ from .grid import (
     grid_params,
     grid_types,
     require_grid,
+    require_point_set,
     require_regular_grid,
 )
 from .integration import QuadratureS2

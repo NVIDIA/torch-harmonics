@@ -299,8 +299,8 @@ def _precompute_convolution_tensor_s2(
 
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
-    colats_in, win = input_grid.colats, input_grid.quad_weights
-    colats_out, wout = output_grid.colats, output_grid.quad_weights
+    colats_in, win = input_grid.colats, input_grid.colat_weights
+    colats_out, wout = output_grid.colats, output_grid.colat_weights
 
     # compute the phi differences
     # It's imporatant to not include the 2 pi point in the longitudes, as it is equivalent to lon=0

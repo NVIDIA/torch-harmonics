@@ -96,7 +96,7 @@ class DistributedQuadratureS2(torch.nn.Module):
         # weight of a point does not depend on its longitude, so tiling to the
         # local width is exactly this rank's slice.
         dlambda = 2 * torch.pi / self.nlon
-        quad_weight = dlambda * self.shard.quad_weights.unsqueeze(1)
+        quad_weight = dlambda * self.shard.colat_weights.unsqueeze(1)
         quad_weight = quad_weight.tile(1, self.shard.nlon)
 
         # apply normalization

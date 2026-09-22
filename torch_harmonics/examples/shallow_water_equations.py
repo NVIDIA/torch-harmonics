@@ -104,7 +104,7 @@ class ShallowWaterSolver(nn.Module):
         # they are ordered consistently -- north to south -- instead of pairing an
         # unflipped weight with a flipped node and relying on the rule being symmetric.
         quadrature_grid = as_grid(self.grid, nlat=self.nlat, nlon=self.nlon)
-        quad_weights = quadrature_grid.quad_weights.reshape(-1, 1)
+        quad_weights = quadrature_grid.colat_weights.reshape(-1, 1)
         lats = quadrature_grid.lats
         lons = quadrature_grid.lons()
 

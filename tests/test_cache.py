@@ -277,15 +277,15 @@ class TestGridDescriptorCaching(unittest.TestCase):
             for grid_type in grid_types():
                 with self.subTest(grid=grid_type):
                     grid = as_grid(grid_type, nlat=32, nlon=64)
-                    pristine_colats, pristine_weights = grid.colats.clone(), grid.quad_weights.clone()
+                    pristine_colats, pristine_weights = grid.colats.clone(), grid.colat_weights.clone()
 
                     grid.colats.mul_(-1.0)
-                    grid.quad_weights.mul_(-1.0)
+                    grid.colat_weights.mul_(-1.0)
                     grid.lons().mul_(-1.0)
 
                     self.assertTrue(compare_tensors(f"lats after external mutation (grid={grid_type})", grid.colats, pristine_colats, atol=0.0, rtol=0.0, verbose=verbose))
                     self.assertTrue(
-                        compare_tensors(f"weights after external mutation (grid={grid_type})", grid.quad_weights, pristine_weights, atol=0.0, rtol=0.0, verbose=verbose)
+                        compare_tensors(f"weights after external mutation (grid={grid_type})", grid.colat_weights, pristine_weights, atol=0.0, rtol=0.0, verbose=verbose)
                     )
                     self.assertGreaterEqual(grid.lons().min().item(), 0.0, msg=f"grid={grid_type}: longitudes were corrupted by an external in-place write")
 

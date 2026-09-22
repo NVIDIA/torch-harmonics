@@ -132,7 +132,7 @@ class AttentionS2(nn.Module):
         self.scale = scale
 
         # integration weights
-        wgl = self.grid_in.quad_weights
+        wgl = self.grid_in.colat_weights
         quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
         # we need to tile and flatten them accordingly
         quad_weights = torch.tile(quad_weights.reshape(-1, 1), (1, self.nlon_in)).flatten()
@@ -367,7 +367,7 @@ class NeighborhoodAttentionS2(nn.Module):
         self.theta_cutoff = truncate_support(self.grid_in if self.upsample else self.grid_out, theta_cutoff)
 
         # integration weights live on the input grid
-        wgl = self.grid_in.quad_weights
+        wgl = self.grid_in.colat_weights
         quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 

@@ -44,28 +44,36 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.grid import PointSetS2, require_point_set
 
 
 class QuadratureS2(nn.Module):
     r"""
-    Scalar quadrature on :math:`S^2` for integrating spherical fields defined on a
-    latitude/longitude grid.
+    Scalar quadrature on :math:`S^2`.
 
-    Given a signal :math:`f(\theta, \lambda)` sampled on a latitude--longitude
-    grid, this module approximates the surface integral over the sphere:
+    Given a signal :math:`f` sampled at the points of a grid, this module
+    approximates the surface integral over the sphere as a weighted sum:
 
     .. math::
 
-        I[f] = \int_0^{2\pi}\!\int_0^{\pi}
-            f(\theta, \lambda)\,\sin\theta\; d\theta\; d\lambda
-        \;\approx\; \sum_{k=0}^{N_\theta - 1} \sum_{j=0}^{N_\lambda - 1}
-            f(\theta_k, \lambda_j)\, q_k\, \Delta\lambda
+        I[f] = \int_{S^2} f \; dA
+        \;\approx\; \sum_{i} f(\theta_i, \lambda_i)\, W_i
 
-    where :math:`q_k` are the latitudinal quadrature weights (which absorb the
+    where :math:`W_i` are the per-point solid-angle weights reported by
+    :attr:`~torch_harmonics.grid.PointSetS2.quad_weights`, which sum to
+    :math:`4\pi`.
+
+    On a ring-structured grid those weights factorize as
+    :math:`W_i = q_k \cdot 2\pi / N_{\lambda,k}` for a point on ring :math:`k`,
+    where :math:`q_k` are the latitudinal weights (which absorb the
     :math:`\sin\theta` Jacobian via the change of variable to
-    :math:`\cos\theta`) and :math:`\Delta\lambda = 2\pi / N_\lambda` is the
-    uniform longitudinal spacing.
+    :math:`\cos\theta`). Note the :math:`k` on :math:`N_\lambda`: the
+    longitudinal spacing is per ring, not global. It is uniform only on a
+    :class:`~torch_harmonics.grid.RegularGridS2`; on a reduced Gaussian or HEALPix
+    grid the polar rings carry fewer points, so each of their points covers more
+    solid angle and is weighted more heavily. This module does not assume
+    otherwise -- it takes the weights from the descriptor rather than deriving a
+    single :math:`\Delta\lambda`.
 
     The choice of ``grid`` determines how the nodes :math:`\theta_k` and weights
     :math:`q_k` are computed:
@@ -90,10 +98,11 @@ class QuadratureS2(nn.Module):
 
     Parameters
     ----------
-    grid : RegularGridS2
-        Descriptor of the grid to integrate on. It carries both the resolution and
-        the quadrature rule, so no separate shape argument is needed. Build one with
-        :func:`torch_harmonics.grid.as_grid`.
+    grid : PointSetS2
+        Descriptor of the sampling to integrate on. Any :class:`PointSetS2` is
+        accepted: integration needs points and weights, not ring structure. The
+        descriptor carries both the resolution and the quadrature rule, so no separate
+        shape argument is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
     normalize : bool, optional
         If ``True``, divides weights by :math:`4\pi` to return a spherical mean
         instead of an integral, by default ``False``.
@@ -117,28 +126,34 @@ class QuadratureS2(nn.Module):
     1.0
     """
 
-    def __init__(self, grid: RegularGridS2, normalize: Optional[bool] = False):
+    def __init__(self, grid: PointSetS2, normalize: Optional[bool] = False):
         super().__init__()
 
-        self.grid = require_regular_grid(grid)
-        self.nlat, self.nlon = grid.shape
+        # integration needs points and weights and nothing else -- no ring structure, no
+        # uniform longitude stride -- so this is the one guard that can be the weakest
+        self.grid = require_point_set(grid)
         self.normalize = normalize
 
-        img_shape = grid.shape
-        weights = grid.quad_weights
-        dlambda = 2 * torch.pi / img_shape[1]
-        quad_weight = dlambda * weights.unsqueeze(1)
-        quad_weight = quad_weight.tile(1, img_shape[1])
+        # the descriptor already folds the longitudinal factor into the per-point weight,
+        # per ring. Deriving it here as a single `2 * pi / nlon` would silently assume every
+        # ring carries the same number of longitudes, which is false on a reduced Gaussian
+        # or HEALPix grid: the polar rings are shorter, so their points cover more solid
+        # angle each and must be weighted more heavily.
+        quad_weight = self.grid.quad_weights
 
         # apply normalization
         if normalize:
             quad_weight = quad_weight / (4.0 * torch.pi)
 
-        # make it contiguous
-        quad_weight = quad_weight.contiguous()
+        # lay the weights out like the field they multiply: (nlat, nlon) on a regular grid,
+        # flat (npoints,) otherwise. `grid.shape` is what a field on this grid looks like,
+        # so this stays correct for both without branching on the family.
+        quad_weight = quad_weight.reshape(1, 1, *self.grid.shape).to(torch.float32).contiguous()
 
-        # reshape
-        quad_weight = quad_weight.reshape(1, 1, *img_shape).to(torch.float32).contiguous()
+        # how many trailing axes `forward` reduces over; 2 for a regular grid, 1 for a
+        # ragged one. Derived from the same `grid.shape`, so it cannot disagree with the
+        # buffer above.
+        self.spatial_dims = tuple(range(-len(self.grid.shape), 0))
 
         # register buffer
         self.register_buffer("quad_weight", quad_weight, persistent=False)
@@ -153,15 +168,15 @@ class QuadratureS2(nn.Module):
         Parameters
         ----------
         x : torch.Tensor
-            Input signal of shape ``(..., nlat, nlon)``. Integration is over the last two
-            (spatial) dimensions.
+            Input signal whose trailing axes match ``grid.shape`` -- ``(..., nlat, nlon)``
+            on a regular grid, ``(..., npoints)`` on a ragged or unstructured one.
 
         Returns
         -------
         torch.Tensor
-            Integral of shape ``(...)`` (the input with its last two dimensions reduced).
+            Integral of shape ``(...)`` (the input with its spatial axes reduced).
         """
-        # integrate over last two axes only:
-        quad = torch.sum(x * self.quad_weight, dim=(-2, -1))
+        # reduce over the spatial axes only, however many the grid has
+        quad = torch.sum(x * self.quad_weight, dim=self.spatial_dims)
 
         return quad
