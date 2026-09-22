@@ -35,6 +35,7 @@ from typing import Any, ClassVar, Dict, Optional, Tuple, Type, Union
 
 import torch
 
+from torch_harmonics.cache import lru_cache
 from torch_harmonics.partition import compute_split_shapes
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
 
@@ -60,6 +61,68 @@ __all__ = [
 # Only concrete classes -- those that define their own `grid_type` -- are entered;
 # abstract intermediates such as RegularGridS2 are not.
 _GRID_REGISTRY: Dict[str, Type["PointSetS2"]] = {}
+
+
+# The per-point tensors are built once per descriptor and cached on it. Caching matters
+# here in a way it does not for the per-ring tensors: these are O(npoints), so a
+# 1440x2880 grid rebuilds ~66 MB of coordinates on every access, and building them walks
+# the rings in Python on a ragged grid.
+#
+# `copy=True` matches precompute_latitudes: each caller gets an independent tensor, so an
+# in-place write by one consumer cannot poison the entry for the next. That costs a copy
+# per access, which is the right trade because these are read at layer construction
+# rather than per forward -- and `test_descriptor_returns_independent_tensors` pins the
+# no-aliasing half of it.
+#
+# Free functions rather than methods because the cache must be keyed on the descriptor,
+# which is exactly what its `key`/`__hash__` were designed for.
+
+
+@lru_cache(typed=True, copy=True)
+def _grid_coords(grid: "GridS2") -> torch.Tensor:
+    """Per-point ``(colat, lon)`` of a ring-structured grid, in ring-major order."""
+    counts = grid.nlon_per_lat
+    colats = torch.repeat_interleave(grid.colats, counts)
+    if grid.is_regular:
+        # every ring carries the same longitudes, so tile rather than walking the rings
+        lons = grid.lons().repeat(grid.nrings)
+    else:
+        # ragged, and possibly with a per-ring phase offset (HEALPix staggers by half a
+        # pixel), so each ring has to be asked for its own longitudes
+        lons = torch.cat([grid.lons(k) for k in range(grid.nrings)])
+    return torch.stack([colats, lons.to(colats.dtype)], dim=-1)
+
+
+@lru_cache(typed=True, copy=True)
+def _shard_quad_weights(shard: "RegularGridShardS2") -> torch.Tensor:
+    r"""
+    Per-point solid-angle weights of one rank's block, in its local ``(nlat, nlon)`` order.
+
+    Note which extent each factor takes. The longitudinal factor is
+    :math:`2\pi / N_\lambda` with the **global** ring length, because splitting a ring
+    across azimuth ranks divides the points up but does not change how much solid angle
+    each one covers. The tiling then uses the **local** count, because that is how many
+    of them this rank holds. Using the local length in the factor instead would make every
+    rank's weights sum to the global total, and the reduction would then overcount by the
+    azimuth group size.
+
+    These sum to :math:`4\pi` only across all ranks; locally they are a partial sum.
+    """
+    grid = shard.grid
+    lo = shard.lat_offset
+    counts_global = grid.nlon_per_lat[lo : lo + shard.nlat]
+    weights = shard.colat_weights
+    per_point = weights * (2.0 * torch.pi / counts_global.to(weights.dtype))
+    return torch.repeat_interleave(per_point, shard.nlon)
+
+
+@lru_cache(typed=True, copy=True)
+def _grid_quad_weights(grid: "GridS2") -> torch.Tensor:
+    r"""Per-point solid-angle weights of a ring-structured grid, summing to :math:`4\pi`."""
+    counts = grid.nlon_per_lat
+    weights = grid.colat_weights
+    per_point = weights * (2.0 * torch.pi / counts.to(weights.dtype))
+    return torch.repeat_interleave(per_point, counts)
 
 
 @dataclass(frozen=True, eq=False)
@@ -482,13 +545,7 @@ class GridS2(PointSetS2):
     @property
     def coords(self) -> torch.Tensor:
         """Per-point positions, built from the ring structure in ring-major order."""
-        counts = self.nlon_per_lat
-        colats = torch.repeat_interleave(self.colats, counts)
-        if self.is_regular:
-            lons = self.lons().repeat(self.nrings)
-        else:
-            lons = torch.cat([self.lons(k) for k in range(self.nrings)])
-        return torch.stack([colats, lons.to(colats.dtype)], dim=-1)
+        return _grid_coords(self)
 
     @property
     def quad_weights(self) -> torch.Tensor:
@@ -499,10 +556,7 @@ class GridS2(PointSetS2):
         :math:`w_k \cdot 2\pi / N_{\lambda,k}` at each of its points, and since
         :attr:`colat_weights` sums to 2 the total is :math:`4\pi` by construction.
         """
-        counts = self.nlon_per_lat
-        weights = self.colat_weights
-        per_point = weights * (2.0 * torch.pi / counts.to(weights.dtype))
-        return torch.repeat_interleave(per_point, counts)
+        return _grid_quad_weights(self)
 
     # -- raggedness ----------------------------------------------------------
 
@@ -830,6 +884,17 @@ class GridShardS2:
         """Whether every local latitude ring carries the same number of longitudes."""
         return self.grid.is_regular
 
+    @property
+    def quad_weights(self) -> torch.Tensor:
+        r"""
+        Per-point solid-angle weights of this rank's block.
+
+        The local counterpart of :attr:`~PointSetS2.quad_weights`, and like everything
+        else on a shard a *partial* quantity: these sum to :math:`4\pi` only once summed
+        across every rank, which is what the collective in the layer completes.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not define quad_weights")
+
     # -- serialization -------------------------------------------------------
 
     def to_dict(self) -> Dict[str, Any]:
@@ -953,6 +1018,16 @@ class RegularGridShardS2(GridShardS2):
         These sum to 2 only across all polar ranks; locally they are a partial sum.
         """
         return self.grid.colat_weights[self.lat_offset : self.lat_offset + self.nlat]
+
+    @property
+    def quad_weights(self) -> torch.Tensor:
+        r"""
+        This rank's per-point solid-angle weights, shape ``(nlat * nlon,)``.
+
+        Built from the *global* ring lengths and the *local* point counts; see
+        :func:`_shard_quad_weights`. Sums to :math:`4\pi` only across all ranks.
+        """
+        return _shard_quad_weights(self)
 
     def lons(self, ilat: Optional[int] = None) -> torch.Tensor:
         """This rank's slice of the longitudes of a latitude ring."""

@@ -289,6 +289,26 @@ class TestGridDescriptorCaching(unittest.TestCase):
                     )
                     self.assertGreaterEqual(grid.lons().min().item(), 0.0, msg=f"grid={grid_type}: longitudes were corrupted by an external in-place write")
 
+    def test_per_point_tensors_are_cached_and_independent(self, verbose=False):
+        """
+        ``coords`` and ``quad_weights`` are O(npoints) -- ~66 MB at 1440x2880 -- so they
+        are cached on the descriptor rather than rebuilt per access. They must still obey
+        the same no-aliasing contract as the per-ring tensors, since a cache that hands
+        out shared storage turns one consumer's in-place op into everyone's bug.
+        """
+        with torch.no_grad():
+            for grid_type in grid_types():
+                with self.subTest(grid=grid_type):
+                    grid = as_grid(grid_type, nlat=32, nlon=64)
+                    for name in ("coords", "quad_weights"):
+                        first, second = getattr(grid, name), getattr(grid, name)
+                        self.assertIsNot(first, second, msg=f"{grid_type}.{name} returned the same object twice")
+                        self.assertNotEqual(first.data_ptr(), second.data_ptr(), msg=f"{grid_type}.{name} aliased storage")
+
+                        pristine = second.clone()
+                        first.mul_(-1.0)
+                        self.assertTrue(compare_tensors(f"{name} after external mutation (grid={grid_type})", getattr(grid, name), pristine, atol=0.0, rtol=0.0, verbose=verbose))
+
     def test_descriptor_returns_independent_tensors(self):
         """Two accesses must not alias, otherwise one consumer's in-place op leaks into another's."""
         for grid_type in grid_types():

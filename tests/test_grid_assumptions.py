@@ -846,6 +846,28 @@ class TestGridShard(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     grid.shard(**kwargs)
 
+    def test_shard_weights_reassemble_the_global_ones(self):
+        """
+        The shard's per-point weights are a partition of the grid's, which is what makes
+        the collective in DistributedQuadratureS2 a plain sum.
+
+        The trap this pins: the longitudinal factor takes the *global* ring length while
+        the tiling takes the *local* count. Using the local length in the factor makes
+        every rank's block sum to the global total on its own, and the reduction then
+        overcounts by the azimuth group size -- a wrong answer, not a crash.
+        """
+        grid = as_grid("legendre-gauss", nlat=16, nlon=32)
+        for psize, asize in [(1, 1), (2, 1), (1, 2), (2, 4), (4, 2)]:
+            with self.subTest(polar=psize, azimuth=asize):
+                blocks = {
+                    (pr, ar): grid.shard(polar=(pr, psize), azimuth=(ar, asize)).quad_weights.reshape(*grid.shard(polar=(pr, psize), azimuth=(ar, asize)).shape)
+                    for pr in range(psize)
+                    for ar in range(asize)
+                }
+                rows = [torch.cat([blocks[(pr, ar)] for ar in range(asize)], dim=1) for pr in range(psize)]
+                self.assertTrue(torch.equal(torch.cat(rows, dim=0).flatten(), grid.quad_weights))
+                self.assertAlmostEqual(sum(b.sum().item() for b in blocks.values()), 4.0 * math.pi, places=12)
+
 
 class TestRaggedGridContract(unittest.TestCase):
     """

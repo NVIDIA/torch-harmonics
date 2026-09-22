@@ -91,20 +91,23 @@ class DistributedQuadratureS2(torch.nn.Module):
         self.lat_shapes = list(self.shard.lat_shapes)
         self.lon_shapes = list(self.shard.lon_shapes)
 
-        # Build the local weights directly rather than materialising the global
-        # tensor and slicing it. dlambda is the global longitude spacing, and the
-        # weight of a point does not depend on its longitude, so tiling to the
-        # local width is exactly this rank's slice.
-        dlambda = 2 * torch.pi / self.nlon
-        quad_weight = dlambda * self.shard.colat_weights.unsqueeze(1)
-        quad_weight = quad_weight.tile(1, self.shard.nlon)
+        # the shard builds its own weights, so the per-ring longitudinal factor is written
+        # once, in the grid module, and this class cannot drift from its serial
+        # counterpart. It previously derived `2 * pi / nlon` here, which is the same
+        # assumption QuadratureS2 used to make and the same one that is wrong on a grid
+        # whose rings differ in length.
+        quad_weight = self.shard.quad_weights
 
         # apply normalization
         if normalize:
             quad_weight = quad_weight / (4.0 * torch.pi)
 
-        # cast to fp32
+        # lay the weights out like the local block they multiply
         quad_weight = quad_weight.reshape(1, 1, *self.shard.shape).to(torch.float32).contiguous()
+
+        # how many trailing axes `forward` reduces over, derived from the same shape as
+        # the buffer so the two cannot disagree
+        self.spatial_dims = tuple(range(-len(self.shard.shape), 0))
 
         # register buffer
         self.register_buffer("quad_weight", quad_weight, persistent=False)
@@ -113,8 +116,8 @@ class DistributedQuadratureS2(torch.nn.Module):
         return f"grid={self.grid!r},\nnormalize={self.normalize}"
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # integrate over last two axes only:
-        quad = torch.sum(x * self.quad_weight, dim=(-2, -1))
+        # integrate over the spatial axes only, however many the grid has
+        quad = torch.sum(x * self.quad_weight, dim=self.spatial_dims)
         if self.comm_size_polar > 1:
             quad = reduce_from_polar_region(quad)
         if self.comm_size_azimuth > 1:
