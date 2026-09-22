@@ -41,21 +41,23 @@ from torch_harmonics.grid import as_grid
 
 
 def get_quadrature_weights(nlat: int, nlon: int, grid: str, tile: bool = False, normalized: bool = True) -> torch.Tensor:
-    # area weights
-    # colat_weights, not quad_weights: this builds the per-point weight itself by
-    # applying the longitudinal factor below, so it needs the (nlat,) latitudinal
-    # factor alone. quad_weights is already per-point and would apply 2*pi/nlon twice.
-    q = as_grid(grid, nlat=nlat, nlon=nlon).colat_weights
-    q = q.reshape(-1, 1) * 2 * torch.pi / nlon
+    # the descriptor already carries the per-point solid-angle weights, which is exactly
+    # what this used to build by hand out of the latitudinal factor and 2*pi/nlon. Taking
+    # them from the grid keeps the longitudinal factor per ring, so this stays correct on
+    # a grid whose rings differ in length.
+    grid_in = as_grid(grid, nlat=nlat, nlon=nlon)
+    q = grid_in.quad_weights.reshape(nlat, nlon)
 
-    # numerical precision can be an issue here, make sure it sums to 1:
+    # quad_weights sums to 4*pi; normalizing to 1 is a division by that, exactly
     if normalized:
-        q = q / torch.sum(q) / float(nlon)
+        q = q / (4.0 * torch.pi)
 
-    if tile:
-        q = torch.tile(q, (1, nlon)).contiguous()
+    if not tile:
+        # one column: every point on a ring carries the same weight here, and callers
+        # that broadcast over longitude want the (nlat, 1) form
+        q = q[:, :1]
 
-    return q.to(torch.float32)
+    return q.contiguous().to(torch.float32)
 
 
 class DiceLossS2(nn.Module):

@@ -104,7 +104,10 @@ class ShallowWaterSolver(nn.Module):
         # they are ordered consistently -- north to south -- instead of pairing an
         # unflipped weight with a flipped node and relying on the rule being symmetric.
         quadrature_grid = as_grid(self.grid, nlat=self.nlat, nlon=self.nlon)
-        quad_weights = quadrature_grid.colat_weights.reshape(-1, 1)
+        # per-point solid-angle weights, so integrate_grid does not have to reconstruct
+        # the longitudinal factor. Kept in (nlat, nlon) so the polar_opt slicing below
+        # still indexes rings on axis -2.
+        quad_weights = quadrature_grid.quad_weights.reshape(self.nlat, self.nlon)
         lats = quadrature_grid.lats
         lons = quadrature_grid.lons()
 
@@ -315,12 +318,13 @@ class ShallowWaterSolver(nn.Module):
 
     def integrate_grid(self, ugrid, dimensionless=False, polar_opt=0):
         """Integrate the solution on the grid."""
-        dlon = 2 * torch.pi / self.nlon
+        # no dlon here: self.quad_weights is the per-point solid angle and already
+        # carries the longitudinal factor, per ring
         radius = 1 if dimensionless else self.radius
         if polar_opt > 0:
-            out = torch.sum(ugrid[..., polar_opt:-polar_opt, :] * self.quad_weights[polar_opt:-polar_opt] * dlon * radius**2, dim=(-2, -1))
+            out = torch.sum(ugrid[..., polar_opt:-polar_opt, :] * self.quad_weights[polar_opt:-polar_opt] * radius**2, dim=(-2, -1))
         else:
-            out = torch.sum(ugrid * self.quad_weights * dlon * radius**2, dim=(-2, -1))
+            out = torch.sum(ugrid * self.quad_weights * radius**2, dim=(-2, -1))
         return out
 
     def plot_griddata(self, data, fig, cmap="twilight_shifted", vmax=None, vmin=None, projection="3d", title=None, antialiased=False):
