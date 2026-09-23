@@ -208,7 +208,7 @@ class HealpixGrid(GridS2):
     (48,)
     >>> grid.nlon_per_lat.tolist()
     [4, 8, 8, 8, 8, 8, 4]
-    >>> float(grid.colat_weights.sum())
+    >>> round(float(grid.colat_weights.sum()), 6)  # a latitudinal rule sums to 2
     2.0
     >>> round(float(grid.quad_weights.sum()), 6)  # 4 pi, one entry per pixel
     12.566371

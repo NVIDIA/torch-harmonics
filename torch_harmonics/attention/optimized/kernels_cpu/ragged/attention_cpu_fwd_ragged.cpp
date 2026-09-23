@@ -88,8 +88,13 @@ namespace attention_kernels
         const int64_t nchan_out = vx.size(2);
 
         auto y = torch::zeros({nbatch_heads, npoints_out, nchan_out}, f32);
-        auto alpha_sum = torch::zeros({nbatch_heads, npoints_out}, f32);
-        auto qdotk_max = torch::zeros({nbatch_heads, npoints_out}, f32);
+
+        // (batch, heads, npoints), matching the CUDA kernel rather than the (batch *
+        // heads, npoints) the loop indexes. fold_heads_ragged lays the folded axis out
+        // batch-major, head-minor, so bh * npoints + ipoint addresses this tensor in C
+        // order unchanged -- the shape differs, the memory does not.
+        auto alpha_sum = torch::zeros({nbatch_heads / num_heads, num_heads, npoints_out}, f32);
+        auto qdotk_max = torch::zeros({nbatch_heads / num_heads, num_heads, npoints_out}, f32);
 
         s2_attn_fwd_ragged_cpu_kernel(
             kx.data_ptr<float>(), vx.data_ptr<float>(), qy.data_ptr<float>(), ring_weights.data_ptr<float>(),
@@ -108,7 +113,12 @@ namespace attention_kernels
         auto y_out = y_hi.to(inp_dtype);
         if (y_out.is_same(y_hi)) { y_out = y_hi.clone(); }
 
-        // statistics stay (B * heads, npoints), which is how the backward indexes them
+        // y_hi is returned only where the CUDA kernel returns it -- for bfloat16, whose
+        // mantissa is too short to carry the output the backward re-reads. Anywhere else
+        // it is an empty placeholder, because the shape a caller sees has to be the same
+        // on both devices for one fake to describe the operator.
+        if (inp_dtype != torch::kBFloat16) { y_hi = torch::empty({0}, f32); }
+
         return {y_out, y_hi, alpha_sum, qdotk_max};
     }
 

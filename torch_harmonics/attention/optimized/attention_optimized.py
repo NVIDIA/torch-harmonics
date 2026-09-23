@@ -374,9 +374,15 @@ if optimized_kernels_is_available():
         out_shape = (kx.shape[0], npoints_out, vx.shape[2])
         stat_shape = (kx.shape[0], num_heads, npoints_out)
         f32 = dict(dtype=torch.float32, device=kx.device)
+        # y_hi carries the fp32 output only for bfloat16, whose mantissa is too short to
+        # hold what the backward re-reads; otherwise the kernels return an empty
+        # placeholder. dtype is FakeTensor metadata, so this branch resolves at trace
+        # time -- and getting it wrong is invisible until something reads the fake,
+        # which is what opcheck's aot_dispatch utilities do.
+        y_hi_shape = out_shape if kx.dtype == torch.bfloat16 else (0,)
         return (
             torch.empty(out_shape, dtype=kx.dtype, device=kx.device),
-            torch.empty(out_shape, **f32),
+            torch.empty(y_hi_shape, **f32),
             torch.empty(stat_shape, **f32),
             torch.empty(stat_shape, **f32),
         )
@@ -449,9 +455,10 @@ if optimized_kernels_is_available():
         out_shape = (kw.shape[0], npoints_out, vw.shape[2])
         stat_shape = (kw.shape[0], nh, npoints_out)
         f32 = dict(dtype=torch.float32, device=kw.device)
+        y_hi_shape = out_shape if kw.dtype == torch.bfloat16 else (0,)
         return (
             torch.empty(out_shape, dtype=kw.dtype, device=kw.device),
-            torch.empty(out_shape, **f32),
+            torch.empty(y_hi_shape, **f32),
             torch.empty(stat_shape, **f32),
             torch.empty(stat_shape, **f32),
         )

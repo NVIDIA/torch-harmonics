@@ -2080,8 +2080,8 @@ class TestNeighborhoodAttentionRaggedS2(unittest.TestCase):
         skip_on_empty=True,
     )
     @unittest.skipUnless(
-        torch.cuda.is_available() and optimized_kernels_is_available() and _op_is_declared("forward_ragged") and _op_is_declared("backward_ragged"),
-        "skipping test because the ragged CUDA kernels are not available",
+        optimized_kernels_is_available() and _op_is_declared("forward_ragged") and _op_is_declared("backward_ragged"),
+        "skipping test because the ragged kernels are not available",
     )
     def test_optimized_pt2_compatibility(self, nside, batch, channels, heads):
         """
@@ -2303,8 +2303,11 @@ class TestRaggedForwardCudaKernel(unittest.TestCase):
             vx.contiguous(),
             qy.contiguous(),
             layer.point_weights,
-            layer.psi_col_idx,
-            layer.psi_roff_idx,
+            # from the precompute, not the layer: with the kernels present the layer
+            # holds the arcs and not the column list, and a test comparing the two
+            # implementations must not depend on it carrying state for the one it did
+            # not select
+            *[t.to(self.device) for t in precompute_neighborhood_csr_s2(grid, grid, layer.theta_cutoff)],
             num_heads,
             npix,
         )
