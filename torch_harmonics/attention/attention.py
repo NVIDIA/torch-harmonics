@@ -37,13 +37,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from attention_helpers import optimized_kernels_is_available
 
-from torch_harmonics.attention._attention_utils import _build_psi_segments, _check_dtypes_match, _check_extent, _check_ndim
+from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhood_s2_attention_torch
 from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_optimized
-from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
-from torch_harmonics.filter_basis import get_filter_basis
 from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.neighborhood import precompute_neighborhood_arcs_s2
 from torch_harmonics.truncation import truncate_support
 
 
@@ -371,40 +370,28 @@ class NeighborhoodAttentionS2(nn.Module):
         quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
-        # create a dummy filter basis to pass to the construction of the convolution tensor
-        # this is to avoid code duplication as the logic of pre-computing the sparsity pattern
-        # is identical to convolutions with a constant filter function
-        fb = get_filter_basis(kernel_shape=1, basis_type="zernike")
+        # The neighbourhood pattern is all attention needs: which input points lie
+        # within theta_cutoff of each output point. It used to come from the DISCO
+        # precompute with a fabricated one-function Zernike basis whose values were
+        # thrown away, which cost roughly a third of the setup to produce nothing --
+        # and forced the arc form to be recovered afterwards from the column list.
+        #
+        # fold_longitude keys the pattern by output ring rather than by output point,
+        # which is what makes it the same size as DISCO's: on a regular grid shifting
+        # the output longitude carries a point's neighbourhood onto the next point's,
+        # so one row per ring suffices and the kernels shift. Without it the pattern
+        # would be nlon times larger -- 8.8 million arcs instead of 8,632 at 512x1024.
+        #
+        # For upsample the grids swap, mirroring DISCO's transpose module: rows then
+        # index the smaller input grid and columns encode the larger output grid.
+        src, dst = (self.grid_out, self.grid_in) if self.upsample else (self.grid_in, self.grid_out)
+        arcs = precompute_neighborhood_arcs_s2(src, dst, theta_cutoff=self.theta_cutoff, fold_longitude=True)
 
-        # precompute the neighborhood sparsity pattern. For upsample we mirror DISCO's
-        # transpose module: pass shapes swapped + transpose_normalization=True so that
-        # rows of psi index the (smaller) input grid and cols encode the (larger)
-        # output grid as ho_big * nlon_out + wo_big_canonical.
-        if self.upsample:
-            idx, _, roff = _precompute_convolution_tensor_s2(
-                self.grid_out,
-                self.grid_in,
-                fb,
-                theta_cutoff=self.theta_cutoff,
-                transpose_normalization=True,
-                basis_norm_mode="none",
-                merge_quadrature=True,
-            )
-        else:
-            idx, _, roff = _precompute_convolution_tensor_s2(
-                self.grid_in,
-                self.grid_out,
-                fb,
-                theta_cutoff=self.theta_cutoff,
-                transpose_normalization=False,
-                basis_norm_mode="none",
-                merge_quadrature=True,
-            )
-
-        # this is kept for legacy resons in case we want to resuse sorting of these entries
-        row_idx = idx[1, ...].contiguous()
-        col_idx = idx[2, ...].contiguous()
-        roff_idx = roff.contiguous()
+        # the column form, which the CPU and torch reference paths consume
+        col_idx, roff_idx = arcs.to_csr()
+        col_idx = col_idx.contiguous()
+        roff_idx = roff_idx.to(torch.int64).contiguous()
+        row_idx = torch.repeat_interleave(torch.arange(roff_idx.numel() - 1, dtype=torch.int64), roff_idx.diff()).contiguous()
 
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
@@ -415,12 +402,12 @@ class NeighborhoodAttentionS2(nn.Module):
         # from col_idx with a per-neighbour 64-bit integer division, which the GPU has
         # no instruction for. col_idx is kept because the CPU and torch reference paths
         # still use it -- which is what keeps the reference independent of this
-        # derivation. See _build_psi_segments and TestPsiArcStructure.
+        # derivation. See TestPsiArcStructure.
         #
-        # For the scatter (upsample) psi the rows are keyed by input latitude and the
-        # columns index the output grid, so the decode width differs.
-        nlon_decode = self.nlon_out if (self.nlat_out > self.nlat_in or self.nlon_out > self.nlon_in) else self.nlon_in
-        psi_seg, psi_seg_off = _build_psi_segments(col_idx, roff_idx, nlon_decode)
+        # These now come straight from the precompute rather than being rebuilt from
+        # col_idx by _build_psi_segments: the arcs are what it computes natively, and
+        # the column list is the derived form.
+        psi_seg, psi_seg_off = arcs.segments.contiguous(), arcs.offsets.contiguous()
         self.register_buffer("psi_seg", psi_seg, persistent=False)
         self.register_buffer("psi_seg_off", psi_seg_off, persistent=False)
 
