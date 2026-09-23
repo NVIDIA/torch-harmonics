@@ -78,12 +78,12 @@ References
 
 import math
 from dataclasses import dataclass
-from typing import Any, ClassVar, Dict, Optional, Tuple
+from typing import ClassVar, Optional, Tuple
 
 import torch
 
 from torch_harmonics.cache import lru_cache
-from torch_harmonics.grid import GridS2
+from torch_harmonics.grid import GridS2, _as_int
 
 __all__ = ["HealpixGrid", "healpix_ring_structure"]
 
@@ -216,23 +216,24 @@ class HealpixGrid(GridS2):
 
     nside: int
 
-    def _validate(self):
-        if not isinstance(self.nside, int) or isinstance(self.nside, bool):
-            raise ValueError(f"nside must be an int, got {type(self.nside).__name__}")
+    def __post_init__(self):
+        super().__post_init__()
+        # accepts any integral type and normalizes to int, so that a numpy nside does
+        # not end up in the descriptor's key and therefore in repr and to_dict
+        _as_int(self, "nside")
         if self.nside < 1:
             raise ValueError(f"nside must be at least 1, got {self.nside}")
-
-    # -- identity ------------------------------------------------------------
-
-    @property
-    def params(self) -> Dict[str, Any]:
-        return {"nside": self.nside}
 
     # -- resolution ----------------------------------------------------------
 
     @property
+    def nrings(self) -> int:
+        r"""Number of rings, :math:`4 N - 1`. The name :class:`GridS2` addresses rings by."""
+        return 4 * self.nside - 1
+
+    @property
     def nlat(self) -> int:
-        r"""Number of rings, :math:`4 N - 1`."""
+        r"""Alias for :attr:`nrings`, kept because HEALPix literature counts rings as latitudes."""
         return 4 * self.nside - 1
 
     @property
@@ -297,12 +298,13 @@ class HealpixGrid(GridS2):
     # -- geometry ------------------------------------------------------------
 
     @property
-    def lats(self) -> torch.Tensor:
+    def colats(self) -> torch.Tensor:
+        r"""Ring colatitudes, shape ``(nrings,)``. :attr:`lats` is the geographic latitude."""
         _, _, colats = healpix_ring_structure(self.nside)
         return colats
 
     @property
-    def quad_weights(self) -> torch.Tensor:
+    def colat_weights(self) -> torch.Tensor:
         r"""
         Latitudinal weights of the equal-area rule, :math:`w_k = 2 n_k / N_{pix}`.
 
@@ -310,7 +312,9 @@ class HealpixGrid(GridS2):
         :math:`4\pi / N_{pix}`. Expressed in this library's per-ring
         :math:`\cos\theta` convention, where a single point on ring :math:`k` carries
         :math:`2 \pi w_k / n_k`, that makes :math:`w_k` proportional to the ring size,
-        and :math:`\sum_k w_k = 2` as on every other grid.
+        and :math:`\sum_k w_k = 2` as on every other grid. The per-point weights, which
+        sum to :math:`4\pi`, come from :attr:`~torch_harmonics.grid.PointSetS2.quad_weights`
+        and are uniform here because HEALPix is equal-area.
         """
         return 2.0 * self.nlon_per_lat.to(torch.float64) / self.npoints
 
@@ -366,8 +370,13 @@ class HealpixGrid(GridS2):
         return (2.0 * torch.pi / n) * (j.to(torch.float64) + lon_shifts[ring_of])
 
     def all_lats(self) -> torch.Tensor:
-        r"""Colatitude of every pixel, shape ``(npoints,)``, in RING order."""
-        return torch.repeat_interleave(self.lats, self.nlon_per_lat)
+        r"""
+        Colatitude of every pixel, shape ``(npoints,)``, in RING order.
+
+        Equal to ``coords[:, 0]``; :attr:`~torch_harmonics.grid.PointSetS2.coords`
+        carries both columns and is the form the base class contract is written in.
+        """
+        return torch.repeat_interleave(self.colats, self.nlon_per_lat)
 
     # -- derived quantities --------------------------------------------------
 
@@ -375,36 +384,12 @@ class HealpixGrid(GridS2):
     def is_uniform_in_theta(self) -> bool:
         return False
 
-    def theta_cutoff(self, scale: Optional[float] = 1.0) -> float:
-        r"""
-        Angular support radius of one grid spacing, taking the anisotropy into account.
-
-        Overrides the base definition, which is the latitudinal spacing alone. That
-        works on a product grid because :math:`N_\lambda \approx 2 N_\theta` makes the
-        two spacings nearly equal, but HEALPix is anisotropic. At resolution :math:`N`
-        its ring spacing peaks at about :math:`0.89 / N`, near the join between the
-        polar cap and the equatorial belt, while the in-ring spacing reaches
-        :math:`\pi / (2N) \approx 1.57 / N` at the equator -- a ratio of roughly 1.8 --
-        and a pixel is about :math:`1.02 / N` across. A radius of one *latitudinal*
-        spacing would therefore fall short of a pixel's own nearest neighbours, which
-        lie diagonally at roughly :math:`1.03 / N`, and collapse every output point's
-        stencil onto the single pixel underneath it.
-
-        Taking the larger of the two spacings restores the intent of the default --
-        that the stencils of adjacent output points overlap -- and reduces to the
-        latitudinal spacing on the product grids, where it is the larger one.
-
-        Parameters
-        ----------
-        scale : float, optional
-            Multiplier on the grid spacing, by default 1.0.
-
-        Returns
-        -------
-        float
-            Cutoff angle in radians.
-        """
-        return scale * max(self.max_latitude_spacing, self.max_longitude_spacing)
+    # theta_cutoff is deliberately not overridden. The base used to take the latitudinal
+    # spacing alone, which on HEALPix falls short of a pixel's own nearest neighbours --
+    # its in-ring spacing reaches pi/(2N) at the equator against a ring spacing peaking
+    # near 0.89/N, a ratio of about 1.8 -- and collapsed every stencil onto the pixel
+    # underneath it. GridS2.max_node_spacing now takes the larger of the two directions,
+    # so the anisotropy is handled generically and this grid needs no special case.
 
     # -- spectral bounds -----------------------------------------------------
 
@@ -416,10 +401,6 @@ class HealpixGrid(GridS2):
             "Use HEALPix for the localized operators and quadrature, and a Gauss or equiangular grid for an SHT."
         )
 
-    @property
-    def is_spectrally_accurate(self) -> bool:
-        return False
-
     # -- decomposition -------------------------------------------------------
 
     def shard(self, polar: Optional[Tuple[int, int]] = (0, 1), azimuth: Optional[Tuple[int, int]] = (0, 1)) -> "GridS2":
@@ -428,12 +409,6 @@ class HealpixGrid(GridS2):
             "in length, so there is no global nlon to split azimuthally. A ragged decomposition should split "
             "the flat pixel range, which GridShardS2 does not yet describe."
         )
-
-    def lat_shapes(self, num_chunks: int) -> Tuple[int, ...]:
-        raise NotImplementedError("HealpixGrid does not support a 2D product decomposition; see HealpixGrid.shard.")
-
-    def lon_shapes(self, num_chunks: int) -> Tuple[int, ...]:
-        raise NotImplementedError("HealpixGrid does not support a 2D product decomposition; see HealpixGrid.shard.")
 
     # -- construction --------------------------------------------------------
 
