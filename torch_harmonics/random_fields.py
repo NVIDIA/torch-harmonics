@@ -111,14 +111,17 @@ class GaussianRandomFieldS2(torch.nn.Module):
         self.register_buffer("sqrt_eig", sqrt_eig)
 
         # Save mean and var of the standard Gaussian.
-        # Need these to re-initialize distribution on a new device.
+        # The sampler resolves these buffers after dtype or device conversions.
         mean = torch.as_tensor([0.0]).to(dtype=dtype)
         var = torch.as_tensor([1.0]).to(dtype=dtype)
         self.register_buffer("mean", mean)
         self.register_buffer("var", var)
 
-        # Standard normal noise sampler.
-        self.gaussian_noise = torch.distributions.normal.Normal(self.mean, self.var)
+    @property
+    def gaussian_noise(self):
+        # Module conversions, including those on a parent, can replace buffers.
+        # Resolve the distribution from the current tensors instead of caching it.
+        return torch.distributions.normal.Normal(self.mean, self.var)
 
     def forward(self, N, xi=None):
 
@@ -133,17 +136,3 @@ class GaussianRandomFieldS2(torch.nn.Module):
         u = self.isht(xi * self.sqrt_eig)
 
         return u
-
-    # Override cuda and to methods so sampler gets initialized with mean
-    # and variance on the correct device.
-    def cuda(self, *args, **kwargs):
-        super().cuda(*args, **kwargs)
-        self.gaussian_noise = torch.distributions.normal.Normal(self.mean, self.var)
-
-        return self
-
-    def to(self, *args, **kwargs):
-        super().to(*args, **kwargs)
-        self.gaussian_noise = torch.distributions.normal.Normal(self.mean, self.var)
-
-        return self
