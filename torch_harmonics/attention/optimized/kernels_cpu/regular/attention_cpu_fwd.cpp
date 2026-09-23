@@ -83,13 +83,9 @@ namespace attention_kernels
         TORCH_CHECK(downsample || upsample, "either nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (",
                     nlon_out, "), or vice versa");
 
-        // seg / seg_off are accepted for ABI parity with the CUDA path but not used
-        // here: this is a correctness reference, and the CPU accessors have no
-        // equivalent of the GPU's missing integer-divide instruction, which is the
-        // whole reason the CUDA kernels switched to arcs. Optimizing the CPU path is
-        // a separate question.
-        (void)seg;
-        (void)seg_off;
+        // The gather kernel below walks seg / seg_off, as the CUDA kernels do. col_idx
+        // and row_off are still consumed by the upsample dispatch, which inverts an
+        // input-keyed pattern and has not moved yet; once it does they leave the schema.
 
         TORCH_CHECK(num_heads >= 1, "num_heads must be positive, got ", num_heads);
         TORCH_CHECK(qy.size(3) % num_heads == 0, "q/k channel count (", qy.size(3),
@@ -134,9 +130,11 @@ namespace attention_kernels
         auto quad_weights_arr = ring_weights.packed_accessor64<float, 1>();
         auto col_idx_arr = col_idx.packed_accessor64<int64_t, 1>();
         auto roff_arr = row_off.packed_accessor64<int64_t, 1>();
+        auto seg_arr = seg.packed_accessor64<int32_t, 2>();
+        auto seg_off_arr = seg_off.packed_accessor64<int32_t, 1>();
 
         if (downsample) {
-            s2_attn_fwd_kernel<float>(kx_arr, vx_arr, qy_arr, quad_weights_arr, col_idx_arr, roff_arr, y_arr, nlon_in,
+            s2_attn_fwd_kernel<float>(kx_arr, vx_arr, qy_arr, quad_weights_arr, seg_arr, seg_off_arr, y_arr, nlon_in,
                                       nlat_out, nlon_out, batch_size, nchannels_in, nchannels_out);
         } else {
             s2_attn_fwd_upsample_dispatch(kx_arr, vx_arr, qy_arr, quad_weights_arr, col_idx_arr, roff_arr, y_arr,

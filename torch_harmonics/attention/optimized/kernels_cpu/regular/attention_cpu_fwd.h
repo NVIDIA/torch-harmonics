@@ -65,8 +65,8 @@ namespace attention_kernels
                             const torch::PackedTensorAccessor64<scalar_t, 4> vx_arr,
                             const torch::PackedTensorAccessor64<scalar_t, 4> qy_arr,
                             const torch::PackedTensorAccessor64<scalar_t, 1> quad_weights_arr,
-                            const torch::PackedTensorAccessor64<int64_t, 1> col_idx_arr,
-                            const torch::PackedTensorAccessor64<int64_t, 1> roff_arr,
+                            const torch::PackedTensorAccessor64<int32_t, 2> seg_arr,
+                            const torch::PackedTensorAccessor64<int32_t, 1> seg_off_arr,
                             torch::PackedTensorAccessor64<scalar_t, 4> y_arr, const int64_t nlon_in,
                             const int64_t nlat_out, const int64_t nlon_out, const int64_t batch_size,
                             const int64_t nchannels_in, const int64_t nchannels_out)
@@ -86,8 +86,8 @@ namespace attention_kernels
         const scalar_t *__restrict__ qy_base = qy_arr.data();
         scalar_t *__restrict__ y_base = y_arr.data();
         const scalar_t *__restrict__ quad_p = quad_weights_arr.data();
-        const int64_t *__restrict__ col_p = col_idx_arr.data();
-        const int64_t *__restrict__ roff_p = roff_arr.data();
+        const int32_t *__restrict__ seg_p = seg_arr.data();
+        const int32_t *__restrict__ seg_off_p = seg_off_arr.data();
 
         const int64_t kx_sB = kx_arr.stride(0);
         const int64_t kx_sH = kx_arr.stride(1);
@@ -117,8 +117,8 @@ namespace attention_kernels
                         const int64_t wo_end = std::min(nlon_out, wo_start + block_wo);
                         const int64_t this_block = wo_end - wo_start;
 
-                        const int64_t zstart = roff_p[ho];
-                        const int64_t zend = roff_p[ho + 1];
+                        const int64_t sg_start = seg_off_p[ho];
+                        const int64_t sg_end = seg_off_p[ho + 1];
 
                         // zero this block's y_tmp slice
                         std::fill(y_tmp.begin(), y_tmp.begin() + this_block * nchannels_out, 0.0f);
@@ -133,56 +133,72 @@ namespace attention_kernels
                         const scalar_t *__restrict__ kx_b = kx_base + b * kx_sB;
                         const scalar_t *__restrict__ vx_b = vx_base + b * vx_sB;
 
-                        for (int64_t idz = zstart; idz < zend; idz++) {
-                            const int64_t nz_col_idx = col_p[idz];
-                            const int64_t hi = nz_col_idx / nlon_in;
-                            const int64_t wi = nz_col_idx % nlon_in;
+                        // Iterate contiguous longitude arcs rather than columns, as the
+                        // CUDA kernels do. An arc is a run of neighbours on one input
+                        // latitude, so hi -- and with it the row pointers and the
+                        // quadrature weight -- is a per-arc constant instead of a
+                        // per-neighbour integer division of col_idx. The inner wo block
+                        // below is unchanged; only the decode that feeds it moved.
+                        for (int64_t sg = sg_start; sg < sg_end; sg++) {
+
+                            const int64_t hi = seg_p[3 * sg + 0];
+                            const int64_t arc_lo = seg_p[3 * sg + 1];
+                            const int64_t arc_len = seg_p[3 * sg + 2];
 
                             // hoist (b, hi) pointer bases + quad weight for this row
                             const scalar_t *__restrict__ kx_b_hi = kx_b + hi * kx_sH;
                             const scalar_t *__restrict__ vx_b_hi = vx_b + hi * vx_sH;
                             const float qw_hi = static_cast<float>(quad_p[hi]);
 
-                            // Incremental wip = (wi + pscale * wo) mod nlon_in.
-                            // One real modulo per (idz, bwo); then wip advances by
-                            // pscale per wo step and wraps with a single
-                            // conditional subtract (pscale <= nlon_in so the
-                            // post-increment value is always < 2*nlon_in).
-                            int64_t wip = (wi + pscale * wo_start) % nlon_in;
+                            int64_t wi = arc_lo;
 
-                            for (int64_t wo = wo_start; wo < wo_end; wo++) {
-                                const int64_t wob = wo - wo_start;
+                            for (int64_t j = 0; j < arc_len; j++) {
 
-                                // per-wo channel-vector pointers (ci/co stride-1)
-                                const scalar_t *__restrict__ qy_bow = qy_b_ho + wo * qy_sW;
-                                const scalar_t *__restrict__ kx_biwip = kx_b_hi + wip * kx_sW;
-                                const scalar_t *__restrict__ vx_biwip = vx_b_hi + wip * vx_sW;
+                                // Incremental wip = (wi + pscale * wo) mod nlon_in.
+                                // One real modulo per (idz, bwo); then wip advances by
+                                // pscale per wo step and wraps with a single
+                                // conditional subtract (pscale <= nlon_in so the
+                                // post-increment value is always < 2*nlon_in).
+                                int64_t wip = (wi + pscale * wo_start) % nlon_in;
 
-                                // qdotk: pure ci reduction, stride-1 dot product
-                                float qdotk = 0.0f;
+                                for (int64_t wo = wo_start; wo < wo_end; wo++) {
+                                    const int64_t wob = wo - wo_start;
+
+                                    // per-wo channel-vector pointers (ci/co stride-1)
+                                    const scalar_t *__restrict__ qy_bow = qy_b_ho + wo * qy_sW;
+                                    const scalar_t *__restrict__ kx_biwip = kx_b_hi + wip * kx_sW;
+                                    const scalar_t *__restrict__ vx_biwip = vx_b_hi + wip * vx_sW;
+
+                                    // qdotk: pure ci reduction, stride-1 dot product
+                                    float qdotk = 0.0f;
 #pragma omp simd reduction(+ : qdotk)
-                                for (int64_t ci = 0; ci < nchannels_in; ci++) {
-                                    qdotk += static_cast<float>(qy_bow[ci] * kx_biwip[ci]);
-                                }
+                                    for (int64_t ci = 0; ci < nchannels_in; ci++) {
+                                        qdotk += static_cast<float>(qy_bow[ci] * kx_biwip[ci]);
+                                    }
 
-                                // online softmax update
-                                const float qdotk_max_tmp = std::max(qdotk_max[wob], qdotk);
-                                const float discount = std::exp(qdotk_max[wob] - qdotk_max_tmp);
-                                const float alpha = std::exp(qdotk - qdotk_max_tmp) * qw_hi;
-                                alpha_sum[wob] = alpha + alpha_sum[wob] * discount;
+                                    // online softmax update
+                                    const float qdotk_max_tmp = std::max(qdotk_max[wob], qdotk);
+                                    const float discount = std::exp(qdotk_max[wob] - qdotk_max_tmp);
+                                    const float alpha = std::exp(qdotk - qdotk_max_tmp) * qw_hi;
+                                    alpha_sum[wob] = alpha + alpha_sum[wob] * discount;
 
-                                // v-accumulation: stride-1 SAXPY in co
-                                float *__restrict__ y_tmp_wob = y_tmp.data() + wob * nchannels_out;
+                                    // v-accumulation: stride-1 SAXPY in co
+                                    float *__restrict__ y_tmp_wob = y_tmp.data() + wob * nchannels_out;
 #pragma omp simd
-                                for (int64_t co = 0; co < nchannels_out; co++) {
-                                    y_tmp_wob[co] = y_tmp_wob[co] * discount + alpha * static_cast<float>(vx_biwip[co]);
+                                    for (int64_t co = 0; co < nchannels_out; co++) {
+                                        y_tmp_wob[co]
+                                            = y_tmp_wob[co] * discount + alpha * static_cast<float>(vx_biwip[co]);
+                                    }
+
+                                    qdotk_max[wob] = qdotk_max_tmp;
+
+                                    // advance wip for the next wo; single branchless wrap
+                                    wip += pscale;
+                                    if (wip >= nlon_in) wip -= nlon_in;
                                 }
 
-                                qdotk_max[wob] = qdotk_max_tmp;
-
-                                // advance wip for the next wo; single branchless wrap
-                                wip += pscale;
-                                if (wip >= nlon_in) wip -= nlon_in;
+                                // next longitude along the arc; wraps at most once
+                                if (++wi == nlon_in) { wi = 0; }
                             }
                         }
 

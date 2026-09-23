@@ -119,12 +119,14 @@ namespace attention_kernels
         auto quad_weights_arr = ring_weights.packed_accessor64<float, 1>();
         auto col_idx_arr = col_idx.packed_accessor64<int64_t, 1>();
         auto roff_arr = row_off.packed_accessor64<int64_t, 1>();
+        auto seg_arr = seg.packed_accessor64<int32_t, 2>();
+        auto seg_off_arr = seg_off.packed_accessor64<int32_t, 1>();
         auto dqy_arr = dqy.packed_accessor64<float, 4>();
         auto dvx_arr = dvx.packed_accessor64<float, 4>();
         auto dkx_arr = dkx.packed_accessor64<float, 4>();
 
         if (downsample) {
-            s2_attn_bwd_kernel<float>(kx_arr, vx_arr, qy_arr, dy_arr, quad_weights_arr, col_idx_arr, roff_arr, dqy_arr,
+            s2_attn_bwd_kernel<float>(kx_arr, vx_arr, qy_arr, dy_arr, quad_weights_arr, seg_arr, seg_off_arr, dqy_arr,
                                       dvx_arr, dkx_arr, nlon_in, nlat_out, nlon_out, batch_size, nchannels_in,
                                       nchannels_out);
         } else {

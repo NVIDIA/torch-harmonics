@@ -78,8 +78,8 @@ namespace attention_kernels
                             const torch::PackedTensorAccessor64<scalar_t, 4> qy_arr,
                             const torch::PackedTensorAccessor64<scalar_t, 4> dy_arr,
                             const torch::PackedTensorAccessor64<scalar_t, 1> quad_weights_arr,
-                            const torch::PackedTensorAccessor64<int64_t, 1> col_idx_arr,
-                            const torch::PackedTensorAccessor64<int64_t, 1> roff_arr,
+                            const torch::PackedTensorAccessor64<int32_t, 2> seg_arr,
+                            const torch::PackedTensorAccessor64<int32_t, 1> seg_off_arr,
                             torch::PackedTensorAccessor64<scalar_t, 4> dqy_arr,
                             torch::PackedTensorAccessor64<scalar_t, 4> dvx_arr,
                             torch::PackedTensorAccessor64<scalar_t, 4> dkx_arr, const int64_t nlon_in,
@@ -105,8 +105,40 @@ namespace attention_kernels
         scalar_t *__restrict__ dvx_base = dvx_arr.data();
         scalar_t *__restrict__ dqy_base = dqy_arr.data();
         const scalar_t *__restrict__ quad_p = quad_weights_arr.data();
-        const int64_t *__restrict__ col_p = col_idx_arr.data();
-        const int64_t *__restrict__ roff_p = roff_arr.data();
+        const int32_t *__restrict__ seg_p = seg_arr.data();
+        const int32_t *__restrict__ seg_off_p = seg_off_arr.data();
+
+        // Expand the arcs into a per-row (hi, wi) list, once.
+        //
+        // The three phases below each walk a row's neighbours several times -- phase B
+        // scans every row once per input latitude -- and each visit needs hi and wi.
+        // Reading them from the arcs at every visit would repeat the same decode; doing
+        // it once here costs O(nnz) against the O(nnz * nlon_out * C) the phases spend,
+        // and removes the integer division the column form needed altogether.
+        //
+        // This is a local expansion, not a stored one: the module holds arcs and nothing
+        // else, which is the point of taking them here. It is also what keeps this port
+        // to a change of decode rather than a rewrite of three loop nests.
+        std::vector<int64_t> roff_vec(nlat_out + 1, 0);
+        for (int64_t ho = 0; ho < nlat_out; ho++) {
+            int64_t n = 0;
+            for (int64_t sg = seg_off_p[ho]; sg < seg_off_p[ho + 1]; sg++) { n += seg_p[3 * sg + 2]; }
+            roff_vec[ho + 1] = roff_vec[ho] + n;
+        }
+        std::vector<int32_t> nz_hi(roff_vec[nlat_out]), nz_wi(roff_vec[nlat_out]);
+        for (int64_t ho = 0, idx = 0; ho < nlat_out; ho++) {
+            for (int64_t sg = seg_off_p[ho]; sg < seg_off_p[ho + 1]; sg++) {
+                const int32_t hi = seg_p[3 * sg + 0];
+                const int32_t arc_len = seg_p[3 * sg + 2];
+                int32_t wi = seg_p[3 * sg + 1];
+                for (int32_t j = 0; j < arc_len; j++, idx++) {
+                    nz_hi[idx] = hi;
+                    nz_wi[idx] = wi;
+                    if (++wi == nlon_in) { wi = 0; }
+                }
+            }
+        }
+        const int64_t *__restrict__ roff_p = roff_vec.data();
 
         const int64_t kx_sB = kx_arr.stride(0), kx_sH = kx_arr.stride(1), kx_sW = kx_arr.stride(2);
         const int64_t vx_sB = vx_arr.stride(0), vx_sH = vx_arr.stride(1), vx_sW = vx_arr.stride(2);
@@ -164,9 +196,8 @@ namespace attention_kernels
                         // pass 1: compute qdotk[idz] and find qdotk_max
                         float qdotk_max = -std::numeric_limits<float>::max();
                         for (int64_t idz = zstart; idz < zend; idz++) {
-                            const int64_t nz_col_idx = col_p[idz];
-                            const int64_t hi = nz_col_idx / nlon_in;
-                            const int64_t wi = nz_col_idx % nlon_in;
+                            const int64_t hi = nz_hi[idz];
+                            const int64_t wi = nz_wi[idz];
                             int64_t wip = wi + pscale * wo;
                             if (wip >= nlon_in) wip -= nlon_in;
 
@@ -185,9 +216,8 @@ namespace attention_kernels
                         float alpha_sum = 0.0f;
                         float alpha_gdotv = 0.0f;
                         for (int64_t idz = zstart; idz < zend; idz++) {
-                            const int64_t nz_col_idx = col_p[idz];
-                            const int64_t hi = nz_col_idx / nlon_in;
-                            const int64_t wi = nz_col_idx % nlon_in;
+                            const int64_t hi = nz_hi[idz];
+                            const int64_t wi = nz_wi[idz];
                             int64_t wip = wi + pscale * wo;
                             if (wip >= nlon_in) wip -= nlon_in;
 
@@ -245,9 +275,8 @@ namespace attention_kernels
                             const int64_t zend = roff_p[ho + 1];
 
                             for (int64_t idz = zstart; idz < zend; idz++) {
-                                const int64_t nz_col_idx = col_p[idz];
-                                if (nz_col_idx / nlon_in != hi) continue; // filter to this hi
-                                const int64_t wi = nz_col_idx % nlon_in;
+                                if (nz_hi[idz] != hi) continue; // filter to this hi
+                                const int64_t wi = nz_wi[idz];
                                 const int64_t idz_local = idz - zstart;
 
                                 for (int64_t wo = 0; wo < nlon_out; wo++) {
@@ -315,9 +344,8 @@ namespace attention_kernels
                             const int64_t zend = roff_p[ho + 1];
 
                             for (int64_t idz = zstart; idz < zend; idz++) {
-                                const int64_t nz_col_idx = col_p[idz];
-                                if (nz_col_idx / nlon_in != hi) continue; // filter to this hi
-                                const int64_t wi = nz_col_idx % nlon_in;
+                                if (nz_hi[idz] != hi) continue; // filter to this hi
+                                const int64_t wi = nz_wi[idz];
                                 const int64_t idz_local = idz - zstart;
 
                                 for (int64_t wo = 0; wo < nlon_out; wo++) {
