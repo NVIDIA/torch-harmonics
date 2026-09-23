@@ -83,6 +83,11 @@ _PAIR_BUDGET = 1 << 22
 # exactly, so it must be a tolerance and not an equality test
 _POLE_EPS = 1e-14
 
+#: How far above -1 a cosine may land and still mean "the whole ring". The quantity is
+#: a ratio of sums of products of trigonometric values, so a few ulps of slack is the
+#: floating-point noise floor, not a physical tolerance.
+_WHOLE_RING_EPS = 1e-12
+
 # ceiling on the neighbour entries expanded at once by to_csr. The expansion holds a
 # handful of int64 temporaries per entry, so this trades a bounded peak against a
 # Python iteration count of nnz / budget -- one, for any cutoff of practical size.
@@ -297,6 +302,7 @@ def _validated_lon_shift(grid_in: GridS2, grid_out: GridS2) -> int:
     return nlon_in // nlon_out
 
 
+@lru_cache(maxsize=8, typed=True, copy=True)
 def precompute_neighborhood_arcs_s2(
     grid_in: GridS2, grid_out: GridS2, theta_cutoff: float, theta_eps: Optional[float] = 1e-3, fold_longitude: Optional[bool] = False
 ) -> NeighborhoodArcsS2:
@@ -447,7 +453,15 @@ def precompute_neighborhood_arcs_s2(
         degenerate = denominator.abs() < _POLE_EPS
         cos_half_width = torch.where(degenerate, torch.full_like(denominator, -1.0), (cos_radius - cos_o * cos_in[rings]) / denominator.masked_fill(degenerate, 1.0))
 
-        whole_ring = cos_half_width <= -1.0
+        # A tolerance, not an exact comparison. cos_half_width is a difference of
+        # products divided by another, so a ring that mathematically subtends the whole
+        # circle lands a few ulps above -1 as often as below it. Testing exactly meant
+        # arccos returned a hair under pi, and the floor/ceil below then dropped the one
+        # point at the far side -- visible only when a ring actually has a point there,
+        # i.e. an even nlon, and only for a cutoff wide enough to reach it. That is why
+        # equiangular and Lobatto looked fine: their polar rings take the degenerate
+        # branch above, while Legendre-Gauss has no point on the pole and does not.
+        whole_ring = cos_half_width <= -1.0 + _WHOLE_RING_EPS
         half_width = torch.arccos(cos_half_width.clamp(-1.0, 1.0))
 
         # the ring's points sit at phi = (2 pi / n) (j + delta), so the arc in phi
