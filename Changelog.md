@@ -4,6 +4,8 @@
 
 ### v0.9.3b1 (unreleased)
 
+* Corrected the shallow-water solver startup to use forward Euler followed by second-order Adams-Bashforth before the three-step scheme.
+
 * Improved DISCO CUDA kernel performance: kpacked forward up to 1.28x, backward up to 2.1x on H100 and GB200. No API change.
 * Reduced DISCO psi memory footprint by packing the sparsity into a blocked-CSR layout instead of padding every row to the global maximum.
 * Fixed a DISCO backward launch failure for shapes with `nlon_in > 2048` and an integer scale factor of 3 or more, which exceeded the static shared memory limit.

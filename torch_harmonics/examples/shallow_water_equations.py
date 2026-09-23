@@ -302,12 +302,11 @@ class ShallowWaterSolver(nn.Module):
             # update vort,div,phiv with third-order adams-bashforth.
             # forward euler, then 2nd-order adams-bashforth time steps to start.
             if iter == 0:
-                dudtspec[inow] = dudtspec[inew]
-                dudtspec[iold] = dudtspec[inew]
+                uspec = uspec + self.dt * dudtspec[inew]
             elif iter == 1:
-                dudtspec[iold] = dudtspec[inew]
-
-            uspec = uspec + self.dt * ((23.0 / 12.0) * dudtspec[inew] - (16.0 / 12.0) * dudtspec[inow] + (5.0 / 12.0) * dudtspec[iold])
+                uspec = uspec + self.dt * (1.5 * dudtspec[inew] - 0.5 * dudtspec[inow])
+            else:
+                uspec = uspec + self.dt * ((23.0 / 12.0) * dudtspec[inew] - (16.0 / 12.0) * dudtspec[inow] + (5.0 / 12.0) * dudtspec[iold])
 
             # implicit hyperdiffusion for vort and div.
             uspec[1:] = self.hyperdiff * uspec[1:]
