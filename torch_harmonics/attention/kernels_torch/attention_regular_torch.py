@@ -550,7 +550,7 @@ def _neighborhood_s2_attention_regular_bwd_torch(ctx, grad_output):
 
     # one gradient per forward input: kw, vw, qw, then None for ring_weights,
     # col_idx, row_off, nh, nlon_in, nlat_out, nlon_out
-    return dkw, dvw, dqw, None, None, None, None, None, None, None, None, None
+    return dkw, dvw, dqw, None, None, None, None, None, None, None
 
 
 # register backward

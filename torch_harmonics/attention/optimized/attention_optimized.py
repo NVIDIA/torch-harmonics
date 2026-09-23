@@ -307,7 +307,7 @@ def _neighborhood_s2_attention_regular_bwd_optimized(ctx, grad_output):
     dkw, dvw, dqw = attention_kernels.backward_regular.default(kw, vw, qw, grad_output, ring_weights, seg, seg_off, nh, nlon_in, nlat_out, nlon_out)
 
     # one gradient per forward input: kw, vw, qw, then None for ring_weights,
-    # col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out
+    # seg, seg_off, nh, nlon_in, nlat_out, nlon_out
     return dkw, dvw, dqw, None, None, None, None, None, None, None
 
 
