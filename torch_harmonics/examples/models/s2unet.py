@@ -446,12 +446,11 @@ class SphericalUNet(nn.Module):
     --------
     >>> model = SphericalUNet(
     ...         img_size=(128, 256),
-    ...         scale_factor=4,
+    ...         scale_factor=2,
     ...         in_chans=2,
     ...         out_chans=2,
     ...         embed_dims=[16, 32, 64, 128],
-    ...         depths=[2, 2, 2, 2],
-    ...         use_mlp=True,)
+    ...         depths=[2, 2, 2, 2],)
     >>> model(torch.randn(1, 2, 128, 256)).shape
     torch.Size([1, 2, 128, 256])
     """

@@ -37,13 +37,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from attention_helpers import optimized_kernels_is_available
 
-from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim
+from torch_harmonics.attention._attention_utils import _build_psi_segments, _check_dtypes_match, _check_extent, _check_ndim
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhood_s2_attention_torch
 from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_optimized
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.filter_basis import get_filter_basis
-from torch_harmonics.quadrature import precompute_latitudes
+from torch_harmonics.quadrature import compute_theta_cutoff, precompute_latitudes
 
 
 class AttentionS2(nn.Module):
@@ -298,7 +298,8 @@ class NeighborhoodAttentionS2(nn.Module):
         Angular radius of the geodesic neighborhood disk, in radians. Input points
         farther than this from an output location are excluded from its attention.
         If None (default), it is set to one latitudinal grid spacing of the coarser
-        of the input and output grids, i.e. ``pi / (nlat - 1)``. Must be positive.
+        of the input and output grids, see
+        :func:`torch_harmonics.quadrature.compute_theta_cutoff`. Must be positive.
     k_channels : int
         number of dimensions for interior inner product in the attention matrix (corresponds to kdim in MHA in PyTorch)
     out_channels : int, optional
@@ -351,9 +352,9 @@ class NeighborhoodAttentionS2(nn.Module):
         # convention and use the coarser (input) grid spacing.
         if theta_cutoff is None:
             if self.upsample:
-                self.theta_cutoff = torch.pi / float(self.nlat_in - 1)
+                self.theta_cutoff = compute_theta_cutoff(self.nlat_in, grid=grid_in)
             else:
-                self.theta_cutoff = torch.pi / float(self.nlat_out - 1)
+                self.theta_cutoff = compute_theta_cutoff(self.nlat_out, grid=grid_out)
         else:
             self.theta_cutoff = theta_cutoff
 
@@ -407,6 +408,20 @@ class NeighborhoodAttentionS2(nn.Module):
         self.register_buffer("psi_row_idx", row_idx, persistent=False)
         self.register_buffer("psi_col_idx", col_idx, persistent=False)
         self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+
+        # Contiguous-arc form of the same sparsity, consumed by the CUDA kernels: it
+        # lets them derive a neighbour's column by counting instead of recovering it
+        # from col_idx with a per-neighbour 64-bit integer division, which the GPU has
+        # no instruction for. col_idx is kept because the CPU and torch reference paths
+        # still use it -- which is what keeps the reference independent of this
+        # derivation. See _build_psi_segments and TestPsiArcStructure.
+        #
+        # For the scatter (upsample) psi the rows are keyed by input latitude and the
+        # columns index the output grid, so the decode width differs.
+        nlon_decode = self.nlon_out if (self.nlat_out > self.nlat_in or self.nlon_out > self.nlon_in) else self.nlon_in
+        psi_seg, psi_seg_off = _build_psi_segments(col_idx, roff_idx, nlon_decode)
+        self.register_buffer("psi_seg", psi_seg, persistent=False)
+        self.register_buffer("psi_seg_off", psi_seg_off, persistent=False)
 
         # learnable parameters — Xavier uniform init matching PyTorch MHA convention:
         # bound = sqrt(6 / (fan_in + fan_out)) for each projection
@@ -527,9 +542,9 @@ class NeighborhoodAttentionS2(nn.Module):
         # perform QKV projections. The stored weights keep their (C_out, C_in, 1, 1)
         # convolution shape so checkpoints stay loadable; the view to (C_out, C_in)
         # is free.
-        query = F.linear(query, self.q_weights.view(self.q_weights.shape[0], -1), self.q_bias)
-        key = F.linear(key, self.k_weights.view(self.k_weights.shape[0], -1), self.k_bias)
-        value = F.linear(value, self.v_weights.view(self.v_weights.shape[0], -1), self.v_bias)
+        query = F.linear(query, self.q_weights.reshape(self.q_weights.shape[0], -1), self.q_bias)
+        key = F.linear(key, self.k_weights.reshape(self.k_weights.shape[0], -1), self.k_bias)
+        value = F.linear(value, self.v_weights.reshape(self.v_weights.shape[0], -1), self.v_bias)
 
         # perform QK normalization (must come before scale). In NHWC the channel
         # axis is innermost, so splitting it into (heads, per-head channels) is a
@@ -557,6 +572,8 @@ class NeighborhoodAttentionS2(nn.Module):
             self.quad_weights,
             self.psi_col_idx,
             self.psi_roff_idx,
+            self.psi_seg,
+            self.psi_seg_off,
             self.num_heads,
             self.nlon_in,
             self.nlat_out,
@@ -566,6 +583,6 @@ class NeighborhoodAttentionS2(nn.Module):
         # output projection stays in NHWC for the same reason as the input ones;
         # only then back to channels-first. The matching backward conversion is
         # generated by autograd and uses the same tiled kernel.
-        out = F.linear(out, self.proj_weights.view(self.proj_weights.shape[0], -1), self.proj_bias)
+        out = F.linear(out, self.proj_weights.reshape(self.proj_weights.shape[0], -1), self.proj_bias)
 
         return to_nchw(out)

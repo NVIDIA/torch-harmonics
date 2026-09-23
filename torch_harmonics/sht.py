@@ -34,8 +34,9 @@ import torch.nn as nn
 
 from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
-from torch_harmonics.quadrature import clenshaw_curtiss_weights, legendre_gauss_weights, lobatto_weights
+from torch_harmonics.quadrature import precompute_latitudes
 from torch_harmonics.truncation import truncate_sht
+from torch_harmonics.utils import check
 
 
 class RealSHT(nn.Module):
@@ -86,11 +87,11 @@ class RealSHT(nn.Module):
     >>> import torch
     >>> import torch_harmonics as th
     >>> nlat, nlon = 128, 256
-    >>> sht = th.RealSHT(nlat, nlon).cuda()
-    >>> signal = torch.randn(1, nlat, nlon, device="cuda")
+    >>> sht = th.RealSHT(nlat, nlon)
+    >>> signal = torch.randn(1, nlat, nlon)
     >>> coeffs = sht(signal)   # shape (1, lmax, mmax), complex
     >>> coeffs.shape
-    torch.Size([1, 128, 129])
+    torch.Size([1, 64, 64])
 
     .. note::
         This module uses **cuFFT** (via :func:`torch.fft.rfft`) to compute the
@@ -122,24 +123,20 @@ class RealSHT(nn.Module):
 
         # TODO: include assertions regarding the dimensions
 
-        # compute quadrature points and lmax based on the exactness of the quadrature
-        if self.grid == "legendre-gauss":
-            cost, weights = legendre_gauss_weights(nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, weights = lobatto_weights(nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, weights = clenshaw_curtiss_weights(nlat, -1, 1)
-        else:
-            raise (ValueError("Unknown quadrature mode"))
-
-        # apply cosine transform and flip them
-        tq = torch.flip(torch.arccos(cost), dims=(0,))
+        # nodes and quadrature weights; the grid switch and the cosine transform live in
+        # precompute_latitudes, which is cached on (nlat, grid)
+        _, weights = precompute_latitudes(nlat, grid=self.grid)
 
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
 
+        # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
+        # quadrature weights. It is a constant prefactor of a linear transform, so folding it
+        # here is exact and saves a pointwise multiply on a complex tensor in every forward.
+        weights = 2.0 * torch.pi * weights
+
         # combine quadrature weights with the legendre weights
-        pct = _precompute_legpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
+        pct = _precompute_legpoly(self.mmax, self.lmax, self.nlat, self.grid, norm=self.norm, csphase=self.csphase)
         weights = torch.einsum("mlk,k->mlk", pct, weights).contiguous()
 
         # remember quadrature weights
@@ -163,12 +160,13 @@ class RealSHT(nn.Module):
             Complex spherical harmonic coefficients of shape ``(..., lmax, mmax)``.
         """
 
-        torch._check(x.dim() >= 2, lambda: f"Expected tensor with at least 2 dimensions but got {x.dim()} instead")
-        torch._check(x.shape[-2] == self.nlat, lambda: f"Expected latitudes shape[-2]=={self.nlat}, got {x.shape[-2]}")
-        torch._check(x.shape[-1] == self.nlon, lambda: f"Expected longitudes shape[-1]=={self.nlon}, got {x.shape[-1]}")
+        check(x.dim() >= 2, lambda: f"Expected tensor with at least 2 dimensions but got {x.dim()} instead")
+        check(x.shape[-2] == self.nlat, lambda: f"Expected latitudes shape[-2]=={self.nlat}, got {x.shape[-2]}")
+        check(x.shape[-1] == self.nlon, lambda: f"Expected longitudes shape[-1]=={self.nlon}, got {x.shape[-1]}")
 
-        # apply real fft in the longitudinal direction
-        x = 2.0 * torch.pi * rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
+        # apply real fft in the longitudinal direction. The 2*pi scale factor is folded into
+        # the quadrature weights, so no scaling of the complex output is needed here.
+        x = rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
 
         # transpose to put the contraction dim (nlat) on the fast axis
         x = x.transpose(-1, -2)
@@ -230,8 +228,8 @@ class InverseRealSHT(nn.Module):
     >>> import torch
     >>> import torch_harmonics as th
     >>> nlat, nlon = 128, 256
-    >>> isht = th.InverseRealSHT(nlat, nlon).cuda()
-    >>> coeffs = torch.randn(1, 128, 129, dtype=torch.cfloat, device="cuda")
+    >>> isht = th.InverseRealSHT(nlat, nlon)
+    >>> coeffs = torch.randn(1, isht.lmax, isht.mmax, dtype=torch.cfloat)
     >>> signal = isht(coeffs)   # shape (1, 128, 256), real
     >>> signal.shape
     torch.Size([1, 128, 256])
@@ -276,25 +274,12 @@ class InverseRealSHT(nn.Module):
         self.norm = norm
         self.csphase = csphase
 
-        # compute quadrature points
-        if self.grid == "legendre-gauss":
-            cost, _ = legendre_gauss_weights(nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, _ = lobatto_weights(nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, _ = clenshaw_curtiss_weights(nlat, -1, 1)
-        else:
-            raise (ValueError("Unknown quadrature mode"))
-
-        # apply cosine transform and flip them
-        t = torch.flip(torch.arccos(cost), dims=(0,))
-
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
 
         # precompute associated Legendre polynomials
         # store as (mmax, nlat, lmax) so the contraction dim l is stride-1
-        pct = _precompute_legpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        pct = _precompute_legpoly(self.mmax, self.lmax, self.nlat, self.grid, norm=self.norm, inverse=True, csphase=self.csphase)
         pct = pct.permute(0, 2, 1).contiguous()
 
         # register buffer
@@ -318,9 +303,9 @@ class InverseRealSHT(nn.Module):
             Real-valued signal on the sphere of shape ``(..., nlat, nlon)``.
         """
 
-        torch._check(x.dim() >= 2, lambda: f"Expected tensor with at least 2 dimensions but got {x.dim()} instead")
-        torch._check(x.shape[-2] == self.lmax, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax}, got {x.shape[-2]}")
-        torch._check(x.shape[-1] == self.mmax, lambda: f"Expected spherical harmonic orders (mmax) shape[-1]=={self.mmax}, got {x.shape[-1]}")
+        check(x.dim() >= 2, lambda: f"Expected tensor with at least 2 dimensions but got {x.dim()} instead")
+        check(x.shape[-2] == self.lmax, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax}, got {x.shape[-2]}")
+        check(x.shape[-1] == self.mmax, lambda: f"Expected spherical harmonic orders (mmax) shape[-1]=={self.mmax}, got {x.shape[-1]}")
 
         # transpose to put the contraction dim (lmax) on the fast axis
         x = x.transpose(-1, -2)
@@ -384,11 +369,11 @@ class RealVectorSHT(nn.Module):
     >>> import torch
     >>> import torch_harmonics as th
     >>> nlat, nlon = 128, 256
-    >>> vsht = th.RealVectorSHT(nlat, nlon).cuda()
-    >>> vector_field = torch.randn(1, 2, nlat, nlon, device="cuda")
+    >>> vsht = th.RealVectorSHT(nlat, nlon)
+    >>> vector_field = torch.randn(1, 2, nlat, nlon)
     >>> coeffs = vsht(vector_field)   # shape (1, 2, lmax, mmax), complex
     >>> coeffs.shape
-    torch.Size([1, 2, 128, 129])
+    torch.Size([1, 2, 64, 64])
 
     .. note::
         This module uses **cuFFT** (via :func:`torch.fft.rfft`) to compute the
@@ -418,24 +403,19 @@ class RealVectorSHT(nn.Module):
         self.norm = norm
         self.csphase = csphase
 
-        # compute quadrature points
-        if self.grid == "legendre-gauss":
-            cost, weights = legendre_gauss_weights(nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, weights = lobatto_weights(nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, weights = clenshaw_curtiss_weights(nlat, -1, 1)
-        else:
-            raise (ValueError("Unknown quadrature mode"))
-
-        # apply cosine transform and flip them
-        tq = torch.flip(torch.arccos(cost), dims=(0,))
+        # nodes and quadrature weights; the grid switch and the cosine transform live in
+        # precompute_latitudes, which is cached on (nlat, grid)
+        _, weights = precompute_latitudes(nlat, grid=self.grid)
 
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
 
         # precompute associated Legendre polynomials
-        dpct = _precompute_dlegpoly(self.mmax, self.lmax, tq, norm=self.norm, csphase=self.csphase)
+        dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.nlat, self.grid, norm=self.norm, csphase=self.csphase)
+
+        # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
+        # quadrature weights (see RealSHT.__init__)
+        weights = 2.0 * torch.pi * weights
 
         # combine integration weights, normalization factor in to one:
         l = torch.arange(0, self.lmax)
@@ -468,13 +448,14 @@ class RealVectorSHT(nn.Module):
             size-2 dimension holds the spheroidal and toroidal components.
         """
 
-        torch._check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
-        torch._check(x.shape[-3] == 2, lambda: f"Expected vector field shape[-3]==2, got {x.shape[-3]}")
-        torch._check(x.shape[-2] == self.nlat, lambda: f"Expected latitudes shape[-2]=={self.nlat}, got {x.shape[-2]}")
-        torch._check(x.shape[-1] == self.nlon, lambda: f"Expected longitudes shape[-1]=={self.nlon}, got {x.shape[-1]}")
+        check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
+        check(x.shape[-3] == 2, lambda: f"Expected vector field shape[-3]==2, got {x.shape[-3]}")
+        check(x.shape[-2] == self.nlat, lambda: f"Expected latitudes shape[-2]=={self.nlat}, got {x.shape[-2]}")
+        check(x.shape[-1] == self.nlon, lambda: f"Expected longitudes shape[-1]=={self.nlon}, got {x.shape[-1]}")
 
-        # apply real fft in the longitudinal direction
-        x = 2.0 * torch.pi * rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
+        # apply real fft in the longitudinal direction. The 2*pi scale factor is folded into
+        # the quadrature weights, so no scaling of the complex output is needed here.
+        x = rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
 
         # transpose to put the contraction dim (nlat) on the fast axis
         x = x.transpose(-1, -2)
@@ -492,7 +473,16 @@ class RealVectorSHT(nn.Module):
         t_re = -torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w0)
         t_im = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w0)
 
-        return torch.stack((torch.complex(s_re, s_im), torch.complex(t_re, t_im)), dim=-3)
+        # stack the spheroidal and toroidal components in real space, so the only complex-typed
+        # op is a single aten.complex over contiguous operands. Stacking complex tensors instead
+        # would leave a complex cat, which inductor cannot codegen (triton has no complex type),
+        # and feeding aten.complex the non-contiguous ...lm einsum outputs directly trips
+        # assert_size_stride, as its meta predicts a contiguous layout. torch.stack allocates a
+        # fresh contiguous buffer, which is exactly what that meta expects.
+        out_re = torch.stack((s_re, t_re), dim=-3)
+        out_im = torch.stack((s_im, t_im), dim=-3)
+
+        return torch.complex(out_re, out_im)
 
 
 class InverseRealVectorSHT(nn.Module):
@@ -535,8 +525,8 @@ class InverseRealVectorSHT(nn.Module):
     >>> import torch
     >>> import torch_harmonics as th
     >>> nlat, nlon = 128, 256
-    >>> ivsht = th.InverseRealVectorSHT(nlat, nlon).cuda()
-    >>> coeffs = torch.randn(1, 2, 128, 129, dtype=torch.cfloat, device="cuda")
+    >>> ivsht = th.InverseRealVectorSHT(nlat, nlon)
+    >>> coeffs = torch.randn(1, 2, ivsht.lmax, ivsht.mmax, dtype=torch.cfloat)
     >>> vector_field = ivsht(coeffs)   # shape (1, 2, 128, 256), real
     >>> vector_field.shape
     torch.Size([1, 2, 128, 256])
@@ -576,25 +566,12 @@ class InverseRealVectorSHT(nn.Module):
         self.norm = norm
         self.csphase = csphase
 
-        # compute quadrature points
-        if self.grid == "legendre-gauss":
-            cost, _ = legendre_gauss_weights(nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, _ = lobatto_weights(nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, _ = clenshaw_curtiss_weights(nlat, -1, 1)
-        else:
-            raise (ValueError("Unknown quadrature mode"))
-
-        # apply cosine transform and flip them
-        t = torch.flip(torch.arccos(cost), dims=(0,))
-
         # determine maximum degrees based on triangular truncation
         self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
 
         # precompute associated Legendre polynomials
         # store as (2, mmax, nlat, lmax) so the contraction dim l is stride-1
-        dpct = _precompute_dlegpoly(self.mmax, self.lmax, t, norm=self.norm, inverse=True, csphase=self.csphase)
+        dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.nlat, self.grid, norm=self.norm, inverse=True, csphase=self.csphase)
         dpct = dpct.permute(0, 1, 3, 2).contiguous()
 
         # register weights
@@ -620,10 +597,10 @@ class InverseRealVectorSHT(nn.Module):
             size-2 dimension holds the two tangential (colatitude, longitude) components.
         """
 
-        torch._check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
-        torch._check(x.shape[-3] == 2, lambda: f"Expected vector field shape[-3]==2, got {x.shape[-3]}")
-        torch._check(x.shape[-2] == self.lmax, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax}, got {x.shape[-2]}")
-        torch._check(x.shape[-1] == self.mmax, lambda: f"Expected spherical harmonic orders (mmax) shape[-1]=={self.mmax}, got {x.shape[-1]}")
+        check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
+        check(x.shape[-3] == 2, lambda: f"Expected vector field shape[-3]==2, got {x.shape[-3]}")
+        check(x.shape[-2] == self.lmax, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax}, got {x.shape[-2]}")
+        check(x.shape[-1] == self.mmax, lambda: f"Expected spherical harmonic orders (mmax) shape[-1]=={self.mmax}, got {x.shape[-1]}")
 
         # transpose to put the contraction dim (lmax) on the fast axis
         x = x.transpose(-1, -2)
@@ -642,8 +619,10 @@ class InverseRealVectorSHT(nn.Module):
         trl = -torch.einsum("...ml,mkl->...km", x_im[..., 0, :, :], d1) - torch.einsum("...ml,mkl->...km", x_re[..., 1, :, :], d0)
         tim = torch.einsum("...ml,mkl->...km", x_re[..., 0, :, :], d1) - torch.einsum("...ml,mkl->...km", x_im[..., 1, :, :], d0)
 
-        # reassemble and apply inverse FFT
-        xs = torch.stack((torch.complex(srl, sim), torch.complex(trl, tim)), dim=-3)
+        # reassemble in real space and apply inverse FFT, see RealVectorSHT.forward
+        out_re = torch.stack((srl, trl), dim=-3)
+        out_im = torch.stack((sim, tim), dim=-3)
+        xs = torch.complex(out_re, out_im)
         x = irfft(xs, n=self.nlon, dim=-1, norm="forward")
 
         return x

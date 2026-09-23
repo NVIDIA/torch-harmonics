@@ -40,7 +40,7 @@ from disco_helpers import optimized_kernels_is_available, pack_psi_dense, prepro
 
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
-from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
+from torch_harmonics.quadrature import THETA_CUTOFF_EPS, compute_theta_cutoff, effective_theta_cutoff, latitude_support_band, precompute_latitudes, precompute_longitudes
 
 from ._disco_utils import _get_psi
 from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
@@ -53,6 +53,7 @@ from .optimized.disco_optimized import (
     _disco_s2_fused_conv_kpacked,
     _disco_s2_fused_conv_optimized,
     _disco_s2_transpose_contraction_optimized,
+    _kpacked_build_available,
     _kpacked_supported_on_device,
     _maybe_kpack_psi,
     _split_csr_python_offsets,
@@ -240,7 +241,7 @@ def _precompute_convolution_tensor_s2(
     grid_in: Optional[str] = "equiangular",
     grid_out: Optional[str] = "equiangular",
     theta_cutoff: Optional[float] = 0.01 * math.pi,
-    theta_eps: Optional[float] = 1e-3,
+    theta_eps: Optional[float] = THETA_CUTOFF_EPS,
     transpose_normalization: Optional[bool] = False,
     basis_norm_mode: Optional[str] = "nodal",
     merge_quadrature: Optional[bool] = False,
@@ -318,19 +319,26 @@ def _precompute_convolution_tensor_s2(
         quad_weights = win.reshape(-1, 1) / nlon_in / 2.0
 
     # effective theta cutoff if multiplied with a fudge factor to avoid aliasing with grid width (especially near poles)
-    theta_cutoff_eff = (1.0 + theta_eps) * theta_cutoff
+    theta_cutoff_eff = effective_theta_cutoff(theta_cutoff, theta_eps)
 
     out_idx = []
     out_vals = []
 
     beta = lons_in
-    gamma = lats_in.reshape(-1, 1)
 
     # compute trigs
     cbeta = torch.cos(beta)
     sbeta = torch.sin(beta)
-    cgamma = torch.cos(gamma)
-    sgamma = torch.sin(gamma)
+    cgamma_all = torch.cos(lats_in).reshape(-1, 1)
+    sgamma_all = torch.sin(lats_in).reshape(-1, 1)
+
+    # only input latitudes within the cutoff of an output latitude can land in the support, so
+    # the rotation is evaluated on that band alone rather than on the whole input grid. Without
+    # this the cost is O(nlat_out * nlat_in * nlon_in) to produce a result that is O(nlat_out *
+    # band * nlon_in) -- at the default cutoff the band is a handful of rings wide regardless of
+    # resolution, so almost all of that work was discarded. The band is a superset of the
+    # support, so the sparsity pattern is unchanged, entry for entry.
+    band_lo, band_hi = latitude_support_band(lats_in, lats_out, theta_cutoff_eff)
 
     # compute row offsets
     out_roff = torch.zeros(nlat_out + 1, dtype=torch.int64, device=lons_in.device)
@@ -338,6 +346,15 @@ def _precompute_convolution_tensor_s2(
     for t in range(nlat_out):
         # the last angle has a negative sign as it is a passive rotation, which rotates the filter around the y-axis
         alpha = -lats_out[t]
+
+        lo = int(band_lo[t])
+        hi = int(band_hi[t])
+        if hi < lo:
+            # no input latitude is close enough to this output latitude
+            out_roff[t + 1] = out_roff[t]
+            continue
+        cgamma = cgamma_all[lo : hi + 1]
+        sgamma = sgamma_all[lo : hi + 1]
 
         # compute cartesian coordinates of the rotated position
         # This uses the YZY convention of Euler angles, where the last angle (alpha) is a passive rotation,
@@ -361,8 +378,9 @@ def _precompute_convolution_tensor_s2(
         # find the indices where the rotated position falls into the support of the kernel
         iidx, vals = filter_basis.compute_support_vals(theta, phi, r_cutoff=theta_cutoff_eff)
 
-        # add the output latitude and reshape such that psi has dimensions kernel_shape x nlat_out x (nlat_in*nlon_in)
-        idx = torch.stack([iidx[:, 0], t * torch.ones_like(iidx[:, 0]), iidx[:, 1] * nlon_in + iidx[:, 2]], dim=0)
+        # add the output latitude and reshape such that psi has dimensions kernel_shape x nlat_out x (nlat_in*nlon_in).
+        # iidx[:, 1] indexes the band, so it is shifted back onto the global input latitude axis
+        idx = torch.stack([iidx[:, 0], t * torch.ones_like(iidx[:, 0]), (iidx[:, 1] + lo) * nlon_in + iidx[:, 2]], dim=0)
 
         # append indices and values to the COO datastructure, compute row offsets
         out_idx.append(idx)
@@ -561,7 +579,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
         if theta_cutoff is None:
-            self.theta_cutoff = torch.pi / float(self.nlat_out - 1)
+            self.theta_cutoff = compute_theta_cutoff(self.nlat_out, grid=grid_out)
         else:
             self.theta_cutoff = theta_cutoff
 
@@ -603,47 +621,34 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             self.register_buffer("psi_split_col_idx", split_col_idx, persistent=False)
             self.register_buffer("psi_split_vals", split_vals, persistent=False)
 
-            # optional K-packed dense layout for the WGMMA path (Hopper bf16/fp16).
-            # precompute here so it's available at forward time.
-            psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(
-                self.kernel_size,
-                self.nlat_out,
-                self.nlon_in,
-                0,
-                ker_idx,
-                row_idx,
-                col_idx,
-                vals,
-                roff_idx,
-            )
-            kpack = _maybe_kpack_psi(psi_packed_idx.contiguous(), psi_packed_vals.contiguous(), psi_packed_count.contiguous())
-            if kpack is not None:
-                kpacked_idx, kpacked_vals, kpacked_count, K_pad = kpack
-                self.register_buffer("psi_kpacked_idx", kpacked_idx, persistent=False)
-                self.register_buffer("psi_kpacked_vals", kpacked_vals, persistent=False)
-                self.register_buffer("psi_kpacked_count", kpacked_count, persistent=False)
-                self.psi_kpacked_K_pad = K_pad
-
-            # optional K-packed dense layout for the WGMMA path (Hopper bf16/fp16).
-            # precompute here so it's available at forward time.
-            psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(
-                self.kernel_size,
-                self.nlat_out,
-                self.nlon_in,
-                0,
-                ker_idx,
-                row_idx,
-                col_idx,
-                vals,
-                roff_idx,
-            )
-            kpack = _maybe_kpack_psi(psi_packed_idx.contiguous(), psi_packed_vals.contiguous(), psi_packed_count.contiguous())
-            if kpack is not None:
-                kpacked_idx, kpacked_vals, kpacked_count, K_pad = kpack
-                self.register_buffer("psi_kpacked_idx", kpacked_idx, persistent=False)
-                self.register_buffer("psi_kpacked_vals", kpacked_vals, persistent=False)
-                self.register_buffer("psi_kpacked_count", kpacked_count, persistent=False)
-                self.psi_kpacked_K_pad = K_pad
+            # Optional K-packed dense layout for the WGMMA / tcgen05 path.
+            #
+            # Skipped when the build contains no kpacked kernel: these buffers are
+            # padded to NBR_PAD, the longest neighbour row, which the polar rows set
+            # far above the mean -- ~33 MB at half degree, ~274 MB at 1080x2160 ->
+            # 360x720 -- for a kernel that could then never launch. The check is
+            # build-time rather than device-time on purpose: modules are normally
+            # constructed on CPU and moved afterwards, so the runtime device is not
+            # known here. See _kpacked_build_available.
+            if _kpacked_build_available():
+                psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(
+                    self.kernel_size,
+                    self.nlat_out,
+                    self.nlon_in,
+                    0,
+                    ker_idx,
+                    row_idx,
+                    col_idx,
+                    vals,
+                    roff_idx,
+                )
+                kpack = _maybe_kpack_psi(psi_packed_idx.contiguous(), psi_packed_vals.contiguous(), psi_packed_count.contiguous())
+                if kpack is not None:
+                    kpacked_idx, kpacked_vals, kpacked_offset, K_pad = kpack
+                    self.register_buffer("psi_kpacked_idx", kpacked_idx, persistent=False)
+                    self.register_buffer("psi_kpacked_vals", kpacked_vals, persistent=False)
+                    self.register_buffer("psi_kpacked_offset", kpacked_offset, persistent=False)
+                    self.psi_kpacked_K_pad = K_pad
 
         # save all datastructures
         self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
@@ -714,7 +719,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                 weight_r,
                 self.psi_kpacked_idx,
                 self.psi_kpacked_vals,
-                self.psi_kpacked_count,
+                self.psi_kpacked_offset,
                 self.psi_roff_idx,
                 self.psi_ker_idx,
                 self.psi_row_idx,
@@ -764,7 +769,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                     weight_r,
                     self.psi_kpacked_idx,
                     self.psi_kpacked_vals,
-                    self.psi_kpacked_count,
+                    self.psi_kpacked_offset,
                     self.psi_roff_idx,
                     self.psi_ker_idx,
                     self.psi_row_idx,
@@ -812,7 +817,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                     x.to(kpacked_dtype),
                     self.psi_kpacked_idx,
                     self.psi_kpacked_vals,
-                    self.psi_kpacked_count,
+                    self.psi_kpacked_offset,
                     self.psi_roff_idx,
                     self.psi_ker_idx,
                     self.psi_row_idx,
@@ -923,7 +928,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # bandlimit
         if theta_cutoff is None:
-            self.theta_cutoff = torch.pi / float(self.nlat_in - 1)
+            self.theta_cutoff = compute_theta_cutoff(self.nlat_in, grid=grid_in)
         else:
             self.theta_cutoff = theta_cutoff
 

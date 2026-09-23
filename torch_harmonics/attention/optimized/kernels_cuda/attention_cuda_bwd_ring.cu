@@ -162,7 +162,7 @@ namespace attention_kernels
             // wip = (wi + pscale * wo_local) % nlon_in
             //     = (wi_canonical + pscale * (lon_lo_out + wo_local)) % nlon_in
             const int wi_wo = wi + pscale * wo;
-            const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
+            const int wip = wrap_lon(wi_wo, nlon_in);
 
             if (wip < lon_lo_kx || wip >= lon_lo_kx + nlon_kx) continue;
 
@@ -351,7 +351,7 @@ namespace attention_kernels
                 const int wi = col - (hi_global * nlon_in);
                 const int wi_wo = wi + pscale * wo;
 
-                const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
+                const int wip = wrap_lon(wi_wo, nlon_in);
 
                 if (wip >= lon_lo_kx && wip < lon_lo_kx + nlon_kx) {
 
@@ -609,7 +609,7 @@ namespace attention_kernels
                 const int wi = col - (hi_global * nlon_in);
                 const int wi_wo = wi + pscale * wo;
 
-                const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
+                const int wip = wrap_lon(wi_wo, nlon_in);
 
                 if (wip >= lon_lo_kx && wip < lon_lo_kx + nlon_kx) {
 
@@ -933,7 +933,7 @@ namespace attention_kernels
                 const int wi = col - (hi_global * nlon_in);
                 const int wi_wo = wi + pscale * wo;
 
-                const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
+                const int wip = wrap_lon(wi_wo, nlon_in);
 
                 if (wip >= lon_lo_kx && wip < lon_lo_kx + nlon_kx) {
 
@@ -1384,7 +1384,7 @@ namespace attention_kernels
             // wip = (wi + pscale * wo_local) % nlon_in
             //     = (wi_canonical + pscale * (lon_lo_out + wo_local)) % nlon_in
             const int wi_wo = wi + pscale * wo;
-            const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
+            const int wip = wrap_lon(wi_wo, nlon_in);
 
             if (wip < lon_lo_kx || wip >= lon_lo_kx + nlon_kx) continue;
 
@@ -1609,7 +1609,7 @@ namespace attention_kernels
                 const int wi = col - (hi_global * nlon_in);
                 const int wi_wo = wi + pscale * wo;
 
-                const int wip = wi_wo - (wi_wo / nlon_in) * nlon_in;
+                const int wip = wrap_lon(wi_wo, nlon_in);
 
                 if (wip >= lon_lo_kx && wip < lon_lo_kx + nlon_kx) {
                     hi_local = hi_global - lat_halo_start;

@@ -49,6 +49,8 @@ from torch_harmonics.distributed import (
     compute_split_shapes,
     distributed_transpose_polar,
     gather_from_polar_region,
+    polar_halo_exchange,
+    polar_halo_reduce,
     reduce_from_azimuth_region,
     reduce_from_polar_region,
     reduce_from_scatter_to_azimuth_region,
@@ -597,11 +599,17 @@ class TestRingExchange(unittest.TestCase):
         set_seed(333)
         # Use different channel counts for kw and vw to catch any accidental
         # cross-tensor bleed (e.g. wrong send/recv ordering inside _ring_kv).
-        kw_full = torch.randn(B, C, H, nlon_global, device=self.device, dtype=torch.float32)
-        vw_full = torch.randn(B, C + 1, H, nlon_global, device=self.device, dtype=torch.float32)
+        #
+        # _ring_kv exchanges the tensors in the NHWC layout the kernels consume,
+        # so the chunks here are [B, H, W, C] and the ring splits along W (dim 2),
+        # not along the last axis. Feeding it channels-first instead sizes the
+        # receive buffer from the wrong axes, and the resulting send/recv element
+        # count mismatch hangs the p2p exchange rather than failing.
+        kw_full = torch.randn(B, H, nlon_global, C, device=self.device, dtype=torch.float32)
+        vw_full = torch.randn(B, H, nlon_global, C + 1, device=self.device, dtype=torch.float32)
 
-        kw_ref = split_tensor_along_dim(kw_full, dim=-1, num_chunks=az_size)
-        vw_ref = split_tensor_along_dim(vw_full, dim=-1, num_chunks=az_size)
+        kw_ref = split_tensor_along_dim(kw_full, dim=2, num_chunks=az_size)
+        vw_ref = split_tensor_along_dim(vw_full, dim=2, num_chunks=az_size)
 
         # Each rank starts holding its own chunk.
         kw_chunk = kw_ref[az_rank].clone()
@@ -629,9 +637,10 @@ class TestRingExchange(unittest.TestCase):
                 break
 
             # Next source rank determines the receive-buffer width because
-            # the global split can be uneven.
+            # the global split can be uneven. W is dim 2 in NHWC; the last axis
+            # is the channel count, which is not what the ring is sizing.
             next_src = (az_rank + step + 1) % az_size
-            next_nlon = kw_ref[next_src].shape[-1]
+            next_nlon = kw_ref[next_src].shape[2]
             recv_kw, recv_vw, reqs = _ring_kv(
                 kw_chunk,
                 vw_chunk,
@@ -643,6 +652,102 @@ class TestRingExchange(unittest.TestCase):
                 req.wait()
             kw_chunk = recv_kw.clone()
             vw_chunk = recv_vw.clone()
+
+
+class TestPolarHalo(unittest.TestCase):
+    """Test the latitude halo exchange and its adjoint across the polar group."""
+
+    @classmethod
+    def setUpClass(cls):
+        setup_class_from_context(cls, _DIST_CTX)
+
+    @parameterized.expand(
+        [
+            # B, C,  H,  W, r_lat
+            [2, 4, 32, 64, 1],
+            [2, 4, 32, 64, 2],
+            [2, 4, 33, 64, 1],
+            [1, 1, 16, 8, 3],
+        ],
+        skip_on_empty=True,
+    )
+    def test_halo_gather_reduce_are_adjoint(self, B, C, H, W, r_lat):
+        """``<gather(x), y> == <x, reduce(y)>`` for random x, y.
+
+        The halo exchange and its adjoint are used as each other's forward and backward, so
+        this identity is what makes both the attention layer's gradients and the scatter-shaped
+        DISCO path correct. It is also the check that pins the boundary convention: rank 0 and
+        the last rank zero-pad one side in the gather, and must correspondingly *drop* that
+        side in the reduce. Getting that wrong leaves the two nearly adjoint -- everything
+        matches except the poles -- which is exactly the kind of error a round-trip test on the
+        interior would miss.
+
+        The inner products are global sums, so they are reduced across the polar group before
+        being compared.
+        """
+
+        set_seed(333)
+        comm_size = thd.polar_group_size()
+        if comm_size == 1:
+            self.skipTest("halo exchange is an identity on a single polar rank")
+        if r_lat > H:
+            self.skipTest(f"halo {r_lat} exceeds the local latitude count {H}")
+
+        x = torch.randn(B, C, H, W, device=self.device, dtype=torch.float64)
+        y = torch.randn(B, C, H + 2 * r_lat, W, device=self.device, dtype=torch.float64)
+
+        lhs = torch.sum(polar_halo_exchange(x, r_lat) * y)
+        rhs = torch.sum(x * polar_halo_reduce(y, r_lat, H))
+
+        dist.all_reduce(lhs, group=thd.polar_group())
+        dist.all_reduce(rhs, group=thd.polar_group())
+
+        ok = compare_tensors("halo adjointness", lhs, rhs, atol=1e-12, rtol=1e-12, verbose=False)
+        self.assertTrue(reduce_success(ok, self.device), "halo adjointness")
+
+    @parameterized.expand(
+        [
+            [2, 4, 32, 64, 1],
+            [2, 4, 33, 64, 2],
+        ],
+        skip_on_empty=True,
+    )
+    def test_halo_gather_returns_neighbour_rows(self, B, C, H, W, r_lat):
+        """The gathered halo holds the neighbours' edge rows, and zeros at the poles.
+
+        Checked against the global tensor rather than against the primitive itself, so a
+        convention that is self-consistent but off by a rank would still fail.
+        """
+
+        set_seed(333)
+        comm_size = thd.polar_group_size()
+        rank = thd.polar_group_rank()
+        if comm_size == 1:
+            self.skipTest("halo exchange is an identity on a single polar rank")
+
+        shapes = compute_split_shapes(H * comm_size, comm_size)
+        x_full = torch.randn(B, C, H * comm_size, W, device=self.device, dtype=torch.float64)
+        offset = sum(shapes[:rank])
+        x_local = x_full[:, :, offset : offset + shapes[rank], :].contiguous()
+
+        got = polar_halo_exchange(x_local, r_lat)
+
+        top = got[:, :, :r_lat, :]
+        if rank == 0:
+            expected_top = torch.zeros_like(top)
+        else:
+            expected_top = x_full[:, :, offset - r_lat : offset, :]
+        ok = compare_tensors("halo top", top, expected_top, atol=0.0, rtol=0.0, verbose=False)
+        self.assertTrue(reduce_success(ok, self.device), "halo top rows")
+
+        end = offset + shapes[rank]
+        bot = got[:, :, -r_lat:, :]
+        if rank == comm_size - 1:
+            expected_bot = torch.zeros_like(bot)
+        else:
+            expected_bot = x_full[:, :, end : end + r_lat, :]
+        ok = compare_tensors("halo bottom", bot, expected_bot, atol=0.0, rtol=0.0, verbose=False)
+        self.assertTrue(reduce_success(ok, self.device), "halo bottom rows")
 
 
 if __name__ == "__main__":

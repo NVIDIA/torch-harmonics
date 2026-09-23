@@ -89,8 +89,15 @@ def _torch_cuda_arch_list_has(arch: str) -> bool:
 
 def get_helpers_compile_args(BUILD_CPP, BUILD_CUDA):
     build_kpacked_sm90 = BUILD_CUDA and _torch_cuda_arch_list_has("9.0a")
-    # One flag for both Blackwell targets: the runtime dispatch keys off
-    # props.major == 10, which covers sm_100 and sm_103 alike.
+    # One flag for both datacenter Blackwell targets. The runtime dispatch accepts
+    # capability 10.0 and 10.3 (see _kpacked_supported_on_device); it checks the
+    # minor version because these cubins are arch-conditional, so 10.7 (Rubin)
+    # must not be treated as sm_100. Note this single flag cannot distinguish a
+    # 10.0a-only build from a 10.3a-only one.
+    #
+    # sm_120 / sm_121 (consumer Blackwell, and GB10 in DGX Spark) are deliberately
+    # absent: they carry no TMEM and no tcgen05, so neither kpacked kernel can run
+    # there and those devices take the CSR path.
     build_kpacked_sm100 = BUILD_CUDA and (_torch_cuda_arch_list_has("10.0a") or _torch_cuda_arch_list_has("10.3a"))
     return {
         "cxx": [
@@ -170,6 +177,9 @@ def get_ext_modules():
             [
                 "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd.cu",
                 "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd.cu",
+                # Experimental backward behind disco_kernels::backward_exp.
+                # Not reachable from any module backward; driven only by
+                # performance/disco/ncu_disco.py. Drop this line to build it out.
                 "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_dense_kpacked_sm90.cu",
                 "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_dense_kpacked_sm100.cu",
             ]

@@ -34,6 +34,9 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDAUtils.h>
 
+#include <cuda_bf16.h>
+#include <cuda_fp16.h>
+
 #include <type_traits>
 
 #define WARP_SIZE (32)
@@ -173,6 +176,26 @@ namespace attention_kernels
         ;
     }
 
+    // float2 compute vector.
+    //
+    // Exists so a 2-wide 16-bit storage type can fill the block at nchans == 64:
+    // bdimx is 32 there, so a 4-wide vector leaves nci == 16 and half the lanes idle,
+    // while a 2-wide vector gives nci == 32 exactly. Modern attention kernels run at
+    // head_dim 64 or 128, so that is the case worth fitting, not an edge case.
+    template <> __device__ float2 __forceinline__ __vset<float2>(float x) { return make_float2(x, x); }
+
+    __device__ float2 __forceinline__ __vmul(float2 a, float2 b) { return make_float2(a.x * b.x, a.y * b.y); }
+
+    __device__ float2 __forceinline__ __vadd(float2 a, float2 b) { return make_float2(a.x + b.x, a.y + b.y); }
+
+    __device__ float2 __forceinline__ __vsub(float2 a, float2 b) { return make_float2(a.x - b.x, a.y - b.y); }
+
+    __device__ float __forceinline__ __vred(float2 a) { return a.x + a.y; }
+
+    __device__ float2 __forceinline__ __vscale(float s, float2 v) { return make_float2(s * v.x, s * v.y); }
+
+    __device__ float2 __forceinline__ __vdiv(float s, float2 v) { return make_float2(s / v.x, s / v.y); }
+
     // ---- storage <-> compute helpers for native fp16/bf16 storage ----
     //
     // Kernels are templated on STORAGE_T (the element type as laid out in global
@@ -189,7 +212,42 @@ namespace attention_kernels
         using compute_t = float4;
     };
 
+    // 4-wide 16-bit storage: eight bytes, one LDG.64 instead of four LDG.U16.
+    //
+    // The point is instruction count, not bandwidth. The forward kernel is issue-slot
+    // limited (82% compute throughput, DRAM at 1%, ~9.4 warp cycles per issued
+    // instruction), so four scalar 16-bit loads cost four issue slots where one
+    // vector load costs one. The measured evidence that this trade is worth it: the
+    // fp32 float4 path beats the fp16 scalar path by 29% while running at 31%
+    // occupancy against 50% and moving twice the bytes.
+    //
+    // compute_t is float4, so every existing __vadd/__vmul/__vred/__vscale overload
+    // applies unchanged and accumulation stays fp32 -- no __hfma2, no precision
+    // change. Critically, the packed registers do not outlive the conversion in
+    // vload: nvcc only keeps a __half2 in a single register if every use of it is a
+    // half2 operation, and one scalar touch anywhere unpacks the whole chain. Here
+    // the packed value is consumed immediately and only the float4 accumulator
+    // survives, so there is no long-lived packed value to mis-schedule.
+    struct alignas(8) half4 {
+        __half2 lo, hi;
+    };
+    struct alignas(8) bf164 {
+        c10::BFloat16 x, y, z, w;
+    };
+
+    template <> struct vec_traits<half4> {
+        using compute_t = float4;
+    };
+    template <> struct vec_traits<bf164> {
+        using compute_t = float4;
+    };
+
     // scalar load/store: STORAGE_T in {float, c10::Half, c10::BFloat16}; compute_t == float.
+    // (The vectorised fp16 paths below deliberately DO use a half intrinsic:
+    // __half22float2 converts a pair in one instruction where two c10::Half
+    // conversions would take two, which is the point of vectorising on an
+    // issue-limited kernel. bf16 has no such packed conversion below sm_80, so it
+    // stays on c10's operators, which already handle the arch split.)
     // The return type is spelled via vec_traits so the float4 specialization below
     // (which returns float4) matches the primary template's signature.
     template <typename STORAGE_T>
@@ -205,6 +263,42 @@ namespace attention_kernels
     // float4 vectorized load/store (fp32 fast path): identity, no conversion
     template <> __device__ __forceinline__ float4 vload<float4>(const float4 *p, int idx) { return p[idx]; }
     __device__ __forceinline__ void vstore(float4 *p, int idx, float4 v) { p[idx] = v; }
+
+    // 16-bit vectorized load/store. One 8-byte access, then widen to fp32 immediately
+    // so nothing packed stays live (see the note on vec_traits<half4> above).
+    template <> __device__ __forceinline__ float4 vload<half4>(const half4 *p, int idx)
+    {
+        const half4 v = p[idx];
+        const float2 a = __half22float2(v.lo);
+        const float2 b = __half22float2(v.hi);
+        return make_float4(a.x, a.y, b.x, b.y);
+    }
+    __device__ __forceinline__ void vstore(half4 *p, int idx, float4 v)
+    {
+        half4 out;
+        out.lo = __floats2half2_rn(v.x, v.y);
+        out.hi = __floats2half2_rn(v.z, v.w);
+        p[idx] = out;
+    }
+
+    template <> __device__ __forceinline__ float4 vload<bf164>(const bf164 *p, int idx)
+    {
+        // c10::BFloat16's conversions already select __float2bfloat16 on sm_80+ and
+        // software round-to-nearest-even below it, so this needs no arch guard and no
+        // hand-rolled bit manipulation. fp16 below keeps __half22float2 because that
+        // converts a whole pair in one instruction and is available from sm_53.
+        const bf164 v = p[idx];
+        return make_float4(float(v.x), float(v.y), float(v.z), float(v.w));
+    }
+    __device__ __forceinline__ void vstore(bf164 *p, int idx, float4 v)
+    {
+        bf164 out;
+        out.x = c10::BFloat16(v.x);
+        out.y = c10::BFloat16(v.y);
+        out.z = c10::BFloat16(v.z);
+        out.w = c10::BFloat16(v.w);
+        p[idx] = out;
+    }
 
     __device__ __forceinline__ void atomicMax(float *ptr, float val)
     {
@@ -573,6 +667,25 @@ namespace attention_kernels
         permute_to0312_k<WARP_SIZE, WARPS_X_TILE><<<grid, block, 0, stream>>>(
             src.size(3), src.size(1), src.size(2), src.packed_accessor32<VAL_T, 4, at::RestrictPtrTraits>(),
             dst.packed_accessor32<VAL_T, 4, at::RestrictPtrTraits>());
+    }
+
+    // Reduce wi + pscale*wo into [0, nlon_in).
+    //
+    // Deliberately not `%`. nlon_in is a runtime value and the GPU has no integer
+    // divide instruction, so `x % nlon_in` compiles to ~25 instructions of software
+    // emulation. Profiling the forward kernel on H100 showed exactly this dominating:
+    // 78% compute throughput while only ~2.4% of peak FLOPs were the actual dot
+    // product, with DRAM at 0.5% -- the kernel was spending its time on address
+    // arithmetic, not on math or memory.
+    //
+    // The reduction is exact with one conditional subtract because both terms are
+    // already bounded: wi is a canonical column so wi < nlon_in, and
+    // pscale*wo <= pscale*(nlon_out - 1) < pscale*nlon_out == nlon_in. Hence
+    // wi_wo < 2*nlon_in and at most one wrap can occur. This also holds in the ring
+    // kernels, where wi arrives pre-shifted modulo nlon_in and wo is rank-local.
+    __device__ __forceinline__ int wrap_lon(int wi_wo, int nlon_in)
+    {
+        return (wi_wo >= nlon_in) ? wi_wo - nlon_in : wi_wo;
     }
 
 } // namespace attention_kernels

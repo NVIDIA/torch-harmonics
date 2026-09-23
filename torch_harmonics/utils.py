@@ -100,12 +100,31 @@ def load_mola_elevation(
     return data
 
 
+def _contiguous(x: torch.Tensor) -> torch.Tensor:
+    """
+    ``x.contiguous()``, performed in real space for complex inputs.
+
+    Inductor cannot generate a Triton kernel that reads or writes a complex buffer: complex
+    dtypes have no Triton type, so the copy that ``contiguous()`` lowers to dies in codegen
+    with ``KeyError: 'complex64'``. ``view_as_real``/``view_as_complex`` are pure views (the
+    former is the one consumer for which inductor's complex-tensor check makes an exception),
+    so routing the copy through them yields a bit-identical result from a real-dtype kernel.
+
+    Nothing is written in place, so this does not reintroduce the autograd breakage that the
+    old ``xout[..., 0] = ...`` / ``view_as_complex`` pattern caused.
+    """
+
+    if x.is_complex():
+        return torch.view_as_complex(torch.view_as_real(x).contiguous())
+    return x.contiguous()
+
+
 class _EnsureContiguous(torch.autograd.Function):
     """Ensures the tensor is contiguous in both the forward and backward pass."""
 
     @staticmethod
     def forward(x):
-        return x.contiguous()
+        return _contiguous(x)
 
     @staticmethod
     def setup_context(ctx, inputs, output):
@@ -113,9 +132,40 @@ class _EnsureContiguous(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad):
-        return grad.contiguous()
+        # load-bearing: an upstream layer can hand back a non-contiguous gradient, and the
+        # CPU/MKL FFT backward rejects the resulting stride pattern (DftiCommitDescriptor).
+        return _contiguous(grad)
 
 
 def ensure_contiguous(x: torch.Tensor) -> torch.Tensor:
     """Ensures the tensor is contiguous in both the forward and backward pass."""
     return _EnsureContiguous.apply(x)
+
+
+def check(cond: bool, message) -> None:
+    """
+    ``torch._check`` with a deferred message, without blocking full-graph compilation.
+
+    ``torch._check(cond, lambda: ...)`` is the documented way to keep an error
+    message off the hot path, but it cannot be traced: Dynamo has no ``as_proxy()``
+    for a closure, so a callable message fails ``torch.compile(fullgraph=True)`` with
+    *Failed to convert args/kwargs to proxy*. That is true of any callable, including
+    one returning a constant string, so keeping symbolic values out of the message is
+    not enough to make it traceable.
+
+    Eager execution keeps the deferred message. While tracing, the condition is
+    checked without one: the check still fires, it just reports less.
+
+    Parameters
+    ----------
+    cond : bool
+        Condition to assert. May be a symbolic bool under dynamic shapes.
+    message : callable
+        Zero-argument callable returning the message, evaluated only on failure and
+        only outside tracing.
+    """
+
+    if torch.compiler.is_compiling():
+        torch._check(cond)
+    else:
+        torch._check(cond, message)

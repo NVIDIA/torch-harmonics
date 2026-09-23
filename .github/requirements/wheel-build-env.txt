@@ -3,6 +3,6 @@
 # extension and stamps the version into the published wheels. Pinned so that a compromised or
 # simply broken upstream release cannot silently change what we ship.
 pip==26.2.1
-setuptools==83.0.0
-wheel==0.47.0
+setuptools==84.0.0
+wheel==0.48.0
 setuptools-scm==10.2.1

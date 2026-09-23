@@ -36,6 +36,16 @@ jobs:
         python3 -m pytest -ra --cov-report term --cov-report json --cov-config=.coveragerc --cov=torch_harmonics \
           --ignore-glob="**/test_distributed_*" ./tests/
 
+    # Execute the ">>>" examples in the package docstrings. Sphinx renders them
+    # into the API docs, where they read as verified output, so an unchecked one
+    # is documentation that lies: before this step existed every example in the
+    # package was inert, and several had been wrong for releases. Kept separate
+    # from the suite above so that a broken example is its own red mark and does
+    # not move the coverage number.
+    - name: Doctest the package docstrings
+      run: |
+        python3 -m pytest -ra --doctest-modules ./torch_harmonics/
+
     - name: Update coverage badge
       if: github.ref == 'refs/heads/main'
       env:

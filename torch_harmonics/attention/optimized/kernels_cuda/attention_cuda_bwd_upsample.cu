@@ -51,7 +51,8 @@
 //            required because many output cells can scatter into the same
 //            input cell (one (hi, wi) is reachable from multiple (ho, wo)
 //            via the residue map).
-// Generic-only for now; no specialized channel-size variant or sortRows
+// Generic-only for now; no specialized channel-size variant. Rows ARE sorted
+// (sortRows) and the kernels walk psi's arc segments.
 // load-balancing (correctness path, not perf path).
 // =====================================================================================
 
@@ -114,8 +115,8 @@ namespace attention_kernels
     template <int THREADS_PER_BLOCK, typename STORAGE_T>
     __global__ __launch_bounds__(THREADS_PER_BLOCK) void s2_attn_bwd_upsample_scatter_max_k(
         int nheads, int nchan_in, int nlat_in, int nlon_in, int nlat_out, int nlon_out,
-        const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ qy, const int64_t *__restrict__ row_off,
-        const int64_t *__restrict__ col_idx, float *__restrict__ maxbuf)
+        const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ qy, const int32_t *__restrict__ row_idx,
+        const int32_t *__restrict__ seg, const int32_t *__restrict__ seg_off, float *__restrict__ maxbuf)
     {
         extern __shared__ float shext[];
         float *sh_k = shext + threadIdx.y * nchan_in;
@@ -133,8 +134,15 @@ namespace attention_kernels
         const int wid = blockIdx.x * blockDim.y + threadIdx.y;
         if (wid >= nlat_in * nlon_in) { return; }
         const int tidx = threadIdx.x;
-        const int hi = wid / nlon_in;
-        const int wi = wid - hi * nlon_in;
+        // Rows visited longest-first. psi's density is heavily skewed with latitude -- a
+        // polar row's neighborhood spans the whole circle -- and every wi within a
+        // latitude does identical work, so in natural order entire latitudes of blocks
+        // straggle at the end. ncu measured 29.95% achieved occupancy against 50%
+        // theoretical, which is what that imbalance looks like. The gather path has sorted
+        // rows for exactly this reason; this one never did.
+        const int hi_c = wid / nlon_in;
+        const int hi = row_idx[hi_c];
+        const int wi = wid - hi_c * nlon_in;
         const int pscale_out = nlon_out / nlon_in;
 
         kx += int64_t(batch) * nlat_in * nlon_in * ldi + int64_t(head) * nchan_in + (int64_t(hi) * nlon_in + wi) * ldi;
@@ -143,20 +151,31 @@ namespace attention_kernels
 
         for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { sh_k[chan] = vload(kx, chan); }
 
-        const int64_t rbeg = row_off[hi];
-        const int rlen = static_cast<int>(row_off[hi + 1] - rbeg);
-        const int64_t *col_hi = col_idx + rbeg;
+        // Arc segments instead of the flat column list: a neighbor's (output lat, output
+        // lon) is derived by counting along a contiguous arc, so the 64-bit division that
+        // decoded col / nlon_out per neighbor is gone. The GPU has no integer-divide
+        // instruction, so each cost ~70-100 emulated ones.
+        const int seg_beg = seg_off[hi];
+        const int seg_end = seg_off[hi + 1];
 
-        for (int off = 0; off < rlen; off++) {
-            const int64_t col = col_hi[off];
-            const int ho = static_cast<int>(col / nlon_out);
-            const int wo = bwd_scatter_wo(static_cast<int>(col - int64_t(ho) * nlon_out), wi, pscale_out, nlon_out);
-            const STORAGE_T *_qy = qy + (int64_t(ho) * nlon_out + wo) * ldi;
+        for (int sg = seg_beg; sg < seg_end; sg++) {
 
-            float qd = 0.f;
-            for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { qd += sh_k[chan] * vload(_qy, chan); }
-            qd = __warp_sum(qd);
-            if (tidx == 0) { bwd_atomicMaxf(&maxbuf[int64_t(ho) * nlon_out + wo], qd); }
+            const int ho = seg[3 * sg + 0];
+            const int seg_lo = seg[3 * sg + 1];
+            const int seg_len = seg[3 * sg + 2];
+
+            // one shift at the arc start, then a counted walk: no modulus inside
+            int wo = bwd_scatter_wo(seg_lo, wi, pscale_out, nlon_out);
+
+            for (int j = 0; j < seg_len; j++) {
+                const STORAGE_T *_qy = qy + (int64_t(ho) * nlon_out + wo) * ldi;
+
+                float qd = 0.f;
+                for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { qd += sh_k[chan] * vload(_qy, chan); }
+                qd = __warp_sum(qd);
+                if (tidx == 0) { bwd_atomicMaxf(&maxbuf[int64_t(ho) * nlon_out + wo], qd); }
+                if (++wo == nlon_out) { wo = 0; }
+            }
         }
     }
 
@@ -165,9 +184,9 @@ namespace attention_kernels
     __global__ __launch_bounds__(THREADS_PER_BLOCK) void s2_attn_bwd_upsample_scatter_stats_k(
         int nheads, int nchan_in, int nchan_out, int nlat_in, int nlon_in, int nlat_out, int nlon_out,
         const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy,
-        const STORAGE_T *__restrict__ dy, const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx,
-        const float *__restrict__ quad_weights, const float *__restrict__ maxbuf, float *__restrict__ S,
-        float *__restrict__ Avw, float *__restrict__ Ak, float *__restrict__ Akvw)
+        const STORAGE_T *__restrict__ dy, const int32_t *__restrict__ row_idx, const int32_t *__restrict__ seg,
+        const int32_t *__restrict__ seg_off, const float *__restrict__ quad_weights, const float *__restrict__ maxbuf,
+        float *__restrict__ S, float *__restrict__ Avw, float *__restrict__ Ak, float *__restrict__ Akvw)
     {
         extern __shared__ float shext[];
         float *sh_k = shext + threadIdx.y * (nchan_in + nchan_out);
@@ -187,8 +206,15 @@ namespace attention_kernels
         const int wid = blockIdx.x * blockDim.y + threadIdx.y;
         if (wid >= nlat_in * nlon_in) { return; }
         const int tidx = threadIdx.x;
-        const int hi = wid / nlon_in;
-        const int wi = wid - hi * nlon_in;
+        // Rows visited longest-first. psi's density is heavily skewed with latitude -- a
+        // polar row's neighborhood spans the whole circle -- and every wi within a
+        // latitude does identical work, so in natural order entire latitudes of blocks
+        // straggle at the end. ncu measured 29.95% achieved occupancy against 50%
+        // theoretical, which is what that imbalance looks like. The gather path has sorted
+        // rows for exactly this reason; this one never did.
+        const int hi_c = wid / nlon_in;
+        const int hi = row_idx[hi_c];
+        const int wi = wid - hi_c * nlon_in;
         const int pscale_out = nlon_out / nlon_in;
 
         kx += int64_t(batch) * nlat_in * nlon_in * ldi + int64_t(head) * nchan_in + (int64_t(hi) * nlon_in + wi) * ldi;
@@ -205,35 +231,44 @@ namespace attention_kernels
         for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { sh_v[chan] = vload(vx, chan); }
 
         const float qw = quad_weights[hi];
-        const int64_t rbeg = row_off[hi];
-        const int rlen = static_cast<int>(row_off[hi + 1] - rbeg);
-        const int64_t *col_hi = col_idx + rbeg;
+        // Arc segments instead of the flat column list; see the note on the first
+        // neighbor loop above.
+        const int seg_beg = seg_off[hi];
+        const int seg_end = seg_off[hi + 1];
 
-        for (int off = 0; off < rlen; off++) {
-            const int64_t col = col_hi[off];
-            const int ho = static_cast<int>(col / nlon_out);
-            const int wo = bwd_scatter_wo(static_cast<int>(col - int64_t(ho) * nlon_out), wi, pscale_out, nlon_out);
-            const int64_t cell = int64_t(ho) * nlon_out + wo;
-            const STORAGE_T *_qy = qy + cell * ldi;
-            const STORAGE_T *_dy = dy + cell * ldo;
+        for (int sg = seg_beg; sg < seg_end; sg++) {
 
-            float qd = 0.f, gd = 0.f;
-            for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { qd += sh_k[chan] * vload(_qy, chan); }
-            for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { gd += sh_v[chan] * vload(_dy, chan); }
-            qd = __warp_sum(qd);
-            gd = __warp_sum(gd);
+            const int ho = seg[3 * sg + 0];
+            const int seg_lo = seg[3 * sg + 1];
+            const int seg_len = seg[3 * sg + 2];
 
-            const float alpha = expf(qd - maxbuf[cell]) * qw;
-            const float ag = alpha * gd;
-            if (tidx == 0) {
-                atomicAdd(&S[cell], alpha);
-                atomicAdd(&Avw[cell], ag);
-            }
-            float *_Ak = Ak + cell * nchan_in;
-            float *_Akvw = Akvw + cell * nchan_in;
-            for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
-                atomicAdd(&_Ak[chan], alpha * sh_k[chan]);
-                atomicAdd(&_Akvw[chan], ag * sh_k[chan]);
+            // one shift at the arc start, then a counted walk: no modulus inside
+            int wo = bwd_scatter_wo(seg_lo, wi, pscale_out, nlon_out);
+
+            for (int j = 0; j < seg_len; j++) {
+                const int64_t cell = int64_t(ho) * nlon_out + wo;
+                const STORAGE_T *_qy = qy + cell * ldi;
+                const STORAGE_T *_dy = dy + cell * ldo;
+
+                float qd = 0.f, gd = 0.f;
+                for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { qd += sh_k[chan] * vload(_qy, chan); }
+                for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { gd += sh_v[chan] * vload(_dy, chan); }
+                qd = __warp_sum(qd);
+                gd = __warp_sum(gd);
+
+                const float alpha = expf(qd - maxbuf[cell]) * qw;
+                const float ag = alpha * gd;
+                if (tidx == 0) {
+                    atomicAdd(&S[cell], alpha);
+                    atomicAdd(&Avw[cell], ag);
+                }
+                float *_Ak = Ak + cell * nchan_in;
+                float *_Akvw = Akvw + cell * nchan_in;
+                for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
+                    atomicAdd(&_Ak[chan], alpha * sh_k[chan]);
+                    atomicAdd(&_Akvw[chan], ag * sh_k[chan]);
+                }
+                if (++wo == nlon_out) { wo = 0; }
             }
         }
     }
@@ -272,9 +307,9 @@ namespace attention_kernels
     __global__ __launch_bounds__(THREADS_PER_BLOCK) void s2_attn_bwd_upsample_scatter_dkv_k(
         int nheads, int nchan_in, int nchan_out, int nlat_in, int nlon_in, int nlat_out, int nlon_out,
         const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy,
-        const STORAGE_T *__restrict__ dy, const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx,
-        const float *__restrict__ quad_weights, const float *__restrict__ maxbuf, const float *__restrict__ S,
-        const float *__restrict__ Avw, float *__restrict__ dkx, float *__restrict__ dvx)
+        const STORAGE_T *__restrict__ dy, const int32_t *__restrict__ row_idx, const int32_t *__restrict__ seg,
+        const int32_t *__restrict__ seg_off, const float *__restrict__ quad_weights, const float *__restrict__ maxbuf,
+        const float *__restrict__ S, const float *__restrict__ Avw, float *__restrict__ dkx, float *__restrict__ dvx)
     {
         extern __shared__ float shext[];
         float *sh_k = shext + threadIdx.y * (2 * nchan_in + 2 * nchan_out);
@@ -292,8 +327,15 @@ namespace attention_kernels
         const int wid = blockIdx.x * blockDim.y + threadIdx.y;
         if (wid >= nlat_in * nlon_in) { return; }
         const int tidx = threadIdx.x;
-        const int hi = wid / nlon_in;
-        const int wi = wid - hi * nlon_in;
+        // Rows visited longest-first. psi's density is heavily skewed with latitude -- a
+        // polar row's neighborhood spans the whole circle -- and every wi within a
+        // latitude does identical work, so in natural order entire latitudes of blocks
+        // straggle at the end. ncu measured 29.95% achieved occupancy against 50%
+        // theoretical, which is what that imbalance looks like. The gather path has sorted
+        // rows for exactly this reason; this one never did.
+        const int hi_c = wid / nlon_in;
+        const int hi = row_idx[hi_c];
+        const int wi = wid - hi_c * nlon_in;
         const int pscale_out = nlon_out / nlon_in;
 
         kx += int64_t(batch) * nlat_in * nlon_in * ldi + int64_t(head) * nchan_in + (int64_t(hi) * nlon_in + wi) * ldi;
@@ -316,31 +358,44 @@ namespace attention_kernels
         }
 
         const float qw = quad_weights[hi];
-        const int64_t rbeg = row_off[hi];
-        const int rlen = static_cast<int>(row_off[hi + 1] - rbeg);
-        const int64_t *col_hi = col_idx + rbeg;
+        // Arc segments instead of the flat column list; see the note on the first
+        // neighbor loop above.
+        const int seg_beg = seg_off[hi];
+        const int seg_end = seg_off[hi + 1];
 
-        for (int off = 0; off < rlen; off++) {
-            const int64_t col = col_hi[off];
-            const int ho = static_cast<int>(col / nlon_out);
-            const int wo = bwd_scatter_wo(static_cast<int>(col - int64_t(ho) * nlon_out), wi, pscale_out, nlon_out);
-            const int64_t cell = int64_t(ho) * nlon_out + wo;
-            const STORAGE_T *_qy = qy + cell * ldi;
-            const STORAGE_T *_dy = dy + cell * ldo;
+        for (int sg = seg_beg; sg < seg_end; sg++) {
 
-            float qd = 0.f, gd = 0.f;
-            for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { qd += sh_k[chan] * vload(_qy, chan); }
-            for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { gd += sh_v[chan] * vload(_dy, chan); }
-            qd = __warp_sum(qd);
-            gd = __warp_sum(gd);
+            const int ho = seg[3 * sg + 0];
+            const int seg_lo = seg[3 * sg + 1];
+            const int seg_len = seg[3 * sg + 2];
 
-            const float s = S[cell];
-            const float alpha_mul = expf(qd - maxbuf[cell]) * qw / s;
-            const float integral = Avw[cell] / s;
-            const float scale_dk = (gd - integral) * alpha_mul;
+            // one shift at the arc start, then a counted walk: no modulus inside
+            int wo = bwd_scatter_wo(seg_lo, wi, pscale_out, nlon_out);
 
-            for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { sh_dv[chan] += alpha_mul * vload(_dy, chan); }
-            for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { sh_dk[chan] += scale_dk * vload(_qy, chan); }
+            for (int j = 0; j < seg_len; j++) {
+                const int64_t cell = int64_t(ho) * nlon_out + wo;
+                const STORAGE_T *_qy = qy + cell * ldi;
+                const STORAGE_T *_dy = dy + cell * ldo;
+
+                float qd = 0.f, gd = 0.f;
+                for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { qd += sh_k[chan] * vload(_qy, chan); }
+                for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { gd += sh_v[chan] * vload(_dy, chan); }
+                qd = __warp_sum(qd);
+                gd = __warp_sum(gd);
+
+                const float s = S[cell];
+                const float alpha_mul = expf(qd - maxbuf[cell]) * qw / s;
+                const float integral = Avw[cell] / s;
+                const float scale_dk = (gd - integral) * alpha_mul;
+
+                for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
+                    sh_dv[chan] += alpha_mul * vload(_dy, chan);
+                }
+                for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
+                    sh_dk[chan] += scale_dk * vload(_qy, chan);
+                }
+                if (++wo == nlon_out) { wo = 0; }
+            }
         }
 
         for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { dkx[chan] = sh_dk[chan]; }
@@ -352,9 +407,9 @@ namespace attention_kernels
     template <typename STORAGE_T>
     static void launch_attn_bwd_upsample_scatter(int batch_size, int nheads, int nchans_in, int nchans_out, int nlat_in,
                                                  int nlon_in, int nlat_out, int nlon_out, STORAGE_T *_kxp,
-                                                 STORAGE_T *_vxp, STORAGE_T *_qyp, STORAGE_T *_dyp, int64_t *_row_off,
-                                                 int64_t *_col_idx, float *_quad_weights, float *_dkxp, float *_dvxp,
-                                                 float *_dqyp, cudaStream_t stream)
+                                                 STORAGE_T *_vxp, STORAGE_T *_qyp, STORAGE_T *_dyp, int32_t *_row_idx,
+                                                 int32_t *_seg, int32_t *_seg_off, float *_quad_weights, float *_dkxp,
+                                                 float *_dvxp, float *_dqyp, cudaStream_t stream)
     {
         auto opts = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);
         // reduction scratch carries (batch, head) as its leading index -- private to
@@ -382,12 +437,12 @@ namespace attention_kernels
         const size_t sh_dkv = sizeof(float) * (2 * nchans_in + 2 * nchans_out) * block.y;
 
         s2_attn_bwd_upsample_scatter_max_k<THREADS><<<grid_in, block, sh_max, stream>>>(
-            nheads, nchans_in, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _qyp, _row_off, _col_idx, _maxbuf);
+            nheads, nchans_in, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _qyp, _row_idx, _seg, _seg_off, _maxbuf);
         CHECK_ERROR("s2_attn_bwd_upsample_scatter_max_k");
 
         s2_attn_bwd_upsample_scatter_stats_k<THREADS><<<grid_in, block, sh_stats, stream>>>(
-            nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_off,
-            _col_idx, _quad_weights, _maxbuf, _S, _Avw, _Ak, _Akvw);
+            nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _seg,
+            _seg_off, _quad_weights, _maxbuf, _S, _Avw, _Ak, _Akvw);
         CHECK_ERROR("s2_attn_bwd_upsample_scatter_stats_k");
 
         s2_attn_bwd_upsample_scatter_dq_k<THREADS>
@@ -395,8 +450,8 @@ namespace attention_kernels
         CHECK_ERROR("s2_attn_bwd_upsample_scatter_dq_k");
 
         s2_attn_bwd_upsample_scatter_dkv_k<THREADS><<<grid_in, block, sh_dkv, stream>>>(
-            nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_off,
-            _col_idx, _quad_weights, _maxbuf, _S, _Avw, _dkxp, _dvxp);
+            nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _seg,
+            _seg_off, _quad_weights, _maxbuf, _S, _Avw, _dkxp, _dvxp);
         CHECK_ERROR("s2_attn_bwd_upsample_scatter_dkv_k");
     }
 
@@ -411,8 +466,9 @@ namespace attention_kernels
     void s2_attn_bwd_upsample_dispatch(int batch_size, int64_t num_heads, size_t nchans_in, size_t nchans_out,
                                        int64_t nlon_in, int64_t nlat_in, int64_t nlat_out, int64_t nlon_out,
                                        torch::Tensor kxP, torch::Tensor vxP, torch::Tensor qyP, torch::Tensor dyP,
-                                       torch::Tensor psi_row_off, torch::Tensor psi_col_idx, torch::Tensor quad_weights,
-                                       torch::Tensor dkxP, torch::Tensor dvxP, torch::Tensor dqyP)
+                                       torch::Tensor psi_row_off, torch::Tensor psi_seg, torch::Tensor psi_seg_off,
+                                       torch::Tensor quad_weights, torch::Tensor dkxP, torch::Tensor dvxP,
+                                       torch::Tensor dqyP)
     {
 
         auto stream = at::cuda::getCurrentCUDAStream().stream();
@@ -422,8 +478,14 @@ namespace attention_kernels
         float *_dvxp = reinterpret_cast<float *>(dvxP.data_ptr());
         float *_dqyp = reinterpret_cast<float *>(dqyP.data_ptr());
 
-        int64_t *_row_off = reinterpret_cast<int64_t *>(psi_row_off.data_ptr());
-        int64_t *_col_idx = reinterpret_cast<int64_t *>(psi_col_idx.data_ptr());
+        // Compacted-row -> input-latitude map, sorted longest-first. psi's rows here are
+        // keyed by INPUT latitude (the scatter psi), so this balances across latitudes;
+        // every wi within a latitude does identical work. row_off survives only to feed
+        // this -- the kernels read seg / seg_off instead.
+        at::Tensor row_idx = sortRows(static_cast<int>(nlat_in), psi_row_off, stream);
+        int32_t *_row_idx = reinterpret_cast<int32_t *>(row_idx.data_ptr());
+        int32_t *_seg = reinterpret_cast<int32_t *>(psi_seg.data_ptr());
+        int32_t *_seg_off = reinterpret_cast<int32_t *>(psi_seg_off.data_ptr());
         float *_quad_weights = reinterpret_cast<float *>(quad_weights.data_ptr());
 
         AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, qyP.scalar_type(), "s2_attn_bwd_upsample", [&] {
@@ -435,8 +497,8 @@ namespace attention_kernels
             launch_attn_bwd_upsample_scatter(batch_size, static_cast<int>(num_heads), static_cast<int>(nchans_in),
                                              static_cast<int>(nchans_out), static_cast<int>(nlat_in),
                                              static_cast<int>(nlon_in), static_cast<int>(nlat_out),
-                                             static_cast<int>(nlon_out), _kxp, _vxp, _qyp, _dyp, _row_off, _col_idx,
-                                             _quad_weights, _dkxp, _dvxp, _dqyp, stream);
+                                             static_cast<int>(nlon_out), _kxp, _vxp, _qyp, _dyp, _row_idx, _seg,
+                                             _seg_off, _quad_weights, _dkxp, _dvxp, _dqyp, stream);
         });
 
         C10_CUDA_KERNEL_LAUNCH_CHECK();

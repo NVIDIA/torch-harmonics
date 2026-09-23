@@ -578,6 +578,59 @@ _NATTN_CONFIGS = [
         skip_correctness=True,
         tags=["attention", "neighborhood", "cross"],
     ),
+    # quarter-degree self-attention. The resolution the production configs are
+    # actually headed for, and the one where the kernels stop being latency-bound on
+    # grid size alone: 721x1440 is ~1.04M query points, 16x the 1deg entries.
+    # Correctness is skipped -- the dense torch reference is quadratic in nlat*nlon
+    # and does not fit at this size.
+    dict(
+        name="nattn_s2_opt_qdeg_b1_c64_h1_tc003_float32_cuda",
+        device="cuda",
+        dtype=torch.float32,
+        batch=1,
+        channels=64,
+        num_heads=1,
+        nlat_in=721,
+        nlon_in=1440,
+        nlat_out=721,
+        nlon_out=1440,
+        theta_cutoff=0.03,
+        optimized=True,
+        skip_correctness=True,
+        tags=["attention", "neighborhood", "self"],
+    ),
+    dict(
+        name="nattn_s2_opt_qdeg_b1_c64_h1_tc003_float16_cuda",
+        device="cuda",
+        dtype=torch.float16,
+        batch=1,
+        channels=64,
+        num_heads=1,
+        nlat_in=721,
+        nlon_in=1440,
+        nlat_out=721,
+        nlon_out=1440,
+        theta_cutoff=0.03,
+        optimized=True,
+        skip_correctness=True,
+        tags=["attention", "neighborhood", "self"],
+    ),
+    dict(
+        name="nattn_s2_opt_qdeg_b1_c64_h1_tc003_bfloat16_cuda",
+        device="cuda",
+        dtype=torch.bfloat16,
+        batch=1,
+        channels=64,
+        num_heads=1,
+        nlat_in=721,
+        nlon_in=1440,
+        nlat_out=721,
+        nlon_out=1440,
+        theta_cutoff=0.03,
+        optimized=True,
+        skip_correctness=True,
+        tags=["attention", "neighborhood", "self"],
+    ),
 ]
 
 for cfg in _ATTN_CONFIGS:

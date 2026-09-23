@@ -353,7 +353,7 @@ namespace attention_kernels
 
     std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
     s2_attention_bwd_cpu(torch::Tensor kx, torch::Tensor vx, torch::Tensor qy, torch::Tensor dy,
-                         torch::Tensor quad_weights, torch::Tensor col_idx, torch::Tensor row_off, int64_t num_heads,
-                         int64_t nlon_in, int64_t nlat_out, int64_t nlon_out);
+                         torch::Tensor quad_weights, torch::Tensor col_idx, torch::Tensor row_off, torch::Tensor seg,
+                         torch::Tensor seg_off, int64_t num_heads, int64_t nlon_in, int64_t nlat_out, int64_t nlon_out);
 
 } // namespace attention_kernels

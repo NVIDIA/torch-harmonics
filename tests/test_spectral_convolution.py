@@ -496,6 +496,63 @@ class TestSpectralConvS2(unittest.TestCase):
             msg="spectral_bias.grad should contain non-zero entries",
         )
 
+    # -----------------------------------------------------------------------
+    # Test 12: torch.compile
+    #
+    # The layer holds complex spectral coefficients throughout, and inductor
+    # cannot generate a kernel that reads or writes a complex buffer: triton has
+    # no complex type, so the kernel signature fails with KeyError: 'complex64'.
+    # Every pointwise step here (bias, contiguity, reshape) therefore has to run
+    # on the real view.  The bias path is parameterized separately because it is
+    # the only complex arithmetic in the layer.
+    # -----------------------------------------------------------------------
+    @parameterized.expand(
+        [
+            # nlat, nlon, in_channels, out_channels, num_groups, bias
+            [16, 32, 4, 4, 1, False],
+            [16, 32, 4, 8, 2, False],
+            [16, 32, 4, 4, 1, True],
+            [16, 32, 4, 8, 2, True],
+        ],
+        skip_on_empty=True,
+    )
+    def test_compile(self, nlat, nlon, in_channels, out_channels, num_groups, bias, verbose=False):
+        """The layer compiles and matches eager, forward and backward."""
+
+        set_seed(333)
+
+        conv = SpectralConvS2(
+            in_shape=(nlat, nlon),
+            out_shape=(nlat, nlon),
+            in_channels=in_channels,
+            out_channels=out_channels,
+            num_groups=num_groups,
+            grid_in="equiangular",
+            grid_out="equiangular",
+            bias=bias,
+        ).to(self.device)
+        conv.eval()
+
+        if bias:
+            with torch.no_grad():
+                conv.spectral_bias.data.fill_(0.1)
+
+        x = torch.randn(2, in_channels, nlat, nlon, device=self.device, requires_grad=True)
+        gradient = torch.randn(2, out_channels, nlat, nlon, device=self.device)
+
+        expected = conv(x)
+        (expected_grad,) = torch.autograd.grad(expected, x, grad_outputs=gradient)
+
+        # fullgraph is deliberately not requested: _contract_lwise carries its own
+        # @torch.compile, and the point here is that inductor can generate code for
+        # every complex-valued step, not that the layer traces into a single graph.
+        compiled = torch.compile(conv, dynamic=False)
+        actual = compiled(x)
+        (actual_grad,) = torch.autograd.grad(actual, x, grad_outputs=gradient)
+
+        self.assertTrue(compare_tensors("compiled forward", actual, expected, atol=1e-5, rtol=1e-5, verbose=verbose))
+        self.assertTrue(compare_tensors("compiled backward", actual_grad, expected_grad, atol=1e-5, rtol=1e-5, verbose=verbose))
+
 
 if __name__ == "__main__":
     unittest.main()
