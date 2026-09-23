@@ -153,6 +153,23 @@ def _grid_quad_weights(grid: "GridS2") -> torch.Tensor:
     return torch.repeat_interleave(per_point, counts)
 
 
+@lru_cache(typed=True, copy=True)
+def _grid_ring_weights(grid: "GridS2", dtype: torch.dtype) -> torch.Tensor:
+    r"""Quadrature weight carried by a single point of each ring, shape ``(nrings,)``."""
+    # every operand cast before the arithmetic, not after: a consumer working in fp32
+    # that let this be computed in fp64 and rounded at the end would land about one ulp
+    # away, which is a visible shift in the weights of an already-trained model
+    weights = grid.colat_weights.to(dtype)
+    counts = grid.nlon_per_lat.to(dtype)
+    return 2.0 * torch.pi * weights / counts
+
+
+@lru_cache(typed=True, copy=True)
+def _grid_point_weights(grid: "GridS2", dtype: torch.dtype) -> torch.Tensor:
+    r"""The same quadrature, one entry per point, shape ``(npoints,)``."""
+    return torch.repeat_interleave(_grid_ring_weights(grid, dtype), grid.nlon_per_lat)
+
+
 @dataclass(frozen=True, eq=False)
 class PointSetS2:
     r"""
@@ -577,6 +594,54 @@ class GridS2(PointSetS2):
         :attr:`colat_weights` sums to 2 the total is :math:`4\pi` by construction.
         """
         return _grid_quad_weights(self)
+
+    def ring_weights(self, dtype: torch.dtype = torch.float64) -> torch.Tensor:
+        r"""
+        Quadrature weight carried by a single point of each ring, shape ``(nrings,)``.
+
+        The separable factorization of :attr:`quad_weights`: ring :math:`k` contributes
+        :math:`w_k \cdot 2\pi / N_{\lambda,k}` at each of its points, so this is that
+        per-point contribution indexed by ring. A consumer that already knows which ring
+        a point belongs to -- a kernel walking a grid ring by ring -- wants this rather
+        than the expanded form, and on a ragged grid it is the only compact form there is.
+
+        Takes a dtype rather than returning float64 and leaving the caller to cast,
+        because the two are not the same number. The arithmetic is done entirely in the
+        requested dtype; rounding a float64 result instead lands about one ulp away, which
+        is a visible shift in the quadrature weights of an already-trained model.
+
+        Parameters
+        ----------
+        dtype : torch.dtype, optional
+            Dtype to compute in, by default ``torch.float64``.
+
+        Returns
+        -------
+        torch.Tensor
+            Per-ring weights of shape ``(nrings,)``.
+        """
+        return _grid_ring_weights(self, dtype)
+
+    def point_weights(self, dtype: torch.dtype = torch.float64) -> torch.Tensor:
+        r"""
+        The same quadrature as :meth:`ring_weights`, one entry per point.
+
+        Equal to :attr:`quad_weights` up to rounding -- that property is the descriptor's
+        canonical per-point rule and keeps its own arithmetic, while this one is computed
+        wholly in ``dtype`` so that it stays exactly consistent with
+        :meth:`ring_weights`, which is what a consumer holding both forms needs.
+
+        Parameters
+        ----------
+        dtype : torch.dtype, optional
+            Dtype to compute in, by default ``torch.float64``.
+
+        Returns
+        -------
+        torch.Tensor
+            Per-point weights of shape ``(npoints,)``, summing to :math:`4\pi`.
+        """
+        return _grid_point_weights(self, dtype)
 
     # -- raggedness ----------------------------------------------------------
 
