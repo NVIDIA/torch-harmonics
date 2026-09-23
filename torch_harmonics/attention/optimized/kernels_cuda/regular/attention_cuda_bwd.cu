@@ -936,13 +936,15 @@ namespace attention_kernels
         CHECK_CUDA_INPUT_TENSOR(qy);
         CHECK_CUDA_INPUT_TENSOR(dy);
         CHECK_CUDA_TENSOR(ring_weights);
-        // The operator no longer carries the column list: no kernel below indexes
-        // col_idx or row_off -- they are plumbing threaded through the dispatch
-        // templates, which read the arcs. Rather than strip that plumbing from two
-        // dozen template signatures with no CUDA compiler to check the result, the
-        // launcher feeds it empty tensors. Removing the dead parameters is a
-        // follow-up, and one the compiler will verify in a single pass.
-        const auto psi_row_off = torch::empty({0}, kx.options().dtype(torch::kInt64));
+        // row_off is no longer an operand, but sortRows still needs the per-row neighbour
+        // counts to order rows by length. They are recoverable from the arcs: a row's
+        // neighbours are the lengths of its segments, so the CSR row offsets are a
+        // cumulative sum of the segment lengths sampled at the row boundaries. This is
+        // the same derivation the CPU kernels do locally, and it is why the column list
+        // could be dropped while this could not.
+        auto seg_cum = torch::zeros({psi_seg.size(0) + 1}, psi_seg.options().dtype(torch::kInt64));
+        seg_cum.slice(0, 1).copy_(torch::cumsum(psi_seg.select(1, 2).to(torch::kInt64), 0));
+        const auto psi_row_off = seg_cum.index_select(0, psi_seg_off.to(torch::kInt64));
         CHECK_CUDA_TENSOR(psi_seg);
         CHECK_CUDA_TENSOR(psi_seg_off);
 
