@@ -41,7 +41,7 @@ from torch_harmonics.attention._attention_utils import _check_dtypes_match, _che
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhood_s2_attention_torch
 from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_optimized
-from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.grid import GridS2, RegularGridS2, require_grid, require_regular_grid
 from torch_harmonics.neighborhood import precompute_neighborhood_arcs_s2
 from torch_harmonics.truncation import truncate_support
 
@@ -288,10 +288,10 @@ class NeighborhoodAttentionS2(nn.Module):
 
     Parameters
     ----------
-    grid_in : RegularGridS2
+    grid_in : GridS2
         Descriptor of the input grid; it carries the resolution as well as the
         quadrature rule.
-    grid_out : RegularGridS2
+    grid_out : GridS2
         Descriptor of the output grid.
     in_channels : int
         number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
@@ -325,8 +325,8 @@ class NeighborhoodAttentionS2(nn.Module):
 
     def __init__(
         self,
-        grid_in: RegularGridS2,
-        grid_out: RegularGridS2,
+        grid_in: GridS2,
+        grid_out: GridS2,
         in_channels: int,
         num_heads: Optional[int] = 1,
         scale: Optional[Union[torch.Tensor, float]] = None,
@@ -339,18 +339,48 @@ class NeighborhoodAttentionS2(nn.Module):
     ):
         super().__init__()
 
-        self.grid_in = require_regular_grid(grid_in, "grid_in")
-        self.grid_out = require_regular_grid(grid_out, "grid_out")
-        self.nlat_in, self.nlon_in = self.grid_in.shape
-        self.nlat_out, self.nlon_out = self.grid_out.shape
+        # a ring grid, not necessarily a regular one: the ragged path below serves
+        # HEALPix and other grids whose rings differ in length. This is the first of the
+        # require_regular_grid guards to come back down, which is what they were put in
+        # for -- one relaxed per backend that gains support, rather than all at once.
+        self.grid_in = require_grid(grid_in, "grid_in")
+        self.grid_out = require_grid(grid_out, "grid_out")
 
-        # direction selection: gather (self / downsample) iff nlon_in is an integer
-        # multiple of nlon_out; scatter (upsample) iff nlon_out is an integer multiple
-        # of nlon_in. Self-attention (nlon_in == nlon_out) satisfies both and falls
-        # through the gather path with pscale == 1.
-        self.upsample = (self.nlon_out % self.nlon_in == 0) and (self.nlon_in % self.nlon_out != 0)
-        if not (self.nlon_in % self.nlon_out == 0 or self.upsample):
-            raise ValueError(f"either nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}), or vice versa, for the attention p-shift to be exact")
+        # Raggedness is a property of each side on its own, and the two roles it plays
+        # are separable. self.ragged picks the computation, and one ragged grid is
+        # enough to force it for both sides, because the ragged path is the general one
+        # and a regular grid is a case it admits. ragged_in and ragged_out pick only the
+        # layout each side shows the caller, which is what lets a HEALPix field attend
+        # onto a lat/lon one and come back shaped like a lat/lon field.
+        self.ragged_in = not self.grid_in.is_regular
+        self.ragged_out = not self.grid_out.is_regular
+        self.ragged = self.ragged_in or self.ragged_out
+
+        self.npoints_in = self.grid_in.npoints
+        self.npoints_out = self.grid_out.npoints
+
+        if self.ragged:
+            # nlat/nlon exist only on a regular grid; keep them where they are defined so
+            # that a consumer reaching for them on a ragged side fails rather than
+            # silently taking the widest ring for a stride
+            if not self.ragged_in:
+                self.nlat_in, self.nlon_in = self.grid_in.shape
+            if not self.ragged_out:
+                self.nlat_out, self.nlon_out = self.grid_out.shape
+            # there is no p-shift to be exact on a ragged grid, so direction is decided
+            # by point count alone
+            self.upsample = self.npoints_out > self.npoints_in
+        else:
+            self.nlat_in, self.nlon_in = self.grid_in.shape
+            self.nlat_out, self.nlon_out = self.grid_out.shape
+
+            # direction selection: gather (self / downsample) iff nlon_in is an integer
+            # multiple of nlon_out; scatter (upsample) iff nlon_out is an integer multiple
+            # of nlon_in. Self-attention (nlon_in == nlon_out) satisfies both and falls
+            # through the gather path with pscale == 1.
+            self.upsample = (self.nlon_out % self.nlon_in == 0) and (self.nlon_in % self.nlon_out != 0)
+            if not (self.nlon_in % self.nlon_out == 0 or self.upsample):
+                raise ValueError(f"either nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}), or vice versa, for the attention p-shift to be exact")
 
         self.in_channels = in_channels
         self.num_heads = num_heads
@@ -365,9 +395,15 @@ class NeighborhoodAttentionS2(nn.Module):
         # the output otherwise
         self.theta_cutoff = truncate_support(self.grid_in if self.upsample else self.grid_out, theta_cutoff)
 
-        # integration weights live on the input grid
+        # Integration weights live on the input grid, one per ring: every point of a
+        # ring carries the same solid angle, so the kernels index them by ring rather
+        # than by point. colat_weights * 2*pi / nlon_per_lat is the per-point weight
+        # written per ring, and on a regular grid nlon_per_lat is constant, so this is
+        # the same 2*pi*w/nlon_in it has always been.
         wgl = self.grid_in.colat_weights
-        quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
+        # cast before the arithmetic, not after: doing it in float64 and rounding at the
+        # end shifts the buffer by ~1e-9 against every previously trained model
+        quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.grid_in.nlon_per_lat.to(dtype=torch.float32)
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
         # The neighbourhood pattern is all attention needs: which input points lie
@@ -382,10 +418,27 @@ class NeighborhoodAttentionS2(nn.Module):
         # so one row per ring suffices and the kernels shift. Without it the pattern
         # would be nlon times larger -- 8.8 million arcs instead of 8,632 at 512x1024.
         #
-        # For upsample the grids swap, mirroring DISCO's transpose module: rows then
-        # index the smaller input grid and columns encode the larger output grid.
-        src, dst = (self.grid_out, self.grid_in) if self.upsample else (self.grid_in, self.grid_out)
-        arcs = precompute_neighborhood_arcs_s2(src, dst, theta_cutoff=self.theta_cutoff, fold_longitude=True)
+        # For upsample on a regular grid the grids swap, mirroring DISCO's transpose
+        # module: rows then index the smaller input grid and columns encode the larger
+        # output grid. That trick is the p-shift again, so the ragged path does not take
+        # it -- there the pattern always runs input to output and the kernel reads it in
+        # whichever direction it needs.
+        if self.ragged:
+            src, dst = self.grid_in, self.grid_out
+        else:
+            src, dst = (self.grid_out, self.grid_in) if self.upsample else (self.grid_in, self.grid_out)
+
+        # One call for both families; the only difference is whether the longitude axis
+        # can be folded away. It can exactly when the grids are regular, which is what
+        # fold_longitude checks -- so `not self.ragged` is not a shortcut here, it is
+        # the same condition stated once.
+        arcs = precompute_neighborhood_arcs_s2(src, dst, theta_cutoff=self.theta_cutoff, fold_longitude=not self.ragged)
+
+        # the ring tables a ragged kernel needs to turn (ring, offset) into a flat
+        # index, which a regular kernel derives arithmetically from nlon instead
+        if self.ragged:
+            self.register_buffer("psi_ring_base", arcs.ring_base.contiguous(), persistent=False)
+            self.register_buffer("psi_ring_size", arcs.ring_size.contiguous(), persistent=False)
 
         # the column form, which the CPU and torch reference paths consume
         col_idx, roff_idx = arcs.to_csr()
