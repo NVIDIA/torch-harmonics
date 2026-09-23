@@ -92,12 +92,32 @@ def _check_dtypes_match(tensors) -> None:
 
 # Shared backward-context helper used by both the torch reference kernels
 # (in kernels_torch/) and the optimized custom_op path (in optimized/).
-def _setup_context_attention_backward(ctx, inputs, output):
-    # col_idx / row_off are saved alongside seg / seg_off. The CUDA backward walks the
-    # arc segments, but the CPU backward still consumes the column list, and both reach
-    # backward through the same op schema.
-    kw, vw, qw, ring_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out = inputs
-    ctx.save_for_backward(col_idx, row_off, seg, seg_off, ring_weights, kw, vw, qw)
+def _setup_context_attention_regular_optimized_backward(ctx, inputs, output):
+    """
+    Backward context for the compiled product-grid operator, which reads arcs.
+
+    There were once one of these, shared with the torch reference, because both
+    operators declared both forms of the neighbourhood and each ignored one. They now
+    declare only what they read, so the input lists differ and so do these.
+    """
+    kw, vw, qw, ring_weights, seg, seg_off, nh, nlon_in, nlat_out, nlon_out = inputs
+    ctx.save_for_backward(seg, seg_off, ring_weights, kw, vw, qw)
+    ctx.nh = nh
+    ctx.nlon_in = nlon_in
+    ctx.nlat_out = nlat_out
+    ctx.nlon_out = nlon_out
+
+
+def _setup_context_attention_regular_reference_backward(ctx, inputs, output):
+    """
+    Backward context for the torch reference, which reads the column list.
+
+    That it takes the columns and not the arcs is the whole of its value as a
+    reference: the arcs are a derivation, and a reference that consumed them could not
+    catch an error in deriving them. The signature now says so.
+    """
+    kw, vw, qw, ring_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out = inputs
+    ctx.save_for_backward(col_idx, row_off, ring_weights, kw, vw, qw)
     ctx.nh = nh
     ctx.nlon_in = nlon_in
     ctx.nlat_out = nlat_out

@@ -405,9 +405,7 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
         qw = torch.randn(2, nlat, nlon, channels, device=self.device, dtype=torch.float32)
 
         with torch.autocast(self.device.type, dtype=autocast_dtype):
-            out = torch.ops.attention_kernels._neighborhood_s2_attention_regular_optimized(
-                kw, vw, qw, model.ring_weights, model.psi_col_idx, model.psi_roff_idx, model.psi_seg, model.psi_seg_off, 1, nlon, nlat, nlon
-            )
+            out = torch.ops.attention_kernels._neighborhood_s2_attention_regular_optimized(kw, vw, qw, model.ring_weights, model.psi_seg, model.psi_seg_off, 1, nlon, nlat, nlon)
 
         self.assertEqual(out.dtype, autocast_dtype, f"autocast output dtype {out.dtype} != {autocast_dtype}")
 
@@ -908,8 +906,6 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
             to_nhwc(vw),
             to_nhwc(qw),
             att.ring_weights,
-            att.psi_col_idx,
-            att.psi_roff_idx,
             att.psi_seg,
             att.psi_seg_off,
             att.num_heads,

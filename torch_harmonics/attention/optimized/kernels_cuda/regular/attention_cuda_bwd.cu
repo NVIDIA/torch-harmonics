@@ -927,8 +927,8 @@ namespace attention_kernels
     std::tuple<at::Tensor, at::Tensor, at::Tensor>
     // NHWC ABI, heads packed along channels -- see s2_attention_fwd_cuda.
     s2_attention_bwd_dkvq_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy, at::Tensor ring_weights,
-                               at::Tensor psi_col_idx, at::Tensor psi_row_off, at::Tensor psi_seg, at::Tensor psi_seg_off,
-                               int64_t num_heads, int64_t nlon_in, int64_t nlat_out, int64_t nlon_out)
+                               at::Tensor psi_seg, at::Tensor psi_seg_off, int64_t num_heads, int64_t nlon_in,
+                               int64_t nlat_out, int64_t nlon_out)
     {
 
         CHECK_CUDA_INPUT_TENSOR(kx);

@@ -38,12 +38,11 @@ namespace attention_kernels
 
     // NHWC ABI with heads packed along channels -- see s2_attention_fwd_cpu.
     std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
-    // seg / seg_off are accepted but unused here: the CPU backward still walks the column
-    // list. They are part of the shared schema because the CUDA backward consumes them,
-    // and keeping this path on col_idx is what keeps it independent of that derivation.
+    // The torch reference is what stays on the column list, in its own operator; this
+    // path and the CUDA kernels both read the arcs.
     s2_attention_bwd_cpu(torch::Tensor kx, torch::Tensor vx, torch::Tensor qy, torch::Tensor dy,
-                         torch::Tensor ring_weights, torch::Tensor col_idx, torch::Tensor row_off, torch::Tensor seg,
-                         torch::Tensor seg_off, int64_t num_heads, int64_t nlon_in, int64_t nlat_out, int64_t nlon_out)
+                         torch::Tensor ring_weights, torch::Tensor seg, torch::Tensor seg_off, int64_t num_heads,
+                         int64_t nlon_in, int64_t nlat_out, int64_t nlon_out)
     {
 
         // Caller-visible shapes (NHWC, heads packed along channels):
@@ -60,8 +59,6 @@ namespace attention_kernels
         CHECK_CPU_INPUT_TENSOR(qy);
         CHECK_CPU_INPUT_TENSOR(dy);
         CHECK_CPU_INPUT_TENSOR(ring_weights);
-        CHECK_CPU_INPUT_TENSOR(col_idx);
-        CHECK_CPU_INPUT_TENSOR(row_off);
 
         // direction selection: same as fwd. Self (nlon_in == nlon_out) hits both
         // and routes through the gather kernel (pscale == 1).
@@ -117,8 +114,6 @@ namespace attention_kernels
         auto qy_arr = qy.packed_accessor64<float, 4>();
         auto dy_arr = dy.packed_accessor64<float, 4>();
         auto quad_weights_arr = ring_weights.packed_accessor64<float, 1>();
-        auto col_idx_arr = col_idx.packed_accessor64<int64_t, 1>();
-        auto roff_arr = row_off.packed_accessor64<int64_t, 1>();
         auto seg_arr = seg.packed_accessor64<int32_t, 2>();
         auto seg_off_arr = seg_off.packed_accessor64<int32_t, 1>();
         auto dqy_arr = dqy.packed_accessor64<float, 4>();

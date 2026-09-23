@@ -40,8 +40,6 @@ from attention_helpers import optimized_kernels_is_available
 from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.backends import BACKENDS
-from torch_harmonics.attention.kernels_torch.attention_regular_torch import _neighborhood_s2_attention_regular_torch
-from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_regular_optimized
 from torch_harmonics.grid import GridS2, RegularGridS2, require_grid, require_regular_grid
 from torch_harmonics.neighborhood import precompute_neighborhood_arcs_s2
 from torch_harmonics.truncation import truncate_support
@@ -494,11 +492,6 @@ class NeighborhoodAttentionS2(nn.Module):
             self.q_norm_weights = None
             self.k_norm_weights = None
 
-        if self.optimized_kernel:
-            self.attention_handle = _neighborhood_s2_attention_regular_optimized
-        else:
-            self.attention_handle = _neighborhood_s2_attention_regular_torch
-
         # last, so that a backend handed this layer finds it fully built
         if self._backend_managed:
             self._select_backend()
@@ -750,23 +743,11 @@ class NeighborhoodAttentionS2(nn.Module):
         # scale after normalization
         query_scaled = query * self.scale
 
-        if self.backend is not None:
-            out = self.backend(self, key, value, query_scaled)
-        else:
-            out = self.attention_handle(
-                key,
-                value,
-                query_scaled,
-                self.ring_weights,
-                self.psi_col_idx,
-                self.psi_roff_idx,
-                self.psi_seg,
-                self.psi_seg_off,
-                self.num_heads,
-                self.nlon_in,
-                self.nlat_out,
-                self.nlon_out,
-            )
+        # A backend is always selected here. The only layer that sets _backend_managed
+        # False -- the distributed one -- overrides forward entirely, so it never reaches
+        # this line, and there is no second call path to keep in step with the operator
+        # signatures.
+        out = self.backend(self, key, value, query_scaled)
 
         # output projection stays in NHWC for the same reason as the input ones;
         # only then back to channels-first. The matching backward conversion is

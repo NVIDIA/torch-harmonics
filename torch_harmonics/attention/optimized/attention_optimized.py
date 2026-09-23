@@ -35,7 +35,7 @@ import torch
 from attention_helpers import optimized_kernels_is_available
 
 from .. import attention_kernels
-from .._attention_utils import _setup_context_attention_backward, _setup_context_attention_ragged_backward
+from .._attention_utils import _setup_context_attention_ragged_backward, _setup_context_attention_regular_optimized_backward
 
 
 def _op_is_declared(name: str) -> bool:
@@ -64,8 +64,6 @@ if optimized_kernels_is_available():
         vw: torch.Tensor,
         qw: torch.Tensor,
         ring_weights: torch.Tensor,
-        col_idx: torch.Tensor,
-        row_off: torch.Tensor,
         seg: torch.Tensor,
         seg_off: torch.Tensor,
         num_heads: int,
@@ -86,8 +84,6 @@ if optimized_kernels_is_available():
         qw: torch.Tensor,
         grad_output: torch.Tensor,
         ring_weights: torch.Tensor,
-        col_idx: torch.Tensor,
-        row_off: torch.Tensor,
         seg: torch.Tensor,
         seg_off: torch.Tensor,
         num_heads: int,
@@ -255,8 +251,6 @@ if optimized_kernels_is_available():
         vw: torch.Tensor,
         qw: torch.Tensor,
         ring_weights: torch.Tensor,
-        col_idx: torch.Tensor,
-        row_off: torch.Tensor,
         seg: torch.Tensor,
         seg_off: torch.Tensor,
         nh: int,
@@ -276,7 +270,7 @@ if optimized_kernels_is_available():
         vw = vw.contiguous()
         qw = qw.contiguous()
 
-        return attention_kernels.forward_regular.default(kw, vw, qw, ring_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out)
+        return attention_kernels.forward_regular.default(kw, vw, qw, ring_weights, seg, seg_off, nh, nlon_in, nlat_out, nlon_out)
 
     @torch.library.register_fake("attention_kernels::_neighborhood_s2_attention_regular_optimized")
     def _(
@@ -284,8 +278,6 @@ if optimized_kernels_is_available():
         vw: torch.Tensor,
         qw: torch.Tensor,
         ring_weights: torch.Tensor,
-        col_idx: torch.Tensor,
-        row_off: torch.Tensor,
         seg: torch.Tensor,
         seg_off: torch.Tensor,
         nh: int,
@@ -298,7 +290,7 @@ if optimized_kernels_is_available():
 
 
 def _neighborhood_s2_attention_regular_bwd_optimized(ctx, grad_output):
-    col_idx, row_off, seg, seg_off, ring_weights, kw, vw, qw = ctx.saved_tensors
+    seg, seg_off, ring_weights, kw, vw, qw = ctx.saved_tensors
     nh = ctx.nh
     nlon_in = ctx.nlon_in
     nlat_out = ctx.nlat_out
@@ -312,17 +304,19 @@ def _neighborhood_s2_attention_regular_bwd_optimized(ctx, grad_output):
     qw = qw.contiguous()
     grad_output = grad_output.contiguous()
 
-    dkw, dvw, dqw = attention_kernels.backward_regular.default(kw, vw, qw, grad_output, ring_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out)
+    dkw, dvw, dqw = attention_kernels.backward_regular.default(kw, vw, qw, grad_output, ring_weights, seg, seg_off, nh, nlon_in, nlat_out, nlon_out)
 
     # one gradient per forward input: kw, vw, qw, then None for ring_weights,
     # col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out
-    return dkw, dvw, dqw, None, None, None, None, None, None, None, None, None
+    return dkw, dvw, dqw, None, None, None, None, None, None, None
 
 
 # register backward
 if optimized_kernels_is_available():
     torch.library.register_autograd(
-        "attention_kernels::_neighborhood_s2_attention_regular_optimized", _neighborhood_s2_attention_regular_bwd_optimized, setup_context=_setup_context_attention_backward
+        "attention_kernels::_neighborhood_s2_attention_regular_optimized",
+        _neighborhood_s2_attention_regular_bwd_optimized,
+        setup_context=_setup_context_attention_regular_optimized_backward,
     )
 
     # Autocast: register at the dispatcher's Autocast{CUDA,CPU} keys (not via
@@ -337,11 +331,11 @@ if optimized_kernels_is_available():
     # what makes the requirement hold.
     def _make_autocast_impl(device_type):
         @torch.library.impl("attention_kernels::_neighborhood_s2_attention_regular_optimized", f"Autocast{device_type.upper()}")
-        def _(kw, vw, qw, ring_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out):
+        def _(kw, vw, qw, ring_weights, seg, seg_off, nh, nlon_in, nlat_out, nlon_out):
             cast_dtype = torch.get_autocast_dtype(device_type)
             with torch.amp.autocast(device_type, enabled=False):
                 return _neighborhood_s2_attention_regular_optimized(
-                    kw.to(cast_dtype), vw.to(cast_dtype), qw.to(cast_dtype), ring_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out
+                    kw.to(cast_dtype), vw.to(cast_dtype), qw.to(cast_dtype), ring_weights, seg, seg_off, nh, nlon_in, nlat_out, nlon_out
                 )
 
         return _

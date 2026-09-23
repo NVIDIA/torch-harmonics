@@ -111,19 +111,19 @@ namespace attention_kernels
         //              applies the integer p-shift  wip = wi + pscale*wo  internally,
         //              where pscale = nlon_in / nlon_out).
         // Requires nlon_in % nlon_out == 0.
-        // seg / seg_off are the contiguous-arc form of psi (see _build_psi_segments):
-        // seg is (nsegs, 3) int32 holding (input_lat, lon_start, arc_len), seg_off maps
-        // an output row to its segment range. The CUDA kernels use them instead of
-        // col_idx; col_idx and row_off stay because the CPU and torch reference paths
-        // still consume them -- which is what keeps the reference independent.
-        m.def("forward_regular(Tensor kx, Tensor vx, Tensor qy, Tensor ring_weights, Tensor col_idx, Tensor row_off, "
+        // seg / seg_off are the contiguous-arc form of psi: seg is (nsegs, 3) int32
+        // holding (input_lat, lon_start, arc_len), and seg_off maps an output row to its
+        // segment range. Both the CUDA and the CPU kernels read this form, so it is the
+        // only one declared here. The torch reference takes the column list instead, and
+        // has its own operator -- which is what keeps it independent of this derivation
+        // rather than merely documented as being so.
+        m.def("forward_regular(Tensor kx, Tensor vx, Tensor qy, Tensor ring_weights, "
               "Tensor seg, Tensor seg_off, int num_heads, int nlon_in, int nlat_out, int nlon_out) -> Tensor",
               {at::Tag::pt2_compliant_tag});
-        m.def(
-            "backward_regular(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor ring_weights, Tensor col_idx, Tensor "
-            "row_off, Tensor seg, Tensor seg_off, int num_heads, int nlon_in, int nlat_out, int nlon_out) -> "
-            "(Tensor, Tensor, Tensor)",
-            {at::Tag::pt2_compliant_tag});
+        m.def("backward_regular(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor ring_weights, "
+              "Tensor seg, Tensor seg_off, int num_heads, int nlon_in, int nlat_out, int nlon_out) -> "
+              "(Tensor, Tensor, Tensor)",
+              {at::Tag::pt2_compliant_tag});
 
         // Ragged counterparts, for a grid whose rings differ in length (HEALPix, reduced
         // Gaussian). Three differences from the regular schemas above, all forced by the

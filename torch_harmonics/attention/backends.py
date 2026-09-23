@@ -183,53 +183,14 @@ class RaggedReferenceBackend(AttentionBackendS2):
 
 
 class _RegularBackend(AttentionBackendS2):
-    """
-    Shared state for the product-grid backends.
-
-    The optimized and reference regular paths prepare identically, which is not an
-    accident of this refactor: they share one operator schema, because the CPU kernels
-    and the torch reference both consume the column list while the CUDA kernels consume
-    the arcs, and one schema has to carry both. So unlike the ragged pair there is no
-    memory to be saved by choosing between them -- the whole point of splitting them
-    here is that the *call* differs, and that distributed can later substitute a third
-    preparation that is sharded rather than global.
-    """
+    """Common argument order for the product-grid backends."""
 
     @classmethod
     def available(cls, layer: "NeighborhoodAttentionS2", device: torch.device) -> bool:
         raise NotImplementedError
 
-    def prepare(self, layer: "NeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
-        arcs = layer._neighborhood_arcs()
-        col_idx, roff_idx = arcs.to_csr()
-        col_idx = col_idx.contiguous()
-        roff_idx = roff_idx.to(torch.int64).contiguous()
-        # the row index is the expansion of the offsets, not a sort order -- see the
-        # distributed layer, which rebuilds its own by neighbour count
-        row_idx = torch.repeat_interleave(torch.arange(roff_idx.numel() - 1, dtype=torch.int64), roff_idx.diff()).contiguous()
-        return {
-            "psi_row_idx": row_idx.to(device),
-            "psi_col_idx": col_idx.to(device),
-            "psi_roff_idx": roff_idx.to(device),
-            "psi_seg": arcs.segments.contiguous().to(device),
-            "psi_seg_off": arcs.offsets.contiguous().to(device),
-        }
-
-    def _args(self, layer, key, value, query_scaled):
-        return (
-            key,
-            value,
-            query_scaled,
-            layer.ring_weights,
-            layer.psi_col_idx,
-            layer.psi_roff_idx,
-            layer.psi_seg,
-            layer.psi_seg_off,
-            layer.num_heads,
-            layer.nlon_in,
-            layer.nlat_out,
-            layer.nlon_out,
-        )
+    def _args(self, layer, key, value, query_scaled, *pattern):
+        return (key, value, query_scaled, layer.ring_weights, *pattern, layer.num_heads, layer.nlon_in, layer.nlat_out, layer.nlon_out)
 
 
 class RegularOptimizedBackend(_RegularBackend):
@@ -241,8 +202,12 @@ class RegularOptimizedBackend(_RegularBackend):
     def available(cls, layer: "NeighborhoodAttentionS2", device: torch.device) -> bool:
         return not layer.ragged and layer.optimized_kernel
 
+    def prepare(self, layer: "NeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
+        arcs = layer._neighborhood_arcs()
+        return {"psi_seg": arcs.segments.contiguous().to(device), "psi_seg_off": arcs.offsets.contiguous().to(device)}
+
     def __call__(self, layer, key, value, query_scaled):
-        return _neighborhood_s2_attention_regular_optimized(*self._args(layer, key, value, query_scaled))
+        return _neighborhood_s2_attention_regular_optimized(*self._args(layer, key, value, query_scaled, layer.psi_seg, layer.psi_seg_off))
 
 
 class RegularReferenceBackend(_RegularBackend):
@@ -254,8 +219,13 @@ class RegularReferenceBackend(_RegularBackend):
     def available(cls, layer: "NeighborhoodAttentionS2", device: torch.device) -> bool:
         return not layer.ragged
 
+    def prepare(self, layer: "NeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
+        arcs = layer._neighborhood_arcs()
+        col_idx, roff_idx = arcs.to_csr()
+        return {"psi_col_idx": col_idx.contiguous().to(device), "psi_roff_idx": roff_idx.to(torch.int64).contiguous().to(device)}
+
     def __call__(self, layer, key, value, query_scaled):
-        return _neighborhood_s2_attention_regular_torch(*self._args(layer, key, value, query_scaled))
+        return _neighborhood_s2_attention_regular_torch(*self._args(layer, key, value, query_scaled, layer.psi_col_idx, layer.psi_roff_idx))
 
 
 #: Every backend, most specific first. Order *is* the decision procedure: the first

@@ -730,9 +730,8 @@ namespace attention_kernels
     // channel dimension rather than folded into the batch dimension, because
     // folding is not free in this layout.
     torch::Tensor s2_attention_fwd_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor ring_weights,
-                                        at::Tensor psi_col_idx, at::Tensor psi_row_off, at::Tensor psi_seg,
-                                        at::Tensor psi_seg_off, int64_t num_heads, int64_t nlon_in, int64_t nlat_out,
-                                        int64_t nlon_out)
+                                        at::Tensor psi_seg, at::Tensor psi_seg_off, int64_t num_heads, int64_t nlon_in,
+                                        int64_t nlat_out, int64_t nlon_out)
     {
         CHECK_CUDA_INPUT_TENSOR(kx);
         CHECK_CUDA_INPUT_TENSOR(vx);
