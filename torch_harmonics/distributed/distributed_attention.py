@@ -41,7 +41,7 @@ from torch_harmonics.attention._attention_utils import _check_extent, _check_ndi
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
 from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_fwd, _custom_setup_context
-from torch_harmonics.grid import RegularGridS2
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
 from torch_harmonics.quadrature import effective_theta_cutoff
 
 from .primitives import compute_polar_halo_radius, get_group_neighbors, polar_halo_exchange
@@ -143,7 +143,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         psi_col_idx,
         psi_roff_idx,
         psi_row_idx,
-        quad_weights,
+        ring_weights,
         nlon_in: int,
         pscale: int,
         lon_chunk_starts: list,
@@ -200,7 +200,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                 y_acc,
                 alpha_sum,
                 qdotk_max,
-                quad_weights,
+                ring_weights,
                 psi_col_idx,
                 psi_roff_idx,
                 psi_row_idx,
@@ -241,7 +241,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
             psi_col_idx,
             psi_roff_idx,
             psi_row_idx,
-            quad_weights,
+            ring_weights,
             nlon_in,
             pscale,
             lon_chunk_starts,
@@ -261,7 +261,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # alpha_sum and qdotk_max are internal accumulators, not true outputs;
         # marking them non-differentiable keeps backward's signature as (ctx, dy).
         ctx.mark_non_differentiable(alpha_sum, qdotk_max)
-        ctx.save_for_backward(kw, vw, qw, psi_col_idx, psi_roff_idx, psi_row_idx, quad_weights, alpha_sum, qdotk_max)
+        ctx.save_for_backward(kw, vw, qw, psi_col_idx, psi_roff_idx, psi_row_idx, ring_weights, alpha_sum, qdotk_max)
         ctx.nlon_in = nlon_in
         ctx.pscale = pscale
         ctx.lon_chunk_starts = lon_chunk_starts
@@ -280,7 +280,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, dy, _dalpha_sum, _dqdotk_max):
         # _dalpha_sum and _dqdotk_max are always None (non-differentiable outputs)
-        kw, vw, qw, psi_col_idx, psi_roff_idx, psi_row_idx, quad_weights, fwd_alpha_sum, fwd_qdotk_max = ctx.saved_tensors
+        kw, vw, qw, psi_col_idx, psi_roff_idx, psi_row_idx, ring_weights, fwd_alpha_sum, fwd_qdotk_max = ctx.saved_tensors
 
         nlon_in = ctx.nlon_in
         pscale = ctx.pscale
@@ -364,7 +364,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                 integral_buf,
                 alpha_k_buf,
                 alpha_kvw_buf,
-                quad_weights,
+                ring_weights,
                 psi_col_idx,
                 psi_roff_idx,
                 psi_row_idx,
@@ -448,7 +448,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                     integral_norm,
                     dkw_out,
                     dvw_out,
-                    quad_weights,
+                    ring_weights,
                     psi_col_idx,
                     psi_roff_idx,
                     psi_row_idx,
@@ -503,7 +503,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
             dkw = None
             dvw = None
 
-        # Return grads for (kw, vw, qw, psi_col, psi_roff, psi_row, quad_weights,
+        # Return grads for (kw, vw, qw, psi_col, psi_roff, psi_row, ring_weights,
         #                   nlon_in, pscale, lon_chunk_starts, nlon_kx_list, lat_halo_start,
         #                   nlat_out_local, nlon_out_local, r_lat,
         #                   az_group, az_rank, az_size,
@@ -539,7 +539,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
         qw,
         psi_col_idx,
         psi_roff_idx,
-        quad_weights,
+        ring_weights,
         nlon_in: int,
         nlon_out_global: int,
         pscale_out: int,
@@ -591,7 +591,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                 y_acc,
                 alpha_sum,
                 qdotk_max,
-                quad_weights,
+                ring_weights,
                 psi_col_idx,
                 psi_roff_idx,
                 nlon_in,
@@ -628,7 +628,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
             qw,
             psi_col_idx,
             psi_roff_idx,
-            quad_weights,
+            ring_weights,
             nlon_in,
             nlon_out_global,
             pscale_out,
@@ -646,7 +646,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
         # alpha_sum and qdotk_max are internal accumulators, not true outputs;
         # marking them non-differentiable keeps backward's signature as (ctx, dy).
         ctx.mark_non_differentiable(alpha_sum, qdotk_max)
-        ctx.save_for_backward(kw, vw, qw, psi_col_idx, psi_roff_idx, quad_weights, alpha_sum, qdotk_max)
+        ctx.save_for_backward(kw, vw, qw, psi_col_idx, psi_roff_idx, ring_weights, alpha_sum, qdotk_max)
         ctx.nlon_in = nlon_in
         ctx.nlon_out_global = nlon_out_global
         ctx.pscale_out = pscale_out
@@ -663,7 +663,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, dy, _dalpha_sum, _dqdotk_max):
         # _dalpha_sum and _dqdotk_max are always None (non-differentiable outputs)
-        kw, vw, qw, psi_col_idx, psi_roff_idx, quad_weights, fwd_alpha_sum, fwd_qdotk_max = ctx.saved_tensors
+        kw, vw, qw, psi_col_idx, psi_roff_idx, ring_weights, fwd_alpha_sum, fwd_qdotk_max = ctx.saved_tensors
 
         nlon_in = ctx.nlon_in
         nlon_out_global = ctx.nlon_out_global
@@ -736,7 +736,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                 integral_buf,
                 alpha_k_buf,
                 alpha_kvw_buf,
-                quad_weights,
+                ring_weights,
                 psi_col_idx,
                 psi_roff_idx,
                 nlon_in,
@@ -810,7 +810,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                     integral_norm,
                     dkw_chunk_cl,
                     dvw_chunk_cl,
-                    quad_weights,
+                    ring_weights,
                     psi_col_idx,
                     psi_roff_idx,
                     nlon_in,
@@ -864,7 +864,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
             dkw = None
             dvw = None
 
-        # Return grads for (kw, vw, qw, psi_col, psi_roff, quad_weights,
+        # Return grads for (kw, vw, qw, psi_col, psi_roff, ring_weights,
         #                   nlon_in, nlon_out_global, pscale_out, lon_chunk_starts,
         #                   nlon_kx_list, lat_halo_start, nlat_out_local, nlon_out_local,
         #                   r_lat, az_group, az_rank, az_size)
@@ -900,6 +900,12 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
             Serial counterpart with full parameter documentation.
     """
 
+    # This layer manages its own pattern: _build_local_psi slices the global one and
+    # _drop_global_psi frees it, so letting the base class reselect a backend on a
+    # device change would rebuild precisely what was freed. See backends.BACKENDS for
+    # the ring backend that replaces this.
+    _backend_managed = False
+
     def __init__(
         self,
         grid_in: RegularGridS2,
@@ -916,6 +922,16 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
     ):
         if not optimized_kernels_is_available():
             raise RuntimeError("Optimized kernels are required to run DistributedNeighborhoodAttentionS2.")
+
+        # The base class accepts any GridS2, because the serial layer has a ragged path.
+        # This one does not: _build_local_psi recovers (hi, wi) from a column index by
+        # dividing by nlon and re-shifts wi by pscale * lon_lo, and the ring kernels index
+        # the same way. On a grid whose rings differ in length none of that arithmetic
+        # means anything -- it would not raise, it would silently address the wrong points.
+        # So the assumption is stated here rather than inherited, as it is in
+        # DistributedDiscreteContinuousConvS2.
+        require_regular_grid(grid_in, "grid_in")
+        require_regular_grid(grid_out, "grid_out")
 
         # initialise base class (builds global psi, creates parameters)
         super().__init__(
@@ -1053,8 +1069,14 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         instead of a ``None`` propagating into index arithmetic and failing a frame later.
 
         ``del`` is the supported route: ``nn.Module.__delattr__`` removes the entry from
-        ``_buffers`` and discards the name from ``_non_persistent_buffers_set``. The base
-        class registers all five unconditionally, so none of these can be missing.
+        ``_buffers`` and discards the name from ``_non_persistent_buffers_set``.
+
+        All five exist only because this class is regular-only. The base class registers
+        the three CSR buffers on its regular path alone -- on a ragged grid the column
+        list is built on demand instead, and ``psi_row_idx`` has no consumer at all -- so
+        each ``del`` below would raise on a ragged module. The ``require_regular_grid``
+        check in ``__init__`` is what makes that unreachable, and it has to stay for this
+        method to hold.
         """
         del self.psi_row_idx
         del self.psi_col_idx
@@ -1103,7 +1125,14 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         # Build sorted row_idx for local output rows (0-indexed within local range)
         # Reuse the serial sort order: just re-sort by nnz per local row
         nnz_per_row = (roff_local[1:] - roff_local[:-1]).cpu()
-        row_idx_local = torch.argsort(nnz_per_row, descending=True).to(torch.int32)
+        # stable=True because the ties here are the rule, not the exception: on a 32x64
+        # grid every row shares its neighbour count with another, the largest such group
+        # holding 20 of the 32. torch.argsort defaults to stable=False, so the order
+        # within a tie group is unspecified -- any of them is equally correct, since this
+        # is only the order the kernel walks rows in, but "unspecified" means the buffer
+        # cannot be compared against a reference build. Pinning it costs nothing and makes
+        # this reproducible across devices and versions.
+        row_idx_local = torch.argsort(nnz_per_row, descending=True, stable=True).to(torch.int32)
 
         self.register_buffer("psi_col_idx_local", col_idx_shifted, persistent=False)
         self.register_buffer("psi_roff_idx_local", roff_local, persistent=False)
@@ -1264,7 +1293,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
                 query_proj,
                 self.psi_col_idx_local,
                 self.psi_roff_idx_local,
-                self.quad_weights,
+                self.ring_weights,
                 self.nlon_in,
                 self.nlon_out,
                 pscale_out,
@@ -1289,7 +1318,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
                 self.psi_col_idx_local,
                 self.psi_roff_idx_local,
                 self.psi_row_idx_local,
-                self.quad_weights,
+                self.ring_weights,
                 self.nlon_in,
                 pscale,
                 self.lon_in_starts,  # lon chunk starts for kv (same as lon_in)
