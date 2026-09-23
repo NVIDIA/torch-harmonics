@@ -76,11 +76,12 @@ def _get_stats_multiclass(
     batch_size, *dims = output.shape
     num_elements = torch.prod(torch.tensor(dims)).long()
 
+    valid_weight = torch.sum(quad_weights)
     if ignore_index is not None:
         ignore = target == ignore_index
         output = torch.where(ignore, -1, output)
         target = torch.where(ignore, -1, target)
-        ignore_per_sample = ignore.view(batch_size, -1).sum(1)
+        valid_weight = ((~ignore) * quad_weights).reshape(batch_size, -1).sum(1, keepdim=True)
 
     tp_count = torch.zeros(batch_size, num_classes, dtype=torch.float32, device=output.device)
     fp_count = torch.zeros(batch_size, num_classes, dtype=torch.float32, device=output.device)
@@ -107,7 +108,7 @@ def _get_stats_multiclass(
             fn_count[i, c] = torch.sum(not_matched_i[target_i == c] * qwt_c)
 
     # true negatives is the leftovers
-    tn_count = torch.sum(quad_weights) - tp_count - fp_count - fn_count
+    tn_count = valid_weight - tp_count - fp_count - fn_count
     return tp_count, fp_count, fn_count, tn_count
 
 
