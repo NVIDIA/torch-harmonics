@@ -333,14 +333,16 @@ def precompute_neighborhood_arcs_s2(grid_in: GridS2, grid_out: GridS2, theta_cut
     radius = min((1.0 + theta_eps) * theta_cutoff, math.pi)
     cos_radius = math.cos(radius)
 
-    colats_in = grid_in.lats.to(torch.float64)
+    colats_in = grid_in.colats.to(torch.float64)
     ring_size = grid_in.nlon_per_lat.to(torch.int64)
     ring_base = grid_in.lon_offsets[:-1].to(torch.int64)
-    shifts_in = _lon_shifts(grid_in)
+    shifts_in = grid_in.lon_shifts.to(torch.float64)
     sin_in, cos_in = torch.sin(colats_in), torch.cos(colats_in)
 
-    colats_out = _flat_colats(grid_out)
-    lons_out = _flat_lons(grid_out)
+    # the descriptor carries the per-point geometry in the flat order a field is
+    # stored in, so this no longer has to know whether grid_out is ragged
+    coords_out = grid_out.coords.to(torch.float64)
+    colats_out, lons_out = coords_out[:, 0], coords_out[:, 1]
     npoints_out = colats_out.numel()
 
     # rings are sorted by colatitude, so the band that can reach a given output point
@@ -448,34 +450,3 @@ def precompute_neighborhood_csr_s2(grid_in: GridS2, grid_out: GridS2, theta_cuto
     precompute_neighborhood_arcs_s2 : the arc form, which the kernels consume.
     """
     return precompute_neighborhood_arcs_s2(grid_in, grid_out, theta_cutoff, theta_eps).to_csr()
-
-
-def _lon_shifts(grid: GridS2) -> torch.Tensor:
-    r"""
-    Fractional longitude offset of each ring, in units of one point of that ring.
-
-    Zero on the product grids, where every ring starts at :math:`\lambda = 0`;
-    HEALPix staggers successive rings by half a point and reports it as
-    ``lon_shifts``.
-    """
-    shifts = getattr(grid, "lon_shifts", None)
-    if shifts is None:
-        return torch.zeros(grid.nlat, dtype=torch.float64)
-    return shifts.to(torch.float64)
-
-
-def _flat_colats(grid: GridS2) -> torch.Tensor:
-    """Colatitude of every point of a grid, in its flat order."""
-    if grid.is_regular:
-        return grid.lats.to(torch.float64).repeat_interleave(grid.nlon)
-    return torch.repeat_interleave(grid.lats.to(torch.float64), grid.nlon_per_lat)
-
-
-def _flat_lons(grid: GridS2) -> torch.Tensor:
-    """Longitude of every point of a grid, in its flat order."""
-    if grid.is_regular:
-        return grid.lons().to(torch.float64).tile(grid.nlat)
-    all_lons = getattr(grid, "all_lons", None)
-    if all_lons is not None:
-        return all_lons().to(torch.float64)
-    return torch.cat([grid.lons(ilat).to(torch.float64) for ilat in range(grid.nlat)])

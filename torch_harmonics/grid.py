@@ -586,6 +586,23 @@ class GridS2(PointSetS2):
         raise NotImplementedError(f"{type(self).__name__} does not define nlon_per_lat")
 
     @property
+    def lon_shifts(self) -> torch.Tensor:
+        r"""
+        Fractional longitude offset of each ring, shape ``(nrings,)``, in units of one
+        point of that ring.
+
+        Zero on the product grids, where every ring starts at :math:`\lambda = 0`.
+        HEALPix staggers successive rings by half a point, which is what makes its
+        pixels rhombic and equal-area; a consumer assuming every ring starts at 0 would
+        misplace half the grid.
+
+        :meth:`lons` already includes the shift, so this exists for the consumers that
+        need the offset *separately* -- reconstructing a point's index within its ring,
+        as the neighbourhood kernels do.
+        """
+        return torch.zeros(self.nrings, dtype=torch.float64)
+
+    @property
     def lon_offsets(self) -> torch.Tensor:
         """
         Exclusive prefix sum of :attr:`nlon_per_lat`, shape ``(nrings + 1,)``.
