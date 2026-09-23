@@ -130,7 +130,7 @@ namespace attention_kernels
                                       dvx_arr, dkx_arr, nlon_in, nlat_out, nlon_out, batch_size, nchannels_in,
                                       nchannels_out);
         } else {
-            s2_attn_bwd_upsample_dispatch(kx_arr, vx_arr, qy_arr, dy_arr, quad_weights_arr, col_idx_arr, roff_arr,
+            s2_attn_bwd_upsample_dispatch(kx_arr, vx_arr, qy_arr, dy_arr, quad_weights_arr, seg_arr, seg_off_arr,
                                           dqy_arr, dvx_arr, dkx_arr, nlon_in, nlat_in, nlat_out, nlon_out, batch_size,
                                           nchannels_in, nchannels_out);
         }

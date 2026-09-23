@@ -83,8 +83,8 @@ namespace attention_kernels
         const torch::PackedTensorAccessor64<scalar_t, 4> kx_arr, const torch::PackedTensorAccessor64<scalar_t, 4> vx_arr,
         const torch::PackedTensorAccessor64<scalar_t, 4> qy_arr, const torch::PackedTensorAccessor64<scalar_t, 4> dy_arr,
         const torch::PackedTensorAccessor64<scalar_t, 1> quad_weights_arr,
-        const torch::PackedTensorAccessor64<int64_t, 1> col_idx_arr,
-        const torch::PackedTensorAccessor64<int64_t, 1> roff_arr, torch::PackedTensorAccessor64<scalar_t, 4> dqy_arr,
+        const torch::PackedTensorAccessor64<int32_t, 2> seg_arr,
+        const torch::PackedTensorAccessor64<int32_t, 1> seg_off_arr, torch::PackedTensorAccessor64<scalar_t, 4> dqy_arr,
         torch::PackedTensorAccessor64<scalar_t, 4> dvx_arr, torch::PackedTensorAccessor64<scalar_t, 4> dkx_arr,
         const int64_t nlon_in, const int64_t nlat_in, const int64_t nlat_out, const int64_t nlon_out,
         const int64_t batch_size, const int64_t nchannels_in, const int64_t nchannels_out)
@@ -101,8 +101,39 @@ namespace attention_kernels
         scalar_t *__restrict__ dvx_base = dvx_arr.data();
         scalar_t *__restrict__ dqy_base = dqy_arr.data();
         const scalar_t *__restrict__ quad_p = quad_weights_arr.data();
-        const int64_t *__restrict__ col_p = col_idx_arr.data();
-        const int64_t *__restrict__ roff_p = roff_arr.data();
+        const int32_t *__restrict__ seg_p = seg_arr.data();
+        const int32_t *__restrict__ seg_off_p = seg_off_arr.data();
+
+        // Expand the arcs into a per-row (ho, wo_canonical) list, once.
+        //
+        // This kernel is output-centric: it scans a row's neighbours and filters to the
+        // ones reaching the output cell it is building, which is what lets it avoid the
+        // scatter -- and the atomics -- the CUDA kernel needs. That structure is worth
+        // keeping, so only the decode moves to arcs. An arc is a run of consecutive
+        // wo_canonical on one output latitude, so ho is a per-arc constant and the
+        // column counts, which is the same expansion the gather backward does.
+        //
+        // Local, not stored: the module holds arcs and nothing else.
+        std::vector<int64_t> roff_vec(nlat_in + 1, 0);
+        for (int64_t hi = 0; hi < nlat_in; hi++) {
+            int64_t n = 0;
+            for (int64_t sg = seg_off_p[hi]; sg < seg_off_p[hi + 1]; sg++) { n += seg_p[3 * sg + 2]; }
+            roff_vec[hi + 1] = roff_vec[hi] + n;
+        }
+        std::vector<int32_t> nz_ho(roff_vec[nlat_in]), nz_wo(roff_vec[nlat_in]);
+        for (int64_t hi = 0, idx = 0; hi < nlat_in; hi++) {
+            for (int64_t sg = seg_off_p[hi]; sg < seg_off_p[hi + 1]; sg++) {
+                const int32_t ho = seg_p[3 * sg + 0];
+                const int32_t arc_len = seg_p[3 * sg + 2];
+                int32_t wo_c = seg_p[3 * sg + 1];
+                for (int32_t j = 0; j < arc_len; j++, idx++) {
+                    nz_ho[idx] = ho;
+                    nz_wo[idx] = wo_c;
+                    if (++wo_c == nlon_out) { wo_c = 0; }
+                }
+            }
+        }
+        const int64_t *__restrict__ roff_p = roff_vec.data();
 
         const int64_t kx_sB = kx_arr.stride(0), kx_sH = kx_arr.stride(1), kx_sW = kx_arr.stride(2);
         const int64_t vx_sB = vx_arr.stride(0), vx_sH = vx_arr.stride(1), vx_sW = vx_arr.stride(2);
@@ -159,10 +190,9 @@ namespace attention_kernels
                             const int64_t zstart = roff_p[hi];
                             const int64_t zend = roff_p[hi + 1];
                             for (int64_t idz = zstart; idz < zend; idz++) {
-                                const int64_t col = col_p[idz];
-                                const int64_t ho_neigh = col / nlon_out;
+                                const int64_t ho_neigh = nz_ho[idz];
                                 if (ho_neigh != ho) continue;
-                                const int64_t wo_canonical = col % nlon_out;
+                                const int64_t wo_canonical = nz_wo[idz];
                                 int64_t wo_diff = wo - wo_canonical;
                                 if (wo_diff < 0) wo_diff += nlon_out;
                                 if (wo_diff % pscale_out != 0) continue;
@@ -189,10 +219,9 @@ namespace attention_kernels
                             const int64_t zend = roff_p[hi + 1];
                             const float qw_hi = static_cast<float>(quad_p[hi]);
                             for (int64_t idz = zstart; idz < zend; idz++) {
-                                const int64_t col = col_p[idz];
-                                const int64_t ho_neigh = col / nlon_out;
+                                const int64_t ho_neigh = nz_ho[idz];
                                 if (ho_neigh != ho) continue;
-                                const int64_t wo_canonical = col % nlon_out;
+                                const int64_t wo_canonical = nz_wo[idz];
                                 int64_t wo_diff = wo - wo_canonical;
                                 if (wo_diff < 0) wo_diff += nlon_out;
                                 if (wo_diff % pscale_out != 0) continue;
@@ -249,9 +278,8 @@ namespace attention_kernels
                         const int64_t zend = roff_p[hi + 1];
 
                         for (int64_t idz = zstart; idz < zend; idz++) {
-                            const int64_t col = col_p[idz];
-                            const int64_t ho_neigh = col / nlon_out;
-                            const int64_t wo_canonical = col % nlon_out;
+                            const int64_t ho_neigh = nz_ho[idz];
+                            const int64_t wo_canonical = nz_wo[idz];
                             const int64_t idz_local = idz - zstart;
 
                             for (int64_t wi = 0; wi < nlon_in; wi++) {
@@ -316,9 +344,8 @@ namespace attention_kernels
                         const int64_t zend = roff_p[hi + 1];
 
                         for (int64_t idz = zstart; idz < zend; idz++) {
-                            const int64_t col = col_p[idz];
-                            const int64_t ho_neigh = col / nlon_out;
-                            const int64_t wo_canonical = col % nlon_out;
+                            const int64_t ho_neigh = nz_ho[idz];
+                            const int64_t wo_canonical = nz_wo[idz];
                             const int64_t idz_local = idz - zstart;
 
                             for (int64_t wi = 0; wi < nlon_in; wi++) {
@@ -350,14 +377,14 @@ namespace attention_kernels
         const torch::PackedTensorAccessor64<float, 4> kx_arr, const torch::PackedTensorAccessor64<float, 4> vx_arr,
         const torch::PackedTensorAccessor64<float, 4> qy_arr, const torch::PackedTensorAccessor64<float, 4> dy_arr,
         const torch::PackedTensorAccessor64<float, 1> quad_weights_arr,
-        const torch::PackedTensorAccessor64<int64_t, 1> col_idx_arr,
-        const torch::PackedTensorAccessor64<int64_t, 1> roff_arr, torch::PackedTensorAccessor64<float, 4> dqy_arr,
+        const torch::PackedTensorAccessor64<int32_t, 2> seg_arr,
+        const torch::PackedTensorAccessor64<int32_t, 1> seg_off_arr, torch::PackedTensorAccessor64<float, 4> dqy_arr,
         torch::PackedTensorAccessor64<float, 4> dvx_arr, torch::PackedTensorAccessor64<float, 4> dkx_arr,
         int64_t nlon_in, int64_t nlat_in, int64_t nlat_out, int64_t nlon_out, int64_t batch_size, int64_t nchannels_in,
         int64_t nchannels_out)
     {
 
-        s2_attn_bwd_upsample_kernel<float>(kx_arr, vx_arr, qy_arr, dy_arr, quad_weights_arr, col_idx_arr, roff_arr,
+        s2_attn_bwd_upsample_kernel<float>(kx_arr, vx_arr, qy_arr, dy_arr, quad_weights_arr, seg_arr, seg_off_arr,
                                            dqy_arr, dvx_arr, dkx_arr, nlon_in, nlat_in, nlat_out, nlon_out, batch_size,
                                            nchannels_in, nchannels_out);
     }

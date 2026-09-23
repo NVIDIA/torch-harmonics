@@ -44,8 +44,8 @@ namespace attention_kernels
         const torch::PackedTensorAccessor64<float, 4> kx_arr, const torch::PackedTensorAccessor64<float, 4> vx_arr,
         const torch::PackedTensorAccessor64<float, 4> qy_arr, const torch::PackedTensorAccessor64<float, 4> dy_arr,
         const torch::PackedTensorAccessor64<float, 1> quad_weights_arr,
-        const torch::PackedTensorAccessor64<int64_t, 1> col_idx_arr,
-        const torch::PackedTensorAccessor64<int64_t, 1> roff_arr, torch::PackedTensorAccessor64<float, 4> dqy_arr,
+        const torch::PackedTensorAccessor64<int32_t, 2> seg_arr,
+        const torch::PackedTensorAccessor64<int32_t, 1> seg_off_arr, torch::PackedTensorAccessor64<float, 4> dqy_arr,
         torch::PackedTensorAccessor64<float, 4> dvx_arr, torch::PackedTensorAccessor64<float, 4> dkx_arr,
         int64_t nlon_in, int64_t nlat_in, int64_t nlat_out, int64_t nlon_out, int64_t batch_size, int64_t nchannels_in,
         int64_t nchannels_out);

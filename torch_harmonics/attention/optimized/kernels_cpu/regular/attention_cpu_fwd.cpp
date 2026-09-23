@@ -137,7 +137,7 @@ namespace attention_kernels
             s2_attn_fwd_kernel<float>(kx_arr, vx_arr, qy_arr, quad_weights_arr, seg_arr, seg_off_arr, y_arr, nlon_in,
                                       nlat_out, nlon_out, batch_size, nchannels_in, nchannels_out);
         } else {
-            s2_attn_fwd_upsample_dispatch(kx_arr, vx_arr, qy_arr, quad_weights_arr, col_idx_arr, roff_arr, y_arr,
+            s2_attn_fwd_upsample_dispatch(kx_arr, vx_arr, qy_arr, quad_weights_arr, seg_arr, seg_off_arr, y_arr,
                                           nlon_in, nlat_in, nlat_out, nlon_out, batch_size, nchannels_in, nchannels_out);
         }
 
