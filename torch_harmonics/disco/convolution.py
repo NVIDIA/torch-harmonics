@@ -45,16 +45,16 @@ from torch_harmonics.quadrature import THETA_CUTOFF_EPS, effective_theta_cutoff,
 from torch_harmonics.truncation import truncate_support
 
 from ._disco_utils import _get_psi
-from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
+from .kernels_torch.disco_torch import _disco_s2_contraction_regular_torch, _disco_s2_transpose_contraction_regular_torch
 from .optimized.disco_optimized import (
     _build_kernel_split_csr,
     _disco_s2_contraction_kpacked,
-    _disco_s2_contraction_optimized,
+    _disco_s2_contraction_regular_optimized,
     _disco_s2_conv_save_x_kpacked,
-    _disco_s2_conv_save_x_optimized,
+    _disco_s2_conv_save_x_regular_optimized,
     _disco_s2_fused_conv_kpacked,
-    _disco_s2_fused_conv_optimized,
-    _disco_s2_transpose_contraction_optimized,
+    _disco_s2_fused_conv_regular_optimized,
+    _disco_s2_transpose_contraction_regular_optimized,
     _kpacked_build_available,
     _kpacked_supported_on_device,
     _maybe_kpack_psi,
@@ -729,7 +729,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                 self.psi_split_nnz_offsets,
             )
         elif self.fused:
-            out = _disco_s2_fused_conv_optimized(
+            out = _disco_s2_fused_conv_regular_optimized(
                 x,
                 weight_r,
                 self.psi_roff_idx,
@@ -779,7 +779,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                     self.psi_split_nnz_offsets,
                 )
             elif _save_x_spatial_first_ok:
-                out = _disco_s2_conv_save_x_optimized(
+                out = _disco_s2_conv_save_x_regular_optimized(
                     x.to(kpacked_dtype),
                     weight_r,
                     self.psi_roff_idx,
@@ -817,11 +817,11 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
                     self.nlon_out,
                 )
             elif self.optimized_kernel:
-                x = _disco_s2_contraction_optimized(
+                x = _disco_s2_contraction_regular_optimized(
                     x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
                 )
             else:
-                x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
+                x = _disco_s2_contraction_regular_torch(x, self.psi.to(x.device), self.nlon_out)
 
             # extract shape
             if not _save_x_spatial_first_ok:
@@ -978,11 +978,11 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = x.reshape(B, self.weight.shape[0], x.shape[-3], H, W)
 
         if self.optimized_kernel:
-            out = _disco_s2_transpose_contraction_optimized(
+            out = _disco_s2_transpose_contraction_regular_optimized(
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
             )
         else:
-            out = _disco_s2_transpose_contraction_torch(x, self.psi_st.to(x.device), self.nlon_out)
+            out = _disco_s2_transpose_contraction_regular_torch(x, self.psi_st.to(x.device), self.nlon_out)
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, self.bias.shape[0], 1, 1)

@@ -116,12 +116,36 @@ namespace attention_kernels
         // an output row to its segment range. The CUDA kernels use them instead of
         // col_idx; col_idx and row_off stay because the CPU and torch reference paths
         // still consume them -- which is what keeps the reference independent.
-        m.def("forward(Tensor kx, Tensor vx, Tensor qy, Tensor quad_weights, Tensor col_idx, Tensor row_off, "
+        m.def("forward_regular(Tensor kx, Tensor vx, Tensor qy, Tensor ring_weights, Tensor col_idx, Tensor row_off, "
               "Tensor seg, Tensor seg_off, int num_heads, int nlon_in, int nlat_out, int nlon_out) -> Tensor",
               {at::Tag::pt2_compliant_tag});
-        m.def("backward(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor quad_weights, Tensor col_idx, Tensor "
-              "row_off, Tensor seg, Tensor seg_off, int num_heads, int nlon_in, int nlat_out, int nlon_out) -> "
-              "(Tensor, Tensor, Tensor)",
+        m.def(
+            "backward_regular(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor ring_weights, Tensor col_idx, Tensor "
+            "row_off, Tensor seg, Tensor seg_off, int num_heads, int nlon_in, int nlat_out, int nlon_out) -> "
+            "(Tensor, Tensor, Tensor)",
+            {at::Tag::pt2_compliant_tag});
+
+        // Ragged counterparts, for a grid whose rings differ in length (HEALPix, reduced
+        // Gaussian). Three differences from the regular schemas above, all forced by the
+        // absence of longitudinal translation invariance:
+        //
+        //  - there is no (nlat, nlon) to address by, so the extent is one npoints_out and
+        //    the ring tables carry what nlon used to give arithmetically;
+        //  - the neighbourhood is the arc form only. The regular kernels take col_idx and
+        //    row_off as well because the CPU and torch reference paths share the schema;
+        //    here the CSR is built lazily for the reference alone and never reaches a
+        //    kernel, so putting it in the schema would commit to materializing a tensor
+        //    that on the CUDA path is pure overhead;
+        //  - the forward returns its softmax bookkeeping (y_hi, alpha_sum, qdotk_max)
+        //    rather than recomputing it, because the backward walks a neighbour list it
+        //    cannot cheaply re-derive. These are fp32 whatever the activations are.
+        m.def("forward_ragged(Tensor kx, Tensor vx, Tensor qy, Tensor ring_weights, Tensor psi_seg, "
+              "Tensor psi_seg_off, Tensor ring_base, Tensor ring_size, int num_heads, int npoints_out) -> "
+              "(Tensor, Tensor, Tensor, Tensor)",
+              {at::Tag::pt2_compliant_tag});
+        m.def("backward_ragged(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor y, Tensor y_hi, Tensor alpha_sum, "
+              "Tensor qdotk_max, Tensor ring_weights, Tensor psi_seg, Tensor psi_seg_off, Tensor ring_base, "
+              "Tensor ring_size, int num_heads, int npoints_out) -> (Tensor, Tensor, Tensor)",
               {at::Tag::pt2_compliant_tag});
 
         // ---- Ring-step variants for DistributedNeighborhoodAttentionS2 ----
@@ -142,7 +166,7 @@ namespace attention_kernels
         // it is a setup-time host-side scalar computation that is never traced.
         m.def("split_csr_rows(Tensor row_idx, Tensor row_off, int nlat_out) -> (int, int, int)");
         m.def("forward_ring_step(Tensor kx, Tensor vx, Tensor qy, Tensor(a!) y_acc, Tensor(b!) alpha_sum_buf, "
-              "Tensor(c!) qdotk_max_buf, Tensor quad_weights, Tensor col_idx, Tensor row_off, Tensor row_idx, int "
+              "Tensor(c!) qdotk_max_buf, Tensor ring_weights, Tensor col_idx, Tensor row_off, Tensor row_idx, int "
               "nlon_in, int pscale, int lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out, int n_long_rows, "
               "int max_row_len, int mid_row_len) -> ()",
               {at::Tag::pt2_compliant_tag});
@@ -151,12 +175,12 @@ namespace attention_kernels
         // scatters dkx/dvx into the current chunk using those finalized stats.
         m.def("backward_ring_step_pass1(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor(a!) alpha_sum_buf, "
               "Tensor(b!) qdotk_max_buf, Tensor(c!) integral_buf, Tensor(d!) alpha_k_buf, Tensor(e!) alpha_kvw_buf, "
-              "Tensor quad_weights, Tensor col_idx, Tensor row_off, Tensor row_idx, int nlon_in, int pscale, int "
+              "Tensor ring_weights, Tensor col_idx, Tensor row_off, Tensor row_idx, int nlon_in, int pscale, int "
               "lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out, int n_long_rows, int max_row_len, int "
               "mid_row_len) -> ()",
               {at::Tag::pt2_compliant_tag});
         m.def("backward_ring_step_pass2(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor alpha_sum_buf, Tensor "
-              "qdotk_max_buf, Tensor integral_norm_buf, Tensor(a!) dkx, Tensor(b!) dvx, Tensor quad_weights, Tensor "
+              "qdotk_max_buf, Tensor integral_norm_buf, Tensor(a!) dkx, Tensor(b!) dvx, Tensor ring_weights, Tensor "
               "col_idx, Tensor row_off, Tensor row_idx, int nlon_in, int pscale, int lon_lo_kx, int lat_halo_start, "
               "int nlat_out, int nlon_out, int n_long_rows, int max_row_len, int mid_row_len) -> ()",
               {at::Tag::pt2_compliant_tag});
@@ -176,7 +200,7 @@ namespace attention_kernels
         // A single forward step runs the 3-phase max/rescale/accumulate scheme so the
         // online softmax stays consistent across ring steps despite the scatter form.
         m.def("forward_ring_step_upsample(Tensor kx, Tensor vx, Tensor qy, Tensor(a!) y_acc, Tensor(b!) "
-              "alpha_sum_buf, Tensor(c!) qdotk_max_buf, Tensor quad_weights, Tensor col_idx, Tensor row_off, int "
+              "alpha_sum_buf, Tensor(c!) qdotk_max_buf, Tensor ring_weights, Tensor col_idx, Tensor row_off, int "
               "nlon_in, int nlon_out_global, int pscale_out, int lon_lo_kx, int lat_halo_start, int nlat_out, int "
               "nlon_out) -> ()",
               {at::Tag::pt2_compliant_tag});
@@ -184,12 +208,12 @@ namespace attention_kernels
         // pass1 scatters the per-output stats (integral, alpha_k, alpha_kvw) needed for
         // dqy; pass2 accumulates chunk-local dkx/dvx (allreduced in Python).
         m.def("backward_ring_step_upsample_pass1(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor qdotk_max_buf, "
-              "Tensor(a!) integral_buf, Tensor(b!) alpha_k_buf, Tensor(c!) alpha_kvw_buf, Tensor quad_weights, Tensor "
+              "Tensor(a!) integral_buf, Tensor(b!) alpha_k_buf, Tensor(c!) alpha_kvw_buf, Tensor ring_weights, Tensor "
               "col_idx, Tensor row_off, int nlon_in, int nlon_out_global, int pscale_out, int lon_lo_kx, int "
               "lat_halo_start, int nlat_out, int nlon_out) -> ()",
               {at::Tag::pt2_compliant_tag});
         m.def("backward_ring_step_upsample_pass2(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor alpha_sum_buf, "
-              "Tensor qdotk_max_buf, Tensor integral_norm_buf, Tensor(a!) dkx, Tensor(b!) dvx, Tensor quad_weights, "
+              "Tensor qdotk_max_buf, Tensor integral_norm_buf, Tensor(a!) dkx, Tensor(b!) dvx, Tensor ring_weights, "
               "Tensor col_idx, Tensor row_off, int nlon_in, int nlon_out_global, int pscale_out, int lon_lo_kx, int "
               "lat_halo_start, int nlat_out, int nlon_out) -> ()",
               {at::Tag::pt2_compliant_tag});

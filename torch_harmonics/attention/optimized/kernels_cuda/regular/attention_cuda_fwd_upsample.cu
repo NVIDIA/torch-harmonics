@@ -183,7 +183,7 @@ namespace attention_kernels
     __global__ __launch_bounds__(THREADS_PER_BLOCK) void s2_attn_fwd_upsample_scatter_acc_k(
         int nheads, int nchan_in, int nchan_out, int nlat_in, int nlon_in, int nlat_out, int nlon_out,
         const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy,
-        const int32_t *__restrict__ seg, const int32_t *__restrict__ seg_off, const float *__restrict__ quad_weights,
+        const int32_t *__restrict__ seg, const int32_t *__restrict__ seg_off, const float *__restrict__ ring_weights,
         const float *__restrict__ maxbuf, float *__restrict__ numer, float *__restrict__ denom)
     {
         extern __shared__ float shext[];
@@ -217,7 +217,7 @@ namespace attention_kernels
         for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { sh_k[chan] = vload(kx, chan); }
         for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { sh_v[chan] = vload(vx, chan); }
 
-        const float qw = quad_weights[hi];
+        const float qw = ring_weights[hi];
         // Arc segments instead of the flat column list, matching every other serial
         // attention kernel: a neighbor's (output lat, output lon) is derived by counting
         // along a contiguous arc rather than decoded from a flat column index with a
@@ -341,14 +341,14 @@ namespace attention_kernels
     void s2_attn_fwd_upsample_dispatch(int batch_size, int64_t num_heads, size_t nchans_in, size_t nchans_out,
                                        int64_t nlon_in, int64_t nlat_in, int64_t nlat_out, int64_t nlon_out,
                                        torch::Tensor kxP, torch::Tensor vxP, torch::Tensor qyP, torch::Tensor psi_seg,
-                                       torch::Tensor psi_seg_off, torch::Tensor quad_weights, torch::Tensor yP)
+                                       torch::Tensor psi_seg_off, torch::Tensor ring_weights, torch::Tensor yP)
     {
 
         auto stream = at::cuda::getCurrentCUDAStream().stream();
 
         int32_t *_seg = reinterpret_cast<int32_t *>(psi_seg.data_ptr());
         int32_t *_seg_off = reinterpret_cast<int32_t *>(psi_seg_off.data_ptr());
-        float *_quad_weights = reinterpret_cast<float *>(quad_weights.data_ptr());
+        float *_quad_weights = reinterpret_cast<float *>(ring_weights.data_ptr());
 
         AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, qyP.scalar_type(), "s2_attn_fwd_upsample", [&] {
             scalar_t *_kxp = reinterpret_cast<scalar_t *>(kxP.data_ptr());

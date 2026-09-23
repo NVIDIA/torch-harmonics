@@ -39,8 +39,9 @@ from attention_helpers import optimized_kernels_is_available
 
 from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
-from torch_harmonics.attention.kernels_torch.attention_torch import _neighborhood_s2_attention_torch
-from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_optimized
+from torch_harmonics.attention.backends import BACKENDS
+from torch_harmonics.attention.kernels_torch.attention_regular_torch import _neighborhood_s2_attention_regular_torch
+from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_regular_optimized
 from torch_harmonics.grid import GridS2, RegularGridS2, require_grid, require_regular_grid
 from torch_harmonics.neighborhood import precompute_neighborhood_arcs_s2
 from torch_harmonics.truncation import truncate_support
@@ -131,16 +132,15 @@ class AttentionS2(nn.Module):
         self.scale = scale
 
         # integration weights
-        wgl = self.grid_in.colat_weights
-        quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.nlon_in
-        # we need to tile and flatten them accordingly
-        quad_weights = torch.tile(quad_weights.reshape(-1, 1), (1, self.nlon_in)).flatten()
+        # global attention has no neighbourhood to index by ring, so only the expanded
+        # per-point form is ever needed here
+        point_weights = self.grid_in.point_weights(torch.float32)
 
         # compute log because they are applied as an addition prior to the softmax ('attn_mask'), which includes an exponential.
         # see https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
         # for info on how 'attn_mask' is applied to the attention weights
-        log_quad_weights = torch.log(quad_weights).reshape(1, 1, -1)
-        self.register_buffer("log_quad_weights", log_quad_weights, persistent=False)
+        log_point_weights = torch.log(point_weights).reshape(1, 1, -1)
+        self.register_buffer("log_point_weights", log_point_weights, persistent=False)
 
         # learnable parameters — Xavier uniform init matching PyTorch MHA convention:
         # bound = sqrt(6 / (fan_in + fan_out)) for each projection
@@ -240,9 +240,9 @@ class AttentionS2(nn.Module):
         dropout_p = self.drop_rate if self.training else 0.0
         if isinstance(self.scale, torch.Tensor):
             query = query * self.scale
-            out = F.scaled_dot_product_attention(query, key, value, attn_mask=self.log_quad_weights, dropout_p=dropout_p, scale=1.0)
+            out = F.scaled_dot_product_attention(query, key, value, attn_mask=self.log_point_weights, dropout_p=dropout_p, scale=1.0)
         else:
-            out = F.scaled_dot_product_attention(query, key, value, attn_mask=self.log_quad_weights, dropout_p=dropout_p, scale=self.scale)
+            out = F.scaled_dot_product_attention(query, key, value, attn_mask=self.log_point_weights, dropout_p=dropout_p, scale=self.scale)
 
         # reshape
         B, _, _, C = out.shape
@@ -323,6 +323,13 @@ class NeighborhoodAttentionS2(nn.Module):
     :cite:`Bonev2025`
     """
 
+    #: Whether this layer picks its implementation through :mod:`.backends`. True here;
+    #: DistributedNeighborhoodAttentionS2 sets it False, because it slices the global
+    #: pattern into per-rank buffers and then frees the global one -- reselecting on a
+    #: device change would rebuild exactly what it freed. It becomes a backend of its
+    #: own, at which point this flag goes away.
+    _backend_managed = True
+
     def __init__(
         self,
         grid_in: GridS2,
@@ -400,11 +407,16 @@ class NeighborhoodAttentionS2(nn.Module):
         # than by point. colat_weights * 2*pi / nlon_per_lat is the per-point weight
         # written per ring, and on a regular grid nlon_per_lat is constant, so this is
         # the same 2*pi*w/nlon_in it has always been.
-        wgl = self.grid_in.colat_weights
-        # cast before the arithmetic, not after: doing it in float64 and rounding at the
-        # end shifts the buffer by ~1e-9 against every previously trained model
-        quad_weights = 2.0 * torch.pi * wgl.to(dtype=torch.float32) / self.grid_in.nlon_per_lat.to(dtype=torch.float32)
-        self.register_buffer("quad_weights", quad_weights, persistent=False)
+        # Both forms of the same quadrature, because the two paths want different ones:
+        # the kernels index by ring, having the ring tables (or, on a regular grid, nlon)
+        # to get from a point to its ring, while the torch reference gathers an explicit
+        # neighbour list whose entries are points and would otherwise map each one back.
+        #
+        # The descriptor computes in the dtype it is asked for, which is what keeps these
+        # matching an already-trained model -- see GridS2.ring_weights.
+        self.register_buffer("ring_weights", self.grid_in.ring_weights(torch.float32), persistent=False)
+
+        self.register_buffer("point_weights", self.grid_in.point_weights(torch.float32), persistent=False)
 
         # The neighbourhood pattern is all attention needs: which input points lie
         # within theta_cutoff of each output point. It used to come from the DISCO
@@ -432,37 +444,18 @@ class NeighborhoodAttentionS2(nn.Module):
         # can be folded away. It can exactly when the grids are regular, which is what
         # fold_longitude checks -- so `not self.ragged` is not a shortcut here, it is
         # the same condition stated once.
-        arcs = precompute_neighborhood_arcs_s2(src, dst, theta_cutoff=self.theta_cutoff, fold_longitude=not self.ragged)
+        self._arcs_src, self._arcs_dst = src, dst
 
-        # the ring tables a ragged kernel needs to turn (ring, offset) into a flat
-        # index, which a regular kernel derives arithmetically from nlon instead
-        if self.ragged:
-            self.register_buffer("psi_ring_base", arcs.ring_base.contiguous(), persistent=False)
-            self.register_buffer("psi_ring_size", arcs.ring_size.contiguous(), persistent=False)
-
-        # the column form, which the CPU and torch reference paths consume
-        col_idx, roff_idx = arcs.to_csr()
-        col_idx = col_idx.contiguous()
-        roff_idx = roff_idx.to(torch.int64).contiguous()
-        row_idx = torch.repeat_interleave(torch.arange(roff_idx.numel() - 1, dtype=torch.int64), roff_idx.diff()).contiguous()
-
-        self.register_buffer("psi_row_idx", row_idx, persistent=False)
-        self.register_buffer("psi_col_idx", col_idx, persistent=False)
-        self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
-
-        # Contiguous-arc form of the same sparsity, consumed by the CUDA kernels: it
-        # lets them derive a neighbour's column by counting instead of recovering it
-        # from col_idx with a per-neighbour 64-bit integer division, which the GPU has
-        # no instruction for. col_idx is kept because the CPU and torch reference paths
-        # still use it -- which is what keeps the reference independent of this
-        # derivation. See TestPsiArcStructure.
-        #
-        # These now come straight from the precompute rather than being rebuilt from
-        # col_idx by _build_psi_segments: the arcs are what it computes natively, and
-        # the column list is the derived form.
-        psi_seg, psi_seg_off = arcs.segments.contiguous(), arcs.offsets.contiguous()
-        self.register_buffer("psi_seg", psi_seg, persistent=False)
-        self.register_buffer("psi_seg_off", psi_seg_off, persistent=False)
+        # On the ragged path every tensor derived from the neighbourhood belongs to a
+        # backend, which registers exactly what it reads -- see backends.py. Selection
+        # happens last, after the parameters exist, because a backend is handed the
+        # layer; and it happens again on every device change, via _apply.
+        self._backend_state = ()
+        self.backend = None
+        if not self._backend_managed:
+            # the distributed subclass slices a global pattern and then frees it; see
+            # _backend_managed
+            self._register_regular_pattern()
 
         # learnable parameters — Xavier uniform init matching PyTorch MHA convention:
         # bound = sqrt(6 / (fan_in + fan_out)) for each projection
@@ -502,12 +495,138 @@ class NeighborhoodAttentionS2(nn.Module):
             self.k_norm_weights = None
 
         if self.optimized_kernel:
-            self.attention_handle = _neighborhood_s2_attention_optimized
+            self.attention_handle = _neighborhood_s2_attention_regular_optimized
         else:
-            self.attention_handle = _neighborhood_s2_attention_torch
+            self.attention_handle = _neighborhood_s2_attention_regular_torch
+
+        # last, so that a backend handed this layer finds it fully built
+        if self._backend_managed:
+            self._select_backend()
 
     def extra_repr(self):
         return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}, theta_cutoff={self.theta_cutoff}"
+
+    def _register_regular_pattern(self) -> None:
+        """
+        Register the neighbourhood in every form the regular kernels read.
+
+        The regular path is not yet on the backend protocol: its three consumers -- the
+        CUDA kernels, the CPU kernels and the torch reference -- share one op schema, so
+        they share one set of buffers and there is nothing to choose between at runtime.
+        Porting it is worthwhile for the distributed case, where the ring kernels want a
+        sharded pattern instead, but it is a separate step.
+        """
+        arcs = self._neighborhood_arcs()
+
+        col_idx, roff_idx = arcs.to_csr()
+        col_idx = col_idx.contiguous()
+        roff_idx = roff_idx.to(torch.int64).contiguous()
+        row_idx = torch.repeat_interleave(torch.arange(roff_idx.numel() - 1, dtype=torch.int64), roff_idx.diff()).contiguous()
+        self.register_buffer("psi_row_idx", row_idx, persistent=False)
+        self.register_buffer("psi_col_idx", col_idx, persistent=False)
+        self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
+
+        # Contiguous-arc form of the same sparsity, consumed by the CUDA kernels: it
+        # lets them derive a neighbour's column by counting instead of recovering it
+        # from col_idx with a per-neighbour 64-bit integer division, which the GPU has
+        # no instruction for. col_idx is kept because the CPU and torch reference paths
+        # still use it -- which is what keeps the reference independent of this
+        # derivation. See TestPsiArcStructure.
+        #
+        # These now come straight from the precompute rather than being rebuilt from
+        # col_idx by _build_psi_segments: the arcs are what it computes natively, and
+        # the column list is the derived form.
+        psi_seg, psi_seg_off = arcs.segments.contiguous(), arcs.offsets.contiguous()
+        self.register_buffer("psi_seg", psi_seg, persistent=False)
+        self.register_buffer("psi_seg_off", psi_seg_off, persistent=False)
+
+    @property
+    def device(self) -> torch.device:
+        """
+        The device this module is on.
+
+        ``nn.Module`` has no public equivalent, and a backend-independent buffer is the
+        honest answer: ring_weights exists on every path and follows every move.
+        """
+        return self.ring_weights.device
+
+    def _neighborhood_arcs(self):
+        """The neighbourhood in arc form. Cached by the precompute, so backends share it."""
+        return precompute_neighborhood_arcs_s2(self._arcs_src, self._arcs_dst, theta_cutoff=self.theta_cutoff, fold_longitude=not self.ragged)
+
+    def _select_backend(self) -> None:
+        """
+        Pick the backend for the current device and register exactly its state.
+
+        The previous backend's buffers are removed first, so the module carries one
+        backend's tensors and never a union of them.
+        """
+        device = self.device
+        backend = next((b for b in BACKENDS if b.available(self, device)), None)
+        if backend is None:
+            raise RuntimeError(f"no attention backend serves {type(self.grid_in).__name__} -> {type(self.grid_out).__name__} on {device}")
+        backend = backend()
+
+        for name in self._backend_state:
+            delattr(self, name)
+
+        state = backend.prepare(self, device)
+        for name, tensor in state.items():
+            self.register_buffer(name, tensor, persistent=False)
+
+        self._backend_state = tuple(state)
+        self.backend = backend
+
+    def _apply(self, fn, recurse: bool = True):
+        """
+        Reselect the backend when the module changes device.
+
+        ``_apply`` rather than ``to``: ``.cuda()``, ``.cpu()`` and ``.float()`` never
+        call ``to``, so it is the only hook that sees every move. A dtype-only change
+        leaves the device alone and must not rebuild anything, which is why the test is
+        on the device and not on the call.
+
+        The state of the outgoing backend is moved by ``super()._apply`` and then thrown
+        away -- a few MB copied once per move, against not having to know the target
+        device before anything has been touched.
+        """
+        before = self.device if self._backend_managed else None
+        out = super()._apply(fn, recurse)
+        if self._backend_managed and self.device != before:
+            self._select_backend()
+        return out
+
+    def _check_inputs(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor):
+        """
+        Shape and dtype contract of the three inputs, for whichever grid kind this is.
+
+        query is sampled on the output grid and key/value on the input grid, so a mixed
+        pair gives the two sides different ranks; each is checked against its own grid
+        rather than against one rank for the layer.
+
+        The branches are on Python bools fixed at construction, so dynamo specialises on
+        them rather than breaking the graph, and the checks themselves are the same
+        traceable helpers the regular path has always used.
+        """
+        _check_ndim(query, 3 if self.ragged_out else 4, "query")
+        for tensor, name in ((key, "key"), (value, "value")):
+            _check_ndim(tensor, 3 if self.ragged_in else 4, name)
+        _check_dtypes_match((query, key, value))
+
+        if self.ragged_out:
+            _check_extent(query, -1, self.npoints_out, "query points")
+        else:
+            _check_extent(query, -2, self.nlat_out, "query latitudes")
+            _check_extent(query, -1, self.nlon_out, "query longitudes")
+
+        if self.ragged_in:
+            _check_extent(key, -1, self.npoints_in, "key points")
+            _check_extent(value, -1, self.npoints_in, "value points")
+        else:
+            _check_extent(key, -2, self.nlat_in, "key latitudes")
+            _check_extent(key, -1, self.nlon_in, "key longitudes")
+            _check_extent(value, -2, self.nlat_in, "value latitudes")
+            _check_extent(value, -1, self.nlon_in, "value longitudes")
 
     def _to_channels_last(self, tensor: torch.Tensor, ragged_layout: bool) -> torch.Tensor:
         """
@@ -568,16 +687,7 @@ class NeighborhoodAttentionS2(nn.Module):
             value = query
 
         # change this later to allow arbitrary number of batch dims
-        _check_ndim(query, 4, "query")
-        _check_ndim(key, 4, "key")
-        _check_ndim(value, 4, "value")
-        _check_dtypes_match((query, key, value))
-        _check_extent(query, -2, self.nlat_out, "query latitudes")
-        _check_extent(query, -1, self.nlon_out, "query longitudes")
-        _check_extent(key, -2, self.nlat_in, "key latitudes")
-        _check_extent(key, -1, self.nlon_in, "key longitudes")
-        _check_extent(value, -2, self.nlat_in, "value latitudes")
-        _check_extent(value, -1, self.nlon_in, "value longitudes")
+        self._check_inputs(query, key, value)
 
         # Convert to NHWC once, here, and stay in it for the whole module. Every
         # projection is 1x1 (see __init__), so in NHWC it is a plain GEMM over a
@@ -622,34 +732,41 @@ class NeighborhoodAttentionS2(nn.Module):
         # reshape of contiguous memory -- a view, not a copy. The channels-first
         # form of this needed a 5D permute in and another back out.
         if self.q_norm_weights is not None:
-            B, H, W, C = query.shape
-            query = query.reshape(B, H, W, self.num_heads, -1)
+            # splitting the channel axis into (heads, per-head) is a view in either
+            # rank, so the spatial axes are carried through rather than named
+            shape = query.shape
+            query = query.reshape(*shape[:-1], self.num_heads, -1)
             query = F.rms_norm(query, normalized_shape=self.q_norm_weights.shape, weight=1 + self.q_norm_weights)
-            query = query.reshape(B, H, W, C)
+            query = query.reshape(shape)
 
         if self.k_norm_weights is not None:
-            B, H, W, C = key.shape
-            key = key.reshape(B, H, W, self.num_heads, -1)
+            # splitting the channel axis into (heads, per-head) is a view in either
+            # rank, so the spatial axes are carried through rather than named
+            shape = key.shape
+            key = key.reshape(*shape[:-1], self.num_heads, -1)
             key = F.rms_norm(key, normalized_shape=self.k_norm_weights.shape, weight=1 + self.k_norm_weights)
-            key = key.reshape(B, H, W, C)
+            key = key.reshape(shape)
 
         # scale after normalization
         query_scaled = query * self.scale
 
-        out = self.attention_handle(
-            key,
-            value,
-            query_scaled,
-            self.quad_weights,
-            self.psi_col_idx,
-            self.psi_roff_idx,
-            self.psi_seg,
-            self.psi_seg_off,
-            self.num_heads,
-            self.nlon_in,
-            self.nlat_out,
-            self.nlon_out,
-        )
+        if self.backend is not None:
+            out = self.backend(self, key, value, query_scaled)
+        else:
+            out = self.attention_handle(
+                key,
+                value,
+                query_scaled,
+                self.ring_weights,
+                self.psi_col_idx,
+                self.psi_roff_idx,
+                self.psi_seg,
+                self.psi_seg_off,
+                self.num_heads,
+                self.nlon_in,
+                self.nlat_out,
+                self.nlon_out,
+            )
 
         # output projection stays in NHWC for the same reason as the input ones;
         # only then back to channels-first. The matching backward conversion is

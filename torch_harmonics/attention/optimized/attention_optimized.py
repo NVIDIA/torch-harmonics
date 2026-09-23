@@ -35,17 +35,35 @@ import torch
 from attention_helpers import optimized_kernels_is_available
 
 from .. import attention_kernels
-from .._attention_utils import _setup_context_attention_backward
+from .._attention_utils import _setup_context_attention_backward, _setup_context_attention_ragged_backward
+
+
+def _op_is_declared(name: str) -> bool:
+    """
+    Whether the extension declared a schema for ``attention_kernels::<name>``.
+
+    A build can have the kernels compiled and still not expose a given operator: the
+    ragged pair, for one, was registering CUDA implementations before any schema
+    declared them. Tests that exercise an op need to gate on the op, not merely on
+    ``optimized_kernels_is_available``, or they fail with an attribute error on a build
+    where the rest of the library is fine.
+    """
+    try:
+        return hasattr(torch.ops.attention_kernels, name)
+    except (AttributeError, RuntimeError):
+        # the namespace itself is absent, i.e. the extension never loaded
+        return False
+
 
 # define NA op for CUDA
 if optimized_kernels_is_available():
     # raw forward fake
-    @torch.library.register_fake("attention_kernels::forward")
+    @torch.library.register_fake("attention_kernels::forward_regular")
     def _(
         kw: torch.Tensor,
         vw: torch.Tensor,
         qw: torch.Tensor,
-        quad_weights: torch.Tensor,
+        ring_weights: torch.Tensor,
         col_idx: torch.Tensor,
         row_off: torch.Tensor,
         seg: torch.Tensor,
@@ -61,13 +79,13 @@ if optimized_kernels_is_available():
         return torch.empty(out_shape, dtype=kw.dtype, device=kw.device)
 
     # raw backward fake
-    @torch.library.register_fake("attention_kernels::backward")
+    @torch.library.register_fake("attention_kernels::backward_regular")
     def _(
         kw: torch.Tensor,
         vw: torch.Tensor,
         qw: torch.Tensor,
         grad_output: torch.Tensor,
-        quad_weights: torch.Tensor,
+        ring_weights: torch.Tensor,
         col_idx: torch.Tensor,
         row_off: torch.Tensor,
         seg: torch.Tensor,
@@ -91,7 +109,7 @@ if optimized_kernels_is_available():
         y_acc: torch.Tensor,
         alpha_sum_buf: torch.Tensor,
         qdotk_max_buf: torch.Tensor,
-        quad_weights: torch.Tensor,
+        ring_weights: torch.Tensor,
         col_idx: torch.Tensor,
         row_off: torch.Tensor,
         row_idx: torch.Tensor,
@@ -118,7 +136,7 @@ if optimized_kernels_is_available():
         integral_buf: torch.Tensor,
         alpha_k_buf: torch.Tensor,
         alpha_kvw_buf: torch.Tensor,
-        quad_weights: torch.Tensor,
+        ring_weights: torch.Tensor,
         col_idx: torch.Tensor,
         row_off: torch.Tensor,
         row_idx: torch.Tensor,
@@ -145,7 +163,7 @@ if optimized_kernels_is_available():
         integral_norm_buf: torch.Tensor,
         dkx: torch.Tensor,
         dvx: torch.Tensor,
-        quad_weights: torch.Tensor,
+        ring_weights: torch.Tensor,
         col_idx: torch.Tensor,
         row_off: torch.Tensor,
         row_idx: torch.Tensor,
@@ -170,7 +188,7 @@ if optimized_kernels_is_available():
         y_acc: torch.Tensor,
         alpha_sum_buf: torch.Tensor,
         qdotk_max_buf: torch.Tensor,
-        quad_weights: torch.Tensor,
+        ring_weights: torch.Tensor,
         col_idx: torch.Tensor,
         row_off: torch.Tensor,
         nlon_in: int,
@@ -193,7 +211,7 @@ if optimized_kernels_is_available():
         integral_buf: torch.Tensor,
         alpha_k_buf: torch.Tensor,
         alpha_kvw_buf: torch.Tensor,
-        quad_weights: torch.Tensor,
+        ring_weights: torch.Tensor,
         col_idx: torch.Tensor,
         row_off: torch.Tensor,
         nlon_in: int,
@@ -217,7 +235,7 @@ if optimized_kernels_is_available():
         integral_norm_buf: torch.Tensor,
         dkx: torch.Tensor,
         dvx: torch.Tensor,
-        quad_weights: torch.Tensor,
+        ring_weights: torch.Tensor,
         col_idx: torch.Tensor,
         row_off: torch.Tensor,
         nlon_in: int,
@@ -231,12 +249,12 @@ if optimized_kernels_is_available():
         pass
 
     # forward
-    @torch.library.custom_op("attention_kernels::_neighborhood_s2_attention_optimized", mutates_args=())
-    def _neighborhood_s2_attention_optimized(
+    @torch.library.custom_op("attention_kernels::_neighborhood_s2_attention_regular_optimized", mutates_args=())
+    def _neighborhood_s2_attention_regular_optimized(
         kw: torch.Tensor,
         vw: torch.Tensor,
         qw: torch.Tensor,
-        quad_weights: torch.Tensor,
+        ring_weights: torch.Tensor,
         col_idx: torch.Tensor,
         row_off: torch.Tensor,
         seg: torch.Tensor,
@@ -258,14 +276,14 @@ if optimized_kernels_is_available():
         vw = vw.contiguous()
         qw = qw.contiguous()
 
-        return attention_kernels.forward.default(kw, vw, qw, quad_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out)
+        return attention_kernels.forward_regular.default(kw, vw, qw, ring_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out)
 
-    @torch.library.register_fake("attention_kernels::_neighborhood_s2_attention_optimized")
+    @torch.library.register_fake("attention_kernels::_neighborhood_s2_attention_regular_optimized")
     def _(
         kw: torch.Tensor,
         vw: torch.Tensor,
         qw: torch.Tensor,
-        quad_weights: torch.Tensor,
+        ring_weights: torch.Tensor,
         col_idx: torch.Tensor,
         row_off: torch.Tensor,
         seg: torch.Tensor,
@@ -279,8 +297,8 @@ if optimized_kernels_is_available():
         return torch.empty(out_shape, dtype=kw.dtype, device=kw.device)
 
 
-def _neighborhood_s2_attention_bwd_optimized(ctx, grad_output):
-    col_idx, row_off, seg, seg_off, quad_weights, kw, vw, qw = ctx.saved_tensors
+def _neighborhood_s2_attention_regular_bwd_optimized(ctx, grad_output):
+    col_idx, row_off, seg, seg_off, ring_weights, kw, vw, qw = ctx.saved_tensors
     nh = ctx.nh
     nlon_in = ctx.nlon_in
     nlat_out = ctx.nlat_out
@@ -294,9 +312,9 @@ def _neighborhood_s2_attention_bwd_optimized(ctx, grad_output):
     qw = qw.contiguous()
     grad_output = grad_output.contiguous()
 
-    dkw, dvw, dqw = attention_kernels.backward.default(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out)
+    dkw, dvw, dqw = attention_kernels.backward_regular.default(kw, vw, qw, grad_output, ring_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out)
 
-    # one gradient per forward input: kw, vw, qw, then None for quad_weights,
+    # one gradient per forward input: kw, vw, qw, then None for ring_weights,
     # col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out
     return dkw, dvw, dqw, None, None, None, None, None, None, None, None, None
 
@@ -304,12 +322,12 @@ def _neighborhood_s2_attention_bwd_optimized(ctx, grad_output):
 # register backward
 if optimized_kernels_is_available():
     torch.library.register_autograd(
-        "attention_kernels::_neighborhood_s2_attention_optimized", _neighborhood_s2_attention_bwd_optimized, setup_context=_setup_context_attention_backward
+        "attention_kernels::_neighborhood_s2_attention_regular_optimized", _neighborhood_s2_attention_regular_bwd_optimized, setup_context=_setup_context_attention_backward
     )
 
     # Autocast: register at the dispatcher's Autocast{CUDA,CPU} keys (not via
     # register_autocast — that API hard-codes ``cast_inputs`` and can't follow
-    # the active autocast dtype). Index tensors and quad_weights pass through.
+    # the active autocast dtype). Index tensors and ring_weights pass through.
     #
     # Both keys are needed. The kernels dispatch once on q's scalar type and then
     # reinterpret every activation pointer as that type, so they require k, v and q
@@ -318,15 +336,175 @@ if optimized_kernels_is_available():
     # normalization can hand the op an fp32 q next to an fp16 v. Normalizing here is
     # what makes the requirement hold.
     def _make_autocast_impl(device_type):
-        @torch.library.impl("attention_kernels::_neighborhood_s2_attention_optimized", f"Autocast{device_type.upper()}")
-        def _(kw, vw, qw, quad_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out):
+        @torch.library.impl("attention_kernels::_neighborhood_s2_attention_regular_optimized", f"Autocast{device_type.upper()}")
+        def _(kw, vw, qw, ring_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out):
             cast_dtype = torch.get_autocast_dtype(device_type)
             with torch.amp.autocast(device_type, enabled=False):
-                return _neighborhood_s2_attention_optimized(
-                    kw.to(cast_dtype), vw.to(cast_dtype), qw.to(cast_dtype), quad_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out
+                return _neighborhood_s2_attention_regular_optimized(
+                    kw.to(cast_dtype), vw.to(cast_dtype), qw.to(cast_dtype), ring_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out
                 )
 
         return _
 
     _make_autocast_impl("cuda")
     _make_autocast_impl("cpu")
+
+
+# define the ragged NA op, for a grid whose rings differ in length (HEALPix, reduced
+# Gaussian). CUDA only: there is no CPU ragged kernel, so a ragged grid on CPU falls
+# back to the torch reference -- see optimized/kernels_cpu/ragged/README.md.
+if optimized_kernels_is_available():
+    # raw forward fake. The three trailing outputs are softmax bookkeeping the backward
+    # consumes; they are fp32 whatever the activations are, because that is what the
+    # kernel writes and what the backward reads unconditionally.
+    @torch.library.register_fake("attention_kernels::forward_ragged")
+    def _(
+        kx: torch.Tensor,
+        vx: torch.Tensor,
+        qy: torch.Tensor,
+        ring_weights: torch.Tensor,
+        psi_seg: torch.Tensor,
+        psi_seg_off: torch.Tensor,
+        ring_base: torch.Tensor,
+        ring_size: torch.Tensor,
+        num_heads: int,
+        npoints_out: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        # flat field: one point axis in place of the regular path's (nlat, nlon)
+        out_shape = (kx.shape[0], npoints_out, vx.shape[2])
+        stat_shape = (kx.shape[0], num_heads, npoints_out)
+        f32 = dict(dtype=torch.float32, device=kx.device)
+        return (
+            torch.empty(out_shape, dtype=kx.dtype, device=kx.device),
+            torch.empty(out_shape, **f32),
+            torch.empty(stat_shape, **f32),
+            torch.empty(stat_shape, **f32),
+        )
+
+    # raw backward fake
+    @torch.library.register_fake("attention_kernels::backward_ragged")
+    def _(
+        kx: torch.Tensor,
+        vx: torch.Tensor,
+        qy: torch.Tensor,
+        dy: torch.Tensor,
+        y: torch.Tensor,
+        y_hi: torch.Tensor,
+        alpha_sum: torch.Tensor,
+        qdotk_max: torch.Tensor,
+        ring_weights: torch.Tensor,
+        psi_seg: torch.Tensor,
+        psi_seg_off: torch.Tensor,
+        ring_base: torch.Tensor,
+        ring_size: torch.Tensor,
+        num_heads: int,
+        npoints_out: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return (torch.empty_like(kx), torch.empty_like(vx), torch.empty_like(qy))
+
+    # forward
+    @torch.library.custom_op("attention_kernels::_neighborhood_s2_attention_ragged_optimized", mutates_args=())
+    def _neighborhood_s2_attention_ragged_optimized(
+        kw: torch.Tensor,
+        vw: torch.Tensor,
+        qw: torch.Tensor,
+        ring_weights: torch.Tensor,
+        psi_seg: torch.Tensor,
+        psi_seg_off: torch.Tensor,
+        ring_base: torch.Tensor,
+        ring_size: torch.Tensor,
+        nh: int,
+        npoints_out: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+
+        # NHC in, NHC out, heads packed along the channel dimension -- the regular op's
+        # layout with the two spatial axes collapsed to one. As there, the head axis is
+        # interior and is addressed in place rather than folded into the batch, which is
+        # why nh is passed down. The native dtype is kept and widened at the load site.
+        #
+        # Unlike the regular op this returns four tensors, not one. The regular backward
+        # can rebuild its softmax statistics by re-walking a row it can address
+        # arithmetically; here the neighbour list is explicit and re-walking it is the
+        # expensive part, so the forward hands the statistics on instead. They carry no
+        # gradient -- see _setup_context_attention_ragged_backward.
+        kw = kw.contiguous()
+        vw = vw.contiguous()
+        qw = qw.contiguous()
+
+        return attention_kernels.forward_ragged.default(kw, vw, qw, ring_weights, psi_seg, psi_seg_off, ring_base, ring_size, nh, npoints_out)
+
+    @torch.library.register_fake("attention_kernels::_neighborhood_s2_attention_ragged_optimized")
+    def _(
+        kw: torch.Tensor,
+        vw: torch.Tensor,
+        qw: torch.Tensor,
+        ring_weights: torch.Tensor,
+        psi_seg: torch.Tensor,
+        psi_seg_off: torch.Tensor,
+        ring_base: torch.Tensor,
+        ring_size: torch.Tensor,
+        nh: int,
+        npoints_out: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        out_shape = (kw.shape[0], npoints_out, vw.shape[2])
+        stat_shape = (kw.shape[0], nh, npoints_out)
+        f32 = dict(dtype=torch.float32, device=kw.device)
+        return (
+            torch.empty(out_shape, dtype=kw.dtype, device=kw.device),
+            torch.empty(out_shape, **f32),
+            torch.empty(stat_shape, **f32),
+            torch.empty(stat_shape, **f32),
+        )
+
+
+def _neighborhood_s2_attention_ragged_bwd_optimized(ctx, grad_output, grad_y_hi, grad_alpha_sum, grad_qdotk_max):
+    """
+    One incoming gradient per forward output. Only the first is used: the other three
+    are marked non-differentiable in setup_context, so autograd never routes anything
+    through them and they arrive as None.
+    """
+    psi_seg, psi_seg_off, ring_base, ring_size, ring_weights, kw, vw, qw, y, y_hi, alpha_sum, qdotk_max = ctx.saved_tensors
+    nh = ctx.nh
+    npoints_out = ctx.npoints_out
+
+    kw = kw.contiguous()
+    vw = vw.contiguous()
+    qw = qw.contiguous()
+    grad_output = grad_output.contiguous()
+
+    dkw, dvw, dqw = attention_kernels.backward_ragged.default(
+        kw, vw, qw, grad_output, y, y_hi, alpha_sum, qdotk_max, ring_weights, psi_seg, psi_seg_off, ring_base, ring_size, nh, npoints_out
+    )
+
+    # one gradient per forward input: kw, vw, qw, then None for ring_weights, psi_seg,
+    # psi_seg_off, ring_base, ring_size, nh, npoints_out
+    return dkw, dvw, dqw, None, None, None, None, None, None, None
+
+
+# register backward
+if optimized_kernels_is_available():
+    torch.library.register_autograd(
+        "attention_kernels::_neighborhood_s2_attention_ragged_optimized",
+        _neighborhood_s2_attention_ragged_bwd_optimized,
+        setup_context=_setup_context_attention_ragged_backward,
+    )
+
+    # Autocast, for the same reason as the regular op: the kernel dispatches once on q's
+    # scalar type and then reinterprets every activation pointer as that type, so k, v
+    # and q must agree. Autocast does not guarantee that on its own. Index tensors and
+    # ring_weights pass through untouched.
+    #
+    # Only the CUDA key is registered here. The CPU key would be dead -- there is no CPU
+    # ragged kernel, so a ragged grid on CPU never reaches this op at all.
+    def _make_ragged_autocast_impl(device_type):
+        @torch.library.impl("attention_kernels::_neighborhood_s2_attention_ragged_optimized", f"Autocast{device_type.upper()}")
+        def _(kw, vw, qw, ring_weights, psi_seg, psi_seg_off, ring_base, ring_size, nh, npoints_out):
+            cast_dtype = torch.get_autocast_dtype(device_type)
+            with torch.amp.autocast(device_type, enabled=False):
+                return _neighborhood_s2_attention_ragged_optimized(
+                    kw.to(cast_dtype), vw.to(cast_dtype), qw.to(cast_dtype), ring_weights, psi_seg, psi_seg_off, ring_base, ring_size, nh, npoints_out
+                )
+
+        return _
+
+    _make_ragged_autocast_impl("cuda")

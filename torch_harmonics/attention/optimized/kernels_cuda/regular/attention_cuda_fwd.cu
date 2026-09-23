@@ -59,7 +59,7 @@ namespace attention_kernels
     void s2_attn_fwd_upsample_dispatch(int batch_size, int64_t num_heads, size_t nchans_in, size_t nchans_out,
                                        int64_t nlon_in, int64_t nlat_in, int64_t nlat_out, int64_t nlon_out,
                                        torch::Tensor kxP, torch::Tensor vxP, torch::Tensor qyP, torch::Tensor psi_seg,
-                                       torch::Tensor psi_seg_off, torch::Tensor quad_weights, torch::Tensor yP);
+                                       torch::Tensor psi_seg_off, torch::Tensor ring_weights, torch::Tensor yP);
 
     // called with (blockDim.x=32 and blockDim.y>1, BDIM_X=blockDim.x*blockDim.y)
     //
@@ -86,7 +86,7 @@ namespace attention_kernels
         int nlat_in, int nlon_in, int nlat_out, int nlon_out, const STORAGE_T *__restrict__ kx,
         const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy, const int32_t *__restrict__ row_idx,
         const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx, const int32_t *__restrict__ seg,
-        const int32_t *__restrict__ seg_off, const float *__restrict__ quad_weights, STORAGE_T *__restrict__ y)
+        const int32_t *__restrict__ seg_off, const float *__restrict__ ring_weights, STORAGE_T *__restrict__ y)
     {
         using COMPUTE_T = typename vec_traits<STORAGE_T>::compute_t;
 
@@ -149,7 +149,7 @@ namespace attention_kernels
             const int lo = seg[3 * sg + 1];
             const int len = seg[3 * sg + 2];
 
-            const float qw = quad_weights[hi];
+            const float qw = ring_weights[hi];
 
             // stride between spatial points is ldi/ldo; the head offset is
             // already baked into kx/vx above
@@ -209,7 +209,7 @@ namespace attention_kernels
         int nlat_in, int nlon_in, int nlat_out, int nlon_out, const STORAGE_T *__restrict__ kx,
         const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy, const int32_t *__restrict__ row_idx,
         const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx, const int32_t *__restrict__ seg,
-        const int32_t *__restrict__ seg_off, const float *__restrict__ quad_weights, STORAGE_T *__restrict__ y)
+        const int32_t *__restrict__ seg_off, const float *__restrict__ ring_weights, STORAGE_T *__restrict__ y)
     {
         using COMPUTE_T = typename vec_traits<STORAGE_T>::compute_t;
 
@@ -318,7 +318,7 @@ namespace attention_kernels
             const int lo = seg[3 * sg + 1];
             const int len = seg[3 * sg + 2];
 
-            const float qw_seg = quad_weights[hi];
+            const float qw_seg = ring_weights[hi];
             const STORAGE_T *kx_row = kx + int64_t(hi) * nlon_in * ldi;
             const STORAGE_T *vx_row = vx + int64_t(hi) * nlon_in * ldo;
 
@@ -606,7 +606,7 @@ namespace attention_kernels
     static void s2_attn_fwd_dispatch(int64_t batch_size, int64_t nheads, int64_t nchans_in, int64_t nchans_out,
                                      int64_t nlon_in, int64_t nlat_out, int64_t nlon_out, at::Tensor kxP,
                                      at::Tensor vxP, at::Tensor qyP, at::Tensor row_off, at::Tensor col_idx,
-                                     at::Tensor seg, at::Tensor seg_off, at::Tensor quad_weights, at::Tensor yP)
+                                     at::Tensor seg, at::Tensor seg_off, at::Tensor ring_weights, at::Tensor yP)
     {
 
         static_assert(0 == (MAX_LOCAL_ARR_LEN & (MAX_LOCAL_ARR_LEN - 1)));
@@ -638,7 +638,7 @@ namespace attention_kernels
         // to its segment range. See _build_psi_segments.
         const int32_t *_seg = reinterpret_cast<const int32_t *>(seg.data_ptr());
         const int32_t *_seg_off = reinterpret_cast<const int32_t *>(seg_off.data_ptr());
-        float *_quad_weights = reinterpret_cast<float *>(quad_weights.data_ptr());
+        float *_quad_weights = reinterpret_cast<float *>(ring_weights.data_ptr());
 
         constexpr int MIN_LOC_ARR_LEN = MAX_LOCAL_ARR_LEN / 2 + 1;
 
@@ -729,7 +729,7 @@ namespace attention_kernels
     // it by construction (see attention/_layout.py). Heads are packed along the
     // channel dimension rather than folded into the batch dimension, because
     // folding is not free in this layout.
-    torch::Tensor s2_attention_fwd_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor quad_weights,
+    torch::Tensor s2_attention_fwd_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor ring_weights,
                                         at::Tensor psi_col_idx, at::Tensor psi_row_off, at::Tensor psi_seg,
                                         at::Tensor psi_seg_off, int64_t num_heads, int64_t nlon_in, int64_t nlat_out,
                                         int64_t nlon_out)
@@ -737,7 +737,7 @@ namespace attention_kernels
         CHECK_CUDA_INPUT_TENSOR(kx);
         CHECK_CUDA_INPUT_TENSOR(vx);
         CHECK_CUDA_INPUT_TENSOR(qy);
-        CHECK_CUDA_TENSOR(quad_weights);
+        CHECK_CUDA_TENSOR(ring_weights);
         CHECK_CUDA_TENSOR(psi_col_idx);
         CHECK_CUDA_TENSOR(psi_row_off);
 
@@ -802,13 +802,13 @@ namespace attention_kernels
             if (downsample) {
                 s2_attn_fwd_dispatch<storage_t>(batch_size, num_heads, nchans_in, nchans_out, nlon_in, nlat_out,
                                                 nlon_out, kx, vx, qy, psi_row_off, psi_col_idx, psi_seg, psi_seg_off,
-                                                quad_weights, y_nhwc);
+                                                ring_weights, y_nhwc);
             } else {
                 // upsample (scatter) path: s2_attn_fwd_upsample_dispatch does its own
                 // AT_DISPATCH and widens fp16/bf16 at load (fp32 compute), narrowing
                 // the output at store — same as the gather path.
                 s2_attn_fwd_upsample_dispatch(batch_size, num_heads, nchans_in, nchans_out, nlon_in, nlat_in, nlat_out,
-                                              nlon_out, kx, vx, qy, psi_seg, psi_seg_off, quad_weights, y_nhwc);
+                                              nlon_out, kx, vx, qy, psi_seg, psi_seg_off, ring_weights, y_nhwc);
             }
 
             y = y_nhwc;
@@ -827,6 +827,6 @@ namespace attention_kernels
         return y;
     }
 
-    TORCH_LIBRARY_IMPL(attention_kernels, CUDA, m) { m.impl("forward", &s2_attention_fwd_cuda); }
+    TORCH_LIBRARY_IMPL(attention_kernels, CUDA, m) { m.impl("forward_regular", &s2_attention_fwd_cuda); }
 
 } // namespace attention_kernels

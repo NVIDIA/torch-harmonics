@@ -96,12 +96,36 @@ def _setup_context_attention_backward(ctx, inputs, output):
     # col_idx / row_off are saved alongside seg / seg_off. The CUDA backward walks the
     # arc segments, but the CPU backward still consumes the column list, and both reach
     # backward through the same op schema.
-    kw, vw, qw, quad_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out = inputs
-    ctx.save_for_backward(col_idx, row_off, seg, seg_off, quad_weights, kw, vw, qw)
+    kw, vw, qw, ring_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out = inputs
+    ctx.save_for_backward(col_idx, row_off, seg, seg_off, ring_weights, kw, vw, qw)
     ctx.nh = nh
     ctx.nlon_in = nlon_in
     ctx.nlat_out = nlat_out
     ctx.nlon_out = nlon_out
+
+
+def _setup_context_attention_ragged_backward(ctx, inputs, output):
+    """
+    Backward context for the ragged optimized op.
+
+    Two differences from the regular helper above. The neighbourhood is saved in arc
+    form only -- the ragged CUDA backward walks the arcs, and unlike the regular path
+    there is no CPU kernel sharing the schema that would need the column list.
+
+    The other is the three trailing outputs. The forward returns its softmax
+    bookkeeping so the backward does not have to rebuild it, but that bookkeeping is
+    not a function of the inputs in the differentiable sense: alpha_sum and qdotk_max
+    are reduction statistics, and y_hi is the output over again, so a gradient routed
+    through it would be counted twice. Marking them non-differentiable makes attempting
+    any of that an error at the autograd level rather than a silently wrong number.
+    """
+    kw, vw, qw, ring_weights, psi_seg, psi_seg_off, ring_base, ring_size, nh, npoints_out = inputs
+    y, y_hi, alpha_sum, qdotk_max = output
+
+    ctx.save_for_backward(psi_seg, psi_seg_off, ring_base, ring_size, ring_weights, kw, vw, qw, y, y_hi, alpha_sum, qdotk_max)
+    ctx.nh = nh
+    ctx.npoints_out = npoints_out
+    ctx.mark_non_differentiable(y_hi, alpha_sum, qdotk_max)
 
 
 def _build_psi_segments(col_idx: torch.Tensor, roff_idx: torch.Tensor, nlon: int):

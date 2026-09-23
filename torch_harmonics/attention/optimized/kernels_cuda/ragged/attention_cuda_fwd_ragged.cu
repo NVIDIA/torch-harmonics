@@ -212,7 +212,7 @@ namespace attention_kernels
             const int len = seg[3 * sg + 2];
 
             // constant along the arc: every point of a ring carries the same
-            // quadrature weight, so this is hoisted exactly as quad_weights[hi] is
+            // quadrature weight, so this is hoisted exactly as ring_weights[hi] is
             // in the product-grid kernel
             const float qw = ring_weights[iring];
 

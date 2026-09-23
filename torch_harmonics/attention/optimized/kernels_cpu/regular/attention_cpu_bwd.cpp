@@ -42,14 +42,14 @@ namespace attention_kernels
     // list. They are part of the shared schema because the CUDA backward consumes them,
     // and keeping this path on col_idx is what keeps it independent of that derivation.
     s2_attention_bwd_cpu(torch::Tensor kx, torch::Tensor vx, torch::Tensor qy, torch::Tensor dy,
-                         torch::Tensor quad_weights, torch::Tensor col_idx, torch::Tensor row_off, torch::Tensor seg,
+                         torch::Tensor ring_weights, torch::Tensor col_idx, torch::Tensor row_off, torch::Tensor seg,
                          torch::Tensor seg_off, int64_t num_heads, int64_t nlon_in, int64_t nlat_out, int64_t nlon_out)
     {
 
         // Caller-visible shapes (NHWC, heads packed along channels):
         //   kx, vx          : (B, Hi, Wi, num_heads * C)
         //   qy, dy          : (B, Ho, Wo, num_heads * C)
-        //   quad_weights    : (Hi,)
+        //   ring_weights    : (Hi,)
         //   dkx, dvx (out)  : same as kx, vx
         //   dqy (out)       : same as qy
         // The loop kernels are head-agnostic, so the wrapper folds heads into the
@@ -59,7 +59,7 @@ namespace attention_kernels
         CHECK_CPU_INPUT_TENSOR(vx);
         CHECK_CPU_INPUT_TENSOR(qy);
         CHECK_CPU_INPUT_TENSOR(dy);
-        CHECK_CPU_INPUT_TENSOR(quad_weights);
+        CHECK_CPU_INPUT_TENSOR(ring_weights);
         CHECK_CPU_INPUT_TENSOR(col_idx);
         CHECK_CPU_INPUT_TENSOR(row_off);
 
@@ -116,7 +116,7 @@ namespace attention_kernels
         auto vx_arr = vx.packed_accessor64<float, 4>();
         auto qy_arr = qy.packed_accessor64<float, 4>();
         auto dy_arr = dy.packed_accessor64<float, 4>();
-        auto quad_weights_arr = quad_weights.packed_accessor64<float, 1>();
+        auto quad_weights_arr = ring_weights.packed_accessor64<float, 1>();
         auto col_idx_arr = col_idx.packed_accessor64<int64_t, 1>();
         auto roff_arr = row_off.packed_accessor64<int64_t, 1>();
         auto dqy_arr = dqy.packed_accessor64<float, 4>();
@@ -141,6 +141,6 @@ namespace attention_kernels
         return std::make_tuple(dkx.to(inp_dtype), dvx.to(inp_dtype), dqy.to(inp_dtype));
     }
 
-    TORCH_LIBRARY_IMPL(attention_kernels, CPU, m) { m.impl("backward", &s2_attention_bwd_cpu); }
+    TORCH_LIBRARY_IMPL(attention_kernels, CPU, m) { m.impl("backward_regular", &s2_attention_bwd_cpu); }
 
 } // namespace attention_kernels

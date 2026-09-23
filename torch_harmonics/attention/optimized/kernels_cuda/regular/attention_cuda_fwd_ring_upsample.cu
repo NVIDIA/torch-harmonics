@@ -187,7 +187,7 @@ namespace attention_kernels
         int nchan_in, int nchan_out, int nlat_halo, int nlon_kx, int nlon_out_global, int pscale_out, int lon_lo_kx,
         int lat_halo_start, int nlat_out, int nlon_out, const STORAGE_T *__restrict__ kx,
         const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy, const int64_t *__restrict__ row_off,
-        const int64_t *__restrict__ col_idx, const float *__restrict__ quad_weights,
+        const int64_t *__restrict__ col_idx, const float *__restrict__ ring_weights,
         const float *__restrict__ qdotk_max_buf, float *__restrict__ alpha_sum_buf, float *__restrict__ y_acc)
     {
         extern __shared__ float shext[];
@@ -218,8 +218,8 @@ namespace attention_kernels
         for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { sh_k[chan] = vload(kx, chan); }
         for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { sh_v[chan] = vload(vx, chan); }
 
-        // quad_weights is indexed by the GLOBAL input latitude
-        const float qw = quad_weights[lat_halo_start + hi];
+        // ring_weights is indexed by the GLOBAL input latitude
+        const float qw = ring_weights[lat_halo_start + hi];
 
         for (int off = 0; off < rlen; off++) {
             const int64_t col = col_hi[off];
@@ -285,7 +285,7 @@ namespace attention_kernels
 
     void s2_attention_fwd_ring_step_upsample_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor y_acc,
                                                   at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
-                                                  at::Tensor quad_weights, at::Tensor psi_col_idx,
+                                                  at::Tensor ring_weights, at::Tensor psi_col_idx,
                                                   at::Tensor psi_row_off, int64_t nlon_in, int64_t nlon_out_global,
                                                   int64_t pscale_out, int64_t lon_lo_kx, int64_t lat_halo_start,
                                                   int64_t nlat_out, int64_t nlon_out)
@@ -296,7 +296,7 @@ namespace attention_kernels
         CHECK_CUDA_TENSOR(y_acc);
         CHECK_CUDA_TENSOR(alpha_sum_buf);
         CHECK_CUDA_TENSOR(qdotk_max_buf);
-        CHECK_CUDA_TENSOR(quad_weights);
+        CHECK_CUDA_TENSOR(ring_weights);
         CHECK_CUDA_TENSOR(psi_col_idx);
         CHECK_CUDA_TENSOR(psi_row_off);
 
@@ -313,7 +313,7 @@ namespace attention_kernels
 
         int64_t *_row_off = reinterpret_cast<int64_t *>(psi_row_off.data_ptr());
         int64_t *_col_idx = reinterpret_cast<int64_t *>(psi_col_idx.data_ptr());
-        float *_quad_weights = reinterpret_cast<float *>(quad_weights.data_ptr());
+        float *_quad_weights = reinterpret_cast<float *>(ring_weights.data_ptr());
         float *_y_acc = reinterpret_cast<float *>(y_acc.data_ptr());
         float *_alpha_sum = reinterpret_cast<float *>(alpha_sum_buf.data_ptr());
         float *_qdotk_max = reinterpret_cast<float *>(qdotk_max_buf.data_ptr());

@@ -75,6 +75,6 @@ namespace disco_kernels
         return out.to(inp_dtype);
     }
 
-    TORCH_LIBRARY_IMPL(disco_kernels, CPU, m) { m.impl("backward", &disco_cpu_bwd); }
+    TORCH_LIBRARY_IMPL(disco_kernels, CPU, m) { m.impl("backward_regular", &disco_cpu_bwd); }
 
 } // namespace disco_kernels

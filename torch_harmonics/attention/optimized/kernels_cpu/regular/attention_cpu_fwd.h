@@ -205,7 +205,7 @@ namespace attention_kernels
 
     // NHWC ABI with heads packed along the channel dimension; see the definition
     // in attention_cpu_fwd.cpp.
-    torch::Tensor s2_attention_fwd_cpu(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor quad_weights,
+    torch::Tensor s2_attention_fwd_cpu(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor ring_weights,
                                        at::Tensor col_idx, at::Tensor row_off, at::Tensor seg, at::Tensor seg_off,
                                        int64_t num_heads, int64_t nlon_in, int64_t nlat_out, int64_t nlon_out);
 

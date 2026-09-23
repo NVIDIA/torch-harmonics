@@ -185,7 +185,7 @@ namespace attention_kernels
         int nheads, int nchan_in, int nchan_out, int nlat_in, int nlon_in, int nlat_out, int nlon_out,
         const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy,
         const STORAGE_T *__restrict__ dy, const int32_t *__restrict__ row_idx, const int32_t *__restrict__ seg,
-        const int32_t *__restrict__ seg_off, const float *__restrict__ quad_weights, const float *__restrict__ maxbuf,
+        const int32_t *__restrict__ seg_off, const float *__restrict__ ring_weights, const float *__restrict__ maxbuf,
         float *__restrict__ S, float *__restrict__ Avw, float *__restrict__ Ak, float *__restrict__ Akvw)
     {
         extern __shared__ float shext[];
@@ -230,7 +230,7 @@ namespace attention_kernels
         for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { sh_k[chan] = vload(kx, chan); }
         for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { sh_v[chan] = vload(vx, chan); }
 
-        const float qw = quad_weights[hi];
+        const float qw = ring_weights[hi];
         // Arc segments instead of the flat column list; see the note on the first
         // neighbor loop above.
         const int seg_beg = seg_off[hi];
@@ -308,7 +308,7 @@ namespace attention_kernels
         int nheads, int nchan_in, int nchan_out, int nlat_in, int nlon_in, int nlat_out, int nlon_out,
         const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy,
         const STORAGE_T *__restrict__ dy, const int32_t *__restrict__ row_idx, const int32_t *__restrict__ seg,
-        const int32_t *__restrict__ seg_off, const float *__restrict__ quad_weights, const float *__restrict__ maxbuf,
+        const int32_t *__restrict__ seg_off, const float *__restrict__ ring_weights, const float *__restrict__ maxbuf,
         const float *__restrict__ S, const float *__restrict__ Avw, float *__restrict__ dkx, float *__restrict__ dvx)
     {
         extern __shared__ float shext[];
@@ -357,7 +357,7 @@ namespace attention_kernels
             sh_dv[chan] = 0.f;
         }
 
-        const float qw = quad_weights[hi];
+        const float qw = ring_weights[hi];
         // Arc segments instead of the flat column list; see the note on the first
         // neighbor loop above.
         const int seg_beg = seg_off[hi];
@@ -467,7 +467,7 @@ namespace attention_kernels
                                        int64_t nlon_in, int64_t nlat_in, int64_t nlat_out, int64_t nlon_out,
                                        torch::Tensor kxP, torch::Tensor vxP, torch::Tensor qyP, torch::Tensor dyP,
                                        torch::Tensor psi_row_off, torch::Tensor psi_seg, torch::Tensor psi_seg_off,
-                                       torch::Tensor quad_weights, torch::Tensor dkxP, torch::Tensor dvxP,
+                                       torch::Tensor ring_weights, torch::Tensor dkxP, torch::Tensor dvxP,
                                        torch::Tensor dqyP)
     {
 
@@ -486,7 +486,7 @@ namespace attention_kernels
         int32_t *_row_idx = reinterpret_cast<int32_t *>(row_idx.data_ptr());
         int32_t *_seg = reinterpret_cast<int32_t *>(psi_seg.data_ptr());
         int32_t *_seg_off = reinterpret_cast<int32_t *>(psi_seg_off.data_ptr());
-        float *_quad_weights = reinterpret_cast<float *>(quad_weights.data_ptr());
+        float *_quad_weights = reinterpret_cast<float *>(ring_weights.data_ptr());
 
         AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, qyP.scalar_type(), "s2_attn_bwd_upsample", [&] {
             scalar_t *_kxp = reinterpret_cast<scalar_t *>(kxP.data_ptr());

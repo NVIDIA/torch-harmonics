@@ -32,7 +32,7 @@
 """
 Pure-PyTorch reference implementations of the neighborhood S2 attention kernels,
 plus the matching ``torch.library`` custom_op + autograd registration that
-exposes them under the ``attention_kernels::_neighborhood_s2_attention_torch``
+exposes them under the ``attention_kernels::_neighborhood_s2_attention_regular_torch``
 operator name.
 
 These mirror the C++/CUDA kernels in ``optimized/kernels_cpu`` and
@@ -74,8 +74,8 @@ from .._attention_utils import _setup_context_attention_backward
 #   https://alexdremov.me/understanding-flash-attention-writing-the-algorithm-from-scratch-in-triton/
 # The backward references rebuild the softmax state on the fly (multiple passes
 # over the neighbor list); reference code, not meant to be fast.
-def _neighborhood_s2_attention_fwd_torch(
-    kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor, nlon_in: int, nlat_out: int, nlon_out: int
+def _neighborhood_s2_attention_regular_fwd_torch(
+    kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, ring_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor, nlon_in: int, nlat_out: int, nlon_out: int
 ) -> torch.Tensor:
 
     # one output lon step corresponds to pscale input lon steps; require an integer ratio
@@ -115,7 +115,7 @@ def _neighborhood_s2_attention_fwd_torch(
                 qdotk_max_tmp = torch.maximum(qdotk_max, qdotk)
 
                 # alpha sum update
-                alpha = torch.exp(qdotk - qdotk_max_tmp) * quad_weights[hi]
+                alpha = torch.exp(qdotk - qdotk_max_tmp) * ring_weights[hi]
                 alpha_sum = alpha + alpha_sum * torch.exp(qdotk_max - qdotk_max_tmp)
                 # update output
                 y[:, :, ho, wo] = y[:, :, ho, wo] * torch.exp(qdotk_max - qdotk_max_tmp).unsqueeze(1) + alpha[:, None] * vx[:, :, hi, wip]
@@ -130,12 +130,12 @@ def _neighborhood_s2_attention_fwd_torch(
 
 # Explicit gradient w.r.t. vx: dM/dv
 # provided as a reference for CUDA & other hand-written gradients
-def _neighborhood_s2_attention_bwd_dv_torch(
+def _neighborhood_s2_attention_regular_bwd_dv_torch(
     kx: torch.Tensor,
     vx: torch.Tensor,
     qy: torch.Tensor,
     dy: torch.Tensor,
-    quad_weights: torch.Tensor,
+    ring_weights: torch.Tensor,
     col_idx: torch.Tensor,
     row_off: torch.Tensor,
     nlon_in: int,
@@ -148,7 +148,7 @@ def _neighborhood_s2_attention_bwd_dv_torch(
     # kx: B, C, Hi, Wi
     # vx: B, Cout, Hi, Wi
     # qy: B, Cout, Ho, Wo
-    # quad_weights: Hi
+    # ring_weights: Hi
     # output
     # dvx: B, Cout, Hi, Wi
 
@@ -193,7 +193,7 @@ def _neighborhood_s2_attention_bwd_dv_torch(
                 # account for output shift and ensure positive index due to circular condition
                 wi = nz_col_idx % nlon_in
                 wip = (wi + pscale * wo) % nlon_in
-                alpha_nz[:, idz - zstart] = torch.exp(qdotk_nz[:, idz - zstart] - qdotk_max) * quad_weights[hi]
+                alpha_nz[:, idz - zstart] = torch.exp(qdotk_nz[:, idz - zstart] - qdotk_max) * ring_weights[hi]
                 alpha_sum[:] += alpha_nz[:, idz - zstart]
 
             for idz in range(zstart, zend):
@@ -211,12 +211,12 @@ def _neighborhood_s2_attention_bwd_dv_torch(
 
 # Explicit gradient w.r.t. kx: dM/dk
 # provided as a reference for CUDA & other hand-written gradients
-def _neighborhood_s2_attention_bwd_dk_torch(
+def _neighborhood_s2_attention_regular_bwd_dk_torch(
     kx: torch.Tensor,
     vx: torch.Tensor,
     qy: torch.Tensor,
     dy: torch.Tensor,
-    quad_weights: torch.Tensor,
+    ring_weights: torch.Tensor,
     col_idx: torch.Tensor,
     row_off: torch.Tensor,
     nlon_in: int,
@@ -229,7 +229,7 @@ def _neighborhood_s2_attention_bwd_dk_torch(
     # kx: B, C, Hi, Wi
     # vx: B, Cout, Hi, Wi
     # qy: B, C, Ho, Wo
-    # quad_weights: Hi
+    # ring_weights: Hi
     # output
     # dkx: B, C, Hi, Wi
 
@@ -276,7 +276,7 @@ def _neighborhood_s2_attention_bwd_dk_torch(
                 wj = nz_col_idx % nlon_in
                 wjp = (wj + pscale * wo) % nlon_in
 
-                alpha[:, idz - zstart] = torch.exp(qdotk_nz[:, idz - zstart] - qdotk_max) * quad_weights[hj]
+                alpha[:, idz - zstart] = torch.exp(qdotk_nz[:, idz - zstart] - qdotk_max) * ring_weights[hj]
                 alpha_sum[:] += alpha[:, idz - zstart]
 
                 # input dot
@@ -306,12 +306,12 @@ def _neighborhood_s2_attention_bwd_dk_torch(
 
 # Explicit gradient w.r.t. qy: dM/dq
 # provided as a reference for CUDA & other hand-written gradients
-def _neighborhood_s2_attention_bwd_dq_torch(
+def _neighborhood_s2_attention_regular_bwd_dq_torch(
     kx: torch.Tensor,
     vx: torch.Tensor,
     qy: torch.Tensor,
     dy: torch.Tensor,
-    quad_weights: torch.Tensor,
+    ring_weights: torch.Tensor,
     col_idx: torch.Tensor,
     row_off: torch.Tensor,
     nlon_in: int,
@@ -324,7 +324,7 @@ def _neighborhood_s2_attention_bwd_dq_torch(
     # kx: B, C, Hi, Wi
     # vx: B, Cout, Hi, Wi
     # qy: B, C, Ho, Wo
-    # quad_weights: Hi
+    # ring_weights: Hi
     # output
     # dq: B, C, Ho, Wo
 
@@ -380,7 +380,7 @@ def _neighborhood_s2_attention_bwd_dq_torch(
                 q_ho_wo = qy[:, :, ho, wo]
                 k_hi_wi = kx[:, :, hi, wip]
                 idz_i = idz - zstart
-                alpha[:, idz_i] = torch.exp(qdotk_nz[:, idz - zstart] - qdotk_max) * quad_weights[hi]
+                alpha[:, idz_i] = torch.exp(qdotk_nz[:, idz - zstart] - qdotk_max) * ring_weights[hi]
                 alpha_sum[:] += alpha[:, idz_i]
 
                 gdotv = torch.sum(dy[:, :, ho, wo] * vx[:, :, hi, wip], dim=1)
@@ -393,12 +393,12 @@ def _neighborhood_s2_attention_bwd_dq_torch(
     return dqy
 
 
-@torch.library.custom_op("attention_kernels::_neighborhood_s2_attention_torch", mutates_args=())
-def _neighborhood_s2_attention_torch(
+@torch.library.custom_op("attention_kernels::_neighborhood_s2_attention_regular_torch", mutates_args=())
+def _neighborhood_s2_attention_regular_torch(
     kw: torch.Tensor,
     vw: torch.Tensor,
     qw: torch.Tensor,
-    quad_weights: torch.Tensor,
+    ring_weights: torch.Tensor,
     col_idx: torch.Tensor,
     row_off: torch.Tensor,
     seg: torch.Tensor,
@@ -439,9 +439,9 @@ def _neighborhood_s2_attention_torch(
     # of nlon_in. Self-attention (nlon_in == nlon_out) satisfies both and falls
     # through the gather path with pscale == 1.
     if nlon_in % nlon_out == 0:
-        output = _neighborhood_s2_attention_fwd_torch(kw, vw, qw, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
+        output = _neighborhood_s2_attention_regular_fwd_torch(kw, vw, qw, ring_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
     elif nlon_out % nlon_in == 0:
-        output = _neighborhood_s2_attention_upsample_fwd_torch(kw, vw, qw, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
+        output = _neighborhood_s2_attention_upsample_fwd_torch(kw, vw, qw, ring_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
     else:
         raise ValueError(f"either nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out}), or vice versa")
 
@@ -463,12 +463,12 @@ def _neighborhood_s2_attention_torch(
     return output.to(dtype=inp_dtype)
 
 
-@torch.library.register_fake("attention_kernels::_neighborhood_s2_attention_torch")
+@torch.library.register_fake("attention_kernels::_neighborhood_s2_attention_regular_torch")
 def _(
     kw: torch.Tensor,
     vw: torch.Tensor,
     qw: torch.Tensor,
-    quad_weights: torch.Tensor,
+    ring_weights: torch.Tensor,
     col_idx: torch.Tensor,
     row_off: torch.Tensor,
     seg: torch.Tensor,
@@ -482,11 +482,11 @@ def _(
     return torch.empty(out_shape, dtype=kw.dtype, device=kw.device)
 
 
-def _neighborhood_s2_attention_bwd_torch(ctx, grad_output):
+def _neighborhood_s2_attention_regular_bwd_torch(ctx, grad_output):
     # seg / seg_off are unpacked but unused: this reference walks the column list, which
     # is what keeps it independent of the arc-segment derivation the CUDA kernels use.
     # The unpack is positional and shares _setup_context_attention_backward with them.
-    col_idx, row_off, seg, seg_off, quad_weights, kw, vw, qw = ctx.saved_tensors
+    col_idx, row_off, seg, seg_off, ring_weights, kw, vw, qw = ctx.saved_tensors
     nh = ctx.nh
     nlon_in = ctx.nlon_in
     nlat_out = ctx.nlat_out
@@ -524,9 +524,9 @@ def _neighborhood_s2_attention_bwd_torch(ctx, grad_output):
 
     # direction selection — same convention as the forward op.
     if nlon_in % nlon_out == 0:
-        dv_fn = _neighborhood_s2_attention_bwd_dv_torch
-        dk_fn = _neighborhood_s2_attention_bwd_dk_torch
-        dq_fn = _neighborhood_s2_attention_bwd_dq_torch
+        dv_fn = _neighborhood_s2_attention_regular_bwd_dv_torch
+        dk_fn = _neighborhood_s2_attention_regular_bwd_dk_torch
+        dq_fn = _neighborhood_s2_attention_regular_bwd_dq_torch
     elif nlon_out % nlon_in == 0:
         dv_fn = _neighborhood_s2_attention_upsample_bwd_dv_torch
         dk_fn = _neighborhood_s2_attention_upsample_bwd_dk_torch
@@ -535,46 +535,48 @@ def _neighborhood_s2_attention_bwd_torch(ctx, grad_output):
         raise ValueError(f"either nlon_in ({nlon_in}) must be an integer multiple of nlon_out ({nlon_out}), or vice versa")
 
     if vw_needs_grad:
-        dvw = dv_fn(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
+        dvw = dv_fn(kw, vw, qw, grad_output, ring_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
         dvw = _to_nhwc(dvw).to(dtype=vw_dtype)
     else:
         dvw = None
 
     if kw_needs_grad:
-        dkw = dk_fn(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
+        dkw = dk_fn(kw, vw, qw, grad_output, ring_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
         dkw = _to_nhwc(dkw).to(dtype=kw_dtype)
     else:
         dkw = None
 
     if qw_needs_grad:
-        dqw = dq_fn(kw, vw, qw, grad_output, quad_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
+        dqw = dq_fn(kw, vw, qw, grad_output, ring_weights, col_idx, row_off, nlon_in, nlat_out, nlon_out)
         dqw = _to_nhwc(dqw).to(dtype=qw_dtype)
     else:
         dqw = None
 
-    # one gradient per forward input: kw, vw, qw, then None for quad_weights,
+    # one gradient per forward input: kw, vw, qw, then None for ring_weights,
     # col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out
     return dkw, dvw, dqw, None, None, None, None, None, None, None, None, None
 
 
 # register backward
-torch.library.register_autograd("attention_kernels::_neighborhood_s2_attention_torch", _neighborhood_s2_attention_bwd_torch, setup_context=_setup_context_attention_backward)
+torch.library.register_autograd(
+    "attention_kernels::_neighborhood_s2_attention_regular_torch", _neighborhood_s2_attention_regular_bwd_torch, setup_context=_setup_context_attention_backward
+)
 
 
 # Autocast: register at the dispatcher's Autocast{CUDA,CPU} keys (not via
 # register_autocast — that API hard-codes ``cast_inputs`` and can't follow the
-# active autocast dtype). Index tensors and quad_weights pass through.
+# active autocast dtype). Index tensors and ring_weights pass through.
 #
 # The reference path mirrors the optimized one so the two stay comparable under
 # autocast on either device; see the note in attention_optimized.py for why CPU
 # needs its own key.
 def _make_autocast_impl(device_type):
-    @torch.library.impl("attention_kernels::_neighborhood_s2_attention_torch", f"Autocast{device_type.upper()}")
-    def _(kw, vw, qw, quad_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out):
+    @torch.library.impl("attention_kernels::_neighborhood_s2_attention_regular_torch", f"Autocast{device_type.upper()}")
+    def _(kw, vw, qw, ring_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out):
         cast_dtype = torch.get_autocast_dtype(device_type)
         with torch.amp.autocast(device_type, enabled=False):
-            return _neighborhood_s2_attention_torch(
-                kw.to(cast_dtype), vw.to(cast_dtype), qw.to(cast_dtype), quad_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out
+            return _neighborhood_s2_attention_regular_torch(
+                kw.to(cast_dtype), vw.to(cast_dtype), qw.to(cast_dtype), ring_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out
             )
 
     return _
@@ -605,7 +607,7 @@ _make_autocast_impl("cpu")
 # The backward references rebuild the softmax state on the fly (same pattern as
 # the downsample torch references; reference code, not meant to be fast).
 def _neighborhood_s2_attention_upsample_fwd_torch(
-    kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, quad_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor, nlon_in: int, nlat_out: int, nlon_out: int
+    kx: torch.Tensor, vx: torch.Tensor, qy: torch.Tensor, ring_weights: torch.Tensor, col_idx: torch.Tensor, row_off: torch.Tensor, nlon_in: int, nlat_out: int, nlon_out: int
 ) -> torch.Tensor:
     """Scatter-style attention forward for the upsample direction.
 
@@ -653,7 +655,7 @@ def _neighborhood_s2_attention_upsample_fwd_torch(
                 wop = (wo + pscale_out * wi) % nlon_out
 
                 qdotk = torch.sum(qy[:, :, ho, wop] * kx[:, :, hi, wi], dim=1)  # [B]
-                alpha = torch.exp(qdotk - qdotk_max[:, ho, wop]) * quad_weights[hi]
+                alpha = torch.exp(qdotk - qdotk_max[:, ho, wop]) * ring_weights[hi]
                 alpha_sum[:, ho, wop] += alpha
                 y_acc[:, :, ho, wop] += alpha.unsqueeze(1) * vx[:, :, hi, wi]
 
@@ -667,7 +669,7 @@ def _neighborhood_s2_attention_upsample_bwd_dv_torch(
     vx: torch.Tensor,
     qy: torch.Tensor,
     dy: torch.Tensor,
-    quad_weights: torch.Tensor,
+    ring_weights: torch.Tensor,
     col_idx: torch.Tensor,
     row_off: torch.Tensor,
     nlon_in: int,
@@ -710,7 +712,7 @@ def _neighborhood_s2_attention_upsample_bwd_dv_torch(
                 wo = col % nlon_out
                 wop = (wo + pscale_out * wi) % nlon_out
                 qdotk = torch.sum(qy[:, :, ho, wop] * kx[:, :, hi, wi], dim=1)
-                alpha_sum[:, ho, wop] += torch.exp(qdotk - qdotk_max[:, ho, wop]) * quad_weights[hi]
+                alpha_sum[:, ho, wop] += torch.exp(qdotk - qdotk_max[:, ho, wop]) * ring_weights[hi]
 
     # scatter dvx
     dvx = torch.zeros_like(vx)
@@ -723,7 +725,7 @@ def _neighborhood_s2_attention_upsample_bwd_dv_torch(
                 wo = col % nlon_out
                 wop = (wo + pscale_out * wi) % nlon_out
                 qdotk = torch.sum(qy[:, :, ho, wop] * kx[:, :, hi, wi], dim=1)
-                alpha = torch.exp(qdotk - qdotk_max[:, ho, wop]) * quad_weights[hi]
+                alpha = torch.exp(qdotk - qdotk_max[:, ho, wop]) * ring_weights[hi]
                 alpha_norm = alpha / alpha_sum[:, ho, wop]  # [B]
                 dvx[:, :, hi, wi] += alpha_norm.unsqueeze(1) * dy[:, :, ho, wop]
 
@@ -735,7 +737,7 @@ def _neighborhood_s2_attention_upsample_bwd_dk_torch(
     vx: torch.Tensor,
     qy: torch.Tensor,
     dy: torch.Tensor,
-    quad_weights: torch.Tensor,
+    ring_weights: torch.Tensor,
     col_idx: torch.Tensor,
     row_off: torch.Tensor,
     nlon_in: int,
@@ -781,7 +783,7 @@ def _neighborhood_s2_attention_upsample_bwd_dk_torch(
                 wo = col % nlon_out
                 wop = (wo + pscale_out * wi) % nlon_out
                 qdotk = torch.sum(qy[:, :, ho, wop] * kx[:, :, hi, wi], dim=1)
-                alpha = torch.exp(qdotk - qdotk_max[:, ho, wop]) * quad_weights[hi]
+                alpha = torch.exp(qdotk - qdotk_max[:, ho, wop]) * ring_weights[hi]
                 alpha_sum[:, ho, wop] += alpha
                 gdotv = torch.sum(dy[:, :, ho, wop] * vx[:, :, hi, wi], dim=1)  # [B]
                 integral[:, ho, wop] += alpha * gdotv
@@ -798,7 +800,7 @@ def _neighborhood_s2_attention_upsample_bwd_dk_torch(
                 wo = col % nlon_out
                 wop = (wo + pscale_out * wi) % nlon_out
                 qdotk = torch.sum(qy[:, :, ho, wop] * kx[:, :, hi, wi], dim=1)
-                alpha = torch.exp(qdotk - qdotk_max[:, ho, wop]) * quad_weights[hi]
+                alpha = torch.exp(qdotk - qdotk_max[:, ho, wop]) * ring_weights[hi]
                 alpha_norm = alpha / alpha_sum[:, ho, wop]  # [B]
                 gdotv = torch.sum(dy[:, :, ho, wop] * vx[:, :, hi, wi], dim=1)  # [B]
                 dkx[:, :, hi, wi] += qy[:, :, ho, wop] * (alpha_norm * (gdotv - integral[:, ho, wop])).unsqueeze(1)
@@ -811,7 +813,7 @@ def _neighborhood_s2_attention_upsample_bwd_dq_torch(
     vx: torch.Tensor,
     qy: torch.Tensor,
     dy: torch.Tensor,
-    quad_weights: torch.Tensor,
+    ring_weights: torch.Tensor,
     col_idx: torch.Tensor,
     row_off: torch.Tensor,
     nlon_in: int,
@@ -861,7 +863,7 @@ def _neighborhood_s2_attention_upsample_bwd_dq_torch(
                 wo = col % nlon_out
                 wop = (wo + pscale_out * wi) % nlon_out
                 qdotk = torch.sum(qy[:, :, ho, wop] * kx[:, :, hi, wi], dim=1)
-                alpha = torch.exp(qdotk - qdotk_max[:, ho, wop]) * quad_weights[hi]  # [B]
+                alpha = torch.exp(qdotk - qdotk_max[:, ho, wop]) * ring_weights[hi]  # [B]
                 gdotv = torch.sum(dy[:, :, ho, wop] * vx[:, :, hi, wi], dim=1)  # [B]
 
                 alpha_sum[:, ho, wop] += alpha

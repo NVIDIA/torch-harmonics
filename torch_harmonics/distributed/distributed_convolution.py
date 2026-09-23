@@ -40,10 +40,10 @@ from torch_harmonics.disco.convolution import (
     _kpacked_device_supported_for_tensor,
     _precompute_convolution_tensor_s2,
 )
-from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_transpose_contraction_torch
+from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_transpose_contraction_regular_torch
 from torch_harmonics.disco.optimized.disco_optimized import (
     _build_kernel_split_csr,
-    _disco_s2_transpose_contraction_optimized,
+    _disco_s2_transpose_contraction_regular_optimized,
     _kpacked_build_available,
     _maybe_kpack_psi,
     _split_csr_python_offsets,
@@ -782,11 +782,11 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             x = gather_from_copy_to_polar_region(x, -2, self.lat_in_shapes)
 
         if self.optimized_kernel:
-            out = _disco_s2_transpose_contraction_optimized(
+            out = _disco_s2_transpose_contraction_regular_optimized(
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out_local, self.nlon_out
             )
         else:
-            out = _disco_s2_transpose_contraction_torch(x, self.psi_st.to(x.device), self.nlon_out)
+            out = _disco_s2_transpose_contraction_regular_torch(x, self.psi_st.to(x.device), self.nlon_out)
 
         # now we can transpose back the result, so that lon is split and channels are local
         if self.comm_size_azimuth > 1:

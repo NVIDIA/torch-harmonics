@@ -64,7 +64,7 @@ namespace attention_kernels
                                        int64_t nlon_in, int64_t nlat_in, int64_t nlat_out, int64_t nlon_out,
                                        torch::Tensor kxP, torch::Tensor vxP, torch::Tensor qyP, torch::Tensor dyP,
                                        torch::Tensor psi_row_off, torch::Tensor psi_seg, torch::Tensor psi_seg_off,
-                                       torch::Tensor quad_weights, torch::Tensor dkxP, torch::Tensor dvxP,
+                                       torch::Tensor ring_weights, torch::Tensor dkxP, torch::Tensor dvxP,
                                        torch::Tensor dqyP);
 
     // BEGIN backward kernels and functions
@@ -90,7 +90,7 @@ namespace attention_kernels
         const STORAGE_T *__restrict__ qy, // [batch][nlat_out][nlon_out][nchan_in]
         const STORAGE_T *__restrict__ dy, // [batch][nlat_out][nlon_out][nchan_out]
         const int32_t *__restrict__ row_idx, const int32_t *__restrict__ seg, const int32_t *__restrict__ seg_off,
-        const float *__restrict__ quad_weights,
+        const float *__restrict__ ring_weights,
         typename vec_traits<STORAGE_T>::compute_t *__restrict__ dkx, // [batch][nlat_in][nlon_in][nchan_in]
         typename vec_traits<STORAGE_T>::compute_t *__restrict__ dvx, // [batch][nlat_in][nlon_in][nchan_out]
         typename vec_traits<STORAGE_T>::compute_t *__restrict__ dqy)
@@ -188,7 +188,7 @@ namespace attention_kernels
             const int hi = seg[3 * sg + 0];
             const int seg_lo = seg[3 * sg + 1];
             const int seg_len = seg[3 * sg + 2];
-            const float qw_seg = quad_weights[hi];
+            const float qw_seg = ring_weights[hi];
 
             const STORAGE_T *kx_row = kx + int64_t(hi) * nlon_in * ldi;
             const STORAGE_T *vx_row = vx + int64_t(hi) * nlon_in * ldo;
@@ -256,7 +256,7 @@ namespace attention_kernels
             const int hi = seg[3 * sg + 0];
             const int seg_lo = seg[3 * sg + 1];
             const int seg_len = seg[3 * sg + 2];
-            const float qw_seg = quad_weights[hi];
+            const float qw_seg = ring_weights[hi];
 
             const STORAGE_T *kx_row = kx + int64_t(hi) * nlon_in * ldi;
             const STORAGE_T *vx_row = vx + int64_t(hi) * nlon_in * ldo;
@@ -347,7 +347,7 @@ namespace attention_kernels
         const STORAGE_T *__restrict__ qy, // [batch][nlat_out][nlon_out][nchan_in]
         const STORAGE_T *__restrict__ dy, // [batch][nlat_out][nlon_out][nchan_out]
         const int32_t *__restrict__ row_idx, const int32_t *__restrict__ seg, const int32_t *__restrict__ seg_off,
-        const float *__restrict__ quad_weights,
+        const float *__restrict__ ring_weights,
         typename vec_traits<STORAGE_T>::compute_t *__restrict__ dkx, // [batch][nlat_in][nlon_in][nchan_in]
         typename vec_traits<STORAGE_T>::compute_t *__restrict__ dvx, // [batch][nlat_in][nlon_in][nchan_out]
         typename vec_traits<STORAGE_T>::compute_t *__restrict__ dqy)
@@ -501,7 +501,7 @@ namespace attention_kernels
             const int hi = seg[3 * sg + 0];
             const int seg_lo = seg[3 * sg + 1];
             const int seg_len = seg[3 * sg + 2];
-            const float qw_seg = quad_weights[hi];
+            const float qw_seg = ring_weights[hi];
 
             const STORAGE_T *kx_row = kx + int64_t(hi) * nlon_in * ldi;
             const STORAGE_T *vx_row = vx + int64_t(hi) * nlon_in * ldo;
@@ -601,7 +601,7 @@ namespace attention_kernels
             const int hi = seg[3 * sg + 0];
             const int seg_lo = seg[3 * sg + 1];
             const int seg_len = seg[3 * sg + 2];
-            const float qw_seg = quad_weights[hi];
+            const float qw_seg = ring_weights[hi];
 
             const STORAGE_T *kx_row = kx + int64_t(hi) * nlon_in * ldi;
             const STORAGE_T *vx_row = vx + int64_t(hi) * nlon_in * ldo;
@@ -847,7 +847,7 @@ namespace attention_kernels
     static void s2_attn_bwd_dispatch(int64_t batch_size, int64_t nheads, int64_t nchans_in, int64_t nchans_out,
                                      int64_t nlon_in, int64_t nlat_out, int64_t nlon_out, at::Tensor kxP,
                                      at::Tensor vxP, at::Tensor qyP, at::Tensor dyP, at::Tensor row_off, at::Tensor seg,
-                                     at::Tensor seg_off, at::Tensor quad_weights, at::Tensor dkxP, at::Tensor dvxP,
+                                     at::Tensor seg_off, at::Tensor ring_weights, at::Tensor dkxP, at::Tensor dvxP,
                                      at::Tensor dqyP)
     {
 
@@ -884,7 +884,7 @@ namespace attention_kernels
         // segments, which is what removes the per-neighbour 64-bit division.
         int32_t *_seg = reinterpret_cast<int32_t *>(seg.data_ptr());
         int32_t *_seg_off = reinterpret_cast<int32_t *>(seg_off.data_ptr());
-        float *_quad_weights = reinterpret_cast<float *>(quad_weights.data_ptr());
+        float *_quad_weights = reinterpret_cast<float *>(ring_weights.data_ptr());
 
         constexpr int MIN_LOC_ARR_LEN = MAX_LOCAL_ARR_LEN / 2 + 1;
 
@@ -926,7 +926,7 @@ namespace attention_kernels
 
     std::tuple<at::Tensor, at::Tensor, at::Tensor>
     // NHWC ABI, heads packed along channels -- see s2_attention_fwd_cuda.
-    s2_attention_bwd_dkvq_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy, at::Tensor quad_weights,
+    s2_attention_bwd_dkvq_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy, at::Tensor ring_weights,
                                at::Tensor psi_col_idx, at::Tensor psi_row_off, at::Tensor psi_seg, at::Tensor psi_seg_off,
                                int64_t num_heads, int64_t nlon_in, int64_t nlat_out, int64_t nlon_out)
     {
@@ -935,7 +935,7 @@ namespace attention_kernels
         CHECK_CUDA_INPUT_TENSOR(vx);
         CHECK_CUDA_INPUT_TENSOR(qy);
         CHECK_CUDA_INPUT_TENSOR(dy);
-        CHECK_CUDA_TENSOR(quad_weights);
+        CHECK_CUDA_TENSOR(ring_weights);
         CHECK_CUDA_TENSOR(psi_col_idx);
         CHECK_CUDA_TENSOR(psi_row_off);
         CHECK_CUDA_TENSOR(psi_seg);
@@ -1006,10 +1006,10 @@ namespace attention_kernels
             if (downsample) {
                 s2_attn_bwd_dispatch<storage_t>(batch_size, num_heads, nchans_in, nchans_out, nlon_in, nlat_out,
                                                 nlon_out, kx, vx, qy, dy, psi_row_off, psi_seg, psi_seg_off,
-                                                quad_weights, dkxP, dvxP, dqyP);
+                                                ring_weights, dkxP, dvxP, dqyP);
             } else {
                 s2_attn_bwd_upsample_dispatch(batch_size, num_heads, nchans_in, nchans_out, nlon_in, nlat_in, nlat_out,
-                                              nlon_out, kx, vx, qy, dy, psi_row_off, psi_seg, psi_seg_off, quad_weights,
+                                              nlon_out, kx, vx, qy, dy, psi_row_off, psi_seg, psi_seg_off, ring_weights,
                                               dkxP, dvxP, dqyP);
             }
 
@@ -1028,6 +1028,6 @@ namespace attention_kernels
         return std::make_tuple(dkx, dvx, dqy);
     }
 
-    TORCH_LIBRARY_IMPL(attention_kernels, CUDA, m) { m.impl("backward", &s2_attention_bwd_dkvq_cuda); }
+    TORCH_LIBRARY_IMPL(attention_kernels, CUDA, m) { m.impl("backward_regular", &s2_attention_bwd_dkvq_cuda); }
 
 } // namespace attention_kernels

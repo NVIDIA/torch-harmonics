@@ -17,13 +17,13 @@ description: >
 ```
 disco_interface.cpp          TORCH_LIBRARY("disco_kernels") — raw op schema
   ├── forward(inp, …)        CSR sparse contraction inp → (B,C,K,H,W)
-  ├── backward(inp, …)       CSR transpose contraction (B,C,K,H,W) → inp
+  ├── backward_regular(inp, …) CSR transpose contraction (B,C,K,H,W) → inp
   └── forward_kpacked(…)     WGMMA kpacked forward (SM_90a + bf16/fp16 only)
 
 disco_optimized.py           Python dispatch layer
-  ├── _disco_s2_contraction_optimized         custom_op wrapping forward
-  ├── _disco_s2_transpose_contraction_optimized  custom_op wrapping backward
-  ├── _disco_s2_fused_conv_optimized          custom_op: contraction + einsum
+  ├── _disco_s2_contraction_regular_optimized         custom_op wrapping forward
+  ├── _disco_s2_transpose_contraction_regular_optimized  custom_op wrapping backward
+  ├── _disco_s2_fused_conv_regular_optimized          custom_op: contraction + einsum
   ├── _DiscoKpackedFn(autograd.Function)      WGMMA fwd + CSR bwd (unfused)
   ├── _DiscoKpackedFusedFn(autograd.Function) WGMMA fwd + CSR bwd (fused)
   └── _maybe_kpack_psi(…)    converts CSR psi to kpacked layout at init time if required
@@ -32,9 +32,9 @@ convolution.py               DiscreteContinuousConvS2._forward() dispatch:
   _kpacked_ok = optimized_kernel and psi_kpacked_K_pad in (8,16)
                 and x.dtype in (float16, bfloat16)
   fused + kpacked  →  _disco_s2_fused_conv_kpacked
-  fused only       →  _disco_s2_fused_conv_optimized
+  fused only       →  _disco_s2_fused_conv_regular_optimized
   kpacked only     →  _disco_s2_contraction_kpacked
-  CSR default      →  _disco_s2_contraction_optimized / torch
+  CSR default      →  _disco_s2_contraction_regular_optimized / torch
 
 distributed_convolution_kernels.py   mirrors serial dispatch for a2a paths
 distributed_convolution.py           builds kpacked buffers in _build_local_psi

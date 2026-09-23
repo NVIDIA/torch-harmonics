@@ -45,18 +45,18 @@ namespace attention_kernels
 
     // NHWC ABI with heads packed along the channel dimension; see the definitions
     // in attention_cuda_fwd.cu / attention_cuda_bwd.cu.
-    torch::Tensor s2_attention_fwd_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor quad_weights,
+    torch::Tensor s2_attention_fwd_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor ring_weights,
                                         at::Tensor psi_col_idx, at::Tensor psi_row_off, at::Tensor psi_seg,
                                         at::Tensor psi_seg_off, int64_t num_heads, int64_t nlon_in, int64_t nlat_out,
                                         int64_t nlon_out);
 
     std::tuple<at::Tensor, at::Tensor, at::Tensor>
-    s2_attention_bwd_dkvq_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy, at::Tensor quad_weights,
+    s2_attention_bwd_dkvq_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy, at::Tensor ring_weights,
                                at::Tensor psi_col_idx, at::Tensor psi_row_off, at::Tensor psi_seg, at::Tensor psi_seg_off,
                                int64_t num_heads, int64_t nlon_in, int64_t nlat_out, int64_t nlon_out);
 
     void s2_attention_fwd_ring_step_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor y_acc,
-                                         at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf, at::Tensor quad_weights,
+                                         at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf, at::Tensor ring_weights,
                                          at::Tensor psi_col_idx, at::Tensor psi_row_off, at::Tensor psi_row_idx,
                                          int64_t nlon_in, int64_t pscale, int64_t lon_lo_kx, int64_t lat_halo_start,
                                          int64_t nlat_out, int64_t nlon_out, int64_t n_long_rows, int64_t max_row_len,
@@ -65,7 +65,7 @@ namespace attention_kernels
     void s2_attention_bwd_ring_step_pass1_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
                                                at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
                                                at::Tensor integral_buf, at::Tensor alpha_k_buf, at::Tensor alpha_kvw_buf,
-                                               at::Tensor quad_weights, at::Tensor psi_col_idx, at::Tensor psi_row_off,
+                                               at::Tensor ring_weights, at::Tensor psi_col_idx, at::Tensor psi_row_off,
                                                at::Tensor psi_row_idx, int64_t nlon_in, int64_t pscale, int64_t lon_lo_kx,
                                                int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out,
                                                int64_t n_long_rows, int64_t max_row_len, int64_t mid_row_len);
@@ -73,7 +73,7 @@ namespace attention_kernels
     void s2_attention_bwd_ring_step_pass2_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
                                                at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
                                                at::Tensor integral_norm_buf, at::Tensor dkx, at::Tensor dvx,
-                                               at::Tensor quad_weights, at::Tensor psi_col_idx, at::Tensor psi_row_off,
+                                               at::Tensor ring_weights, at::Tensor psi_col_idx, at::Tensor psi_row_off,
                                                at::Tensor psi_row_idx, int64_t nlon_in, int64_t pscale, int64_t lon_lo_kx,
                                                int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out,
                                                int64_t n_long_rows, int64_t max_row_len, int64_t mid_row_len);
@@ -81,7 +81,7 @@ namespace attention_kernels
     // ring-step variants for the upsample (input-keyed scatter) direction
     void s2_attention_fwd_ring_step_upsample_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor y_acc,
                                                   at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
-                                                  at::Tensor quad_weights, at::Tensor psi_col_idx,
+                                                  at::Tensor ring_weights, at::Tensor psi_col_idx,
                                                   at::Tensor psi_row_off, int64_t nlon_in, int64_t nlon_out_global,
                                                   int64_t pscale_out, int64_t lon_lo_kx, int64_t lat_halo_start,
                                                   int64_t nlat_out, int64_t nlon_out);
@@ -89,7 +89,7 @@ namespace attention_kernels
     void s2_attention_bwd_ring_step_upsample_pass1_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
                                                         at::Tensor qdotk_max_buf, at::Tensor integral_buf,
                                                         at::Tensor alpha_k_buf, at::Tensor alpha_kvw_buf,
-                                                        at::Tensor quad_weights, at::Tensor psi_col_idx,
+                                                        at::Tensor ring_weights, at::Tensor psi_col_idx,
                                                         at::Tensor psi_row_off, int64_t nlon_in,
                                                         int64_t nlon_out_global, int64_t pscale_out, int64_t lon_lo_kx,
                                                         int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out);
@@ -97,9 +97,29 @@ namespace attention_kernels
     void s2_attention_bwd_ring_step_upsample_pass2_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
                                                         at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
                                                         at::Tensor integral_norm_buf, at::Tensor dkx, at::Tensor dvx,
-                                                        at::Tensor quad_weights, at::Tensor psi_col_idx,
+                                                        at::Tensor ring_weights, at::Tensor psi_col_idx,
                                                         at::Tensor psi_row_off, int64_t nlon_in,
                                                         int64_t nlon_out_global, int64_t pscale_out, int64_t lon_lo_kx,
                                                         int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out);
+
+    // Ragged variants, for a grid whose rings differ in length; see the definitions in
+    // kernels_cuda/ragged/. Same NHWC ABI, but the field is flat: one npoints extent in
+    // place of (nlat, nlon), with ring_base/ring_size carrying what nlon gave
+    // arithmetically on a regular grid. The neighbourhood arrives in arc form only --
+    // the CSR is the reference path's, and never reaches a kernel here.
+    //
+    // The forward returns (y, y_hi, alpha_sum, qdotk_max): the trailing three are softmax
+    // bookkeeping the backward consumes rather than rebuilding, and are fp32 whatever the
+    // activations are. y_hi is an fp32 copy of the output, empty when not wanted.
+    std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+    s2_attention_fwd_ragged_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor ring_weights,
+                                 at::Tensor psi_seg, at::Tensor psi_seg_off, at::Tensor ring_base, at::Tensor ring_size,
+                                 int64_t num_heads, int64_t npoints_out);
+
+    std::tuple<at::Tensor, at::Tensor, at::Tensor>
+    s2_attention_bwd_ragged_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy, at::Tensor y,
+                                 at::Tensor y_hi, at::Tensor alpha_sum, at::Tensor qdotk_max, at::Tensor ring_weights,
+                                 at::Tensor psi_seg, at::Tensor psi_seg_off, at::Tensor ring_base, at::Tensor ring_size,
+                                 int64_t num_heads, int64_t npoints_out);
 
 } // namespace attention_kernels

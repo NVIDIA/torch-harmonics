@@ -48,7 +48,7 @@ from .._disco_utils import _compute_dtype
 
 
 # convolution
-def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
+def _disco_s2_contraction_regular_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
     """
     Reference implementation of the custom contraction as described in :cite:`Ocampo2023`. This requires repeated
     shifting of the input tensor, which can potentially be costly. For an efficient implementation
@@ -93,7 +93,7 @@ def _disco_s2_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: in
 
 
 # transpose convolution
-def _disco_s2_transpose_contraction_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
+def _disco_s2_transpose_contraction_regular_torch(x: torch.Tensor, psi: torch.Tensor, nlon_out: int):
     check(psi.dim() == 3, lambda: f"Expected 3-dimensional psi tensor, got {psi.dim()} dimensions")
     check(x.dim() == 5, lambda: f"Expected 5-dimensional input tensor, got {x.dim()} dimensions")
     psi = psi.to(x.device)

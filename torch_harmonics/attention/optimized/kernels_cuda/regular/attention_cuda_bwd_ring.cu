@@ -82,7 +82,7 @@ namespace attention_kernels
         const STORAGE_T *__restrict__ qy, // [batch][nlat_out][nlon_out][nchan_in]
         const STORAGE_T *__restrict__ dy, // [batch][nlat_out][nlon_out][nchan_out]
         const int32_t *__restrict__ row_idx, const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx,
-        const float *__restrict__ quad_weights,
+        const float *__restrict__ ring_weights,
         float *__restrict__ alpha_sum_buf,                                    // [batch][nlat_out][nlon_out] (in/out)
         float *__restrict__ qdotk_max_buf,                                    // [batch][nlat_out][nlon_out] (in/out)
         float *__restrict__ integral_buf,                                     // [batch][nlat_out][nlon_out] (in/out)
@@ -185,7 +185,7 @@ namespace attention_kernels
             const float gdotv = __warp_sum(__vred(gdotv_v));
 
             const float qdotk_max_tmp = max(qdotk_max, qdotk);
-            const float alpha_inz = expf(qdotk - qdotk_max_tmp) * quad_weights[hi_global];
+            const float alpha_inz = expf(qdotk - qdotk_max_tmp) * ring_weights[hi_global];
             const float max_correction = expf(qdotk_max - qdotk_max_tmp);
 
             alpha_sum = alpha_sum * max_correction + alpha_inz;
@@ -477,7 +477,7 @@ namespace attention_kernels
         const STORAGE_T *__restrict__ qy, // [batch][nlat_out][nlon_out][nchan_in]
         const STORAGE_T *__restrict__ dy, // [batch][nlat_out][nlon_out][nchan_out]
         const int32_t *__restrict__ row_idx, const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx,
-        const float *__restrict__ quad_weights,
+        const float *__restrict__ ring_weights,
         float *__restrict__ alpha_sum_buf,  // [batch][nlat_out][nlon_out] (in/out)
         float *__restrict__ qdotk_max_curr, // [batch][nlat_out][nlon_out] (in/out)
         float *__restrict__ integral_buf,   // [batch][nlat_out][nlon_out] unnormalized (in/out)
@@ -620,7 +620,7 @@ namespace attention_kernels
                         const int wip_local = wip - lon_lo_kx;
                         kx_ptr = kx + int64_t(hi_local) * nlon_kx * nchan_in + int64_t(wip_local) * nchan_in;
                         vx_ptr = vx + int64_t(hi_local) * nlon_kx * nchan_out + int64_t(wip_local) * nchan_out;
-                        weight = quad_weights[hi_global];
+                        weight = ring_weights[hi_global];
                     }
                 }
             }
@@ -661,7 +661,7 @@ namespace attention_kernels
 
             __group_sum<BDIM_X, BDIM_Y>(qdotk, gdotv);
 
-            const float alpha_inz = expf(qdotk - qdotk_max_new) * shweight[i]; // quad_weights[hi_global];
+            const float alpha_inz = expf(qdotk - qdotk_max_new) * shweight[i]; // ring_weights[hi_global];
             const float ainz_gdotv = alpha_inz * gdotv;
 
             alpha_sum += alpha_inz;
@@ -810,7 +810,7 @@ namespace attention_kernels
         const STORAGE_T *__restrict__ qy, // [batch][nlat_out][nlon_out][nchan_in]
         const STORAGE_T *__restrict__ dy, // [batch][nlat_out][nlon_out][nchan_out]
         const int32_t *__restrict__ row_idx, const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx,
-        const float *__restrict__ quad_weights,
+        const float *__restrict__ ring_weights,
         float *__restrict__ alpha_sum_buf, // [batch][nlat_out][nlon_out] (in/out)
         float *__restrict__ qdotk_max_buf, // [batch][nlat_out][nlon_out] (in/out)
         float *__restrict__ integral_buf,  // [batch][nlat_out][nlon_out] unnormalized (in/out)
@@ -944,7 +944,7 @@ namespace attention_kernels
                         const int wip_local = wip - lon_lo_kx;
                         kx_ptr = kx + int64_t(hi_local) * nlon_kx * nchan_in + int64_t(wip_local) * nchan_in;
                         vx_ptr = vx + int64_t(hi_local) * nlon_kx * nchan_out + int64_t(wip_local) * nchan_out;
-                        weight = quad_weights[hi_global];
+                        weight = ring_weights[hi_global];
                     }
                 }
             }
@@ -984,7 +984,7 @@ namespace attention_kernels
             __group_sum<BDIM_X, BDIM_Y>(qdotk, gdotv);
 
             const float qdotk_max_tmp = max(qdotk_max, qdotk);
-            const float alpha_inz = expf(qdotk - qdotk_max_tmp) * shweight[i]; // quad_weights[hi_global];
+            const float alpha_inz = expf(qdotk - qdotk_max_tmp) * shweight[i]; // ring_weights[hi_global];
             const float max_correction = expf(qdotk_max - qdotk_max_tmp);
 
             alpha_sum = alpha_sum * max_correction + alpha_inz;
@@ -1118,7 +1118,7 @@ namespace attention_kernels
         int64_t batch_size, int64_t nchans_in, int64_t nchans_out, int64_t nlon_in, int64_t pscale, int64_t nlat_halo,
         int64_t nlon_kx, int64_t lon_lo_kx, int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out, at::Tensor kxP,
         at::Tensor vxP, at::Tensor qyP, at::Tensor dyP, at::Tensor row_idx, at::Tensor row_off, at::Tensor col_idx,
-        at::Tensor quad_weights, at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf, at::Tensor integral_buf,
+        at::Tensor ring_weights, at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf, at::Tensor integral_buf,
         at::Tensor alpha_k_buf, at::Tensor alpha_kvw_buf, int64_t n_long_rows, int64_t max_row_len, int64_t mid_row_len)
     {
 
@@ -1140,7 +1140,7 @@ namespace attention_kernels
         int32_t *_row_idx = reinterpret_cast<int32_t *>(row_idx.data_ptr());
         int64_t *_row_off = reinterpret_cast<int64_t *>(row_off.data_ptr());
         int64_t *_col_idx = reinterpret_cast<int64_t *>(col_idx.data_ptr());
-        float *_quad_weights = reinterpret_cast<float *>(quad_weights.data_ptr());
+        float *_quad_weights = reinterpret_cast<float *>(ring_weights.data_ptr());
         float *_alpha_k = reinterpret_cast<float *>(alpha_k_buf.data_ptr());
         float *_alpha_kvw = reinterpret_cast<float *>(alpha_kvw_buf.data_ptr());
 
@@ -1312,7 +1312,7 @@ namespace attention_kernels
     __global__ __launch_bounds__(BDIM_X) void s2_attn_bwd_ring_pass2_generic_k(
         const __grid_constant__ attn_params_t p, const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ vx,
         const STORAGE_T *__restrict__ qy, const STORAGE_T *__restrict__ dy, const int32_t *__restrict__ row_idx,
-        const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx, const float *__restrict__ quad_weights,
+        const int64_t *__restrict__ row_off, const int64_t *__restrict__ col_idx, const float *__restrict__ ring_weights,
         const float *__restrict__ alpha_sum_buf,     // finalized [batch][nlat_out][nlon_out]
         const float *__restrict__ qdotk_max_buf,     // finalized [batch][nlat_out][nlon_out]
         const float *__restrict__ integral_norm_buf, // finalized, normalized [batch][nlat_out][nlon_out]
@@ -1408,7 +1408,7 @@ namespace attention_kernels
             const float qdotk = __warp_sum(__vred(qdotk_v));
             const float gdotv = __warp_sum(__vred(gdotv_v));
 
-            const float alpha_inz = expf(qdotk - qdotk_max) * quad_weights[hi_global];
+            const float alpha_inz = expf(qdotk - qdotk_max) * ring_weights[hi_global];
             const float alpha_mul = alpha_inz * alpha_sum_inv;
             const float scale_dkx = (gdotv - integral_norm) * alpha_mul;
             const float scale_dvx = alpha_mul;
@@ -1479,7 +1479,7 @@ namespace attention_kernels
         const int nlat_max, // we may process less than nlat_out rows, so use this for early exit
         const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy,
         const STORAGE_T *__restrict__ dy, const int32_t *__restrict__ row_idx, const int64_t *__restrict__ row_off,
-        const int64_t *__restrict__ col_idx, const float *__restrict__ quad_weights,
+        const int64_t *__restrict__ col_idx, const float *__restrict__ ring_weights,
         const float *__restrict__ alpha_sum_buf,     // finalized [batch][nlat_out][nlon_out]
         const float *__restrict__ qdotk_max_buf,     // finalized [batch][nlat_out][nlon_out]
         const float *__restrict__ integral_norm_buf, // finalized, normalized [batch][nlat_out][nlon_out]
@@ -1616,7 +1616,7 @@ namespace attention_kernels
                     if (hi_local >= 0 && hi_local < nlat_halo) {
 
                         wip_local = wip - lon_lo_kx;
-                        weight = quad_weights[hi_global];
+                        weight = ring_weights[hi_global];
                     }
                 }
             }
@@ -1829,7 +1829,7 @@ namespace attention_kernels
         int64_t batch_size, int64_t nchans_in, int64_t nchans_out, int64_t nlon_in, int64_t pscale, int64_t nlat_halo,
         int64_t nlon_kx, int64_t lon_lo_kx, int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out, at::Tensor kxP,
         at::Tensor vxP, at::Tensor qyP, at::Tensor dyP, at::Tensor row_idx, at::Tensor row_off, at::Tensor col_idx,
-        at::Tensor quad_weights, at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf, at::Tensor integral_norm_buf,
+        at::Tensor ring_weights, at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf, at::Tensor integral_norm_buf,
         at::Tensor dkxP, at::Tensor dvxP, int64_t n_long_rows, int64_t max_row_len, int64_t mid_row_len)
     {
 
@@ -1848,7 +1848,7 @@ namespace attention_kernels
         int32_t *_row_idx = reinterpret_cast<int32_t *>(row_idx.data_ptr());
         int64_t *_row_off = reinterpret_cast<int64_t *>(row_off.data_ptr());
         int64_t *_col_idx = reinterpret_cast<int64_t *>(col_idx.data_ptr());
-        float *_quad_weights = reinterpret_cast<float *>(quad_weights.data_ptr());
+        float *_quad_weights = reinterpret_cast<float *>(ring_weights.data_ptr());
         float *_alpha_sum = reinterpret_cast<float *>(alpha_sum_buf.data_ptr());
         float *_qdotk_max = reinterpret_cast<float *>(qdotk_max_buf.data_ptr());
         float *_integral_n = reinterpret_cast<float *>(integral_norm_buf.data_ptr());
@@ -2014,7 +2014,7 @@ namespace attention_kernels
     void s2_attention_bwd_ring_step_pass1_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
                                                at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
                                                at::Tensor integral_buf, at::Tensor alpha_k_buf, at::Tensor alpha_kvw_buf,
-                                               at::Tensor quad_weights, at::Tensor psi_col_idx, at::Tensor psi_row_off,
+                                               at::Tensor ring_weights, at::Tensor psi_col_idx, at::Tensor psi_row_off,
                                                at::Tensor psi_row_idx, int64_t nlon_in, int64_t pscale, int64_t lon_lo_kx,
                                                int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out,
                                                int64_t n_long_rows, int64_t max_row_len, int64_t mid_row_len)
@@ -2028,7 +2028,7 @@ namespace attention_kernels
         CHECK_CUDA_TENSOR(integral_buf);
         CHECK_CUDA_TENSOR(alpha_k_buf);
         CHECK_CUDA_TENSOR(alpha_kvw_buf);
-        CHECK_CUDA_TENSOR(quad_weights);
+        CHECK_CUDA_TENSOR(ring_weights);
         CHECK_CUDA_TENSOR(psi_col_idx);
         CHECK_CUDA_TENSOR(psi_row_off);
         CHECK_CUDA_TENSOR(psi_row_idx);
@@ -2058,7 +2058,7 @@ namespace attention_kernels
 
                 s2_attn_bwd_ring_step_pass1_dispatch<storage_t>(
                     batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start,
-                    nlat_out, nlon_out, kxP, vxP, qyP, dyP, psi_row_idx, psi_row_off, psi_col_idx, quad_weights,
+                    nlat_out, nlon_out, kxP, vxP, qyP, dyP, psi_row_idx, psi_row_off, psi_col_idx, ring_weights,
                     alpha_sum_buf, qdotk_max_buf, integral_buf, alpha_k_buf, alpha_kvw_buf, n_long_rows, max_row_len,
                     mid_row_len);
             });
@@ -2069,7 +2069,7 @@ namespace attention_kernels
     void s2_attention_bwd_ring_step_pass2_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
                                                at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
                                                at::Tensor integral_norm_buf, at::Tensor dkx, at::Tensor dvx,
-                                               at::Tensor quad_weights, at::Tensor psi_col_idx, at::Tensor psi_row_off,
+                                               at::Tensor ring_weights, at::Tensor psi_col_idx, at::Tensor psi_row_off,
                                                at::Tensor psi_row_idx, int64_t nlon_in, int64_t pscale, int64_t lon_lo_kx,
                                                int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out,
                                                int64_t n_long_rows, int64_t max_row_len, int64_t mid_row_len)
@@ -2083,7 +2083,7 @@ namespace attention_kernels
         CHECK_CUDA_TENSOR(integral_norm_buf);
         CHECK_CUDA_TENSOR(dkx);
         CHECK_CUDA_TENSOR(dvx);
-        CHECK_CUDA_TENSOR(quad_weights);
+        CHECK_CUDA_TENSOR(ring_weights);
         CHECK_CUDA_TENSOR(psi_col_idx);
         CHECK_CUDA_TENSOR(psi_row_off);
         CHECK_CUDA_TENSOR(psi_row_idx);
@@ -2117,7 +2117,7 @@ namespace attention_kernels
                 // dkx/dvx are already in channels-last format (allocated that way in Python)
                 s2_attn_bwd_ring_step_pass2_dispatch<storage_t>(
                     batch_size, nchans_in, nchans_out, nlon_in, pscale, nlat_halo, nlon_kx, lon_lo_kx, lat_halo_start,
-                    nlat_out, nlon_out, kxP, vxP, qyP, dyP, psi_row_idx, psi_row_off, psi_col_idx, quad_weights,
+                    nlat_out, nlon_out, kxP, vxP, qyP, dyP, psi_row_idx, psi_row_off, psi_col_idx, ring_weights,
                     alpha_sum_buf, qdotk_max_buf, integral_norm_buf, dkx, dvx, n_long_rows, max_row_len, mid_row_len);
             });
 
