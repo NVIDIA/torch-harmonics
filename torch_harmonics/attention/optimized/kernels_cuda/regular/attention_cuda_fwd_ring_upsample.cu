@@ -65,7 +65,7 @@
 // mirroring the serial upsample scatter kernels in attention_cuda_fwd_upsample.cu.
 // =====================================================================================
 
-#include "attention_cuda.cuh"
+#include "../common/attention_cuda.cuh"
 #include <ATen/Dispatch.h>
 #include <ATen/cuda/CUDAUtils.h>
 #include <c10/cuda/CUDAException.h>
@@ -73,8 +73,8 @@
 #include <cuda_runtime.h>
 #include <cfloat>
 
-#include "cudamacro.h"
-#include "attention_cuda_utils.cuh"
+#include "../common/cudamacro.h"
+#include "../common/attention_cuda_utils.cuh"
 
 #define THREADS (64)
 

@@ -87,7 +87,7 @@
 // identities at the top of that file. Nothing about the forward's own arithmetic
 // changes: the two values are written before alpha_sum is inverted.
 
-#include "attention_cuda.cuh"
+#include "../common/attention_cuda.cuh"
 #include <ATen/Dispatch.h>
 #include <ATen/OpMathType.h>
 #include "c10/core/MemoryFormat.h"
@@ -106,8 +106,8 @@
 #include <cfloat>
 #include <cstdlib>
 
-#include "cudamacro.h"
-#include "attention_cuda_utils.cuh"
+#include "../common/cudamacro.h"
+#include "../common/attention_cuda_utils.cuh"
 
 // Threads per block, and so warps per block, since BDIM_X is a warp. Overridable
 // because the ragged kernel wants it swept independently of the product-grid one:

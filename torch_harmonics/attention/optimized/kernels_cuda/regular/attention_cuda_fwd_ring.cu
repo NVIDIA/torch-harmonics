@@ -28,7 +28,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "attention_cuda.cuh"
+#include "../common/attention_cuda.cuh"
 #include <ATen/Dispatch.h>
 #include <ATen/OpMathType.h>
 #include <ATen/cuda/detail/TensorInfo.cuh>
@@ -44,8 +44,8 @@
 
 #include <cuda/barrier>
 
-#include "cudamacro.h"
-#include "attention_cuda_utils.cuh"
+#include "../common/cudamacro.h"
+#include "../common/attention_cuda_utils.cuh"
 
 #define THREADS (64)
 

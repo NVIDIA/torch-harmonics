@@ -102,7 +102,7 @@
 // as an escape hatch, since only the last of NLOC registers is bounds-checked and
 // that argument depends on NLOC being exactly DIV_UP(nchan, BDIM_X).
 
-#include "attention_cuda.cuh"
+#include "../common/attention_cuda.cuh"
 #include <ATen/Dispatch.h>
 #include <ATen/OpMathType.h>
 #include "c10/core/MemoryFormat.h"
@@ -121,8 +121,8 @@
 #include <cfloat>
 #include <cstdlib>
 
-#include "cudamacro.h"
-#include "attention_cuda_utils.cuh"
+#include "../common/cudamacro.h"
+#include "../common/attention_cuda_utils.cuh"
 
 // Threads per block, and so warps per block, since BDIM_X is a warp. Overridable for
 // the reason given in attention_cuda_fwd_ragged.cu: warps in a block take consecutive
