@@ -99,6 +99,21 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
         if self.device.type == "cuda":
             torch.cuda.manual_seed(333)
 
+    def _csr(self, att):
+        """
+        The neighbourhood as CSR, built from the layer's arcs rather than read off it.
+
+        The ring kernels are the last consumer of the column form: everything else on the
+        regular path now reads arcs, so an optimized layer registers only ``psi_seg`` /
+        ``psi_seg_off`` and has no ``psi_col_idx`` to borrow. Deriving it here is the same
+        construction ``DistributedNeighborhoodAttentionS2`` performs on its own shard, and
+        keeps these tests independent of which backend the serial layer happened to pick.
+        """
+        col_idx, roff_idx = att._neighborhood_arcs().to_csr()
+        col_idx = col_idx.contiguous().to(self.device)
+        roff_idx = roff_idx.to(torch.int64).contiguous().to(self.device)
+        return col_idx, roff_idx
+
     @parameterized.expand(
         [
             # Format: [batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, use_qknorm, atol, rtol]
@@ -952,8 +967,8 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
         nlat_out, nlon_out = out_shape
         pscale = nlon_in // nlon_out
 
-        # Build the module just to get a consistent (ring_weights, psi_col_idx, psi_roff_idx)
-        # for the chosen grid; we do not exercise its forward.
+        # Build the module just to get a consistent (ring_weights, neighbourhood) for the
+        # chosen grid; we do not exercise its forward.
         att = NeighborhoodAttentionS2(
             grid_in=as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
             grid_out=as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
@@ -962,6 +977,7 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
             bias=False,
             optimized_kernel=True,
         ).to(self.device)
+        psi_col_idx, psi_roff_idx = self._csr(att)
 
         # Channel counts after the (head-folded) projections in DistributedNeighborhoodAttentionS2.
         Bnh = batch_size * heads
@@ -976,12 +992,12 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
         # The kernel expects row_idx to be the sorted permutation of output rows (by nnz),
         # not the row index buffer registered on the serial module. Build it the same way
         # _build_local_psi does in distributed_attention.py.
-        nnz_per_row = (att.psi_roff_idx[1:] - att.psi_roff_idx[:-1]).cpu()
+        nnz_per_row = (psi_roff_idx[1:] - psi_roff_idx[:-1]).cpu()
         row_idx_kernel = torch.argsort(nnz_per_row, descending=True).to(torch.int32).to(self.device)
 
         # Precomputed CSR row split, threaded into every ring-step op (constant for a
         # fixed psi; see split_csr_rows_op / _row_split in distributed_attention.py).
-        n_long_rows, max_row_len, mid_row_len = torch.ops.attention_kernels.split_csr_rows(row_idx_kernel, att.psi_roff_idx, nlat_out)
+        n_long_rows, max_row_len, mid_row_len = torch.ops.attention_kernels.split_csr_rows(row_idx_kernel, psi_roff_idx, nlat_out)
 
         # ---- forward ring step ----
         # State buffers in channels-last layout, as expected by the CUDA kernels.
@@ -997,8 +1013,8 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
             alpha_sum,
             qdotk_max,
             att.ring_weights,
-            att.psi_col_idx,
-            att.psi_roff_idx,
+            psi_col_idx,
+            psi_roff_idx,
             row_idx_kernel,
             nlon_in,
             pscale,
@@ -1033,8 +1049,8 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
             alpha_k_buf,
             alpha_kvw_buf,
             att.ring_weights,
-            att.psi_col_idx,
-            att.psi_roff_idx,
+            psi_col_idx,
+            psi_roff_idx,
             row_idx_kernel,
             nlon_in,
             pscale,
@@ -1071,8 +1087,8 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
             dkw,
             dvw,
             att.ring_weights,
-            att.psi_col_idx,
-            att.psi_roff_idx,
+            psi_col_idx,
+            psi_roff_idx,
             row_idx_kernel,
             nlon_in,
             pscale,
@@ -1121,9 +1137,9 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
         nlat_out, nlon_out = out_shape
         pscale_out = nlon_out // nlon_in
 
-        # Build the module just to get a consistent (ring_weights, psi_col_idx, psi_roff_idx)
-        # for the chosen grid; we do not exercise its forward. For upsample shapes the module
-        # builds the scatter psi (rows keyed by hi, cols encoding ho * nlon_out + wo).
+        # Build the module just to get a consistent (ring_weights, neighbourhood) for the
+        # chosen grid; we do not exercise its forward. For upsample shapes the neighbourhood
+        # is the scatter psi (rows keyed by hi, cols encoding ho * nlon_out + wo).
         att = NeighborhoodAttentionS2(
             grid_in=as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
             grid_out=as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
@@ -1133,6 +1149,7 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
             optimized_kernel=True,
         ).to(self.device)
         self.assertTrue(att.upsample)
+        psi_col_idx, psi_roff_idx = self._csr(att)
 
         # Channel counts after the (head-folded) projections in DistributedNeighborhoodAttentionS2.
         Bnh = batch_size * heads
@@ -1158,8 +1175,8 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
             alpha_sum,
             qdotk_max,
             att.ring_weights,
-            att.psi_col_idx,
-            att.psi_roff_idx,
+            psi_col_idx,
+            psi_roff_idx,
             nlon_in,
             nlon_out,
             pscale_out,
@@ -1192,8 +1209,8 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
             alpha_k_buf,
             alpha_kvw_buf,
             att.ring_weights,
-            att.psi_col_idx,
-            att.psi_roff_idx,
+            psi_col_idx,
+            psi_roff_idx,
             nlon_in,
             nlon_out,
             pscale_out,
@@ -1223,8 +1240,8 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
             dkw,
             dvw,
             att.ring_weights,
-            att.psi_col_idx,
-            att.psi_roff_idx,
+            psi_col_idx,
+            psi_roff_idx,
             nlon_in,
             nlon_out,
             pscale_out,
