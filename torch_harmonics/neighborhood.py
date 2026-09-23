@@ -122,9 +122,13 @@ class NeighborhoodArcsS2(NamedTuple):
         consumer can advance with a single compare-and-subtract and never needs a
         modulo.
     offsets : torch.Tensor
-        ``int32``, shape ``(npoints_out + 1,)``. Segments of output point ``p`` are
-        ``segments[offsets[p]:offsets[p + 1]]``. Output points are in the flat order of
-        the output grid.
+        ``int32``, shape ``(nrows + 1,)``. Segments of row ``r`` are
+        ``segments[offsets[r]:offsets[r + 1]]``.
+
+        What a *row* is depends on :attr:`lon_shift`. With ``lon_shift is None`` there is
+        one row per output point, in the flat order of the output grid. Otherwise there
+        is one row per output *ring*, holding the pattern of that ring's first point,
+        and the rest of the ring is recovered by shifting.
     ring_base : torch.Tensor
         ``int64``, shape ``(nlat_in,)``. Flat index of the first point of each input
         ring, i.e. the input grid's ``lon_offsets[:-1]``. Carried alongside so a
@@ -135,6 +139,20 @@ class NeighborhoodArcsS2(NamedTuple):
         grid's ``nlon_per_lat``. Needed to wrap an arc.
     theta_cutoff : float
         The radius the pattern was built for, in radians.
+    lon_shift : int, optional
+        ``None`` when the pattern is stored per output point.
+
+        Otherwise the longitude axis has been folded away: there is one row per output
+        ring, and the neighbourhood of the point at longitude index ``w`` of ring ``k``
+        is row ``k``'s arcs with every ``start`` advanced by ``w * lon_shift`` within its
+        ring. That is only valid when shifting the output longitude maps the pattern onto
+        itself, which needs both grids regular, unstaggered rings, and
+        ``nlon_in % nlon_out == 0``; :func:`precompute_neighborhood_arcs_s2` checks all
+        three before folding.
+
+        Worth the check: folding divides the stored pattern by ``nlon_out``. At 1024
+        output longitudes that is the difference between 631 thousand entries and 646
+        million.
     """
 
     segments: torch.Tensor
@@ -142,6 +160,7 @@ class NeighborhoodArcsS2(NamedTuple):
     ring_base: torch.Tensor
     ring_size: torch.Tensor
     theta_cutoff: float
+    lon_shift: Optional[int] = None
 
     @property
     def nnz(self) -> int:
@@ -248,7 +267,39 @@ class NeighborhoodArcsS2(NamedTuple):
 
 
 @lru_cache(maxsize=8, typed=True, copy=True)
-def precompute_neighborhood_arcs_s2(grid_in: GridS2, grid_out: GridS2, theta_cutoff: float, theta_eps: Optional[float] = 1e-3) -> NeighborhoodArcsS2:
+def _validated_lon_shift(grid_in: GridS2, grid_out: GridS2) -> int:
+    r"""
+    The input-longitude step one output-longitude step corresponds to, or a refusal.
+
+    Folding the longitude axis assumes that advancing the output longitude by one index
+    carries a point's neighbourhood onto the next point's. Three things have to hold:
+
+    * both grids regular -- on a ragged grid the rings have different lengths, so no
+      single shift works for all of them;
+    * neither grid's rings staggered -- HEALPix offsets successive rings by half a
+      point, so a shift within one ring does not line up with the next;
+    * ``nlon_in % nlon_out == 0`` -- otherwise one output step is a fractional number of
+      input steps and the shifted arcs would not land on input points.
+
+    None of the three announces itself if skipped: the pattern would simply be wrong for
+    every output longitude except the first.
+    """
+    for name, grid in (("grid_in", grid_in), ("grid_out", grid_out)):
+        if not grid.is_regular:
+            raise ValueError(f"fold_longitude needs both grids regular, but {name} is ragged: {grid!r}")
+        if bool(grid.lon_shifts.any()):
+            raise ValueError(f"fold_longitude needs unstaggered rings, but {name} offsets its rings: {grid!r}")
+    nlon_in, nlon_out = int(grid_in.nlon_per_lat[0]), int(grid_out.nlon_per_lat[0])
+    if nlon_in % nlon_out != 0:
+        raise ValueError(
+            f"fold_longitude needs nlon_in ({nlon_in}) to be a multiple of nlon_out ({nlon_out}), " "so that one output longitude step is a whole number of input steps"
+        )
+    return nlon_in // nlon_out
+
+
+def precompute_neighborhood_arcs_s2(
+    grid_in: GridS2, grid_out: GridS2, theta_cutoff: float, theta_eps: Optional[float] = 1e-3, fold_longitude: Optional[bool] = False
+) -> NeighborhoodArcsS2:
     r"""
     Geodesic neighbourhood of every output point, as contiguous arcs of input points.
 
@@ -342,6 +393,13 @@ def precompute_neighborhood_arcs_s2(grid_in: GridS2, grid_out: GridS2, theta_cut
     # the descriptor carries the per-point geometry in the flat order a field is
     # stored in, so this no longer has to know whether grid_out is ragged
     coords_out = grid_out.coords.to(torch.float64)
+
+    lon_shift = _validated_lon_shift(grid_in, grid_out) if fold_longitude else None
+    if lon_shift is not None:
+        # keep only the first point of each output ring; the rest of the ring is that
+        # point's pattern shifted, so computing and storing it would be redundant
+        coords_out = coords_out[grid_out.lon_offsets[:-1].to(torch.int64)]
+
     colats_out, lons_out = coords_out[:, 0], coords_out[:, 1]
     npoints_out = colats_out.numel()
 
@@ -359,6 +417,7 @@ def precompute_neighborhood_arcs_s2(grid_in: GridS2, grid_out: GridS2, theta_cut
             ring_base=ring_base,
             ring_size=ring_size,
             theta_cutoff=theta_cutoff,
+            lon_shift=lon_shift,
         )
 
     # Vectorized over (output point, ring in band) pairs, in chunks of output points.
@@ -413,11 +472,13 @@ def precompute_neighborhood_arcs_s2(grid_in: GridS2, grid_out: GridS2, theta_cut
     offsets = torch.zeros(npoints_out + 1, dtype=torch.int32)
     offsets[1:] = counts.cumsum(0).to(torch.int32)
 
-    return NeighborhoodArcsS2(segments=segments, offsets=offsets, ring_base=ring_base, ring_size=ring_size, theta_cutoff=theta_cutoff)
+    return NeighborhoodArcsS2(segments=segments, offsets=offsets, ring_base=ring_base, ring_size=ring_size, theta_cutoff=theta_cutoff, lon_shift=lon_shift)
 
 
 @lru_cache(maxsize=8, typed=True, copy=True)
-def precompute_neighborhood_csr_s2(grid_in: GridS2, grid_out: GridS2, theta_cutoff: float, theta_eps: Optional[float] = 1e-3) -> Tuple[torch.Tensor, torch.Tensor]:
+def precompute_neighborhood_csr_s2(
+    grid_in: GridS2, grid_out: GridS2, theta_cutoff: float, theta_eps: Optional[float] = 1e-3, fold_longitude: Optional[bool] = False
+) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
     Cached CSR form of the neighbourhood, for consumers that want columns not arcs.
 
@@ -449,4 +510,4 @@ def precompute_neighborhood_csr_s2(grid_in: GridS2, grid_out: GridS2, theta_cuto
     --------
     precompute_neighborhood_arcs_s2 : the arc form, which the kernels consume.
     """
-    return precompute_neighborhood_arcs_s2(grid_in, grid_out, theta_cutoff, theta_eps).to_csr()
+    return precompute_neighborhood_arcs_s2(grid_in, grid_out, theta_cutoff, theta_eps, fold_longitude).to_csr()
