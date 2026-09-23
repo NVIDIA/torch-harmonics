@@ -47,6 +47,50 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
     """Tests for GaussianRandomFieldS2."""
 
     @parameterized.expand(
+        [(grid, conversion) for grid in ("equiangular", "legendre-gauss", "lobatto") for conversion in ("double", "float", "parent_to", "parent_double", "direct_to", "unchanged")]
+    )
+    def test_sampler_follows_module_conversion(self, grid, conversion, verbose=False):
+        initial_dtype = torch.float64 if conversion == "float" else torch.float32
+        field = GaussianRandomFieldS2(8, grid=grid, dtype=initial_dtype).to(self.device)
+        if conversion == "double":
+            field.double()
+        elif conversion == "float":
+            field.float()
+        elif conversion == "parent_to":
+            torch.nn.Sequential(field).to(dtype=torch.float64)
+        elif conversion == "parent_double":
+            torch.nn.Sequential(field).double()
+        elif conversion == "direct_to":
+            field.to(dtype=torch.float64)
+
+        # Rebuild the reference distribution from the module's current buffers.
+        # A cached Normal retains the old tensors when Module replaces them.
+        shape = (2, field.isht.lmax, field.isht.mmax, 2)
+        set_seed(333)
+        reference_noise = torch.distributions.Normal(field.mean, field.var).sample(shape).squeeze(-1)
+        expected = field(2, xi=torch.view_as_complex(reference_noise))
+        set_seed(333)
+        actual = field(2)
+        self.assertTrue(compare_tensors("converted samples", expected, actual, atol=0, rtol=0, verbose=verbose))
+        self.assertEqual(field.gaussian_noise.loc.dtype, field.mean.dtype)
+        self.assertEqual(field.gaussian_noise.loc.device, field.mean.device)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA for a real device transfer")
+    def test_sampler_follows_parent_cuda_and_cpu(self, verbose=False):
+        field = GaussianRandomFieldS2(8)
+        parent = torch.nn.Sequential(field).cuda()
+        for device in ("cuda", "cpu"):
+            parent.to(device)
+            shape = (2, field.isht.lmax, field.isht.mmax, 2)
+            set_seed(333)
+            noise = torch.distributions.Normal(field.mean, field.var).sample(shape).squeeze(-1)
+            expected = field(2, xi=torch.view_as_complex(noise))
+            set_seed(333)
+            actual = field(2)
+            self.assertTrue(compare_tensors("transferred samples", expected, actual, atol=0, rtol=0, verbose=verbose))
+            self.assertEqual(actual.device.type, device)
+
+    @parameterized.expand(
         [
             [16, 2.0, 3.0, None, "equiangular"],
             [16, 3.0, 2.0, None, "legendre-gauss"],
