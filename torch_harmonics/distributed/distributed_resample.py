@@ -147,7 +147,8 @@ class DistributedResampleS2(nn.Module):
 
         # get the difference
         diff = self.lons_in[lon_idx_right] - self.lons_in[lon_idx_left]
-        diff = torch.where(diff < 0.0, diff + 2 * math.pi, diff)
+        # Coincident endpoints span a full period when there is one longitude.
+        diff = torch.where(diff <= 0.0, diff + 2 * math.pi, diff)
         lon_weights = ((self.lons_out - self.lons_in[lon_idx_left]) / diff).to(torch.float32)
 
         # register buffers
