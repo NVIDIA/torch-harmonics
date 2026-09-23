@@ -33,10 +33,10 @@ import unittest
 from copy import deepcopy
 
 import torch
-from testutils import compare_tensors
+from testutils import compare_tensors, regular_grid_types
 
 from torch_harmonics.cache import lru_cache
-from torch_harmonics.grid import as_grid, grid_types
+from torch_harmonics.grid import as_grid
 
 
 class TestCacheConsistency(unittest.TestCase):
@@ -225,7 +225,7 @@ class TestGridDescriptorCaching(unittest.TestCase):
             calls.append(grid)
             return grid.nlat * grid.nlon
 
-        for grid_type in grid_types():
+        for grid_type in regular_grid_types():
             with self.subTest(grid=grid_type):
                 calls.clear()
                 first = _expensive(as_grid(grid_type, nlat=64, nlon=128))
@@ -257,7 +257,7 @@ class TestGridDescriptorCaching(unittest.TestCase):
 
     def test_descriptor_survives_deepcopy(self):
         """``lru_cache(copy=True)`` deep-copies its return value, so a cached descriptor must remain a valid key."""
-        for grid_type in grid_types():
+        for grid_type in regular_grid_types():
             with self.subTest(grid=grid_type):
                 grid = as_grid(grid_type, nlat=64, nlon=128)
                 clone = deepcopy(grid)
@@ -274,7 +274,7 @@ class TestGridDescriptorCaching(unittest.TestCase):
         :meth:`TestCacheConsistency.test_consistency` guards the Legendre cache.
         """
         with torch.no_grad():
-            for grid_type in grid_types():
+            for grid_type in regular_grid_types():
                 with self.subTest(grid=grid_type):
                     grid = as_grid(grid_type, nlat=32, nlon=64)
                     pristine_colats, pristine_weights = grid.colats.clone(), grid.colat_weights.clone()
@@ -297,7 +297,7 @@ class TestGridDescriptorCaching(unittest.TestCase):
         out shared storage turns one consumer's in-place op into everyone's bug.
         """
         with torch.no_grad():
-            for grid_type in grid_types():
+            for grid_type in regular_grid_types():
                 with self.subTest(grid=grid_type):
                     grid = as_grid(grid_type, nlat=32, nlon=64)
                     for name in ("coords", "quad_weights"):
@@ -311,7 +311,7 @@ class TestGridDescriptorCaching(unittest.TestCase):
 
     def test_descriptor_returns_independent_tensors(self):
         """Two accesses must not alias, otherwise one consumer's in-place op leaks into another's."""
-        for grid_type in grid_types():
+        for grid_type in regular_grid_types():
             with self.subTest(grid=grid_type):
                 grid = as_grid(grid_type, nlat=32, nlon=64)
                 first, second = grid.colats, grid.colats
@@ -320,7 +320,7 @@ class TestGridDescriptorCaching(unittest.TestCase):
 
     def test_derived_scalars_are_consistent_across_accesses(self):
         """``max_latitude_spacing`` is itself cached; repeated access must be stable and match the nodes."""
-        for grid_type in grid_types():
+        for grid_type in regular_grid_types():
             with self.subTest(grid=grid_type):
                 grid = as_grid(grid_type, nlat=65, nlon=128)
                 first = grid.max_latitude_spacing

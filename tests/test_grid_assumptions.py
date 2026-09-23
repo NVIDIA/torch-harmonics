@@ -50,10 +50,11 @@ import inspect
 import math
 import unittest
 import warnings
+from typing import Tuple
 
 import torch
 from parameterized import parameterized
-from testutils import compare_tensors
+from testutils import compare_tensors, regular_grid_types
 
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.distributed.primitives import split_tensor_along_dim
@@ -75,6 +76,7 @@ from torch_harmonics.grid import (
     require_point_set,
     require_regular_grid,
 )
+from torch_harmonics.healpix import HealpixGrid, healpix_ring_structure
 from torch_harmonics.integration import QuadratureS2
 from torch_harmonics.partition import compute_split_shapes
 from torch_harmonics.quadrature import compute_latitude_spacing, compute_theta_cutoff, precompute_latitudes, precompute_longitudes
@@ -721,7 +723,9 @@ class TestGridDescriptor(unittest.TestCase):
 
     def test_registry_covers_every_supported_grid_string(self):
         """A grid string accepted by precompute_latitudes must have a descriptor."""
-        self.assertEqual(set(grid_types()), set(_ALL_GRIDS))
+        self.assertEqual(set(regular_grid_types()), set(_ALL_GRIDS))
+        # the registry itself carries the ragged families too
+        self.assertEqual(set(grid_types()), set(_ALL_GRIDS) | {"healpix"})
 
 
 class TestDirectConstructionMatchesFactory(unittest.TestCase):
@@ -744,7 +748,7 @@ class TestDirectConstructionMatchesFactory(unittest.TestCase):
         nlat, nlon = shape
         return _DIRECT_CLASSES[name](nlat=nlat, nlon=nlon), as_grid(name, nlat=shape[0], nlon=shape[1])
 
-    @parameterized.expand([[name, shape] for name in grid_types() for shape in _PAIR_SHAPES])
+    @parameterized.expand([[name, shape] for name in regular_grid_types() for shape in _PAIR_SHAPES])
     def test_identity_matches(self, name, shape):
         direct, factory = self._pair(name, shape)
         self.assertIs(type(direct), type(factory))
@@ -754,12 +758,12 @@ class TestDirectConstructionMatchesFactory(unittest.TestCase):
         self.assertEqual(repr(direct), repr(factory))
         self.assertEqual(len({direct, factory}), 1)
 
-    @parameterized.expand([[name] for name in grid_types()])
+    @parameterized.expand([[name] for name in regular_grid_types()])
     def test_factory_resolves_to_the_class_you_would_write(self, name):
         """The registry must not drift from the concrete classes."""
         self.assertIs(type(as_grid(name, nlat=32, nlon=64)), _DIRECT_CLASSES[name])
 
-    @parameterized.expand([[name, shape] for name in grid_types() for shape in _PAIR_SHAPES])
+    @parameterized.expand([[name, shape] for name in regular_grid_types() for shape in _PAIR_SHAPES])
     def test_every_property_matches(self, name, shape, verbose=False):
         """
         Compare every public property on the class, discovered by introspection.
@@ -783,7 +787,7 @@ class TestDirectConstructionMatchesFactory(unittest.TestCase):
                     else:
                         self.assertEqual(a, b)
 
-    @parameterized.expand([[name, shape] for name in grid_types() for shape in _PAIR_SHAPES])
+    @parameterized.expand([[name, shape] for name in regular_grid_types() for shape in _PAIR_SHAPES])
     def test_methods_match(self, name, shape, verbose=False):
         """Properties are not the whole surface: lons() is a method."""
         direct, factory = self._pair(name, shape)
@@ -793,7 +797,7 @@ class TestDirectConstructionMatchesFactory(unittest.TestCase):
             self.assertEqual(direct.max_node_spacing, factory.max_node_spacing)
         self.assertEqual(direct.to_dict(), factory.to_dict())
 
-    @parameterized.expand([[name] for name in grid_types()])
+    @parameterized.expand([[name] for name in regular_grid_types()])
     def test_interchangeable_as_a_cache_key(self, name):
         """The two routes must not produce two cache entries for one grid."""
         calls = []
@@ -807,13 +811,13 @@ class TestDirectConstructionMatchesFactory(unittest.TestCase):
         self.assertEqual(_expensive(direct), _expensive(factory))
         self.assertEqual(len(calls), 1, msg=f"{name}: direct construction and as_grid missed each other's cache entry")
 
-    @parameterized.expand([[name] for name in grid_types()])
+    @parameterized.expand([[name] for name in regular_grid_types()])
     def test_round_trip_lands_on_the_same_grid_either_way(self, name):
         direct, factory = self._pair(name, (32, 64))
         self.assertEqual(GridS2.from_dict(direct.to_dict()), GridS2.from_dict(factory.to_dict()))
         self.assertIs(type(GridS2.from_dict(direct.to_dict())), _DIRECT_CLASSES[name])
 
-    @parameterized.expand([[name] for name in grid_types()])
+    @parameterized.expand([[name] for name in regular_grid_types()])
     def test_positional_and_keyword_construction_agree(self, name):
         cls = _DIRECT_CLASSES[name]
         self.assertEqual(cls(32, 64), cls(nlat=32, nlon=64))
@@ -844,7 +848,7 @@ class TestGridShard(unittest.TestCase):
     describing the quadrature *rule* remain global.
     """
 
-    @parameterized.expand([[name, shape, dec] for name in grid_types() for shape in _GLOBAL_SHAPES for dec in _DECOMPOSITIONS])
+    @parameterized.expand([[name, shape, dec] for name in regular_grid_types() for shape in _GLOBAL_SHAPES for dec in _DECOMPOSITIONS])
     def test_shards_tile_the_global_grid_exactly(self, name, shape, dec, verbose=False):
         """Concatenating the pieces in rank order must reproduce the global arrays."""
         psize, asize = dec
@@ -860,7 +864,7 @@ class TestGridShard(unittest.TestCase):
         self.assertTrue(compare_tensors(f"{name}{shape} weights tiled {psize}x", weights, grid.colat_weights, atol=0.0, rtol=0.0, verbose=verbose))
         self.assertTrue(compare_tensors(f"{name}{shape} lons tiled {asize}x", lons, grid.lons(), atol=0.0, rtol=0.0, verbose=verbose))
 
-    @parameterized.expand([[name, dec] for name in grid_types() for dec in _DECOMPOSITIONS])
+    @parameterized.expand([[name, dec] for name in regular_grid_types() for dec in _DECOMPOSITIONS])
     def test_partial_weights_sum_to_the_global_total(self, name, dec):
         """
         The local weights are a partial contribution completed by a reduction, so
@@ -871,7 +875,7 @@ class TestGridShard(unittest.TestCase):
         total = sum(grid.shard(polar=(r, psize)).colat_weights.sum().item() for r in range(psize))
         self.assertAlmostEqual(total, grid.colat_weights.sum().item(), places=14)
 
-    @parameterized.expand([[name, shape] for name in grid_types() for shape in _GLOBAL_SHAPES])
+    @parameterized.expand([[name, shape] for name in regular_grid_types() for shape in _GLOBAL_SHAPES])
     def test_trivial_shard_is_the_whole_grid(self, name, shape, verbose=False):
         grid = as_grid(name, nlat=shape[0], nlon=shape[1])
         shard = grid.shard()
@@ -1266,6 +1270,441 @@ class TestPointSetContract(unittest.TestCase):
             self.ps.max_exact_degree
         with self.assertRaises(NotImplementedError):
             self.ps.shard()
+
+
+_NSIDES = [1, 2, 3, 4, 8]
+
+
+def _healpix_pix2ang_reference(nside: int, ipix: int) -> Tuple[float, float]:
+    r"""
+    Centre of one RING-order HEALPix pixel, from the pixel index alone.
+
+    An independent reference for :func:`healpix_ring_structure`, transcribed from the
+    inverse formulas in Gorski et al. 2005 (the algorithm ``healpy`` implements as
+    ``pix2ang_ring``). It is worth having precisely because it inverts the problem:
+    the descriptor builds the ring table and then walks it, whereas this recovers the
+    ring and the position within it from a flat index, using the integer square root.
+    A sign or an off-by-one in the ring boundaries or in the half-pixel stagger shows
+    up as a disagreement rather than being reproduced by both.
+
+    Returns
+    -------
+    tuple of float
+        ``(colatitude, longitude)`` in radians.
+    """
+    npix = 12 * nside * nside
+    ncap = 2 * nside * (nside - 1)  # pixels in the north polar cap
+
+    if ipix < ncap:
+        iring = (1 + math.isqrt(1 + 2 * ipix)) // 2  # ring index from the north pole
+        iphi = (ipix + 1) - 2 * iring * (iring - 1)
+        z = 1.0 - iring * iring / (3.0 * nside * nside)
+        phi = (iphi - 0.5) * (0.5 * math.pi) / iring
+    elif ipix < npix - ncap:
+        ip = ipix - ncap
+        iring = ip // (4 * nside) + nside
+        iphi = ip % (4 * nside) + 1
+        # half-pixel stagger, alternating from ring to ring across the belt
+        fodd = 1.0 if (iring + nside) % 2 else 0.5
+        z = (2 * nside - iring) * 2.0 / (3.0 * nside)
+        phi = (iphi - fodd) * math.pi / (2.0 * nside)
+    else:
+        ip = npix - ipix
+        iring = (1 + math.isqrt(2 * ip - 1)) // 2  # ring index from the south pole
+        iphi = 4 * iring + 1 - (ip - 2 * iring * (iring - 1))
+        z = -1.0 + iring * iring / (3.0 * nside * nside)
+        phi = (iphi - 0.5) * (0.5 * math.pi) / iring
+
+    return math.acos(z), phi
+
+
+def _great_circle_distances(colats: torch.Tensor, lons: torch.Tensor) -> torch.Tensor:
+    """Pairwise great-circle distances between points given as (colatitude, longitude)."""
+    x = torch.stack([torch.sin(colats) * torch.cos(lons), torch.sin(colats) * torch.sin(lons), torch.cos(colats)], dim=-1)
+    return torch.arccos((x @ x.T).clamp(-1.0, 1.0))
+
+
+class TestHealpixGrid(unittest.TestCase):
+    r"""
+    Contract for :class:`torch_harmonics.healpix.HealpixGrid`.
+
+    The first ragged grid in the library, and the reason the descriptor protocol
+    separates ``spatial_shape`` from ``shape`` and ``nlon_per_lat`` from ``nlon``.
+    These tests fix two things: that the ring geometry is the real HEALPix
+    pixelization and not an approximation of it, and that the raggedness is described
+    consistently enough for a localized operator to consume without special-casing.
+    """
+
+    # -- resolution ----------------------------------------------------------
+
+    @parameterized.expand([[n] for n in _NSIDES])
+    def test_resolution_follows_the_pixelization(self, nside):
+        g = HealpixGrid(nside=nside)
+        self.assertEqual(g.grid_type, "healpix")
+        self.assertEqual(g.npoints, 12 * nside**2)
+        self.assertEqual(g.nlat, 4 * nside - 1)
+        self.assertEqual(g.nlon, 4 * nside)
+        self.assertFalse(g.is_regular)
+        self.assertEqual(g.shape, (12 * nside**2,))
+
+    @parameterized.expand([[n] for n in _NSIDES])
+    def test_nlon_is_the_widest_ring_not_a_stride(self, nside):
+        """
+        The trap this grid exists to expose: ``nlat * nlon`` overcounts a ragged grid
+        by a third, so anything that strides by ``nlon`` reads past the ring it is on.
+        """
+        g = HealpixGrid(nside=nside)
+        self.assertEqual(int(g.nlon_per_lat.max().item()), g.nlon)
+        if nside > 1:
+            self.assertLess(g.npoints, g.nlat * g.nlon)
+
+    def test_invalid_nside_is_rejected(self):
+        for bad in [0, -1, -8]:
+            with self.subTest(nside=bad):
+                with self.assertRaises(ValueError):
+                    HealpixGrid(nside=bad)
+        for bad in [2.0, "4", True]:
+            with self.subTest(nside=bad):
+                with self.assertRaises(ValueError):
+                    HealpixGrid(nside=bad)
+
+    # -- ring structure ------------------------------------------------------
+
+    @parameterized.expand([[n] for n in _NSIDES])
+    def test_ring_sizes_grow_to_the_equator_and_back(self, nside):
+        g = HealpixGrid(nside=nside)
+        sizes = g.nlon_per_lat
+
+        self.assertEqual(sizes.dtype, torch.int64)
+        self.assertEqual(sizes.shape, (4 * nside - 1,))
+        self.assertEqual(int(sizes.sum().item()), g.npoints)
+        self.assertTrue(torch.equal(sizes, sizes.flip(0)), msg="ring sizes must be symmetric about the equator")
+
+        # 4, 8, ... over the polar cap, then 4 * nside across the belt
+        expected_cap = torch.arange(1, nside, dtype=torch.int64) * 4
+        self.assertTrue(torch.equal(sizes[: nside - 1], expected_cap))
+        self.assertTrue(torch.equal(sizes[nside - 1 : 3 * nside], torch.full((2 * nside + 1,), 4 * nside, dtype=torch.int64)))
+
+    @parameterized.expand([[n] for n in _NSIDES])
+    def test_lon_offsets_flatten_the_rings(self, nside):
+        g = HealpixGrid(nside=nside)
+        offsets = g.lon_offsets
+
+        self.assertEqual(offsets.dtype, torch.int64)
+        self.assertEqual(offsets.shape, (g.nlat + 1,))
+        self.assertEqual(int(offsets[0].item()), 0)
+        self.assertEqual(int(offsets[-1].item()), g.npoints)
+        self.assertTrue(torch.equal(offsets[1:] - offsets[:-1], g.nlon_per_lat))
+
+    def test_the_cached_ring_table_cannot_be_mutated_by_a_consumer(self):
+        """
+        The ring table is memoized because every property reads it. Handing out the
+        cached tensors themselves would let one consumer's in-place edit corrupt the
+        geometry for every other.
+        """
+        first, _, _ = healpix_ring_structure(8)
+        first[0] = 999
+        second, _, _ = healpix_ring_structure(8)
+        self.assertEqual(int(second[0].item()), 4)
+        self.assertEqual(int(HealpixGrid(nside=8).nlon_per_lat[0].item()), 4)
+
+    @parameterized.expand([[n] for n in _NSIDES])
+    def test_colatitudes_are_ordered_and_pole_symmetric(self, nside, verbose=False):
+        g = HealpixGrid(nside=nside)
+        colats = g.colats
+
+        self.assertEqual(colats.dtype, torch.float64)
+        self.assertEqual(colats.shape, (g.nlat,))
+        self.assertTrue(bool((colats[1:] > colats[:-1]).all()), msg="colatitudes must ascend from the north pole")
+        self.assertGreater(float(colats[0]), 0.0)
+        self.assertLess(float(colats[-1]), math.pi)
+        self.assertTrue(compare_tensors(f"pole symmetry (nside={nside})", colats + colats.flip(0), torch.full_like(colats, math.pi), atol=1e-14, rtol=0.0, verbose=verbose))
+
+    @parameterized.expand([[n] for n in _NSIDES])
+    def test_the_cap_and_belt_formulas_join_up(self, nside):
+        r"""
+        The two regimes must agree at :math:`\cos\theta = \pm 2/3`, or the rings would
+        not be strictly ordered across the join.
+        """
+        g = HealpixGrid(nside=nside)
+        z = torch.cos(g.colats)
+        self.assertAlmostEqual(float(z[nside - 1]), 2.0 / 3.0, places=14)
+        self.assertAlmostEqual(float(z[3 * nside - 1]), -2.0 / 3.0, places=14)
+
+    @parameterized.expand([[n] for n in _NSIDES])
+    def test_longitudes_are_equispaced_and_staggered(self, nside):
+        g = HealpixGrid(nside=nside)
+        shifts = g.lon_shifts
+
+        for ilat in range(g.nlat):
+            with self.subTest(ilat=ilat):
+                lons = g.lons(ilat)
+                n = int(g.nlon_per_lat[ilat].item())
+                self.assertEqual(lons.shape, (n,))
+                self.assertGreaterEqual(float(lons[0]), 0.0)
+                self.assertLess(float(lons[-1]), 2.0 * math.pi)
+                spacing = lons[1:] - lons[:-1]
+                self.assertTrue(bool((spacing - 2.0 * math.pi / n).abs().max() < 1e-14), msg="longitudes on a ring must be equispaced")
+                self.assertAlmostEqual(float(lons[0]), (2.0 * math.pi / n) * float(shifts[ilat]), places=14)
+
+        self.assertTrue(bool(((shifts == 0.5) | (shifts == 0.0)).all()), msg="the stagger is half a pixel or none")
+        # adjacent rings must not sit on the same meridians, or the pixels would not tile
+        self.assertTrue(bool((shifts[1:] != shifts[:-1]).any()) or nside == 1)
+
+    def test_lons_needs_a_ring_index(self):
+        """
+        Unlike a product grid, there is no ring-independent set of longitudes to
+        return, so guessing one would silently misplace most of the grid.
+        """
+        g = HealpixGrid(nside=4)
+        with self.assertRaises(ValueError):
+            g.lons()
+        with self.assertRaises(ValueError):
+            g.lons(g.nlat)
+
+    @parameterized.expand([[n] for n in _NSIDES])
+    def test_flat_geometry_matches_the_per_ring_geometry(self, nside, verbose=False):
+        """``all_lons``/``all_lats`` are what a ragged operator consumes; they must be
+        exactly the concatenation of the rings, in RING order."""
+        g = HealpixGrid(nside=nside)
+        expected_lons = torch.cat([g.lons(ilat) for ilat in range(g.nlat)])
+        expected_lats = torch.cat([torch.full((int(g.nlon_per_lat[ilat].item()),), float(g.colats[ilat]), dtype=torch.float64) for ilat in range(g.nlat)])
+
+        self.assertTrue(compare_tensors(f"all_lons (nside={nside})", g.all_lons(), expected_lons, atol=0.0, rtol=0.0, verbose=verbose))
+        self.assertTrue(compare_tensors(f"all_lats (nside={nside})", g.all_lats(), expected_lats, atol=0.0, rtol=0.0, verbose=verbose))
+
+    # -- cross-checks against independent implementations --------------------
+
+    @parameterized.expand([[n] for n in _NSIDES])
+    def test_pixel_centres_match_the_inverse_formulas(self, nside, verbose=False):
+        """
+        The load-bearing check: the ring table, walked in RING order, must reproduce
+        the pixel centres that the index-to-angle formulas give.
+        """
+        g = HealpixGrid(nside=nside)
+        reference = [_healpix_pix2ang_reference(nside, ipix) for ipix in range(g.npoints)]
+        ref_colats = torch.tensor([c for c, _ in reference], dtype=torch.float64)
+        ref_lons = torch.tensor([p for _, p in reference], dtype=torch.float64)
+
+        self.assertTrue(compare_tensors(f"colatitudes (nside={nside})", g.all_lats(), ref_colats, atol=1e-14, rtol=0.0, verbose=verbose))
+        self.assertTrue(compare_tensors(f"longitudes (nside={nside})", g.all_lons(), ref_lons, atol=1e-14, rtol=0.0, verbose=verbose))
+
+    @parameterized.expand([[n] for n in [1, 2, 4, 8]])
+    def test_pixel_centres_match_earth2grid(self, nside, verbose=False):
+        """
+        Interop, not correctness: healda stores its fields on ``earth2grid``'s HEALPix
+        grid, so a field handed to a torch-harmonics operator has to be indexed the
+        same way. A disagreement here means the two libraries disagree about which
+        pixel a value belongs to, which no amount of numerics downstream would catch.
+        """
+        try:
+            from earth2grid import healpix as e2g_healpix
+        except ImportError:
+            self.skipTest("earth2grid is not installed")
+
+        g = HealpixGrid(nside=nside)
+        e2g = e2g_healpix.Grid(level=g.level, pixel_order=e2g_healpix.PixelOrder.RING)
+
+        ref_colats = torch.as_tensor(0.5 * math.pi - torch.deg2rad(torch.as_tensor(e2g.lat, dtype=torch.float64)))
+        ref_lons = torch.deg2rad(torch.as_tensor(e2g.lon, dtype=torch.float64)) % (2.0 * math.pi)
+
+        self.assertTrue(compare_tensors(f"earth2grid colatitudes (nside={nside})", g.all_lats(), ref_colats, atol=1e-12, rtol=0.0, verbose=verbose))
+        self.assertTrue(compare_tensors(f"earth2grid longitudes (nside={nside})", g.all_lons(), ref_lons, atol=1e-12, rtol=0.0, verbose=verbose))
+
+    # -- quadrature ----------------------------------------------------------
+
+    @parameterized.expand([[n] for n in _NSIDES])
+    def test_weights_are_equal_area(self, nside):
+        r"""
+        Every pixel must carry exactly :math:`4\pi / N_{pix}`. This is the property
+        healda picks HEALPix for, and in this library's per-ring :math:`\cos\theta`
+        convention it constrains ``quad_weights`` to be proportional to the ring size.
+        """
+        g = HealpixGrid(nside=nside)
+        w = g.colat_weights
+
+        self.assertEqual(w.shape, (g.nlat,))
+        self.assertAlmostEqual(float(w.sum()), 2.0, places=14)
+
+        per_pixel = 2.0 * math.pi * w / g.nlon_per_lat.to(torch.float64)
+        self.assertTrue(bool((per_pixel - 4.0 * math.pi / g.npoints).abs().max() < 1e-15), msg="pixels must have equal solid angle")
+
+    @parameterized.expand([[n] for n in _NSIDES])
+    def test_quadrature_integrates_a_constant_exactly(self, nside):
+        """The one thing an equal-weight rule is exact for, and the reason
+        ``is_spectrally_accurate`` is False."""
+        g = HealpixGrid(nside=nside)
+        area = float((2.0 * math.pi * g.colat_weights).sum())
+        self.assertAlmostEqual(area, 4.0 * math.pi, places=13)
+
+    @parameterized.expand([[n] for n in [8, 16]])
+    def test_quadrature_converges_on_a_smooth_function(self, nside):
+        r"""
+        Only algebraically, unlike the interpolatory rules, so this pins the order of
+        magnitude rather than machine precision. Integrates
+        :math:`\exp(\cos\theta)`, as the quadrature tests above do.
+        """
+        g = HealpixGrid(nside=nside)
+        integral = float((2.0 * math.pi * g.colat_weights * torch.exp(torch.cos(g.colats))).sum())
+        expected = 2.0 * math.pi * (math.e - 1.0 / math.e)
+        self.assertLess(abs(integral - expected) / expected, 1e-2)
+
+    # -- spectral bounds -----------------------------------------------------
+
+    def test_it_declines_to_claim_spectral_accuracy(self):
+        g = HealpixGrid(nside=8)
+        self.assertFalse(g.is_spectrally_accurate)
+        with self.assertRaises(NotImplementedError):
+            g.max_exact_degree
+        # no max_azimuthal_order assertion: that is a RegularGridS2 concept. Every
+        # HEALPix ring has its own azimuthal bandwidth, so a single value would have
+        # to be the widest ring's, which is not what any caller of it means.
+        self.assertFalse(hasattr(type(g), "max_azimuthal_order"))
+
+    # -- support radius ------------------------------------------------------
+
+    @parameterized.expand([[n] for n in _NSIDES])
+    def test_the_support_radius_reaches_the_nearest_neighbours(self, nside):
+        r"""
+        The contract that makes the localized operators usable here at all.
+
+        HEALPix is anisotropic: its rings sit roughly 2.4x closer together in
+        :math:`\theta` than its pixels do along a ring. One *latitudinal* spacing --
+        the base definition of the default support radius -- is therefore smaller than
+        the distance to a pixel's own nearest neighbour, and a stencil of that radius
+        would contain nothing but the output pixel itself, silently turning a
+        convolution or an attention layer into a pointwise operation. Measured
+        against the true pairwise distances rather than against the formula.
+        """
+        g = HealpixGrid(nside=nside)
+        cutoff = truncate_support(g)
+
+        distances = _great_circle_distances(g.all_lats(), g.all_lons())
+        distances.fill_diagonal_(math.inf)
+        nearest = distances.min(dim=-1).values
+
+        self.assertLess(float(nearest.max()), cutoff, msg=f"nside={nside}: the default cutoff {cutoff:.4f} excludes some pixel's nearest neighbour")
+        self.assertGreater(cutoff, g.max_latitude_spacing, msg="the anisotropy correction must widen the radius, not narrow it")
+
+    @parameterized.expand([[n] for n in [4, 8]])
+    def test_the_default_stencil_spans_several_rings(self, nside):
+        """
+        Every output pixel must see a genuine neighbourhood, not just its own ring.
+        The equivalent contract for the product grids is
+        ``test_default_cutoff_gives_multi_ring_neighborhood``.
+        """
+        g = HealpixGrid(nside=nside)
+        distances = _great_circle_distances(g.all_lats(), g.all_lons())
+        counts = (distances <= truncate_support(g)).sum(dim=-1)
+
+        self.assertGreaterEqual(int(counts.min()), 5, msg="a stencil should hold at least the pixel and its four neighbours")
+
+        rings = torch.repeat_interleave(torch.arange(g.nlat), g.nlon_per_lat)
+        for ipix in [0, g.npoints // 2, g.npoints - 1]:
+            with self.subTest(ipix=ipix):
+                touched = rings[distances[ipix] <= truncate_support(g)].unique()
+                self.assertGreaterEqual(len(touched), 2, msg=f"pixel {ipix} sees only ring {touched.tolist()}")
+
+    def test_the_anisotropy_it_corrects_for_is_real(self):
+        """
+        Documents the measurement the overridden radius is based on: the in-ring
+        spacing peaks at pi / (2 nside) on the equatorial ring, the ring spacing at
+        roughly 0.89 / nside near the cap/belt join, and the ratio settles near 1.76.
+        """
+        nside = 32
+        g = HealpixGrid(nside=nside)
+        self.assertAlmostEqual(g.max_longitude_spacing, math.pi / (2 * nside), places=12)
+        self.assertAlmostEqual(g.max_latitude_spacing * nside, 0.893, places=2)
+        self.assertAlmostEqual(g.max_longitude_spacing / g.max_latitude_spacing, 1.76, places=2)
+
+        # the reason the base definition is not usable here: one latitudinal spacing
+        # does not reach a pixel's own nearest neighbour, at about 1.03 / nside
+        self.assertLess(g.max_latitude_spacing, 1.0 / nside)
+        self.assertGreater(truncate_support(g), 1.03 / nside)
+
+    # -- identity and construction -------------------------------------------
+
+    @parameterized.expand([[n] for n in _NSIDES])
+    def test_identity_is_keyed_on_nside(self, nside):
+        a, b = HealpixGrid(nside=nside), HealpixGrid(nside=nside)
+        self.assertIsNot(a, b)
+        self.assertEqual(a, b)
+        self.assertEqual(hash(a), hash(b))
+        self.assertEqual(len({a, b}), 1)
+        self.assertEqual(a.key, ("healpix", nside))
+        self.assertNotEqual(a, HealpixGrid(nside=nside + 1))
+        self.assertNotEqual(a, as_grid("equiangular", nlat=a.nlat, nlon=a.nlon))
+        self.assertEqual(repr(a), f"HealpixGrid(nside={nside})")
+
+    @parameterized.expand([[n] for n in _NSIDES])
+    def test_hash_is_stable_across_tensor_access(self, nside):
+        g = HealpixGrid(nside=nside)
+        before = hash(g)
+        _ = g.colats, g.colat_weights, g.nlon_per_lat, g.lon_offsets, g.all_lons()
+        self.assertEqual(hash(g), before)
+
+    @parameterized.expand([[n] for n in _NSIDES])
+    def test_to_dict_roundtrip(self, nside):
+        g = HealpixGrid(nside=nside)
+        self.assertEqual(g.to_dict(), {"grid": "healpix", "nside": nside})
+        restored = GridS2.from_dict(g.to_dict())
+        self.assertIs(type(restored), HealpixGrid)
+        self.assertEqual(restored, g)
+
+    def test_from_dict_rejects_the_wrong_parameters(self):
+        with self.assertRaises(ValueError):
+            GridS2.from_dict({"grid": "healpix"})
+        with self.assertRaises(ValueError):
+            GridS2.from_dict({"grid": "healpix", "nlat": 31, "nlon": 32})
+
+    @parameterized.expand([[n] for n in _NSIDES])
+    def test_as_grid_builds_it_from_its_parameters(self, nside):
+        # as_grid takes the parameterization of the family, which for HEALPix is nside
+        # and not a (nlat, nlon) shape -- there is no product shape that describes it
+        self.assertEqual(as_grid("healpix", nside=nside), g_ := HealpixGrid(nside=nside))
+        self.assertIs(as_grid(g_), g_)
+
+    def test_as_grid_rejects_parameters_that_are_not_a_pixelization(self):
+        with self.assertRaises(ValueError):
+            as_grid("healpix", nlat=64, nlon=128)  # a product shape does not describe this grid
+        with self.assertRaises(ValueError):
+            as_grid("healpix")  # nside is required
+
+    @parameterized.expand([[level] for level in range(5)])
+    def test_level_round_trips_with_earth2grid_parameterization(self, level):
+        g = HealpixGrid.from_level(level)
+        self.assertEqual(g.nside, 2**level)
+        self.assertEqual(g.level, level)
+
+    def test_level_is_undefined_off_the_power_of_two_ladder(self):
+        """RING geometry is fine at any nside; NEST order and refinement are not."""
+        g = HealpixGrid(nside=3)
+        self.assertEqual(g.npoints, 108)
+        with self.assertRaises(ValueError):
+            g.level
+
+    # -- decomposition -------------------------------------------------------
+
+    def test_it_refuses_a_product_decomposition(self):
+        """
+        There is no global ``nlon`` to split, so a product shard would describe ranges
+        that do not exist. Failing loudly is the point: the distributed layers assume
+        the product form in twenty-two places.
+        """
+        g = HealpixGrid(nside=4)
+        for name, call in (("shard(polar=)", lambda: g.shard(polar=(0, 2))), ("shard()", lambda: g.shard())):
+            with self.subTest(call=name):
+                with self.assertRaises(NotImplementedError):
+                    call()
+
+        # lat_shapes and lon_shapes are not overridden to refuse -- they are simply not
+        # part of this class. They describe a product decomposition, so they live on
+        # RegularGridS2, and a ragged grid never had them to decline. Absence is the
+        # stronger statement: there is no version of them that could be called by
+        # mistake.
+        for name in ("lat_shapes", "lon_shapes"):
+            with self.subTest(attribute=name):
+                self.assertFalse(hasattr(g, name))
 
 
 if __name__ == "__main__":

@@ -55,6 +55,26 @@ def _is_sm100():
     return major == 10
 
 
+def regular_grid_types():
+    """
+    Registered grid families whose descriptors are :class:`RegularGridS2`.
+
+    Most of the library addresses a field as a dense ``(nlat, nlon)`` array and is
+    guarded by ``require_regular_grid``, so a test that sweeps "every grid" means every
+    grid those routines accept -- and constructs them with ``nlat``/``nlon``, which a
+    ragged family does not take.
+
+    Derived from the registry by subclass rather than by listing names, so a grid family
+    added later lands on the correct side of this without anyone remembering to come
+    back. HEALPix is excluded here and exercised where it is actually supported, which
+    today is attention; as other backends gain ragged support their tests should sweep
+    the full registry instead of this.
+    """
+    from torch_harmonics.grid import _GRID_REGISTRY, RegularGridS2
+
+    return tuple(name for name, cls in _GRID_REGISTRY.items() if issubclass(cls, RegularGridS2))
+
+
 def set_seed(seed=333):
     """Set the torch + CUDA random seed.
 

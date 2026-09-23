@@ -57,6 +57,7 @@ from torch_harmonics.filter_basis import get_filter_basis
 from torch_harmonics.grid import as_grid
 from torch_harmonics.healpix import HealpixGrid
 from torch_harmonics.neighborhood import precompute_neighborhood_arcs_s2, precompute_neighborhood_csr_s2
+from torch_harmonics.truncation import truncate_support
 
 # the same relative widening the precompute applies, so a reference built here
 # includes exactly the points that land on the cutoff
@@ -64,14 +65,19 @@ _THETA_EPS = 1e-3
 
 
 def _flat_coords(grid):
-    """Colatitude and longitude of every point of a grid, in its flat order."""
-    if grid.is_regular:
-        colats = grid.lats.to(torch.float64).repeat_interleave(grid.nlon)
-        lons = grid.lons().to(torch.float64).tile(grid.nlat)
-    else:
-        colats = grid.all_lats().to(torch.float64)
-        lons = grid.all_lons().to(torch.float64)
-    return colats, lons
+    """
+    Colatitude and longitude of every point of a grid, in its flat order.
+
+    ``coords`` is the descriptor's own ring-major expansion and is defined for every
+    grid family, so there is no branch on raggedness here and -- more to the point --
+    no second opinion about what the flat order is. The reference is only a reference
+    if it disagrees with the implementation about the geometry and not the bookkeeping.
+
+    Note this is *colatitude*: ``lats`` is the geographic latitude, pi/2 - theta, which
+    is a different number and produces a plausible-looking but wrong ball.
+    """
+    coords = grid.coords.to(torch.float64)
+    return coords[:, 0], coords[:, 1]
 
 
 def _unit_vectors(colats, lons):
@@ -111,7 +117,7 @@ class TestNeighborhoodArcs(unittest.TestCase):
         cannot hide behind the equatorial majority.
         """
         grid = HealpixGrid(nside=nside)
-        cutoff = grid.theta_cutoff()
+        cutoff = truncate_support(grid)
         arcs = precompute_neighborhood_arcs_s2(grid, grid, cutoff)
 
         expected = _brute_force_neighborhood(grid, grid, cutoff)
@@ -124,7 +130,7 @@ class TestNeighborhoodArcs(unittest.TestCase):
     def test_healpix_resampling_neighborhood_matches_brute_force(self, nside):
         """Cross-resolution, where output and input rings share no structure at all."""
         fine, coarse = HealpixGrid(nside=nside), HealpixGrid(nside=nside // 2)
-        cutoff = coarse.theta_cutoff()
+        cutoff = truncate_support(coarse)
 
         for grid_in, grid_out in [(fine, coarse), (coarse, fine)]:
             with self.subTest(nside_in=grid_in.nside, nside_out=grid_out.nside):
@@ -132,7 +138,7 @@ class TestNeighborhoodArcs(unittest.TestCase):
                 expected = _brute_force_neighborhood(grid_in, grid_out, cutoff)
                 self.assertTrue(torch.equal(_arcs_to_mask(arcs, grid_in.npoints), expected))
 
-    @parameterized.expand([["equiangular", 16], ["legendre-gauss", 16], ["lobatto", 17], ["equiangular-trapezoidal", 16]])
+    @parameterized.expand([["equiangular", 16], ["legendre-gauss", 16], ["lobatto", 17], ["trapezoidal", 16]])
     def test_product_grids_match_brute_force(self, name, nlat):
         """
         The generalization must not have cost the regular case. Equiangular and Lobatto
@@ -140,7 +146,7 @@ class TestNeighborhoodArcs(unittest.TestCase):
         location repeated nlon times -- the degenerate case the arc solve has to
         special-case rather than divide by.
         """
-        grid = as_grid(name, (nlat, 2 * nlat))
+        grid = as_grid(name, nlat=nlat, nlon=2 * nlat)
         cutoff = grid.max_latitude_spacing
         arcs = precompute_neighborhood_arcs_s2(grid, grid, cutoff)
 
@@ -157,7 +163,7 @@ class TestNeighborhoodArcs(unittest.TestCase):
         kernels to reach the other output longitudes by rotating the pattern, so its
         rows are compared against the arcs of the output points at longitude zero.
         """
-        grid = as_grid("equiangular", (16, 32))
+        grid = as_grid("equiangular", nlat=16, nlon=32)
         cutoff = grid.max_latitude_spacing
 
         idx, _, roff = _precompute_convolution_tensor_s2(
@@ -194,7 +200,7 @@ class TestNeighborhoodArcs(unittest.TestCase):
         representation.
         """
         grid = HealpixGrid(nside=nside)
-        arcs = precompute_neighborhood_arcs_s2(grid, grid, grid.theta_cutoff())
+        arcs = precompute_neighborhood_arcs_s2(grid, grid, truncate_support(grid))
 
         ring, start, length = arcs.segments[:, 0].to(torch.int64), arcs.segments[:, 1].to(torch.int64), arcs.segments[:, 2].to(torch.int64)
         sizes = arcs.ring_size[ring]
@@ -213,7 +219,7 @@ class TestNeighborhoodArcs(unittest.TestCase):
         some points and, in the kernels, double-count them in the softmax.
         """
         grid = HealpixGrid(nside=nside)
-        arcs = precompute_neighborhood_arcs_s2(grid, grid, grid.theta_cutoff())
+        arcs = precompute_neighborhood_arcs_s2(grid, grid, truncate_support(grid))
 
         for ipoint in range(grid.npoints):
             begin, end = int(arcs.offsets[ipoint]), int(arcs.offsets[ipoint + 1])
@@ -223,7 +229,7 @@ class TestNeighborhoodArcs(unittest.TestCase):
     @parameterized.expand([[2], [4], [8]])
     def test_offsets_partition_the_segments(self, nside):
         grid = HealpixGrid(nside=nside)
-        arcs = precompute_neighborhood_arcs_s2(grid, grid, grid.theta_cutoff())
+        arcs = precompute_neighborhood_arcs_s2(grid, grid, truncate_support(grid))
 
         self.assertEqual(arcs.offsets.numel(), grid.npoints + 1)
         self.assertEqual(int(arcs.offsets[0]), 0)
@@ -235,7 +241,7 @@ class TestNeighborhoodArcs(unittest.TestCase):
         """A self-neighbourhood that dropped its own centre would break the softmax's
         one guaranteed entry."""
         grid = HealpixGrid(nside=nside)
-        arcs = precompute_neighborhood_arcs_s2(grid, grid, grid.theta_cutoff())
+        arcs = precompute_neighborhood_arcs_s2(grid, grid, truncate_support(grid))
 
         for ipoint in range(grid.npoints):
             self.assertIn(ipoint, arcs.columns(ipoint).tolist())
@@ -247,7 +253,7 @@ class TestNeighborhoodArcs(unittest.TestCase):
         rather than as two, or as the complementary arc across the far side.
         """
         grid = HealpixGrid(nside=8)
-        arcs = precompute_neighborhood_arcs_s2(grid, grid, grid.theta_cutoff())
+        arcs = precompute_neighborhood_arcs_s2(grid, grid, truncate_support(grid))
 
         # first pixel of the equatorial ring, which sits at the seam
         equator = 2 * grid.nside - 1
@@ -259,15 +265,15 @@ class TestNeighborhoodArcs(unittest.TestCase):
         start, length = own_ring[0]
         self.assertGreater(start + length, n, msg="the arc at the seam must wrap rather than be clipped")
 
-        expected = _brute_force_neighborhood(grid, grid, grid.theta_cutoff())[ipoint].nonzero().flatten()
+        expected = _brute_force_neighborhood(grid, grid, truncate_support(grid))[ipoint].nonzero().flatten()
         self.assertEqual(arcs.columns(ipoint).tolist(), expected.tolist())
 
     # -- radius behaviour ----------------------------------------------------
 
     def test_a_wider_radius_only_adds_neighbours(self):
         grid = HealpixGrid(nside=4)
-        narrow = precompute_neighborhood_arcs_s2(grid, grid, grid.theta_cutoff())
-        wide = precompute_neighborhood_arcs_s2(grid, grid, 2.0 * grid.theta_cutoff())
+        narrow = precompute_neighborhood_arcs_s2(grid, grid, truncate_support(grid))
+        wide = precompute_neighborhood_arcs_s2(grid, grid, 2.0 * truncate_support(grid))
 
         self.assertGreater(wide.nnz, narrow.nnz)
         for ipoint in range(grid.npoints):
@@ -302,7 +308,7 @@ class TestNeighborhoodArcs(unittest.TestCase):
         # an nside no other test in this file uses, so the first call below is
         # guaranteed to be a miss rather than a hit on an already-warm entry
         grid = HealpixGrid(nside=5)
-        cutoff = grid.theta_cutoff()
+        cutoff = truncate_support(grid)
 
         before = precompute_neighborhood_arcs_s2.cache_info()
         precompute_neighborhood_arcs_s2(grid, grid, cutoff)
@@ -318,9 +324,9 @@ class TestNeighborhoodArcs(unittest.TestCase):
 
     def test_cached_results_are_independent_copies(self):
         grid = HealpixGrid(nside=2)
-        first = precompute_neighborhood_arcs_s2(grid, grid, grid.theta_cutoff())
+        first = precompute_neighborhood_arcs_s2(grid, grid, truncate_support(grid))
         first.segments[0, 2] = 0
-        second = precompute_neighborhood_arcs_s2(grid, grid, grid.theta_cutoff())
+        second = precompute_neighborhood_arcs_s2(grid, grid, truncate_support(grid))
         self.assertGreater(int(second.segments[0, 2]), 0)
 
 
@@ -338,7 +344,7 @@ class TestCsrExpansion(unittest.TestCase):
     @parameterized.expand([(2,), (3,), (4,), (8,)])
     def test_it_agrees_with_the_per_point_expansion(self, nside):
         grid = HealpixGrid(nside=nside)
-        arcs = precompute_neighborhood_arcs_s2(grid, grid, grid.theta_cutoff())
+        arcs = precompute_neighborhood_arcs_s2(grid, grid, truncate_support(grid))
         col_idx, row_off = arcs.to_csr()
 
         self.assertEqual(row_off.numel(), grid.npoints + 1)
@@ -353,8 +359,8 @@ class TestCsrExpansion(unittest.TestCase):
 
     @parameterized.expand([("equiangular", 16), ("legendre-gauss", 12)])
     def test_it_agrees_with_the_per_point_expansion_on_product_grids(self, name, nlat):
-        grid = as_grid(name, (nlat, 2 * nlat))
-        arcs = precompute_neighborhood_arcs_s2(grid, grid, grid.theta_cutoff())
+        grid = as_grid(name, nlat=nlat, nlon=2 * nlat)
+        arcs = precompute_neighborhood_arcs_s2(grid, grid, truncate_support(grid))
         col_idx, row_off = arcs.to_csr()
 
         for ipoint in range(grid.npoints):
@@ -368,7 +374,7 @@ class TestCsrExpansion(unittest.TestCase):
         rows would still hold the right columns in the wrong order.
         """
         grid = HealpixGrid(nside=4)
-        arcs = precompute_neighborhood_arcs_s2(grid, grid, grid.theta_cutoff())
+        arcs = precompute_neighborhood_arcs_s2(grid, grid, truncate_support(grid))
         col_idx, row_off = arcs.to_csr()
 
         wrapping = 0
@@ -388,7 +394,7 @@ class TestCsrExpansion(unittest.TestCase):
         the chunked path directly: chunking must not change the answer.
         """
         grid = HealpixGrid(nside=4)
-        arcs = precompute_neighborhood_arcs_s2(grid, grid, grid.theta_cutoff())
+        arcs = precompute_neighborhood_arcs_s2(grid, grid, truncate_support(grid))
         reference = arcs.to_csr()
 
         for budget in [1, 7, 64, 1 << 20]:
@@ -414,7 +420,7 @@ class TestCsrExpansion(unittest.TestCase):
         """
         # an nside no other test in this file uses, so the first call is a miss
         grid = HealpixGrid(nside=7)
-        cutoff = grid.theta_cutoff()
+        cutoff = truncate_support(grid)
 
         before = precompute_neighborhood_csr_s2.cache_info()
         precompute_neighborhood_csr_s2(grid, grid, cutoff)
@@ -429,7 +435,7 @@ class TestCsrExpansion(unittest.TestCase):
 
     def test_cached_expansions_are_independent_copies(self):
         grid = HealpixGrid(nside=2)
-        cutoff = grid.theta_cutoff()
+        cutoff = truncate_support(grid)
         first, _ = precompute_neighborhood_csr_s2(grid, grid, cutoff)
         sentinel = int(first[0])
         first[0] = -1
@@ -438,11 +444,34 @@ class TestCsrExpansion(unittest.TestCase):
 
     def test_it_matches_the_cached_entry_point(self):
         grid = HealpixGrid(nside=3)
-        cutoff = grid.theta_cutoff()
+        cutoff = truncate_support(grid)
         direct = precompute_neighborhood_arcs_s2(grid, grid, cutoff).to_csr()
         cached = precompute_neighborhood_csr_s2(grid, grid, cutoff)
         self.assertEqual(cached[0].tolist(), direct[0].tolist())
         self.assertEqual(cached[1].tolist(), direct[1].tolist())
+
+
+class TestRaggedArcsToCsr(unittest.TestCase):
+    """The CSR expansion of an arc pattern, against its per-point counterpart."""
+
+    def test_it_agrees_with_the_per_point_expansion(self):
+        for nside_in, nside_out in ((2, 2), (4, 2), (2, 4)):
+            with self.subTest(nside_in=nside_in, nside_out=nside_out):
+                grid_in = HealpixGrid(nside=nside_in)
+                grid_out = HealpixGrid(nside=nside_out)
+                arcs = precompute_neighborhood_arcs_s2(grid_in, grid_out, 0.5)
+
+                col_idx, row_off = arcs.to_csr()
+
+                self.assertEqual(row_off.numel(), grid_out.npoints + 1)
+                self.assertEqual(int(row_off[0]), 0)
+                self.assertEqual(int(row_off[-1]), col_idx.numel())
+                self.assertEqual(col_idx.numel(), arcs.nnz)
+
+                for ipoint in range(grid_out.npoints):
+                    expected = arcs.columns(ipoint)
+                    got = col_idx[row_off[ipoint] : row_off[ipoint + 1]]
+                    self.assertTrue(torch.equal(got, expected))
 
 
 if __name__ == "__main__":
