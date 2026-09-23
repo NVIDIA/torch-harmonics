@@ -182,29 +182,29 @@ namespace attention_kernels
     //   dq_p  = sum_j dqk_pj k_j
     //   dk_j  = sum_p dqk_pj q_p
     //
-    // dq is keyed by the output point, so it is accumulated privately per thread
-    // and needs no synchronization. dk and dv are keyed by the *input* point, and
-    // neighborhoods overlap, so they are reduced across threads -- here by giving
-    // each thread its own buffer and summing at the end, which trades memory for
-    // dropping the atomics the GPU needs. That is affordable because this path
+    // dq is keyed by the output point, and the loop below owns one output point per
+    // iteration, so those writes need no synchronization at all. dk and dv are keyed
+    // by the *input* point and neighborhoods overlap, so they are accumulated
+    // atomically -- the same scatter the CUDA kernel does with atomicAdd.
+    //
+    // Per-thread buffers summed at the end would avoid the atomics, but they cost
+    // nbatch_heads * npoints_in * nchan floats *per thread*: at nside=64 with 64
+    // threads that is hundreds of megabytes allocated invisibly inside a backward
+    // pass. Being slower is a better failure than being unable to run, and this path
     // exists for CI and small grids.
     inline void s2_attn_bwd_ragged_cpu_kernel(
         const float *__restrict__ kx, const float *__restrict__ vx, const float *__restrict__ qy,
         const float *__restrict__ dy, const float *__restrict__ integral, const float *__restrict__ alpha_sum_in,
         const float *__restrict__ qdotk_max_in, const float *__restrict__ ring_weights, const int32_t *__restrict__ seg,
         const int32_t *__restrict__ seg_off, const int64_t *__restrict__ ring_base, const int64_t *__restrict__ ring_size,
-        float *__restrict__ dkx, float *__restrict__ dvx, float *__restrict__ dqy, const int64_t nbatch_heads,
-        const int64_t npoints_in, const int64_t npoints_out, const int64_t nchan_in, const int64_t nchan_out)
+        // dkx and dvx are deliberately not __restrict__: threads scatter into overlapping
+        // regions of them, which is exactly the aliasing that qualifier promises does not
+        // happen. dqy is, because each iteration owns its slice outright.
+        float *dkx, float *dvx, float *__restrict__ dqy, const int64_t nbatch_heads, const int64_t npoints_in,
+        const int64_t npoints_out, const int64_t nchan_in, const int64_t nchan_out)
     {
-        const int64_t in_k = nbatch_heads * npoints_in * nchan_in;
-        const int64_t in_v = nbatch_heads * npoints_in * nchan_out;
-
 #pragma omp parallel
         {
-            // per-thread scatter targets, summed into the shared output below
-            std::vector<float> dk_priv(in_k, 0.0f);
-            std::vector<float> dv_priv(in_v, 0.0f);
-
 #pragma omp for collapse(2) schedule(dynamic, 8)
             for (int64_t bh = 0; bh < nbatch_heads; bh++) {
                 for (int64_t ipoint = 0; ipoint < npoints_out; ipoint++) {
@@ -216,8 +216,8 @@ namespace attention_kernels
 
                     const float *__restrict__ kx_b = kx + bh * npoints_in * nchan_in;
                     const float *__restrict__ vx_b = vx + bh * npoints_in * nchan_out;
-                    float *__restrict__ dk_b = dk_priv.data() + bh * npoints_in * nchan_in;
-                    float *__restrict__ dv_b = dv_priv.data() + bh * npoints_in * nchan_out;
+                    float *dk_b = dkx + bh * npoints_in * nchan_in;
+                    float *dv_b = dvx + bh * npoints_in * nchan_out;
 
                     const float inv_sum = 1.0f / alpha_sum_in[istat];
                     const float qdotk_max = qdotk_max_in[istat];
@@ -251,24 +251,24 @@ namespace attention_kernels
 
                             const float dqk = alpha_norm * (dy_dot_v - integ);
 
-                            float *__restrict__ dk_p = dk_b + col * nchan_in;
-                            float *__restrict__ dv_p = dv_b + col * nchan_out;
+                            float *dk_p = dk_b + col * nchan_in;
+                            float *dv_p = dv_b + col * nchan_out;
                             for (int64_t c = 0; c < nchan_in; c++) {
+                                // shared across output points, hence atomic
+#pragma omp atomic
                                 dk_p[c] += dqk * qy_p[c];
+                                // this output point's own gradient, hence not
                                 dqy_p[c] += dqk * kx_p[c];
                             }
-                            for (int64_t c = 0; c < nchan_out; c++) { dv_p[c] += alpha_norm * dy_p[c]; }
+                            for (int64_t c = 0; c < nchan_out; c++) {
+#pragma omp atomic
+                                dv_p[c] += alpha_norm * dy_p[c];
+                            }
 
                             if (++col == ring_hi) { col = ring_lo; }
                         }
                     }
                 }
-            }
-
-#pragma omp critical
-            {
-                for (int64_t i = 0; i < in_k; i++) { dkx[i] += dk_priv[i]; }
-                for (int64_t i = 0; i < in_v; i++) { dvx[i] += dv_priv[i]; }
             }
         }
     }
