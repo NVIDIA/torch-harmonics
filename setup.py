@@ -212,6 +212,9 @@ def get_ext_modules():
                 "torch_harmonics/attention/optimized/kernels_cuda/regular/attention_cuda_bwd_ring.cu",
                 "torch_harmonics/attention/optimized/kernels_cuda/regular/attention_cuda_fwd_ring_upsample.cu",
                 "torch_harmonics/attention/optimized/kernels_cuda/regular/attention_cuda_bwd_ring_upsample.cu",
+                # ragged (HEALPix and other non-product grids); see kernels_cuda/ragged/
+                "torch_harmonics/attention/optimized/kernels_cuda/ragged/attention_cuda_fwd_ragged.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/ragged/attention_cuda_bwd_ragged.cu",
             ]
         )
         ext_modules.append(CUDAExtension("torch_harmonics.attention._C", attention_sources, extra_compile_args=get_compile_args("attention")))

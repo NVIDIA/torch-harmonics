@@ -37,7 +37,7 @@ try:
 except ImportError:  # pragma: no cover - source tree that was never built
     __version__ = "0.0.0"
 
-from . import examples, grid, integration, partition, quadrature, random_fields
+from . import examples, grid, healpix, integration, neighborhood, partition, quadrature, random_fields
 from .attention import AttentionS2, NeighborhoodAttentionS2
 from .disco import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 from .grid import (
@@ -57,7 +57,9 @@ from .grid import (
     require_point_set,
     require_regular_grid,
 )
+from .healpix import HealpixGrid
 from .integration import QuadratureS2
+from .neighborhood import NeighborhoodArcsS2, precompute_neighborhood_arcs_s2, precompute_neighborhood_csr_s2
 from .resample import ResampleS2
 from .sht import InverseRealSHT, InverseRealVectorSHT, RealSHT, RealVectorSHT
 from .spectral_convolution import SpectralConvS2
