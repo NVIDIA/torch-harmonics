@@ -1720,6 +1720,19 @@ class TestNeighborhoodAttentionRaggedS2(unittest.TestCase):
         ).to(self.device)
         return grid_in, grid_out, model
 
+    def _csr(self, model):
+        """
+        The neighbourhood as a column list, built rather than read off the layer.
+
+        A layer holds whatever its backend needs, and the compiled ragged kernels take
+        the arc form: the columns are several MB they never look at. So a test that
+        wants the neighbourhood as columns -- to compare against a mask, or to drive the
+        reference -- has to ask the precompute for it, not the module. It is the same
+        pattern either way, and the precompute is cached, so this costs nothing.
+        """
+        col_idx, roff_idx = precompute_neighborhood_csr_s2(model.grid_in, model.grid_out, model.theta_cutoff)
+        return col_idx.to(self.device), roff_idx.to(self.device)
+
     def _inputs(self, batch, channels, npoints_in, npoints_out):
         make = lambda npoints: torch.randn(batch, channels, npoints, device=self.device, dtype=torch.float32, requires_grad=True)
         return {"q": make(npoints_out), "k": make(npoints_in), "v": make(npoints_in)}
@@ -1807,7 +1820,8 @@ class TestNeighborhoodAttentionRaggedS2(unittest.TestCase):
         model = NeighborhoodAttentionS2(grid_in=grid, grid_out=grid, in_channels=channels, num_heads=2, bias=False, theta_cutoff=2 * math.pi).to(self.device)
 
         # the pattern is complete: every output point sees every input point, exactly once
-        self.assertEqual(model.psi_col_idx.numel(), grid.npoints * grid.npoints)
+        col_idx, _ = self._csr(model)
+        self.assertEqual(col_idx.numel(), grid.npoints * grid.npoints)
 
         inputs = self._inputs(batch, channels, grid.npoints, grid.npoints)
         inputs_ref = {name: tensor.detach().clone().requires_grad_() for name, tensor in inputs.items()}
@@ -1878,8 +1892,7 @@ class TestNeighborhoodAttentionRaggedS2(unittest.TestCase):
             make(model.out_channels),
             make(model.k_channels),
             model.point_weights,
-            model.psi_col_idx,
-            model.psi_roff_idx,
+            *self._csr(model),
             model.num_heads,
             npoints,
         )
@@ -1927,7 +1940,7 @@ class TestNeighborhoodAttentionRaggedS2(unittest.TestCase):
         grid = HealpixGrid(nside=4)
         model = NeighborhoodAttentionS2(grid_in=grid, grid_out=grid, in_channels=1)
 
-        col_idx, row_off = model.psi_col_idx, model.psi_roff_idx
+        col_idx, row_off = self._csr(model)
         for ipoint in range(grid.npoints):
             neighbors = col_idx[row_off[ipoint] : row_off[ipoint + 1]]
             self.assertIn(ipoint, neighbors.tolist(), f"output point {ipoint} does not attend to itself")
@@ -1945,10 +1958,11 @@ class TestNeighborhoodAttentionRaggedS2(unittest.TestCase):
             with self.subTest(nside_in=nside_in, nside_out=nside_out):
                 grid_in, grid_out, model = self._build(nside_in, nside_out, 1, 1, 1, False, False)
                 expected = _brute_force_neighborhood(grid_in, grid_out, model.theta_cutoff)
+                col_idx, roff_idx = self._csr(model)
 
                 got = torch.zeros_like(expected)
                 for ipoint in range(grid_out.npoints):
-                    got[ipoint, model.psi_col_idx[model.psi_roff_idx[ipoint] : model.psi_roff_idx[ipoint + 1]]] = True
+                    got[ipoint, col_idx[roff_idx[ipoint] : roff_idx[ipoint + 1]]] = True
 
                 self.assertTrue(torch.equal(got, expected))
 

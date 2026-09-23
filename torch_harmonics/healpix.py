@@ -174,7 +174,7 @@ class HealpixGrid(GridS2):
     A ragged :class:`~torch_harmonics.grid.GridS2`: its ``12 * nside**2`` points are
     organized into ``4 * nside - 1`` isolatitude rings of unequal length, so a field
     on it is a flat ``(..., npix)`` tensor rather than a ``(..., nlat, nlon)`` one.
-    :attr:`~torch_harmonics.grid.GridS2.spatial_shape` reports ``(npix,)``,
+    :attr:`~torch_harmonics.grid.PointSetS2.shape` reports ``(npix,)``,
     :attr:`~torch_harmonics.grid.GridS2.is_regular` is ``False``, and
     :attr:`~torch_harmonics.grid.GridS2.shape` raises rather than name a rectangle
     the grid does not fill.
@@ -204,12 +204,14 @@ class HealpixGrid(GridS2):
     >>> grid = HealpixGrid(nside=2)
     >>> grid.npoints, grid.nlat, grid.nlon
     (48, 7, 8)
-    >>> grid.spatial_shape
+    >>> grid.shape
     (48,)
     >>> grid.nlon_per_lat.tolist()
     [4, 8, 8, 8, 8, 8, 4]
-    >>> float(grid.quad_weights.sum())
+    >>> float(grid.colat_weights.sum())
     2.0
+    >>> round(float(grid.quad_weights.sum()), 6)  # 4 pi, one entry per pixel
+    12.566371
     """
 
     grid_type: ClassVar[str] = "healpix"

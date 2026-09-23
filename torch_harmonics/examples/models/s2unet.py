@@ -41,7 +41,7 @@ from torch_harmonics.grid import as_grid
 
 # heuristic for finding theta_cutoff
 def _compute_cutoff_radius(nlat, kernel_shape, basis_type):
-    theta_cutoff_factor = {"piecewise linear": 0.5, "morlet": 0.5, "zernike": math.sqrt(2.0)}
+    theta_cutoff_factor = {"piecewise linear": 0.5, "harmonic": 0.5, "zernike": math.sqrt(2.0)}
 
     return (kernel_shape[0] + 1) * theta_cutoff_factor[basis_type] * math.pi / float(nlat - 1)
 
@@ -72,7 +72,7 @@ class DownsamplingBlock(nn.Module):
     kernel_shape : tuple, optional
         Kernel shape for convolution, by default (3, 3)
     basis_type : str, optional
-        Filter basis type, by default "morlet"
+        Filter basis type, by default "harmonic"
     activation : nn.Module, optional
         Activation function, by default nn.ReLU
     transform_skip : bool, optional
@@ -97,7 +97,7 @@ class DownsamplingBlock(nn.Module):
         grid_out="equiangular",
         nrep=1,
         kernel_shape=(3, 3),
-        basis_type="morlet",
+        basis_type="harmonic",
         activation=nn.ReLU,
         transform_skip=False,
         drop_conv_rate=0.0,
@@ -230,7 +230,7 @@ class UpsamplingBlock(nn.Module):
     kernel_shape : tuple, optional
         Kernel shape for convolution, by default (3, 3)
     basis_type : str, optional
-        Filter basis type, by default "morlet"
+        Filter basis type, by default "harmonic"
     activation : nn.Module, optional
         Activation function, by default nn.ReLU
     transform_skip : bool, optional
@@ -255,7 +255,7 @@ class UpsamplingBlock(nn.Module):
         grid_out="equiangular",
         nrep=1,
         kernel_shape=(3, 3),
-        basis_type="morlet",
+        basis_type="harmonic",
         activation=nn.ReLU,
         transform_skip=False,
         drop_conv_rate=0.0,
@@ -409,7 +409,7 @@ class SphericalUNet(nn.Module):
     kernel_shape : tuple, optional
         Kernel shape for convolutions, by default (3, 3)
     filter_basis_type : str, optional
-        Filter basis type, by default "morlet"
+        Filter basis type, by default "harmonic"
     transform_skip : bool, optional
         Whether to transform skip connection, by default False
     drop_conv_rate : float, optional
@@ -448,7 +448,7 @@ class SphericalUNet(nn.Module):
         scale_factor=2,
         activation_function="relu",
         kernel_shape=(3, 3),
-        filter_basis_type="morlet",
+        filter_basis_type="harmonic",
         transform_skip=False,
         drop_conv_rate=0.1,
         drop_path_rate=0.1,

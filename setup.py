@@ -197,6 +197,10 @@ def get_ext_modules():
         "torch_harmonics/attention/optimized/kernels_cpu/regular/attention_cpu_fwd_upsample.cpp",
         "torch_harmonics/attention/optimized/kernels_cpu/regular/attention_cpu_bwd.cpp",
         "torch_harmonics/attention/optimized/kernels_cpu/regular/attention_cpu_bwd_upsample.cpp",
+        # ragged (HEALPix and other non-product grids); mirrors kernels_cuda/ragged/
+        # rather than the regular CPU kernels, so both devices read the same arcs
+        "torch_harmonics/attention/optimized/kernels_cpu/ragged/attention_cpu_fwd_ragged.cpp",
+        "torch_harmonics/attention/optimized/kernels_cpu/ragged/attention_cpu_bwd_ragged.cpp",
     ]
 
     if BUILD_CUDA:

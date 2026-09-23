@@ -1293,8 +1293,8 @@ class TestKpackedPath(unittest.TestCase):
     def test_kpacked_disabled_for_unsupported_k_pad(self):
         """K_PAD not in {8,16} must silently fall back to CSR, not crash."""
         # ZernikeFilterBasis with order 4 gives K=15 → K_pad=16 (fine).
-        # Use basis_type="morlet" which typically has K > 16 depending on parameters,
-        # or just directly verify the guard in _kpacked_ok via a monkeypatched K_pad.
+        # A basis with K > 16 would reach K_pad = 24 naturally; monkeypatching K_pad is
+        # the direct way to exercise the guard without depending on one existing.
         conv = self._make_conv(1, 4, (16, 32))
         original_k_pad = conv.psi_kpacked_K_pad
         try:

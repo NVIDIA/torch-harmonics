@@ -105,7 +105,7 @@ class AttentionBackendS2:
 
 class RaggedOptimizedBackend(AttentionBackendS2):
     """
-    The CUDA ragged kernels.
+    The compiled ragged kernels, CPU or CUDA.
 
     Takes the arc form of the neighbourhood and the ring tables, and no column list:
     the kernel derives a neighbour's index by counting along an arc, so the columns
@@ -117,8 +117,11 @@ class RaggedOptimizedBackend(AttentionBackendS2):
 
     @classmethod
     def available(cls, layer: "NeighborhoodAttentionS2", device: torch.device) -> bool:
-        # there is no CPU ragged kernel; see optimized/kernels_cpu/ragged/README.md
-        return layer.ragged and layer.optimized_kernel and device.type == "cuda"
+        # No device test: the CPU and CUDA ragged kernels read the same arcs and are
+        # registered against the same operator, so the dispatcher picks between them.
+        # That is the point of having the CPU kernel take the arc form rather than the
+        # column list the product-grid CPU kernels use -- one backend serves both.
+        return layer.ragged and layer.optimized_kernel
 
     def prepare(self, layer: "NeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
         arcs = layer._neighborhood_arcs()

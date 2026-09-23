@@ -49,7 +49,7 @@ from torch_harmonics.grid import as_grid
 
 # heuristic for finding theta_cutoff
 def _compute_cutoff_radius(nlat, kernel_shape, basis_type):
-    theta_cutoff_factor = {"piecewise linear": 0.5, "morlet": 0.5, "zernike": math.sqrt(2.0)}
+    theta_cutoff_factor = {"piecewise linear": 0.5, "harmonic": 0.5, "zernike": math.sqrt(2.0)}
 
     return (kernel_shape[0] + 1) * theta_cutoff_factor[basis_type] * math.pi / float(nlat - 1)
 
@@ -78,7 +78,7 @@ class DiscreteContinuousEncoder(nn.Module):
     kernel_shape : tuple, optional
         Kernel shape for convolution, by default (3, 3)
     basis_type : str, optional
-        Filter basis type, by default "morlet"
+        Filter basis type, by default "harmonic"
     groups : int, optional
         Number of groups for grouped convolution, by default 1
     bias : bool, optional
@@ -94,7 +94,7 @@ class DiscreteContinuousEncoder(nn.Module):
         inp_chans=2,
         out_chans=2,
         kernel_shape=(3, 3),
-        basis_type="morlet",
+        basis_type="harmonic",
         groups=1,
         bias=False,
     ):
@@ -149,7 +149,7 @@ class DiscreteContinuousDecoder(nn.Module):
     kernel_shape : tuple, optional
         Kernel shape for convolution, by default (3, 3)
     basis_type : str, optional
-        Filter basis type, by default "morlet"
+        Filter basis type, by default "harmonic"
     groups : int, optional
         Number of groups for grouped convolution, by default 1
     bias : bool, optional
@@ -167,7 +167,7 @@ class DiscreteContinuousDecoder(nn.Module):
         inp_chans=2,
         out_chans=2,
         kernel_shape=(3, 3),
-        basis_type="morlet",
+        basis_type="harmonic",
         groups=1,
         bias=False,
         upsample_sht=False,
@@ -243,7 +243,7 @@ class SphericalNeuralOperatorBlock(nn.Module):
     disco_kernel_shape : tuple, optional
         Kernel shape for discrete-continuous convolution, by default (3, 3)
     disco_basis_type : str, optional
-        Filter basis type for discrete-continuous convolution, by default "morlet"
+        Filter basis type for discrete-continuous convolution, by default "harmonic"
     bias : bool, optional
         Whether to use bias, by default False
 
@@ -269,7 +269,7 @@ class SphericalNeuralOperatorBlock(nn.Module):
         outer_skip="identity",
         use_mlp=True,
         disco_kernel_shape=(3, 3),
-        disco_basis_type="morlet",
+        disco_basis_type="harmonic",
         bias=False,
     ):
         super().__init__()
@@ -410,7 +410,7 @@ class LocalSphericalNeuralOperator(nn.Module):
     encoder_kernel_shape : tuple, optional
         Kernel shape for encoder, by default (3, 3)
     filter_basis_type : str, optional
-        Filter basis type, by default "morlet"
+        Filter basis type, by default "harmonic"
     use_mlp : bool, optional
         Whether to use MLP layers, by default True
     mlp_ratio : float, optional
@@ -465,7 +465,7 @@ class LocalSphericalNeuralOperator(nn.Module):
         activation_function="gelu",
         kernel_shape=(3, 3),
         encoder_kernel_shape=(3, 3),
-        filter_basis_type="morlet",
+        filter_basis_type="harmonic",
         use_mlp=True,
         mlp_ratio=2.0,
         drop_rate=0.0,
