@@ -32,6 +32,8 @@
 
 import torch
 
+from torch_harmonics.quadrature import QuadratureS2
+
 from .poisson_equation import RadialPoissonSolver
 
 
@@ -46,14 +48,12 @@ class PoissonDataset(torch.utils.data.Dataset):
         Angular grid type, by default "legendre-gauss"
     domain : str, optional
         Either "half-line" or "exterior", by default "half-line"
-    R : float, optional
+    inner_radius : float, optional
         Inner radius for exterior domain, by default None
-    nblobs : int or tuple of int, optional
-        Number of blobs in each source, by default (1, 8)
-    l_src : int, optional
-        Angular band limit of the source, by default 8
-    positive : bool, optional
-        Draw only positive sources, by default False
+    rmin, rmax : float, optional
+        Radial bounds, by default (1e-1, 1e3)
+    source : str, optional
+        Source type, by default "bump". Either "bump" or "ball"
     num_examples : int, optional
         Number of examples, by default 32
     device : torch.device, optional
@@ -64,7 +64,7 @@ class PoissonDataset(torch.utils.data.Dataset):
     Returns
     -------
     inp : torch.Tensor
-        Source, shape (nr, nlat, nlon)
+        Source times r**2, shape (nr, nlat, nlon).
     tar : torch.Tensor
         Solution, shape (nr, nlat, nlon)
     """
@@ -74,51 +74,60 @@ class PoissonDataset(torch.utils.data.Dataset):
         dims=(64, 128, 256),
         grid="legendre-gauss",
         domain="half-line",
-        R=None,
-        nblobs=(1, 8),
-        l_src=8,
-        positive=False,
+        inner_radius=None,
+        rmin=1e-1,
+        rmax=1e3,
+        source="bump",
         num_examples=32,
         device=torch.device("cpu"),
         normalize=True,
     ):
+        if source not in ("bump", "ball"):
+            raise ValueError(f"unknown source: {source}")
+
         self.num_examples = num_examples
         self.device = device
         self.normalize = normalize
-        self.nblobs = nblobs
-        self.l_src = l_src
-        self.positive = positive
+        self.source = source
         self.nlat, self.nlon, self.nr = dims
 
         self.solver = RadialPoissonSolver(
             self.nlat,
             self.nlon,
             self.nr,
+            rmin=rmin,
+            rmax=rmax,
             grid=grid,
             domain=domain,
-            R=R,
+            inner_radius=inner_radius,
         ).to(self.device)
+
+        # mean over the sphere for the scale
+        self.sphere_mean = QuadratureS2((self.nlat, self.nlon), grid=grid, normalize=True).to(self.device)
 
     def __len__(self):
         return self.num_examples
 
     def _get_sample(self):
-        """Get one unscaled source + solution pair."""
+        """Get one unscaled (r**2 f, u) pair in float64."""
 
-        f = self.solver.random_source(nblobs=self.nblobs, l_src=self.l_src, positive=self.positive)
+        if self.source == "bump":
+            nblobs = int(torch.randint(1, 9, ()).item())
+            f = self.solver.random_bump_source(nblobs=nblobs, l_src=8)
+        else:
+            # random node in the middle of the grid
+            ir = int(torch.randint(self.nr // 5, 4 * self.nr // 5, ()).item())
+            r = self.solver.r[ir].item()
+            f = self.solver.ball_source(radius=r)
+
         u = self.solver.solve(f)
+        r2f = self.solver.r.reshape(-1, 1, 1) ** 2 * f
 
-        return f.float(), u.float()
+        return r2f, u
 
-    def scale(self, f):
-        """
-        Scale factor for a pair: the L2 norm of the source, quadrature-weighted in the
-        radial direction by r**2 dr and approximated by an unweighted mean over the
-        angular directions.
-        """
-
-        w, r = self.solver.w, self.solver.r
-        return ((w * r**2) * (f**2).mean(dim=(-1, -2))).sum().sqrt()
+    def scale(self, g):
+        """Scale factor as the RMS, averaged over the sphere and over the radial nodes."""
+        return self.sphere_mean(g**2).mean().sqrt()
 
     def __getitem__(self, index):
 
@@ -130,4 +139,4 @@ class PoissonDataset(torch.utils.data.Dataset):
                     s = self.scale(inp)
                     inp, tar = inp / s, tar / s
 
-        return inp.clone(), tar.clone()
+        return inp.float(), tar.float()

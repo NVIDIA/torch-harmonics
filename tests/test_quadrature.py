@@ -39,7 +39,6 @@ from testutils import compare_tensors, set_seed
 import torch_harmonics as th
 from torch_harmonics.quadrature import geometric_weights, precompute_latitudes, precompute_longitudes, trapezoidal_weights
 
-
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
     _devices.append((torch.device("cuda"),))
@@ -276,6 +275,8 @@ class TestGeometricWeights(unittest.TestCase):
         for a in (0.0, -1.0):
             with self.assertRaisesRegex(ValueError, "must be positive"):
                 geometric_weights(8, a, 10.0)
+
+
 class TestQuadratureWeightPrecision(unittest.TestCase):
     """Every quadrature rule must carry its weights in the same precision as its nodes."""
 

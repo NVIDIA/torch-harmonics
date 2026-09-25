@@ -138,6 +138,52 @@ def precompute_latitudes(nlat: int, grid: Optional[str] = "equiangular") -> Tupl
     return lats, wlg
 
 
+@lru_cache(typed=True, copy=True)
+def precompute_radii(
+    nr: int, vmin: float, vmax: float, domain: str = "half-line", inner_radius: Optional[float] = None, dtype: torch.dtype = torch.float64
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Radial grid and quadrature weights.
+
+    Parameters
+    -----------
+    nr : int
+        Number of radial nodes
+    vmin : float
+        Lower bound on r, or on rho / inner_radius = (r - inner_radius) / inner_radius for the exterior domain
+    vmax : float
+        Upper bound
+    domain : str, optional
+        Either "half-line" or "exterior", by default "half-line"
+    inner_radius : float, optional
+        Inner radius, required for domain="exterior", by default None
+    dtype : torch.dtype, optional
+        Floating point type, by default torch.float64
+
+    Returns
+    -------
+    x : torch.Tensor
+        Reduced coordinate of the nodes
+    r : torch.Tensor
+        Radial nodes
+    w : torch.Tensor
+        Trapezoidal weights for the integral over dr
+    """
+
+    if domain == "half-line":
+        r, w = geometric_weights(nr, vmin, vmax)
+        x = torch.log(r)
+    elif domain == "exterior":
+        if inner_radius is None:
+            raise ValueError("inner_radius must be given for domain='exterior'")
+        rho, wrho = geometric_weights(nr, vmin, vmax)
+        x, r, w = torch.log(rho), inner_radius + inner_radius * rho, inner_radius * wrho
+    else:
+        raise ValueError(f"unknown domain: {domain}")
+
+    return x.to(dtype), r.to(dtype), w.to(dtype)
+
+
 @lru_cache(typed=True, copy=False)
 def compute_latitude_spacing(nlat: int, grid: Optional[str] = "equiangular") -> float:
     r"""
@@ -356,7 +402,7 @@ def trapezoidal_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 
 def geometric_weights(n: int, a: Optional[float] = 1.0, b: Optional[float] = math.e) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Helper routine which returns geometrically spaced nodes, uniform in log(x), together
-    with the corresponding trapezoidal weights for the integral over dv on [a, b]
+    with the corresponding trapezoidal weights for the integral over dx on [a, b]
 
     Parameters
     -----------

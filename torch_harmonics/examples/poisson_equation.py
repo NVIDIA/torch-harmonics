@@ -31,58 +31,13 @@
 
 
 import math
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
 
 import torch_harmonics as th
-from torch_harmonics.quadrature import geometric_weights, precompute_latitudes, precompute_longitudes
-
-
-def radial_grid(
-    nr: int, vmin: float, vmax: float, grid: str = "half-line", R: Optional[float] = None, dtype: torch.dtype = torch.float64
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Radial grid and quadrature weights.
-
-    Parameters
-    -----------
-    nr : int
-        Number of radial nodes
-    vmin : float
-        Lower bound on r, or on rho / R = (r - R) / R for the exterior domain
-    vmax : float
-        Upper bound
-    grid : str, optional
-        Either "half-line" or "exterior", by default "half-line"
-    R : float, optional
-        Inner radius, required for domain="exterior", by default None
-    dtype : torch.dtype, optional
-        Floating point type, by default torch.float64
-
-    Returns
-    -------
-    x : torch.Tensor
-        Reduced coordinate of the nodes
-    r : torch.Tensor
-        Radial nodes
-    w : torch.Tensor
-        Trapezoidal weights for the integral over dr
-    """
-
-    if grid == "half-line":
-        r, w = geometric_weights(nr, vmin, vmax)
-        x = torch.log(r)
-    elif grid == "exterior":
-        if R is None:
-            raise ValueError("R must be given for grid='exterior'")
-        rho, wrho = geometric_weights(nr, vmin, vmax)
-        x, r, w = torch.log(rho), R + R * rho, R * wrho
-    else:
-        raise ValueError(f"unknown grid: {grid}")
-
-    return x.to(dtype), r.to(dtype), w.to(dtype)
+from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes, precompute_radii
 
 
 class GreensOperator(nn.Module):
@@ -100,31 +55,32 @@ class GreensOperator(nn.Module):
         Number of spherical harmonic degrees
     domain : str, optional
         Either "half-line" or "exterior", by default "half-line"
-    R : float, optional
+    inner_radius : float, optional
         Inner radius for exterior domain, by default None
+
+    References
+    ----------
+    .. [1] J. D. Jackson, *Classical Electrodynamics*, 3rd ed., Wiley, 1999, Sec. 3.9
+    .. [2] R. Fitzpatrick, *Classical Electromagnetism*, lecture notes,
+       https://farside.ph.utexas.edu/teaching/jk1/Electromagnetism/node31.html
     """
 
-    def __init__(self, r: torch.Tensor, w: torch.Tensor, lmax: int, domain: str = "half-line", R: Optional[float] = None):
+    def __init__(self, r: torch.Tensor, w: torch.Tensor, lmax: int, domain: str = "half-line", inner_radius: Optional[float] = None):
         super().__init__()
 
         if domain not in ("half-line", "exterior"):
             raise NotImplementedError(f"Domain {domain} not implemented")
-        if domain == "exterior" and R is None:
-            raise ValueError("R must be given for domain='exterior'")
+        if domain == "exterior" and inner_radius is None:
+            raise ValueError("Inner radius must be given for domain='exterior'")
 
         self.lmax = lmax
         self.domain = domain
-        self.R = R
+        self.inner_radius = inner_radius
 
         logr = torch.log(r)
         green = self._assemble(logr, r**2 * w)
 
         self.register_buffer("green", green)
-
-        # harmonic lift for boundary data, shape (nr, lmax)
-        if domain == "exterior":
-            l = torch.arange(0, lmax, dtype=r.dtype).unsqueeze(0)
-            self.register_buffer("blift", torch.exp((l + 1) * (math.log(R) - logr.unsqueeze(-1))))
 
     def _assemble(self, logr: torch.Tensor, quad: torch.Tensor) -> torch.Tensor:
         """Green's kernel of shape (lmax, nr, nr), assembled in log space."""
@@ -140,25 +96,17 @@ class GreensOperator(nn.Module):
 
         core = torch.exp(l * loglo - (l + 1) * loghi)
         if self.domain == "exterior":
-            core = core - torch.exp((2 * l + 1) * math.log(self.R) - (l + 1) * (loglo + loghi))
+            core = core - torch.exp((2 * l + 1) * math.log(self.inner_radius) - (l + 1) * (loglo + loghi))
 
         return -core * quad.reshape(1, 1, -1) / (2 * l + 1)
 
-    def forward(self, fspec: torch.Tensor, v0spec: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, fspec: torch.Tensor) -> torch.Tensor:
         """Solve lap u = f in spectral space."""
 
-        uspec = torch.complex(
+        return torch.complex(
             torch.einsum("lkj,...jlm->...klm", self.green, fspec.real),
             torch.einsum("lkj,...jlm->...klm", self.green, fspec.imag),
         )
-
-        # handle boundary data for exterior domain
-        if v0spec is not None:
-            if self.domain != "exterior":
-                raise ValueError("inner Dirichlet data is only defined on the exterior domain")
-            uspec = uspec + v0spec.unsqueeze(-3) * self.blift.unsqueeze(-1).to(v0spec.dtype)
-
-        return uspec
 
 
 class RadialPoissonSolver(nn.Module):
@@ -169,10 +117,6 @@ class RadialPoissonSolver(nn.Module):
     operator in the radial direction and a spherical harmonic transform in the angular
     directions.
 
-    The Green's kernel is stored densely, so the solver holds an (lmax, nr, nr) float64
-    buffer and each solve costs O(lmax * mmax * nr**2): 33 MB at nlat=64, nr=256, but
-    537 MB at nlat=256, nr=512. Size the radial grid accordingly.
-
     Parameters
     -----------
     nlat : int
@@ -181,11 +125,10 @@ class RadialPoissonSolver(nn.Module):
         Number of longitude points
     nr : int
         Number of radial points
-    r_min, r_max : float, optional
-        Bounds of the radial grid. On the half-line these are bounds on r itself, by
-        default (1e-1, 1e3). On the exterior domain they are bounds on the reduced
-        coordinate rho / R = (r - R) / R, by default (1e-2, 1e2), so that r ranges over
-        R * (1 + r_min) to R * (1 + r_max).
+    rmin, rmax : float, optional
+        Bounds of the radial grid, by default (1e-1, 1e3). On the half-line these are
+        bounds on r itself. On the exterior domain they are bounds on the reduced
+        coordinate rho.
     lmax : int, optional
         Maximum l mode, by default None
     mmax : int, optional
@@ -194,12 +137,16 @@ class RadialPoissonSolver(nn.Module):
         Grid type ("legendre-gauss", "lobatto", "equiangular"), by default "legendre-gauss"
     domain : str, optional
         Either "half-line" or "exterior", by default "half-line"
-    R : float, optional
+    inner_radius : float, optional
         Inner radius for exterior domain, by default None
     """
 
-    def __init__(self, nlat, nlon, nr, r_min=None, r_max=None, lmax=None, mmax=None, grid="legendre-gauss", domain="half-line", R=None):
+    def __init__(self, nlat, nlon, nr, rmin=1e-1, rmax=1e3, lmax=None, mmax=None, grid="legendre-gauss", domain="half-line", inner_radius=None):
         super().__init__()
+
+        # assertions
+        if domain == "half-line" and inner_radius is not None:
+            raise ValueError("inner_radius is only meaningful on the exterior domain")
 
         # grid parameters
         self.nlat = nlat
@@ -207,7 +154,9 @@ class RadialPoissonSolver(nn.Module):
         self.nr = nr
         self.grid = grid
         self.domain = domain
-        self.R = R
+        self.rmin = rmin
+        self.rmax = rmax
+        self.inner_radius = inner_radius
 
         # SHT
         self.sht = th.RealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
@@ -216,28 +165,14 @@ class RadialPoissonSolver(nn.Module):
         self.lmax = self.sht.lmax
         self.mmax = self.sht.mmax
 
-        # compute gridpoints; precompute_latitudes returns colatitudes ordered from the
-        # north pole, matching the row order the SHT expects. Unsupported grids are
-        # already rejected by the RealSHT constructor above.
+        # compute gridpoints
         colats, _ = precompute_latitudes(self.nlat, grid=self.grid)
         lats = 0.5 * torch.pi - colats
         lons = precompute_longitudes(self.nlon)
+        x, r, w = precompute_radii(nr, self.rmin, self.rmax, domain=domain, inner_radius=inner_radius)
 
-        # radial grid and the exact radial Green's operator
-        if domain == "half-line":
-            if R is not None:
-                raise ValueError("R is only meaningful on the exterior domain")
-            defaults = (1e-1, 1e3)
-        elif domain == "exterior":
-            defaults = (1e-2, 1e2)
-        else:
-            raise ValueError(f"unknown domain: {domain}")
-
-        self.r_min = defaults[0] if r_min is None else r_min
-        self.r_max = defaults[1] if r_max is None else r_max
-
-        x, r, w = radial_grid(nr, self.r_min, self.r_max, grid=domain, R=R)
-        self.radial = GreensOperator(r, w, self.lmax, domain=domain, R=R)
+        # exact radial Green's operator
+        self.operator = GreensOperator(r, w, self.lmax, domain=domain, inner_radius=inner_radius)
 
         # register all
         self.register_buffer("lats", lats)
@@ -254,28 +189,11 @@ class RadialPoissonSolver(nn.Module):
         """Convert spectral coefficients to spatial data."""
         return self.isht(uspec)
 
-    def solve(self, f: torch.Tensor, v0: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
-        Solve poisson equation lap u = f on the grid.
+    def solve(self, f: torch.Tensor) -> torch.Tensor:
+        """Solve poisson equation lap u = f on the grid."""
+        return self.spec2grid(self.operator(self.grid2spec(f)))
 
-        Parameters
-        -----------
-        f : torch.Tensor
-            Source, shape (..., nr, nlat, nlon)
-        v0 : torch.Tensor, optional
-            Dirichlet data on the inner sphere r = R, shape (..., nlat, nlon). Only
-            defined on the exterior domain, where it is lifted harmonically as
-            (R / r)**(l + 1) per degree. Homogeneous (u = 0 at r = R) if omitted.
-
-        Returns
-        -------
-        u : torch.Tensor
-            Solution, same shape as f
-        """
-        v0spec = None if v0 is None else self.grid2spec(v0)
-        return self.spec2grid(self.radial(self.grid2spec(f), v0spec))
-
-    def _random_angular_spec(self, shape, l_src=8, decay=1.0) -> torch.Tensor:
+    def _random_angular_spec(self, shape, l_src=8) -> torch.Tensor:
         """Random band-limited complex coefficients of a real field on the sphere."""
 
         lsrc = min(l_src + 1, self.lmax)
@@ -285,51 +203,30 @@ class RadialPoissonSolver(nn.Module):
         scale = math.sqrt(4.0 * math.pi / lsrc / (lsrc + 1))
         aspec[..., :lsrc, :msrc] = scale * torch.randn_like(aspec[..., :lsrc, :msrc])
 
-        # decay higher modes
-        l = torch.arange(0, self.lmax, dtype=self.r.dtype, device=self.r.device).reshape(-1, 1)
-        aspec = aspec * (1.0 + l).pow(-decay).to(aspec.dtype)
-
         aspec = torch.tril(aspec)
         aspec[..., 0].imag.zero_()
 
         return aspec
 
-    def random_source(self, nblobs=(1, 8), l_src=8, decay=1.0, margin=None, width=(0.03, 0.10), positive=False) -> torch.Tensor:
-        """
-        Random multi-scale source.
-        A sum of nblobs terms, each a radial bump in x = log r times a random band-limited angular field.
+    def ball_source(self, radius=1.0, value=1.0) -> torch.Tensor:
+        """Source for the Poisson equation on a ball of radius `radius` and value `value`."""
+        f = torch.zeros(self.nr, self.nlat, self.nlon, dtype=self.r.dtype, device=self.r.device)
+        f[self.r <= radius] = value
+        return f
 
-        Parameters
-        -----------
-        nblobs : int or tuple of int, optional
-            Number of blobs, or an inclusive range to draw it from, by default (1, 8)
-        l_src : int, optional
-            Angular band limit of the source, by default 8
-        decay : float, optional
-            Decay exponent of angular spectrum, by default 1.0
-        margin : float, optional
-            Fraction of the log range kept free at each end, by default width[1] + 0.02
-        width : tuple of float, optional
-            Range of blob half-widths as a fraction of the log range, by default (0.03, 0.10)
-        positive : bool, optional
-            Make the source non-negative
-        """
+    def random_bump_source(self, nblobs=4, l_src=8, margin=0.05, width=(0.03, 0.10)) -> torch.Tensor:
+        """Random multi-scale source. A sum of nblobs terms, each a radial bump in x = log r times a random band-limited angular field."""
 
         device = self.r.device
         dtype = self.r.dtype
 
-        if margin is None:
-            margin = width[1] + 0.02
-        if not isinstance(nblobs, int):
-            nblobs = int(torch.randint(nblobs[0], nblobs[1] + 1, ()).item())
-
-        # range of source support -> leave margin to avoid boundary effects
+        # range of source support
         x = self.x
         span = (x[-1] - x[0]).item()
         xlo = x[0].item() + margin * span
         xhi = x[-1].item() - margin * span
 
-        # random half width of blobs, clamped so the support always fits
+        # random half width of blobs
         half = width[0] * span + (width[1] - width[0]) * span * torch.rand(nblobs, dtype=dtype, device=device)
         half = torch.clamp(half, max=0.5 * (xhi - xlo))
         # random centers of blobs
@@ -341,20 +238,10 @@ class RadialPoissonSolver(nn.Module):
         radial = torch.zeros_like(t)
         radial[inside] = torch.exp(1.0 - 1.0 / (1.0 - t[inside] ** 2))
 
-        # one angular field per blob, so a per-blob shift can enforce positivity
-        angular = self.spec2grid(self._random_angular_spec((nblobs,), l_src=l_src, decay=decay))
-        if positive:
-            angular = angular - angular.amin(dim=(-1, -2), keepdim=True)
+        # one angular field per blob
+        angular = self.spec2grid(self._random_angular_spec((nblobs,), l_src=l_src))
 
         return torch.einsum("bxy,bk->kxy", angular, radial)
-
-    def random_boundary_data(self, l_src=8, decay=1.0) -> torch.Tensor:
-        """Random band-limited Dirichlet data on the inner sphere."""
-
-        if self.domain != "exterior":
-            raise ValueError("random_boundary_data is only defined on the exterior domain")
-
-        return self.spec2grid(self._random_angular_spec((), l_src=l_src, decay=decay))
 
     def plot_sphere(self, data, ax, title="", cmap=None, vmin=None, vmax=None, projection="mollweide", colorbar=True):
         """One radial level of a grid field, on the sphere. Supports the "mollweide" projection."""
@@ -384,27 +271,7 @@ class RadialPoissonSolver(nn.Module):
         return im
 
     def plot_meridional(self, data, ax, ilon=0, title="", cmap=None, vmin=None, vmax=None, projection="log", colorbar=True, rmax=None):
-        """
-        Meridional slice of a grid field of shape (nr, nlat, nlon).
-
-        Parameters
-        -----------
-        data : torch.Tensor
-            Grid field, shape (nr, nlat, nlon)
-        ax : matplotlib.axes.Axes
-            Axes to draw on. The "polar" projection expects a plain (non-polar) axes,
-            since the slice is drawn in Cartesian coordinates.
-        ilon : int, optional
-            Index of the meridian to slice, by default 0. The "polar" projection also
-            draws the antipodal meridian, closing the plane through the poles.
-        projection : str, optional
-            Either "log", radius against latitude on a logarithmic radial axis (rho / R
-            on the exterior domain), or "polar", the meridional plane in Cartesian
-            coordinates with the north pole at the top. By default "log".
-        rmax : float, optional
-            Clip the plot to r <= rmax, by default None. Useful on grids spanning
-            several decades, where the outermost nodes dominate the extent.
-        """
+        """Meridional slice of a grid field of shape (nr, nlat, nlon)."""
 
         import matplotlib.pyplot as plt
         import numpy as np
@@ -436,14 +303,14 @@ class RadialPoissonSolver(nn.Module):
 
             # stroke the walls; the inner one is R itself, which is never a grid node
             t = np.linspace(0.0, 2 * np.pi, 361)
-            for radius in [self.R, r[-1]] if self.domain == "exterior" else [r[-1]]:
+            for radius in [self.inner_radius, r[-1]] if self.domain == "exterior" else [r[-1]]:
                 ax.plot(radius * np.sin(t), radius * np.cos(t), c="k", lw=0.8)
 
             ax.set_aspect("equal")
             ax.set_axis_off()
         elif projection == "log":
             if self.domain == "exterior":
-                x, label = (r - self.R) / self.R, r"$\rho/R$"
+                x, label = (r - self.inner_radius) / self.inner_radius, r"$\rho/R$"
             else:
                 x, label = r, "$r$"
 
