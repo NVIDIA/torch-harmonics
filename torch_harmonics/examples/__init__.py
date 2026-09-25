@@ -31,5 +31,7 @@
 
 from .pde_dataset import PdeDataset
 from .pde_sphere import SphereSolver
+from .poisson_dataset import PoissonDataset
+from .poisson_equation import RadialPoissonSolver
 from .shallow_water_equations import ShallowWaterSolver
 from .stanford_2d3ds_dataset import Stanford2D3DSDownloader, StanfordDatasetSubset, StanfordDepthDataset, StanfordSegmentationDataset, compute_stats_s2

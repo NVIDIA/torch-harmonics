@@ -28,6 +28,9 @@
 * **Breaking**: fixed the `"bilinear-spherical"` resampling mode of `ResampleS2` and `DistributedResampleS2`, which applied spherical interpolation weights that are only valid for vectors to scalar sample values and could amplify its input without bound. It now interpolates along the shorter arc of the circle, which is identical to `"bilinear"` unless the field contains a phase wrap, so only wrapped fields change.
 * Fixed pole expansion for the same mode, which averaged angles arithmetically and so placed the pole in nearly the opposite direction for fields crossing the branch cut.
 * Fixed `trapezoidal_weights` returning float32 weights alongside float64 nodes, which capped the accuracy of everything derived from it at roughly 1e-7.
+* Added a radial Poisson solver example (`RadialPoissonSolver` and `PoissonDataset` in `torch_harmonics.examples`), solving `lap u = f` on `(0, inf) x S2` and `[R, inf) x S2` subject to `u -> 0` at infinity, with `u = 0` on the inner sphere of the exterior domain. It combines an exact per-degree Green's operator in the radial direction with a spherical harmonic transform in the angular directions. New tutorial notebook: `notebooks/poisson_equation.ipynb`.
+* Added `geometric_weights` to `torch_harmonics.quadrature`: geometrically spaced nodes, uniform in `log(x)`, together with the corresponding trapezoidal weights for the integral over `dx` on a positive interval. Intended for radial directions spanning several decades.
+* Added `precompute_radii` to `torch_harmonics.quadrature`, which builds the radial nodes and `dr` weights of either the half-line `(0, inf)` or the exterior domain `[R, inf)` on top of `geometric_weights`. On the exterior domain the geometric spacing is applied to the reduced coordinate `(r - R) / R`.
 
 ### v0.9.2
 
