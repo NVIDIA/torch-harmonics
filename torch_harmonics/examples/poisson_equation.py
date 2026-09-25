@@ -128,7 +128,8 @@ class RadialPoissonSolver(nn.Module):
     rmin, rmax : float, optional
         Bounds of the radial grid, by default (1e-1, 1e3). On the half-line these are
         bounds on r itself. On the exterior domain they are bounds on the reduced
-        coordinate rho.
+        coordinate (r - inner_radius) / inner_radius, so that r ranges over
+        inner_radius * (1 + rmin) to inner_radius * (1 + rmax).
     lmax : int, optional
         Maximum l mode, by default None
     mmax : int, optional

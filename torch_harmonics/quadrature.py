@@ -163,7 +163,8 @@ def precompute_radii(
     Returns
     -------
     x : torch.Tensor
-        Reduced coordinate of the nodes
+        Reduced coordinate of the nodes, log(r) on the half-line and
+        log((r - inner_radius) / inner_radius) on the exterior domain
     r : torch.Tensor
         Radial nodes
     w : torch.Tensor
