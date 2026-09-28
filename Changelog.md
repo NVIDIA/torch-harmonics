@@ -5,6 +5,7 @@
 ### v0.9.3b1 (unreleased)
 
 * Fixed `DiceLossS2` including ignored pixels in the class-zero denominator; ignored targets now contribute to neither term of the Dice score.
+* Fixed `AccuracyS2` counting ignored area as correctly classified. The true negatives were taken as the whole sphere minus the other three counts, while those three already excluded the ignored samples, so everything masked out landed in the true negatives. Since `ignore_index` defaults to `-100` the metric was inflated toward 1 for any masked target: scoring a quarter of the sphere and getting every scored sample wrong reported 0.75 rather than 0. Ignored samples are now given zero quadrature weight, which drops them from all four counts and from the total, replacing the separate relabeling and area-subtraction paths with the one mechanism. `IntersectionOverUnionS2` has no true-negative term and is unaffected, and unmasked results are bit-identical.
 
 * Improved DISCO CUDA kernel performance: kpacked forward up to 1.28x, backward up to 2.1x on H100 and GB200. No API change.
 * Reduced DISCO psi memory footprint by packing the sparsity into a blocked-CSR layout instead of padding every row to the global maximum.
