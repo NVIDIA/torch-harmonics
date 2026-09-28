@@ -34,6 +34,7 @@ import unittest
 
 import torch
 from parameterized import parameterized
+from testutils import compare_tensors
 
 from torch_harmonics.examples.metrics import AccuracyS2, IntersectionOverUnionS2, _get_stats_multiclass
 
@@ -85,7 +86,7 @@ class TestMulticlassStats(unittest.TestCase):
         expected = confusion_reference(output, target, 4, metric.quad_weights, ignore_index)
 
         for count, reference, name in zip(actual, expected, ["tp", "fp", "fn", "tn"]):
-            torch.testing.assert_close(count.double(), reference, rtol=1e-6, atol=1e-7, msg=f"{name} mismatch")
+            self.assertTrue(compare_tensors(f"{name} mismatch", count.double(), reference, atol=1e-7, rtol=1e-6))
 
     def test_counts_sum_to_the_scored_area(self):
         """Every class partitions the scored area into the four counts."""
@@ -99,7 +100,7 @@ class TestMulticlassStats(unittest.TestCase):
         total = sum(counts)
         scored = torch.where(target == -100, 0.0, metric.quad_weights.expand_as(target.double()).double())
         expected = scored.flatten(1).sum(1, keepdim=True).expand_as(total)
-        torch.testing.assert_close(total.double(), expected, rtol=1e-6, atol=1e-7)
+        self.assertTrue(compare_tensors("counts sum to the scored area", total.double(), expected, atol=1e-7, rtol=1e-6))
 
 
 class TestAccuracyS2(unittest.TestCase):
@@ -111,7 +112,7 @@ class TestAccuracyS2(unittest.TestCase):
         target[:, 6:, :] = -100
         metric = AccuracyS2(8, 16, grid=grid, mode=mode)
         score = metric(confident_logits(target.clamp(min=0), 3), target)
-        torch.testing.assert_close(score.double(), torch.tensor(1.0, dtype=torch.float64), rtol=0, atol=1e-6)
+        self.assertTrue(compare_tensors("perfect prediction scores one", score.double(), torch.tensor(1.0, dtype=torch.float64), atol=1e-6, rtol=0))
 
     def test_ignored_area_is_not_credited_as_correct(self):
         """A prediction wrong on every scored pixel scores zero, whatever is masked out.
@@ -123,7 +124,7 @@ class TestAccuracyS2(unittest.TestCase):
         target[..., :4] = 0  # only a quarter of the sphere is scored
         logits = confident_logits(torch.ones_like(target), 2)  # always predicts class 1
         metric = AccuracyS2(8, 16, mode="micro")
-        torch.testing.assert_close(metric(logits, target).double(), torch.tensor(0.0, dtype=torch.float64), rtol=0, atol=1e-6)
+        self.assertTrue(compare_tensors("ignored area is not credited as correct", metric(logits, target).double(), torch.tensor(0.0, dtype=torch.float64), atol=1e-6, rtol=0))
 
     def test_ignored_predictions_do_not_change_the_score(self):
         generator = torch.Generator().manual_seed(34)
@@ -133,7 +134,7 @@ class TestAccuracyS2(unittest.TestCase):
         changed = logits.clone()
         changed[:, :, 3:5, :] = 50 * torch.randn((1, 3, 2, 16), dtype=torch.float64, generator=generator)
         metric = AccuracyS2(8, 16)
-        torch.testing.assert_close(metric(logits, target), metric(changed, target), rtol=0, atol=0)
+        self.assertTrue(compare_tensors("ignored predictions do not change the score", metric(logits, target), metric(changed, target), atol=0, rtol=0))
 
     def test_unmasked_score_is_the_area_weighted_correct_fraction(self):
         generator = torch.Generator().manual_seed(35)
@@ -141,7 +142,9 @@ class TestAccuracyS2(unittest.TestCase):
         output = torch.randint(0, 2, (1, 8, 16), generator=generator)
         metric = AccuracyS2(8, 16, mode="micro")
         expected = (metric.quad_weights * (target == output)).sum().double()
-        torch.testing.assert_close(metric(confident_logits(output, 2), target).double(), expected, rtol=1e-6, atol=1e-7)
+        self.assertTrue(
+            compare_tensors("unmasked score is the area weighted correct fraction", metric(confident_logits(output, 2), target).double(), expected, atol=1e-7, rtol=1e-6)
+        )
 
 
 class TestIntersectionOverUnionS2(unittest.TestCase):
@@ -153,7 +156,7 @@ class TestIntersectionOverUnionS2(unittest.TestCase):
         target[:, 6:, :] = -100
         metric = IntersectionOverUnionS2(8, 16, mode=mode)
         score = metric(confident_logits(target.clamp(min=0), 3), target)
-        torch.testing.assert_close(score.double(), torch.tensor(1.0, dtype=torch.float64), rtol=0, atol=1e-6)
+        self.assertTrue(compare_tensors("perfect prediction scores one", score.double(), torch.tensor(1.0, dtype=torch.float64), atol=1e-6, rtol=0))
 
     def test_matches_the_iou_definition(self):
         """IoU has no true-negative term, so it reads straight off the reference."""
@@ -165,4 +168,61 @@ class TestIntersectionOverUnionS2(unittest.TestCase):
         metric = IntersectionOverUnionS2(8, 16, mode="micro")
         tp, fp, fn, _ = confusion_reference(output, target, 2, metric.quad_weights, -100)
         expected = (tp.mean(dim=1) / (tp + fp + fn).mean(dim=1)).mean()
-        torch.testing.assert_close(metric(confident_logits(output, 2), target).double(), expected, rtol=1e-6, atol=1e-7)
+        self.assertTrue(compare_tensors("matches the iou definition", metric(confident_logits(output, 2), target).double(), expected, atol=1e-7, rtol=1e-6))
+
+
+class TestMetricConventions(unittest.TestCase):
+    """Behaviors that are surprising but current. Encoded so a change is deliberate."""
+
+    def test_a_fully_ignored_sample_is_nan_in_micro_and_zero_in_macro(self):
+        """The two modes disagree about an undefined score.
+
+        Micro divides zero by zero and propagates NaN, which poisons the batch. Macro
+        maps NaN to 0.0, which is indistinguishable from a genuinely worst-possible
+        score. Neither is obviously right, but they should not disagree.
+        """
+        generator = torch.Generator().manual_seed(51)
+        target = torch.full((1, 8, 16), -100, dtype=torch.long)
+        logits = torch.randn((1, 2, 8, 16), generator=generator)
+
+        self.assertTrue(torch.isnan(AccuracyS2(8, 16, mode="micro")(logits, target)))
+        self.assertTrue(compare_tensors("fully ignored, macro", AccuracyS2(8, 16, mode="macro")(logits, target), torch.tensor(0.0), atol=0, rtol=0))
+
+    def test_macro_class_weights_are_not_normalized(self):
+        """Macro sums score * weight without dividing by the weight total, so weights
+        that do not sum to one push the score outside [0, 1]. Micro is scale-invariant
+        because the weights appear in both the numerator and the denominator."""
+        generator = torch.Generator().manual_seed(52)
+        target = torch.randint(0, 3, (1, 8, 16), generator=generator)
+        logits = torch.randn((1, 3, 8, 16), generator=generator)
+        small = torch.tensor([0.2, 0.3, 0.5])
+
+        for mode, invariant in (("micro", True), ("macro", False)):
+            unit = AccuracyS2(8, 16, weight=small, mode=mode)(logits, target)
+            tenfold = AccuracyS2(8, 16, weight=10 * small, mode=mode)(logits, target)
+            expected = unit if invariant else 10 * unit
+            self.assertTrue(compare_tensors(f"{mode} under weight rescaling", tenfold, expected, atol=1e-6, rtol=1e-5))
+
+        # the concrete consequence: an accuracy above one
+        self.assertGreater(AccuracyS2(8, 16, weight=10 * small, mode="macro")(logits, target).item(), 1.0)
+
+    def test_an_unrecognized_mode_yields_neither_micro_nor_macro(self):
+        """A mistyped mode is a silent misconfiguration with its own behavior.
+
+        The two branches test for different strings: ``_forward`` reduces only when the
+        mode is exactly "micro", while ``forward`` applies the class reduction only when
+        it is exactly "macro". Anything else falls between them -- the per-class scores
+        are returned unreduced, and the NaN handling that macro applies is skipped. A
+        caller expecting a scalar silently receives a vector of length num_classes.
+        """
+        generator = torch.Generator().manual_seed(53)
+        target = torch.randint(0, 3, (1, 8, 16), generator=generator)
+        logits = torch.randn((1, 3, 8, 16), generator=generator)
+
+        mistyped = AccuracyS2(8, 16, mode="Micro")(logits, target)
+        macro = AccuracyS2(8, 16, mode="macro")(logits, target)
+
+        self.assertEqual(macro.shape, torch.Size([]))
+        self.assertEqual(mistyped.shape, torch.Size([3]))
+        # it is the unreduced macro vector: averaging it by hand recovers the macro score
+        self.assertTrue(compare_tensors("mistyped mode is the unreduced macro vector", mistyped.mean(), macro, atol=1e-6, rtol=1e-5))
