@@ -105,6 +105,8 @@ class DiceLossS2(nn.Module):
 
         # one hot encode
         taroh = nn.functional.one_hot(tar, num_classes=prd.shape[1]).permute(0, 3, 1, 2)
+        if self.ignore_index is not None:
+            taroh = taroh * mask.unsqueeze(1)
 
         # compute numerator and denominator
         intersection = torch.sum((prd * taroh) * self.quad_weights, dim=(-2, -1))
