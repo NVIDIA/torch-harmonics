@@ -148,9 +148,7 @@ class TestDistributedResampling(unittest.TestCase):
         self.assertTrue(reduce_success(ok, self.device), "single-longitude output")
 
         igrad_gather_full = self._gather_helper_bwd(igrad_local, res_dist)
-        ok = compare_tensors(
-            "single-longitude gradients", igrad_full, igrad_gather_full, atol=1e-6, rtol=1e-5, verbose=verbose
-        )
+        ok = compare_tensors("single-longitude gradients", igrad_full, igrad_gather_full, atol=1e-6, rtol=1e-5, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "single-longitude gradients")
         self.assertTrue(reduce_success(bool(torch.isfinite(igrad_local).all()), self.device), "finite gradients")
         self.assertTrue(
