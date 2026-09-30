@@ -64,6 +64,15 @@ namespace disco_kernels
               "vals, int "
               "kernel_size, int nlat_out, int nlon_out) -> Tensor",
               {at::Tag::pt2_compliant_tag});
+        // The same contraction and scatter with psi in arc form: rows carry their basis
+        // function and latitude once, and walk (ring, start, length) arcs whose values are
+        // stored consecutively. Experimental; see disco_arcs.py.
+        m.def("forward_arcs(Tensor inp, Tensor row_ker, Tensor row_lat, Tensor seg_off, Tensor seg, Tensor val_off, "
+              "Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor",
+              {at::Tag::pt2_compliant_tag});
+        m.def("backward_arcs(Tensor inp, Tensor row_ker, Tensor row_lat, Tensor seg_off, Tensor seg, Tensor val_off, "
+              "Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor",
+              {at::Tag::pt2_compliant_tag});
         // K-packed dense forward (WGMMA path, Hopper SM_90a + bf16/fp16 only)
         m.def("forward_kpacked(Tensor inp, Tensor pack_idx, Tensor pack_val, Tensor pack_offset, "
               "int kernel_size, int nlat_out, int nlon_out) -> Tensor",

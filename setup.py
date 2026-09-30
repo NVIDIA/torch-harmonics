@@ -169,6 +169,7 @@ def get_ext_modules():
         "torch_harmonics/disco/optimized/disco_interface.cpp",
         "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_fwd.cpp",
         "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_bwd.cpp",
+        "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_arcs.cpp",
     ]
 
     if BUILD_CUDA:
@@ -177,6 +178,7 @@ def get_ext_modules():
             [
                 "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd.cu",
                 "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd.cu",
+                "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_arcs.cu",
                 # Experimental backward behind disco_kernels::backward_exp.
                 # Not reachable from any module backward; driven only by
                 # performance/disco/ncu_disco.py. Drop this line to build it out.

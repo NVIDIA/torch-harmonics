@@ -107,6 +107,69 @@ namespace disco_kernels
         check_csr_psi(inp, roff_idx, ker_idx, row_idx, col_idx, vals, K);
     }
 
+    // psi in arc form: per row its basis function and latitude (int32), the row's range of
+    // arcs (seg_off, int64) and of values (val_off, int64); per arc (ring, start, length)
+    // (int32), with start in [0, ring length) and the arc wrapping at the ring's end. The
+    // values are in arc order, in the compute dtype of the activations. As for the CSR form,
+    // only metadata is checked: validating the index contents would read them, and sync.
+    inline void check_arc_psi(const at::Tensor &inp, const at::Tensor &row_ker, const at::Tensor &row_lat,
+                              const at::Tensor &seg_off, const at::Tensor &seg, const at::Tensor &val_off,
+                              const at::Tensor &vals, int64_t K)
+    {
+        TORCH_CHECK(K > 0, "kernel_size must be positive, got ", K);
+
+        check_same_device(row_ker, inp, "row_ker");
+        check_same_device(row_lat, inp, "row_lat");
+        check_same_device(seg_off, inp, "seg_off");
+        check_same_device(seg, inp, "seg");
+        check_same_device(val_off, inp, "val_off");
+        check_same_device(vals, inp, "vals");
+
+        check_index_vector(row_ker, at::kInt, "row_ker");
+        check_index_vector(row_lat, at::kInt, "row_lat");
+        check_index_vector(seg_off, at::kLong, "seg_off");
+        check_index_vector(val_off, at::kLong, "val_off");
+        const int64_t nrows = row_ker.size(0);
+        TORCH_CHECK(row_lat.size(0) == nrows && seg_off.size(0) == nrows + 1 && val_off.size(0) == nrows + 1,
+                    "row_ker and row_lat must hold one entry per row and seg_off, val_off one more (", nrows,
+                    " rows), got ", row_lat.size(0), ", ", seg_off.size(0), " and ", val_off.size(0));
+
+        TORCH_CHECK(seg.scalar_type() == at::kInt && seg.dim() == 2 && seg.size(1) == 3,
+                    "seg must be an int32 (nsegs, 3) tensor, got ", seg.scalar_type(), " of shape ", seg.sizes());
+        check_dense(seg, "seg");
+
+        TORCH_CHECK(vals.dim() == 1, "vals must be 1-D, got shape ", vals.sizes());
+        check_dense(vals, "vals");
+        TORCH_CHECK(vals.scalar_type() == compute_dtype(inp.scalar_type()),
+                    "vals must be in the compute dtype of the input (", compute_dtype(inp.scalar_type()), " for ",
+                    inp.scalar_type(), " activations), got ", vals.scalar_type());
+    }
+
+    inline void check_forward_arcs_inputs(const at::Tensor &inp, const at::Tensor &row_ker, const at::Tensor &row_lat,
+                                          const at::Tensor &seg_off, const at::Tensor &seg, const at::Tensor &val_off,
+                                          const at::Tensor &vals, int64_t K, int64_t Ho, int64_t Wo)
+    {
+        TORCH_CHECK(inp.dim() == 4, "inp must be (B, C, Hi, Wi), got shape ", inp.sizes());
+        TORCH_CHECK(Ho > 0 && Wo > 0, "nlat_out and nlon_out must be positive, got ", Ho, " and ", Wo);
+        TORCH_CHECK(inp.size(3) % Wo == 0, "Wi (", inp.size(3), ") must be an integer multiple of Wo (", Wo,
+                    ") for the p-shift to be exact");
+        check_dense(inp, "inp");
+        check_arc_psi(inp, row_ker, row_lat, seg_off, seg, val_off, vals, K);
+    }
+
+    inline void check_backward_arcs_inputs(const at::Tensor &inp, const at::Tensor &row_ker, const at::Tensor &row_lat,
+                                           const at::Tensor &seg_off, const at::Tensor &seg, const at::Tensor &val_off,
+                                           const at::Tensor &vals, int64_t K, int64_t Ho, int64_t Wo)
+    {
+        TORCH_CHECK(inp.dim() == 5, "inp must be (B, C, K, Hi, Wi), got shape ", inp.sizes());
+        TORCH_CHECK(inp.size(2) == K, "inp must hold kernel_size (", K, ") basis-function planes, got ", inp.size(2));
+        TORCH_CHECK(Ho > 0 && Wo > 0, "nlat_out and nlon_out must be positive, got ", Ho, " and ", Wo);
+        TORCH_CHECK(inp.size(4) > 0 && Wo % inp.size(4) == 0, "Wo (", Wo, ") must be an integer multiple of Wi (",
+                    inp.size(4), ") for the p-shift to be exact");
+        check_dense(inp, "inp");
+        check_arc_psi(inp, row_ker, row_lat, seg_off, seg, val_off, vals, K);
+    }
+
     // forward_kpacked: the blocked-CSR layout of the tensor-core kernels. Every
     // neighbour carries (hi, wi) in pack_idx and all K_pad filter values in pack_val, and
     // pack_offset holds one row offset per output latitude plus the total.
