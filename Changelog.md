@@ -2,7 +2,7 @@
 
 ## Versioning
 
-### v0.9.3b1 (unreleased)
+### v1.0.0rc1 (unreleased)
 
 * Faster DISCO CUDA kernels on H100 and GB200: kpacked forward up to 1.28x, backward up to 2.1x.
 * Smaller DISCO psi memory footprint through a blocked-CSR layout instead of padding every row to the maximum.
