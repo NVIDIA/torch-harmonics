@@ -37,7 +37,7 @@ from torch_harmonics.quadrature import QuadratureS2
 from .poisson_equation import RadialPoissonSolver
 
 
-class PoissonDataset(torch.utils.data.Dataset):
+class RadialPoissonDataset(torch.utils.data.Dataset):
     """Custom Dataset class for Poisson training data
 
     Parameters

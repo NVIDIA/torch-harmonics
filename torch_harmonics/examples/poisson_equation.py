@@ -105,7 +105,7 @@ class GreensOperator(nn.Module):
 
         # apply the operator in the precision of the input. the kernel is assembled in
         # float64 because it is built from exponentials over several decades in r, but
-        # the caller decides what the solve runs in -- PoissonDataset hands back float32
+        # the caller decides what the solve runs in -- RadialPoissonDataset hands back float32
         # samples, and einsum rejects a float32 operand against a float64 kernel outright
         green = self.green.to(fspec.real.dtype)
 

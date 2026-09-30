@@ -130,7 +130,7 @@ class TestRadialPoissonSolver(unittest.TestCase):
     def test_solve_honours_the_input_precision(self, dtype, verbose=False):
         """The Green's kernel is assembled in float64 whatever the caller uses.
 
-        PoissonDataset hands back float32 samples, and einsum rejects a float32 operand
+        RadialPoissonDataset hands back float32 samples, and einsum rejects a float32 operand
         against a float64 kernel outright, so the solve has to meet the input where it is.
         """
         solver = RadialPoissonSolver(nlat=16, nlon=32, nr=64, grid="legendre-gauss")
