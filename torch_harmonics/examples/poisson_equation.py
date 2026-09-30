@@ -103,9 +103,15 @@ class GreensOperator(nn.Module):
     def forward(self, fspec: torch.Tensor) -> torch.Tensor:
         """Solve lap u = f in spectral space."""
 
+        # apply the operator in the precision of the input. the kernel is assembled in
+        # float64 because it is built from exponentials over several decades in r, but
+        # the caller decides what the solve runs in -- PoissonDataset hands back float32
+        # samples, and einsum rejects a float32 operand against a float64 kernel outright
+        green = self.green.to(fspec.real.dtype)
+
         return torch.complex(
-            torch.einsum("lkj,...jlm->...klm", self.green, fspec.real),
-            torch.einsum("lkj,...jlm->...klm", self.green, fspec.imag),
+            torch.einsum("lkj,...jlm->...klm", green, fspec.real),
+            torch.einsum("lkj,...jlm->...klm", green, fspec.imag),
         )
 
 
