@@ -166,6 +166,44 @@ class TestResampleS2(unittest.TestCase):
 
         self.assertTrue(compare_tensors("sin(phi) periodic", out, expected, atol=atol, rtol=rtol, verbose=verbose))
 
+    @parameterized.expand([[mode, nlon_out] for mode in ("bilinear", "bilinear-spherical") for nlon_out in (1, 7)])
+    def test_single_longitude_replication_and_gradients(self, mode, nlon_out, verbose=False):
+        """A single periodic longitude replicates cleanly and keeps finite gradients."""
+        resample = ResampleS2(3, 1, 5, nlon_out, mode=mode).to(self.device)
+        data = (torch.arange(12, dtype=torch.float32, device=self.device).reshape(2, 2, 3, 1) / 20).requires_grad_()
+        reference_data = data.detach().clone().requires_grad_()
+        latitude_map = torch.tensor(
+            [[1, 0, 0], [0.5, 0.5, 0], [0, 1, 0], [0, 0.5, 0.5], [0, 0, 1]],
+            dtype=data.dtype,
+            device=self.device,
+        )
+        expected = torch.einsum("oi,bcik->bcok", latitude_map, reference_data).expand(2, 2, 5, nlon_out)
+        actual = resample(data)
+        cotangent = torch.linspace(0.1, 1.0, actual.numel(), dtype=data.dtype, device=self.device).reshape(actual.shape)
+
+        actual.backward(cotangent)
+        expected.backward(cotangent)
+
+        self.assertTrue(compare_tensors("single-longitude field", expected, actual, atol=1e-6, rtol=1e-5, verbose=verbose))
+        self.assertTrue(compare_tensors("single-longitude gradient", reference_data.grad, data.grad, atol=1e-6, rtol=1e-5, verbose=verbose))
+        self.assertTrue(torch.isfinite(data.grad).all())
+        self.assertTrue(torch.isfinite(resample.lon_weights).all())
+
+    @parameterized.expand([[mode] for mode in ("bilinear", "bilinear-spherical")])
+    def test_single_longitude_fix_preserves_multi_longitude_interpolation(self, mode, verbose=False):
+        """Ordinary periodic interpolation is unchanged by the coincident-endpoint fix."""
+        resample = ResampleS2(4, 4, 4, 8, mode=mode).to(self.device)
+        longitude_values = torch.tensor([0.0, 0.1, 0.2, 0.3], device=self.device).reshape(1, 1, 1, 4)
+        data = longitude_values.expand(1, 1, 4, 4).contiguous()
+        expected_longitudes = torch.tensor(
+            [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.15],
+            device=self.device,
+        ).reshape(1, 1, 1, 8)
+        expected = expected_longitudes.expand(1, 1, 4, 8)
+        actual = resample(data)
+
+        self.assertTrue(compare_tensors("multi-longitude field", expected, actual, atol=1e-6, rtol=1e-5, verbose=verbose))
+
     # The pre-existing coverage of "bilinear-spherical" only used constant fields. For a
     # constant field every neighbouring difference is zero, so the shortest-arc branch was
     # never actually executed. These tests exercise it on non-constant data.

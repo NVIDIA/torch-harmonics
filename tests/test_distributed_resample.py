@@ -106,6 +106,57 @@ class TestDistributedResampling(unittest.TestCase):
         return tensor_gather
 
     @parameterized.expand(
+        [[mode, nlon_out] for mode in ("bilinear", "bilinear-spherical") for nlon_out in (1, 7)],
+        skip_on_empty=True,
+    )
+    def test_single_longitude_resampling(self, mode, nlon_out, verbose=False):
+        """A single longitude matches serial resampling and keeps finite gradients."""
+        if self.grid_size_w != 1:
+            self.skipTest("a single longitude cannot be partitioned across multiple azimuth ranks")
+        if self.grid_size_h > 16:
+            self.skipTest("test grid has fewer input latitudes than polar ranks")
+
+        set_seed(334)
+        res_args = dict(
+            nlat_in=16,
+            nlon_in=1,
+            nlat_out=24,
+            nlon_out=nlon_out,
+            grid_in="equiangular",
+            grid_out="equiangular",
+            mode=mode,
+        )
+        res_local = th.ResampleS2(**res_args).to(self.device)
+        res_dist = thd.DistributedResampleS2(**res_args).to(self.device)
+
+        inp_full = torch.randn((2, 8, 16, 1), dtype=torch.float32, device=self.device, requires_grad=True)
+        out_full = res_local(inp_full)
+        ograd_full = torch.randn_like(out_full)
+        out_full.backward(ograd_full)
+        igrad_full = inp_full.grad.clone()
+
+        inp_local = self._split_helper(inp_full.detach().clone())
+        inp_local.requires_grad = True
+        out_local = res_dist(inp_local)
+        ograd_local = self._split_helper(ograd_full)
+        out_local.backward(ograd_local)
+        igrad_local = inp_local.grad.clone()
+
+        verbose = verbose and self.world_rank == 0
+        out_gather_full = self._gather_helper_fwd(out_local, res_dist)
+        ok = compare_tensors("single-longitude output", out_full, out_gather_full, atol=1e-6, rtol=1e-5, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "single-longitude output")
+
+        igrad_gather_full = self._gather_helper_bwd(igrad_local, res_dist)
+        ok = compare_tensors("single-longitude gradients", igrad_full, igrad_gather_full, atol=1e-6, rtol=1e-5, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "single-longitude gradients")
+        self.assertTrue(reduce_success(bool(torch.isfinite(igrad_local).all()), self.device), "finite gradients")
+        self.assertTrue(
+            reduce_success(bool(torch.isfinite(res_dist.lon_weights).all()), self.device),
+            "finite longitude weights",
+        )
+
+    @parameterized.expand(
         [
             [64, 128, 128, 256, 32, 8, "equiangular", "equiangular", "bilinear", 1e-6, 1e-7],
             [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", "bilinear", 1e-6, 1e-7],
