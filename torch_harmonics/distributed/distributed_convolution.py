@@ -498,6 +498,9 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     :cite:`Ocampo2023`
     """
 
+    #: psi is applied in the scatter direction, as in the serial transpose convolution
+    transpose = True
+
     def __init__(
         self,
         grid_in: RegularGridS2,

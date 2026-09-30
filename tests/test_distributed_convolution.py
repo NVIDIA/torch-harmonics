@@ -360,6 +360,13 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
                 polar_mode=polar_mode,
             ).to(dtype=module_dtype, device=self.device)
 
+        # the transpose must declare itself so: the kpacked backend serves the forward only,
+        # and would otherwise pack the transpose's psi, keyed by the other grid's latitudes
+        self.assertEqual(conv_dist.transpose, transpose)
+        self.assertEqual(conv_local.transpose, transpose)
+        if transpose:
+            self.assertNotEqual(conv_dist.backend.name, "kpacked")
+
         # copy the weights from the local conv into the dist conv
         with torch.no_grad():
             conv_dist.weight.copy_(conv_local.weight)

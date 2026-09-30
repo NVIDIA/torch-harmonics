@@ -239,6 +239,11 @@ def build_kpacked(
     if not shared:
         return None
 
+    # the layout is indexed by the latitudes of the forward's output; rows beyond them mean
+    # a psi of another shape -- a transpose's, keyed by input latitude -- was passed
+    if npoints and int(blk_row[:, 0].max()) >= nrows:
+        raise ValueError(f"psi rows reach latitude {int(blk_row[:, 0].max())}, but the kpacked layout is sized for {nrows}; it serves the forward direction only")
+
     col = blk_col[:, 0]
     pack_idx = torch.stack([col // nlon, col % nlon], dim=1).to(torch.int64).contiguous()
     pack_val = torch.zeros(npoints, k_pad, dtype=vals.dtype, device=device)
