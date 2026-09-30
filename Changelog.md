@@ -50,9 +50,10 @@
 * `QuadratureS2` takes any `PointSetS2` and reads its per-point weights, which is also correct on ragged grids.
 * Grid resolutions may be any integer type, e.g. `numpy.int64`.
 * **Breaking**: the example losses and metrics take a grid descriptor instead of `(nlat, nlon, grid)`.
-* **Breaking**: the example models, solvers and `PdeDataset` take grid descriptors: `grid` replaces `img_size`/`dims` plus a grid name, and `grid_internal` (or `grids_internal`, one per stage, for `SphericalUNet` and `SphericalSegformer`) replaces `scale_factor`.
+* **Breaking**: the example models, solvers and `ShallowWaterDataset` take grid descriptors: `grid` replaces `img_size`/`dims` plus a grid name, and `grid_internal` (or `grids_internal`, one per stage, for `SphericalUNet` and `SphericalSegformer`) replaces `scale_factor`.
+* **Breaking**: `PdeDataset` is renamed `ShallowWaterDataset`, and its `pde` argument is gone. The class only ever built a `ShallowWaterSolver` -- the `pde` switch had a single branch and raised `NotImplementedError` for anything else -- and the rest of its surface is time-stepping specific (`dt`, `nsteps`, `initial_condition`, `set_initial_condition`), so the general name described an intent the code never had. Datasets here are now named for the equation they solve, pairing with the solver that generates them: `ShallowWaterSolver`/`ShallowWaterDataset`. The module path `torch_harmonics.examples.pde_dataset` is unchanged.
 * Fixed `SphericalUNet` convolving its input and output stages on the internal grid type instead of the grid the data lives on.
-* The shallow-water solver skips transforms whose results it discards, and its time step is a `forward` that `ShallowWaterSolver.compile()` or `PdeDataset(compile=True)` can compile.
+* The shallow-water solver skips transforms whose results it discards, and its time step is a `forward` that `ShallowWaterSolver.compile()` or `ShallowWaterDataset(compile=True)` can compile.
 * `Stanford2D3DSDownloader` downloads archives concurrently (`max_workers`), in larger chunks (`chunk_size`), and hashes them while downloading.
 * **Breaking**: the example models default to the `"harmonic"` filter basis, the L2-normalized form of the deprecated `"morlet"`, which changes their results; pass `filter_basis_type="morlet"` for the previous behaviour.
 * **Breaking**: the `"equiangular-trapezoidal"` grid is renamed `"trapezoidal"` (class `TrapezoidalGrid`), since its nodes are equispaced in `cos(theta)`.

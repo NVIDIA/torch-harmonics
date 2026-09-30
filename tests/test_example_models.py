@@ -45,7 +45,7 @@ import torch
 from parameterized import parameterized
 
 from torch_harmonics import as_grid
-from torch_harmonics.examples import PdeDataset, ShallowWaterSolver, SphereSolver
+from torch_harmonics.examples import ShallowWaterDataset, ShallowWaterSolver, SphereSolver
 from torch_harmonics.examples.models import (
     LocalSphericalNeuralOperator,
     SphericalFourierNeuralOperator,
@@ -109,7 +109,7 @@ class TestExampleSolvers(unittest.TestCase):
 
     def test_pde_dataset_generates_samples_on_its_grid(self):
         grid = as_grid("equiangular", nlat=16, nlon=32)
-        dataset = PdeDataset(dt=60.0, nsteps=1, grid=grid, num_examples=1, normalize=False)
+        dataset = ShallowWaterDataset(dt=60.0, nsteps=1, grid=grid, num_examples=1, normalize=False)
         inp, tar = dataset[0]
         self.assertEqual(tuple(inp.shape[-2:]), grid.shape)
         self.assertEqual(tuple(tar.shape[-2:]), grid.shape)
