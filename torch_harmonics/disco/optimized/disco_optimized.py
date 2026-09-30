@@ -301,7 +301,7 @@ def _disco_s2_fused_conv_spatial_first_dgrad(
         row_k = split_row_idx[start:end]
         col_k = split_col_idx[start:end]
         vals_k = split_vals[start:end]
-        part = disco_kernels.backward.default(grad_small, roff_k, ker_k, row_k, col_k, vals_k, 1, nlat_in, nlon_in)
+        part = disco_kernels.backward_regular.default(grad_small, roff_k, ker_k, row_k, col_k, vals_k, 1, nlat_in, nlon_in)
         parts.append(part.reshape(B, G, Og, nlat_in, nlon_in))
 
     grad_spatial = torch.stack(parts, dim=3)
@@ -312,7 +312,7 @@ def _disco_s2_fused_conv_spatial_first_dgrad(
 # custom kernels
 if optimized_kernels_is_available():
     # raw forward fake
-    @torch.library.register_fake("disco_kernels::forward")
+    @torch.library.register_fake("disco_kernels::forward_regular")
     def _(
         inp: torch.Tensor,
         roff_idx: torch.Tensor,
@@ -328,7 +328,7 @@ if optimized_kernels_is_available():
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
     # raw backward fake
-    @torch.library.register_fake("disco_kernels::backward")
+    @torch.library.register_fake("disco_kernels::backward_regular")
     def _(
         inp: torch.Tensor,
         roff_idx: torch.Tensor,
@@ -344,8 +344,8 @@ if optimized_kernels_is_available():
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
     # forward
-    @torch.library.custom_op("disco_kernels::_disco_s2_contraction_optimized", mutates_args=())
-    def _disco_s2_contraction_optimized(
+    @torch.library.custom_op("disco_kernels::_disco_s2_contraction_regular_optimized", mutates_args=())
+    def _disco_s2_contraction_regular_optimized(
         inp: torch.Tensor,
         roff_idx: torch.Tensor,
         ker_idx: torch.Tensor,
@@ -363,13 +363,13 @@ if optimized_kernels_is_available():
         # half), matching the kernel's val.data_ptr<compute_t>(). fp32/fp64 unchanged.
         inp = inp.contiguous()
         vals = vals.to(cdtype)
-        out = disco_kernels.forward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+        out = disco_kernels.forward_regular.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
         out = out.to(itype)
         return out
 
     # transpose
-    @torch.library.custom_op("disco_kernels::_disco_s2_transpose_contraction_optimized", mutates_args=())
-    def _disco_s2_transpose_contraction_optimized(
+    @torch.library.custom_op("disco_kernels::_disco_s2_transpose_contraction_regular_optimized", mutates_args=())
+    def _disco_s2_transpose_contraction_regular_optimized(
         inp: torch.Tensor,
         roff_idx: torch.Tensor,
         ker_idx: torch.Tensor,
@@ -387,12 +387,12 @@ if optimized_kernels_is_available():
         # half), matching the kernel's val.data_ptr<compute_t>(). fp32/fp64 unchanged.
         inp = inp.contiguous()
         vals = vals.to(cdtype)
-        out = disco_kernels.backward.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+        out = disco_kernels.backward_regular.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
         out = out.to(itype)
         return out
 
     # forward fake
-    @torch.library.register_fake("disco_kernels::_disco_s2_contraction_optimized")
+    @torch.library.register_fake("disco_kernels::_disco_s2_contraction_regular_optimized")
     def _(
         inp: torch.Tensor,
         roff_idx: torch.Tensor,
@@ -408,7 +408,7 @@ if optimized_kernels_is_available():
         return torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
     # transpose fake
-    @torch.library.register_fake("disco_kernels::_disco_s2_transpose_contraction_optimized")
+    @torch.library.register_fake("disco_kernels::_disco_s2_transpose_contraction_regular_optimized")
     def _(
         inp: torch.Tensor,
         roff_idx: torch.Tensor,
@@ -434,7 +434,7 @@ def _setup_context_conv_backward(ctx, inputs, output):
 
 
 # convolution related
-def _disco_s2_contraction_bwd_optimized(ctx, grad_output):
+def _disco_s2_contraction_regular_bwd_optimized(ctx, grad_output):
     roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
 
     if ctx.needs_input_grad[0]:
@@ -444,7 +444,7 @@ def _disco_s2_contraction_bwd_optimized(ctx, grad_output):
         # compute type (fp32 for half), matching val.data_ptr<compute_t>().
         grad_output = grad_output.contiguous()
         vals = vals.to(cdtype)
-        grad_input = disco_kernels.backward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals, ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
+        grad_input = disco_kernels.backward_regular.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals, ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
         grad_input = grad_input.to(gtype)
     else:
         grad_input = None
@@ -453,7 +453,9 @@ def _disco_s2_contraction_bwd_optimized(ctx, grad_output):
 
 
 if optimized_kernels_is_available():
-    torch.library.register_autograd("disco_kernels::_disco_s2_contraction_optimized", _disco_s2_contraction_bwd_optimized, setup_context=_setup_context_conv_backward)
+    torch.library.register_autograd(
+        "disco_kernels::_disco_s2_contraction_regular_optimized", _disco_s2_contraction_regular_bwd_optimized, setup_context=_setup_context_conv_backward
+    )
 
     # Autocast: register at the dispatcher's AutocastCUDA key. We use
     # torch.library.impl (not register_autocast) because register_autocast's
@@ -468,11 +470,11 @@ if optimized_kernels_is_available():
     # CPU kernel normalizes dtypes itself, in disco_cpu_fwd.cpp, so nothing errors),
     # but it means CPU AMP did not actually apply here.
     def _make_contraction_autocast(device_type):
-        @torch.library.impl("disco_kernels::_disco_s2_contraction_optimized", f"Autocast{device_type.upper()}")
+        @torch.library.impl("disco_kernels::_disco_s2_contraction_regular_optimized", f"Autocast{device_type.upper()}")
         def _(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out):
             cast_dtype = torch.get_autocast_dtype(device_type)
             with torch.amp.autocast(device_type, enabled=False):
-                return _disco_s2_contraction_optimized(inp.to(cast_dtype), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+                return _disco_s2_contraction_regular_optimized(inp.to(cast_dtype), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
 
         return _
 
@@ -481,7 +483,7 @@ if optimized_kernels_is_available():
 
 
 # Transpose convolution related
-def _disco_s2_transpose_contraction_bwd_optimized(ctx, grad_output):
+def _disco_s2_transpose_contraction_regular_bwd_optimized(ctx, grad_output):
     roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
 
     if ctx.needs_input_grad[0]:
@@ -491,7 +493,7 @@ def _disco_s2_transpose_contraction_bwd_optimized(ctx, grad_output):
         # compute type (fp32 for half), matching val.data_ptr<compute_t>().
         grad_output = grad_output.contiguous()
         vals = vals.to(cdtype)
-        grad_input = disco_kernels.forward.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals, ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
+        grad_input = disco_kernels.forward_regular.default(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals, ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
         grad_input = grad_input.to(gtype)
     else:
         grad_input = None
@@ -501,15 +503,15 @@ def _disco_s2_transpose_contraction_bwd_optimized(ctx, grad_output):
 
 if optimized_kernels_is_available():
     torch.library.register_autograd(
-        "disco_kernels::_disco_s2_transpose_contraction_optimized", _disco_s2_transpose_contraction_bwd_optimized, setup_context=_setup_context_conv_backward
+        "disco_kernels::_disco_s2_transpose_contraction_regular_optimized", _disco_s2_transpose_contraction_regular_bwd_optimized, setup_context=_setup_context_conv_backward
     )
 
     def _make_transpose_contraction_autocast(device_type):
-        @torch.library.impl("disco_kernels::_disco_s2_transpose_contraction_optimized", f"Autocast{device_type.upper()}")
+        @torch.library.impl("disco_kernels::_disco_s2_transpose_contraction_regular_optimized", f"Autocast{device_type.upper()}")
         def _(inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out):
             cast_dtype = torch.get_autocast_dtype(device_type)
             with torch.amp.autocast(device_type, enabled=False):
-                return _disco_s2_transpose_contraction_optimized(inp.to(cast_dtype), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+                return _disco_s2_transpose_contraction_regular_optimized(inp.to(cast_dtype), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
 
         return _
 
@@ -522,8 +524,8 @@ if optimized_kernels_is_available():
 # by recomputing the contraction during backward instead.
 if optimized_kernels_is_available():
 
-    @torch.library.custom_op("disco_kernels::_disco_s2_fused_conv_optimized", mutates_args=())
-    def _disco_s2_fused_conv_optimized(
+    @torch.library.custom_op("disco_kernels::_disco_s2_fused_conv_regular_optimized", mutates_args=())
+    def _disco_s2_fused_conv_regular_optimized(
         inp: torch.Tensor,
         weight: torch.Tensor,
         roff_idx: torch.Tensor,
@@ -549,7 +551,7 @@ if optimized_kernels_is_available():
         # sparse contraction: (B, C, H_in, W_in) -> (B, C, K, H_out, W_out)
         itype = inp.dtype
         cdtype = _compute_dtype(itype)
-        x_expanded = disco_kernels.forward.default(inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals.to(cdtype), kernel_size, nlat_out, nlon_out)
+        x_expanded = disco_kernels.forward_regular.default(inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals.to(cdtype), kernel_size, nlat_out, nlon_out)
         x_expanded = x_expanded.to(itype)
 
         # weight contraction: (B, G, Cg, K, H, W) x (G, Og, Cg, K) -> (B, O, H, W)
@@ -559,7 +561,7 @@ if optimized_kernels_is_available():
         out = out.reshape(B, groups * weight.shape[1], H, W)
         return out
 
-    @torch.library.register_fake("disco_kernels::_disco_s2_fused_conv_optimized")
+    @torch.library.register_fake("disco_kernels::_disco_s2_fused_conv_regular_optimized")
     def _(
         inp: torch.Tensor,
         weight: torch.Tensor,
@@ -619,7 +621,7 @@ def _setup_context_fused_conv_backward(ctx, inputs, output):
     ctx.split_nnz_offsets = split_nnz_offsets
 
 
-def _disco_s2_fused_conv_bwd_optimized(ctx, grad_output):
+def _disco_s2_fused_conv_regular_bwd_optimized(ctx, grad_output):
     inp, weight, roff_idx, ker_idx, row_idx, col_idx, vals, split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals = ctx.saved_tensors
 
     itype = grad_output.dtype
@@ -662,12 +664,12 @@ def _disco_s2_fused_conv_bwd_optimized(ctx, grad_output):
             grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
 
             # transpose contraction back to input space
-            grad_inp = disco_kernels.backward.default(grad_x_expanded.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
+            grad_inp = disco_kernels.backward_regular.default(grad_x_expanded.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
         grad_inp = grad_inp.to(itype)
 
     if ctx.needs_input_grad[1]:
         # recompute x_expanded from inp (the trade: one extra forward pass)
-        x_expanded = disco_kernels.forward.default(inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, H, W)
+        x_expanded = disco_kernels.forward_regular.default(inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, H, W)
         x_expanded = x_expanded.to(itype).reshape(B, G, Cg, K, H, W)
 
         # weight gradient: (B, G, Og, H, W) x (B, G, Cg, K, H, W) -> (G, Og, Cg, K)
@@ -678,12 +680,12 @@ def _disco_s2_fused_conv_bwd_optimized(ctx, grad_output):
 
 if optimized_kernels_is_available():
     torch.library.register_autograd(
-        "disco_kernels::_disco_s2_fused_conv_optimized",
-        _disco_s2_fused_conv_bwd_optimized,
+        "disco_kernels::_disco_s2_fused_conv_regular_optimized",
+        _disco_s2_fused_conv_regular_bwd_optimized,
         setup_context=_setup_context_fused_conv_backward,
     )
 
-    @torch.library.impl("disco_kernels::_disco_s2_fused_conv_optimized", "AutocastCUDA")
+    @torch.library.impl("disco_kernels::_disco_s2_fused_conv_regular_optimized", "AutocastCUDA")
     def _(
         inp,
         weight,
@@ -708,7 +710,7 @@ if optimized_kernels_is_available():
     ):
         cast_dtype = torch.get_autocast_dtype("cuda")
         with torch.amp.autocast("cuda", enabled=False):
-            return _disco_s2_fused_conv_optimized(
+            return _disco_s2_fused_conv_regular_optimized(
                 inp.to(cast_dtype),
                 weight.to(cast_dtype),
                 roff_idx,
@@ -766,7 +768,7 @@ class _DiscoSaveXConvFn(torch.autograd.Function):
     ):
         itype = inp.dtype
         cdtype = _compute_dtype(itype)
-        x_expanded = disco_kernels.forward.default(inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals.to(cdtype), kernel_size, nlat_out, nlon_out)
+        x_expanded = disco_kernels.forward_regular.default(inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals.to(cdtype), kernel_size, nlat_out, nlon_out)
         x_expanded = x_expanded.to(itype)
 
         ctx.save_for_backward(x_expanded, weight, roff_idx, ker_idx, row_idx, col_idx, vals, split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals)
@@ -826,7 +828,7 @@ class _DiscoSaveXConvFn(torch.autograd.Function):
             else:
                 grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
                 grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
-                grad_inp = disco_kernels.backward.default(grad_x_expanded, roff_idx, ker_idx, row_idx, col_idx, vals_c, K, ctx.nlat_in, ctx.nlon_in)
+                grad_inp = disco_kernels.backward_regular.default(grad_x_expanded, roff_idx, ker_idx, row_idx, col_idx, vals_c, K, ctx.nlat_in, ctx.nlon_in)
             grad_inp = grad_inp.to(itype)
 
         if ctx.needs_input_grad[1]:
@@ -836,7 +838,7 @@ class _DiscoSaveXConvFn(torch.autograd.Function):
         return (grad_inp, grad_weight) + (None,) * 18
 
 
-def _disco_s2_conv_save_x_optimized(
+def _disco_s2_conv_save_x_regular_optimized(
     inp,
     weight,
     roff_idx,
@@ -924,7 +926,7 @@ class _DiscoKpackedFn(torch.autograd.Function):
         if ctx.needs_input_grad[0]:
             gtype = grad_output.dtype
             cdtype = _compute_dtype(gtype)
-            grad_input = disco_kernels.backward.default(
+            grad_input = disco_kernels.backward_regular.default(
                 grad_output.contiguous(),
                 roff_idx,
                 ker_idx,
@@ -1038,7 +1040,7 @@ class _DiscoKpackedSaveXConvFn(torch.autograd.Function):
             else:
                 grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
                 grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
-                grad_inp = disco_kernels.backward.default(grad_x_expanded, roff_idx, ker_idx, row_idx, col_idx, vals_c, K, ctx.nlat_in, ctx.nlon_in)
+                grad_inp = disco_kernels.backward_regular.default(grad_x_expanded, roff_idx, ker_idx, row_idx, col_idx, vals_c, K, ctx.nlat_in, ctx.nlon_in)
             grad_inp = grad_inp.to(itype)
 
         if ctx.needs_input_grad[1]:
@@ -1191,11 +1193,11 @@ class _DiscoKpackedFusedFn(torch.autograd.Function):
             else:
                 grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
                 grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
-                grad_inp = disco_kernels.backward.default(grad_x_expanded, roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
+                grad_inp = disco_kernels.backward_regular.default(grad_x_expanded, roff_idx, ker_idx, row_idx, col_idx, vals_c, K, inp.shape[-2], inp.shape[-1])
             grad_inp = grad_inp.to(itype)
 
         if ctx.needs_input_grad[1]:
-            x_expanded = disco_kernels.forward.default(inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, H, W).to(itype).reshape(B, G, Cg, K, H, W)
+            x_expanded = disco_kernels.forward_regular.default(inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals_c, K, H, W).to(itype).reshape(B, G, Cg, K, H, W)
             grad_weight = torch.einsum("bgoxy,bgckxy->gock", grad_output_r, x_expanded)
 
         return (grad_inp, grad_weight) + (None,) * 21

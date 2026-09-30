@@ -479,6 +479,6 @@ namespace disco_kernels
         return out;
     }
 
-    TORCH_LIBRARY_IMPL(disco_kernels, CUDA, m) { m.impl("backward", &disco_cuda_bwd); }
+    TORCH_LIBRARY_IMPL(disco_kernels, CUDA, m) { m.impl("backward_regular", &disco_cuda_bwd); }
 
 } // namespace disco_kernels

@@ -55,6 +55,26 @@ def _is_sm100():
     return major == 10
 
 
+def regular_grid_types():
+    """
+    Registered grid families whose descriptors are :class:`RegularGridS2`.
+
+    Most of the library addresses a field as a dense ``(nlat, nlon)`` array and is
+    guarded by ``require_regular_grid``, so a test that sweeps "every grid" means every
+    grid those routines accept -- and constructs them with ``nlat``/``nlon``, which a
+    ragged family does not take.
+
+    Derived from the registry by subclass rather than by listing names, so a grid family
+    added later lands on the correct side of this without anyone remembering to come
+    back. HEALPix is excluded here and exercised where it is actually supported, which
+    today is attention; as other backends gain ragged support their tests should sweep
+    the full registry instead of this.
+    """
+    from torch_harmonics.grid import _GRID_REGISTRY, RegularGridS2
+
+    return tuple(name for name, cls in _GRID_REGISTRY.items() if issubclass(cls, RegularGridS2))
+
+
 def set_seed(seed=333):
     """Set the torch + CUDA random seed.
 
@@ -174,7 +194,10 @@ def setup_distributed_context(ctx):
         print(f"Running distributed tests on grid H x W = {ctx.grid_size_h} x {ctx.grid_size_w}")
 
     thd.init(ctx.h_group, ctx.w_group)
-    torch.cuda.set_device(ctx.device.index)
+    # gloo on a CPU-only host gives every rank a plain "cpu" device, whose index is
+    # None -- set_device would reject it and take the whole module down at setup.
+    if ctx.device.type == "cuda":
+        torch.cuda.set_device(ctx.device.index)
 
     return
 
@@ -325,3 +348,87 @@ def compare_tensors(msg, tensor1, tensor2, atol=1e-8, rtol=1e-5, verbose=False):
             print(f"Worst allclose condition violation: {diff_bad} <= {atol} + {rtol} * {tensor2_abs_bad} = {atol + rtol * tensor2_abs_bad}")
 
     return allclose
+
+
+def build_psi_segments(col_idx: torch.Tensor, roff_idx: torch.Tensor, nlon: int):
+    """
+    Re-express a column list as contiguous longitude arcs, by brute force.
+
+    A test oracle. The library computes the arcs natively in
+    :func:`torch_harmonics.neighborhood.precompute_neighborhood_arcs_s2`; this recovers
+    them from a column list instead, sharing none of that code, so the two can be held
+    against each other.
+
+    psi's sparsity is a union of arcs: for a given output row and input latitude, the
+    neighbor longitudes are contiguous on the circle (possibly wrapping). This is
+    geometric -- a geodesic ball meets a latitude circle in one arc -- and is pinned by
+    TestPsiArcStructure.
+
+    That lets a kernel iterate (hi, lo, len) segments and derive each neighbor's column
+    by counting, instead of loading it from col_idx and recovering hi with a 64-bit
+    integer division. The GPU has no integer divide instruction, so that division costs
+    ~70-100 emulated instructions per neighbor against roughly four instructions of
+    useful math; profiling showed the forward kernel at 80% compute throughput while
+    delivering ~2.4% of peak FLOPs.
+
+    Returns
+    -------
+    seg : int32 tensor of shape (nsegs, 3), columns (hi, lo, len)
+    seg_off : int32 tensor of shape (nrows + 1,), row -> segment range
+
+    Notes
+    -----
+    Relies on col_idx being sorted ascending within each row, which is how both
+    _precompute_convolution_tensor_s2 and NeighborhoodArcsS2.to_csr emit it. A wrapping arc therefore appears as
+    two runs at the ends of the sorted list, which is handled explicitly.
+    """
+
+    col = col_idx.cpu().to(torch.int64)
+    roff = roff_idx.cpu().to(torch.int64)
+    nrows = roff.numel() - 1
+
+    seg_rows = []
+    segs = []
+    for row in range(nrows):
+        beg, end = int(roff[row]), int(roff[row + 1])
+        n_before = len(segs)
+        if end > beg:
+            cols = col[beg:end]
+            hi = torch.div(cols, nlon, rounding_mode="floor")
+            wi = cols - hi * nlon
+            for h in torch.unique(hi):
+                w = torch.unique(wi[hi == h]).sort().values
+                count = int(w.numel())
+                lo, hi_w = int(w[0]), int(w[-1])
+                if hi_w - lo + 1 == count:
+                    # plain arc
+                    start, length = lo, count
+                else:
+                    # wraps the seam: sorted as [0..a] u [b..nlon-1]; the arc starts at
+                    # b, which is one past the single interior gap
+                    gaps = torch.diff(w)
+                    split = int(torch.argmax(gaps))
+                    start = int(w[split + 1])
+                    length = count
+                segs.append((int(h), start, length))
+        seg_rows.append(len(segs) - n_before)
+
+    seg = torch.tensor(segs, dtype=torch.int32).reshape(-1, 3)
+    seg_off = torch.zeros(nrows + 1, dtype=torch.int32)
+    seg_off[1:] = torch.tensor(seg_rows, dtype=torch.int32).cumsum(0)
+    return seg, seg_off
+
+
+def expand_psi_segments(seg: torch.Tensor, seg_off: torch.Tensor, nlon: int):
+    """Expand segments back to a per-row column list. Inverse of build_psi_segments,
+    used to verify the two representations describe the same sparsity."""
+
+    out = []
+    for row in range(seg_off.numel() - 1):
+        cols = []
+        for s in range(int(seg_off[row]), int(seg_off[row + 1])):
+            hi, lo, length = (int(x) for x in seg[s])
+            for j in range(length):
+                cols.append(hi * nlon + (lo + j) % nlon)
+        out.append(sorted(cols))
+    return out
