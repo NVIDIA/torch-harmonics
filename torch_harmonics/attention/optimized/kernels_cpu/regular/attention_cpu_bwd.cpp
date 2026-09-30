@@ -38,18 +38,17 @@ namespace attention_kernels
 
     // NHWC ABI with heads packed along channels -- see s2_attention_fwd_cpu.
     std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
-    // seg / seg_off are accepted but unused here: the CPU backward still walks the column
-    // list. They are part of the shared schema because the CUDA backward consumes them,
-    // and keeping this path on col_idx is what keeps it independent of that derivation.
+    // The torch reference is what stays on the column list, in its own operator; this
+    // path and the CUDA kernels both read the arcs.
     s2_attention_bwd_cpu(torch::Tensor kx, torch::Tensor vx, torch::Tensor qy, torch::Tensor dy,
-                         torch::Tensor quad_weights, torch::Tensor col_idx, torch::Tensor row_off, torch::Tensor seg,
-                         torch::Tensor seg_off, int64_t num_heads, int64_t nlon_in, int64_t nlat_out, int64_t nlon_out)
+                         torch::Tensor ring_weights, torch::Tensor seg, torch::Tensor seg_off, int64_t num_heads,
+                         int64_t nlon_in, int64_t nlat_out, int64_t nlon_out)
     {
 
         // Caller-visible shapes (NHWC, heads packed along channels):
         //   kx, vx          : (B, Hi, Wi, num_heads * C)
         //   qy, dy          : (B, Ho, Wo, num_heads * C)
-        //   quad_weights    : (Hi,)
+        //   ring_weights    : (Hi,)
         //   dkx, dvx (out)  : same as kx, vx
         //   dqy (out)       : same as qy
         // The loop kernels are head-agnostic, so the wrapper folds heads into the
@@ -59,32 +58,15 @@ namespace attention_kernels
         CHECK_CPU_INPUT_TENSOR(vx);
         CHECK_CPU_INPUT_TENSOR(qy);
         CHECK_CPU_INPUT_TENSOR(dy);
-        CHECK_CPU_INPUT_TENSOR(quad_weights);
-        CHECK_CPU_INPUT_TENSOR(col_idx);
-        CHECK_CPU_INPUT_TENSOR(row_off);
+        CHECK_CPU_INPUT_TENSOR(ring_weights);
+
+        // devices, shapes, dtypes, direction, index and weight tables, dense layouts
+        check_regular_attention_inputs(kx, vx, qy, ring_weights, seg, seg_off, num_heads, nlon_in, nlat_out, nlon_out);
+        check_output_grad(dy, kx, vx, qy);
 
         // direction selection: same as fwd. Self (nlon_in == nlon_out) hits both
         // and routes through the gather kernel (pscale == 1).
-        const bool downsample = (nlon_in % nlon_out == 0);
-        const bool upsample = (nlon_out % nlon_in == 0);
-        TORCH_CHECK(downsample || upsample, "either nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (",
-                    nlon_out, "), or vice versa");
-
-        TORCH_CHECK(num_heads >= 1, "num_heads must be positive, got ", num_heads);
-        TORCH_CHECK(qy.size(3) % num_heads == 0, "q/k channel count (", qy.size(3),
-                    ") must be divisible by num_heads (", num_heads, ")");
-        TORCH_CHECK(vx.size(3) % num_heads == 0, "v channel count (", vx.size(3), ") must be divisible by num_heads (",
-                    num_heads, ")");
-
-        // Every activation must share one dtype: the dispatch below selects a single
-        // scalar_t from qy and the launchers reinterpret_cast k/v/q (and dy) to it, so
-        // a mismatched input would be reinterpreted rather than converted.
-        TORCH_CHECK(kx.scalar_type() == qy.scalar_type(), "k dtype (", kx.scalar_type(), ") must match q dtype (",
-                    qy.scalar_type(), ")");
-        TORCH_CHECK(vx.scalar_type() == qy.scalar_type(), "v dtype (", vx.scalar_type(), ") must match q dtype (",
-                    qy.scalar_type(), ")");
-        TORCH_CHECK(dy.scalar_type() == qy.scalar_type(), "dy dtype (", dy.scalar_type(), ") must match q dtype (",
-                    qy.scalar_type(), ")");
+        const bool downsample = (nlon_in % nlon_out == 0); // otherwise upsample: validated above
 
         // The CPU kernels are fp32-only (storage/compute split is CUDA-only Tier B).
         // Upcast fp16/bf16 inputs to fp32 and cast the grads back at the end; CPU
@@ -116,19 +98,19 @@ namespace attention_kernels
         auto vx_arr = vx.packed_accessor64<float, 4>();
         auto qy_arr = qy.packed_accessor64<float, 4>();
         auto dy_arr = dy.packed_accessor64<float, 4>();
-        auto quad_weights_arr = quad_weights.packed_accessor64<float, 1>();
-        auto col_idx_arr = col_idx.packed_accessor64<int64_t, 1>();
-        auto roff_arr = row_off.packed_accessor64<int64_t, 1>();
+        auto quad_weights_arr = ring_weights.packed_accessor64<float, 1>();
+        auto seg_arr = seg.packed_accessor64<int32_t, 2>();
+        auto seg_off_arr = seg_off.packed_accessor64<int32_t, 1>();
         auto dqy_arr = dqy.packed_accessor64<float, 4>();
         auto dvx_arr = dvx.packed_accessor64<float, 4>();
         auto dkx_arr = dkx.packed_accessor64<float, 4>();
 
         if (downsample) {
-            s2_attn_bwd_kernel<float>(kx_arr, vx_arr, qy_arr, dy_arr, quad_weights_arr, col_idx_arr, roff_arr, dqy_arr,
+            s2_attn_bwd_kernel<float>(kx_arr, vx_arr, qy_arr, dy_arr, quad_weights_arr, seg_arr, seg_off_arr, dqy_arr,
                                       dvx_arr, dkx_arr, nlon_in, nlat_out, nlon_out, batch_size, nchannels_in,
                                       nchannels_out);
         } else {
-            s2_attn_bwd_upsample_dispatch(kx_arr, vx_arr, qy_arr, dy_arr, quad_weights_arr, col_idx_arr, roff_arr,
+            s2_attn_bwd_upsample_dispatch(kx_arr, vx_arr, qy_arr, dy_arr, quad_weights_arr, seg_arr, seg_off_arr,
                                           dqy_arr, dvx_arr, dkx_arr, nlon_in, nlat_in, nlat_out, nlon_out, batch_size,
                                           nchannels_in, nchannels_out);
         }
@@ -141,6 +123,6 @@ namespace attention_kernels
         return std::make_tuple(dkx.to(inp_dtype), dvx.to(inp_dtype), dqy.to(inp_dtype));
     }
 
-    TORCH_LIBRARY_IMPL(attention_kernels, CPU, m) { m.impl("backward", &s2_attention_bwd_cpu); }
+    TORCH_LIBRARY_IMPL(attention_kernels, CPU, m) { m.impl("backward_regular", &s2_attention_bwd_cpu); }
 
 } // namespace attention_kernels

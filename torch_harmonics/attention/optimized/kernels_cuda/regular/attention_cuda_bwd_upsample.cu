@@ -32,31 +32,15 @@
 // Upsample (scatter-style) attention backward — CUDA
 // =====================================================================================
 //
-// Mirrors the structure of the downsample backward (see attention_cuda_bwd.cu),
-// just with the output-centric inverse-shift logic in the inner scan:
-//   - psi rows are indexed by hi; each output (b, ho, wo) scans every psi[hi]
-//     row, skipping entries where ho_neigh != ho or where the residue test
-//     (wo - wo_canonical) mod pscale_out != 0 fails. For surviving entries,
-//     wi = (wo - wo_canonical) / pscale_out.
-//
-// Single kernel computes dqy, dkx, dvx for one output cell:
-//   pass 1 — online softmax over contributors; accumulates per-channel
-//            shared-memory state (sh_alpha_k__, sh_alpha_vw_, sh_alpha_kvw)
-//            and scalar alpha_sum, integral, qdotk_max. After the scan, the
-//            warp writes dqy[b, ho, wo, :] = (alpha_kvw * alpha_sum - alpha_vw *
-//            alpha_k) / alpha_sum^2.
-//   pass 2 — scan again with the finalized softmax stats; for each contributor
-//            atomicAdd into dkx[b, hi, wi, :] += qy * (gdotv - integral) *
-//            alpha_norm and dvx[b, hi, wi, :] += dy * alpha_norm. atomics are
-//            required because many output cells can scatter into the same
-//            input cell (one (hi, wi) is reachable from multiple (ho, wo)
-//            via the residue map).
-// Generic-only for now; no specialized channel-size variant. Rows ARE sorted
-// (sortRows) and the kernels walk psi's arc segments.
-// load-balancing (correctness path, not perf path).
+// The adjoint of the input-keyed scatter forward (attention_cuda_fwd_upsample.cu).
+// psi is in arc form with rows indexed by input latitude hi; each arc is a run of
+// output longitudes on one output ring, canonical at wi=0 and shifted by
+// pscale_out * wi. One warp per coarse input cell (hi, wi) walks the arcs of its
+// row, so the work is O(nnz); the passes and their buffers are described at the
+// kernels below. Rows are sorted longest-first (sortRows) to balance the load.
 // =====================================================================================
 
-#include "attention_cuda.cuh"
+#include "../common/attention_cuda.cuh"
 #include <ATen/Dispatch.h>
 #include <ATen/cuda/CUDAUtils.h>
 #include <c10/cuda/CUDAException.h>
@@ -64,8 +48,8 @@
 #include <cuda_runtime.h>
 #include <cfloat>
 
-#include "cudamacro.h"
-#include "attention_cuda_utils.cuh"
+#include "../common/cudamacro.h"
+#include "../common/attention_cuda_utils.cuh"
 
 #define THREADS (64)
 
@@ -185,7 +169,7 @@ namespace attention_kernels
         int nheads, int nchan_in, int nchan_out, int nlat_in, int nlon_in, int nlat_out, int nlon_out,
         const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy,
         const STORAGE_T *__restrict__ dy, const int32_t *__restrict__ row_idx, const int32_t *__restrict__ seg,
-        const int32_t *__restrict__ seg_off, const float *__restrict__ quad_weights, const float *__restrict__ maxbuf,
+        const int32_t *__restrict__ seg_off, const float *__restrict__ ring_weights, const float *__restrict__ maxbuf,
         float *__restrict__ S, float *__restrict__ Avw, float *__restrict__ Ak, float *__restrict__ Akvw)
     {
         extern __shared__ float shext[];
@@ -230,7 +214,7 @@ namespace attention_kernels
         for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { sh_k[chan] = vload(kx, chan); }
         for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { sh_v[chan] = vload(vx, chan); }
 
-        const float qw = quad_weights[hi];
+        const float qw = ring_weights[hi];
         // Arc segments instead of the flat column list; see the note on the first
         // neighbor loop above.
         const int seg_beg = seg_off[hi];
@@ -308,7 +292,7 @@ namespace attention_kernels
         int nheads, int nchan_in, int nchan_out, int nlat_in, int nlon_in, int nlat_out, int nlon_out,
         const STORAGE_T *__restrict__ kx, const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy,
         const STORAGE_T *__restrict__ dy, const int32_t *__restrict__ row_idx, const int32_t *__restrict__ seg,
-        const int32_t *__restrict__ seg_off, const float *__restrict__ quad_weights, const float *__restrict__ maxbuf,
+        const int32_t *__restrict__ seg_off, const float *__restrict__ ring_weights, const float *__restrict__ maxbuf,
         const float *__restrict__ S, const float *__restrict__ Avw, float *__restrict__ dkx, float *__restrict__ dvx)
     {
         extern __shared__ float shext[];
@@ -357,7 +341,7 @@ namespace attention_kernels
             sh_dv[chan] = 0.f;
         }
 
-        const float qw = quad_weights[hi];
+        const float qw = ring_weights[hi];
         // Arc segments instead of the flat column list; see the note on the first
         // neighbor loop above.
         const int seg_beg = seg_off[hi];
@@ -436,22 +420,22 @@ namespace attention_kernels
         const size_t sh_stats = sizeof(float) * (nchans_in + nchans_out) * block.y;
         const size_t sh_dkv = sizeof(float) * (2 * nchans_in + 2 * nchans_out) * block.y;
 
-        s2_attn_bwd_upsample_scatter_max_k<THREADS><<<grid_in, block, sh_max, stream>>>(
-            nheads, nchans_in, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _qyp, _row_idx, _seg, _seg_off, _maxbuf);
+        launch_dyn_shmem(&s2_attn_bwd_upsample_scatter_max_k<THREADS, STORAGE_T>, grid_in, block, sh_max, stream, nheads,
+                         nchans_in, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _qyp, _row_idx, _seg, _seg_off, _maxbuf);
         CHECK_ERROR("s2_attn_bwd_upsample_scatter_max_k");
 
-        s2_attn_bwd_upsample_scatter_stats_k<THREADS><<<grid_in, block, sh_stats, stream>>>(
-            nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _seg,
-            _seg_off, _quad_weights, _maxbuf, _S, _Avw, _Ak, _Akvw);
+        launch_dyn_shmem(&s2_attn_bwd_upsample_scatter_stats_k<THREADS, STORAGE_T>, grid_in, block, sh_stats, stream,
+                         nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp,
+                         _row_idx, _seg, _seg_off, _quad_weights, _maxbuf, _S, _Avw, _Ak, _Akvw);
         CHECK_ERROR("s2_attn_bwd_upsample_scatter_stats_k");
 
         s2_attn_bwd_upsample_scatter_dq_k<THREADS>
             <<<grid_out, block, 0, stream>>>(nheads, nchans_in, nlat_out, nlon_out, _S, _Avw, _Ak, _Akvw, _dqyp);
         CHECK_ERROR("s2_attn_bwd_upsample_scatter_dq_k");
 
-        s2_attn_bwd_upsample_scatter_dkv_k<THREADS><<<grid_in, block, sh_dkv, stream>>>(
-            nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp, _row_idx, _seg,
-            _seg_off, _quad_weights, _maxbuf, _S, _Avw, _dkxp, _dvxp);
+        launch_dyn_shmem(&s2_attn_bwd_upsample_scatter_dkv_k<THREADS, STORAGE_T>, grid_in, block, sh_dkv, stream,
+                         nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out, nlon_out, _kxp, _vxp, _qyp, _dyp,
+                         _row_idx, _seg, _seg_off, _quad_weights, _maxbuf, _S, _Avw, _dkxp, _dvxp);
         CHECK_ERROR("s2_attn_bwd_upsample_scatter_dkv_k");
     }
 
@@ -467,7 +451,7 @@ namespace attention_kernels
                                        int64_t nlon_in, int64_t nlat_in, int64_t nlat_out, int64_t nlon_out,
                                        torch::Tensor kxP, torch::Tensor vxP, torch::Tensor qyP, torch::Tensor dyP,
                                        torch::Tensor psi_row_off, torch::Tensor psi_seg, torch::Tensor psi_seg_off,
-                                       torch::Tensor quad_weights, torch::Tensor dkxP, torch::Tensor dvxP,
+                                       torch::Tensor ring_weights, torch::Tensor dkxP, torch::Tensor dvxP,
                                        torch::Tensor dqyP)
     {
 
@@ -486,7 +470,7 @@ namespace attention_kernels
         int32_t *_row_idx = reinterpret_cast<int32_t *>(row_idx.data_ptr());
         int32_t *_seg = reinterpret_cast<int32_t *>(psi_seg.data_ptr());
         int32_t *_seg_off = reinterpret_cast<int32_t *>(psi_seg_off.data_ptr());
-        float *_quad_weights = reinterpret_cast<float *>(quad_weights.data_ptr());
+        float *_quad_weights = reinterpret_cast<float *>(ring_weights.data_ptr());
 
         AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, qyP.scalar_type(), "s2_attn_bwd_upsample", [&] {
             scalar_t *_kxp = reinterpret_cast<scalar_t *>(kxP.data_ptr());

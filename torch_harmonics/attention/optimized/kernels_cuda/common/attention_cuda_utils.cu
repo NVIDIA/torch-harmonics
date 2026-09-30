@@ -206,6 +206,11 @@ namespace attention_kernels
     at::Tensor permute_to_nhwc_cuda(at::Tensor x)
     {
         CHECK_CUDA_TENSOR(x);
+
+        // run on the inputs' device: without this, the current stream, the scratch
+        // allocations and the per-device queries (ensure_dyn_shmem, getPtxver) would all
+        // resolve to whichever CUDA device happens to be current
+        const at::cuda::OptionalCUDAGuard device_guard(x.device());
         TORCH_CHECK(x.dim() == 4, "permute_to_nhwc expects a 4D (B, C, H, W) tensor, got ", x.dim(), "D");
         TORCH_CHECK(x.is_contiguous(), "permute_to_nhwc expects a contiguous (B, C, H, W) tensor");
         return permute_4D_to0231(x);
@@ -214,6 +219,11 @@ namespace attention_kernels
     at::Tensor permute_to_nchw_cuda(at::Tensor x)
     {
         CHECK_CUDA_TENSOR(x);
+
+        // run on the inputs' device: without this, the current stream, the scratch
+        // allocations and the per-device queries (ensure_dyn_shmem, getPtxver) would all
+        // resolve to whichever CUDA device happens to be current
+        const at::cuda::OptionalCUDAGuard device_guard(x.device());
         TORCH_CHECK(x.dim() == 4, "permute_to_nchw expects a 4D (B, H, W, C) tensor, got ", x.dim(), "D");
         TORCH_CHECK(x.is_contiguous(), "permute_to_nchw expects a contiguous (B, H, W, C) tensor");
         return permute_4D_to0312(x);
@@ -225,164 +235,6 @@ namespace attention_kernels
         m.impl("permute_to_nchw", &permute_to_nchw_cuda);
     }
     // END - tensor permutation kernels and functions
-
-    // BEGIN - CSR row splitting kernels and functions
-    __global__ void get_rlen_boundary_k(const float thres, const int64_t split_len, const int64_t n, const int32_t *idx,
-                                        const int64_t *off, int64_t *num_lrow_ptr, int64_t *max_rlen_ptr0,
-                                        int64_t *max_rlen_ptr1)
-    {
-        const int tid = threadIdx.x;
-
-        int64_t max_rlen = off[idx[0] + 1] - off[idx[0]];
-
-        int64_t min_longr_len = max(split_len, int64_t(max_rlen * thres));
-
-        int64_t tot_long = 0;
-        for (int64_t i = 0; i < n; i += blockDim.x) {
-
-            int64_t rlen = 0;
-
-            if (i + tid < n) {
-                int32_t row = idx[i + tid];
-                rlen = off[row + 1] - off[row];
-            }
-
-            int n_long = __syncthreads_count(rlen >= min_longr_len);
-            if (n_long == 0) { break; }
-
-            tot_long += n_long;
-        }
-
-        if (!tid) {
-            *num_lrow_ptr = tot_long;
-            *max_rlen_ptr0 = tot_long ? max_rlen : 0;
-
-            if (tot_long < n) {
-                int32_t first_short_row = idx[tot_long];
-                *max_rlen_ptr1 = off[first_short_row + 1] - off[first_short_row];
-            } else {
-                *max_rlen_ptr1 = 0;
-            }
-        }
-
-        return;
-    }
-
-    // ASSUMES row_idx sorted by decreasing length.
-    //
-    // Splits the rows int two sections:
-    // 1) "long  rows": first "n_long_rows" with (length >= split_len && length >= thres*max_row_length);
-    // 2) "short rows": remaining rows with      (                       length <  thres*max_row_length);
-    //
-    // Note than split_len is only used to determine whether a row is long or not. If there are
-    // long rows, then the short ones are selected based on the condition that their length is
-    // less than one tenth the longest long row, regardless of the value of split_len (i.e.
-    // short rows can have length >= split_len, if thres*max_row_length > split_len).
-    //
-    // Returns:
-    //  n_long_rows: size of section 1;
-    //  max_row_len0: max row length of section 1, or 0 if section 1 is empty (i.e., n_long_rows == 0).
-    //  max_row_len1: max row length of section 2, or 0 if section 2 is empty (i.e., n_long_rows == nrows).
-    void split_csr_rows(float thres, int64_t split_len, int64_t nrows, int32_t *row_idx, int64_t *row_off,
-                        int64_t *n_long_rows, int64_t *max_row_len0, int64_t *max_row_len1)
-    {
-
-        if (!nrows) {
-            *n_long_rows = 0;
-            *max_row_len0 = 0;
-            *max_row_len1 = 0;
-            return;
-        }
-
-        torch::Tensor tmp_d = torch::empty({3}, torch::TensorOptions().dtype(torch::kInt64).device(torch::kCUDA));
-        int64_t *tmp_ptr_d = reinterpret_cast<int64_t *>(tmp_d.data_ptr());
-
-        int64_t *num_lr = tmp_ptr_d;
-        int64_t *max_rl0 = tmp_ptr_d + 1;
-        int64_t *max_rl1 = tmp_ptr_d + 2;
-
-        auto stream = at::cuda::getCurrentCUDAStream().stream();
-
-        get_rlen_boundary_k<<<1, 1024, 0, stream>>>(thres, split_len, nrows, row_idx, row_off, num_lr, max_rl0, max_rl1);
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
-
-        at::Tensor tmp_h = tmp_d.cpu();
-        int64_t *tmp_ptr_h = tmp_h.data_ptr<int64_t>();
-
-        *n_long_rows = tmp_ptr_h[0];
-        *max_row_len0 = tmp_ptr_h[1];
-        *max_row_len1 = tmp_ptr_h[2];
-
-        return;
-    }
-
-    // One-time wrapper, exposed as the "split_csr_rows" op. The split is a pure
-    // function of the psi sparsity geometry (row_idx/row_off/nlat_out), which is
-    // fixed after init, so callers invoke this once (from the module constructor)
-    // and thread the result into every ring step instead of recomputing it (and
-    // paying a 24-byte D2H sync) per step. row_idx is int32, row_off is int64.
-    //
-    // Registered for both CPU and CUDA: the constructor computes the split while
-    // the local psi buffers are still on the CPU (before .to(device)), so the CPU
-    // path is the one normally taken. The CUDA path keeps the op valid if it is
-    // ever called on device tensors. The CPU scan mirrors get_rlen_boundary_k
-    // exactly (same constants + same float truncation in the threshold) so both
-    // backends select identical long/short row splits.
-    std::tuple<int64_t, int64_t, int64_t> split_csr_rows_op(at::Tensor row_idx, at::Tensor row_off, int64_t nlat_out)
-    {
-        if (nlat_out <= 0) { return std::make_tuple(int64_t(0), int64_t(0), int64_t(0)); }
-
-        if (row_idx.is_cuda()) {
-            CHECK_CUDA_TENSOR(row_idx);
-            CHECK_CUDA_TENSOR(row_off);
-
-            int32_t *_row_idx = reinterpret_cast<int32_t *>(row_idx.data_ptr());
-            int64_t *_row_off = reinterpret_cast<int64_t *>(row_off.data_ptr());
-
-            int64_t n_long_rows = 0, max_row_len = 0, mid_row_len = 0;
-            split_csr_rows(SPLIT_ROW_LENGTH_THRES, SPLIT_LONG_ROW_MIN_LEN, nlat_out, _row_idx, _row_off, &n_long_rows,
-                           &max_row_len, &mid_row_len);
-
-            return std::make_tuple(n_long_rows, max_row_len, mid_row_len);
-        }
-
-        // CPU path: host-side scan. Rows are sorted by decreasing length, so the
-        // "long" rows form a prefix; count it and read the first short row length.
-        at::Tensor ri = row_idx.contiguous();
-        at::Tensor ro = row_off.contiguous();
-        const int32_t *idx = ri.data_ptr<int32_t>();
-        const int64_t *off = ro.data_ptr<int64_t>();
-
-        const int64_t max_rlen = off[idx[0] + 1] - off[idx[0]];
-        const int64_t thres_len = int64_t(float(max_rlen) * SPLIT_ROW_LENGTH_THRES);
-        const int64_t min_longr_len
-            = (int64_t(SPLIT_LONG_ROW_MIN_LEN) > thres_len) ? int64_t(SPLIT_LONG_ROW_MIN_LEN) : thres_len;
-
-        int64_t tot_long = 0;
-        for (int64_t i = 0; i < nlat_out; i++) {
-            const int32_t row = idx[i];
-            const int64_t rlen = off[row + 1] - off[row];
-            if (rlen >= min_longr_len) {
-                tot_long++;
-            } else {
-                break;
-            }
-        }
-
-        const int64_t n_long_rows = tot_long;
-        const int64_t max_row_len = tot_long ? max_rlen : 0;
-        int64_t mid_row_len = 0;
-        if (tot_long < nlat_out) {
-            const int32_t first_short_row = idx[tot_long];
-            mid_row_len = off[first_short_row + 1] - off[first_short_row];
-        }
-
-        return std::make_tuple(n_long_rows, max_row_len, mid_row_len);
-    }
-
-    TORCH_LIBRARY_IMPL(attention_kernels, CPU, m) { m.impl("split_csr_rows", &split_csr_rows_op); }
-    TORCH_LIBRARY_IMPL(attention_kernels, CUDA, m) { m.impl("split_csr_rows", &split_csr_rows_op); }
-    // END - CSR row splitting kernels and functions
 
     // BEGIN - general host-side functions
     unsigned int next_pow2(unsigned int x)
@@ -407,8 +259,7 @@ namespace attention_kernels
         //    launched at different sizes by different module instances in the
         //    same process. Caching on the kernel alone drops every request after
         //    the first, and a later, larger launch then fails with
-        //    cudaErrorInvalidValue. (attention_cuda_bwd_ring.cu works around the
-        //    same-call-site version of this by passing max(shsize_lr, shsize).)
+        //    cudaErrorInvalidValue.
         //
         //  - cudaFuncSetAttribute applies to the current device, so a
         //    process-wide cache would let device 0 suppress the opt-in that
@@ -429,6 +280,20 @@ namespace attention_kernels
         // inserts a 0 entry when this (device, kernel) pair is new
         size_t &granted_size = granted[std::make_pair(dev, kern)];
         if (granted_size >= shsize) { return; }
+
+        // The opt-in cannot exceed what the device offers a block, less the kernel's
+        // static shared memory. The requests scale with the per-head channel count, so
+        // past that point the launch is impossible rather than merely un-opted-in; say
+        // so instead of letting cudaFuncSetAttribute fail with a bare invalid argument.
+        int optin_max = 0;
+        CHECK_CUDA(cudaDeviceGetAttribute(&optin_max, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev));
+        cudaFuncAttributes attr;
+        CHECK_CUDA(cudaFuncGetAttributes(&attr, kern));
+        const size_t avail = static_cast<size_t>(optin_max) - attr.sharedSizeBytes;
+        TORCH_CHECK(shsize <= avail, "attention kernel needs ", shsize, " bytes of dynamic shared memory, but device ",
+                    dev, " offers at most ", avail,
+                    " per block; the request grows with the per-head channel count, so use fewer channels per head "
+                    "(more heads)");
 
         CHECK_CUDA(cudaFuncSetAttribute(kern, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(shsize)));
         granted_size = shsize;

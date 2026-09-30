@@ -1,0 +1,286 @@
+# coding=utf-8
+
+# SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+# list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+# this list of conditions and the following disclaimer in the documentation
+# and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+# contributors may be used to endorse or promote products derived from
+# this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+r"""
+Attention backends: an implementation together with the state it needs.
+
+A neighbourhood is one piece of geometry, but no two implementations want it in the
+same form. The compiled kernels walk contiguous arcs, and the ragged ones also need the
+ring tables; the torch references gather an explicit column list -- the ragged one
+indexing weights by point, the regular one by ring; the distributed ring kernels want only this rank's slice of the arcs, with
+the arc starts shifted to its longitudes. A FlexAttention backend would want a
+``BlockMask``, which is not a tensor at all.
+
+Left to the layer, that becomes a union: every buffer any implementation might need,
+registered always, with the surplus deleted or rebuilt lazily by whoever knows better.
+That is what this replaces. A backend declares when it can run and what it needs, and
+the layer registers exactly that.
+
+Which backend can run depends on the device, and the device is not known when the
+layer is built -- constructing on CPU and moving with ``.to()`` is the normal thing to
+do. So selection is driven by :meth:`~torch.nn.Module._apply`, which every one of
+``.to()``, ``.cuda()``, ``.cpu()``, ``.float()`` funnels through. On a device change
+the layer reselects and the new backend prepares its state there. Nothing about this
+is lazy and nothing is decided in ``forward``, which is what keeps the forward pass
+traceable: the backend is a plain Python attribute, fixed before tracing begins.
+
+Backend state is always ``persistent=False``. Which backend is live is a property of
+where the module happens to be, never of what was trained, so it must not reach a
+checkpoint.
+"""
+
+from typing import TYPE_CHECKING, Dict
+
+import torch
+
+from torch_harmonics.attention.kernels_torch.attention_ragged_torch import _neighborhood_s2_attention_ragged_torch
+from torch_harmonics.attention.kernels_torch.attention_regular_torch import _neighborhood_s2_attention_regular_torch
+from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_ragged_optimized, _neighborhood_s2_attention_regular_optimized
+from torch_harmonics.neighborhood import precompute_neighborhood_csr_s2
+
+if TYPE_CHECKING:  # pragma: no cover
+    from torch_harmonics.attention.attention import NeighborhoodAttentionS2
+
+
+class AttentionBackendS2:
+    """
+    One way of evaluating neighbourhood attention, and the state it needs to do it.
+
+    Subclasses implement three things:
+
+    ``available(layer, device)``
+        Whether this backend can serve that layer on that device. Checked in the order
+        the layer lists its backends, so the most specific comes first and the torch
+        reference -- which is always available -- comes last.
+
+    ``prepare(layer, device)``
+        The tensors this backend reads, on that device. The layer registers them as
+        non-persistent buffers and removes them again when another backend is selected,
+        so a backend gets exactly its own state and never sees another's.
+
+    ``__call__(layer, key, value, query_scaled)``
+        Evaluate. Reads the prepared state back off the layer by name.
+
+    The quadrature weights are state like any other, and come in two forms of the same
+    rule because the implementations want different ones. Every point of a ring carries
+    the same solid angle, so the kernels index weights by ring (``_ring_weights``),
+    having the ring tables -- or, on a regular grid, nlon -- to get from a point to its
+    ring; colat_weights * 2*pi / nlon_per_lat is the per-point weight written per ring,
+    and on a regular grid that is the same 2*pi*w/nlon_in it has always been. The ragged
+    torch reference instead gathers an explicit neighbour list whose entries are points,
+    and reads per-point weights (``_point_weights``) rather than mapping each point back;
+    the regular reference recovers the ring from the column and keeps ring weights.
+    The per-point form is npoints long -- 4 MB at a quarter degree -- which is why it is
+    registered only by the backend that reads it.
+    """
+
+    name = "?"
+
+    @classmethod
+    def available(cls, layer: "NeighborhoodAttentionS2", device: torch.device) -> bool:
+        raise NotImplementedError
+
+    def prepare(self, layer: "NeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
+        raise NotImplementedError
+
+    def __call__(self, layer: "NeighborhoodAttentionS2", key: torch.Tensor, value: torch.Tensor, query_scaled: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
+
+
+def _ring_weights(layer: "NeighborhoodAttentionS2", device: torch.device) -> torch.Tensor:
+    """
+    The input grid's quadrature weights, one per ring.
+
+    The descriptor computes in the dtype it is asked for, which is what keeps these
+    matching an already-trained model -- see GridS2.ring_weights.
+    """
+    return layer.grid_in.ring_weights(torch.float32).to(device)
+
+
+def _point_weights(layer: "NeighborhoodAttentionS2", device: torch.device) -> torch.Tensor:
+    """The input grid's quadrature weights, one per point; see ``_ring_weights``."""
+    return layer.grid_in.point_weights(torch.float32).to(device)
+
+
+class RaggedOptimizedBackend(AttentionBackendS2):
+    """
+    The compiled ragged kernels, CPU or CUDA.
+
+    Takes the arc form of the neighbourhood and the ring tables, and no column list:
+    the kernel derives a neighbour's index by counting along an arc, so the columns
+    would be several MB of tensor it never reads. At nside=64 that is 3.6 MB against
+    2.8 MB for everything else the layer holds.
+    """
+
+    name = "ragged-optimized"
+
+    @classmethod
+    def available(cls, layer: "NeighborhoodAttentionS2", device: torch.device) -> bool:
+        # No device test: the CPU and CUDA ragged kernels read the same arcs and are
+        # registered against the same operator, so the dispatcher picks between them
+        # and one backend serves both, as RegularOptimizedBackend does for the
+        # product-grid kernels.
+        return layer.ragged and layer.optimized_kernel
+
+    def prepare(self, layer: "NeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
+        arcs = layer._neighborhood_arcs()
+        return {
+            "ring_weights": _ring_weights(layer, device),
+            "psi_seg": arcs.segments.contiguous().to(device),
+            "psi_seg_off": arcs.offsets.contiguous().to(device),
+            "psi_ring_base": arcs.ring_base.contiguous().to(device),
+            "psi_ring_size": arcs.ring_size.contiguous().to(device),
+        }
+
+    def __call__(self, layer, key, value, query_scaled):
+        # the kernel also returns the softmax bookkeeping its backward consumes; only
+        # the output is the layer's result
+        return _neighborhood_s2_attention_ragged_optimized(
+            key,
+            value,
+            query_scaled,
+            layer.ring_weights,
+            layer.psi_seg,
+            layer.psi_seg_off,
+            layer.psi_ring_base,
+            layer.psi_ring_size,
+            layer.num_heads,
+            layer.npoints_out,
+        )[0]
+
+
+class RaggedReferenceBackend(AttentionBackendS2):
+    """
+    The torch reference, in terms of an explicit column list.
+
+    The fallback for a ragged grid: it asks nothing of the device, so it is what a build
+    without the kernels gets, or a layer with ``optimized_kernel=False``. It walks a neighbour list
+    in Python, which is what makes it readable and also what makes it slow -- it is the
+    specification, not a fast path.
+    """
+
+    name = "ragged-reference"
+
+    @classmethod
+    def available(cls, layer: "NeighborhoodAttentionS2", device: torch.device) -> bool:
+        return layer.ragged
+
+    def prepare(self, layer: "NeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
+        col_idx, roff_idx = precompute_neighborhood_csr_s2(layer.grid_in, layer.grid_out, layer.theta_cutoff)
+        return {"point_weights": _point_weights(layer, device), "psi_col_idx": col_idx.to(device), "psi_roff_idx": roff_idx.to(device)}
+
+    def __call__(self, layer, key, value, query_scaled):
+        return _neighborhood_s2_attention_ragged_torch(
+            key,
+            value,
+            query_scaled,
+            layer.point_weights,
+            layer.psi_col_idx,
+            layer.psi_roff_idx,
+            layer.num_heads,
+            layer.npoints_out,
+        )
+
+
+class _RegularBackend(AttentionBackendS2):
+    """Common argument order for the product-grid backends."""
+
+    def _args(self, layer, key, value, query_scaled, *pattern):
+        return (key, value, query_scaled, layer.ring_weights, *pattern, layer.num_heads, layer.nlon_in, layer.nlat_out, layer.nlon_out)
+
+
+class RegularOptimizedBackend(_RegularBackend):
+    """The compiled product-grid kernels, CPU or CUDA, dispatched by the operator like the ragged pair."""
+
+    name = "regular-optimized"
+
+    @classmethod
+    def available(cls, layer: "NeighborhoodAttentionS2", device: torch.device) -> bool:
+        return not layer.ragged and layer.optimized_kernel
+
+    def prepare(self, layer: "NeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
+        arcs = layer._neighborhood_arcs()
+        return {
+            "ring_weights": _ring_weights(layer, device),
+            "psi_seg": arcs.segments.contiguous().to(device),
+            "psi_seg_off": arcs.offsets.contiguous().to(device),
+        }
+
+    def __call__(self, layer, key, value, query_scaled):
+        return _neighborhood_s2_attention_regular_optimized(*self._args(layer, key, value, query_scaled, layer.psi_seg, layer.psi_seg_off))
+
+
+class RegularReferenceBackend(_RegularBackend):
+    """The product-grid torch reference: the fallback when the kernels were not built."""
+
+    name = "regular-reference"
+
+    @classmethod
+    def available(cls, layer: "NeighborhoodAttentionS2", device: torch.device) -> bool:
+        return not layer.ragged
+
+    def prepare(self, layer: "NeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
+        arcs = layer._neighborhood_arcs()
+        col_idx, roff_idx = arcs.to_csr()
+        return {
+            "ring_weights": _ring_weights(layer, device),
+            "psi_col_idx": col_idx.contiguous().to(device),
+            "psi_roff_idx": roff_idx.to(torch.int64).contiguous().to(device),
+        }
+
+    def __call__(self, layer, key, value, query_scaled):
+        return _neighborhood_s2_attention_regular_torch(*self._args(layer, key, value, query_scaled, layer.psi_col_idx, layer.psi_roff_idx))
+
+
+#: Every backend, most specific first. Order *is* the decision procedure: the first
+#: whose ``available`` accepts the layer and device wins, so a backend narrows the case
+#: by returning False rather than by sitting at a particular depth of a tree.
+#:
+#: The axes that actually decide this are not a fixed three. Grid family, whether the
+#: kernels were compiled, and the device are the ones in play today; the regular path
+#: adds direction (downsample vs upsample), the distributed path adds dense vs ring, a
+#: FlexAttention backend would add a torch version, and DISCO's kpacked equivalent turns
+#: on dtype and SM version together. A nested tree has to be reshaped each time one of
+#: those appears. A predicate does not -- which is the whole reason the condition lives
+#: on the backend instead of in the layer.
+#:
+#: Ordering resolves overlap, as in any dispatcher: put the narrower backend first. The
+#: last entry must accept anything the layer can be built with, or selection raises.
+#:
+#: This is the serial layer's list. A subclass that computes differently supplies its
+#: own through ``_backends``: DistributedNeighborhoodAttentionS2 lists the ring
+#: backends, whose prepare() takes this rank's shard of the arcs.
+BACKENDS = (
+    RaggedOptimizedBackend,
+    RaggedReferenceBackend,
+    RegularOptimizedBackend,
+    RegularReferenceBackend,
+)

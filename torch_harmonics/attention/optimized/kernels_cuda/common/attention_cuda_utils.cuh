@@ -33,43 +33,42 @@
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDAUtils.h>
+#include <c10/cuda/CUDAGuard.h>
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
 #include <type_traits>
+#include <utility>
+
+#include "../../attention_checks.h"
 
 #define WARP_SIZE (32)
 #define FULL_MASK (0xFFFFFFFF)
 #define DIV_UP(a, b) (((a) + ((b) - 1)) / (b))
 
-#define SPLIT_ROW_LENGTH_THRES (0.1f)
-#define SPLIT_LONG_ROW_MIN_LEN (1024)
-#define SPLIT_LONG_ROW_MIN_WORK_X_BLK (32)
-#define SPLIT_LONG_ROW_MAX_BLK_X_ROW (32)
-
 namespace attention_kernels
 {
 
+    // Extents of one ring step: the serial kernels' (nheads, nchan_in, nchan_out,
+    // nlon_in, nlat_out, nlon_out), plus where the K/V chunk currently held sits in the
+    // global input grid.
     struct attn_params_t {
+        // Heads are packed along the channel dim, as in the serial kernels: tensors
+        // are physically (B, H, W, nheads * nchan), gridDim spans batch * nheads, and
+        // nchan_in / nchan_out are per-head counts. The stride between two spatial
+        // points is therefore nheads * nchan, not nchan.
+        int nheads;
         int nchan_in;
         int nchan_out;
-        int nlat_halo;
-        int nlon_kx;
-        int nlon_in;
-        int pscale;
-        int lon_lo_kx;
-        int lat_halo_start;
-        int nlat_out;
-        int nlon_out;
-        // Precomputed CSR row split (see split_csr_rows). These depend only on
-        // the psi sparsity geometry (row_idx/row_off/nlat_out), which is fixed
-        // after init, so they are computed once on the host side and threaded
-        // in via the ring-step dispatch instead of being recomputed every ring
-        // step (which previously incurred a per-step 24-byte D2H sync).
-        int64_t n_long_rows;
-        int64_t max_row_len;
-        int64_t mid_row_len;
+        int nlat_halo;      // latitudes in the K/V chunk, halo included
+        int nlon_kx;        // longitudes in the K/V chunk
+        int nlon_in;        // GLOBAL input longitudes
+        int pscale;         // GLOBAL nlon_in / nlon_out; not derivable from the local nlon_out
+        int lon_lo_kx;      // global longitude of the chunk's first column
+        int lat_halo_start; // global latitude of the chunk's first (halo) row
+        int nlat_out;       // LOCAL output latitudes
+        int nlon_out;       // LOCAL output longitudes
     };
 
     // CSR rows sorting kernels and functions
@@ -87,31 +86,24 @@ namespace attention_kernels
     at::Tensor permute_to_nhwc_cuda(at::Tensor x);
     at::Tensor permute_to_nchw_cuda(at::Tensor x);
 
-    // Host tensor dump and CSR manipulation functions
-    void dump_tensor(const char *fname, at::Tensor t);
-    void dump_csr(const char *fname, at::Tensor roff, at::Tensor cols);
-
-    int part_csr_rows(int *row_perm, const at::Tensor roff, const at::Tensor cols, int **part_off, int **part_val);
-
-    int verify_part(const int npart, const int *part_off, const int *part_val, const at::Tensor roff,
-                    const at::Tensor cols);
-
-    void verify_part_new(const int nlon_out, const int nlat_in, const int nlon_in,
-                         const int npart, // partitioning data
-                         const int *part_off, const int *part_val, const at::Tensor roff, const at::Tensor cols);
-
-    void split_csr_rows(float thres, int64_t split_len, int64_t nrows, int32_t *row_idx, int64_t *row_off,
-                        int64_t *n_long_rows, int64_t *max_row_len0, int64_t *max_row_len1);
-
-    // One-time wrapper exposed as the "split_csr_rows" op so Python can
-    // precompute the row split once (constant for a fixed psi) and pass it into
-    // the ring-step ops. Handles CPU and CUDA row_idx/row_off; the module
-    // constructor calls it on the still-on-CPU local psi buffers.
-    std::tuple<int64_t, int64_t, int64_t> split_csr_rows_op(at::Tensor row_idx, at::Tensor row_off, int64_t nlat_out);
-
     unsigned int next_pow2(unsigned int x);
 
     void ensure_dyn_shmem(const void *kern, size_t shsize);
+
+    // Launch a kernel that takes dynamic shared memory, opting in first when the request
+    // exceeds the default 48 KiB -- without the opt-in such a launch fails with
+    // cudaErrorInvalidValue. The request grows with the channel count, so every launch
+    // with a channel-dependent shsize goes through here. kern must be the fully
+    // specified instantiation; the launch arguments then have to convert to its
+    // parameters, so naming the wrong storage type fails to compile instead of opting
+    // in a kernel that is never launched.
+    template <typename... KArgs, typename... Args>
+    inline void launch_dyn_shmem(void (*kern)(KArgs...), dim3 grid, dim3 block, size_t shsize, cudaStream_t stream,
+                                 Args &&...args)
+    {
+        ensure_dyn_shmem(reinterpret_cast<const void *>(kern), shsize);
+        kern<<<grid, block, shsize, stream>>>(std::forward<Args>(args)...);
+    }
 
     int getPtxver();
 
@@ -144,8 +136,6 @@ namespace attention_kernels
 
     __device__ float __forceinline__ __vscale(float s, float v) { return v * s; }
 
-    __device__ float __forceinline__ __vdiv(float s, float v) { return v / s; }
-
     template <> __device__ float4 __forceinline__ __vset<float4>(float x) { return make_float4(x, x, x, x); }
 
     __device__ float4 __forceinline__ __vmul(float4 a, float4 b)
@@ -169,32 +159,6 @@ namespace attention_kernels
     {
         return make_float4(s * v.x, s * v.y, s * v.z, s * v.w);
     }
-
-    __device__ float4 __forceinline__ __vdiv(float s, float4 v)
-    {
-        return make_float4(s / v.x, s / v.y, s / v.z, s / v.w);
-        ;
-    }
-
-    // float2 compute vector.
-    //
-    // Exists so a 2-wide 16-bit storage type can fill the block at nchans == 64:
-    // bdimx is 32 there, so a 4-wide vector leaves nci == 16 and half the lanes idle,
-    // while a 2-wide vector gives nci == 32 exactly. Modern attention kernels run at
-    // head_dim 64 or 128, so that is the case worth fitting, not an edge case.
-    template <> __device__ float2 __forceinline__ __vset<float2>(float x) { return make_float2(x, x); }
-
-    __device__ float2 __forceinline__ __vmul(float2 a, float2 b) { return make_float2(a.x * b.x, a.y * b.y); }
-
-    __device__ float2 __forceinline__ __vadd(float2 a, float2 b) { return make_float2(a.x + b.x, a.y + b.y); }
-
-    __device__ float2 __forceinline__ __vsub(float2 a, float2 b) { return make_float2(a.x - b.x, a.y - b.y); }
-
-    __device__ float __forceinline__ __vred(float2 a) { return a.x + a.y; }
-
-    __device__ float2 __forceinline__ __vscale(float s, float2 v) { return make_float2(s * v.x, s * v.y); }
-
-    __device__ float2 __forceinline__ __vdiv(float s, float2 v) { return make_float2(s / v.x, s / v.y); }
 
     // ---- storage <-> compute helpers for native fp16/bf16 storage ----
     //
@@ -314,83 +278,12 @@ namespace attention_kernels
         return;
     }
 
-    template <int BDIM_X, int NUM_IT, typename FUNC_T> __device__ __forceinline__ void strided_op(int n, FUNC_T op)
-    {
-
-        constexpr int USE_STATIC_UNROLL = (NUM_IT > 0);
-
-        const int tidx = threadIdx.x;
-
-        if constexpr (USE_STATIC_UNROLL) {
-            constexpr int NUM_IT_M1 = NUM_IT - 1;
-
-#pragma unroll
-            for (int i = 0; i < NUM_IT_M1; i++) { op(i); }
-            if (NUM_IT_M1 * BDIM_X + tidx < n) { op(NUM_IT_M1); }
-        } else {
-            // Fallback dynamic loop
-            for (int i = 0; i * BDIM_X + tidx < n; i++) { op(i); }
-        }
-        return;
-    }
-
     template <typename VAL_T> __device__ VAL_T __warp_sum(VAL_T val)
     {
 
 #pragma unroll
         for (int i = WARP_SIZE / 2; i; i /= 2) { val += __shfl_xor_sync(FULL_MASK, val, i, WARP_SIZE); }
         return val;
-    }
-
-    // Performs BDIM_Y reductions along BDIM_X, if BDIM_X == 32;
-    // otherwise performs one reduction along BDIM_X (BDIM_Y==1)
-    template <int BDIM_X, int BDIM_Y, typename VAL_T, typename... REST_T>
-    __device__ void __group_sum(VAL_T &v0, REST_T &...rest)
-    {
-        static_assert(0 == (BDIM_X % WARP_SIZE));
-        static_assert((BDIM_X == WARP_SIZE && BDIM_Y > 1) || (BDIM_X > WARP_SIZE && BDIM_Y == 1));
-
-        static_assert((std::is_same_v<VAL_T, REST_T> && ...), "__group_sum: all arguments must have the same type");
-
-        constexpr int N = 1 + sizeof...(REST_T);
-
-        VAL_T vals[N] = {v0, rest...};
-
-#pragma unroll
-        for (int i = 0; i < N; i++) { vals[i] = __warp_sum(vals[i]); }
-
-        if constexpr (BDIM_X > WARP_SIZE) {
-
-            constexpr int NWARP = (BDIM_X * BDIM_Y) / WARP_SIZE;
-
-            const int tid = threadIdx.y * BDIM_X + threadIdx.x;
-
-            const int lid = tid % WARP_SIZE;
-            const int wid = tid / WARP_SIZE;
-
-            __shared__ VAL_T sh[N][NWARP];
-
-            if (lid == 0) {
-#pragma unroll
-                for (int i = 0; i < N; i++) { sh[i][wid] = vals[i]; }
-            }
-            __syncthreads();
-
-            for (int i = wid; i < N; i += NWARP) {
-                VAL_T v = (lid < NWARP) ? sh[i][lid] : __vset<VAL_T>(0);
-                v = __warp_sum(v);
-                if (!lid) { sh[i][0] = v; }
-            }
-            __syncthreads();
-
-#pragma unroll
-            for (int i = 0; i < N; i++) { vals[i] = sh[i][0]; }
-            __syncthreads();
-        }
-
-        v0 = vals[0];
-        int i = 1;
-        ((rest = vals[i++]), ...);
     }
 
     template <int BDIM_X, int BDIM_Y = 1, int BDIM_Z = 1, typename VAL_T> __device__ VAL_T __block_sum(VAL_T val)
@@ -428,83 +321,6 @@ namespace attention_kernels
             __syncthreads();
         }
         return val;
-    }
-
-    template <typename VAL_T> __device__ void swap_d(VAL_T &a, VAL_T &b)
-    {
-
-        auto tmp = a;
-        a = b;
-        b = tmp;
-
-        return;
-    }
-
-    __device__ __forceinline__ unsigned int __laneid()
-    {
-        unsigned int ret;
-        asm("mov.u32 %0, %%laneid;" : "=r"(ret));
-        return ret;
-    }
-
-    __device__ __forceinline__ unsigned int __lanemask_lt()
-    {
-        unsigned int ret;
-        asm("mov.u32 %0, %%lanemask_lt;" : "=r"(ret));
-        return ret;
-    }
-
-    __device__ __forceinline__ int __warp_compact(bool pred, int *index)
-    {
-        const unsigned int mask = __ballot_sync(FULL_MASK, pred);
-        *index = __popc(mask & __lanemask_lt());
-        return __popc(mask);
-    }
-
-    template <int BDIM_X, int BDIM_Y = 1> __device__ int __compact(bool pred, int *index)
-    {
-        static_assert((BDIM_X == 32 && BDIM_Y > 1) || (BDIM_X > 32 && BDIM_Y == 1));
-
-        int ret = __warp_compact(pred, index);
-
-        if constexpr (BDIM_X > WARP_SIZE) {
-
-            constexpr int NWARP = BDIM_X / WARP_SIZE;
-
-            const int lid = __laneid();
-            const int wid = threadIdx.x / WARP_SIZE;
-
-            __shared__ int sh[NWARP];
-
-            if (lid == 0) { sh[wid] = ret; }
-            ret = __syncthreads_count(pred);
-
-            if (wid == 0) {
-
-                int val = (lid > 0 && lid < NWARP) ? sh[lid - 1] : 0;
-
-#pragma unroll
-                for (int i = 1; i < NWARP; i *= 2) {
-                    const int recv = __shfl_up_sync(FULL_MASK, val, i);
-                    if (lid >= i) { val += recv; }
-                }
-                if (lid < NWARP) { sh[lid] = val; }
-            }
-            __syncthreads();
-
-            *index += sh[wid];
-            __syncthreads();
-        }
-        return ret;
-    }
-
-    template <int BDIM_X> __device__ __forceinline__ void __group_sync()
-    {
-        if constexpr (BDIM_X == WARP_SIZE) {
-            __syncwarp();
-        } else {
-            __syncthreads();
-        }
     }
 
     // transpose utils
@@ -686,6 +502,37 @@ namespace attention_kernels
     __device__ __forceinline__ int wrap_lon(int wi_wo, int nlon_in)
     {
         return (wi_wo >= nlon_in) ? wi_wo - nlon_in : wi_wo;
+    }
+
+    // Clip a longitude arc to a window, for the ring kernels.
+    //
+    // The arc is the one a serial kernel walks: `len` longitudes from `start` on a ring
+    // of `nlon`, wrapping at most once (start < nlon, len <= nlon). The window is the
+    // range [w_lo, w_lo + w_len) of the same ring that one rank holds, and does not
+    // wrap. Split at the seam, the arc is at most two linear pieces, and each meets the
+    // window in at most one interval, so the result is at most two pieces, returned as
+    // (first longitude relative to w_lo, count) in the order the serial walk visits
+    // them. With the whole ring as the window this reproduces the serial walk exactly.
+    //
+    // This is what the column form could not do: it had to decode every neighbour of a
+    // row on every ring step and discard the (P-1)/P of them outside the chunk. Here the
+    // cost per step is a few integer ops per arc plus the neighbours actually present.
+    __device__ __forceinline__ int clip_arc(int start, int len, int nlon, int w_lo, int w_len, int2 (&piece)[2])
+    {
+        const int w_hi = w_lo + w_len;
+        int n = 0;
+
+        // [start, min(start + len, nlon))
+        int a = max(start, w_lo);
+        int b = min(min(start + len, nlon), w_hi);
+        if (a < b) { piece[n++] = make_int2(a - w_lo, b - a); }
+
+        // the part past the seam, [0, start + len - nlon)
+        a = w_lo;
+        b = min(start + len - nlon, w_hi);
+        if (a < b) { piece[n++] = make_int2(a - w_lo, b - a); }
+
+        return n;
     }
 
 } // namespace attention_kernels

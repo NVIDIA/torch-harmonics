@@ -34,11 +34,10 @@
 #include <stdlib.h>
 #include <torch/all.h>
 #include <torch/library.h>
+
+#include "attention_checks.h"
 #include <cassert>
 
-#define CHECK_CPU_TENSOR(x) TORCH_INTERNAL_ASSERT(x.device().type() == torch::kCPU)
-#define CHECK_CONTIGUOUS_TENSOR(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
-#define CHECK_INPUT_TENSOR(x) CHECK_CONTIGUOUS_TENSOR(x)
-#define CHECK_CPU_INPUT_TENSOR(x)                                                                                      \
-    CHECK_CPU_TENSOR(x);                                                                                               \
-    CHECK_CONTIGUOUS_TENSOR(x)
+// Device only; the layout is checked by check_dense in attention_checks.h, see the CUDA side.
+#define CHECK_CPU_TENSOR(x) TORCH_CHECK(x.device().is_cpu(), #x " must be a CPU tensor, got ", x.device())
+#define CHECK_CPU_INPUT_TENSOR(x) CHECK_CPU_TENSOR(x)

@@ -29,7 +29,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
 
-#include "../attention.h"
+#include "../../attention.h"
 
 namespace attention_kernels
 {
