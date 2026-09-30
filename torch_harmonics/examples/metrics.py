@@ -34,6 +34,8 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
+
 from .losses import get_quadrature_weights
 
 
@@ -138,12 +140,10 @@ class BaseMetricS2(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
-    grid : str, optional
-        Grid type ("equiangular", "legendre-gauss", etc.), by default "equiangular"
+    grid : RegularGridS2
+        Descriptor of the grid the fields are sampled on. It carries the resolution as
+        well as the quadrature rule, so no separate shape argument is needed. Build one
+        with :func:`torch_harmonics.as_grid`.
     weight : torch.Tensor, optional
         Class weights for weighted averaging, by default None
     ignore_index : int, optional
@@ -152,14 +152,16 @@ class BaseMetricS2(nn.Module):
         Averaging mode ("micro" or "macro"), by default "micro"
     """
 
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
+    def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
         super().__init__()
 
         self.ignore_index = ignore_index
         self.mode = mode
 
-        # area weights
-        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid, tile=True)
+        # area weights. The masks below index a flattened (nlat, nlon) field, so this
+        # needs a grid that really is a dense array
+        self.grid = require_regular_grid(grid)
+        q = get_quadrature_weights(self.grid, tile=True)
         self.register_buffer("quad_weights", q)
 
         if weight is None:
@@ -207,12 +209,10 @@ class IntersectionOverUnionS2(BaseMetricS2):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
-    grid : str, optional
-        Grid type ("equiangular", "legendre-gauss", etc.), by default "equiangular"
+    grid : RegularGridS2
+        Descriptor of the grid the fields are sampled on. It carries the resolution as
+        well as the quadrature rule, so no separate shape argument is needed. Build one
+        with :func:`torch_harmonics.as_grid`.
     weight : torch.Tensor, optional
         Class weights for weighted averaging, by default None
     ignore_index : int, optional
@@ -221,8 +221,8 @@ class IntersectionOverUnionS2(BaseMetricS2):
         Averaging mode ("micro" or "macro"), by default "micro"
     """
 
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
-        super().__init__(nlat, nlon, grid, weight, ignore_index, mode)
+    def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
+        super().__init__(grid, weight, ignore_index, mode)
 
     def forward(self, pred: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
 
@@ -253,12 +253,10 @@ class AccuracyS2(BaseMetricS2):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
-    grid : str, optional
-        Grid type ("equiangular", "legendre-gauss", etc.), by default "equiangular"
+    grid : RegularGridS2
+        Descriptor of the grid the fields are sampled on. It carries the resolution as
+        well as the quadrature rule, so no separate shape argument is needed. Build one
+        with :func:`torch_harmonics.as_grid`.
     weight : torch.Tensor, optional
         Class weights for weighted averaging, by default None
     ignore_index : int, optional
@@ -267,8 +265,8 @@ class AccuracyS2(BaseMetricS2):
         Averaging mode ("micro" or "macro"), by default "micro"
     """
 
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
-        super().__init__(nlat, nlon, grid, weight, ignore_index, mode)
+    def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
+        super().__init__(grid, weight, ignore_index, mode)
 
     def forward(self, pred: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
 

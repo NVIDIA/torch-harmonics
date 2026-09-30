@@ -31,13 +31,15 @@
 
 
 import math
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 
 import torch_harmonics as th
-from torch_harmonics.quadrature import precompute_longitudes
+from torch_harmonics.fft import rfft
+from torch_harmonics.grid import require_regular_grid
 
 
 class ShallowWaterSolver(nn.Module):
@@ -49,18 +51,16 @@ class ShallowWaterSolver(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
+    grid : RegularGridS2
+        Grid the fields are sampled on, e.g. ``as_grid("equiangular", nlat=256, nlon=512)``.
+        Its quadrature must support an SHT, so ``"equiangular"``, ``"legendre-gauss"`` or
+        ``"lobatto"``.
     dt : float
         Time step size
     lmax : int, optional
         Maximum l mode for spherical harmonics, by default None
     mmax : int, optional
         Maximum m mode for spherical harmonics, by default None
-    grid : str, optional
-        Grid type ("equiangular", "legendre-gauss", "lobatto"), by default "equiangular"
     radius : float, optional
         Radius of the sphere in meters, by default 6.37122E6 (Earth radius)
     omega : float, optional
@@ -73,16 +73,15 @@ class ShallowWaterSolver(nn.Module):
         Height amplitude in meters, by default 120.
     """
 
-    def __init__(self, nlat, nlon, dt, lmax=None, mmax=None, grid="equiangular", radius=6.37122e6, omega=7.292e-5, gravity=9.80616, havg=10.0e3, hamp=120.0):
+    def __init__(self, grid, dt, lmax=None, mmax=None, radius=6.37122e6, omega=7.292e-5, gravity=9.80616, havg=10.0e3, hamp=120.0):
         super().__init__()
 
         # time stepping param
         self.dt = dt
 
         # grid parameters
-        self.nlat = nlat
-        self.nlon = nlon
-        self.grid = grid
+        self.grid = require_regular_grid(grid)
+        self.nlat, self.nlon = self.grid.shape
 
         # physical sonstants
         self.register_buffer("radius", torch.as_tensor(radius, dtype=torch.float64))
@@ -92,27 +91,18 @@ class ShallowWaterSolver(nn.Module):
         self.register_buffer("hamp", torch.as_tensor(hamp, dtype=torch.float64))
 
         # SHT
-        self.sht = th.RealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.isht = th.InverseRealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.vsht = th.RealVectorSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.ivsht = th.InverseRealVectorSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
+        self.sht = th.RealSHT(self.grid, lmax=lmax, mmax=mmax, csphase=False)
+        self.isht = th.InverseRealSHT(self.grid, lmax=lmax, mmax=mmax, csphase=False)
+        self.vsht = th.RealVectorSHT(self.grid, lmax=lmax, mmax=mmax, csphase=False)
+        self.ivsht = th.InverseRealVectorSHT(self.grid, lmax=lmax, mmax=mmax, csphase=False)
 
-        self.lmax = lmax or self.sht.lmax
-        self.mmax = lmax or self.sht.mmax
-
-        # compute gridpoints
-        if self.grid == "legendre-gauss":
-            cost, quad_weights = th.quadrature.legendre_gauss_weights(self.nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, quad_weights = th.quadrature.lobatto_weights(self.nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, quad_weights = th.quadrature.clenshaw_curtiss_weights(self.nlat, -1, 1)
-
-        quad_weights = quad_weights.reshape(-1, 1)
-
-        # apply cosine transform and flip them
-        lats = -torch.arcsin(cost)
-        lons = precompute_longitudes(self.nlon)
+        # grid points and weights, both from the descriptor, so they are ordered alike --
+        # north to south. The weights are per-point solid angles, so integrate_grid does
+        # not have to reconstruct the longitudinal factor; kept in (nlat, nlon) so the
+        # polar_opt slicing indexes rings on axis -2.
+        quad_weights = self.grid.quad_weights.reshape(self.nlat, self.nlon)
+        lats = self.grid.lats
+        lons = self.grid.lons()
 
         self.lmax = self.sht.lmax
         self.mmax = self.sht.mmax
@@ -139,7 +129,9 @@ class ShallowWaterSolver(nn.Module):
         self.register_buffer("invlap", invlap)
         self.register_buffer("coriolis", coriolis)
         self.register_buffer("hyperdiff", hyperdiff)
-        self.register_buffer("quad_weights", quad_weights)
+        # non-persistent: derived from the grid descriptor, so there is nothing to restore, and
+        # its layout changed with the descriptor (per-point, summing to 4*pi)
+        self.register_buffer("quad_weights", quad_weights, persistent=False)
 
     def grid2spec(self, ugrid):
         """Convert spatial data to spectral coefficients."""
@@ -153,6 +145,18 @@ class ShallowWaterSolver(nn.Module):
         """Compute vorticity and divergence from velocity field."""
         vrtdivspec = self.lap * self.radius * self.vsht(ugrid)
         return vrtdivspec
+
+    def divspec(self, ugrid):
+        """Compute only the divergence from velocity field, i.e. vrtdivspec(ugrid)[1] without the vorticity contractions."""
+        x = rfft(ugrid, nmodes=self.vsht.mmax, dim=-1, norm="forward").transpose(-1, -2)
+        x_re = x.real.contiguous()
+        x_im = x.imag.contiguous()
+        w0 = self.vsht.weights[0].to(x_re.dtype)
+        w1 = self.vsht.weights[1].to(x_re.dtype)
+        # same contractions as the toroidal component in RealVectorSHT.forward
+        t_re = -torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w0)
+        t_im = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w0)
+        return self.lap * self.radius * torch.complex(t_re, t_im)
 
     def getuv(self, vrtdivspec):
         """Compute wind vector from spectral coefficients of vorticity and divergence."""
@@ -181,21 +185,18 @@ class ShallowWaterSolver(nn.Module):
         """Compute time derivatives from solution represented in spectral coefficients."""
         dudtspec = torch.zeros_like(uspec)
 
-        # compute the derivatives - this should be incorporated into the solver:
-        ugrid = self.spec2grid(uspec)
+        # compute the derivatives - this should be incorporated into the solver.
+        # only phi = ugrid[0] and vrt = ugrid[1] are needed on the grid, so the divergence is not transformed
+        ugrid = self.spec2grid(uspec[:2])
         uvgrid = self.getuv(uspec[1:])
-
-        # phi = ugrid[0]
-        # vrtdiv = ugrid[1:]
 
         tmp = uvgrid * (ugrid[1] + self.coriolis)
         tmpspec = self.vrtdivspec(tmp)
         dudtspec[2] = tmpspec[0]
         dudtspec[1] = -1 * tmpspec[1]
 
-        tmp = uvgrid * ugrid[0]
-        tmp = self.vrtdivspec(tmp)
-        dudtspec[0] = -1 * tmp[1]
+        # only the divergence of the geopotential flux is needed
+        dudtspec[0] = -1 * self.divspec(uvgrid * ugrid[0])
 
         tmpspec = self.grid2spec(ugrid[0] + 0.5 * (uvgrid[0] ** 2 + uvgrid[1] ** 2))
         dudtspec[2] = dudtspec[2] - self.lap * tmpspec
@@ -214,7 +215,7 @@ class ShallowWaterSolver(nn.Module):
         alpha = 1.0 / 3.0
         beta = 1.0 / 15.0
 
-        lats, lons = torch.meshgrid(self.lats, self.lons)
+        lats, lons = torch.meshgrid(self.lats, self.lons, indexing="ij")
 
         mask = torch.logical_and(lats > phi0, lats < phi1)
         # use safe values outside the band to prevent exp from overflowing
@@ -287,46 +288,63 @@ class ShallowWaterSolver(nn.Module):
 
         return torch.tril(uspec)
 
+    def forward(self, uspec: torch.Tensor, dnow: Optional[torch.Tensor] = None, dold: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Advance the solution by a single third-order Adams-Bashforth step.
+
+        This is the unit to compile: ``solver.compile()`` compiles it for this instance, and
+        ``timestep`` then runs the compiled step. With ``mode="reduce-overhead"`` (CUDA graphs)
+        each call overwrites the outputs of the previous one, so the caller has to clone the
+        returned tensors before feeding them back in.
+
+        Parameters
+        ----------
+        uspec : torch.Tensor
+            Current solution in spectral coefficients
+        dnow : torch.Tensor, optional
+            Tendency from the previous step. None at the first step, which reduces the scheme to forward Euler.
+        dold : torch.Tensor, optional
+            Tendency from two steps back. None within the first two steps, which reduces the scheme to
+            forward Euler and second-order Adams-Bashforth, respectively.
+
+        Returns
+        -------
+        Tuple[torch.Tensor, torch.Tensor]
+            Updated solution and the tendency computed in this step, which becomes dnow of the next step
+        """
+        dnew = self.dudtspec(uspec)
+
+        # forward euler, then 2nd-order adams-bashforth time steps to start.
+        dnow = dnew if dnow is None else dnow
+        dold = dnew if dold is None else dold
+
+        # update vort,div,phiv with third-order adams-bashforth.
+        uspec = uspec + self.dt * ((23.0 / 12.0) * dnew - (16.0 / 12.0) * dnow + (5.0 / 12.0) * dold)
+
+        # implicit hyperdiffusion for vort and div. Out of place, as inductor cannot generate the
+        # complex slice assignment uspec[1:] = ... in triton.
+        uspec = torch.cat((uspec[:1], self.hyperdiff * uspec[1:]))
+
+        return uspec, dnew
+
     def timestep(self, uspec: torch.Tensor, nsteps: int) -> torch.Tensor:
         """Integrate the solution using Adams-Bashforth / forward Euler for nsteps steps."""
-        dudtspec = torch.zeros(3, 3, self.lmax, self.mmax, dtype=uspec.dtype, device=uspec.device)
-
-        # pointers to indicate the most current result
-        inew = 0
-        inow = 1
-        iold = 2
-
-        for iter in range(nsteps):
-            dudtspec[inew] = self.dudtspec(uspec)
-
-            # update vort,div,phiv with third-order adams-bashforth.
-            # forward euler, then 2nd-order adams-bashforth time steps to start.
-            if iter == 0:
-                dudtspec[inow] = dudtspec[inew]
-                dudtspec[iold] = dudtspec[inew]
-            elif iter == 1:
-                dudtspec[iold] = dudtspec[inew]
-
-            uspec = uspec + self.dt * ((23.0 / 12.0) * dudtspec[inew] - (16.0 / 12.0) * dudtspec[inow] + (5.0 / 12.0) * dudtspec[iold])
-
-            # implicit hyperdiffusion for vort and div.
-            uspec[1:] = self.hyperdiff * uspec[1:]
-
-            # cycle through the indices
-            inew = (inew - 1) % 3
-            inow = (inow - 1) % 3
-            iold = (iold - 1) % 3
+        dnow = dold = None
+        for _ in range(nsteps):
+            uspec, dnew = self(uspec, dnow, dold)
+            dnow, dold = dnew, dnow
 
         return uspec
 
     def integrate_grid(self, ugrid, dimensionless=False, polar_opt=0):
         """Integrate the solution on the grid."""
-        dlon = 2 * torch.pi / self.nlon
+        # no dlon here: self.quad_weights is the per-point solid angle and already
+        # carries the longitudinal factor, per ring
         radius = 1 if dimensionless else self.radius
         if polar_opt > 0:
-            out = torch.sum(ugrid[..., polar_opt:-polar_opt, :] * self.quad_weights[polar_opt:-polar_opt] * dlon * radius**2, dim=(-2, -1))
+            out = torch.sum(ugrid[..., polar_opt:-polar_opt, :] * self.quad_weights[polar_opt:-polar_opt] * radius**2, dim=(-2, -1))
         else:
-            out = torch.sum(ugrid * self.quad_weights * dlon * radius**2, dim=(-2, -1))
+            out = torch.sum(ugrid * self.quad_weights * radius**2, dim=(-2, -1))
         return out
 
     def plot_griddata(self, data, fig, cmap="twilight_shifted", vmax=None, vmin=None, projection="3d", title=None, antialiased=False):
@@ -336,10 +354,10 @@ class ShallowWaterSolver(nn.Module):
         lons = self.lons.squeeze() - torch.pi
         lats = self.lats.squeeze()
 
-        if data.is_cuda:
-            data = data.cpu()
-            lons = lons.cpu()
-            lats = lats.cpu()
+        # matplotlib needs host memory, whatever device the solver runs on (CUDA, MPS, ...)
+        data = data.detach().cpu()
+        lons = lons.cpu()
+        lats = lats.cpu()
 
         Lons, Lats = np.meshgrid(lons, lats)
 
