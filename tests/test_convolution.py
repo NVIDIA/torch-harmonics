@@ -663,7 +663,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, False, True, 1e-9, 1e-9],
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, True, 1e-2, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, True, 5e-2, 1e-2],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, True, 5e-2, 5e-2],
+            # same tolerance as the unfused bf16 row: CPU autocast now reaches the fused path too,
+            # which used to run it in fp32 and so passed a tighter bound on CPU only
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, True, 3e-1, 5e-2],
         ],
         skip_on_empty=True,
     )
