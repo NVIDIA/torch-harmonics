@@ -35,7 +35,7 @@ from typing import Optional
 import torch
 
 from torch_harmonics.cache import lru_cache
-from torch_harmonics.quadrature import precompute_latitudes
+from torch_harmonics.grid import GridS2
 
 
 def clm(l: int, m: int) -> float:
@@ -185,8 +185,7 @@ def legpoly(
 def _precompute_legpoly(
     mmax: int,
     lmax: int,
-    nlat: int,
-    grid: Optional[str] = "equiangular",
+    grid: GridS2,
     norm: Optional[str] = "ortho",
     inverse: Optional[bool] = False,
     csphase: Optional[bool] = True,
@@ -203,8 +202,8 @@ def _precompute_legpoly(
     This is the cached entry point, and it is keyed on the *grid* rather than on a tensor of
     nodes. That is deliberate: tensors hash by identity, so a table built for one layer could
     never be reused by the next one, which rebuilds an equal-valued but distinct node tensor.
-    Describing the nodes by ``(nlat, grid)`` makes the key a tuple of scalars, so layers that
-    share a resolution share the table. Use :func:`legpoly` directly to evaluate at nodes that
+    A :class:`~torch_harmonics.grid.GridS2` hashes on its type and resolution, so layers that
+    share a grid share the table. Use :func:`legpoly` directly to evaluate at nodes that
     are not a grid's colatitudes.
 
     Parameters
@@ -213,10 +212,8 @@ def _precompute_legpoly(
         Maximum order of the spherical harmonics (exclusive)
     lmax : int
         Maximum degree of the spherical harmonics (exclusive)
-    nlat : int
-        Number of latitudinal nodes of the grid
-    grid : Optional[str]
-        Quadrature grid type, see :func:`~torch_harmonics.quadrature.precompute_latitudes`
+    grid : GridS2
+        Descriptor of the grid whose colatitudes the polynomials are evaluated on.
     norm : Optional[str]
         Normalization of the Legendre polynomials
     inverse : Optional[bool]
@@ -230,7 +227,7 @@ def _precompute_legpoly(
     kmin : Optional[int]
         First latitude to evaluate, by default 0
     kmax : Optional[int]
-        One past the last latitude to evaluate, by default ``nlat``. Unlike the order and
+        One past the last latitude to evaluate, by default all of them. Unlike the order and
         degree ranges, restricting latitudes costs nothing: they are independent of one
         another, so the excluded ones are never computed in the first place.
 
@@ -240,10 +237,10 @@ def _precompute_legpoly(
         Tensor of Legendre polynomial values
     """
 
-    lats, _ = precompute_latitudes(nlat, grid=grid)
-    kmax = nlat if kmax is None else kmax
+    colats = grid.colats
+    kmax = len(colats) if kmax is None else kmax
 
-    return legpoly(mmax, lmax, torch.cos(lats[kmin:kmax]), norm=norm, inverse=inverse, csphase=csphase, mmin=mmin, lmin=lmin)
+    return legpoly(mmax, lmax, torch.cos(colats[kmin:kmax]), norm=norm, inverse=inverse, csphase=csphase, mmin=mmin, lmin=lmin)
 
 
 @torch.no_grad()
@@ -369,8 +366,7 @@ def dlegpoly(
 def _precompute_dlegpoly(
     mmax: int,
     lmax: int,
-    nlat: int,
-    grid: Optional[str] = "equiangular",
+    grid: GridS2,
     norm: Optional[str] = "ortho",
     inverse: Optional[bool] = False,
     csphase: Optional[bool] = True,
@@ -393,10 +389,8 @@ def _precompute_dlegpoly(
         Maximum order of the spherical harmonics (exclusive)
     lmax : int
         Maximum degree of the spherical harmonics (exclusive)
-    nlat : int
-        Number of latitudinal nodes of the grid
-    grid : Optional[str]
-        Quadrature grid type, see :func:`~torch_harmonics.quadrature.precompute_latitudes`
+    grid : GridS2
+        Descriptor of the grid whose colatitudes the polynomials are evaluated on.
     norm : Optional[str]
         Normalization of the Legendre polynomials
     inverse : Optional[bool]
@@ -410,7 +404,7 @@ def _precompute_dlegpoly(
     kmin : Optional[int]
         First latitude to evaluate, by default 0
     kmax : Optional[int]
-        One past the last latitude to evaluate, by default ``nlat``
+        One past the last latitude to evaluate, by default all of them
 
     Returns
     -------
@@ -418,7 +412,7 @@ def _precompute_dlegpoly(
         Tensor of derivative Legendre polynomial values
     """
 
-    lats, _ = precompute_latitudes(nlat, grid=grid)
-    kmax = nlat if kmax is None else kmax
+    colats = grid.colats
+    kmax = len(colats) if kmax is None else kmax
 
-    return dlegpoly(mmax, lmax, lats[kmin:kmax], norm=norm, inverse=inverse, csphase=csphase, mmin=mmin, lmin=lmin)
+    return dlegpoly(mmax, lmax, colats[kmin:kmax], norm=norm, inverse=inverse, csphase=csphase, mmin=mmin, lmin=lmin)
