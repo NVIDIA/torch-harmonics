@@ -239,8 +239,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         transpose-back; the K-expanded intermediate is saved for backward.
 
       ``fused=True`` — reordered a2a: the weight einsum runs before the
-        collectives on the local azimuth channel shard, via the fused
-        contraction+einsum op that recomputes the K-expanded in backward
+        collectives on the local azimuth channel shard, through the
+        backend's fused node, which recomputes the K-expanded in backward
         instead of saving it. K× lower activation memory and K× less
         collective volume, at the cost of one extra contraction in
         backward.
@@ -360,12 +360,10 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         # compute theta cutoff based on the bandlimit of the input field
         self.theta_cutoff = truncate_support(self.grid_out, theta_cutoff)
 
-        # Note that the psi matrix is of shape nlat_out x nlat_in * nlon_in.
-        # Since the contraction in nlon direction is a convolution, we keep
-        # it local to all nodes and split along nlat. We further split the
-        # input dim because this reduces the number of atomic reduction
-        # calls inside the actual kernel.
-
+        # psi is (nlat_out) x (nlat_in * nlon_in). The contraction along the longitude is a
+        # convolution, which the a2a makes local, so psi is split along latitude only; the
+        # polar mode decides along which side.
+        #
         # The operator is local: an output latitude only reads input latitudes within
         # theta_cutoff of it. When that reach fits inside a neighbouring rank's share, each rank
         # can borrow a halo and compute its own output rows outright -- no partial sums, so no
@@ -547,17 +545,13 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         # bandlimit
         self.theta_cutoff = truncate_support(self.grid_in, theta_cutoff)
 
-        # Note that the psi matrix is of shape nlat_out x nlat_in * nlon_in. Since the contraction in nlon direction is a convolution,
-        # we will keep local to all nodes and split the computation up along nlat. We further split the input dim because this reduces the number
-        # of atomic reduction calls inside the actual kernel
-
-        # set local shapes according to distributed mode:
+        # psi is the forward convolution's from grid_out to grid_in. The input is gathered
+        # along latitude, so every rank holds all input latitudes -- psi's rows -- and psi is
+        # split over the output latitudes instead: each rank scatters into its own output
+        # rows only. Its columns index the full-longitude output grid, which the a2a makes
+        # local, as in the forward.
         self.nlat_in_local = self.nlat_in
         self.nlat_out_local = self.lat_out_shapes[self.comm_rank_polar]
-
-        # psi is the forward convolution's from grid_out to grid_in, keyed by the global
-        # input latitudes (the input is gathered along them) and split over the output
-        # ones; its columns index the full-longitude output grid
         self._psi_nlon = self.nlon_out
         self._contract_shape = (self.nlat_out_local, self.nlon_out)
 

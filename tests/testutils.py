@@ -327,7 +327,9 @@ def compare_tensors(msg, tensor1, tensor2, atol=1e-8, rtol=1e-5, verbose=False):
         allclose = False
         if verbose:
             print("tensor1 is not None and tensor2 is None")
-    elif tensor1.dtype == torch.long and tensor2.dtype == torch.long:
+    elif not (tensor1.is_floating_point() or tensor1.is_complex()) and not (tensor2.is_floating_point() or tensor2.is_complex()):
+        # integers of any width (or bools): exact, and no mean/relative error, which
+        # integer tensors do not support
         allclose = torch.all(tensor1 == tensor2)
         if not allclose and verbose:
             diff = torch.abs(tensor1 - tensor2)
