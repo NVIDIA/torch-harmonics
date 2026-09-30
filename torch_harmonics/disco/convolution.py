@@ -488,14 +488,14 @@ class DiscreteContinuousConv(BackendSelectionMixin, nn.Module, metaclass=abc.ABC
         """
         return self.weight.device
 
-    @property
-    def psi_idx(self):
-        """The CSR backends' psi indices, stacked as ``(ker, row, col)``."""
-        return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
-
     @abc.abstractmethod
     def _psi_coo(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """The psi entries ``(ker_idx, row_idx, col_idx, vals)`` on the CPU, as fresh tensors the caller may modify."""
+        """
+        The psi entries ``(ker_idx, row_idx, col_idx, vals)``, as fresh tensors.
+
+        A row is a latitude of the grid psi is keyed by and a column a flat index
+        ``ring * _psi_nlon + lon`` into the other grid.
+        """
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -607,8 +607,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
         self.theta_cutoff = truncate_support(self.grid_out, theta_cutoff)
 
-        # psi is keyed by output latitude and contracts to the output grid
-        self._psi_nrows = self.nlat_out
+        # psi is keyed by output latitude, its columns index the input grid
+        self._psi_nlon = self.nlon_in
         self._contract_shape = (self.nlat_out, self.nlon_out)
         self._needs_split = _use_spatial_first_dgrad(self.out_per_group, self.groupsize, self.kernel_size)
 
@@ -736,8 +736,8 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.theta_cutoff = truncate_support(self.grid_in, theta_cutoff)
 
         # psi is that of the forward convolution from grid_out to grid_in, so it is keyed
-        # by *input* latitude and scattered onto the output grid
-        self._psi_nrows = self.nlat_in
+        # by *input* latitude and its columns index the output grid it scatters onto
+        self._psi_nlon = self.nlon_out
         self._contract_shape = (self.nlat_out, self.nlon_out)
 
         self._select_backend()

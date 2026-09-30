@@ -35,7 +35,3 @@
 #include <torch/all.h>
 #include <torch/library.h>
 #include <cassert>
-
-// the psi preprocessing helpers walk their inputs through raw pointers; the op hosts
-// validate with the checks in disco_checks.h instead
-#define CHECK_CONTIGUOUS_TENSOR(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")

@@ -58,7 +58,7 @@ tensor. Bias and the weight-gradient reduction (all_reduce over the spatial
 groups) are the caller's responsibility — identical for both variants.
 
 Both evaluate the psi contraction through the layer's DISCO backend
-(:mod:`torch_harmonics.disco.backends`), so the kpacked tensor cores, the CSR kernels on
+(:mod:`torch_harmonics.disco.backends`), so the kpacked tensor cores, the arc kernels on
 CPU or CUDA, and the torch reference all serve either variant; the collectives are all
 that is distributed-specific here.
 """

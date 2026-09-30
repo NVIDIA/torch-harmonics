@@ -397,8 +397,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.nlon_out_local = self.lon_out_shapes[self.comm_rank_azimuth]
 
         # psi is keyed by this rank's output rows (all of them under reduce-scatter) and
-        # its columns by the full-longitude input band the a2a makes local
-        self._psi_nrows = self.nlat_out_local
+        # its columns index the full-longitude input band the a2a makes local
+        self._psi_nlon = self.nlon_in
         self._contract_shape = (self.nlat_out_local, self.nlon_out)
         # only the reordered path contracts through the fused node
         self._needs_split = self.fused and _use_spatial_first_dgrad(self.out_per_group, self.groupsize, self.kernel_size)
@@ -556,8 +556,9 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.nlat_out_local = self.lat_out_shapes[self.comm_rank_polar]
 
         # psi is the forward convolution's from grid_out to grid_in, keyed by the global
-        # input latitudes (the input is gathered along them) and split over the output ones
-        self._psi_nrows = self.nlat_in_local
+        # input latitudes (the input is gathered along them) and split over the output
+        # ones; its columns index the full-longitude output grid
+        self._psi_nlon = self.nlon_out
         self._contract_shape = (self.nlat_out_local, self.nlon_out)
 
         self._select_backend()

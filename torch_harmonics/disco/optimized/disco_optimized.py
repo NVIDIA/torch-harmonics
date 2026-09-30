@@ -29,6 +29,11 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+# The operators behind the DISCO backends: fake kernels and autocast for the raw ops, the
+# contraction and its transpose as custom ops with autograd, and the autograd node that
+# fuses the contraction with the weight contraction. psi reaches them in the layouts
+# built by torch_harmonics.disco._psi; which ones a layer holds is its backend's choice.
+
 import functools
 from typing import Optional
 
@@ -38,6 +43,8 @@ from disco_helpers import (
     kpacked_sm100_kernels_is_available,
     optimized_kernels_is_available,
 )
+
+from torch_harmonics.utils import check
 
 from .. import disco_kernels
 from .._disco_utils import _compute_dtype
@@ -77,7 +84,7 @@ def _kpacked_supported_on_device(device_index: int) -> bool:
     SM_100a (Blackwell) — tcgen05 path in disco_cuda_fwd_dense_kpacked_sm100.cu.
 
     Checks the minor version too; see the note on the tables above. A device
-    outside those targets falls back to the CSR path, which is correct
+    outside those targets falls back to the arc kernels, which are correct
     everywhere.
     """
     major, minor = torch.cuda.get_device_capability(device_index)
@@ -88,85 +95,11 @@ def _kpacked_supported_on_device(device_index: int) -> bool:
     return False
 
 
-def _maybe_kpack_psi(psi_packed_idx, psi_packed_vals, psi_packed_count, n_align: int = 8):
-    """Convert pack_psi_dense output [K,Ho,NBR_PAD,*] to the blocked-CSR kpacked layout.
-
-    Returns (kpacked_idx, kpacked_vals, kpacked_offset, K_pad) or None if the
-    per-k support sets differ across k_kern (layout mismatch).
-
-    Inputs (from pack_psi_dense):
-        psi_packed_idx   : [K, Ho, NBR_PAD, 2]   int64
-        psi_packed_vals  : [K, Ho, NBR_PAD]      fp32
-        psi_packed_count : [K, Ho]               int64
-    Outputs:
-        kpacked_idx      : [nnz, 2]              int64
-        kpacked_vals     : [nnz, K_pad]          fp32   (zero-padded in k)
-        kpacked_offset   : [Ho + 1]              int64  (prefix sum of per-ho counts)
-        K_pad            : int  (K rounded up to next multiple of n_align)
-
-    Blocked CSR: row offsets over ho, and each neighbour carries all K_pad values
-    contiguously as one block. The block layout is what makes the tensor-core
-    kernel possible -- it contracts over nz with k as the MMA's N dimension -- so
-    this is not the serial path's CSR, where k is a *row* dimension and each
-    nonzero holds a single scalar.
-
-    The rows used to be padded to NBR_PAD = max_ho cnt(ho), a stride set by the
-    polar rows where the cutoff spans the whole longitude circle while the mean
-    row is far shorter. That cost ~33 MB of pack_val at half degree and ~274 MB at
-    1080x2160 -> 360x720, against ~2 MB and ~16 MB of real data. The padding was
-    never read by the kernel, so compacting is a footprint fix rather than a
-    speed one -- but at quarter degree and finer the padded form approaches a
-    gigabyte per layer, which stops being merely wasteful.
-
-    kpacked_offset replaces the previous kpacked_offset: cnt(ho) is recoverable as
-    offset[ho+1] - offset[ho], so the op keeps its arity.
-
-    No alignment padding is needed between rows. Both wide accesses in the kernel
-    land on 16-byte boundaries for any offset, because each neighbour occupies
-    K_pad*sizeof(T) bytes (32 at K_pad=16, 16 at K_pad=8) in pack_val and 16 bytes
-    in pack_idx -- all multiples of 16.
-    """
-    K = int(psi_packed_count.shape[0])
-    K_pad = ((K + n_align - 1) // n_align) * n_align
-
-    if psi_packed_count.shape[0] > 1:
-        # The K-packed layout needs one idx/count per ho shared across all k.
-        if not torch.equal(psi_packed_count, psi_packed_count[0:1].expand_as(psi_packed_count)):
-            return None
-        if not torch.equal(psi_packed_idx, psi_packed_idx[0:1].expand_as(psi_packed_idx)):
-            return None
-
-    counts = psi_packed_count[0].contiguous()  # [Ho]
-    Ho = int(counts.numel())
-    NBR_PAD = int(psi_packed_vals.shape[2])
-
-    kpacked_offset = torch.zeros(Ho + 1, dtype=counts.dtype, device=counts.device)
-    kpacked_offset[1:] = torch.cumsum(counts, dim=0)
-
-    # Row-major mask over [Ho, NBR_PAD] selecting each row's first cnt(ho) entries,
-    # so the gathered order is exactly ho-major then nz -- i.e. the CSR order the
-    # offsets describe.
-    valid = torch.arange(NBR_PAD, device=counts.device).unsqueeze(0) < counts.unsqueeze(1)
-
-    kpacked_idx = psi_packed_idx[0][valid].contiguous()  # [nnz, 2]
-
-    vals_perm = psi_packed_vals.permute(1, 2, 0)  # [Ho, NBR_PAD, K]
-    vals_sel = vals_perm[valid]  # [nnz, K]
-    if K_pad == K:
-        kpacked_vals = vals_sel.contiguous()
-    else:
-        kpacked_vals = torch.zeros(vals_sel.shape[0], K_pad, dtype=vals_sel.dtype, device=vals_sel.device)
-        kpacked_vals[:, :K] = vals_sel
-        kpacked_vals = kpacked_vals.contiguous()
-
-    return kpacked_idx, kpacked_vals, kpacked_offset, K_pad
-
-
 def _kpacked_k_pad(kernel_size: int, n_align: int = 8) -> Optional[int]:
     """The K padding the kpacked kernels would use, or None if they have no instantiation for it.
 
     The tensor-core kernels take k as the MMA's N dimension and are instantiated for
-    N = 8 and N = 16 only, so a basis with more than 16 functions stays on the CSR path.
+    N = 8 and N = 16 only, so a basis with more than 16 functions stays on the arc kernels.
     """
     k_pad = ((kernel_size + n_align - 1) // n_align) * n_align
     return k_pad if k_pad in (8, 16) else None
@@ -184,70 +117,25 @@ def _use_spatial_first_dgrad(out_per_group: int, in_per_group: int, kernel_size:
     return kernel_size > 1 and out_per_group * 2 <= in_per_group
 
 
-def _build_kernel_split_csr(roff_idx: torch.Tensor, ker_idx: torch.Tensor, kernel_size: int):
+def _spatial_first_dgrad(grad_output_r, weight, row_lat, seg_off, seg, val_off, vals, split_ker, kernel_size, nlat_in, nlon_in, row_offsets):
     """
-    Index the CSR psi per basis function, for the spatial-first input gradient.
+    Input gradient with the sparse transpose first, one scatter per basis function.
 
-    That gradient calls the scatter kernel once per basis function k, each time with a
-    psi holding only k's rows and K = 1. :func:`preprocess_psi` has already sorted the
-    entries by k, so k's entries are one contiguous block of the full arrays and nothing
-    needs copying: all that is new is a row-offset table relative to each block, and the
-    block boundaries. The kernel also reads ``ker_idx``, which for a K = 1 call has to be
-    zero throughout; one shared zero vector, as long as the largest block, serves every k.
-
-    Returns
-    -------
-    split_roff_idx : torch.Tensor
-        The per-k row offsets, concatenated; k's table is
-        ``split_roff_idx[row_offsets[k]:row_offsets[k + 1]]`` and starts at 0.
-    split_ker_idx : torch.Tensor
-        Zeros, as long as the largest per-k block.
-    row_offsets, nnz_offsets : Tuple[int, ...]
-        Python block boundaries into ``split_roff_idx`` and into the entry arrays. Python
-        ints on purpose: they slice tensors inside the backward, where a tensor-valued
-        bound would force a device sync, or a graph break under torch.compile.
+    Basis function k's rows are ``row_offsets[k]:row_offsets[k + 1]``. Their arc and value
+    offsets are absolute, so each call reads slices of the same arrays and needs only
+    ``split_ker``, zeros, in place of row_ker for a K = 1 call. See build_split.
     """
-    roff_idx = roff_idx.cpu()
-    ker_idx = ker_idx.cpu()
-    nrows = roff_idx.numel() - 1
-
-    # the basis function of every row, and how many rows and entries each has
-    row_ker = ker_idx[roff_idx[:-1]] if nrows > 0 else ker_idx.new_empty((0,))
-    rows_per_k = torch.bincount(row_ker, minlength=kernel_size).tolist()
-    nnz_per_k = torch.bincount(ker_idx, minlength=kernel_size).tolist()
-
-    parts, row_offsets, nnz_offsets = [], [0], [0]
-    row_start = 0
-    for k in range(kernel_size):
-        # k's rows are contiguous, so its table is a slice of the full one, rebased to 0;
-        # an empty k gets the one-entry table [0], i.e. zero rows
-        table = roff_idx[row_start : row_start + rows_per_k[k] + 1]
-        parts.append(table - table[0])
-        row_start += rows_per_k[k]
-        row_offsets.append(row_offsets[-1] + rows_per_k[k] + 1)
-        nnz_offsets.append(nnz_offsets[-1] + nnz_per_k[k])
-
-    split_roff_idx = torch.cat(parts).contiguous()
-    split_ker_idx = torch.zeros(max(nnz_per_k, default=0), dtype=ker_idx.dtype, device=ker_idx.device)
-    return split_roff_idx, split_ker_idx, tuple(row_offsets), tuple(nnz_offsets)
-
-
-def _spatial_first_dgrad(grad_output_r, weight, split_roff_idx, split_ker_idx, row_idx, col_idx, vals, kernel_size, nlat_in, nlon_in, row_offsets, nnz_offsets):
-    """Input gradient with the sparse transpose first, one launch per basis function; see _use_spatial_first_dgrad."""
     B, G, Og, H, W = grad_output_r.shape
     Cg = weight.shape[2]
     grad_small = grad_output_r.reshape(B, G * Og, 1, H, W).contiguous()
 
     parts = []
     for k in range(kernel_size):
-        roff_k = split_roff_idx[row_offsets[k] : row_offsets[k + 1]]
-        if roff_k.numel() <= 1:
+        r0, r1 = row_offsets[k], row_offsets[k + 1]
+        if r1 == r0:
             parts.append(grad_output_r.new_zeros((B, G, Og, nlat_in, nlon_in)))
             continue
-        start, end = nnz_offsets[k], nnz_offsets[k + 1]
-        part = disco_kernels.backward_regular.default(
-            grad_small, roff_k, split_ker_idx[: end - start], row_idx[start:end], col_idx[start:end], vals[start:end], 1, nlat_in, nlon_in
-        )
+        part = disco_kernels.backward_regular.default(grad_small, split_ker[: r1 - r0], row_lat[r0:r1], seg_off[r0 : r1 + 1], seg, val_off[r0 : r1 + 1], vals, 1, nlat_in, nlon_in)
         parts.append(part.reshape(B, G, Og, nlat_in, nlon_in))
 
     grad_spatial = torch.stack(parts, dim=3)
@@ -280,52 +168,149 @@ def _register_autocast(qualname: str, device_types):
         torch.library.impl(qualname, f"Autocast{device_type.upper()}")(_autocast_impl)
 
 
-# custom kernels
+# Operand checks for the fake implementations. They mirror the host-side TORCH_CHECKs in
+# disco_checks.h -- devices, dtypes, ranks, sizes -- so that under torch.compile a malformed
+# call fails at trace time with the same message instead of only when the graph runs.
+# Strides stay on the C++ side: with dynamic shapes they are symbolic, and the fakes promise
+# nothing about layout.
+#
+# Every check goes through `check`, i.e. torch._check, and holds at most one comparison of
+# sizes: those may be symbolic, and combining them with `and`, all() or a tuple comparison
+# would call bool() on a SymBool, which makes Dynamo guard -- specialize -- on it. Checks on
+# plain Python values (dtypes, ranks, int arguments) are combined freely.
+
+
+def _check_size(t: torch.Tensor, dim: int, expected, what: str) -> None:
+    # one symbolic comparison per call, see above
+    check(t.shape[dim] == expected, lambda: f"{what}: expected {expected}, got {t.shape[dim]} (shape {tuple(t.shape)})")
+
+
+def _check_index_vector(t: torch.Tensor, inp: torch.Tensor, dtype: torch.dtype, name: str) -> None:
+    check(t.device == inp.device, lambda: f"{name} must be on the same device as the activations ({inp.device}), got {t.device}")
+    check(t.dtype == dtype and t.dim() == 1, lambda: f"{name} must be a 1-D {dtype} tensor, got {t.dtype} of shape {tuple(t.shape)}")
+
+
+def _check_arc_psi(inp, row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size: int, vals_dtype_exact: bool) -> None:
+    """
+    psi in arc form, see check_arc_psi in disco_checks.h.
+
+    The raw operators read vals in the compute dtype of the activations, so for them the
+    dtype is exact; the custom ops cast vals themselves and only need it floating.
+    """
+    check(inp.is_floating_point(), lambda: f"inp must be a floating-point tensor, got {inp.dtype}")
+    check(kernel_size > 0, lambda: f"kernel_size must be positive, got {kernel_size}")
+    _check_index_vector(row_ker, inp, torch.int32, "row_ker")
+    _check_index_vector(row_lat, inp, torch.int32, "row_lat")
+    _check_index_vector(seg_off, inp, torch.int64, "seg_off")
+    _check_index_vector(val_off, inp, torch.int64, "val_off")
+    _check_size(row_lat, 0, row_ker.shape[0], "row_lat, one per row")
+    _check_size(seg_off, 0, row_ker.shape[0] + 1, "seg_off, one more than the rows")
+    _check_size(val_off, 0, row_ker.shape[0] + 1, "val_off, one more than the rows")
+    check(seg.device == inp.device, lambda: f"seg must be on the same device as the activations ({inp.device}), got {seg.device}")
+    check(seg.dtype == torch.int32 and seg.dim() == 2, lambda: f"seg must be an int32 (nsegs, 3) tensor, got {seg.dtype} of shape {tuple(seg.shape)}")
+    _check_size(seg, 1, 3, "seg columns (ring, start, length)")
+    check(vals.device == inp.device, lambda: f"vals must be on the same device as the activations ({inp.device}), got {vals.device}")
+    check(vals.dim() == 1, lambda: f"vals must be 1-D, got shape {tuple(vals.shape)}")
+    if vals_dtype_exact:
+        check(vals.dtype == _compute_dtype(inp.dtype), lambda: f"vals must be in the compute dtype of the input ({_compute_dtype(inp.dtype)} for {inp.dtype}), got {vals.dtype}")
+    else:
+        check(vals.is_floating_point(), lambda: f"vals must be floating point, got {vals.dtype}")
+
+
+def _check_forward_inputs(inp, row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, nlat_out, nlon_out, vals_dtype_exact) -> None:
+    """The gather: inp (B, C, Hi, Wi) -> (B, C, K, Ho, Wo); see check_forward_inputs."""
+    check(inp.dim() == 4, lambda: f"inp must be (B, C, Hi, Wi), got shape {tuple(inp.shape)}")
+    check(nlat_out > 0 and nlon_out > 0, lambda: f"nlat_out and nlon_out must be positive, got {nlat_out} and {nlon_out}")
+    check(inp.shape[3] % nlon_out == 0, lambda: f"Wi ({inp.shape[3]}) must be an integer multiple of Wo ({nlon_out}) for the p-shift to be exact")
+    _check_arc_psi(inp, row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, vals_dtype_exact)
+
+
+def _check_backward_inputs(inp, row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, nlat_out, nlon_out, vals_dtype_exact) -> None:
+    """The scatter: inp (B, C, K, Hi, Wi) -> (B, C, Ho, Wo); see check_backward_inputs."""
+    check(inp.dim() == 5, lambda: f"inp must be (B, C, K, Hi, Wi), got shape {tuple(inp.shape)}")
+    _check_size(inp, 2, kernel_size, "inp basis-function planes (kernel_size)")
+    check(nlat_out > 0 and nlon_out > 0, lambda: f"nlat_out and nlon_out must be positive, got {nlat_out} and {nlon_out}")
+    check(nlon_out % inp.shape[4] == 0, lambda: f"Wo ({nlon_out}) must be an integer multiple of Wi ({inp.shape[4]}) for the p-shift to be exact")
+    _check_arc_psi(inp, row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, vals_dtype_exact)
+
+
+def _check_kpacked_inputs(inp, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out) -> None:
+    """The tensor-core forward's blocked layout; see check_kpacked_inputs."""
+    check(inp.dim() == 4, lambda: f"inp must be (B, C, Hi, Wi), got shape {tuple(inp.shape)}")
+    check(inp.dtype in (torch.float16, torch.bfloat16), lambda: f"forward_kpacked requires fp16 or bf16 activations, got {inp.dtype}")
+    check(nlat_out > 0 and nlon_out > 0 and nlon_out % 8 == 0, lambda: f"nlat_out must be positive and nlon_out a positive multiple of 8, got {nlat_out} and {nlon_out}")
+    check(inp.shape[3] % nlon_out == 0, lambda: f"Wi ({inp.shape[3]}) must be an integer multiple of Wo ({nlon_out})")
+    for t, name in ((pack_idx, "pack_idx"), (pack_val, "pack_val"), (pack_offset, "pack_offset")):
+        check(t.device == inp.device, lambda t=t, name=name: f"{name} must be on the same device as the activations ({inp.device}), got {t.device}")
+    check(pack_idx.dtype == torch.int64 and pack_idx.dim() == 2, lambda: f"pack_idx must be an int64 (npoints, 2) tensor, got {pack_idx.dtype} of shape {tuple(pack_idx.shape)}")
+    _check_size(pack_idx, 1, 2, "pack_idx columns (ring, lon)")
+    check(
+        pack_val.is_floating_point() and pack_val.dim() == 2, lambda: f"pack_val must be a floating (npoints, K_pad) tensor, got {pack_val.dtype} of shape {tuple(pack_val.shape)}"
+    )
+    _check_size(pack_val, 0, pack_idx.shape[0], "pack_val rows, one per pack_idx entry")
+    # K_pad in {8, 16}, as three single comparisons rather than one `or` of two
+    check(pack_val.shape[1] % 8 == 0, lambda: f"pack_val must be padded to K_pad 8 or 16, got {pack_val.shape[1]}")
+    check(pack_val.shape[1] >= 8, lambda: f"pack_val must be padded to K_pad 8 or 16, got {pack_val.shape[1]}")
+    check(pack_val.shape[1] <= 16, lambda: f"pack_val must be padded to K_pad 8 or 16, got {pack_val.shape[1]}")
+    check(kernel_size <= pack_val.shape[1], lambda: f"pack_val's K_pad ({pack_val.shape[1]}) must cover kernel_size ({kernel_size})")
+    _check_index_vector(pack_offset, inp, torch.int64, "pack_offset")
+    _check_size(pack_offset, 0, nlat_out + 1, "pack_offset, nlat_out + 1 offsets")
+
+
+# The operators take psi in arc form (see torch_harmonics.disco._psi): row_ker and row_lat
+# int32 per row, seg_off and val_off int64 row offsets into seg (int32 (nsegs, 3) arcs) and
+# vals, the values in the compute dtype of the activations.
 if optimized_kernels_is_available():
 
     @torch.library.register_fake("disco_kernels::forward_regular")
     def _(
         inp: torch.Tensor,
-        roff_idx: torch.Tensor,
-        ker_idx: torch.Tensor,
-        row_idx: torch.Tensor,
-        col_idx: torch.Tensor,
+        row_ker: torch.Tensor,
+        row_lat: torch.Tensor,
+        seg_off: torch.Tensor,
+        seg: torch.Tensor,
+        val_off: torch.Tensor,
         vals: torch.Tensor,
         kernel_size: int,
         nlat_out: int,
         nlon_out: int,
     ) -> torch.Tensor:
+        _check_forward_inputs(inp, row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, nlat_out, nlon_out, vals_dtype_exact=True)
         return inp.new_empty((inp.shape[0], inp.shape[1], kernel_size, nlat_out, nlon_out))
 
     @torch.library.register_fake("disco_kernels::backward_regular")
     def _(
         inp: torch.Tensor,
-        roff_idx: torch.Tensor,
-        ker_idx: torch.Tensor,
-        row_idx: torch.Tensor,
-        col_idx: torch.Tensor,
+        row_ker: torch.Tensor,
+        row_lat: torch.Tensor,
+        seg_off: torch.Tensor,
+        seg: torch.Tensor,
+        val_off: torch.Tensor,
         vals: torch.Tensor,
         kernel_size: int,
         nlat_out: int,
         nlon_out: int,
     ) -> torch.Tensor:
+        _check_backward_inputs(inp, row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, nlat_out, nlon_out, vals_dtype_exact=True)
         return inp.new_empty((inp.shape[0], inp.shape[1], nlat_out, nlon_out))
 
     @torch.library.register_fake("disco_kernels::forward_kpacked")
     def _(inp: torch.Tensor, pack_idx: torch.Tensor, pack_val: torch.Tensor, pack_offset: torch.Tensor, kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+        _check_kpacked_inputs(inp, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out)
         return inp.new_empty((inp.shape[0], inp.shape[1], kernel_size, nlat_out, nlon_out))
 
     # The contraction and its transpose, as custom ops with their own autograd: each is
     # the other's backward. The activation stays in its storage dtype, so fp16/bf16 reach
-    # the kernel, which accumulates in fp32; vals is cast to the compute dtype, matching
-    # the kernel's val.data_ptr<compute_t>(). fp32/fp64 pass through unchanged.
+    # the kernel, which accumulates in fp32; vals is cast to the compute dtype, which the
+    # kernel reads it as. fp32/fp64 pass through unchanged.
     @torch.library.custom_op("disco_kernels::_disco_s2_contraction_regular_optimized", mutates_args=())
     def _disco_s2_contraction_regular_optimized(
         inp: torch.Tensor,
-        roff_idx: torch.Tensor,
-        ker_idx: torch.Tensor,
-        row_idx: torch.Tensor,
-        col_idx: torch.Tensor,
+        row_ker: torch.Tensor,
+        row_lat: torch.Tensor,
+        seg_off: torch.Tensor,
+        seg: torch.Tensor,
+        val_off: torch.Tensor,
         vals: torch.Tensor,
         kernel_size: int,
         nlat_out: int,
@@ -333,16 +318,17 @@ if optimized_kernels_is_available():
     ) -> torch.Tensor:
         itype = inp.dtype
         vals = vals.to(_compute_dtype(itype))
-        out = disco_kernels.forward_regular.default(inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+        out = disco_kernels.forward_regular.default(inp.contiguous(), row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, nlat_out, nlon_out)
         return out.to(itype)
 
     @torch.library.custom_op("disco_kernels::_disco_s2_transpose_contraction_regular_optimized", mutates_args=())
     def _disco_s2_transpose_contraction_regular_optimized(
         inp: torch.Tensor,
-        roff_idx: torch.Tensor,
-        ker_idx: torch.Tensor,
-        row_idx: torch.Tensor,
-        col_idx: torch.Tensor,
+        row_ker: torch.Tensor,
+        row_lat: torch.Tensor,
+        seg_off: torch.Tensor,
+        seg: torch.Tensor,
+        val_off: torch.Tensor,
         vals: torch.Tensor,
         kernel_size: int,
         nlat_out: int,
@@ -350,60 +336,62 @@ if optimized_kernels_is_available():
     ) -> torch.Tensor:
         itype = inp.dtype
         vals = vals.to(_compute_dtype(itype))
-        out = disco_kernels.backward_regular.default(inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+        out = disco_kernels.backward_regular.default(inp.contiguous(), row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, nlat_out, nlon_out)
         return out.to(itype)
 
     @torch.library.register_fake("disco_kernels::_disco_s2_contraction_regular_optimized")
     def _(
         inp: torch.Tensor,
-        roff_idx: torch.Tensor,
-        ker_idx: torch.Tensor,
-        row_idx: torch.Tensor,
-        col_idx: torch.Tensor,
+        row_ker: torch.Tensor,
+        row_lat: torch.Tensor,
+        seg_off: torch.Tensor,
+        seg: torch.Tensor,
+        val_off: torch.Tensor,
         vals: torch.Tensor,
         kernel_size: int,
         nlat_out: int,
         nlon_out: int,
     ) -> torch.Tensor:
+        _check_forward_inputs(inp, row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, nlat_out, nlon_out, vals_dtype_exact=False)
         return inp.new_empty((inp.shape[0], inp.shape[1], kernel_size, nlat_out, nlon_out))
 
     @torch.library.register_fake("disco_kernels::_disco_s2_transpose_contraction_regular_optimized")
     def _(
         inp: torch.Tensor,
-        roff_idx: torch.Tensor,
-        ker_idx: torch.Tensor,
-        row_idx: torch.Tensor,
-        col_idx: torch.Tensor,
+        row_ker: torch.Tensor,
+        row_lat: torch.Tensor,
+        seg_off: torch.Tensor,
+        seg: torch.Tensor,
+        val_off: torch.Tensor,
         vals: torch.Tensor,
         kernel_size: int,
         nlat_out: int,
         nlon_out: int,
     ) -> torch.Tensor:
+        _check_backward_inputs(inp, row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, nlat_out, nlon_out, vals_dtype_exact=False)
         return inp.new_empty((inp.shape[0], inp.shape[1], nlat_out, nlon_out))
 
 
 def _setup_context_contraction(ctx, inputs, output):
-    inp, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out = inputs
-    ctx.save_for_backward(roff_idx, ker_idx, row_idx, col_idx, vals)
+    inp, row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, nlat_out, nlon_out = inputs
+    ctx.save_for_backward(row_ker, row_lat, seg_off, seg, val_off, vals)
     ctx.kernel_size = kernel_size
     ctx.nlat_in = inp.shape[-2]
     ctx.nlon_in = inp.shape[-1]
 
 
 def _contraction_bwd(ctx, grad_output):
-    roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
     grad_input = None
     if ctx.needs_input_grad[0]:
-        grad_input = _disco_s2_transpose_contraction_regular_optimized(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals, ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
-    return grad_input, None, None, None, None, None, None, None, None
+        grad_input = _disco_s2_transpose_contraction_regular_optimized(grad_output, *ctx.saved_tensors, ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
+    return (grad_input,) + (None,) * 9
 
 
 def _transpose_contraction_bwd(ctx, grad_output):
-    roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
     grad_input = None
     if ctx.needs_input_grad[0]:
-        grad_input = _disco_s2_contraction_regular_optimized(grad_output, roff_idx, ker_idx, row_idx, col_idx, vals, ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
-    return grad_input, None, None, None, None, None, None, None, None
+        grad_input = _disco_s2_contraction_regular_optimized(grad_output, *ctx.saved_tensors, ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
+    return (grad_input,) + (None,) * 9
 
 
 if optimized_kernels_is_available():
@@ -416,47 +404,50 @@ if optimized_kernels_is_available():
     _register_autocast("disco_kernels::forward_kpacked", ("cuda",))
 
 
-def _contract(inp, roff_idx, ker_idx, row_idx, col_idx, vals, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out):
-    """The raw forward contraction: tensor-core kpacked when its layout is given, CSR otherwise."""
+def _contract(inp, row_ker, row_lat, seg_off, seg, val_off, vals, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out):
+    """The raw forward contraction: tensor-core kpacked when its layout is given, the arc gather otherwise."""
     inp = inp.contiguous()
     if pack_idx is not None:
         return disco_kernels.forward_kpacked.default(inp, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out)
     itype = inp.dtype
-    out = disco_kernels.forward_regular.default(inp, roff_idx, ker_idx, row_idx, col_idx, vals.to(_compute_dtype(itype)), kernel_size, nlat_out, nlon_out)
+    out = disco_kernels.forward_regular.default(inp, row_ker, row_lat, seg_off, seg, val_off, vals.to(_compute_dtype(itype)), kernel_size, nlat_out, nlon_out)
     return out.to(itype)
 
 
 class _DiscoKpackedFn(torch.autograd.Function):
     """
-    Kpacked forward contraction, CSR backward.
+    Kpacked forward contraction, arc scatter backward.
 
-    The backward stays on the CSR scatter: it is input-pixel-parallel with no cross-CTA
+    The backward stays on the scatter kernel: it is input-pixel-parallel with no cross-CTA
     atomics, the right algorithm for overlapping support sets (the reason cuDNN uses an
     implicit GEMM rather than col2im for strided convolutions).
     """
 
     @staticmethod
-    def forward(ctx, inp, pack_idx, pack_val, pack_offset, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out):
-        ctx.save_for_backward(roff_idx, ker_idx, row_idx, col_idx, vals)
+    def forward(ctx, inp, pack_idx, pack_val, pack_offset, row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, nlat_out, nlon_out):
+        ctx.save_for_backward(row_ker, row_lat, seg_off, seg, val_off, vals)
         ctx.kernel_size = kernel_size
         ctx.nlat_in = inp.shape[-2]
         ctx.nlon_in = inp.shape[-1]
-        return _contract(inp, None, None, None, None, None, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out)
+        return _contract(inp, None, None, None, None, None, None, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out)
 
     @staticmethod
     def backward(ctx, grad_output):
-        roff_idx, ker_idx, row_idx, col_idx, vals = ctx.saved_tensors
+        row_ker, row_lat, seg_off, seg, val_off, vals = ctx.saved_tensors
         grad_input = None
         if ctx.needs_input_grad[0]:
             gtype = grad_output.dtype
+            vals = vals.to(_compute_dtype(gtype))
             grad_input = disco_kernels.backward_regular.default(
-                grad_output.contiguous(), roff_idx, ker_idx, row_idx, col_idx, vals.to(_compute_dtype(gtype)), ctx.kernel_size, ctx.nlat_in, ctx.nlon_in
+                grad_output.contiguous(), row_ker, row_lat, seg_off, seg, val_off, vals, ctx.kernel_size, ctx.nlat_in, ctx.nlon_in
             ).to(gtype)
-        return (grad_input,) + (None,) * 11
+        # inp, pack_idx, pack_val, pack_offset, the six arc arrays, kernel_size, nlat_out, nlon_out
+        return (grad_input,) + (None,) * 12
 
 
-def _disco_s2_contraction_kpacked(inp, pack_idx, pack_val, pack_offset, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out):
-    return _DiscoKpackedFn.apply(inp, pack_idx, pack_val, pack_offset, roff_idx, ker_idx, row_idx, col_idx, vals, kernel_size, nlat_out, nlon_out)
+def _disco_s2_contraction_kpacked(inp, kpacked, arcs, kernel_size, nlat_out, nlon_out):
+    """Kpacked forward through :class:`_DiscoKpackedFn`; ``kpacked`` is (pack_idx, pack_val, pack_offset), ``arcs`` the six arc arrays."""
+    return _DiscoKpackedFn.apply(inp, *kpacked, *arcs, kernel_size, nlat_out, nlon_out)
 
 
 class _DiscoConvFn(torch.autograd.Function):
@@ -471,12 +462,12 @@ class _DiscoConvFn(torch.autograd.Function):
       one extra contraction. This is the layer's ``fused=True``.
     * the input gradient can run the sparse transpose before the weight contraction
       (spatial-first, see :func:`_use_spatial_first_dgrad`), which it can only choose when
-      it sees the weight -- the split-CSR tables are its state, and it is used exactly
-      when they are passed.
+      it sees the weight. ``split_ker`` and ``split_row_offsets`` (see build_split) are its
+      state, and it is considered exactly when they are passed.
 
     The forward contraction is the kpacked tensor-core kernel when its layout is passed,
-    the CSR kernel otherwise; the backward is the CSR scatter either way, and so is the
-    recompute. Every combination of those used to be a separate autograd path.
+    the arc gather otherwise; the backward is the arc scatter either way, and so is the
+    recompute.
     """
 
     @staticmethod
@@ -484,16 +475,16 @@ class _DiscoConvFn(torch.autograd.Function):
         ctx,
         inp,
         weight,
-        roff_idx,
-        ker_idx,
-        row_idx,
-        col_idx,
+        row_ker,
+        row_lat,
+        seg_off,
+        seg,
+        val_off,
         vals,
         pack_idx,
         pack_val,
         pack_offset,
-        split_roff_idx,
-        split_ker_idx,
+        split_ker,
         kernel_size,
         nlat_out,
         nlon_out,
@@ -501,13 +492,12 @@ class _DiscoConvFn(torch.autograd.Function):
         groupsize,
         recompute,
         split_row_offsets,
-        split_nnz_offsets,
     ):
         itype = inp.dtype
         inp = inp.contiguous()
-        x_expanded = _contract(inp, roff_idx, ker_idx, row_idx, col_idx, vals, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out)
+        x_expanded = _contract(inp, row_ker, row_lat, seg_off, seg, val_off, vals, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out)
 
-        ctx.save_for_backward(inp if recompute else x_expanded, weight, roff_idx, ker_idx, row_idx, col_idx, vals, split_roff_idx, split_ker_idx)
+        ctx.save_for_backward(inp if recompute else x_expanded, weight, row_ker, row_lat, seg_off, seg, val_off, vals, split_ker)
         ctx.recompute = recompute
         ctx.kernel_size = kernel_size
         ctx.nlat_in = inp.shape[-2]
@@ -517,7 +507,6 @@ class _DiscoConvFn(torch.autograd.Function):
         ctx.groups = groups
         ctx.groupsize = groupsize
         ctx.split_row_offsets = split_row_offsets
-        ctx.split_nnz_offsets = split_nnz_offsets
 
         B, C, K, H, W = x_expanded.shape
         x_expanded = x_expanded.reshape(B, groups, groupsize, K, H, W)
@@ -526,7 +515,7 @@ class _DiscoConvFn(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        saved, weight, roff_idx, ker_idx, row_idx, col_idx, vals, split_roff_idx, split_ker_idx = ctx.saved_tensors
+        saved, weight, row_ker, row_lat, seg_off, seg, val_off, vals, split_ker = ctx.saved_tensors
 
         itype = grad_output.dtype
         vals_c = vals.to(_compute_dtype(itype))
@@ -542,39 +531,30 @@ class _DiscoConvFn(torch.autograd.Function):
         grad_weight = None
 
         if ctx.needs_input_grad[0]:
-            if split_roff_idx is not None and _use_spatial_first_dgrad(Og, Cg, K):
+            if split_ker is not None and _use_spatial_first_dgrad(Og, Cg, K):
                 grad_inp = _spatial_first_dgrad(
-                    grad_output_r,
-                    weight.to(itype),
-                    split_roff_idx,
-                    split_ker_idx,
-                    row_idx,
-                    col_idx,
-                    vals_c,
-                    K,
-                    ctx.nlat_in,
-                    ctx.nlon_in,
-                    ctx.split_row_offsets,
-                    ctx.split_nnz_offsets,
+                    grad_output_r, weight.to(itype), row_lat, seg_off, seg, val_off, vals_c, split_ker, K, ctx.nlat_in, ctx.nlon_in, ctx.split_row_offsets
                 )
             else:
                 grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype))
                 grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, H, W).contiguous()
-                grad_inp = disco_kernels.backward_regular.default(grad_x_expanded, roff_idx, ker_idx, row_idx, col_idx, vals_c, K, ctx.nlat_in, ctx.nlon_in)
+                grad_inp = disco_kernels.backward_regular.default(grad_x_expanded, row_ker, row_lat, seg_off, seg, val_off, vals_c, K, ctx.nlat_in, ctx.nlon_in)
             grad_inp = grad_inp.to(itype)
 
         if ctx.needs_input_grad[1]:
             if ctx.recompute:
-                x_expanded = disco_kernels.forward_regular.default(saved, roff_idx, ker_idx, row_idx, col_idx, vals_c, K, H, W)
+                x_expanded = disco_kernels.forward_regular.default(saved, row_ker, row_lat, seg_off, seg, val_off, vals_c, K, H, W)
             else:
                 x_expanded = saved
             x_expanded = x_expanded.to(itype).reshape(B, G, Cg, K, H, W)
             grad_weight = torch.einsum("bgoxy,bgckxy->gock", grad_output_r, x_expanded)
 
-        return (grad_inp, grad_weight) + (None,) * 18
+        # inp, weight, then the six arc arrays, the three kpacked ones, split_ker,
+        # kernel_size, nlat_out, nlon_out, groups, groupsize, recompute, split_row_offsets
+        return (grad_inp, grad_weight) + (None,) * 17
 
 
-def _disco_s2_conv_optimized(inp, weight, csr, kpacked, split, kernel_size, nlat_out, nlon_out, groups, groupsize, recompute=False):
+def _disco_s2_conv_optimized(inp, weight, arcs, kpacked, split, kernel_size, nlat_out, nlon_out, groups, groupsize, recompute=False):
     """
     Contraction plus weight contraction through :class:`_DiscoConvFn`.
 
@@ -584,33 +564,16 @@ def _disco_s2_conv_optimized(inp, weight, csr, kpacked, split, kernel_size, nlat
         ``(B, groups * groupsize, H_in, W_in)``.
     weight : torch.Tensor
         ``(groups, out_per_group, groupsize, kernel_size)``.
-    csr : Tuple[torch.Tensor, ...]
-        ``(roff_idx, ker_idx, row_idx, col_idx, vals)``, always: the backward reads it.
+    arcs : Tuple[torch.Tensor, ...]
+        ``(row_ker, row_lat, seg_off, seg, val_off, vals)``, always: the backward reads it.
     kpacked : Optional[Tuple[torch.Tensor, ...]]
         ``(pack_idx, pack_val, pack_offset)`` to run the forward on the tensor cores.
     split : Optional[Tuple]
-        ``(split_roff_idx, split_ker_idx, row_offsets, nnz_offsets)`` from
-        :func:`_build_kernel_split_csr`, to allow the spatial-first input gradient.
+        ``(split_ker, row_offsets)`` from build_split, to allow the spatial-first input
+        gradient.
     recompute : bool
         Recompute the K-expanded intermediate in backward rather than saving it.
     """
     pack_idx, pack_val, pack_offset = kpacked if kpacked is not None else (None, None, None)
-    split_roff_idx, split_ker_idx, row_offsets, nnz_offsets = split if split is not None else (None, None, (), ())
-    return _DiscoConvFn.apply(
-        inp,
-        weight,
-        *csr,
-        pack_idx,
-        pack_val,
-        pack_offset,
-        split_roff_idx,
-        split_ker_idx,
-        kernel_size,
-        nlat_out,
-        nlon_out,
-        groups,
-        groupsize,
-        recompute,
-        row_offsets,
-        nnz_offsets,
-    )
+    split_ker, row_offsets = split if split is not None else (None, ())
+    return _DiscoConvFn.apply(inp, weight, *arcs, pack_idx, pack_val, pack_offset, split_ker, kernel_size, nlat_out, nlon_out, groups, groupsize, recompute, row_offsets)

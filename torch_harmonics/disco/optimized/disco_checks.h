@@ -46,77 +46,19 @@ namespace disco_kernels
     using th_checks::check_same_device;
     using th_checks::compute_dtype;
 
-    // psi in CSR form: row offsets over the (basis function, output latitude) rows, and
-    // one basis function, output latitude, flat input column and value per entry. The
-    // kernels read all five through raw pointers -- the indices as int64, the values in
-    // the compute dtype of the activations -- so the dtypes are part of the contract.
-    inline void check_csr_psi(const at::Tensor &inp, const at::Tensor &roff_idx, const at::Tensor &ker_idx,
-                              const at::Tensor &row_idx, const at::Tensor &col_idx, const at::Tensor &vals, int64_t K)
-    {
-        TORCH_CHECK(K > 0, "kernel_size must be positive, got ", K);
-
-        const struct {
-            const at::Tensor &t;
-            const char *name;
-        } indices[] = {{roff_idx, "roff_idx"}, {ker_idx, "ker_idx"}, {row_idx, "row_idx"}, {col_idx, "col_idx"}};
-        for (const auto &index : indices) {
-            check_same_device(index.t, inp, index.name);
-            check_index_vector(index.t, at::kLong, index.name);
-        }
-        TORCH_CHECK(roff_idx.size(0) >= 1, "roff_idx must hold at least the leading 0 offset");
-
-        check_same_device(vals, inp, "vals");
-        TORCH_CHECK(vals.dim() == 1, "vals must be 1-D, got shape ", vals.sizes());
-        check_dense(vals, "vals");
-        TORCH_CHECK(vals.scalar_type() == compute_dtype(inp.scalar_type()),
-                    "vals must be in the compute dtype of the input (", compute_dtype(inp.scalar_type()), " for ",
-                    inp.scalar_type(), " activations), got ", vals.scalar_type());
-
-        const int64_t nnz = vals.size(0);
-        TORCH_CHECK(ker_idx.size(0) == nnz && row_idx.size(0) == nnz && col_idx.size(0) == nnz,
-                    "ker_idx, row_idx and col_idx must have one entry per value (", nnz, "), got ", ker_idx.size(0),
-                    ", ", row_idx.size(0), " and ", col_idx.size(0));
-    }
-
-    // forward_regular: inp (B, C, Hi, Wi) -> (B, C, K, Ho, Wo), gathering along the
-    // longitude with stride pscale = Wi / Wo.
-    inline void check_forward_inputs(const at::Tensor &inp, const at::Tensor &roff_idx, const at::Tensor &ker_idx,
-                                     const at::Tensor &row_idx, const at::Tensor &col_idx, const at::Tensor &vals,
-                                     int64_t K, int64_t Ho, int64_t Wo)
-    {
-        TORCH_CHECK(inp.dim() == 4, "inp must be (B, C, Hi, Wi), got shape ", inp.sizes());
-        TORCH_CHECK(Ho > 0 && Wo > 0, "nlat_out and nlon_out must be positive, got ", Ho, " and ", Wo);
-        TORCH_CHECK(inp.size(3) % Wo == 0, "Wi (", inp.size(3), ") must be an integer multiple of Wo (", Wo,
-                    ") for the p-shift to be exact");
-        check_dense(inp, "inp");
-        check_csr_psi(inp, roff_idx, ker_idx, row_idx, col_idx, vals, K);
-    }
-
-    // backward_regular, the scatter direction: inp (B, C, K, Hi, Wi) -> (B, C, Ho, Wo),
-    // with pscale = Wo / Wi.
-    inline void check_backward_inputs(const at::Tensor &inp, const at::Tensor &roff_idx, const at::Tensor &ker_idx,
-                                      const at::Tensor &row_idx, const at::Tensor &col_idx, const at::Tensor &vals,
-                                      int64_t K, int64_t Ho, int64_t Wo)
-    {
-        TORCH_CHECK(inp.dim() == 5, "inp must be (B, C, K, Hi, Wi), got shape ", inp.sizes());
-        TORCH_CHECK(inp.size(2) == K, "inp must hold kernel_size (", K, ") basis-function planes, got ", inp.size(2));
-        TORCH_CHECK(Ho > 0 && Wo > 0, "nlat_out and nlon_out must be positive, got ", Ho, " and ", Wo);
-        TORCH_CHECK(inp.size(4) > 0 && Wo % inp.size(4) == 0, "Wo (", Wo, ") must be an integer multiple of Wi (",
-                    inp.size(4), ") for the p-shift to be exact");
-        check_dense(inp, "inp");
-        check_csr_psi(inp, roff_idx, ker_idx, row_idx, col_idx, vals, K);
-    }
-
-    // psi in arc form: per row its basis function and latitude (int32), the row's range of
-    // arcs (seg_off, int64) and of values (val_off, int64); per arc (ring, start, length)
-    // (int32), with start in [0, ring length) and the arc wrapping at the ring's end. The
-    // values are in arc order, in the compute dtype of the activations. As for the CSR form,
-    // only metadata is checked: validating the index contents would read them, and sync.
+    // psi in arc form (torch_harmonics/disco/_psi.py): per row its basis function and
+    // latitude (int32), the row's range of arcs (seg_off, int64) and of values (val_off,
+    // int64); per arc (ring, start, length) (int32), with start in [0, ring length) and the
+    // arc wrapping at the ring's end. The values are in arc order and in the compute dtype of
+    // the activations, which the kernels read them as. Only metadata is checked: validating
+    // the index contents would read them, and sync.
     inline void check_arc_psi(const at::Tensor &inp, const at::Tensor &row_ker, const at::Tensor &row_lat,
                               const at::Tensor &seg_off, const at::Tensor &seg, const at::Tensor &val_off,
                               const at::Tensor &vals, int64_t K)
     {
         TORCH_CHECK(K > 0, "kernel_size must be positive, got ", K);
+        TORCH_CHECK(at::isFloatingType(inp.scalar_type()), "inp must be a floating-point tensor, got ",
+                    inp.scalar_type());
 
         check_same_device(row_ker, inp, "row_ker");
         check_same_device(row_lat, inp, "row_lat");
@@ -145,9 +87,9 @@ namespace disco_kernels
                     inp.scalar_type(), " activations), got ", vals.scalar_type());
     }
 
-    inline void check_forward_arcs_inputs(const at::Tensor &inp, const at::Tensor &row_ker, const at::Tensor &row_lat,
-                                          const at::Tensor &seg_off, const at::Tensor &seg, const at::Tensor &val_off,
-                                          const at::Tensor &vals, int64_t K, int64_t Ho, int64_t Wo)
+    inline void check_forward_inputs(const at::Tensor &inp, const at::Tensor &row_ker, const at::Tensor &row_lat,
+                                     const at::Tensor &seg_off, const at::Tensor &seg, const at::Tensor &val_off,
+                                     const at::Tensor &vals, int64_t K, int64_t Ho, int64_t Wo)
     {
         TORCH_CHECK(inp.dim() == 4, "inp must be (B, C, Hi, Wi), got shape ", inp.sizes());
         TORCH_CHECK(Ho > 0 && Wo > 0, "nlat_out and nlon_out must be positive, got ", Ho, " and ", Wo);
@@ -157,9 +99,9 @@ namespace disco_kernels
         check_arc_psi(inp, row_ker, row_lat, seg_off, seg, val_off, vals, K);
     }
 
-    inline void check_backward_arcs_inputs(const at::Tensor &inp, const at::Tensor &row_ker, const at::Tensor &row_lat,
-                                           const at::Tensor &seg_off, const at::Tensor &seg, const at::Tensor &val_off,
-                                           const at::Tensor &vals, int64_t K, int64_t Ho, int64_t Wo)
+    inline void check_backward_inputs(const at::Tensor &inp, const at::Tensor &row_ker, const at::Tensor &row_lat,
+                                      const at::Tensor &seg_off, const at::Tensor &seg, const at::Tensor &val_off,
+                                      const at::Tensor &vals, int64_t K, int64_t Ho, int64_t Wo)
     {
         TORCH_CHECK(inp.dim() == 5, "inp must be (B, C, K, Hi, Wi), got shape ", inp.sizes());
         TORCH_CHECK(inp.size(2) == K, "inp must hold kernel_size (", K, ") basis-function planes, got ", inp.size(2));

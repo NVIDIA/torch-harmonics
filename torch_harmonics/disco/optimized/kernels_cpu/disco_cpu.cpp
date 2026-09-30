@@ -28,9 +28,13 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// The CSR kernels of disco_cpu_fwd.h and disco_cpu_bwd.h with psi in arc form: the same
-// parallel decomposition and buffers, with the psi decode replaced. See
-// kernels_cuda/disco_cuda_arcs.cu for why the two forms are kept this close.
+// The DISCO contraction (forward_regular, a gather) and its transpose (backward_regular, a
+// scatter) on the CPU, with psi in arc form -- see torch_harmonics/disco/_psi.py and, for
+// the CUDA counterparts, kernels_cuda/disco_cuda.cu.
+//
+// The CPU kernels compute in fp32/fp64 only: the storage/compute split is a CUDA
+// optimization, and CPU fp16/bf16 arithmetic is emulated anyway, so the hosts upcast
+// reduced-precision activations and cast the result back.
 
 #include "../disco.h"
 #include "../disco_checks.h"
@@ -51,11 +55,13 @@ namespace disco_kernels
         const int64_t *val_off;
     };
 
-    // gather, pscale = Wi / Wo; PSCALE > 0 makes the stride a compile-time constant
+    // Gather, pscale = Wi / Wo. Parallel over (batch, channel, row): every row writes its
+    // own output row. PSCALE > 0 makes the stride a compile-time constant, so the multiply
+    // folds and PSCALE == 1 becomes a contiguous SIMD load.
     template <typename scalar_t, int PSCALE>
-    static void disco_fwd_arcs_cpu_impl(int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi, int64_t Ho, int64_t Wo,
-                                        int64_t pscale_runtime, const ArcPsiCpu psi, const scalar_t *__restrict__ vals,
-                                        const scalar_t *__restrict__ inp, scalar_t *__restrict__ out)
+    static void disco_fwd_cpu_impl(int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi, int64_t Ho, int64_t Wo,
+                                   int64_t pscale_runtime, const ArcPsiCpu psi, const scalar_t *__restrict__ vals,
+                                   const scalar_t *__restrict__ inp, scalar_t *__restrict__ out)
     {
         const int64_t pscale = (PSCALE != 0) ? static_cast<int64_t>(PSCALE) : pscale_runtime;
 
@@ -108,13 +114,15 @@ namespace disco_kernels
         }
     }
 
-    // scatter, pscale = Wo / Wi. As in disco_bwd_cpu_impl the output ring is accumulated in
-    // pscale lanes and flushed only when it changes -- across rows too, since consecutive
-    // rows often land on the same output ring.
+    // Scatter, pscale = Wo / Wi. Parallel over (batch, channel) only: different rows scatter
+    // into the same output positions, so collapsing the rows into the parallel loop would
+    // race. The output ring is accumulated in pscale lanes of a doubled buffer and flushed
+    // only when it changes -- across rows too, since consecutive rows often land on the
+    // same output ring.
     template <typename scalar_t, int PSCALE>
-    static void disco_bwd_arcs_cpu_impl(int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi, int64_t Ho, int64_t Wo,
-                                        int64_t pscale_runtime, const ArcPsiCpu psi, const scalar_t *__restrict__ vals,
-                                        const scalar_t *__restrict__ inp, scalar_t *__restrict__ out)
+    static void disco_bwd_cpu_impl(int64_t B, int64_t C, int64_t K, int64_t Hi, int64_t Wi, int64_t Ho, int64_t Wo,
+                                   int64_t pscale_runtime, const ArcPsiCpu psi, const scalar_t *__restrict__ vals,
+                                   const scalar_t *__restrict__ inp, scalar_t *__restrict__ out)
     {
         const int64_t pscale = (PSCALE != 0) ? static_cast<int64_t>(PSCALE) : pscale_runtime;
         const int64_t lane_size = 2 * Wi;
@@ -177,7 +185,7 @@ namespace disco_kernels
         }
     }
 
-#define DISCO_ARCS_PSCALE_DISPATCH(IMPL, ...)                                                                          \
+#define DISCO_PSCALE_DISPATCH(IMPL, ...)                                                                               \
     switch (pscale) {                                                                                                  \
     case 1: IMPL<scalar_t, 1>(__VA_ARGS__); break;                                                                     \
     case 2: IMPL<scalar_t, 2>(__VA_ARGS__); break;                                                                     \
@@ -196,14 +204,13 @@ namespace disco_kernels
                           val_off.data_ptr<int64_t>()};
     }
 
-    torch::Tensor disco_cpu_fwd_arcs(torch::Tensor inp, torch::Tensor row_ker, torch::Tensor row_lat,
-                                     torch::Tensor seg_off, torch::Tensor seg, torch::Tensor val_off,
-                                     torch::Tensor vals, int64_t K, int64_t Ho, int64_t Wo)
+    torch::Tensor disco_cpu_fwd(torch::Tensor inp, torch::Tensor row_ker, torch::Tensor row_lat, torch::Tensor seg_off,
+                                torch::Tensor seg, torch::Tensor val_off, torch::Tensor vals, int64_t K, int64_t Ho,
+                                int64_t Wo)
     {
         TORCH_CHECK(inp.device().is_cpu(), "inp must be a CPU tensor, got ", inp.device());
-        check_forward_arcs_inputs(inp, row_ker, row_lat, seg_off, seg, val_off, vals, K, Ho, Wo);
+        check_forward_inputs(inp, row_ker, row_lat, seg_off, seg, val_off, vals, K, Ho, Wo);
 
-        // computes in fp32/fp64 only, as the CSR host does
         const auto inp_dtype = inp.scalar_type();
         inp = inp.to(compute_dtype(inp_dtype)).contiguous();
 
@@ -212,21 +219,21 @@ namespace disco_kernels
         const ArcPsiCpu psi = arc_psi_cpu(row_ker, row_lat, seg_off, seg, val_off);
         const int64_t pscale = Wi / Wo;
 
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_arcs_cpu", ([&] {
-                                       DISCO_ARCS_PSCALE_DISPATCH(disco_fwd_arcs_cpu_impl, B, C, K, Hi, Wi, Ho, Wo,
-                                                                  pscale, psi, vals.data_ptr<scalar_t>(),
-                                                                  inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>());
+        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_forward_cpu", ([&] {
+                                       DISCO_PSCALE_DISPATCH(disco_fwd_cpu_impl, B, C, K, Hi, Wi, Ho, Wo, pscale, psi,
+                                                             vals.data_ptr<scalar_t>(), inp.data_ptr<scalar_t>(),
+                                                             out.data_ptr<scalar_t>());
                                    }));
 
         return out.to(inp_dtype);
     }
 
-    torch::Tensor disco_cpu_bwd_arcs(torch::Tensor inp, torch::Tensor row_ker, torch::Tensor row_lat,
-                                     torch::Tensor seg_off, torch::Tensor seg, torch::Tensor val_off,
-                                     torch::Tensor vals, int64_t K, int64_t Ho, int64_t Wo)
+    torch::Tensor disco_cpu_bwd(torch::Tensor inp, torch::Tensor row_ker, torch::Tensor row_lat, torch::Tensor seg_off,
+                                torch::Tensor seg, torch::Tensor val_off, torch::Tensor vals, int64_t K, int64_t Ho,
+                                int64_t Wo)
     {
         TORCH_CHECK(inp.device().is_cpu(), "inp must be a CPU tensor, got ", inp.device());
-        check_backward_arcs_inputs(inp, row_ker, row_lat, seg_off, seg, val_off, vals, K, Ho, Wo);
+        check_backward_inputs(inp, row_ker, row_lat, seg_off, seg, val_off, vals, K, Ho, Wo);
 
         const auto inp_dtype = inp.scalar_type();
         inp = inp.to(compute_dtype(inp_dtype)).contiguous();
@@ -236,21 +243,21 @@ namespace disco_kernels
         const ArcPsiCpu psi = arc_psi_cpu(row_ker, row_lat, seg_off, seg, val_off);
         const int64_t pscale = Wo / Wi;
 
-        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_arcs_cpu", ([&] {
-                                       DISCO_ARCS_PSCALE_DISPATCH(disco_bwd_arcs_cpu_impl, B, C, K, Hi, Wi, Ho, Wo,
-                                                                  pscale, psi, vals.data_ptr<scalar_t>(),
-                                                                  inp.data_ptr<scalar_t>(), out.data_ptr<scalar_t>());
+        AT_DISPATCH_FLOATING_TYPES(inp.scalar_type(), "disco_backward_cpu", ([&] {
+                                       DISCO_PSCALE_DISPATCH(disco_bwd_cpu_impl, B, C, K, Hi, Wi, Ho, Wo, pscale, psi,
+                                                             vals.data_ptr<scalar_t>(), inp.data_ptr<scalar_t>(),
+                                                             out.data_ptr<scalar_t>());
                                    }));
 
         return out.to(inp_dtype);
     }
 
-#undef DISCO_ARCS_PSCALE_DISPATCH
+#undef DISCO_PSCALE_DISPATCH
 
     TORCH_LIBRARY_IMPL(disco_kernels, CPU, m)
     {
-        m.impl("forward_arcs", &disco_cpu_fwd_arcs);
-        m.impl("backward_arcs", &disco_cpu_bwd_arcs);
+        m.impl("forward_regular", &disco_cpu_fwd);
+        m.impl("backward_regular", &disco_cpu_bwd);
     }
 
 } // namespace disco_kernels

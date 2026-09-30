@@ -50,7 +50,7 @@ from testutils import (
 
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
-from torch_harmonics.disco.backends import CSRBackend, ReferenceBackend
+from torch_harmonics.disco.backends import OptimizedBackend, ReferenceBackend
 from torch_harmonics.distributed import compute_polar_halo_radius, compute_split_shapes
 from torch_harmonics.quadrature import compute_theta_cutoff, effective_theta_cutoff, precompute_latitudes
 
@@ -276,13 +276,13 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             # even though the base class selects it automatically on any install without the
             # extension. It is also the only consumer that builds a torch.sparse_coo_tensor and
             # therefore has to declare psi's column extent, which the halo mode re-keys onto a
-            # padded input band -- a mismatch the CSR and kpacked kernels cannot see because they
+            # padded input band -- a mismatch the arc and kpacked kernels cannot see because they
             # just index into whatever x they are handed. One row per polar mode: halo-exchange
             # for the padded extent, reduce-scatter to pin that r_lat=0 still yields the
             # unpadded one.
             #
             # Resolution and batch_size/num_chan are dialed down relative to the rest of the
-            # suite: the fallback contracts a torch.sparse_coo_tensor instead of the CSR kernel
+            # suite: the fallback contracts a torch.sparse_coo_tensor instead of the arc kernel
             # and is orders of magnitude slower. What these rows check is index bookkeeping,
             # which is resolution-independent, so the smallest grid that still splits across
             # polar ranks is enough.
@@ -343,7 +343,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             grid_out=th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
             bias=True,
             # applied to the reference too, so the comparison stays between the same two
-            # algorithms and a fallback row is not silently checking the CSR kernel
+            # algorithms and a fallback row is not silently checking the arc kernel
             optimized_kernel=optimized_kernel,
         )
 
@@ -436,7 +436,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
     def _run_kpacked_fallback(self, fused: bool, dtype: torch.dtype, atol: float, rtol: float):
         """Shared body for kpacked-fallback tests.
 
-        Rules the kpacked backend out, so the distributed conv runs the CSR kernels even
+        Rules the kpacked backend out, so the distributed conv runs the arc kernels even
         with bf16/fp16 input, and verifies fwd+bwd correctness against the serial reference
         (which has kpacked ruled out the same way).
         """
@@ -464,9 +464,9 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             conv_dist.weight.copy_(conv_local.weight)
             conv_dist.bias.copy_(conv_local.bias)
 
-        # Force both onto the CSR kernels.
+        # Force both onto the arc kernels.
         for conv in (conv_local, conv_dist):
-            conv._backends = (CSRBackend, ReferenceBackend)
+            conv._backends = (OptimizedBackend, ReferenceBackend)
             conv._select_backend()
 
         inp_full = torch.randn((B, C, nlat, nlon), dtype=torch.float32, device=self.device)
@@ -496,15 +496,15 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         self.assertTrue(reduce_success(ok, self.device), "gradients")
 
     def test_kpacked_fallback_bf16_unfused(self):
-        """bf16 + kpacked ruled out → CSR path, fused=False."""
+        """bf16 + kpacked ruled out → arc kernels, fused=False."""
         self._run_kpacked_fallback(fused=False, dtype=torch.bfloat16, atol=5e-2, rtol=5e-2)
 
     def test_kpacked_fallback_bf16_fused(self):
-        """bf16 + kpacked ruled out → CSR path, fused=True."""
+        """bf16 + kpacked ruled out → arc kernels, fused=True."""
         self._run_kpacked_fallback(fused=True, dtype=torch.bfloat16, atol=5e-2, rtol=5e-2)
 
     def test_kpacked_fallback_fp16_unfused(self):
-        """fp16 + kpacked ruled out → CSR path, fused=False."""
+        """fp16 + kpacked ruled out → arc kernels, fused=False."""
         self._run_kpacked_fallback(fused=False, dtype=torch.float16, atol=2e-2, rtol=1e-2)
 
     @parameterized.expand(
@@ -555,7 +555,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
         Each rank compares against its own slice of the serial construction, so no collective
         is involved and a failure identifies the rank. The comparison is order-insensitive --
-        the local build re-keys and re-sorts into CSR -- so entries are sorted by
+        the local build re-keys and re-sorts psi -- so entries are sorted by
         (kernel, output latitude, global input index) on both sides first.
         """
 
@@ -643,7 +643,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             shapes = conv_dist.lat_in_shapes
 
         def sorted_entries(ker, row, col, vals):
-            """Canonical ordering so the two builds are comparable regardless of CSR layout."""
+            """Canonical ordering so the two builds are comparable regardless of layout."""
             key = (ker.to(torch.int64) * (nlat_out + nlat_in) + row.to(torch.int64)) * (nlat_in * nlat_out * nlon_split) + col.to(torch.int64)
             order = torch.argsort(key)
             return ker[order], row[order], col[order], vals[order]
