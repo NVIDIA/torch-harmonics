@@ -209,7 +209,7 @@ def compute_theta_cutoff(nlat: int, grid: Optional[str] = "equiangular", scale: 
     UserWarning
         On grids whose node spacing is not uniform in :math:`\theta`, where this
         returns a different value than the ``pi / (N_\theta - 1)`` heuristic used
-        before v0.9.3. Equiangular grids are unaffected and do not warn.
+        before v1.0.0. Equiangular grids are unaffected and do not warn.
 
     Notes
     -----
@@ -239,7 +239,7 @@ def compute_theta_cutoff(nlat: int, grid: Optional[str] = "equiangular", scale: 
     if abs(dlat_max - legacy) > 1e-9 * legacy:
         consequence = "the previous value under-covered the poles" if dlat_max > legacy else "the previous value was slightly wider than the grid warrants"
         warnings.warn(
-            f"Default theta_cutoff changed in v0.9.3: the '{grid}' grid is not uniform in theta, so the cutoff is now "
+            f"Default theta_cutoff changed in v1.0.0: the '{grid}' grid is not uniform in theta, so the cutoff is now "
             f"its maximum latitudinal node spacing ({dlat_max:.6f}) rather than pi/(nlat-1) ({legacy:.6f}); "
             f"{consequence}. Specify theta_cutoff explicitly to override.",
             UserWarning,

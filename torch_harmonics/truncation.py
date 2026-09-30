@@ -163,7 +163,7 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
 
 def _warn_if_default_moved(grid: PointSetS2) -> None:
     r"""
-    Announce that the default support radius differs from the pre-v0.9.3 heuristic.
+    Announce that the default support radius differs from the pre-v1.0.0 heuristic.
 
     Lives here rather than in :func:`torch_harmonics.quadrature.compute_theta_cutoff`
     because it is policy, not a fact about the nodes: the descriptor property stays
@@ -196,7 +196,7 @@ def _warn_if_default_moved(grid: PointSetS2) -> None:
 
     consequence = "the previous value under-covered the grid" if spacing > legacy else "the previous value was wider than the grid warrants"
     warnings.warn(
-        f"Default theta_cutoff changed in v0.9.3: on the '{grid.grid_type}' grid at nlat={grid.nlat}, nlon={grid.nlon} it is now "
+        f"Default theta_cutoff changed in v1.0.0: on the '{grid.grid_type}' grid at nlat={grid.nlat}, nlon={grid.nlon} it is now "
         f"one node spacing ({spacing:.6f}) rather than pi/(nlat-1) ({legacy:.6f}), because " + " and ".join(reasons) + f". {consequence}. "
         "Specify theta_cutoff explicitly to override.",
         UserWarning,
@@ -266,7 +266,7 @@ def truncate_support(grid: PointSetS2, theta_cutoff: Optional[float] = None, sca
     -----
     UserWarning
         On a latitude-longitude grid whose default differs from the
-        ``pi / (nlat - 1)`` heuristic used before v0.9.3. That happens when its
+        ``pi / (nlat - 1)`` heuristic used before v1.0.0. That happens when its
         nodes are not uniform in :math:`\theta`, or when its in-ring spacing
         exceeds its latitudinal one -- on an equiangular grid, when ``nlon`` is
         below about ``2 * (nlat - 1)``. Ragged grids had no earlier default and do
