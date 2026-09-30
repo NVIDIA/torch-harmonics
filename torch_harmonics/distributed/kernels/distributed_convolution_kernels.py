@@ -44,8 +44,8 @@ Two variants, selected by the public ``fused=`` flag (mirrors the serial
              K-expanded intermediate is saved for backward.
 
   ``fused=True``  : the reordered path. The weight einsum is done FIRST, on
-             the local azimuth channel shard, via the custom-autograd fused
-             conv op (K-expanded recomputed in backward, not saved); the
+             the local azimuth channel shard, through the backend's fused
+             node (K-expanded recomputed in backward, not saved); the
              collectives then move only the K-less ``(B, O, H, W)``. Trades
              ~one extra contraction in backward for K× lower activation
              memory and K× less collective volume. Grouped convs are handled
@@ -57,32 +57,15 @@ internally, and return a polar-reduced ``(B, O, H_out_local, W_out_local)``
 tensor. Bias and the weight-gradient reduction (all_reduce over the spatial
 groups) are the caller's responsibility — identical for both variants.
 
-``optimized_kernels_is_available()`` (from disco_helpers) gates whether the
-optimized CUDA kernels (required by ``fused=True``) are present.
+Both evaluate the psi contraction through the layer's DISCO backend
+(:mod:`torch_harmonics.disco.backends`), so the kpacked tensor cores, the CSR kernels on
+CPU or CUDA, and the torch reference all serve either variant; the collectives are all
+that is distributed-specific here.
 """
 
 from itertools import accumulate
-from typing import List, Optional
 
 import torch
-from disco_helpers import optimized_kernels_is_available
-
-from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_contraction_regular_torch
-from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_regular_optimized
-
-# The fused and kpacked conv ops are defined inside
-# disco_optimized.py's ``if optimized_kernels_is_available():`` block, so they
-# exist iff that helper returns True. The fused a2a forward requires them.
-if optimized_kernels_is_available():
-    from torch_harmonics.disco.optimized.disco_optimized import (
-        _disco_s2_contraction_kpacked,
-        _disco_s2_fused_conv_kpacked,
-        _disco_s2_fused_conv_regular_optimized,
-    )
-else:
-    _disco_s2_contraction_kpacked = None
-    _disco_s2_fused_conv_kpacked = None
-    _disco_s2_fused_conv_regular_optimized = None
 
 from torch_harmonics.distributed.primitives import (
     compute_split_shapes,
@@ -97,33 +80,7 @@ from torch_harmonics.distributed.primitives import (
 # ---------------------------------------------------------------------------
 
 
-def _distributed_disco_fwd_a2a(
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    *,
-    psi_roff_idx: Optional[torch.Tensor],
-    psi_ker_idx: torch.Tensor,
-    psi_row_idx: torch.Tensor,
-    psi_col_idx: torch.Tensor,
-    psi_vals: torch.Tensor,
-    psi_kpacked_idx: Optional[torch.Tensor] = None,
-    psi_kpacked_vals: Optional[torch.Tensor] = None,
-    psi_kpacked_offset: Optional[torch.Tensor] = None,
-    psi_kpacked_K_pad: Optional[int] = None,
-    kpacked_device_supported: bool = False,
-    psi_torch: Optional[torch.Tensor],
-    optimized_kernel: bool,
-    kernel_size: int,
-    nlat_out_local: int,
-    nlon_out: int,
-    groups: int,
-    groupsize: int,
-    comm_size_polar: int,
-    comm_size_azimuth: int,
-    lon_in_shapes: List[int],
-    use_halo: bool = False,
-    r_lat: int = 0,
-) -> torch.Tensor:
+def _distributed_disco_fwd_a2a(layer, x: torch.Tensor) -> torch.Tensor:
     """A2A-based distributed DISCO forward.
 
     Pattern:
@@ -134,7 +91,7 @@ def _distributed_disco_fwd_a2a(
       5. (optional) azimuth <-> channel A2A back so W is split, C is local.
       6. Local einsum (C, K) × (O, C, K) → (B, O, H_out_local, W_out_local).
 
-    Two polar strategies, chosen by the caller:
+    Two polar strategies, chosen by the layer's ``polar_mode``:
 
     * ``use_halo``: psi is keyed to this rank's own output rows over a halo-padded input
       band, so step 3 already produces the final rows and step 4 is skipped. The K-expanded
@@ -147,47 +104,22 @@ def _distributed_disco_fwd_a2a(
 
     Returns the output WITHOUT bias.
     """
+    comm_size_polar = layer.comm_size_polar
+    comm_size_azimuth = layer.comm_size_azimuth
+    use_halo = layer.use_halo
+
     num_chans = x.shape[1]
 
     # h and w split; make w local by transposing into channel dim.
     if comm_size_azimuth > 1:
-        x = distributed_transpose_azimuth(x, (1, -1), lon_in_shapes)
+        x = distributed_transpose_azimuth(x, (1, -1), layer.lon_in_shapes)
 
     # Borrow the input rows this rank's output rows reach into. psi's columns were keyed to
     # the padded band at construction, so the contraction below reads it directly.
     if use_halo and comm_size_polar > 1:
-        x = polar_halo_exchange(x, r_lat)
+        x = polar_halo_exchange(x, layer.r_lat)
 
-    _kpacked_ok = optimized_kernel and psi_kpacked_K_pad in (8, 16) and x.dtype in (torch.float16, torch.bfloat16) and x.is_cuda and kpacked_device_supported
-    if _kpacked_ok:
-        x = _disco_s2_contraction_kpacked(
-            x,
-            psi_kpacked_idx,
-            psi_kpacked_vals,
-            psi_kpacked_offset,
-            psi_roff_idx,
-            psi_ker_idx,
-            psi_row_idx,
-            psi_col_idx,
-            psi_vals,
-            kernel_size,
-            nlat_out_local,
-            nlon_out,
-        )
-    elif optimized_kernel:
-        x = _disco_s2_contraction_regular_optimized(
-            x,
-            psi_roff_idx,
-            psi_ker_idx,
-            psi_row_idx,
-            psi_col_idx,
-            psi_vals,
-            kernel_size,
-            nlat_out_local,
-            nlon_out,
-        )
-    else:
-        x = _disco_s2_contraction_regular_torch(x, psi_torch.to(x.device), nlon_out)
+    x = layer.backend.contract(layer, x)
 
     # Fused reduce_scatter on the polar group — half the comm of
     # reduce_from_polar_region + scatter_to_polar_region; pads short
@@ -205,17 +137,9 @@ def _distributed_disco_fwd_a2a(
         x = distributed_transpose_azimuth(x, (-1, 1), chan_shapes)
 
     B, C, K, H, W = x.shape
-    x = x.reshape(B, groups, groupsize, K, H, W)
-    out_channels = weight.shape[0]
-    out_per_group = out_channels // groups
-
-    out = torch.einsum(
-        "bgckxy,gock->bgoxy",
-        x,
-        weight.reshape(groups, out_per_group, weight.shape[1], weight.shape[2]),
-    ).contiguous()
-    out = out.reshape(out.shape[0], out_channels, H, W)
-    return out
+    x = x.reshape(B, layer.groups, layer.groupsize, K, H, W)
+    out = torch.einsum("bgckxy,gock->bgoxy", x, layer._weight_r()).contiguous()
+    return out.reshape(B, layer.groups * layer.out_per_group, H, W)
 
 
 # ---------------------------------------------------------------------------
@@ -223,46 +147,13 @@ def _distributed_disco_fwd_a2a(
 # ---------------------------------------------------------------------------
 
 
-def _distributed_disco_fwd_a2a_reordered(
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    *,
-    psi_roff_idx: torch.Tensor,
-    psi_ker_idx: torch.Tensor,
-    psi_row_idx: torch.Tensor,
-    psi_col_idx: torch.Tensor,
-    psi_vals: torch.Tensor,
-    psi_split_roff_idx: torch.Tensor,
-    psi_split_nnz_off: torch.Tensor,
-    psi_split_ker_idx: torch.Tensor,
-    psi_split_row_idx: torch.Tensor,
-    psi_split_col_idx: torch.Tensor,
-    psi_split_vals: torch.Tensor,
-    psi_split_row_offsets=(),
-    psi_split_nnz_offsets=(),
-    psi_kpacked_idx: Optional[torch.Tensor] = None,
-    psi_kpacked_vals: Optional[torch.Tensor] = None,
-    psi_kpacked_offset: Optional[torch.Tensor] = None,
-    psi_kpacked_K_pad: Optional[int] = None,
-    kpacked_device_supported: bool = False,
-    kernel_size: int,
-    nlat_out_local: int,
-    nlon_out: int,
-    groups: int,
-    groupsize: int,
-    comm_size_polar: int,
-    comm_size_azimuth: int,
-    comm_rank_azimuth: int,
-    lon_in_shapes: List[int],
-    use_halo: bool = False,
-    r_lat: int = 0,
-) -> torch.Tensor:
+def _distributed_disco_fwd_a2a_reordered(layer, x: torch.Tensor) -> torch.Tensor:
     """Reordered + fused A2A DISCO forward (the ``fused=True`` path).
 
     The weight einsum (a linear contraction over C, K) commutes with the linear
-    collectives, so it is done FIRST — on the local azimuth channel shard, via
-    the custom-autograd fused conv op (which recomputes the K-expanded in
-    backward instead of saving it). The collectives then move the K-less
+    collectives, so it is done FIRST — on the local azimuth channel shard, through
+    the backend's fused node (which recomputes the K-expanded in backward instead
+    of saving it, where the backend can). The collectives then move the K-less
     ``(B, O, H, W)`` instead of the K-expanded tensor:
 
         transpose(W->C) -> fused contraction+einsum(local C-shard) ->
@@ -287,22 +178,24 @@ def _distributed_disco_fwd_a2a_reordered(
 
     Returns the polar-reduced ``(B, O, H_out_local, W_out_local)`` WITHOUT bias.
     """
-    if _disco_s2_fused_conv_regular_optimized is None:
-        raise NotImplementedError(
-            "fused=True requires the optimized DISCO CUDA kernels " "(_disco_s2_fused_conv_regular_optimized); rebuild the optimized library " "or use fused=False."
-        )
+    weight = layer.weight
+    groups, groupsize = layer.groups, layer.groupsize
+    comm_size_polar = layer.comm_size_polar
+    comm_size_azimuth = layer.comm_size_azimuth
+    comm_rank_azimuth = layer.comm_rank_azimuth
+    use_halo = layer.use_halo
 
     out_channels, _, K = weight.shape  # weight: (out_channels, groupsize, K)
     out_per_group = out_channels // groups
     in_channels = groups * groupsize
 
     # 1. azimuth transpose W->C: full W, even channel shard.
-    x = distributed_transpose_azimuth(x, (1, -1), lon_in_shapes) if comm_size_azimuth > 1 else x
+    x = distributed_transpose_azimuth(x, (1, -1), layer.lon_in_shapes) if comm_size_azimuth > 1 else x
 
     # (halo) borrow the input rows this rank's output rows reach into; psi's columns were
     # keyed to the padded band at construction. See _distributed_disco_fwd_a2a.
     if use_halo and comm_size_polar > 1:
-        x = polar_halo_exchange(x, r_lat)
+        x = polar_halo_exchange(x, layer.r_lat)
     local_in_channels = x.shape[1]
     chan_start = ([0] + list(accumulate(compute_split_shapes(in_channels, comm_size_azimuth)[:-1])))[comm_rank_azimuth] if comm_size_azimuth > 1 else 0
     chan_end = chan_start + local_in_channels
@@ -335,56 +228,7 @@ def _distributed_disco_fwd_a2a_reordered(
 
     # 2+3. fused contraction + local weight einsum ->
     #      (B, n_local_groups * out_per_group, H_out_full, W_full).
-    _kpacked_ok = psi_kpacked_K_pad in (8, 16) and x_padded.dtype in (torch.float16, torch.bfloat16) and x_padded.is_cuda and kpacked_device_supported
-    if _kpacked_ok:
-        local_out = _disco_s2_fused_conv_kpacked(
-            x_padded,
-            weight_local,
-            psi_kpacked_idx,
-            psi_kpacked_vals,
-            psi_kpacked_offset,
-            psi_roff_idx,
-            psi_ker_idx,
-            psi_row_idx,
-            psi_col_idx,
-            psi_vals,
-            psi_split_roff_idx,
-            psi_split_nnz_off,
-            psi_split_ker_idx,
-            psi_split_row_idx,
-            psi_split_col_idx,
-            psi_split_vals,
-            kernel_size,
-            nlat_out_local,
-            nlon_out,
-            n_local_groups,
-            local_groupsize,
-            psi_split_row_offsets,
-            psi_split_nnz_offsets,
-        )
-    else:
-        local_out = _disco_s2_fused_conv_regular_optimized(
-            x_padded,
-            weight_local,
-            psi_roff_idx,
-            psi_ker_idx,
-            psi_row_idx,
-            psi_col_idx,
-            psi_vals,
-            psi_split_roff_idx,
-            psi_split_nnz_off,
-            psi_split_ker_idx,
-            psi_split_row_idx,
-            psi_split_col_idx,
-            psi_split_vals,
-            kernel_size,
-            nlat_out_local,
-            nlon_out,
-            n_local_groups,
-            local_groupsize,
-            psi_split_row_offsets,
-            psi_split_nnz_offsets,
-        )
+    local_out = layer.backend.conv(layer, x_padded, weight_local, n_local_groups, local_groupsize, recompute=True)
 
     # 4. place into a full output-channel tensor (zeros for groups this rank
     #    doesn't touch; a group split across ranks is summed by the azimuth rs).

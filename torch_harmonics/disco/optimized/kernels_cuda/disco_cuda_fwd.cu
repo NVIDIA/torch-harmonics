@@ -217,13 +217,11 @@ namespace disco_kernels
                                  torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo)
     {
 
-        // some sanity checks
-        CHECK_CUDA_INPUT_TENSOR(inp);
-        CHECK_CUDA_INPUT_TENSOR(roff_idx);
-        CHECK_CUDA_INPUT_TENSOR(ker_idx);
-        CHECK_CUDA_INPUT_TENSOR(row_idx);
-        CHECK_CUDA_INPUT_TENSOR(col_idx);
-        CHECK_CUDA_INPUT_TENSOR(val);
+        TORCH_CHECK(inp.device().is_cuda(), "inp must be a CUDA tensor, got ", inp.device());
+        check_forward_inputs(inp, roff_idx, ker_idx, row_idx, col_idx, val, K, Ho, Wo);
+
+        // launch on the inputs' device, not whichever one is current
+        const at::cuda::OptionalCUDAGuard device_guard(inp.device());
 
         // extract some shapes
         int64_t B = inp.size(0);
@@ -232,9 +230,6 @@ namespace disco_kernels
         int64_t Hi = inp.size(2);
         int64_t Wi = inp.size(3);
         int64_t nrows = roff_idx.size(0) - 1;
-
-        // the kernel uses pscale = Wi / Wo; require an integer ratio so the p-shift is exact
-        TORCH_CHECK(Wi % Wo == 0, "Wi (", Wi, ") must be an integer multiple of Wo (", Wo, ")");
 
         // allocate output
         int64_t out_dims[] = {B, C, K, Ho, Wo};
@@ -300,9 +295,8 @@ namespace disco_kernels
                                                     inp.data_ptr<storage_t>(), out.data_ptr<storage_t>(), stream);
                                             }));
         } else {
-            fprintf(stderr, "%s:%d: error, unsupported Wo value (%ld), max supported is %d\n", __FILE__, __LINE__, Wo,
-                    1024 * ELXTH_MAX);
-            exit(EXIT_FAILURE);
+            TORCH_CHECK(false, "disco forward: nlon_out (", Wo, ") exceeds the largest supported value (",
+                        1024 * ELXTH_MAX, ")");
         }
 
         C10_CUDA_KERNEL_LAUNCH_CHECK();

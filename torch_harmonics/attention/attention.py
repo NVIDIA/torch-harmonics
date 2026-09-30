@@ -37,6 +37,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from attention_helpers import optimized_kernels_is_available
 
+from torch_harmonics._backend import BackendSelectionMixin
 from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.backends import BACKENDS
@@ -335,7 +336,7 @@ class AttentionS2(nn.Module):
         return self._to_channels_first(out, self.grid_out)
 
 
-class NeighborhoodAttentionS2(nn.Module):
+class NeighborhoodAttentionS2(BackendSelectionMixin, nn.Module):
     r"""
     Neighborhood attention on the 2-sphere.
 
@@ -592,55 +593,8 @@ class NeighborhoodAttentionS2(nn.Module):
         """
         pass
 
-    def _select_backend(self) -> None:
-        """
-        Pick the backend for the current device and register exactly its state.
-
-        The previous backend's buffers are removed first, so the module carries one
-        backend's tensors and never a union of them.
-        """
-        device = self.device
-        backend = next((b for b in self._backends if b.available(self, device)), None)
-        if backend is None:
-            raise RuntimeError(f"no attention backend serves {type(self.grid_in).__name__} -> {type(self.grid_out).__name__} on {device}")
-        backend = backend()
-
-        for name in self._backend_state:
-            delattr(self, name)
-
-        state = backend.prepare(self, device)
-        for name, tensor in state.items():
-            self.register_buffer(name, tensor, persistent=False)
-
-        self._backend_state = tuple(state)
-        self.backend = backend
-
-    def _apply(self, fn, recurse: bool = True):
-        """
-        Reselect the backend when the module changes device, and restore its state when a
-        dtype change has cast it.
-
-        ``_apply`` rather than ``to``: ``.cuda()``, ``.cpu()``, ``.half()`` and
-        ``.double()`` never call ``to``, so it is the only hook that sees every move.
-
-        A dtype change casts every floating buffer, backend state included, but that state
-        has a fixed dtype: the quadrature weights are float32 whatever the activations are,
-        and the kernels read them as such. So a cast of the state is undone by preparing it
-        again, just as a device move is -- which is also what keeps ``.half()`` from
-        handing the kernels a 16-bit buffer they would read as ``float``. The test is on
-        what actually changed, the device or the state's dtypes, not on the call.
-
-        The state of the outgoing backend is moved or cast by ``super()._apply`` and then
-        thrown away -- a few MB, once per move, against not having to know the target
-        device or dtype before anything has been touched.
-        """
-        device_before = self.device
-        dtypes_before = {name: getattr(self, name).dtype for name in self._backend_state}
-        out = super()._apply(fn, recurse)
-        state_cast = any(getattr(self, name).dtype != dtype for name, dtype in dtypes_before.items())
-        if self.device != device_before or state_cast:
-            self._select_backend()
-        return out
+    def _no_backend_message(self, device: torch.device) -> str:
+        return f"no attention backend serves {type(self.grid_in).__name__} -> {type(self.grid_out).__name__} on {device}"
 
     def _check_inputs(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor):
         """

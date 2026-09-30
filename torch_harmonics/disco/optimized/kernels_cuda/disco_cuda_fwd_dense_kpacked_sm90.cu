@@ -441,42 +441,37 @@ namespace disco_kernels
                                                torch::Tensor pack_offset, int64_t K, int64_t Ho, int64_t Wo);
 
     // Torch op: runtime-dispatches to SM_90a (WGMMA) or SM_100a (tcgen05) based on
-    // the current device's compute capability. Falls back with TORCH_CHECK on
-    // unsupported architectures.
+    // the input device's compute capability, and raises on any other architecture.
+    // Validation happens here, once, for both.
     torch::Tensor disco_cuda_fwd_kpacked(torch::Tensor inp,
                                          torch::Tensor pack_idx,    // [nnz, 2]             int64
                                          torch::Tensor pack_val,    // [nnz, K_PAD] fp16/bf16
-                                         torch::Tensor pack_offset, // [Ho]                 int64
+                                         torch::Tensor pack_offset, // [Ho + 1]             int64
                                          int64_t K, int64_t Ho, int64_t Wo)
     {
-        CHECK_CUDA_INPUT_TENSOR(inp);
-        CHECK_CUDA_INPUT_TENSOR(pack_idx);
-        CHECK_CUDA_INPUT_TENSOR(pack_val);
-        CHECK_CUDA_INPUT_TENSOR(pack_offset);
+        TORCH_CHECK(inp.device().is_cuda(), "inp must be a CUDA tensor, got ", inp.device());
+        check_kpacked_inputs(inp, pack_idx, pack_val, pack_offset, K, Ho, Wo);
 
-        cudaDeviceProp props;
-        cudaGetDeviceProperties(&props, inp.get_device());
-        TORCH_CHECK(props.major == 9 || props.major == 10,
+        // launch on the inputs' device, not whichever one is current
+        const at::cuda::OptionalCUDAGuard device_guard(inp.device());
+
+        // cached by PyTorch, unlike cudaGetDeviceProperties, which queries the driver
+        const cudaDeviceProp *props = at::cuda::getDeviceProperties(inp.get_device());
+        TORCH_CHECK(props->major == 9 || props->major == 10,
                     "disco_kernels::forward_kpacked requires SM_90a (Hopper) or SM_100a (Blackwell); got SM_",
-                    props.major, ".", props.minor);
+                    props->major, ".", props->minor);
 
         // Dispatch to SM_100a (tcgen05) path on Blackwell.
-        if (props.major == 10) { return disco_cuda_fwd_kpacked_sm100(inp, pack_idx, pack_val, pack_offset, K, Ho, Wo); }
+        if (props->major == 10) {
+            return disco_cuda_fwd_kpacked_sm100(inp, pack_idx, pack_val, pack_offset, K, Ho, Wo);
+        }
 
         const auto inp_dtype = inp.scalar_type();
-        TORCH_CHECK(inp_dtype == at::ScalarType::BFloat16 || inp_dtype == at::ScalarType::Half,
-                    "disco_kernels::forward_kpacked requires bf16 or fp16 input");
-
         const int64_t B = inp.size(0);
         const int64_t C = inp.size(1);
         const int64_t Hi = inp.size(2);
         const int64_t Wi = inp.size(3);
-
-        TORCH_CHECK(Wi % Wo == 0, "Wi (", Wi, ") must be divisible by Wo (", Wo, ")");
-        TORCH_CHECK(Wo % 8 == 0, "Wo (", Wo, ") must be divisible by 8");
-
-        const int64_t K_PAD = pack_val.size(1); // pack_val is [nnz, K_PAD]
-        TORCH_CHECK(K_PAD == 8 || K_PAD == 16, "K_PAD must be 8 or 16, got ", K_PAD);
+        const int64_t K_PAD = pack_val.size(1); // pack_val is [nnz, K_PAD], K_PAD checked above
 
         constexpr int BC_TILE = 8;
         constexpr int WO_TILE = 8;

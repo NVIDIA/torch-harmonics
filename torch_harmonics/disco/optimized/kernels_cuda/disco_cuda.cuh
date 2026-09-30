@@ -31,14 +31,12 @@
 #pragma once
 
 #include "../disco.h"
+#include "../disco_checks.h"
 
 #include <cuda_runtime.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAStream.h>
-
-#define CHECK_CUDA_TENSOR(x) TORCH_INTERNAL_ASSERT(x.device().type() == torch::kCUDA)
-#define CHECK_CUDA_INPUT_TENSOR(x)                                                                                     \
-    CHECK_CUDA_TENSOR(x);                                                                                              \
-    CHECK_CONTIGUOUS_TENSOR(x)
 
 #define DIV_UP(a, b) (((a) + ((b) - 1)) / (b))
 

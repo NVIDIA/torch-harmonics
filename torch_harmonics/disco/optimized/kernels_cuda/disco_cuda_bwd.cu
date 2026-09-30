@@ -329,11 +329,9 @@ namespace disco_kernels
                 cudaGetDevice(&dev);
                 cudaDeviceGetAttribute(&shmem_max, cudaDevAttrMaxSharedMemoryPerBlock, dev);
                 if (shmem > static_cast<size_t>(shmem_max)) {
-                    fprintf(stderr,
-                            "%s:%d: error, shared memory request (%zu B) for Wi=%d Wo=%d pscale=%d "
-                            "NTH=%d ELXTH=%d exceeds the per-block limit (%d B)\n",
-                            __FILE__, __LINE__, shmem, Wi, Wo, pscale, NTH, ELXTH, shmem_max);
-                    exit(EXIT_FAILURE);
+                    TORCH_CHECK(false, "disco backward: shared memory request (", shmem, " B) for Wi=", Wi, " Wo=", Wo,
+                                " pscale=", pscale, " NTH=", NTH, " ELXTH=", ELXTH, " exceeds the per-block limit (",
+                                shmem_max, " B)");
                 }
 
                 switch (pscale) {
@@ -365,13 +363,11 @@ namespace disco_kernels
                                  torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo)
     {
 
-        // some sanity checks
-        CHECK_CUDA_INPUT_TENSOR(inp);
-        CHECK_CUDA_INPUT_TENSOR(roff_idx);
-        CHECK_CUDA_INPUT_TENSOR(ker_idx);
-        CHECK_CUDA_INPUT_TENSOR(row_idx);
-        CHECK_CUDA_INPUT_TENSOR(col_idx);
-        CHECK_CUDA_INPUT_TENSOR(val);
+        TORCH_CHECK(inp.device().is_cuda(), "inp must be a CUDA tensor, got ", inp.device());
+        check_backward_inputs(inp, roff_idx, ker_idx, row_idx, col_idx, val, K, Ho, Wo);
+
+        // launch on the inputs' device, not whichever one is current
+        const at::cuda::OptionalCUDAGuard device_guard(inp.device());
 
         // extract some shapes
         int64_t B = inp.size(0);
@@ -381,14 +377,13 @@ namespace disco_kernels
         int64_t Wi = inp.size(4);
         int64_t nrows = roff_idx.size(0) - 1;
 
-        // the kernel uses pscale = Wo / Wi; require an integer ratio so the p-shift is exact
-        TORCH_CHECK(Wo % Wi == 0, "Wo (", Wo, ") must be an integer multiple of Wi (", Wi, ")");
-
         // allocate output. NOTE: unlike the forward kernel (which writes storage_t),
-        // the backward kernel writes its result in COMPUTE type (out.data_ptr<compute_t>(),
-        // i.e. fp32 for fp16/bf16 inp). vals is already compute type, so we key the
-        // output dtype off vals; the Python op narrows the fp32 grad back to the input
-        // dtype. Keying this off inp.dtype() would mismatch the kernel under fp16/bf16.
+        // the backward kernel accumulates its result in COMPUTE type
+        // (out.data_ptr<compute_t>(), i.e. fp32 for fp16/bf16 inp) -- it scatters, so
+        // partial sums land in `out` itself and must not round in between. vals is
+        // already compute type, so the buffer is keyed off it, and narrowed to the
+        // activations' dtype on return: every host returns inp's dtype, which is also
+        // what the registered fake promises.
         int64_t out_dims[] = {B, C, Ho, Wo};
         auto options = torch::TensorOptions().device(inp.device()).dtype(val.dtype());
         torch::Tensor out = torch::zeros(out_dims, options);
@@ -466,17 +461,14 @@ namespace disco_kernels
                                                     inp.data_ptr<storage_t>(), out.data_ptr<compute_t>(), stream);
                                             }));
         } else {
-            fprintf(stderr, "%s:%d: error, unsupported Wi value (%ld), max supported is %d\n", __FILE__, __LINE__, Wi,
-                    1024 * ELXTH_MAX);
-            exit(EXIT_FAILURE);
+            TORCH_CHECK(false, "disco backward: nlon_in (", Wi, ") exceeds the largest supported value (",
+                        1024 * ELXTH_MAX, ")");
         }
 
         C10_CUDA_KERNEL_LAUNCH_CHECK();
 
-        // convert type if requested
-        out = out.to(inp.dtype());
-
-        return out;
+        // every host returns the activations' dtype, see the allocation above
+        return out.to(inp.scalar_type());
     }
 
     TORCH_LIBRARY_IMPL(disco_kernels, CUDA, m) { m.impl("backward_regular", &disco_cuda_bwd); }

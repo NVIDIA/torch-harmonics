@@ -43,6 +43,11 @@
 * `AttentionS2` passes no weight mask on equal-area input grids, which is exact and lets SDPA use FlashAttention.
 * New `torch_harmonics.neighborhood` module computing the neighborhood pattern of any `GridS2` directly as contiguous longitude arcs, replacing the DISCO-based precompute neighborhood attention used before.
 * Neighborhood attention picks its implementation through backends selected per device, and each layer registers only the buffers its backend reads.
+* The DISCO convolutions, serial and distributed, pick their implementation the same way -- tensor-core `kpacked`, compiled `csr` on CPU or CUDA, or the torch `reference` -- and register only that backend's psi layout. The kpacked layout is no longer built on devices that cannot run it, and the per-basis-function copy of psi behind the spatial-first input gradient is gone: it indexes the CSR psi instead of duplicating it, and is built only for layers that can use it.
+* The DISCO forward paths (plain, fused, save-for-backward, each on CSR or kpacked) are one autograd node, so `fused=True` and the spatial-first input gradient combine with either kernel. **Breaking** for direct callers: the `disco_kernels::_disco_s2_fused_conv_regular_optimized` operator is removed.
+* `DistributedDiscreteContinuousConvS2(fused=True)` no longer requires CUDA.
+* Casting a DISCO layer with `.half()` or `.to(dtype)` no longer rounds its filter values to that dtype; they stay in the precision they were built in, as for neighborhood attention.
+* `torch.autocast("cpu")` now applies to the fused DISCO path as well.
 * `DistributedNeighborhoodAttentionS2` shares the serial forward pass and uses ring backends whose kernels take the serial layout and arc form, walking only the neighbours in each key/value chunk.
 * `DistributedNeighborhoodAttentionS2` builds only its rank's slice of the sparsity pattern and reduces key/value gradients with a ring reduce-scatter, so its memory shrinks as ranks are added.
 * The distributed neighborhood attention derives its latitude halo from the grid geometry and raises when it would exceed a local chunk.

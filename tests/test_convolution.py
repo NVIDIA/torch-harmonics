@@ -42,10 +42,11 @@ from torch.library import opcheck
 
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2, as_grid
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
+from torch_harmonics.disco.backends import CSRBackend, ReferenceBackend
 from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
 )
-from torch_harmonics.disco.optimized.disco_optimized import _kpacked_supported_on_device
+from torch_harmonics.disco.optimized.disco_optimized import _kpacked_k_pad, _kpacked_supported_on_device
 from torch_harmonics.filter_basis import get_filter_basis
 from torch_harmonics.quadrature import compute_theta_cutoff, precompute_latitudes, precompute_longitudes
 
@@ -531,8 +532,11 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
                 merge_quadrature=True,
             ).to(self.device)
 
+            # psi as the layer describes it, whichever backend holds it
+            ker_idx, row_idx, col_idx, vals = conv._psi_coo()
             with torch.sparse.check_sparse_tensor_invariants(enable=False):
-                psi = torch.sparse_coo_tensor(conv.psi_idx, conv.psi_vals, size=(conv.kernel_size, conv.nlat_in, conv.nlat_out * conv.nlon_out)).to_dense()
+                psi = torch.sparse_coo_tensor(torch.stack([ker_idx, row_idx, col_idx]), vals, size=(conv.kernel_size, conv.nlat_in, conv.nlat_out * conv.nlon_out)).to_dense()
+            psi = psi.to(self.device)
 
             self.assertTrue(torch.allclose(psi, psi_dense[:, :, 0].reshape(-1, nlat_in, nlat_out * nlon_out)))
         else:
@@ -548,8 +552,10 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
                 merge_quadrature=True,
             ).to(self.device)
 
+            ker_idx, row_idx, col_idx, vals = conv._psi_coo()
             with torch.sparse.check_sparse_tensor_invariants(enable=False):
-                psi = torch.sparse_coo_tensor(conv.psi_idx, conv.psi_vals, size=(conv.kernel_size, conv.nlat_out, conv.nlat_in * conv.nlon_in)).to_dense()
+                psi = torch.sparse_coo_tensor(torch.stack([ker_idx, row_idx, col_idx]), vals, size=(conv.kernel_size, conv.nlat_out, conv.nlat_in * conv.nlon_in)).to_dense()
+            psi = psi.to(self.device)
 
             self.assertTrue(torch.allclose(psi, psi_dense[:, :, 0].reshape(-1, nlat_out, nlat_in * nlon_in)))
 
@@ -945,32 +951,28 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
 
         if fused and not transpose:
-            # opcheck for fused conv op
-            weight_r = conv.weight.reshape(conv.groups, -1, conv.weight.shape[1], conv.weight.shape[2])
-            test_inputs = (
-                inp,
-                weight_r,
-                conv.psi_roff_idx,
-                conv.psi_ker_idx,
-                conv.psi_row_idx,
-                conv.psi_col_idx,
-                conv.psi_vals,
-                conv.psi_split_roff_idx,
-                conv.psi_split_nnz_off,
-                conv.psi_split_ker_idx,
-                conv.psi_split_row_idx,
-                conv.psi_split_col_idx,
-                conv.psi_split_vals,
-                conv.kernel_size,
-                conv.nlat_out,
-                conv.nlon_out,
-                conv.groups,
-                conv.groupsize,
-            )
-            opcheck(torch.ops.disco_kernels._disco_s2_fused_conv_regular_optimized, test_inputs)
+            # The fused path is an autograd.Function around the raw kernels rather than an
+            # op of its own, so check that it traces as a whole -- forward and backward, in
+            # one graph -- and agrees with eager. aot_eager exercises the fake kernels and
+            # the joint graph without needing a codegen toolchain.
+            compiled = torch.compile(conv, backend="aot_eager", fullgraph=True)
+            inp_eager = inp.clone().requires_grad_(True)
+            inp_compiled = inp.clone().requires_grad_(True)
+            out_eager = conv(inp_eager)
+            out_compiled = compiled(inp_compiled)
+            self.assertTrue(compare_tensors("fused output", out_compiled, out_eager, atol=1e-5, rtol=1e-5, verbose=verbose))
+            grad = torch.randn_like(out_eager)
+            out_eager.backward(grad)
+            out_compiled.backward(grad)
+            self.assertTrue(compare_tensors("fused input grad", inp_compiled.grad, inp_eager.grad, atol=1e-5, rtol=1e-5, verbose=verbose))
+
+            # and the op it contracts with satisfies the op contract
+            test_inputs = (inp, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals, conv.kernel_size, conv.nlat_out, conv.nlon_out)
+            opcheck(torch.ops.disco_kernels._disco_s2_contraction_regular_optimized, test_inputs)
         else:
             if transpose:
-                inp = torch.randn(batch_size, conv.kernel_size, in_channels, *in_shape, device=self.device)
+                # the scatter op reads (B, C, K, H, W): one plane per basis function per channel
+                inp = torch.randn(batch_size, in_channels, conv.kernel_size, *in_shape, device=self.device)
             test_inputs = (inp, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals, conv.kernel_size, conv.nlat_out, conv.nlon_out)
             if not transpose:
                 opcheck(torch.ops.disco_kernels._disco_s2_contraction_regular_optimized, test_inputs)
@@ -1161,6 +1163,13 @@ def _is_kpacked_supported():
     return _kpacked_built_for_sm90() or _kpacked_built_for_sm100()
 
 
+def _without_kpacked(conv):
+    """Reselect conv's backend with the kpacked one ruled out, so it runs the CSR kernels."""
+    conv._backends = (CSRBackend, ReferenceBackend)
+    conv._select_backend()
+    return conv
+
+
 @unittest.skipUnless(
     optimized_kernels_is_available() and torch.cuda.is_available(),
     "skipping kpacked tests: optimized kernels or CUDA not available",
@@ -1192,8 +1201,8 @@ class TestKpackedPath(unittest.TestCase):
     def test_kpacked_forward_activates_on_sm90(self):
         """forward_kpacked is chosen for bf16/fp16 on Hopper."""
         conv = self._make_conv(1, 8, (16, 32))
-        self.assertIsNotNone(conv.psi_kpacked_K_pad, "psi_kpacked_K_pad should be set for harmonic basis")
-        self.assertIn(conv.psi_kpacked_K_pad, (8, 16), "K_pad must be 8 or 16 for the WGMMA kernel")
+        self.assertEqual(conv.backend.name, "kpacked", "the harmonic basis should select the kpacked backend")
+        self.assertIn(conv.psi_kpacked_vals.shape[1], (8, 16), "K_pad must be 8 or 16 for the WGMMA kernel")
         inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device)
         out = conv(inp)
         self.assertEqual(out.dtype, torch.bfloat16)
@@ -1202,8 +1211,8 @@ class TestKpackedPath(unittest.TestCase):
     def test_kpacked_forward_activates_on_sm100(self):
         """tcgen05 kpacked path is chosen for bf16/fp16 on Blackwell."""
         conv = self._make_conv(1, 8, (16, 32))
-        self.assertIsNotNone(conv.psi_kpacked_K_pad, "psi_kpacked_K_pad should be set for harmonic basis")
-        self.assertIn(conv.psi_kpacked_K_pad, (8, 16), "K_pad must be 8 or 16 for the tcgen05 kernel")
+        self.assertEqual(conv.backend.name, "kpacked", "the harmonic basis should select the kpacked backend")
+        self.assertIn(conv.psi_kpacked_vals.shape[1], (8, 16), "K_pad must be 8 or 16 for the tcgen05 kernel")
         inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device)
         out = conv(inp)
         self.assertEqual(out.dtype, torch.bfloat16)
@@ -1214,12 +1223,11 @@ class TestKpackedPath(unittest.TestCase):
         set_seed(123)
         in_shape = (16, 32)
         conv_kpacked = self._make_conv(1, 8, in_shape).float()
-        conv_csr = self._make_conv(1, 8, in_shape).float()
-        self.assertIsNotNone(conv_kpacked.psi_kpacked_K_pad, "kpacked reference test requires kpacked buffers")
-        self.assertIn(conv_kpacked.psi_kpacked_K_pad, (8, 16), "K_pad must be 8 or 16 for the kpacked kernel")
+        conv_csr = _without_kpacked(self._make_conv(1, 8, in_shape).float())
+        self.assertEqual(conv_kpacked.backend.name, "kpacked", "kpacked reference test requires the kpacked backend")
+        self.assertEqual(conv_csr.backend.name, "csr")
 
         conv_csr.weight.data.copy_(conv_kpacked.weight.data)
-        conv_csr.psi_kpacked_K_pad = 24  # force optimized CSR fallback through normal forward dispatch
 
         inp = torch.randn(1, 8, *in_shape, dtype=torch.float32, device=self.device, requires_grad=True)
         inp_ref = inp.detach().clone().requires_grad_(True)
@@ -1293,31 +1301,28 @@ class TestKpackedPath(unittest.TestCase):
                 self.assertTrue(compare_tensors("inp grad", inp_bf16.grad.float(), inp_fp32.grad, atol=1e-1, rtol=1e-1))
 
     def test_kpacked_disabled_for_unsupported_k_pad(self):
-        """K_PAD not in {8,16} must silently fall back to CSR, not crash."""
-        # ZernikeFilterBasis with order 4 gives K=15 → K_pad=16 (fine).
-        # A basis with K > 16 would reach K_pad = 24 naturally; monkeypatching K_pad is
-        # the direct way to exercise the guard without depending on one existing.
-        conv = self._make_conv(1, 4, (16, 32))
-        original_k_pad = conv.psi_kpacked_K_pad
-        try:
-            conv.psi_kpacked_K_pad = 24  # simulate K=20 → K_pad=24
-            inp = torch.randn(1, 4, 16, 32, dtype=torch.bfloat16, device=self.device)
-            # Should not raise — must fall back to CSR path
-            out = conv(inp)
-            self.assertEqual(out.shape[0], 1)
-        finally:
-            conv.psi_kpacked_K_pad = original_k_pad
+        """A basis the kpacked kernels have no instantiation for must select the CSR backend, not crash."""
+        # the kernels take K as the MMA's N dimension, instantiated for N = 8 and 16
+        self.assertEqual(_kpacked_k_pad(3), 8)
+        self.assertEqual(_kpacked_k_pad(15), 16)
+        self.assertIsNone(_kpacked_k_pad(20))
+
+        conv = _without_kpacked(self._make_conv(1, 4, (16, 32)))
+        inp = torch.randn(1, 4, 16, 32, dtype=torch.bfloat16, device=self.device)
+        out = conv(inp)
+        self.assertEqual(out.shape[0], 1)
+        self.assertFalse(any(name.startswith("psi_kpacked") for name in conv._backend_state), "the CSR backend must not hold the kpacked layout")
 
     def test_kpacked_disabled_fused_fallback(self):
-        """fused=True + K_PAD=24 must fall back to CSR fused path and match fused=False output."""
+        """fused=True on the CSR backend must match fused=False."""
         set_seed(77)
         conv_unfused = self._make_conv(1, 8, (16, 32), fused=False)
         conv_fused = self._make_conv(1, 8, (16, 32), fused=True)
         conv_fused.weight.data.copy_(conv_unfused.weight.data)
 
-        # Disable kpacked on both so both take the CSR path.
-        conv_unfused.psi_kpacked_K_pad = 24
-        conv_fused.psi_kpacked_K_pad = 24
+        # Rule kpacked out on both so both take the CSR path.
+        _without_kpacked(conv_unfused)
+        _without_kpacked(conv_fused)
 
         inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device, requires_grad=True)
         inp2 = inp.detach().clone().requires_grad_(True)

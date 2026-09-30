@@ -29,6 +29,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "disco_cpu_fwd.h"
+#include "../disco_checks.h"
 
 namespace disco_kernels
 {
@@ -37,27 +38,15 @@ namespace disco_kernels
                                 torch::Tensor col_idx, torch::Tensor vals, int64_t K, int64_t Ho, int64_t Wo)
     {
 
-        // sanity checks
-        CHECK_CPU_INPUT_TENSOR(inp);
-        CHECK_CPU_INPUT_TENSOR(roff_idx);
-        CHECK_CPU_INPUT_TENSOR(ker_idx);
-        CHECK_CPU_INPUT_TENSOR(row_idx);
-        CHECK_CPU_INPUT_TENSOR(col_idx);
-        CHECK_CPU_INPUT_TENSOR(vals);
+        TORCH_CHECK(inp.device().is_cpu(), "inp must be a CPU tensor, got ", inp.device());
+        check_forward_inputs(inp, roff_idx, ker_idx, row_idx, col_idx, vals, K, Ho, Wo);
 
-        // the kernel uses pscale = Wi / Wo; require an integer ratio so the p-shift is exact
-        TORCH_CHECK(inp.size(3) % Wo == 0, "Wi (", inp.size(3), ") must be an integer multiple of Wo (", Wo, ")");
-
-        // The CPU kernel is fp32/fp64-only (the storage/compute split is a CUDA-only
-        // optimization, and CPU fp16/bf16 arithmetic is emulated anyway). Upcast
-        // reduced-precision inputs (and vals) to fp32 and cast the result back; fp32
-        // and fp64 inputs are untouched (fp64 precision preserved).
+        // Every host returns the activations' dtype. The CPU kernel computes in fp32/fp64
+        // only -- the storage/compute split is a CUDA optimization, and CPU fp16/bf16
+        // arithmetic is emulated anyway -- so reduced-precision activations are upcast here
+        // and the result cast back. vals is already in the compute dtype (checked above).
         const auto inp_dtype = inp.scalar_type();
-        const bool reduced_precision = (inp_dtype == at::kHalf || inp_dtype == at::kBFloat16);
-        if (reduced_precision) {
-            inp = inp.to(torch::kFloat32);
-            vals = vals.to(torch::kFloat32);
-        }
+        inp = inp.to(compute_dtype(inp_dtype));
 
         // initialize output tensor
         auto out = torch::zeros({inp.size(0), inp.size(1), K, Ho, Wo}, inp.options());

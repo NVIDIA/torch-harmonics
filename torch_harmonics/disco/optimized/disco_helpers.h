@@ -118,11 +118,8 @@ void pack_psi_dense_kernel(int64_t K, int64_t Ho, int64_t Wi, int64_t nbr_pad, i
         const int64_t ho = row_h[soff];
         const int64_t cnt = eoff - soff;
 
-        if (cnt > nbr_pad) {
-            fprintf(stderr, "%s:%d: error, row (k=%ld, ho=%ld) has %ld entries, exceeds nbr_pad=%ld\n", __FILE__,
-                    __LINE__, (long)k, (long)ho, (long)cnt, (long)nbr_pad);
-            exit(EXIT_FAILURE);
-        }
+        TORCH_CHECK(cnt <= nbr_pad, "pack_psi_dense: row (k=", k, ", ho=", ho, ") has ", cnt,
+                    " entries, exceeding nbr_pad=", nbr_pad);
 
         const int64_t row_base = (k * Ho + ho) * nbr_pad;
 

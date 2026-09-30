@@ -32,22 +32,10 @@
 from typing import Optional, Tuple, Union
 
 import torch
-from disco_helpers import optimized_kernels_is_available, pack_psi_dense, preprocess_psi
 
 from torch_harmonics.disco._disco_utils import _get_psi
-from torch_harmonics.disco.convolution import (
-    DiscreteContinuousConv,
-    _kpacked_device_supported_for_tensor,
-    _precompute_convolution_tensor_s2,
-)
-from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_transpose_contraction_regular_torch
-from torch_harmonics.disco.optimized.disco_optimized import (
-    _build_kernel_split_csr,
-    _disco_s2_transpose_contraction_regular_optimized,
-    _kpacked_build_available,
-    _maybe_kpack_psi,
-    _split_csr_python_offsets,
-)
+from torch_harmonics.disco.convolution import DiscreteContinuousConv, _precompute_convolution_tensor_s2
+from torch_harmonics.disco.optimized.disco_optimized import _use_spatial_first_dgrad
 from torch_harmonics.grid import RegularGridS2, require_regular_grid
 from torch_harmonics.quadrature import effective_theta_cutoff
 from torch_harmonics.truncation import truncate_support
@@ -255,7 +243,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         contraction+einsum op that recomputes the K-expanded in backward
         instead of saving it. K× lower activation memory and K× less
         collective volume, at the cost of one extra contraction in
-        backward. CUDA + optimized kernels only.
+        backward.
 
     Parameters
     ----------
@@ -282,14 +270,15 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
     theta_cutoff : Optional[float]
         Theta cutoff for the filter basis
     optimized_kernel : Optional[bool]
-        Use the optimized CUDA contraction kernel. Required when ``fused=True``.
+        Whether to use the optimized kernels (if available)
     fused : bool
         Mirrors the serial conv. ``False`` (default): standard all-to-all
         (the K-expanded intermediate is saved for backward). ``True``:
         reordered all-to-all — the weight einsum runs before the collectives
         on the local azimuth channel shard and the K-expanded is recomputed
         in backward instead of saved, for K× lower activation memory and K×
-        less collective volume (CUDA + optimized kernels only).
+        less collective volume. The recompute needs the optimized kernels; the
+        torch reference keeps the reordering but saves the intermediate.
     polar_mode : Optional[str]
         How the polar ranks obtain their output latitudes.
 
@@ -337,15 +326,9 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             raise ValueError(f"Unknown polar_mode '{polar_mode}', expected one of {sorted(_POLAR_MODES)}")
         self.polar_mode = polar_mode
 
-        # fused=True uses the reordered a2a (fused contraction+einsum op with
-        # K-expanded recompute in backward); it is CUDA + optimized-kernel only.
+        # fused=True uses the reordered a2a, see _distributed_disco_fwd_a2a_reordered
         self.fused = bool(fused)
-        if self.fused and not (torch.cuda.is_available() and optimized_kernels_is_available() and optimized_kernel):
-            raise NotImplementedError(
-                "DistributedDiscreteContinuousConvS2(fused=True) requires CUDA and the "
-                "optimized DISCO kernels (it uses the fused contraction+einsum op with "
-                "K-expanded recompute in backward). Use fused=False otherwise."
-            )
+        self.basis_norm_mode = basis_norm_mode
 
         self.grid_in = require_regular_grid(grid_in, "grid_in")
         self.grid_out = require_regular_grid(grid_out, "grid_out")
@@ -412,94 +395,39 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.nlat_out_local = self.lat_out_shapes[self.comm_rank_polar] if self.use_halo else self.nlat_out
         self.nlon_in_local = self.lon_in_shapes[self.comm_rank_azimuth]
         self.nlon_out_local = self.lon_out_shapes[self.comm_rank_azimuth]
-        self.kpacked_device_supported = False
 
-        # compute global convolution tensor
+        # psi is keyed by this rank's output rows (all of them under reduce-scatter) and
+        # its columns by the full-longitude input band the a2a makes local
+        self._psi_nrows = self.nlat_out_local
+        self._contract_shape = (self.nlat_out_local, self.nlon_out)
+        # only the reordered path contracts through the fused node
+        self._needs_split = self.fused and _use_spatial_first_dgrad(self.out_per_group, self.groupsize, self.kernel_size)
+
+        self._select_backend()
+
+    def _psi_coo(self):
+        """This rank's block of psi: its output rows over the halo band, or its input rows over all output rows."""
         idx, vals, _ = _precompute_convolution_tensor_s2(
             self.grid_in,
             self.grid_out,
             self.filter_basis,
             theta_cutoff=self.theta_cutoff,
             transpose_normalization=False,
-            basis_norm_mode=basis_norm_mode,
+            basis_norm_mode=self.basis_norm_mode,
             merge_quadrature=True,
         )
         if self.use_halo:
             idx, vals = _split_halo_convolution_tensor_s2(idx, vals, self.grid_in, self.grid_out, self.r_lat)
         else:
             idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, self.grid_in, self.grid_out)
-        self._build_local_psi(idx, vals)
+        return idx[0].contiguous(), idx[1].contiguous(), idx[2].contiguous(), vals.contiguous()
 
-    def _build_local_psi(self, idx: torch.Tensor, vals: torch.Tensor):
-        """Register psi buffers for the a2a path. The a2a swap makes W
-        local before the kernel reads col_idx, so no wi pre-shift is
-        applied here."""
-        ker_idx = idx[0, ...].contiguous()
-        row_idx = idx[1, ...].contiguous()
-        col_idx = idx[2, ...].contiguous()
-        vals = vals.contiguous()
-
-        self.psi_kpacked_K_pad = None
-
-        if self.optimized_kernel:
-            roff_idx = preprocess_psi(
-                self.kernel_size,
-                self.nlat_out_local,
-                ker_idx,
-                row_idx,
-                col_idx,
-                vals,
-            ).contiguous()
-            self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
-            split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals = _build_kernel_split_csr(
-                roff_idx, ker_idx, row_idx, col_idx, vals, self.kernel_size, self.nlat_out_local
-            )
-            self.psi_split_row_offsets, self.psi_split_nnz_offsets = _split_csr_python_offsets(split_nnz_off)
-            self.register_buffer("psi_split_roff_idx", split_roff_idx, persistent=False)
-            self.register_buffer("psi_split_nnz_off", split_nnz_off, persistent=False)
-            self.register_buffer("psi_split_ker_idx", split_ker_idx, persistent=False)
-            self.register_buffer("psi_split_row_idx", split_row_idx, persistent=False)
-            self.register_buffer("psi_split_col_idx", split_col_idx, persistent=False)
-            self.register_buffer("psi_split_vals", split_vals, persistent=False)
-
-            # Optional K-packed dense layout for the WGMMA / tcgen05 path.
-            # A2A makes W local before the kernel, so wi_shift=0 like the serial path.
-            #
-            # Skipped when the build contains no kpacked kernel; see
-            # _kpacked_build_available for why the check is build-time, not
-            # device-time.
-            if _kpacked_build_available():
-                psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(
-                    self.kernel_size, self.nlat_out_local, self.nlon_in, 0, ker_idx, row_idx, col_idx, vals, roff_idx
-                )
-                kpack = _maybe_kpack_psi(psi_packed_idx.contiguous(), psi_packed_vals.contiguous(), psi_packed_count.contiguous())
-                if kpack is not None:
-                    kpacked_idx, kpacked_vals, kpacked_offset, K_pad = kpack
-                    self.register_buffer("psi_kpacked_idx", kpacked_idx, persistent=False)
-                    self.register_buffer("psi_kpacked_vals", kpacked_vals, persistent=False)
-                    self.register_buffer("psi_kpacked_offset", kpacked_offset, persistent=False)
-                    self.psi_kpacked_K_pad = K_pad
-
-        self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
-        self.register_buffer("psi_row_idx", row_idx, persistent=False)
-        self.register_buffer("psi_col_idx", col_idx, persistent=False)
-        self.register_buffer("psi_vals", vals, persistent=False)
-
-        if not self.optimized_kernel:
-            # halo mode keys psi's columns onto the halo-padded input band, so the sparse
-            # tensor's column extent has to be the padded row count. r_lat is 0 under
-            # reduce-scatter, where the band is just the local share.
-            self.psi = _get_psi(
-                self.kernel_size,
-                self.psi_idx,
-                self.psi_vals,
-                self.nlat_in,
-                self.nlon_in,
-                self.nlat_out,
-                self.nlon_out,
-                self.nlat_in_local + 2 * self.r_lat,
-                self.nlat_out_local,
-            )
+    def _reference_psi(self, ker_idx, row_idx, col_idx, vals):
+        # halo mode keys psi's columns onto the halo-padded input band, so the sparse
+        # tensor's column extent has to be the padded row count. r_lat is 0 under
+        # reduce-scatter, where the band is just the local share.
+        idx = torch.stack([ker_idx, row_idx, col_idx], dim=0)
+        return _get_psi(self.kernel_size, idx, vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local + 2 * self.r_lat, self.nlat_out_local)
 
     def extra_repr(self):
         return (
@@ -513,87 +441,13 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             f"groups={self.groups}, fused={self.fused}"
         )
 
-    @property
-    def psi_idx(self):
-        return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
-
-    def _refresh_kpacked_device_supported(self):
-        if not hasattr(self, "psi_vals"):
-            self.kpacked_device_supported = False
-            return
-        self.kpacked_device_supported = _kpacked_device_supported_for_tensor(self.psi_vals)
-
-    def _apply(self, fn):
-        result = super()._apply(fn)
-        self._refresh_kpacked_device_supported()
-        return result
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # reordered a2a: einsum-first on the local channel shard, K-expanded recomputed in
+        # backward; standard a2a: contraction, collectives, then the einsum
         if self.fused:
-            # reordered a2a: einsum-first on the local channel shard via the
-            # fused conv op (K-expanded recomputed in backward, not saved).
-            out = _distributed_disco_fwd_a2a_reordered(
-                x,
-                self.weight,
-                psi_roff_idx=self.psi_roff_idx,
-                psi_ker_idx=self.psi_ker_idx,
-                psi_row_idx=self.psi_row_idx,
-                psi_col_idx=self.psi_col_idx,
-                psi_vals=self.psi_vals,
-                psi_split_roff_idx=self.psi_split_roff_idx,
-                psi_split_nnz_off=self.psi_split_nnz_off,
-                psi_split_ker_idx=self.psi_split_ker_idx,
-                psi_split_row_idx=self.psi_split_row_idx,
-                psi_split_col_idx=self.psi_split_col_idx,
-                psi_split_vals=self.psi_split_vals,
-                psi_split_row_offsets=self.psi_split_row_offsets,
-                psi_split_nnz_offsets=self.psi_split_nnz_offsets,
-                psi_kpacked_idx=getattr(self, "psi_kpacked_idx", None),
-                psi_kpacked_vals=getattr(self, "psi_kpacked_vals", None),
-                psi_kpacked_offset=getattr(self, "psi_kpacked_offset", None),
-                psi_kpacked_K_pad=self.psi_kpacked_K_pad,
-                kpacked_device_supported=self.kpacked_device_supported,
-                kernel_size=self.kernel_size,
-                nlat_out_local=self.nlat_out_local,
-                nlon_out=self.nlon_out,
-                groups=self.groups,
-                groupsize=self.groupsize,
-                comm_size_polar=self.comm_size_polar,
-                comm_size_azimuth=self.comm_size_azimuth,
-                comm_rank_azimuth=self.comm_rank_azimuth,
-                lon_in_shapes=self.lon_in_shapes,
-                use_halo=self.use_halo,
-                r_lat=self.r_lat,
-            )
+            out = _distributed_disco_fwd_a2a_reordered(self, x)
         else:
-            # standard a2a: contraction then einsum after the transpose-back;
-            # the K-expanded intermediate is saved for backward.
-            out = _distributed_disco_fwd_a2a(
-                x,
-                self.weight,
-                psi_roff_idx=getattr(self, "psi_roff_idx", None),
-                psi_ker_idx=self.psi_ker_idx,
-                psi_row_idx=self.psi_row_idx,
-                psi_col_idx=self.psi_col_idx,
-                psi_vals=self.psi_vals,
-                psi_kpacked_idx=getattr(self, "psi_kpacked_idx", None),
-                psi_kpacked_vals=getattr(self, "psi_kpacked_vals", None),
-                psi_kpacked_offset=getattr(self, "psi_kpacked_offset", None),
-                psi_kpacked_K_pad=self.psi_kpacked_K_pad,
-                kpacked_device_supported=self.kpacked_device_supported,
-                psi_torch=getattr(self, "psi", None),
-                optimized_kernel=self.optimized_kernel,
-                kernel_size=self.kernel_size,
-                nlat_out_local=self.nlat_out_local,
-                nlon_out=self.nlon_out,
-                groups=self.groups,
-                groupsize=self.groupsize,
-                comm_size_polar=self.comm_size_polar,
-                comm_size_azimuth=self.comm_size_azimuth,
-                lon_in_shapes=self.lon_in_shapes,
-                use_halo=self.use_halo,
-                r_lat=self.r_lat,
-            )
+            out = _distributed_disco_fwd_a2a(self, x)
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, self.bias.shape[0], 1, 1)
@@ -662,6 +516,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     ):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
+        self.basis_norm_mode = basis_norm_mode
         self.grid_in = require_regular_grid(grid_in, "grid_in")
         self.grid_out = require_regular_grid(grid_out, "grid_out")
         self.nlat_in, self.nlon_in = self.grid_in.shape
@@ -700,61 +555,34 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.nlat_in_local = self.nlat_in
         self.nlat_out_local = self.lat_out_shapes[self.comm_rank_polar]
 
-        # compute global convolution tensor
-        # switch in_shape and out_shape since we want transpose conv
-        # distributed mode here is swapped because of the transpose
+        # psi is the forward convolution's from grid_out to grid_in, keyed by the global
+        # input latitudes (the input is gathered along them) and split over the output ones
+        self._psi_nrows = self.nlat_in_local
+        self._contract_shape = (self.nlat_out_local, self.nlon_out)
+
+        self._select_backend()
+
+    def _psi_coo(self):
+        # switch in_shape and out_shape since we want the transpose convolution, and split
+        # along latitude with their meaning swapped for the same reason
         idx, vals, _ = _precompute_convolution_tensor_s2(
             self.grid_out,
             self.grid_in,
             self.filter_basis,
             theta_cutoff=self.theta_cutoff,
             transpose_normalization=True,
-            basis_norm_mode=basis_norm_mode,
+            basis_norm_mode=self.basis_norm_mode,
             merge_quadrature=True,
         )
-
-        # split the convolution tensor along latitude, again, we need to swap the meaning
-        # of in_shape and out_shape
         idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, self.grid_out, self.grid_in)
+        return idx[0].contiguous(), idx[1].contiguous(), idx[2].contiguous(), vals.contiguous()
 
-        # sort the values
-        ker_idx = idx[0, ...].contiguous()
-        row_idx = idx[1, ...].contiguous()
-        col_idx = idx[2, ...].contiguous()
-        vals = vals.contiguous()
-
-        if self.optimized_kernel:
-            # preprocessed data-structure for GPU kernel
-            roff_idx = preprocess_psi(self.kernel_size, self.nlat_in_local, ker_idx, row_idx, col_idx, vals).contiguous()
-            self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
-
-        # save all datastructures
-        self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
-        self.register_buffer("psi_row_idx", row_idx, persistent=False)
-        self.register_buffer("psi_col_idx", col_idx, persistent=False)
-        self.register_buffer("psi_vals", vals, persistent=False)
-
-        # store psi as COO
-        if not self.optimized_kernel:
-            self.psi_st = _get_psi(
-                self.kernel_size,
-                self.psi_idx,
-                self.psi_vals,
-                self.nlat_in,
-                self.nlon_in,
-                self.nlat_out,
-                self.nlon_out,
-                self.nlat_in_local,
-                self.nlat_out_local,
-                semi_transposed=True,
-            )
+    def _reference_psi(self, ker_idx, row_idx, col_idx, vals):
+        idx = torch.stack([ker_idx, row_idx, col_idx], dim=0)
+        return _get_psi(self.kernel_size, idx, vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local, semi_transposed=True)
 
     def extra_repr(self):
         return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.groupsize * self.groups}, out_channels={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
-
-    @property
-    def psi_idx(self):
-        return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
@@ -763,7 +591,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, self.out_per_group, self.weight.shape[1], self.weight.shape[2])).contiguous()
+        x = torch.einsum("bgcxy,gock->bgokxy", x, self._weight_r()).contiguous()
         x = x.reshape(B, self.weight.shape[0], x.shape[-3], H, W)
         num_chans = x.shape[1]
 
@@ -781,12 +609,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         if self.comm_size_polar > 1:
             x = gather_from_copy_to_polar_region(x, -2, self.lat_in_shapes)
 
-        if self.optimized_kernel:
-            out = _disco_s2_transpose_contraction_regular_optimized(
-                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out_local, self.nlon_out
-            )
-        else:
-            out = _disco_s2_transpose_contraction_regular_torch(x, self.psi_st.to(x.device), self.nlon_out)
+        out = self.backend.transpose(self, x)
 
         # now we can transpose back the result, so that lon is split and channels are local
         if self.comm_size_azimuth > 1:
