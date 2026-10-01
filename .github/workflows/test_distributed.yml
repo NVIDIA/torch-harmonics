@@ -23,17 +23,17 @@ jobs:
       with:
         fetch-depth: 0  # setuptools-scm derives the version from the tags
 
-    - name: Set up Python 3.10
+    - name: Set up Python 3.11
       uses: actions/setup-python@v6
       with:
-        python-version: "3.10"
+        python-version: "3.11"
 
     - name: Build the wheel
       run: |
         python3 -m pip install --upgrade pip setuptools wheel
         python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
         # only what building the wheel needs, at the release pins; the rest of build-tools.txt
-        # is for the wheel release job (cibuildwheel there needs a newer Python than this)
+        # (cibuildwheel, twine, auditwheel) is for the wheel release job
         grep -E '^(setuptools-scm|wheel)==' .github/requirements/build-tools.txt | xargs python3 -m pip install
         python3 -m pip wheel --no-build-isolation --no-deps . -w dist
 
@@ -64,10 +64,10 @@ jobs:
     steps:
     - uses: actions/checkout@v5
 
-    - name: Set up Python 3.10
+    - name: Set up Python 3.11
       uses: actions/setup-python@v6
       with:
-        python-version: "3.10"
+        python-version: "3.11"
 
     - uses: actions/download-artifact@v4
       with:
