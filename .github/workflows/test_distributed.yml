@@ -1,0 +1,117 @@
+name: Run distributed tests
+
+# The distributed suite on CPU, with the gloo backend, over the polar x azimuth process
+# grids with 1, 2 and 4 ranks per direction and at most 8 ranks -- the grids the suite is
+# run on by hand on multi-GPU nodes, minus everything CUDA-only (those tests skip).
+#
+# Heavy (up to 8 processes per grid), so it runs on pull requests and on demand only, not
+# on every push.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Build the extension once and share the wheel, instead of compiling it in every grid job.
+  build:
+    name: Build CPU wheel
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        fetch-depth: 0  # setuptools-scm derives the version from the tags
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.10"
+
+    - name: Build the wheel
+      run: |
+        python3 -m pip install --upgrade pip setuptools wheel
+        python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
+        python3 -m pip install -r .github/requirements/build-tools.txt
+        python3 -m pip wheel --no-build-isolation --no-deps . -w dist
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: torch-harmonics-cpu-wheel
+        path: dist/*.whl
+
+  distributed:
+    name: Grid ${{ matrix.grid_h }}x${{ matrix.grid_w }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # polar x azimuth ranks: 1, 2 and 4 per direction, at most 8 ranks
+        include:
+          - {grid_h: 1, grid_w: 1}
+          - {grid_h: 1, grid_w: 2}
+          - {grid_h: 2, grid_w: 1}
+          - {grid_h: 2, grid_w: 2}
+          - {grid_h: 1, grid_w: 4}
+          - {grid_h: 4, grid_w: 1}
+          - {grid_h: 2, grid_w: 4}
+          - {grid_h: 4, grid_w: 2}
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.10"
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: torch-harmonics-cpu-wheel
+        path: dist
+
+    - name: Install
+      run: |
+        python3 -m pip install --upgrade pip
+        python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
+        python3 -m pip install dist/*.whl parameterized scipy pytest
+
+    - name: Run the distributed tests on ${{ matrix.grid_h }}x${{ matrix.grid_w }} ranks
+      env:
+        GRID_H: ${{ matrix.grid_h }}
+        GRID_W: ${{ matrix.grid_w }}
+        MASTER_ADDR: localhost
+        MASTER_PORT: "29501"
+        # the ranks share the runner's vCPUs; threads per rank would oversubscribe them further
+        OMP_NUM_THREADS: "1"
+      run: |
+        # One process per rank, as the cluster scripts launch them: tests/testutils.py reads
+        # WORLD_RANK, GRID_H and GRID_W. Each file gets a fresh set of ranks, so a failure in
+        # one cannot poison the next. The timeout turns a hang -- the way a rank-divergent
+        # collective fails -- into a red mark instead of a stuck job.
+        #
+        # `pytest` rather than `python3 -m pytest`: the latter puts the repository root on
+        # sys.path, and the source tree, which has no compiled extension, would shadow the
+        # installed wheel.
+        nranks=$((GRID_H * GRID_W))
+        status=0
+        for f in tests/test_distributed_*.py; do
+          echo "::group::$f"
+          pids=()
+          for r in $(seq 0 $((nranks - 1))); do
+            WORLD_RANK=$r timeout 900 pytest -ra -q "$f" > "rank$r.log" 2>&1 &
+            pids+=($!)
+          done
+          for i in "${!pids[@]}"; do
+            if ! wait "${pids[$i]}"; then
+              status=1
+              echo "::error::rank $i failed on $f"
+              cat "rank$i.log"
+            fi
+          done
+          cat rank0.log
+          echo "::endgroup::"
+        done
+        exit $status
