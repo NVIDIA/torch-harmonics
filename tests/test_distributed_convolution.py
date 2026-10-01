@@ -55,9 +55,7 @@ from torch_harmonics.distributed import compute_polar_halo_radius, compute_split
 from torch_harmonics.quadrature import compute_theta_cutoff, effective_theta_cutoff, precompute_latitudes
 
 # Opt-in gate for slow / large-grid parameterized cases (e.g. 721x1440 ERA5-like
-# shapes). Mirrors the TORCH_HARMONICS_RUN_PERF_TESTS pattern in
-# tests/test_attention.py and tests/test_convolution.py, and the slow gate in
-# tests/test_distributed_attention.py.
+# shapes), as in tests/test_distributed_attention.py.
 _run_slow_tests = os.getenv("TORCH_HARMONICS_RUN_SLOW_TESTS", "0") == "1"
 
 # (nlat_in, nlon_in, nlat_out, nlon_out) shapes whose parameterized cases are

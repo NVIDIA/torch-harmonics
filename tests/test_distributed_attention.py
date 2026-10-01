@@ -52,8 +52,6 @@ import torch_harmonics.distributed as thd
 
 # Opt-in gate for slow / large-grid parameterized cases (e.g. 721x1440 ERA5-like
 # shapes, whose polar rows have the longest neighbourhoods).
-# Mirrors the TORCH_HARMONICS_RUN_PERF_TESTS pattern in tests/test_attention.py
-# and tests/test_convolution.py.
 _run_slow_tests = os.getenv("TORCH_HARMONICS_RUN_SLOW_TESTS", "0") == "1"
 
 # (nlat_in, nlon_in, nlat_out, nlon_out) shapes whose parameterized cases are

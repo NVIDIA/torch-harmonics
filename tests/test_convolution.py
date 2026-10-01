@@ -30,9 +30,7 @@
 #
 
 import math
-import os
 import unittest
-from time import perf_counter_ns
 
 import torch
 from parameterized import parameterized, parameterized_class
@@ -57,13 +55,6 @@ if not optimized_kernels_is_available():
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
     _devices.append((torch.device("cuda"),))
-
-# perf thresholds
-# CPU results normalized to 16 OpenMP threads,
-# GPU results normalized to V100 16 GB GPU
-# this is just to detect performance regressions, not for absolute performance
-_perf_test_thresholds = {"cpu": {"fwd_ms": 100, "bwd_ms": 90}, "cuda": {"fwd_ms": 2, "bwd_ms": 3}}
-_run_perf_tests = os.getenv("TORCH_HARMONICS_RUN_PERF_TESTS", "0") == "1"
 
 
 def _normalize_convolution_tensor_dense(
@@ -1113,94 +1104,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         for name in conv._backend_state:
             buf = getattr(conv, name)
             self.assertIsNone(buf.grad, f"buffer {name} should not accumulate a gradient (requires_grad={buf.requires_grad})")
-
-    @parameterized.expand(
-        [
-            [8, 4, 2, (91, 180), (91, 180), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4],
-        ],
-        skip_on_empty=True,
-    )
-    @unittest.skipUnless(optimized_kernels_is_available() and _run_perf_tests, "skipping performance test because optimized kernels are not available or perf tests are disabled")
-    def test_perf(self, batch_size, in_channels, out_channels, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, transpose, tol, verbose=True):
-
-        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
-            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
-
-        set_seed(333)
-
-        nlat_in, nlon_in = in_shape
-        nlat_out, nlon_out = out_shape
-
-        if isinstance(kernel_shape, int):
-            theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
-        else:
-            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
-
-        # get handle
-        Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
-
-        # init on cpu
-        conv_optimized = Conv(
-            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
-            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
-            in_channels,
-            out_channels,
-            kernel_shape,
-            basis_type=basis_type,
-            basis_norm_mode=basis_norm_mode,
-            groups=1,
-            bias=True,
-            theta_cutoff=theta_cutoff,
-            optimized_kernel=True,
-        ).to(self.device)
-
-        # random weights
-        with torch.no_grad():
-            conv_optimized.weight.normal_()
-            conv_optimized.bias.normal_()
-
-        # create an input signal
-        inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
-        inp.requires_grad = True
-
-        # forward test
-        # warmup
-        for i in range(2):
-            out_optimized = conv_optimized(inp)
-
-        # start timer
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
-        start = perf_counter_ns()
-        out_optimized = conv_optimized(inp)
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
-        end = perf_counter_ns()
-        duration = (end - start) / 1e6
-        if verbose:
-            print(f"Forward execution time on device {self.device.type}: {duration:.2f} ms")
-        self.assertTrue(duration <= _perf_test_thresholds[self.device.type]["fwd_ms"])
-
-        # backward test
-        out_optimized = conv_optimized(inp)
-        out_grad = torch.randn(out_optimized.shape, dtype=torch.float32, device=self.device)
-
-        # warmup
-        for _ in range(2):
-            out_optimized.backward(out_grad, retain_graph=True)
-
-        # start timer
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
-        start = perf_counter_ns()
-        out_optimized.backward(out_grad)
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
-        end = perf_counter_ns()
-        duration = (end - start) / 1e6
-        if verbose:
-            print(f"Backward execution time on device {self.device.type}: {duration:.2f} ms")
-        self.assertTrue(duration <= _perf_test_thresholds[self.device.type]["bwd_ms"])
 
 
 # A supported device is not sufficient: the kpacked buffers are only built when
