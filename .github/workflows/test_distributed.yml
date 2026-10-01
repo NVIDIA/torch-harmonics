@@ -13,6 +13,12 @@ on:
 permissions:
   contents: read
 
+# a new push to the same pull request supersedes the running grids; cancel them rather
+# than spend the runners on a commit nobody will look at
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Build the extension once and share the wheel, instead of compiling it in every grid job.
   build:
