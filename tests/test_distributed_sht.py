@@ -60,6 +60,21 @@ def tearDownModule():
     teardown_module(_DIST_CTX)
 
 
+def _report_margin(name, ref, got, atol, rtol):
+    """
+    Print how far the distributed result is from the serial one, in the units that matter.
+
+    The tolerance discussion below is about the reassociation error of a distributed sum,
+    which scales with the tensor's largest entries, not with the entry it lands on. Printed
+    unconditionally (on rank 0) rather than only on failure, so the margin is visible on
+    every backend and device, and the tolerance can be calibrated against it.
+    """
+    diff = (got - ref).abs().max().item()
+    scale = ref.abs().max().item()
+    eps = torch.finfo(ref.real.dtype if ref.is_complex() else ref.dtype).eps
+    print(f"{name}: max|diff| = {diff:.3e}, max|ref| = {scale:.3e}, " f"= {diff / max(eps * scale, 1e-30):.1f} eps*max|ref| (atol {atol:.0e}, rtol {rtol:.0e})")
+
+
 class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
     """Test the distributed spherical harmonic transform module (CPU/CUDA if available)."""
 
@@ -181,7 +196,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
-    def test_distributed_sht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, verbose=False):
+    def test_distributed_sht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, verbose=True):
 
         set_seed(333)
 
@@ -233,11 +248,15 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         # evaluate FWD pass
         out_gather_full = self._gather_helper_fwd(out_local, forward_transform_dist)
+        if verbose:
+            _report_margin("output", out_full, out_gather_full, atol, rtol)
         ok = compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "output")
 
         # evaluate BWD pass
         igrad_gather_full = self._gather_helper_bwd(igrad_local, forward_transform_dist)
+        if verbose:
+            _report_margin("gradients", igrad_full, igrad_gather_full, atol, rtol)
         ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
 
@@ -376,11 +395,15 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         # evaluate FWD pass
         out_gather_full = self._gather_helper_bwd(out_local, backward_transform_dist)
+        if verbose:
+            _report_margin("output", out_full, out_gather_full, atol, rtol)
         ok = compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "output")
 
         # evaluate BWD pass
         igrad_gather_full = self._gather_helper_fwd(igrad_local, backward_transform_dist)
+        if verbose:
+            _report_margin("gradients", igrad_full, igrad_gather_full, atol, rtol)
         ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
 
