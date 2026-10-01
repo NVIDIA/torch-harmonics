@@ -5,6 +5,9 @@ relative_files = True
 omit =
     */examples/*
     */plotting.py
+    # written by setuptools-scm at build time and gitignored, so a fresh checkout has no
+    # source for it to report against
+    */_version.py
 
 [paths]
 # the distributed jobs measure the wheel in site-packages, the serial job the editable
