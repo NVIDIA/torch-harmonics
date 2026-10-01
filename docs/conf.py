@@ -92,6 +92,17 @@ def autodoc_skip_member_handler(app, what, name, obj, skip, options):
     return skip
 
 
+def autodoc_process_bases_handler(app, name, obj, options, bases):
+    """
+    Leave out base classes that live in private modules.
+
+    The layers mix in implementation machinery -- backend selection, from
+    ``torch_harmonics._backend`` -- that is not public API and has no page, so listing
+    it under "Bases" would render as an unresolvable reference (and fail the -W build).
+    """
+    bases[:] = [b for b in bases if not any(part.startswith("_") for part in getattr(b, "__module__", "").split("."))]
+
+
 def autodoc_process_docstring_handler(app, what, name, obj, options, lines):
     """Unwrap lru_cache wrappers so autodoc can see the original docstring."""
     import functools
@@ -159,3 +170,4 @@ html_theme_options = {
 def setup(app):
     app.connect("autodoc-skip-member", autodoc_skip_member_handler)
     app.connect("autodoc-process-docstring", autodoc_process_docstring_handler)
+    app.connect("autodoc-process-bases", autodoc_process_bases_handler)
