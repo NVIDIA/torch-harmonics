@@ -67,13 +67,8 @@ class QuadratureS2(nn.Module):
     :math:`W_i = q_k \cdot 2\pi / N_{\lambda,k}` for a point on ring :math:`k`,
     where :math:`q_k` are the latitudinal weights (which absorb the
     :math:`\sin\theta` Jacobian via the change of variable to
-    :math:`\cos\theta`). Note the :math:`k` on :math:`N_\lambda`: the
-    longitudinal spacing is per ring, not global. It is uniform only on a
-    :class:`~torch_harmonics.grid.RegularGridS2`; on a reduced Gaussian or HEALPix
-    grid the polar rings carry fewer points, so each of their points covers more
-    solid angle and is weighted more heavily. This module does not assume
-    otherwise -- it takes the weights from the descriptor rather than deriving a
-    single :math:`\Delta\lambda`.
+    :math:`\cos\theta`). The number of points :math:`N_{\lambda,k}` may differ
+    from ring to ring, as on HEALPix.
 
     The choice of ``grid`` determines how the nodes :math:`\theta_k` and weights
     :math:`q_k` are computed:

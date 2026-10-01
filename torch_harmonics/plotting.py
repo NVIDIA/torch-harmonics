@@ -190,10 +190,9 @@ def plot_sphere(
     grid : GridS2 or str, optional
         Descriptor of the grid the data lives on, used to place the samples.
         A string is coerced with :func:`torch_harmonics.grid.as_grid` against
-        the shape of ``data``. Prefer this over ``lat``/``lon``: only the
-        equiangular grid has samples equispaced in latitude, so the default
-        placement misplaces every other grid (by 4.2 degrees on a 32-point
-        Legendre-Gauss grid, and by 18.9 degrees on the trapezoidal one).
+        the shape of ``data``. Prefer this over ``lat``/``lon``: the default
+        placement assumes equispaced latitudes, which is only correct for the
+        equiangular grid.
         A ragged :class:`~torch_harmonics.grid.GridS2` such as HEALPix takes flat
         ``(npoints,)`` data and is drawn by nearest-point resampling onto an
         equiangular image; a point set without rings is not supported.

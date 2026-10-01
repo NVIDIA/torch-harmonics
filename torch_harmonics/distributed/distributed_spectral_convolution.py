@@ -112,13 +112,12 @@ class DistributedSpectralConvS2(nn.Module):
     Returns
     -------
     torch.Tensor
-        Tensor of shape ``(..., out_channels, out_shape[0], out_shape[1])``.
+        Local output of shape ``(..., out_channels, nlat_out_local, nlon_out_local)``.
 
     Notes
     -----
     The layer truncates ``lmax``/``mmax`` to the distributed SHT limits, and
-    uses local ``lmax``/``mmax`` slices when constructing spectral weights. The
-    grouped contraction is performed with ``_contract_lwise``.
+    stores only this rank's local ``lmax`` slice of the spectral weights.
     """
 
     @_rejects_legacy_signature

@@ -137,11 +137,11 @@ class FilterBasis(metaclass=abc.ABCMeta):
     def get_init_factors(self, device: Optional[torch.device] = None) -> torch.Tensor:
         """
         Return per-basis scaling factors for initializing DISCO convolution weights.
-        Applied element-wise along the kernel_size dimension of the random init so subclasses can
-        bias the initialization toward the basis (e.g. compensating for its L2 norm).
 
-        Shape: (kernel_size,). Default: torch.ones(kernel_size) / sqrt(kernel_size), which reproduces
-        the scalar 1/sqrt(groupsize * kernel_size) init used historically.
+        Multiplies the random initialization element-wise along the basis dimension, so a
+        subclass can adapt the initialization to its basis (e.g. compensate for its L2
+        norms). Returns a tensor of shape ``(kernel_size,)``; the default is
+        ``1 / sqrt(kernel_size)`` for every basis function.
         """
         return torch.ones(self.kernel_size, device=device, dtype=torch.float32) / math.sqrt(self.kernel_size)
 
@@ -500,10 +500,12 @@ class FourierBesselFilterBasis(FilterBasis):
     For m > 0 each (m, n) pair yields two basis functions (cosine and sine),
     while m = 0 yields one (cosine only, i.e., purely radial).
 
-    kernel_shape : int or tuple of two ints (n_radial, n_angular)
-        If int: same value for both (:math:`n_{radial}`, :math:`n_{angular}`) = (:math:`kernel_{shape}`, :math:`kernel_{shape}`).
-        If tuple of length 2: (:math:`n_{radial}`, :math:`n_{angular}`). :math:`n_{radial}` controls the radial degree
-        (number of zeros of :math:`J_0` used to set :math:`\alpha_{max}`). n_angular is the max azimuthal order :math:`m`.
+    Parameters
+    ----------
+    kernel_shape : int or tuple of two ints
+        ``(n_radial, n_angular)``; an int sets both. ``n_radial`` is the number of zeros
+        of :math:`J_0` used to set :math:`\alpha_{max}`, and ``n_angular`` is the maximum
+        azimuthal order :math:`m`.
     """
 
     def __init__(self, kernel_shape: Union[int, Tuple[int], Tuple[int, int]]):
@@ -561,12 +563,11 @@ class FourierBesselFilterBasis(FilterBasis):
         return [bool(m == 0) for m in self._ms.tolist()]
 
     def compute_l2_norms(self, r_cutoff: float = 1.0, nr: int = 50, nphi: int = 200) -> torch.Tensor:
-        """Analytic L2 norms of the Fourier-Bessel basis on a disk of radius r_cutoff.
+        r"""Analytic L2 norms of the Fourier-Bessel basis on a disk of radius ``r_cutoff``.
 
-        nr and nphi are accepted for signature compatibility with the base class.
-
-        Radial: integral_0^R J_m(alpha r/R)^2 r dr = R^2 * J_{m+1}(alpha)^2 / 2.
-        Angular: integral_0^{2pi} cos^2(m phi) dphi = 2pi (m=0) or pi (m>0).
+        Uses :math:`\int_0^R J_m(\alpha r/R)^2 r\,dr = R^2 J_{m+1}(\alpha)^2 / 2` and an angular
+        factor of :math:`2\pi` for :math:`m = 0`, :math:`\pi` otherwise. ``nr`` and ``nphi``
+        are accepted for compatibility with the base class and ignored.
         """
         ms = self._ms
         alphas = self._alphas
@@ -585,10 +586,14 @@ class FourierBesselFilterBasis(FilterBasis):
         r_cutoff: float,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Returns (iidx, vals) matching the convention of the other FilterBasis classes.
+        Return the nonzero basis values on the given grid, in the same layout as the other bases.
 
-        iidx : LongTensor  [nnz, 3]  -- (kernel_idx, row, col)
-        vals : FloatTensor [nnz]
+        Returns
+        -------
+        iidx : torch.Tensor
+            ``int64``, shape ``(nnz, 3)``, columns ``(kernel_idx, row, col)``.
+        vals : torch.Tensor
+            Basis values, shape ``(nnz,)``.
         """
         K = self.kernel_size
 

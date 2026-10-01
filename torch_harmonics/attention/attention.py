@@ -67,14 +67,12 @@ class AttentionS2(nn.Module):
     to a geodesic neighborhood, see
     :class:`~torch_harmonics.NeighborhoodAttentionS2`.
 
-    Global attention needs nothing of the grid but its points and their weights, so
-    either side may be any ring grid, ragged ones such as HEALPix included, and the two
-    sides need not be of the same kind. A field on a regular grid is
+    Either side may be any :class:`~torch_harmonics.grid.GridS2`, including ragged
+    grids such as HEALPix, and the two sides need not be of the same kind. A field on a regular grid is
     ``(batch, channels, nlat, nlon)``, on a ragged one ``(batch, channels, npoints)``;
     in general its trailing shape is ``grid.shape``. On an equal-area input grid
     (:attr:`~torch_harmonics.grid.PointSetS2.is_equal_area`, e.g. HEALPix) the weights
-    are all equal and cancel in the softmax, so no mask is passed at all, which lets
-    SDPA use its fused FlashAttention kernel.
+    cancel in the softmax and no mask is applied.
 
     Parameters
     ----------
@@ -567,11 +565,7 @@ class NeighborhoodAttentionS2(nn.Module):
     @property
     def device(self) -> torch.device:
         """
-        The device this module is on.
-
-        ``nn.Module`` has no public equivalent. Every buffer belongs to a backend and can
-        come and go with it, so the answer is a parameter: q_weights exists on every
-        layer and follows every move.
+        Device of the module's parameters.
         """
         return self.q_weights.device
 

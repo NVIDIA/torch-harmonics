@@ -171,12 +171,9 @@ class HealpixGrid(GridS2):
     r"""
     HEALPix grid in RING pixel order.
 
-    A ragged :class:`~torch_harmonics.grid.GridS2`: its ``12 * nside**2`` points are
-    organized into ``4 * nside - 1`` isolatitude rings of unequal length, so a field
-    on it is a flat ``(..., npix)`` tensor rather than a ``(..., nlat, nlon)`` one.
-    :attr:`~torch_harmonics.grid.PointSetS2.shape` reports ``(npix,)`` and
-    :attr:`~torch_harmonics.grid.GridS2.is_regular` is ``False``. Every pixel has the
-    same area, so :attr:`~torch_harmonics.grid.PointSetS2.is_equal_area` is ``True``.
+    A ragged :class:`~torch_harmonics.grid.GridS2`: ``12 * nside**2`` equal-area
+    pixels on ``4 * nside - 1`` isolatitude rings of unequal length. A field on it is
+    a flat ``(..., npix)`` tensor.
 
     Parameters
     ----------
@@ -186,18 +183,11 @@ class HealpixGrid(GridS2):
 
     Notes
     -----
-    Not suitable for a spherical harmonic transform. HEALPix quadrature gives every
-    pixel the same weight, which integrates a constant exactly and nothing else: the
-    rings are neither at the nodes of a latitudinal quadrature rule nor equispaced in
-    :math:`\theta`, so the associated Legendre functions are not discretely
-    orthogonal under it and ``max_exact_degree`` is undefined. Accordingly
-    :attr:`~torch_harmonics.grid.PointSetS2.is_spectrally_accurate` is ``False`` and
-    :func:`~torch_harmonics.truncate_sht` will refuse this grid. A transform on
-    HEALPix needs iterative or least-squares machinery that this library does not
-    have; the localized operators and plain quadrature are what this descriptor is
-    for. Today that is :class:`~torch_harmonics.NeighborhoodAttentionS2`,
-    :class:`~torch_harmonics.AttentionS2` and :class:`~torch_harmonics.QuadratureS2`;
-    the DISCO convolutions do not accept it yet.
+    Not suitable for a spherical harmonic transform: the equal-area quadrature
+    integrates only constants exactly, so :func:`~torch_harmonics.truncate_sht`
+    refuses this grid. It is supported by :class:`~torch_harmonics.AttentionS2`,
+    :class:`~torch_harmonics.NeighborhoodAttentionS2` and
+    :class:`~torch_harmonics.QuadratureS2`; the DISCO convolutions do not accept it yet.
 
     Examples
     --------
@@ -231,7 +221,7 @@ class HealpixGrid(GridS2):
 
     @property
     def nrings(self) -> int:
-        r"""Number of rings, :math:`4 N - 1`. The name :class:`~torch_harmonics.grid.GridS2` addresses rings by."""
+        r"""Number of rings, :math:`4 N - 1`."""
         return 4 * self.nside - 1
 
     @property
@@ -247,8 +237,7 @@ class HealpixGrid(GridS2):
         Raises
         ------
         ValueError
-            If ``nside`` is not a power of two, in which case the grid has no
-            hierarchical refinement level and cannot be expressed in NEST order.
+            If ``nside`` is not a power of two.
         """
         if self.nside & (self.nside - 1):
             raise ValueError(f"nside={self.nside} is not a power of two, so it has no HEALPix refinement level")
@@ -258,7 +247,7 @@ class HealpixGrid(GridS2):
 
     @property
     def is_equal_area(self) -> bool:
-        """Every pixel covers :math:`4\\pi / (12 N^2)` -- the defining property of HEALPix."""
+        """``True``: every pixel covers :math:`4\\pi / (12 N^2)`."""
         return True
 
     # -- raggedness ----------------------------------------------------------
@@ -279,12 +268,8 @@ class HealpixGrid(GridS2):
     @property
     def lon_shifts(self) -> torch.Tensor:
         r"""
-        Fractional longitude offset of each ring, shape ``(nlat,)``, in units of one
-        pixel of that ring.
-
-        Successive HEALPix rings are staggered by half a pixel, which is what makes
-        the pixels rhombic and equal-area. A consumer that assumed every ring starts
-        at :math:`\lambda = 0` would misplace half the grid.
+        Fractional longitude offset of each ring, shape ``(nrings,)``, in units of one
+        pixel of that ring: either 0 or 1/2.
         """
         _, lon_shifts, _ = healpix_ring_structure(self.nside)
         return lon_shifts
@@ -302,13 +287,8 @@ class HealpixGrid(GridS2):
         r"""
         Latitudinal weights of the equal-area rule, :math:`w_k = 2 n_k / N_{pix}`.
 
-        HEALPix quadrature is the mean: every pixel has solid angle
-        :math:`4\pi / N_{pix}`. Expressed in this library's per-ring
-        :math:`\cos\theta` convention, where a single point on ring :math:`k` carries
-        :math:`2 \pi w_k / n_k`, that makes :math:`w_k` proportional to the ring size,
-        and :math:`\sum_k w_k = 2` as on every other grid. The per-point weights, which
-        sum to :math:`4\pi`, come from :attr:`~torch_harmonics.grid.PointSetS2.quad_weights`
-        and are uniform here because HEALPix is equal-area.
+        Proportional to the ring size :math:`n_k` and summing to 2, so that every pixel
+        carries :math:`4\pi / N_{pix}`.
         """
         return 2.0 * self.nlon_per_lat.to(torch.float64) / self.npoints
 
@@ -319,8 +299,8 @@ class HealpixGrid(GridS2):
         Parameters
         ----------
         ilat : int
-            Ring index, ``0 <= ilat < nlat``. Required: rings differ in both length
-            and phase here, so there is no ring-independent answer to return.
+            Ring index, ``0 <= ilat < nrings``. Required, since rings differ in length
+            and offset; use :meth:`all_lons` for every pixel at once.
 
         Returns
         -------
@@ -347,12 +327,7 @@ class HealpixGrid(GridS2):
         return (2.0 * torch.pi / n) * (torch.arange(n, dtype=torch.float64) + lon_shifts[ilat])
 
     def all_lons(self) -> torch.Tensor:
-        r"""
-        Longitude of every pixel, shape ``(npoints,)``, in RING order.
-
-        The flat counterpart of :meth:`lons`, so a consumer can get the full geometry
-        without a Python loop over ``nlat`` rings.
-        """
+        r"""Longitude of every pixel, shape ``(npoints,)``, in RING order."""
         nlon_per_lat, lon_shifts, _ = healpix_ring_structure(self.nside)
         offsets = self.lon_offsets
 
@@ -364,12 +339,7 @@ class HealpixGrid(GridS2):
         return (2.0 * torch.pi / n) * (j.to(torch.float64) + lon_shifts[ring_of])
 
     def all_colats(self) -> torch.Tensor:
-        r"""
-        Colatitude of every pixel, shape ``(npoints,)``, in RING order.
-
-        Equal to ``coords[:, 0]``; :attr:`~torch_harmonics.grid.PointSetS2.coords`
-        carries both columns and is the form the base class contract is written in.
-        """
+        r"""Colatitude of every pixel, shape ``(npoints,)``, in RING order; equal to ``coords[:, 0]``."""
         return torch.repeat_interleave(self.colats, self.nlon_per_lat)
 
     # -- derived quantities --------------------------------------------------
@@ -415,8 +385,7 @@ class HealpixGrid(GridS2):
         Parameters
         ----------
         level : int
-            Refinement level, at least 0. Any integral type is accepted, e.g.
-            ``numpy.int64``, as for the other descriptors' integer parameters.
+            Refinement level, at least 0.
         """
         # the same rule as _as_int applies to descriptor fields: any Integral, but not bool
         if isinstance(level, bool) or not isinstance(level, numbers.Integral):
