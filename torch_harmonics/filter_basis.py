@@ -502,7 +502,7 @@ class FourierBesselFilterBasis(FilterBasis):
 
     Parameters
     ----------
-    kernel_shape : int or tuple of two ints
+    kernel_shape : int or tuple of int
         ``(n_radial, n_angular)``; an int sets both. ``n_radial`` is the number of zeros
         of :math:`J_0` used to set :math:`\alpha_{max}`, and ``n_angular`` is the maximum
         azimuthal order :math:`m`.
