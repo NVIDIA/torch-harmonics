@@ -32,7 +32,9 @@ jobs:
       run: |
         python3 -m pip install --upgrade pip setuptools wheel
         python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
-        python3 -m pip install -r .github/requirements/build-tools.txt
+        # only what building the wheel needs, at the release pins; the rest of build-tools.txt
+        # is for the wheel release job (cibuildwheel there needs a newer Python than this)
+        grep -E '^(setuptools-scm|wheel)==' .github/requirements/build-tools.txt | xargs python3 -m pip install
         python3 -m pip wheel --no-build-isolation --no-deps . -w dist
 
     - uses: actions/upload-artifact@v4
