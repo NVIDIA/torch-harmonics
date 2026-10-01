@@ -57,7 +57,7 @@
 * Fixed `AttentionS2` to disable SDPA dropout in eval mode.
 * Hardened the 2D3DS example dataset downloader: archives are verified against SHA-256 checksums and tar members which resolve outside the target directory are rejected. Also fixes HTTP error handling, the temporary file location and resuming interrupted downloads, and makes the `2d3ds` extra installable again.
 * Pinned the CI build tooling and restricted workflow token permissions to read-only.
-* Pull requests run the distributed tests in CI, on CPU with the gloo backend, over process grids of up to 8 ranks. They also run on every merge to main, and the coverage badge now combines the serial and distributed suites, with the distributed modules no longer excluded from it.
+* Pull requests run the distributed tests in CI, on CPU with the gloo backend, over process grids of up to 8 ranks. They also run on every merge to main, and coverage now combines the serial and distributed suites, with the distributed modules no longer excluded from it. Coverage is published with the workflow's own token, to the `python-coverage-comment-action-data` branch, instead of to a gist through a personal access token, and pull requests get a comment with their coverage change.
 * **Breaking**: minimum supported Python version is now 3.11, since 3.9 and 3.10 have reached their end of life. No cp39 or cp310 wheels are built anymore.
 * **Breaking**: default `basis_norm_mode` for `DistributedDiscreteContinuousConvS2` and `DistributedDiscreteContinuousConvTransposeS2` changed from `"mean"` to `"nodal"` to match the serial `DiscreteContinuousConvS2` / `DiscreteContinuousConvTransposeS2` defaults. Distributed and serial DISCO layers now share the same default normalization unless explicitly overridden.
 

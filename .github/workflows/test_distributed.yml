@@ -4,11 +4,10 @@ name: Run distributed tests
 # grids with 1, 2 and 4 ranks per direction and at most 8 ranks -- the grids the suite is
 # run on by hand on multi-GPU nodes, minus everything CUDA-only (those tests skip).
 #
-# Heavy (up to 8 processes per grid), so it runs on pull requests and on demand only, not
-# on every push -- plus once per merge to main, called from tests.yml, whose coverage badge
-# combines this suite's coverage with the serial one.
+# Heavy (up to 8 processes per grid), so it does not run on every push: tests.yml calls it on
+# pull requests and on merges to main, and combines its coverage with the serial suite's.
+# It can also be run on demand.
 on:
-  pull_request:
   workflow_dispatch:
   workflow_call:
 
@@ -107,8 +106,8 @@ jobs:
         # sys.path, and the source tree, which has no compiled extension, would shadow the
         # installed wheel.
         #
-        # Every rank of every file writes its own coverage data file; the coverage job below
-        # combines them across ranks and grids. --cov takes the installed package's directory:
+        # Every rank of every file writes its own coverage data file; the coverage job in
+        # tests.yml combines them across ranks and grids, and with the serial suite's. --cov takes the installed package's directory:
         # given the bare name, coverage would match the source tree in the checkout instead,
         # which these tests never execute.
         nranks=$((GRID_H * GRID_W))
@@ -143,31 +142,3 @@ jobs:
         name: coverage-distributed-${{ matrix.grid_h }}x${{ matrix.grid_w }}
         path: covdata/
         include-hidden-files: true  # the data files are .coverage.*
-
-  # Coverage of the distributed suite alone, across all grids, in the run summary. The
-  # combined serial + distributed number for the badge is computed in tests.yml.
-  coverage:
-    name: Distributed coverage
-    needs: distributed
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v5
-
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v6
-      with:
-        python-version: "3.11"
-
-    - uses: actions/download-artifact@v4
-      with:
-        pattern: coverage-distributed-*
-        path: covdata
-        merge-multiple: true
-
-    - name: Combine and report
-      run: |
-        python3 -m pip install coverage
-        python3 -m coverage combine --rcfile=.coveragerc covdata
-        python3 -m coverage report --rcfile=.coveragerc --format=markdown >> "$GITHUB_STEP_SUMMARY"
-        python3 -m coverage report --rcfile=.coveragerc | tail -1

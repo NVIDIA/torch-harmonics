@@ -5,7 +5,8 @@ on:
   pull_request:
   workflow_dispatch:
 
-# the coverage badge step authenticates with its own PAT, so the workflow token stays read-only
+# read-only by default; the coverage job alone gets write access, to publish the badge and
+# the pull request comment with the workflow's own token
 permissions:
   contents: read
 
@@ -55,20 +56,29 @@ jobs:
       run: |
         python3 -m pytest -ra --doctest-modules ./torch_harmonics/
 
-  # The distributed suite, once per merge to main, so the badge covers both suites. On pull
-  # requests it runs from its own trigger in test_distributed.yml instead.
+  # The distributed suite: on pull requests, and once per merge to main, so the coverage
+  # below covers both suites. Not on plain branch pushes -- up to 8 ranks per grid is heavy.
   distributed:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     uses: ./.github/workflows/test_distributed.yml
 
-  # Combine the serial and distributed coverage and publish it as the badge.
+  # Combine the serial and distributed coverage. On main, publish it -- badge, HTML report
+  # and the reference for later comparisons -- to the python-coverage-comment-action-data
+  # branch of this repository; on a pull request, comment on it with the coverage change and
+  # the coverage of the lines it touches. Uses only the workflow's own token.
   coverage:
-    name: Coverage badge
+    name: Coverage
     needs: [build, distributed]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # push the coverage data branch (main only)
+      pull-requests: write  # comment on same-repository pull requests; fork PRs get a read-only token, see coverage_comment.yml
     steps:
     - uses: actions/checkout@v5
+      with:
+        # the action passes its token to git itself; keep the write token out of .git/config
+        persist-credentials: false
 
     - name: Set up Python 3.11
       uses: actions/setup-python@v6
@@ -84,25 +94,24 @@ jobs:
     - name: Combine serial and distributed coverage
       run: |
         python3 -m pip install coverage
+        # combined here rather than by the action, which would not apply the [paths]
+        # remapping of the distributed jobs' site-packages paths
         python3 -m coverage combine --rcfile=.coveragerc covdata
-        python3 -m coverage report --rcfile=.coveragerc --format=markdown >> "$GITHUB_STEP_SUMMARY"
-        python3 -m coverage json --rcfile=.coveragerc
+        python3 -m coverage report --rcfile=.coveragerc | tail -1
 
-    - name: Update coverage badge
-      env:
-        GIST_TOKEN: ${{ secrets.COVERAGE_GIST_TOKEN }}
-      run: |
-        COV=$(python3 -c "import json; print(json.load(open('coverage.json'))['totals']['percent_covered_display'])")
-        COLOR=$(python3 -c "
-        c = float('$COV')
-        print('brightgreen' if c >= 90 else 'green' if c >= 75 else 'yellow' if c >= 60 else 'red')
-        ")
-        PAYLOAD=$(python3 -c "
-        import json
-        print(json.dumps({'files': {'torch_harmonics_coverage.json': {'content': json.dumps({'schemaVersion': 1, 'label': 'coverage', 'message': '${COV}%', 'color': '${COLOR}'})}}}))
-        ")
-        curl -s -X PATCH \
-          -H "Authorization: token ${GIST_TOKEN}" \
-          -H "Accept: application/vnd.github+json" \
-          -d "$PAYLOAD" \
-          "https://api.github.com/gists/5d08af0f7f08ac865934a1929f198ffd"
+    - name: Publish coverage
+      id: coverage_comment
+      uses: py-cov-action/python-coverage-comment-action@e5fb2218463c3377f3504b0c5b5646ed53da7a2f  # v4.5
+      with:
+        GITHUB_TOKEN: ${{ github.token }}
+        MINIMUM_GREEN: 90
+        MINIMUM_ORANGE: 60
+
+    # a fork's pull request gets a read-only token, so the action only writes the comment to
+    # a file; coverage_comment.yml posts it from a trusted context
+    - name: Store the pull request comment
+      if: steps.coverage_comment.outputs.COMMENT_FILE_WRITTEN == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: python-coverage-comment-action
+        path: python-coverage-comment-action.txt

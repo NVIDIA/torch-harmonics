@@ -1,0 +1,38 @@
+name: Post coverage comment
+
+# Pull requests from forks run tests.yml with a read-only token, so its coverage job can only
+# write the comment to an artifact. This workflow runs in the trusted context of the base
+# repository once tests.yml completes, and posts that comment. Same-repository pull requests
+# get their comment from tests.yml directly, and this run is a no-op.
+#
+# workflow_run is safe here because nothing from the pull request is checked out or executed:
+# the only input is the comment artifact, which the action posts as text.
+on:  # zizmor: ignore[dangerous-triggers] see above
+  workflow_run:
+    workflows: ["Run local tests"]
+    types:
+      - completed
+
+concurrency:
+  # github.ref is always the default branch on workflow_run; group by the PR's branch instead
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  comment:
+    name: Post coverage comment
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
+    permissions:
+      pull-requests: write  # post the comment, and edit it on later runs
+      actions: read  # download the comment artifact from the triggering run
+      contents: read
+    steps:
+    # DO NOT check out the repository here: see the note on workflow_run above
+    - name: Post comment
+      uses: py-cov-action/python-coverage-comment-action@e5fb2218463c3377f3504b0c5b5646ed53da7a2f  # v4.5
+      with:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_PR_RUN_ID: ${{ github.event.workflow_run.id }}

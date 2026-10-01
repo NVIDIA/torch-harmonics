@@ -46,7 +46,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 [**Overview**](#overview) | [**Installation**](#installation) | [**More information**](#more-about-torch-harmonics) | [**Getting started**](#getting-started) | [**Contributors**](#contributors) | [**Cite us**](#cite-us) | [**References**](#references)
 
 [![tests](https://github.com/NVIDIA/torch-harmonics/actions/workflows/tests.yml/badge.svg)](https://github.com/NVIDIA/torch-harmonics/actions/workflows/tests.yml)
-[![coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/bonevbs/5d08af0f7f08ac865934a1929f198ffd/raw/torch_harmonics_coverage.json&cacheSeconds=3600)](https://github.com/NVIDIA/torch-harmonics/actions/workflows/tests.yml)
+[![coverage](https://raw.githubusercontent.com/NVIDIA/torch-harmonics/python-coverage-comment-action-data/badge.svg)](https://htmlpreview.github.io/?https://github.com/NVIDIA/torch-harmonics/blob/python-coverage-comment-action-data/htmlcov/index.html)
 [![pypi](https://img.shields.io/pypi/v/torch_harmonics)](https://pypi.org/project/torch_harmonics/)
 
 ## Overview
