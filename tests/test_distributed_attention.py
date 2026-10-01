@@ -51,9 +51,7 @@ import torch_harmonics as th
 import torch_harmonics.distributed as thd
 
 # Opt-in gate for slow / large-grid parameterized cases (e.g. 721x1440 ERA5-like
-# shapes that exercise the long-row branch of the ring backward dispatch).
-# Mirrors the TORCH_HARMONICS_RUN_PERF_TESTS pattern in tests/test_attention.py
-# and tests/test_convolution.py.
+# shapes, whose polar rows have the longest neighbourhoods).
 _run_slow_tests = os.getenv("TORCH_HARMONICS_RUN_SLOW_TESTS", "0") == "1"
 
 # (nlat_in, nlon_in, nlat_out, nlon_out) shapes whose parameterized cases are
@@ -143,11 +141,10 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 1, 8, 8, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
-            # Long-row coverage on realistic ERA5-like grids. With default theta_cutoff
-            # = pi/(nlat_out-1), wide nlon_in makes the kernel disk cover the full
-            # longitude ring near the poles, so pole rows exceed SPLIT_LONG_ROW_MIN_LEN
-            # (1024) while mid-latitude rows stay short -- exercising BOTH the long-row
-            # and short-row branches of the ring backward pass-2 dispatch. Memory note:
+            # Realistic ERA5-like grid with strongly unbalanced rows: near the poles the
+            # neighbourhood disk covers the whole longitude ring, so pole rows hold
+            # thousands of neighbours while mid-latitude rows hold tens, and pole arcs
+            # span several ring chunks of the azimuth split. Memory note:
             # 721x1440 x B=2 x C=16 fp32 ~250 MB per major tensor; expect a few GB
             # working-set including halos and gradient buffers. Splittable up to 2x4
             # (uneven polar shard for odd nlat is handled by the test framework).
@@ -171,11 +168,10 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             # mixed grid: equiangular input -> legendre-gauss output
             [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, torch.float32, 1e-5, 1e-4],
             [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, torch.float32, 1e-5, 1e-4],
-            # Realistic ERA5-like downsample (equi -> LG, ~2x lat/lon). theta_cutoff =
-            # pi/359 gives a kernel band ~4 input lats deep, so pole rows hit several
-            # x nlon_in = O(5760) entries (long) while equator rows stay ~O(64) (short).
-            # Exercises long-row branch in combination with pscale>1 and a mixed grid.
-            # Same memory caveat as the 721x1440 same-shape case above.
+            # Realistic ERA5-like downsample (equi -> LG, ~2x lat/lon). The default cutoff
+            # spans a few input latitudes, so pole rows hold several x nlon_in entries
+            # while equator rows stay short -- the same imbalance as above, combined with
+            # pscale>1 and a mixed grid. Same memory caveat as the 721x1440 case above.
             [721, 1440, 360, 720, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, torch.float32, 1e-5, 1e-4],
             # heads=4 with asymmetric channels (k=32, out=16; in=16)
             [64, 128, 64, 128, 2, 16, 4, 32, 16, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
@@ -219,21 +215,14 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             [32, 64, 32, 64, 2, 1280, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             # BDIM_X=256  (per-head 2049..4096)
             [16, 32, 16, 32, 2, 2560, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
-            # BDIM_X=512 and BDIM_X=1024 disabled until the LDG bwd pass1/pass2 launches
-            # call ``ensure_dyn_shmem``. The dynamic-shmem request for pass1/pass2 is
-            # ``sizeof(float4) * (nchans_in + nchans_out) * block.y``; at the BDIM_X=1024
-            # configuration (nchans=8704, float4 vec = 2176) that's ~69.6 KiB, exceeding the
-            # default 48 KiB per-CTA opt-in on every CUDA arch. Only the TMA branches
-            # currently call ensure_dyn_shmem; the LDG branches launch the kernel directly
-            # with the oversized shsize, which the driver rejects with cudaErrorInvalidValue.
-            # See attention_cuda_bwd_ring.cu (LDG pass1/pass2 dispatch) — fix is to mirror
-            # the ensure_dyn_shmem call already present in the TMA branches.
-            #
-            # # BDIM_X=512  (per-head 4097..8192)
-            # [16, 32, 16, 32, 2, 4608, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
-            # # BDIM_X=1024 (per-head 8193..16384). This also stresses the dynamic-shmem opt-in
-            # # (ensure_dyn_shmem) on the TMA path: ~5*nchans*4 B exceeds the default 48 KiB limit.
-            # [8, 16, 8, 16, 2, 8704, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # BDIM_X=512  (per-head 4097..8192)
+            [16, 32, 16, 32, 2, 4608, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # top of the BDIM_X=512 bucket: the ring bwd pass-2 request,
+            # ``sizeof(float) * (nchans_in + nchans_out)``, is 64 KiB here, above the default
+            # 48 KiB, so this also covers the opt-in (launch_dyn_shmem). Per-head counts
+            # past 8192 take the generic kernels, whose pass-1 request (32 B per channel)
+            # exceeds every device's per-block maximum.
+            [8, 16, 8, 16, 2, 8192, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             # upsampling tests (scatter ring kernels), pscale_out=2 (lat+lon)
             [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             [33, 64, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
@@ -299,10 +288,8 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         attn_args = dict(
             in_channels=C,
-            in_shape=(nlat_in, nlon_in),
-            out_shape=(nlat_out, nlon_out),
-            grid_in=grid_in,
-            grid_out=grid_out,
+            grid_in=th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
+            grid_out=th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
             num_heads=num_heads,
             bias=True,
             use_qknorm=use_qknorm,
@@ -441,10 +428,8 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         attn_args = dict(
             in_channels=C,
-            in_shape=(nlat_in, nlon_in),
-            out_shape=(nlat_out, nlon_out),
-            grid_in=grid_in,
-            grid_out=grid_out,
+            grid_in=th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
+            grid_out=th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
             num_heads=num_heads,
             bias=True,
             use_qknorm=False,
@@ -540,6 +525,52 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             )
             self.assertTrue(reduce_success(ok, self.device), f"input grad {n} (frozen={frozen})")
 
+    @parameterized.expand(
+        [
+            # nlat_in, nlon_in, nlat_out, nlon_out, backend
+            [64, 128, 64, 128, "ring-gather"],  # self-attention
+            [64, 128, 32, 64, "ring-gather"],  # downsampling
+            [32, 64, 64, 128, "ring-upsample"],  # upsampling
+        ],
+        skip_on_empty=True,
+    )
+    def test_backend_state(self, nlat_in, nlon_in, nlat_out, nlon_out, backend):
+        """
+        The layer selects the ring backend for its direction and holds exactly that
+        backend's state, sized to this rank's shard -- on construction and after a move.
+
+        Built on CPU and moved, as a model normally is: construction must not refuse for
+        want of a device, and the move reselects the backend and prepares its state on
+        the new device, rather than carrying the old one along.
+        """
+        attn = thd.DistributedNeighborhoodAttentionS2(
+            grid_in=th.as_grid("equiangular", nlat=nlat_in, nlon=nlon_in),
+            grid_out=th.as_grid("equiangular", nlat=nlat_out, nlon=nlon_out),
+            in_channels=8,
+            num_heads=2,
+            bias=False,
+        )
+
+        # the rows the ring kernels walk: this rank's output latitudes when gathering,
+        # its halo-padded input latitudes when scattering
+        nrows = attn.nlat_in_local + 2 * attn.r_lat if attn.upsample else attn.nlat_out_local
+
+        def check_state():
+            self.assertEqual(attn.backend.name, backend)
+            # exactly what the ring backend reads, as for every serial backend
+            self.assertEqual({name for name, _ in attn.named_buffers()}, {"ring_weights", "psi_seg", "psi_seg_off"})
+            self.assertEqual(set(attn._backend_state), {"ring_weights", "psi_seg", "psi_seg_off"})
+            self.assertEqual(attn.psi_seg_off.numel(), nrows + 1)
+            self.assertEqual(int(attn.psi_seg_off[-1]), attn.psi_seg.shape[0])
+            self.assertEqual(attn.psi_seg.device, attn.ring_weights.device)
+
+        check_state()
+
+        # .to() moves the module in place and reselects the backend on the new device
+        attn.to(self.device)
+        check_state()
+        self.assertEqual(attn.psi_seg.device.type, self.device.type)
+
     def test_wrong_shape_assertions(self):
         """Verify that forward raises RuntimeError on spatial-shape mismatches."""
         B, C = 2, 16
@@ -547,11 +578,9 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         out_shape = (32, 64)
 
         attn = thd.DistributedNeighborhoodAttentionS2(
+            grid_in=th.as_grid("equiangular", nlat=in_shape[0], nlon=in_shape[1]),
+            grid_out=th.as_grid("equiangular", nlat=out_shape[0], nlon=out_shape[1]),
             in_channels=C,
-            in_shape=in_shape,
-            out_shape=out_shape,
-            grid_in="equiangular",
-            grid_out="equiangular",
             num_heads=1,
             bias=False,
         ).to(self.device)

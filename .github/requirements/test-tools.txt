@@ -1,0 +1,11 @@
+# Test-only dependencies that cannot be declared in the `dev` extra of pyproject.toml.
+#
+# earth2grid is not published on PyPI, so it is installed from GitHub -- and PyPI rejects
+# any package whose metadata carries a direct URL dependency, extras included, so it has to
+# live here rather than in pyproject.toml. Pinned to a commit, not a tag, so the reference
+# cannot move under us. It builds a C++ extension against the installed torch, so install
+# it with --no-build-isolation after torch, numpy and packaging.
+#
+# Used by tests/test_grid_assumptions.py to check HEALPix pixel centres against an
+# independent implementation; the tests skip when it is absent.
+earth2grid @ git+https://github.com/NVlabs/earth2grid.git@6e39b069f0558cd0eff0ec666ede5e125d79b4ff  # v2025.11.1

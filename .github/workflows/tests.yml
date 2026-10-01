@@ -31,6 +31,12 @@ jobs:
       run: |
         python3 -m pip install --no-build-isolation -e ".[dev]"
 
+    # test-only dependencies that are not on PyPI; see the file for why they live there
+    - name: Install test-only dependencies
+      run: |
+        python3 -m pip install numpy packaging
+        python3 -m pip install --no-build-isolation -r .github/requirements/test-tools.txt
+
     - name: Test with pytest
       run: |
         python3 -m pytest -ra --cov-report term --cov-report json --cov-config=.coveragerc --cov=torch_harmonics \

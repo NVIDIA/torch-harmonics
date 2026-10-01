@@ -39,6 +39,7 @@ import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
 from torch_harmonics import InverseRealSHT
+from torch_harmonics.grid import require_regular_grid
 from torch_harmonics.utils import check
 
 
@@ -468,20 +469,19 @@ class PositionEmbedding(nn.Module, metaclass=abc.ABCMeta):
 
     Parameters
     ----------
-    img_shape : tuple, optional
-        Image shape (height, width), by default (480, 960)
-    grid : str, optional
-        Grid type, by default "equiangular"
+    grid : RegularGridS2
+        Descriptor of the grid the embedded fields live on; it fixes the embedding's
+        ``(nlat, nlon)`` shape.
     num_chans : int, optional
         Number of channels, by default 1
     """
 
-    def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1):
+    def __init__(self, grid, num_chans=1):
         super().__init__()
 
-        self.img_shape = img_shape
+        self.grid = require_regular_grid(grid)
+        self.img_shape = self.grid.shape
         self.num_chans = num_chans
-        self.grid = grid
 
     def forward(self, x: torch.Tensor):
 
@@ -497,16 +497,14 @@ class SequencePositionEmbedding(PositionEmbedding):
 
     Parameters
     ----------
-    img_shape : tuple, optional
-        Image shape (height, width), by default (480, 960)
-    grid : str, optional
-        Grid type, by default "equiangular"
+    grid : RegularGridS2
+        Descriptor of the grid the embedded fields live on.
     num_chans : int, optional
         Number of channels, by default 1
     """
 
-    def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1):
-        super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
+    def __init__(self, grid, num_chans=1):
+        super().__init__(grid, num_chans=num_chans)
 
         with torch.no_grad():
             # alternating custom position embeddings
@@ -530,19 +528,24 @@ class SpectralPositionEmbedding(PositionEmbedding):
 
     Parameters
     ----------
-    img_shape : tuple, optional
-        Image shape (height, width), by default (480, 960)
-    grid : str, optional
-        Grid type, by default "equiangular"
+    grid : RegularGridS2
+        Descriptor of the grid the embedded fields live on; the harmonics are
+        synthesized on it.
+    lmax : int, optional
+        Maximum spherical harmonic degree of the embedding. If None (default),
+        the truncation is derived from the grid.
+    mmax : int, optional
+        Maximum azimuthal order of the embedding. If None (default), the
+        truncation is derived from the grid.
     num_chans : int, optional
         Number of channels, by default 1
     """
 
-    def __init__(self, img_shape=(480, 960), lmax=None, mmax=None, grid="equiangular", num_chans=1):
-        super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
+    def __init__(self, grid, lmax=None, mmax=None, num_chans=1):
+        super().__init__(grid, num_chans=num_chans)
 
         # compute maximum required frequency and prepare isht
-        isht = InverseRealSHT(nlat=self.img_shape[0], nlon=self.img_shape[1], lmax=lmax, mmax=mmax, grid=grid)
+        isht = InverseRealSHT(self.grid, lmax=lmax, mmax=mmax)
 
         # fill position embedding
         with torch.no_grad():
@@ -576,18 +579,16 @@ class LearnablePositionEmbedding(PositionEmbedding):
 
     Parameters
     ----------
-    img_shape : tuple, optional
-        Image shape (height, width), by default (480, 960)
-    grid : str, optional
-        Grid type, by default "equiangular"
+    grid : RegularGridS2
+        Descriptor of the grid the embedded fields live on.
     num_chans : int, optional
         Number of channels, by default 1
     embed_type : str, optional
         Embedding type ("lat" or "latlon"), by default "lat"
     """
 
-    def __init__(self, img_shape=(480, 960), grid="equiangular", num_chans=1, embed_type="lat"):
-        super().__init__(img_shape=img_shape, grid=grid, num_chans=num_chans)
+    def __init__(self, grid, num_chans=1, embed_type="lat"):
+        super().__init__(grid, num_chans=num_chans)
 
         if embed_type == "latlon":
             self.position_embeddings = nn.Parameter(torch.zeros(1, self.num_chans, self.img_shape[0], self.img_shape[1]))

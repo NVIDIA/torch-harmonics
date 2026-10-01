@@ -50,13 +50,12 @@ from testutils import (
 
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
+from torch_harmonics.disco.backends import OptimizedBackend, ReferenceBackend
 from torch_harmonics.distributed import compute_polar_halo_radius, compute_split_shapes
 from torch_harmonics.quadrature import compute_theta_cutoff, effective_theta_cutoff, precompute_latitudes
 
 # Opt-in gate for slow / large-grid parameterized cases (e.g. 721x1440 ERA5-like
-# shapes). Mirrors the TORCH_HARMONICS_RUN_PERF_TESTS pattern in
-# tests/test_attention.py and tests/test_convolution.py, and the slow gate in
-# tests/test_distributed_attention.py.
+# shapes), as in tests/test_distributed_attention.py.
 _run_slow_tests = os.getenv("TORCH_HARMONICS_RUN_SLOW_TESTS", "0") == "1"
 
 # (nlat_in, nlon_in, nlat_out, nlon_out) shapes whose parameterized cases are
@@ -220,29 +219,10 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "lobatto", "lobatto", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
             [64, 128, 32, 64, 32, 8, (3), "piecewise linear", "mean", 1, "equiangular", "legendre-gauss", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
             [64, 128, 128, 256, 32, 8, (3), "piecewise linear", "mean", 1, "lobatto", "lobatto", torch.float32, True, False, "halo-exchange", 1e-6, 1e-5],
-            # equiangular-trapezoidal is equispaced in cos(theta), so its default cutoff is
+            # trapezoidal is equispaced in cos(theta), so its default cutoff is
             # ~5x wider than the other grids at the same nlat and psi is correspondingly
             # denser. batch_size/num_chan dialed down to keep the working set bounded.
-            [
-                64,
-                128,
-                64,
-                128,
-                2,
-                8,
-                (3),
-                "piecewise linear",
-                "mean",
-                1,
-                "equiangular-trapezoidal",
-                "equiangular-trapezoidal",
-                torch.float32,
-                False,
-                False,
-                "halo-exchange",
-                1e-6,
-                1e-5,
-            ],
+            [64, 128, 64, 128, 2, 8, (3), "piecewise linear", "mean", 1, "trapezoidal", "trapezoidal", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5],
             # ERA5-like grids, gated behind TORCH_HARMONICS_RUN_SLOW_TESTS=1.
             # batch_size and num_chan dialed down (2, 8) vs the rest of the suite (32, 8)
             # to keep the working set under a few GB at these resolutions.
@@ -294,13 +274,13 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             # even though the base class selects it automatically on any install without the
             # extension. It is also the only consumer that builds a torch.sparse_coo_tensor and
             # therefore has to declare psi's column extent, which the halo mode re-keys onto a
-            # padded input band -- a mismatch the CSR and kpacked kernels cannot see because they
+            # padded input band -- a mismatch the arc and kpacked kernels cannot see because they
             # just index into whatever x they are handed. One row per polar mode: halo-exchange
             # for the padded extent, reduce-scatter to pin that r_lat=0 still yields the
             # unpadded one.
             #
             # Resolution and batch_size/num_chan are dialed down relative to the rest of the
-            # suite: the fallback contracts a torch.sparse_coo_tensor instead of the CSR kernel
+            # suite: the fallback contracts a torch.sparse_coo_tensor instead of the arc kernel
             # and is orders of magnitude slower. What these rows check is index bookkeeping,
             # which is resolution-independent, so the smallest grid that still splits across
             # polar ranks is enough.
@@ -337,10 +317,8 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
         # ``fused`` mirrors the serial conv: False -> standard a2a (K-expanded
         # saved), True -> reordered a2a (einsum-first, K-expanded recomputed in
-        # backward). fused=True is CUDA + optimized-kernel only, and the
-        # transpose class has no ``fused`` argument, so it is ignored there.
-        if fused and not torch.cuda.is_available():
-            self.skipTest("fused=True is CUDA-only")
+        # backward). The transpose class has no ``fused`` argument, so it is
+        # ignored there.
 
         # For AMP dtypes the modules + inputs stay in float32 and autocast
         # handles the downcast inside fwd/bwd — same pattern as the serial
@@ -355,17 +333,15 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         disco_args = dict(
             in_channels=C,
             out_channels=C,
-            in_shape=(nlat_in, nlon_in),
-            out_shape=(nlat_out, nlon_out),
             basis_type=basis_type,
             basis_norm_mode=basis_norm_mode,
             kernel_shape=kernel_shape,
             groups=groups,
-            grid_in=grid_in,
-            grid_out=grid_out,
+            grid_in=th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
+            grid_out=th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
             bias=True,
             # applied to the reference too, so the comparison stays between the same two
-            # algorithms and a fallback row is not silently checking the CSR kernel
+            # algorithms and a fallback row is not silently checking the arc kernel
             optimized_kernel=optimized_kernel,
         )
 
@@ -381,6 +357,13 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
                 fused=fused,
                 polar_mode=polar_mode,
             ).to(dtype=module_dtype, device=self.device)
+
+        # the transpose must declare itself so: the kpacked backend serves the forward only,
+        # and would otherwise pack the transpose's psi, keyed by the other grid's latitudes
+        self.assertEqual(conv_dist.transpose, transpose)
+        self.assertEqual(conv_local.transpose, transpose)
+        if transpose:
+            self.assertNotEqual(conv_dist.backend.name, "kpacked")
 
         # copy the weights from the local conv into the dist conv
         with torch.no_grad():
@@ -458,13 +441,10 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
     def _run_kpacked_fallback(self, fused: bool, dtype: torch.dtype, atol: float, rtol: float):
         """Shared body for kpacked-fallback tests.
 
-        Monkeypatches psi_kpacked_K_pad to an ineligible value (24) so that
-        the distributed conv falls back to the CSR path even with bf16/fp16
-        input, and verifies fwd+bwd correctness against the serial reference
-        (which also has kpacked disabled via the same monkeypatch).
+        Rules the kpacked backend out, so the distributed conv runs the arc kernels even
+        with bf16/fp16 input, and verifies fwd+bwd correctness against the serial reference
+        (which has kpacked ruled out the same way).
         """
-        if fused and not torch.cuda.is_available():
-            self.skipTest("fused=True is CUDA-only")
 
         set_seed(555)
         nlat, nlon = 64, 128
@@ -473,14 +453,12 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         args = dict(
             in_channels=C,
             out_channels=C,
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
             basis_type="piecewise linear",
             basis_norm_mode="mean",
             kernel_shape=(3,),
             groups=1,
-            grid_in="equiangular",
-            grid_out="equiangular",
+            grid_in=th.as_grid("equiangular", nlat=nlat, nlon=nlon),
+            grid_out=th.as_grid("equiangular", nlat=nlat, nlon=nlon),
             bias=True,
         )
 
@@ -491,9 +469,10 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             conv_dist.weight.copy_(conv_local.weight)
             conv_dist.bias.copy_(conv_local.bias)
 
-        # Force both to CSR fallback by making K_PAD ineligible.
-        conv_local.psi_kpacked_K_pad = 24
-        conv_dist.psi_kpacked_K_pad = 24
+        # Force both onto the arc kernels.
+        for conv in (conv_local, conv_dist):
+            conv._backends = (OptimizedBackend, ReferenceBackend)
+            conv._select_backend()
 
         inp_full = torch.randn((B, C, nlat, nlon), dtype=torch.float32, device=self.device)
 
@@ -522,15 +501,15 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         self.assertTrue(reduce_success(ok, self.device), "gradients")
 
     def test_kpacked_fallback_bf16_unfused(self):
-        """bf16 + kpacked disabled (K_PAD=24) → CSR path, fused=False."""
+        """bf16 + kpacked ruled out → arc kernels, fused=False."""
         self._run_kpacked_fallback(fused=False, dtype=torch.bfloat16, atol=5e-2, rtol=5e-2)
 
     def test_kpacked_fallback_bf16_fused(self):
-        """bf16 + kpacked disabled (K_PAD=24) → CSR path, fused=True."""
+        """bf16 + kpacked ruled out → arc kernels, fused=True."""
         self._run_kpacked_fallback(fused=True, dtype=torch.bfloat16, atol=5e-2, rtol=5e-2)
 
     def test_kpacked_fallback_fp16_unfused(self):
-        """fp16 + kpacked disabled (K_PAD=24) → CSR path, fused=False."""
+        """fp16 + kpacked ruled out → arc kernels, fused=False."""
         self._run_kpacked_fallback(fused=False, dtype=torch.float16, atol=2e-2, rtol=1e-2)
 
     @parameterized.expand(
@@ -581,7 +560,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
         Each rank compares against its own slice of the serial construction, so no collective
         is involved and a failure identifies the rank. The comparison is order-insensitive --
-        the local build re-keys and re-sorts into CSR -- so entries are sorted by
+        the local build re-keys and re-sorts psi -- so entries are sorted by
         (kernel, output latitude, global input index) on both sides first.
         """
 
@@ -599,12 +578,12 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         # servable on a coarse polar split and not on a fine one. The assertion is then that the
         # constructor agrees -- refusing exactly when the support outruns a neighbour, and saying
         # which mode to use instead.
-        lats_in, _ = precompute_latitudes(nlat_in, grid=grid_in)
-        lats_out, _ = precompute_latitudes(nlat_out, grid=grid_out)
+        colats_in, _ = precompute_latitudes(nlat_in, grid=grid_in)
+        colats_out, _ = precompute_latitudes(nlat_out, grid=grid_out)
         try:
             compute_polar_halo_radius(
-                lats_in,
-                lats_out,
+                colats_in,
+                colats_out,
                 effective_theta_cutoff(theta_cutoff),
                 compute_split_shapes(nlat_in, self.grid_size_h),
                 compute_split_shapes(nlat_out, self.grid_size_h),
@@ -616,13 +595,11 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         if not transpose and polar_mode == "halo-exchange" and not halo_servable:
             with self.assertRaises(ValueError) as ctx:
                 thd.DistributedDiscreteContinuousConvS2(
+                    th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
+                    th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
                     1,
                     1,
-                    (nlat_in, nlon_in),
-                    (nlat_out, nlon_out),
                     kernel_shape=kernel_shape,
-                    grid_in=grid_in,
-                    grid_out=grid_out,
                     theta_cutoff=theta_cutoff,
                     polar_mode=polar_mode,
                 )
@@ -631,26 +608,39 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
         if transpose:
             conv_local = th.DiscreteContinuousConvTransposeS2(
-                1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
+                th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
+                th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
+                1,
+                1,
+                kernel_shape=kernel_shape,
+                theta_cutoff=theta_cutoff,
             ).to(self.device)
             conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(
-                1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
+                th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
+                th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
+                1,
+                1,
+                kernel_shape=kernel_shape,
+                theta_cutoff=theta_cutoff,
             ).to(self.device)
             # the transpose module's psi indexes the output grid along the split axis
             nlon_split = nlon_out
             shapes = conv_dist.lat_out_shapes
         else:
             conv_local = th.DiscreteContinuousConvS2(
-                1, 1, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape=kernel_shape, grid_in=grid_in, grid_out=grid_out, theta_cutoff=theta_cutoff
+                th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
+                th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
+                1,
+                1,
+                kernel_shape=kernel_shape,
+                theta_cutoff=theta_cutoff,
             ).to(self.device)
             conv_dist = thd.DistributedDiscreteContinuousConvS2(
+                th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
+                th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
                 1,
                 1,
-                (nlat_in, nlon_in),
-                (nlat_out, nlon_out),
                 kernel_shape=kernel_shape,
-                grid_in=grid_in,
-                grid_out=grid_out,
                 theta_cutoff=theta_cutoff,
                 polar_mode=polar_mode,
             ).to(self.device)
@@ -658,10 +648,14 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             shapes = conv_dist.lat_in_shapes
 
         def sorted_entries(ker, row, col, vals):
-            """Canonical ordering so the two builds are comparable regardless of CSR layout."""
+            """Canonical ordering so the two builds are comparable regardless of layout."""
             key = (ker.to(torch.int64) * (nlat_out + nlat_in) + row.to(torch.int64)) * (nlat_in * nlat_out * nlon_split) + col.to(torch.int64)
             order = torch.argsort(key)
             return ker[order], row[order], col[order], vals[order]
+
+        # psi as each layer describes it, whichever backend holds it
+        dist_ker, dist_row, dist_col, dist_vals = conv_dist._psi_coo()
+        ser_ker, ser_row, ser_col, ser_vals = conv_local._psi_coo()
 
         # The two polar strategies key psi differently, so both the un-keying and the predicate
         # for "which serial entries should this rank hold" differ. Lift the local tensor back to
@@ -680,27 +674,27 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             out_start = sum(conv_dist.lat_out_shapes[: self.hrank])
             halo_start = sum(conv_dist.lat_in_shapes[: self.hrank]) - r_lat
 
-            lat_loc = conv_dist.psi_col_idx // nlon_split
-            lon_loc = conv_dist.psi_col_idx % nlon_split
+            lat_loc = dist_col // nlon_split
+            lon_loc = dist_col % nlon_split
             col_global = (lat_loc + halo_start) * nlon_split + lon_loc
-            row_global = conv_dist.psi_row_idx + out_start
+            row_global = dist_row + out_start
 
-            keep = (conv_local.psi_row_idx >= out_start) & (conv_local.psi_row_idx < out_start + conv_dist.nlat_out_local)
+            keep = (ser_row >= out_start) & (ser_row < out_start + conv_dist.nlat_out_local)
         else:
             # rows stay global, columns index the local input slice
             lat_start = sum(shapes[: self.hrank])
             lat_local = shapes[self.hrank]
 
-            lat_loc = conv_dist.psi_col_idx // nlon_split
-            lon_loc = conv_dist.psi_col_idx % nlon_split
+            lat_loc = dist_col // nlon_split
+            lon_loc = dist_col % nlon_split
             col_global = (lat_loc + lat_start) * nlon_split + lon_loc
-            row_global = conv_dist.psi_row_idx
+            row_global = dist_row
 
-            lat_ser = conv_local.psi_col_idx // nlon_split
+            lat_ser = ser_col // nlon_split
             keep = (lat_ser >= lat_start) & (lat_ser < lat_start + lat_local)
 
-        got = sorted_entries(conv_dist.psi_ker_idx, row_global, col_global, conv_dist.psi_vals)
-        ref = sorted_entries(conv_local.psi_ker_idx[keep], conv_local.psi_row_idx[keep], conv_local.psi_col_idx[keep], conv_local.psi_vals[keep])
+        got = sorted_entries(dist_ker, row_global, col_global, dist_vals)
+        ref = sorted_entries(ser_ker[keep], ser_row[keep], ser_col[keep], ser_vals[keep])
 
         if verbose:
             print(f"psi block on rank ({self.hrank},{self.wrank}), use_halo={use_halo}: {got[0].numel()} vs {ref[0].numel()} entries")
@@ -715,15 +709,17 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         # wrong in the same way as the implementation would pass it; summing the local entry
         # counts over the polar group and comparing to the serial total catches a partition that
         # drops or duplicates entries, which is the failure that would quietly change results.
-        local_nnz = torch.tensor([conv_dist.psi_vals.numel()], device=self.device, dtype=torch.int64)
+        local_nnz = torch.tensor([dist_vals.numel()], device=self.device, dtype=torch.int64)
         if self.grid_size_h > 1:
             dist.all_reduce(local_nnz, group=self.h_group)
-        self.assertEqual(int(local_nnz.item()), int(conv_local.psi_vals.numel()), "polar ranks together must hold every serial psi entry exactly once")
+        self.assertEqual(int(local_nnz.item()), int(ser_vals.numel()), "polar ranks together must hold every serial psi entry exactly once")
 
     def test_polar_mode_rejects_unknown_value(self):
         """An unrecognised mode is a typo, not a request for a default."""
         with self.assertRaises(ValueError) as ctx:
-            thd.DistributedDiscreteContinuousConvS2(1, 1, (32, 64), (32, 64), kernel_shape=(3, 3), polar_mode="halo")
+            thd.DistributedDiscreteContinuousConvS2(
+                th.as_grid("equiangular", nlat=32, nlon=64), th.as_grid("equiangular", nlat=32, nlon=64), 1, 1, kernel_shape=(3, 3), polar_mode="halo"
+            )
         self.assertIn("halo-exchange", str(ctx.exception))
 
 

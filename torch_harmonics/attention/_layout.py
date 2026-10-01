@@ -113,7 +113,7 @@ if _OPTIMIZED:
     #
     # This differs from the attention ops themselves (see the AutocastCUDA
     # registrations in optimized/attention_optimized.py and
-    # kernels_torch/attention_torch.py), which *do* need a rule because they
+    # kernels_torch/attention_regular_torch.py), which *do* need a rule because they
     # must pull k/v/q to a common autocast dtype before the softmax. A layout
     # conversion has no such requirement: casting inside it would be a silent
     # precision change. test_autocast_preserves_dtype pins this.

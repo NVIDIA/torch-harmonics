@@ -36,35 +36,18 @@ from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from disco_helpers import optimized_kernels_is_available, pack_psi_dense, preprocess_psi
+from disco_helpers import optimized_kernels_is_available
 
+from torch_harmonics._backend import BackendSelectionMixin
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
-from torch_harmonics.quadrature import THETA_CUTOFF_EPS, compute_theta_cutoff, effective_theta_cutoff, latitude_support_band, precompute_latitudes, precompute_longitudes
+from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.quadrature import THETA_CUTOFF_EPS, effective_theta_cutoff, latitude_support_band
+from torch_harmonics.truncation import truncate_support
 
 from ._disco_utils import _get_psi
-from .kernels_torch.disco_torch import _disco_s2_contraction_torch, _disco_s2_transpose_contraction_torch
-from .optimized.disco_optimized import (
-    _build_kernel_split_csr,
-    _disco_s2_contraction_kpacked,
-    _disco_s2_contraction_optimized,
-    _disco_s2_conv_save_x_kpacked,
-    _disco_s2_conv_save_x_optimized,
-    _disco_s2_fused_conv_kpacked,
-    _disco_s2_fused_conv_optimized,
-    _disco_s2_transpose_contraction_optimized,
-    _kpacked_build_available,
-    _kpacked_supported_on_device,
-    _maybe_kpack_psi,
-    _split_csr_python_offsets,
-    _use_spatial_first_dgrad,
-)
-
-
-def _kpacked_device_supported_for_tensor(tensor: torch.Tensor) -> bool:
-    if not tensor.is_cuda:
-        return False
-    return _kpacked_supported_on_device(tensor.get_device())
+from .backends import BACKENDS
+from .optimized.disco_optimized import _use_spatial_first_dgrad
 
 
 def _normalize_convolution_tensor_s2(
@@ -81,7 +64,7 @@ def _normalize_convolution_tensor_s2(
     isotropic_mask=None,
     eps=1e-9,
 ):
-    """Normalizes convolution tensor values based on specified normalization mode.
+    r"""Normalizes convolution tensor values based on specified normalization mode.
 
     This function applies different normalization strategies to the convolution tensor
     values based on the basis_norm_mode parameter. It can normalize individual basis
@@ -106,7 +89,10 @@ def _normalize_convolution_tensor_s2(
     kernel_size : int
         Number of kernel basis functions.
     quad_weights : torch.Tensor
-        Quadrature weights for numerical integration.
+        Per-latitude normalization weights of shape ``(nlat, 1)``, built by the caller as
+        ``colat_weights / nlon_in / 2`` so that they integrate to 1 over the sphere. Not
+        :attr:`~torch_harmonics.grid.PointSetS2.quad_weights`, which is per point and
+        integrates to :math:`4\pi`.
     theta_cutoff : float
         Angular cutoff of the filter support (radians). Required by the "geometric" mode,
         which normalizes by the theoretical area measure of the spherical cap of half-angle
@@ -235,12 +221,10 @@ def _normalize_convolution_tensor_s2(
 
 @lru_cache(typed=True, copy=True)
 def _precompute_convolution_tensor_s2(
-    in_shape: Tuple[int],
-    out_shape: Tuple[int],
+    grid_in: RegularGridS2,
+    grid_out: RegularGridS2,
     filter_basis: FilterBasis,
-    grid_in: Optional[str] = "equiangular",
-    grid_out: Optional[str] = "equiangular",
-    theta_cutoff: Optional[float] = 0.01 * math.pi,
+    theta_cutoff: float,
     theta_eps: Optional[float] = THETA_CUTOFF_EPS,
     transpose_normalization: Optional[bool] = False,
     basis_norm_mode: Optional[str] = "nodal",
@@ -248,7 +232,7 @@ def _precompute_convolution_tensor_s2(
 ):
     r"""
     Precomputes the rotated filters at positions $R^{-1}_j \omega_i = R^{-1}_j R_i \nu = Y(-\theta_j)Z(\phi_i - \phi_j)Y(\theta_j)\nu$.
-    Assumes a tensorized grid on the sphere with an equiangular-trapezoidal sampling in longitude as described in Ocampo et al.
+    Assumes a tensorized grid on the sphere with equiangular sampling in longitude -- a periodic trapezoidal rule -- as described in Ocampo et al.
     The output tensor has shape kernel_shape x nlat_out x (nlat_in * nlon_in).
 
     The rotation of the Euler angles uses the YZY convention, which applied to the northpole $(0,0,1)^T$ yields
@@ -263,16 +247,12 @@ def _precompute_convolution_tensor_s2(
 
     Parameters
     ----------
-    in_shape : Tuple[int]
-        Input shape of the convolution tensor
-    out_shape : Tuple[int]
-        Output shape of the convolution tensor
+    grid_in : RegularGridS2
+        Descriptor of the input grid
+    grid_out : RegularGridS2
+        Descriptor of the output grid
     filter_basis : FilterBasis
         Filter basis functions
-    grid_in : str
-        Input grid type
-    grid_out : str
-        Output grid type
     theta_cutoff : float
         Theta cutoff for the filter basis functions
     theta_eps : float
@@ -293,23 +273,22 @@ def _precompute_convolution_tensor_s2(
 
     """
 
-    if len(in_shape) != 2:
-        raise ValueError(f"in_shape must be a 2-tuple (nlat, nlon), got length {len(in_shape)}")
-    if len(out_shape) != 2:
-        raise ValueError(f"out_shape must be a 2-tuple (nlat, nlon), got length {len(out_shape)}")
+    # the descriptors carry the shapes, so the old 2-tuple validation is gone; what
+    # is still worth rejecting is a shard, whose latitudes are only part of the sphere
+    input_grid = require_regular_grid(grid_in, "grid_in")
+    output_grid = require_regular_grid(grid_out, "grid_out")
+    in_shape, out_shape = input_grid.shape, output_grid.shape
 
     kernel_size = filter_basis.kernel_size
 
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
-
-    # precompute input and output grids
-    lats_in, win = precompute_latitudes(nlat_in, grid=grid_in)
-    lats_out, wout = precompute_latitudes(nlat_out, grid=grid_out)
+    colats_in, win = input_grid.colats, input_grid.colat_weights
+    colats_out, wout = output_grid.colats, output_grid.colat_weights
 
     # compute the phi differences
     # It's imporatant to not include the 2 pi point in the longitudes, as it is equivalent to lon=0
-    lons_in = precompute_longitudes(nlon_in)
+    lons_in = input_grid.lons()
 
     # compute quadrature weights and merge them into the convolution tensor.
     # These quadrature integrate to 1 over the sphere.
@@ -329,8 +308,8 @@ def _precompute_convolution_tensor_s2(
     # compute trigs
     cbeta = torch.cos(beta)
     sbeta = torch.sin(beta)
-    cgamma_all = torch.cos(lats_in).reshape(-1, 1)
-    sgamma_all = torch.sin(lats_in).reshape(-1, 1)
+    cgamma_all = torch.cos(colats_in).reshape(-1, 1)
+    sgamma_all = torch.sin(colats_in).reshape(-1, 1)
 
     # only input latitudes within the cutoff of an output latitude can land in the support, so
     # the rotation is evaluated on that band alone rather than on the whole input grid. Without
@@ -338,14 +317,14 @@ def _precompute_convolution_tensor_s2(
     # band * nlon_in) -- at the default cutoff the band is a handful of rings wide regardless of
     # resolution, so almost all of that work was discarded. The band is a superset of the
     # support, so the sparsity pattern is unchanged, entry for entry.
-    band_lo, band_hi = latitude_support_band(lats_in, lats_out, theta_cutoff_eff)
+    band_lo, band_hi = latitude_support_band(colats_in, colats_out, theta_cutoff_eff)
 
     # compute row offsets
     out_roff = torch.zeros(nlat_out + 1, dtype=torch.int64, device=lons_in.device)
     out_roff[0] = 0
     for t in range(nlat_out):
         # the last angle has a negative sign as it is a passive rotation, which rotates the filter around the y-axis
-        alpha = -lats_out[t]
+        alpha = -colats_out[t]
 
         lo = int(band_lo[t])
         hi = int(band_hi[t])
@@ -411,9 +390,13 @@ def _precompute_convolution_tensor_s2(
     return out_idx, out_vals, out_roff
 
 
-class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
+class DiscreteContinuousConv(BackendSelectionMixin, nn.Module, metaclass=abc.ABCMeta):
     """
     Abstract base class for discrete-continuous convolutions
+
+    Holds the filter basis and the weights, and selects the backend that evaluates the
+    psi contraction -- see :mod:`torch_harmonics.disco.backends` for what a subclass
+    describes about its psi so that any backend can serve it.
 
     Parameters
     ----------
@@ -429,12 +412,25 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
         Number of groups
     bias : Optional[bool]
         Whether to use bias
+    optimized_kernel : Optional[bool]
+        Whether to use the optimized kernel (if available)
 
     Returns
     -------
     torch.Tensor
         Output tensor
     """
+
+    #: The implementations this layer chooses from, in order; see
+    #: :data:`.backends.BACKENDS`.
+    _backends = BACKENDS
+
+    #: whether psi is applied in the scatter direction
+    transpose = False
+
+    #: whether the layer contracts through the fused node with the spatial-first input
+    #: gradient in play; a subclass that does sets this before selecting its backend
+    _needs_split = False
 
     def __init__(
         self,
@@ -472,9 +468,44 @@ class DiscreteContinuousConv(nn.Module, metaclass=abc.ABCMeta):
         else:
             self.bias = None
 
+        # psi belongs to the backend, which registers exactly what it reads. Selection is
+        # the last step of a subclass's __init__, once psi can be described.
+        self._backend_state = ()
+        self.backend = None
+
     @property
     def kernel_size(self):
         return self.filter_basis.kernel_size
+
+    @property
+    def device(self) -> torch.device:
+        """
+        The device this module is on.
+
+        ``nn.Module`` has no public equivalent. Every buffer belongs to the backend and can
+        come and go with it, so the answer is a parameter: the weight exists on every layer
+        and follows every move.
+        """
+        return self.weight.device
+
+    @abc.abstractmethod
+    def _psi_coo(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        The psi entries ``(ker_idx, row_idx, col_idx, vals)``, as fresh tensors.
+
+        A row is a latitude of the grid psi is keyed by and a column a flat index
+        ``ring * _psi_nlon + lon`` into the other grid.
+        """
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def _reference_psi(self, ker_idx, row_idx, col_idx, vals) -> torch.Tensor:
+        """The sparse psi the torch reference contracts with."""
+        raise NotImplementedError
+
+    def _weight_r(self) -> torch.Tensor:
+        """The weight as ``(groups, out_per_group, groupsize, kernel_size)``."""
+        return self.weight.reshape(self.groups, self.out_per_group, self.weight.shape[1], self.weight.shape[2])
 
     @abc.abstractmethod
     def forward(self, x: torch.Tensor):
@@ -512,14 +543,15 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
     Parameters
     ----------
+    grid_in : RegularGridS2
+        Descriptor of the input grid; it carries the resolution as well as the
+        quadrature rule.
+    grid_out : RegularGridS2
+        Descriptor of the output grid.
     in_channels : int
         Number of input channels
     out_channels : int
         Number of output channels
-    in_shape : Tuple[int]
-        Input shape of the convolution tensor
-    out_shape : Tuple[int]
-        Output shape of the convolution tensor
     kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
     basis_type : Optional[str]
@@ -528,10 +560,6 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         Mode for basis normalization
     groups : Optional[int]
         Number of groups
-    grid_in : Optional[str]
-        Input grid type
-    grid_out : Optional[str]
-        Output grid type
     bias : Optional[bool]
         Whether to use bias
     theta_cutoff : Optional[float]
@@ -539,10 +567,9 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
     optimized_kernel : Optional[bool]
         Whether to use the optimized kernel (if available)
     fused : Optional[bool]
-        When True, fuses the sparse contraction and weight multiplication into a single
-        autograd region to avoid storing the K-expanded intermediate in the graph.
-        Trades one extra contraction recompute in backward for K× memory savings.
-        Only effective when optimized_kernel is True.
+        When True, recomputes the K-expanded intermediate ``(B, C, K, H, W)`` in backward
+        instead of storing it: K times less activation memory for one extra sparse
+        contraction. Has no effect with the torch reference.
 
     References
     ----------
@@ -551,16 +578,14 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
     def __init__(
         self,
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         in_channels: int,
         out_channels: int,
-        in_shape: Tuple[int],
-        out_shape: Tuple[int],
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
         basis_type: Optional[str] = "piecewise linear",
         basis_norm_mode: Optional[str] = "nodal",
         groups: Optional[int] = 1,
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         optimized_kernel: Optional[bool] = True,
@@ -568,119 +593,44 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
     ):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
-        self.fused = fused and self.optimized_kernel
-        self.nlat_in, self.nlon_in = in_shape
-        self.nlat_out, self.nlon_out = out_shape
-        self.kpacked_device_supported = False
+        self.fused = bool(fused)
+        self.basis_norm_mode = basis_norm_mode
+        self.grid_in = require_regular_grid(grid_in, "grid_in")
+        self.grid_out = require_regular_grid(grid_out, "grid_out")
+        self.nlat_in, self.nlon_in = self.grid_in.shape
+        self.nlat_out, self.nlon_out = self.grid_out.shape
 
         # make sure the p-shift works by checking that longitudes are divisible
         if self.nlon_in % self.nlon_out != 0:
             raise ValueError(f"nlon_in ({self.nlon_in}) must be an integer multiple of nlon_out ({self.nlon_out}) for the DISCO p-shift to be exact")
 
         # heuristic to compute theta cutoff based on the bandlimit of the input field and overlaps of the basis functions
-        if theta_cutoff is None:
-            self.theta_cutoff = compute_theta_cutoff(self.nlat_out, grid=grid_out)
-        else:
-            self.theta_cutoff = theta_cutoff
+        self.theta_cutoff = truncate_support(self.grid_out, theta_cutoff)
 
-        if self.theta_cutoff <= 0.0:
-            raise ValueError("Error, theta_cutoff has to be positive.")
+        # psi is keyed by output latitude, its columns index the input grid
+        self._psi_nlon = self.nlon_in
+        self._contract_shape = (self.nlat_out, self.nlon_out)
+        self._needs_split = _use_spatial_first_dgrad(self.out_per_group, self.groupsize, self.kernel_size)
 
-        idx, vals, _ = _precompute_convolution_tensor_s2(
-            in_shape,
-            out_shape,
-            self.filter_basis,
-            grid_in=grid_in,
-            grid_out=grid_out,
-            theta_cutoff=self.theta_cutoff,
-            transpose_normalization=False,
-            basis_norm_mode=basis_norm_mode,
-            merge_quadrature=True,
-        )
-
-        # sort the values
-        ker_idx = idx[0, ...].contiguous()
-        row_idx = idx[1, ...].contiguous()
-        col_idx = idx[2, ...].contiguous()
-        vals = vals.contiguous()
-
-        self.psi_kpacked_K_pad = None  # set to int if kpacked buffers are available
-
-        if self.optimized_kernel:
-            # preprocessed data-structure for GPU kernel
-            roff_idx = preprocess_psi(self.kernel_size, self.nlat_out, ker_idx, row_idx, col_idx, vals).contiguous()
-            self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
-            split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx, split_col_idx, split_vals = _build_kernel_split_csr(
-                roff_idx, ker_idx, row_idx, col_idx, vals, self.kernel_size, self.nlat_out
-            )
-            self.psi_split_row_offsets, self.psi_split_nnz_offsets = _split_csr_python_offsets(split_nnz_off)
-            self.register_buffer("psi_split_roff_idx", split_roff_idx, persistent=False)
-            self.register_buffer("psi_split_nnz_off", split_nnz_off, persistent=False)
-            self.register_buffer("psi_split_ker_idx", split_ker_idx, persistent=False)
-            self.register_buffer("psi_split_row_idx", split_row_idx, persistent=False)
-            self.register_buffer("psi_split_col_idx", split_col_idx, persistent=False)
-            self.register_buffer("psi_split_vals", split_vals, persistent=False)
-
-            # Optional K-packed dense layout for the WGMMA / tcgen05 path.
-            #
-            # Skipped when the build contains no kpacked kernel: these buffers are
-            # padded to NBR_PAD, the longest neighbour row, which the polar rows set
-            # far above the mean -- ~33 MB at half degree, ~274 MB at 1080x2160 ->
-            # 360x720 -- for a kernel that could then never launch. The check is
-            # build-time rather than device-time on purpose: modules are normally
-            # constructed on CPU and moved afterwards, so the runtime device is not
-            # known here. See _kpacked_build_available.
-            if _kpacked_build_available():
-                psi_packed_idx, psi_packed_vals, psi_packed_count = pack_psi_dense(
-                    self.kernel_size,
-                    self.nlat_out,
-                    self.nlon_in,
-                    0,
-                    ker_idx,
-                    row_idx,
-                    col_idx,
-                    vals,
-                    roff_idx,
-                )
-                kpack = _maybe_kpack_psi(psi_packed_idx.contiguous(), psi_packed_vals.contiguous(), psi_packed_count.contiguous())
-                if kpack is not None:
-                    kpacked_idx, kpacked_vals, kpacked_offset, K_pad = kpack
-                    self.register_buffer("psi_kpacked_idx", kpacked_idx, persistent=False)
-                    self.register_buffer("psi_kpacked_vals", kpacked_vals, persistent=False)
-                    self.register_buffer("psi_kpacked_offset", kpacked_offset, persistent=False)
-                    self.psi_kpacked_K_pad = K_pad
-
-        # save all datastructures
-        self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
-        self.register_buffer("psi_row_idx", row_idx, persistent=False)
-        self.register_buffer("psi_col_idx", col_idx, persistent=False)
-        self.register_buffer("psi_vals", vals, persistent=False)
-
-        # also store psi as COO matrix just in case for torch input
-        if not self.optimized_kernel:
-            self.psi = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out)
-
-        # cache static forward-path decisions so the forward sees plain Python bools/ints,
-        # not symbolic expressions that confuse torch.compile's value-range analysis
-        self._save_x_spatial_first_ok = self.optimized_kernel and _use_spatial_first_dgrad(self.out_per_group, self.groupsize, self.kernel_size, self.psi_roff_idx, self.nlat_out)
+        self._select_backend()
 
     def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.groupsize * self.groups}, out_channels={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
 
-    @property
-    def psi_idx(self):
-        return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
+    def _psi_coo(self):
+        idx, vals, _ = _precompute_convolution_tensor_s2(
+            self.grid_in,
+            self.grid_out,
+            self.filter_basis,
+            theta_cutoff=self.theta_cutoff,
+            transpose_normalization=False,
+            basis_norm_mode=self.basis_norm_mode,
+            merge_quadrature=True,
+        )
+        return idx[0].contiguous(), idx[1].contiguous(), idx[2].contiguous(), vals.contiguous()
 
-    def _refresh_kpacked_device_supported(self):
-        if not hasattr(self, "psi_vals"):
-            self.kpacked_device_supported = False
-            return
-        self.kpacked_device_supported = _kpacked_device_supported_for_tensor(self.psi_vals)
-
-    def _apply(self, fn):
-        result = super()._apply(fn)
-        self._refresh_kpacked_device_supported()
-        return result
+    def _reference_psi(self, ker_idx, row_idx, col_idx, vals):
+        return _get_psi(self.kernel_size, torch.stack([ker_idx, row_idx, col_idx], dim=0), vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -696,152 +646,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         torch.Tensor
             Convolved signal of shape ``(batch, out_channels, nlat_out, nlon_out)``.
         """
-
-        weight_r = self.weight.reshape(self.groups, self.out_per_group, self.weight.shape[1], self.weight.shape[2])
-        kpacked_dtype = x.dtype
-        if x.is_cuda and torch.is_autocast_enabled("cuda"):
-            kpacked_dtype = torch.get_autocast_dtype("cuda")
-
-        _kpacked_ok = (
-            self.optimized_kernel
-            and self.psi_kpacked_K_pad in (8, 16)
-            and kpacked_dtype in (torch.float16, torch.bfloat16)
-            and x.is_cuda
-            and self.nlon_out % 8 == 0
-            and self.nlon_in % self.nlon_out == 0
-            and self.kpacked_device_supported
-        )
-        _save_x_spatial_first_ok = self._save_x_spatial_first_ok
-
-        if self.fused and _kpacked_ok:
-            out = _disco_s2_fused_conv_kpacked(
-                x.to(kpacked_dtype),
-                weight_r,
-                self.psi_kpacked_idx,
-                self.psi_kpacked_vals,
-                self.psi_kpacked_offset,
-                self.psi_roff_idx,
-                self.psi_ker_idx,
-                self.psi_row_idx,
-                self.psi_col_idx,
-                self.psi_vals,
-                self.psi_split_roff_idx,
-                self.psi_split_nnz_off,
-                self.psi_split_ker_idx,
-                self.psi_split_row_idx,
-                self.psi_split_col_idx,
-                self.psi_split_vals,
-                self.kernel_size,
-                self.nlat_out,
-                self.nlon_out,
-                self.groups,
-                self.groupsize,
-                self.psi_split_row_offsets,
-                self.psi_split_nnz_offsets,
-            )
-        elif self.fused:
-            out = _disco_s2_fused_conv_optimized(
-                x,
-                weight_r,
-                self.psi_roff_idx,
-                self.psi_ker_idx,
-                self.psi_row_idx,
-                self.psi_col_idx,
-                self.psi_vals,
-                self.psi_split_roff_idx,
-                self.psi_split_nnz_off,
-                self.psi_split_ker_idx,
-                self.psi_split_row_idx,
-                self.psi_split_col_idx,
-                self.psi_split_vals,
-                self.kernel_size,
-                self.nlat_out,
-                self.nlon_out,
-                self.groups,
-                self.groupsize,
-                self.psi_split_row_offsets,
-                self.psi_split_nnz_offsets,
-            )
-        else:
-            if _save_x_spatial_first_ok and _kpacked_ok:
-                out = _disco_s2_conv_save_x_kpacked(
-                    x.to(kpacked_dtype),
-                    weight_r,
-                    self.psi_kpacked_idx,
-                    self.psi_kpacked_vals,
-                    self.psi_kpacked_offset,
-                    self.psi_roff_idx,
-                    self.psi_ker_idx,
-                    self.psi_row_idx,
-                    self.psi_col_idx,
-                    self.psi_vals,
-                    self.psi_split_roff_idx,
-                    self.psi_split_nnz_off,
-                    self.psi_split_ker_idx,
-                    self.psi_split_row_idx,
-                    self.psi_split_col_idx,
-                    self.psi_split_vals,
-                    self.kernel_size,
-                    self.nlat_out,
-                    self.nlon_out,
-                    self.groups,
-                    self.groupsize,
-                    self.psi_split_row_offsets,
-                    self.psi_split_nnz_offsets,
-                )
-            elif _save_x_spatial_first_ok:
-                out = _disco_s2_conv_save_x_optimized(
-                    x.to(kpacked_dtype),
-                    weight_r,
-                    self.psi_roff_idx,
-                    self.psi_ker_idx,
-                    self.psi_row_idx,
-                    self.psi_col_idx,
-                    self.psi_vals,
-                    self.psi_split_roff_idx,
-                    self.psi_split_nnz_off,
-                    self.psi_split_ker_idx,
-                    self.psi_split_row_idx,
-                    self.psi_split_col_idx,
-                    self.psi_split_vals,
-                    self.kernel_size,
-                    self.nlat_out,
-                    self.nlon_out,
-                    self.groups,
-                    self.groupsize,
-                    self.psi_split_row_offsets,
-                    self.psi_split_nnz_offsets,
-                )
-            elif _kpacked_ok:
-                x = _disco_s2_contraction_kpacked(
-                    x.to(kpacked_dtype),
-                    self.psi_kpacked_idx,
-                    self.psi_kpacked_vals,
-                    self.psi_kpacked_offset,
-                    self.psi_roff_idx,
-                    self.psi_ker_idx,
-                    self.psi_row_idx,
-                    self.psi_col_idx,
-                    self.psi_vals,
-                    self.kernel_size,
-                    self.nlat_out,
-                    self.nlon_out,
-                )
-            elif self.optimized_kernel:
-                x = _disco_s2_contraction_optimized(
-                    x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
-                )
-            else:
-                x = _disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
-
-            # extract shape
-            if not _save_x_spatial_first_ok:
-                B, C, K, H, W = x.shape
-                x = x.reshape(B, self.groups, self.groupsize, K, H, W)
-
-                # do weight multiplication
-                out = torch.einsum("bgckxy,gock->bgoxy", x, weight_r).contiguous()
-                out = out.reshape(B, self.weight.shape[0], H, W)
+        # the backend is fixed before tracing, see torch_harmonics._backend
+        out = self.backend.conv(self, x, self._weight_r(), self.groups, self.groupsize, recompute=self.fused)
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, self.bias.shape[0], 1, 1)
@@ -869,14 +675,15 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
     Parameters
     ----------
+    grid_in : RegularGridS2
+        Descriptor of the input grid; it carries the resolution as well as the
+        quadrature rule.
+    grid_out : RegularGridS2
+        Descriptor of the output grid.
     in_channels : int
         Number of input channels
     out_channels : int
         Number of output channels
-    in_shape : Tuple[int]
-        Input shape of the convolution tensor
-    out_shape : Tuple[int]
-        Output shape of the convolution tensor
     kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
     basis_type : Optional[str]
@@ -885,10 +692,6 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         Mode for basis normalization
     groups : Optional[int]
         Number of groups
-    grid_in : Optional[str]
-        Input grid type
-    grid_out : Optional[str]
-        Output grid type
     bias : Optional[bool]
         Whether to use bias
     theta_cutoff : Optional[float]
@@ -901,80 +704,63 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     :cite:`Ocampo2023`
     """
 
+    transpose = True
+
     def __init__(
         self,
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         in_channels: int,
         out_channels: int,
-        in_shape: Tuple[int],
-        out_shape: Tuple[int],
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
         basis_type: Optional[str] = "piecewise linear",
         basis_norm_mode: Optional[str] = "nodal",
         groups: Optional[int] = 1,
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         optimized_kernel: Optional[bool] = True,
     ):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
-        self.nlat_in, self.nlon_in = in_shape
-        self.nlat_out, self.nlon_out = out_shape
+        self.basis_norm_mode = basis_norm_mode
+        self.grid_in = require_regular_grid(grid_in, "grid_in")
+        self.grid_out = require_regular_grid(grid_out, "grid_out")
+        self.nlat_in, self.nlon_in = self.grid_in.shape
+        self.nlat_out, self.nlon_out = self.grid_out.shape
 
         # make sure the p-shift works by checking that longitudes are divisible
         if self.nlon_out % self.nlon_in != 0:
             raise ValueError(f"nlon_out ({self.nlon_out}) must be an integer multiple of nlon_in ({self.nlon_in}) for the DISCO transpose p-shift to be exact")
 
         # bandlimit
-        if theta_cutoff is None:
-            self.theta_cutoff = compute_theta_cutoff(self.nlat_in, grid=grid_in)
-        else:
-            self.theta_cutoff = theta_cutoff
+        self.theta_cutoff = truncate_support(self.grid_in, theta_cutoff)
 
-        if self.theta_cutoff <= 0.0:
-            raise ValueError("Error, theta_cutoff has to be positive.")
+        # psi is that of the forward convolution from grid_out to grid_in, so it is keyed
+        # by *input* latitude and its columns index the output grid it scatters onto
+        self._psi_nlon = self.nlon_out
+        self._contract_shape = (self.nlat_out, self.nlon_out)
 
-        # switch in_shape and out_shape since we want the transpose convolution
-        idx, vals, _ = _precompute_convolution_tensor_s2(
-            out_shape,
-            in_shape,
-            self.filter_basis,
-            grid_in=grid_out,
-            grid_out=grid_in,
-            theta_cutoff=self.theta_cutoff,
-            transpose_normalization=True,
-            basis_norm_mode=basis_norm_mode,
-            merge_quadrature=True,
-        )
-
-        # sort the values
-        ker_idx = idx[0, ...].contiguous()
-        row_idx = idx[1, ...].contiguous()
-        col_idx = idx[2, ...].contiguous()
-        vals = vals.contiguous()
-
-        if self.optimized_kernel:
-            # preprocessed data-structure for GPU kernel
-            roff_idx = preprocess_psi(self.kernel_size, self.nlat_in, ker_idx, row_idx, col_idx, vals).contiguous()
-            self.register_buffer("psi_roff_idx", roff_idx, persistent=False)
-
-        # save all datastructures
-        self.register_buffer("psi_ker_idx", ker_idx, persistent=False)
-        self.register_buffer("psi_row_idx", row_idx, persistent=False)
-        self.register_buffer("psi_col_idx", col_idx, persistent=False)
-        self.register_buffer("psi_vals", vals, persistent=False)
-
-        # also store psi just in case
-        if not self.optimized_kernel:
-            self.psi_st = _get_psi(self.kernel_size, self.psi_idx, self.psi_vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, semi_transposed=True)
+        self._select_backend()
 
     def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.groupsize * self.groups}, out_channels={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
 
-    @property
-    def psi_idx(self):
-        return torch.stack([self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx], dim=0).contiguous()
+    def _psi_coo(self):
+        # switch in_shape and out_shape since we want the transpose convolution
+        idx, vals, _ = _precompute_convolution_tensor_s2(
+            self.grid_out,
+            self.grid_in,
+            self.filter_basis,
+            theta_cutoff=self.theta_cutoff,
+            transpose_normalization=True,
+            basis_norm_mode=self.basis_norm_mode,
+            merge_quadrature=True,
+        )
+        return idx[0].contiguous(), idx[1].contiguous(), idx[2].contiguous(), vals.contiguous()
+
+    def _reference_psi(self, ker_idx, row_idx, col_idx, vals):
+        idx = torch.stack([ker_idx, row_idx, col_idx], dim=0)
+        return _get_psi(self.kernel_size, idx, vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, semi_transposed=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -996,15 +782,11 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x = x.reshape(B, self.groups, self.groupsize, H, W)
 
         # do weight multiplication
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self.weight.reshape(self.groups, self.out_per_group, self.weight.shape[1], self.weight.shape[2])).contiguous()
+        x = torch.einsum("bgcxy,gock->bgokxy", x, self._weight_r()).contiguous()
         x = x.reshape(B, self.weight.shape[0], x.shape[-3], H, W)
 
-        if self.optimized_kernel:
-            out = _disco_s2_transpose_contraction_optimized(
-                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out
-            )
-        else:
-            out = _disco_s2_transpose_contraction_torch(x, self.psi_st.to(x.device), self.nlon_out)
+        # the backend is fixed before tracing, see torch_harmonics._backend
+        out = self.backend.transpose(self, x)
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, self.bias.shape[0], 1, 1)
