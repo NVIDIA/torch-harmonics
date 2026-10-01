@@ -45,12 +45,13 @@ properties, so that the refactor can be validated against them:
   agree by accident.
 """
 
+import dataclasses
 import functools
 import inspect
 import math
 import unittest
 import warnings
-from typing import Tuple
+from typing import ClassVar, Tuple
 
 import numpy as np
 import torch
@@ -741,6 +742,45 @@ class TestGridDescriptor(unittest.TestCase):
         self.assertEqual(set(regular_grid_types()), set(_ALL_GRIDS))
         # the registry itself carries the ragged families too
         self.assertEqual(set(grid_types()), set(_ALL_GRIDS) | {"healpix"})
+
+    def test_subclassing_a_concrete_grid_without_a_grid_type_is_refused(self):
+        """
+        Identity is ``(grid_type,) + params``, and ``grid_type`` is a ClassVar, so a
+        subclass that declares none inherits its parent's key, hash and equality. It
+        would then collide with the parent in every descriptor-keyed cache and be handed
+        geometry precomputed for a different grid -- silently, because the result still
+        has the right shape. Refused at class-creation time instead.
+        """
+        with self.assertRaises(TypeError) as caught:
+
+            class ShiftedEquiangular(EquiangularGrid):
+                pass
+
+        message = str(caught.exception)
+        self.assertIn("grid_type", message)
+        self.assertIn("equiangular", message)
+
+    def test_a_subclass_declaring_its_own_grid_type_is_accepted(self):
+        """The guard asks a new family to say what it is, not to stay out of the tree."""
+
+        @dataclasses.dataclass(frozen=True)
+        class CustomRegularGrid(RegularGridS2):
+            grid_type: ClassVar[str] = "custom-regular-for-test"
+
+        try:
+            g = CustomRegularGrid(nlat=8, nlon=16)
+            self.assertEqual(g.key, ("custom-regular-for-test", 8, 16))
+            self.assertNotEqual(g, as_grid("equiangular", nlat=8, nlon=16))
+        finally:
+            _GRID_REGISTRY.pop("custom-regular-for-test", None)
+
+    def test_deriving_from_an_abstract_base_is_unaffected(self):
+        """RegularGridS2 and friends carry no grid_type, so there is nothing to inherit."""
+
+        class AbstractIntermediate(GridS2):
+            pass
+
+        self.assertFalse(hasattr(AbstractIntermediate, "grid_type"))
 
 
 class TestDirectConstructionMatchesFactory(unittest.TestCase):

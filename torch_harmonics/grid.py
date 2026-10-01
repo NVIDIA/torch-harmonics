@@ -250,6 +250,19 @@ class PointSetS2:
         # intermediate such as GridS2 or RegularGridS2 merely inherits the annotation
         grid_type = cls.__dict__.get("grid_type")
         if grid_type is None:
+            # A subclass that declares nothing inherits its parent's grid_type, and with
+            # it the parent's key, hash and equality -- so it would collide with the
+            # parent in every descriptor-keyed cache and be handed the parent's
+            # precomputed geometry. Refuse rather than let a changed grid silently reuse
+            # tables built for a different one. Deriving from an abstract intermediate is
+            # unaffected; those carry no grid_type to inherit.
+            inherited = next((base.__dict__["grid_type"] for base in cls.__mro__[1:] if "grid_type" in base.__dict__), None)
+            if inherited is not None:
+                raise TypeError(
+                    f"{cls.__name__} subclasses a concrete grid without declaring its own grid_type, so it would "
+                    f"inherit '{inherited}' and share that grid's identity. Declare a distinct grid_type, or derive "
+                    f"from an abstract base such as RegularGridS2 instead."
+                )
             return
         if grid_type in _GRID_REGISTRY:
             raise ValueError(f"grid_type '{grid_type}' is already registered to {_GRID_REGISTRY[grid_type].__name__}")
