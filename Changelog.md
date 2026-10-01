@@ -2,39 +2,78 @@
 
 ## Versioning
 
-### v0.9.3b1 (unreleased)
+### v1.0.0rc1 (unreleased)
 
+* Faster DISCO CUDA kernels on H100 and GB200: kpacked forward up to 1.28x, backward up to 2.1x.
+* Smaller DISCO psi memory footprint through a blocked-CSR layout instead of padding every row to the maximum.
+* Fixed a DISCO backward launch failure for `nlon_in > 2048` with an integer scale factor of 3 or more.
+* **Breaking**: `DistributedDiscreteContinuousConvS2` gains `polar_mode`, default `"halo-exchange"`, which computes only locally owned rows; `"reduce-scatter"` restores the old behaviour and is needed when the support reaches past the neighbouring rank.
 * Fixed single-longitude inputs producing non-finite values and gradients in `ResampleS2` and `DistributedResampleS2`.
-* Fixed Gaussian random-field sampling retaining stale dtype or device buffers after module conversions, including conversions of a parent module.
-* Fixed `DiceLossS2` including ignored pixels in the class-zero denominator; ignored targets now contribute to neither term of the Dice score.
-* Fixed `AccuracyS2` counting ignored area as correctly classified. The true negatives were taken as the whole sphere minus the other three counts, while those three already excluded the ignored samples, so everything masked out landed in the true negatives. Since `ignore_index` defaults to `-100` the metric was inflated toward 1 for any masked target: scoring a quarter of the sphere and getting every scored sample wrong reported 0.75 rather than 0. Ignored samples are now given zero quadrature weight, which drops them from all four counts and from the total, replacing the separate relabeling and area-subtraction paths with the one mechanism. `IntersectionOverUnionS2` has no true-negative term and is unaffected, and unmasked results are bit-identical.
-* `CrossEntropyLossS2` and `FocalLossS2` pass their raw predictions to `cross_entropy` instead of applying `log_softmax` first. `cross_entropy` normalizes internally, so the extra call was redundant work rather than a wrong result -- `log_softmax` is idempotent, since the `logsumexp` of a log-softmax is zero. Losses and gradients agree with the previous code to within 2 ULP in both float32 and float64; the difference is the rounding of that `logsumexp`, which is near zero rather than exactly zero.
-* Added test coverage for the loss and metric modules under `torch_harmonics/examples`, which ship in the wheel but were previously untested: `CrossEntropyLossS2`, `FocalLossS2`, the `SphericalLossBase` family, `AccuracyS2`, `IntersectionOverUnionS2` and the weighted confusion matrix behind them.
-
-* Improved DISCO CUDA kernel performance: kpacked forward up to 1.28x, backward up to 2.1x on H100 and GB200. No API change.
-* Reduced DISCO psi memory footprint by packing the sparsity into a blocked-CSR layout instead of padding every row to the global maximum.
-* Fixed a DISCO backward launch failure for shapes with `nlon_in > 2048` and an integer scale factor of 3 or more, which exceeded the static shared memory limit.
-* **Breaking**: `DistributedDiscreteContinuousConvS2` gains `polar_mode`, defaulting to `"halo-exchange"`: each polar rank computes only the output rows it owns, so the K-expanded intermediate now shrinks with the polar group instead of staying at the full `nlat_out`. Results are unchanged. `polar_mode="reduce-scatter"` restores the old behaviour and is required when the support spans more than the neighbouring rank, which now raises rather than falling back silently.
+* Fixed Gaussian random-field sampling keeping stale dtype or device buffers after module conversions, including a parent module's.
+* Fixed `DiceLossS2` counting ignored pixels in the class-zero denominator.
+* Added tests for the example losses and metrics.
 * Added `polar_halo_reduce`, the adjoint of `polar_halo_exchange`, and exported `compute_polar_halo_radius`.
-* The distributed neighborhood attention backward reduces the key/value gradients with a ring reduce-scatter along the azimuth group, instead of accumulating into a buffer spanning the whole global longitude axis and all-reducing it. That buffer was allocated twice in fp32 and did not shrink as azimuth ranks were added, so per-rank cost grew with the group size while the slice actually kept shrank; it is now chunk-sized, and the exchange moves `P` chunks rather than `2 (P - 1)`. Results are unchanged.
-* `DistributedNeighborhoodAttentionS2` releases the global sparsity buffers it inherits from the serial module once the local ones are built. They are keyed to the global grid, so they did not shrink as ranks were added, and they stayed resident on the device next to the local copies that supersede them. They are non-persistent buffers, so checkpoints are unaffected.
-* The sparsity pattern of the DISCO convolutions and of neighborhood attention is now built only on the latitude band that can fall within `theta_cutoff`, rather than evaluating the whole input grid for every output latitude and discarding what falls outside. Construction drops from `O(nlat^2 * nlon)` to `O(nlat * nlon * band)` -- 25x faster at nlat=256 and widening with resolution -- and the dense temporaries shrink with it. The pattern itself is unchanged, entry for entry.
-* The latitude halo of the distributed neighborhood attention is derived from the grid geometry instead of measured off the precomputed sparsity pattern, which also removes the ordering constraint that the halo could only be sized after the pattern was built. It now raises when the halo would exceed the smallest local latitude chunk: the halo is exchanged with immediate neighbours only, so such a configuration would need data from beyond them, and it indicates a polar decomposition too fine for the angular cutoff.
-* **Breaking**: the distributed SHTs contract over latitudes (forward) or degrees (inverse) as a distributed matmul completed by a reduce-scatter, instead of gathering that axis first. The precomputed Legendre coefficients are now partitioned across the whole process grid rather than replicated over the polar group, cutting their per-rank footprint by the polar group size, and two of the four all-to-alls per transform are gone. Because the sum is now accumulated across ranks, results differ from the serial transform by a few float32 ULP of the summands, where they used to agree to within a bit. Near-cancellation outputs inherit that error from the much larger terms they are built from, so their *relative* accuracy is correspondingly lower; comparisons against the serial transform need an absolute tolerance scaled to the tensor's dynamic range rather than a relative one.
-* The Legendre recurrences stream over degree instead of materializing the full `(mmax, lmax, nlat)` table, and take optional order/degree ranges so a distributed rank builds only the block it stores. Peak construction memory drops from `O(nlat^3)` to the size of that block. Values are unchanged bitwise, serial included.
-* Fixed the Legendre tables being rebuilt by every layer instead of being reused. `_precompute_legpoly` and `_precompute_dlegpoly` are cached, but were keyed on a tensor of colatitudes, and tensors hash by identity: each layer built an equal-valued but distinct tensor and therefore always missed. They now take `(nlat, grid)` and derive the nodes internally, so layers sharing a resolution share the table. Evaluating at arbitrary nodes is still possible through the uncached `legpoly` and the new `dlegpoly`, which the cached routines wrap.
-* Fixed `use_fp32` in the distributed reductions demoting float64 inputs to float32. It now only promotes float16/bfloat16, so float64 collectives keep their precision.
-* Added `torch.compile(fullgraph=True)` support to the serial and distributed layers, which previously broke on assertion helpers and on control flow that branched on tensor values.
-* The forward SHTs now fold the `2*pi` longitudinal scale factor into their precomputed quadrature weights instead of scaling the FFT output on every call, which removes a pointwise multiply over a complex tensor from the hot path.
-* `SpectralConvS2` and `DistributedSpectralConvS2` now apply the spectral bias and the post-contraction reshape on the real view of their coefficients. The bias factor is real-valued, so this is exact, and it removes the last complex-typed pointwise ops from the layer.
-* Fixed `torch.compile` of the SHT layers failing in inductor codegen with `KeyError: 'complex64'`. Triton has no complex type, so a pointwise kernel over a complex buffer cannot be generated; the transforms now keep scaling, stacking and contiguity in real space and assemble the complex result with a single `torch.complex` over contiguous operands. The vector transforms additionally fed that call non-contiguous einsum outputs, which tripped `assert_size_stride`.
-* Removed a redundant autocast decorator from the distributed autograd Functions, where it recorded its state somewhere nothing reads it and blocked full-graph compilation.
-* Distributed DISCO convolution now skips its polar collectives when the polar group holds a single rank, as the azimuth path already did.
-* Attention's channel-layout conversions now use the dedicated 4-D helpers, which fixes a stride mismatch against the registered fake kernel and makes the conversion faster.
-* **Breaking**: the default `theta_cutoff` of `DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2`, `NeighborhoodAttentionS2`, and their distributed counterparts are now derived from the grid's actual latitude spacing rather than from `nlat` alone. The previous expression was exact only for equiangular grids and under-covered the poles on the others. Equiangular grids are unaffected, however on the other grids trained models will differ unless `theta_cutoff` is passed explicitly.
-* **Breaking**: fixed the `"bilinear-spherical"` resampling mode of `ResampleS2` and `DistributedResampleS2`, which applied spherical interpolation weights that are only valid for vectors to scalar sample values and could amplify its input without bound. It now interpolates along the shorter arc of the circle, which is identical to `"bilinear"` unless the field contains a phase wrap, so only wrapped fields change.
-* Fixed pole expansion for the same mode, which averaged angles arithmetically and so placed the pole in nearly the opposite direction for fields crossing the branch cut.
-* Fixed `trapezoidal_weights` returning float32 weights alongside float64 nodes, which capped the accuracy of everything derived from it at roughly 1e-7.
+* `polar_halo_exchange` and `polar_halo_reduce` take a `lat_dim` argument, so channels-last tensors can be exchanged directly.
+* The sparsity patterns of DISCO and neighborhood attention are built only on the latitude band within `theta_cutoff`, making construction about 25x faster at nlat=256.
+* **Breaking**: the distributed SHTs contract as a distributed matmul plus reduce-scatter, partitioning the Legendre coefficients over the whole process grid; results now differ from the serial transform by a few float32 ULP.
+* The Legendre recurrences stream over degree, so a distributed rank builds only the block it stores and peak construction memory no longer grows as `O(nlat^3)`.
+* Fixed the Legendre tables being rebuilt by every layer instead of being reused from the cache.
+* Fixed `use_fp32` in the distributed reductions demoting float64 inputs to float32.
+* Added `torch.compile(fullgraph=True)` support to the serial and distributed layers.
+* The forward SHTs fold the `2*pi` longitudinal factor into their quadrature weights instead of scaling the FFT output on every call.
+* `SpectralConvS2` and `DistributedSpectralConvS2` apply the spectral bias on the real view of their coefficients, removing the last complex pointwise ops.
+* Fixed `torch.compile` of the SHT layers failing in inductor with `KeyError: 'complex64'`.
+* Removed a redundant autocast decorator from the distributed autograd Functions that blocked full-graph compilation.
+* Distributed DISCO convolution skips its polar collectives when the polar group holds a single rank.
+* **Breaking**: layers take a grid descriptor instead of a resolution and a grid name, e.g. `RealSHT(as_grid("legendre-gauss", nlat=n, nlon=2*n))`, and `grid_in`/`grid_out` when mapping between grids; the old arguments raise a `TypeError`.
+* **Breaking**: renamed or moved since v0.9.2: `lats_in`/`lats_out` are now `colats_in`/`colats_out` (`ResampleS2`, `DistributedResampleS2`, `latitude_support_band`, `compute_polar_halo_radius`); `QuadratureS2` moved from `torch_harmonics.quadrature` to `torch_harmonics.integration`; `NeighborhoodAttentionS2.quad_weights` became the backend buffer `ring_weights`; `AttentionS2.log_quad_weights` is now `log_point_weights`; the shallow-water example's `quad_weights` buffer is per-point and no longer checkpointed.
+* New `as_grid` builds a grid descriptor from a grid type and its parameters by keyword, e.g. `as_grid("equiangular", nlat=128, nlon=256)`, validated against the type; `grid_params` lists what a type takes.
+* `as_grid(descriptor, **params)` accepts only the descriptor type's own parameters and raises on anything else.
+* Grid descriptors form a hierarchy of `PointSetS2` (points and weights), `GridS2` (isolatitude rings) and `RegularGridS2` (rings of equal length), with matching `GridShardS2`/`RegularGridShardS2`.
+* New `require_point_set`, `require_grid` and `require_regular_grid` guards state which of these levels each routine needs, so an unsupported grid fails at construction.
+* New `HealpixGrid(nside)` (also `as_grid("healpix", nside=...)`), the HEALPix pixelization in RING order, accepted today by `QuadratureS2`, `AttentionS2` and `NeighborhoodAttentionS2`.
+* New `HealpixGrid.from_level(level)` builds the grid at refinement level `level`, i.e. `nside = 2**level`.
+* New `PointSetS2.is_equal_area`, `True` for HEALPix and `False` for every latitude-longitude grid.
+* New `PointSetS2.coords` gives every point's `(colat, lon)` in the order a field is stored in.
+* New `GridS2.ring_weights(dtype)` and `GridS2.point_weights(dtype)` give the quadrature weights per ring and per point, computed in the requested dtype.
+* `plot_sphere` takes a `grid` argument that places the samples at the grid's actual latitudes, and draws ragged grids such as HEALPix by nearest-point resampling.
+* The example losses' `get_quadrature_weights(tile=False)` raises on grids that are not regular.
+* `NeighborhoodAttentionS2` accepts any `GridS2` on either side, including HEALPix and mixed pairs, with new compiled CPU and CUDA kernels for ragged grids.
+* `AttentionS2` accepts any `GridS2` on either side, no longer requires `nlon_in` to be a multiple of `nlon_out`, and projects channels-last like `NeighborhoodAttentionS2`.
+* `AttentionS2` passes no weight mask on equal-area input grids, which is exact and lets SDPA use FlashAttention.
+* New `torch_harmonics.neighborhood` module computing the neighborhood pattern of any `GridS2` directly as contiguous longitude arcs, replacing the DISCO-based precompute neighborhood attention used before.
+* Neighborhood attention picks its implementation through backends selected per device, and each layer registers only the buffers its backend reads.
+* `DistributedNeighborhoodAttentionS2` shares the serial forward pass and uses ring backends whose kernels take the serial layout and arc form, walking only the neighbours in each key/value chunk.
+* `DistributedNeighborhoodAttentionS2` builds only its rank's slice of the sparsity pattern and reduces key/value gradients with a ring reduce-scatter, so its memory shrinks as ranks are added.
+* The distributed neighborhood attention derives its latitude halo from the grid geometry and raises when it would exceed a local chunk.
+* `DistributedNeighborhoodAttentionS2` raises on `optimized_kernel=False` instead of ignoring it, since it has no reference implementation.
+* Fixed attention CUDA kernel launches failing when a large channel count needs more than 48 KiB of shared memory.
+* Fixed the attention CUDA ops running on the current device rather than their inputs' when a module lives on another GPU.
+* The compiled attention operators changed: `forward`/`backward` became `forward_regular`/`backward_regular`, `forward_ragged`/`backward_ragged` were added, the ring operators take arcs, and `split_csr_rows` was removed.
+* Attention's layout conversions use the dedicated 4-D helpers, fixing a stride mismatch with the fake kernel.
+* Grid descriptors give ring colatitudes as `colats` and geographic latitudes as `lats`.
+* Grid descriptors carry the quadrature per ring as `colat_weights` (summing to 2) and per point as `quad_weights` (summing to `4*pi`).
+* **Breaking**: the default `theta_cutoff` of DISCO and neighborhood attention is one node spacing (`PointSetS2.max_node_spacing`) instead of a function of `nlat`, changing it on every grid but equiangular with `nlon = 2*nlat`; neighborhood attention takes it from the grid with fewer points.
+* New `truncate_support` returns the default support radius of DISCO and neighborhood attention from the grid descriptor, with override, validation and a warning when the default changed.
+* `QuadratureS2` takes any `PointSetS2` and reads its per-point weights, which is also correct on ragged grids.
+* Grid resolutions may be any integer type, e.g. `numpy.int64`.
+* **Breaking**: the example losses and metrics take a grid descriptor instead of `(nlat, nlon, grid)`.
+* **Breaking**: the example models, solvers and `PdeDataset` take grid descriptors: `grid` replaces `img_size`/`dims` plus a grid name, and `grid_internal` (or `grids_internal`, one per stage, for `SphericalUNet` and `SphericalSegformer`) replaces `scale_factor`.
+* Fixed `SphericalUNet` convolving its input and output stages on the internal grid type instead of the grid the data lives on.
+* The shallow-water solver skips transforms whose results it discards, and its time step is a `forward` that `ShallowWaterSolver.compile()` or `PdeDataset(compile=True)` can compile.
+* `Stanford2D3DSDownloader` downloads archives concurrently (`max_workers`), in larger chunks (`chunk_size`), and hashes them while downloading.
+* **Breaking**: the example models default to the `"harmonic"` filter basis, the L2-normalized form of the deprecated `"morlet"`, which changes their results; pass `filter_basis_type="morlet"` for the previous behaviour.
+* **Breaking**: the `"equiangular-trapezoidal"` grid is renamed `"trapezoidal"` (class `TrapezoidalGrid`), since its nodes are equispaced in `cos(theta)`.
+* **Breaking**: `GaussianRandomFieldS2` no longer assumes `nlon = 2 * nlat`.
+* **Breaking**: fixed the `"bilinear-spherical"` resampling mode applying vector interpolation weights to scalars; it now interpolates along the shorter arc, changing only fields with a phase wrap.
+* Fixed pole expansion in `"bilinear-spherical"` resampling for fields crossing the branch cut.
+* New `RegularGridS2.shard()` describes one rank's piece of a grid, and the distributed layers take their decomposition from it; `compute_split_shapes` moved to `torch_harmonics.partition`.
+* `DistributedQuadratureS2` builds only its rank's weights and now accepts the `"trapezoidal"` grid.
+* The SHT and quadrature layers read nodes and weights from the grid descriptor instead of dispatching on the grid string, with bit-identical results.
+* The SHTs warn on a `"trapezoidal"` grid, which does not round-trip, instead of raising.
+* Fixed the caching decorator hiding the docstrings and signatures of cached routines.
+* Fixed `trapezoidal_weights` returning float32 weights alongside float64 nodes.
+* Fixed `AccuracyS2` counting ignored area as correctly classified; `IntersectionOverUnionS2` has no true-negative term and is unaffected.
 
 ### v0.9.2
 

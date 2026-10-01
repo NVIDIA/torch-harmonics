@@ -164,11 +164,7 @@ namespace disco_kernels
     //   here        : acc[w_mod][t]          += val * inp[t - w_div]  t owned by thread
     //
     // The inner loop becomes LDS + FFMA instead of LDS + FADD + STS, and the only
-    // barrier left is the one after the shared fill. Measured (bf16, BC=64):
-    //
-    //             prod_decoder (ps 1)      prod_encoder (ps 2)
-    //   H100      121.6 -> 59.19 ms 2.05x   40.20 -> 21.97 ms 1.83x
-    //   GB200      83.21 -> 39.94 ms 2.08x   27.38 -> 14.20 ms 1.93x
+    // barrier left is the one after the shared fill.
     //
     // Gated to PSCALE <= 2. The accumulator costs PSCALE*ELXTH registers, and at
     // pscale 3 (36 registers for Wi=720) occupancy drops far enough that the kernel
@@ -258,9 +254,8 @@ namespace disco_kernels
             // The nesting matters. With the element loop outside and a
             // one-instruction body (acc[m][i] += x) inside, ptxas predicates rather
             // than branches -- correctly, for a body that small -- and the kernel
-            // then issues PSCALE adds per element instead of one. That measured +28%
-            // instructions at pscale 2 and turned a memory-bound kernel into an
-            // issue-bound one (42.25 ms, against 24.45 ms for this form).
+            // then issues PSCALE adds per element instead of one, which turns a
+            // memory-bound kernel into an issue-bound one.
 #pragma unroll
             for (int m = 0; m < PSCALE; m++) {
                 if (m == w_mod_ps) {
@@ -479,6 +474,6 @@ namespace disco_kernels
         return out;
     }
 
-    TORCH_LIBRARY_IMPL(disco_kernels, CUDA, m) { m.impl("backward", &disco_cuda_bwd); }
+    TORCH_LIBRARY_IMPL(disco_kernels, CUDA, m) { m.impl("backward_regular", &disco_cuda_bwd); }
 
 } // namespace disco_kernels

@@ -23,6 +23,7 @@ tutorials/index
 maxdepth: 1
 caption: User guide
 ---
+guide/grids
 guide/spherical_harmonic_transforms
 guide/spectral_convolutions
 guide/disco_convolutions
@@ -48,14 +49,26 @@ api/utilities
 import torch
 import torch_harmonics as th
 
-# forward / inverse real spherical harmonic transform on an equiangular grid
-sht = th.RealSHT(nlat=128, nlon=256, grid="equiangular")
-isht = th.InverseRealSHT(nlat=128, nlon=256, grid="equiangular")
+# the grid descriptor carries the resolution and the quadrature rule together
+grid = th.as_grid("equiangular", nlat=128, nlon=256)
+
+# forward / inverse real spherical harmonic transform on that grid
+sht = th.RealSHT(grid)
+isht = th.InverseRealSHT(grid)
 
 signal = torch.randn(1, 128, 256)
 coeffs = sht(signal)          # -> spherical harmonic coefficients
 reconstructed = isht(coeffs)  # -> back to grid space
 ```
+
+Every operator takes a grid descriptor rather than a resolution and a grid
+name. The descriptor carries both, together with everything that follows from
+where the nodes sit: the quadrature weights, the node spacing localized
+operators take their default cutoff from, the degree an SHT can be truncated to,
+and how the grid decomposes across ranks. Operators mapping between two grids
+take `grid_in` and `grid_out` in that leading position. Besides the
+latitude-longitude grids there is HEALPix, which the attention layers accept on
+either side. See {ref}`grids`.
 
 ```{toctree}
 ---

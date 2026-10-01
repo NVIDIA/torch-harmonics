@@ -28,11 +28,13 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
+
 from typing import List
 
 import torch
 import torch.distributed as dist
 
+from torch_harmonics.partition import compute_split_shapes
 from torch_harmonics.quadrature import latitude_support_band
 from torch_harmonics.utils import check
 
@@ -75,52 +77,6 @@ def _check_shapes(msg, shapes_gather, shapes_expected):
 
 
 # helper routine to compute uneven splitting in balanced way:
-def compute_split_shapes(size: int, num_chunks: int) -> List[int]:
-    r"""
-    Compute balanced chunk sizes for distributing a dimension across ranks.
-
-    Divides ``size`` elements into ``num_chunks`` pieces that differ by at most
-    one element.  The first ``size % num_chunks`` chunks receive one extra
-    element; the remaining chunks get the base size ``size // num_chunks``.
-
-    This is used internally by every distributed module to determine how
-    latitudes, longitudes, and spectral modes are partitioned across process
-    groups.
-
-    Parameters
-    ----------
-    size : int
-        Total number of elements to split (e.g.\ ``nlat`` or ``nlon``).
-    num_chunks : int
-        Number of chunks (typically the process-group size).
-
-    Returns
-    -------
-    List[int]
-        Per-rank chunk sizes, ordered by rank.
-
-    Raises
-    ------
-    RuntimeError
-        If ``size < num_chunks`` (every chunk must be non-empty).
-
-    Examples
-    --------
-    >>> from torch_harmonics.distributed import compute_split_shapes
-    >>> compute_split_shapes(256, 4)
-    [64, 64, 64, 64]
-    >>> compute_split_shapes(128, 3)
-    [43, 43, 42]
-    >>> compute_split_shapes(10, 4)
-    [3, 3, 2, 2]
-    """
-
-    check(size >= num_chunks, lambda: f"Cannot split {size} elements into {num_chunks} chunks; every chunk must be non-empty.")
-
-    base, remainder = divmod(size, num_chunks)
-    return [base + 1] * remainder + [base] * (num_chunks - remainder)
-
-
 def split_tensor_along_dim(tensor, dim, num_chunks):
     r"""
     Split a tensor along a given dimension into balanced chunks.
@@ -171,14 +127,10 @@ def split_tensor_along_dim(tensor, dim, num_chunks):
 def flatten_and_pad_leading_dims(tensor: torch.Tensor, min_leading_size: int, num_trailing_dims: int = 2):
     """Collapse all but the trailing ``num_trailing_dims`` dims into a single leading dim, padding it to at least ``min_leading_size``.
 
-    The distributed (S)HT redistributes this leading ("channel/batch") axis across
-    the process grid via all-to-all transposes, which require every rank to receive
-    a non-empty chunk -- i.e. the leading dim must be at least the (largest) group
-    size. Uneven splits are fine (e.g. 5 elements over 4 ranks -> [2, 1, 1, 1]), so
-    we only pad when the leading dim is *smaller* than the group size, never up to a
-    multiple of it. Since the transforms are linear, zero-padding leaves the real
-    entries untouched; :func:`unpad_and_unflatten_leading_dims` restores the original
-    layout afterwards.
+    The distributed transforms split this leading (batch/channel) axis across ranks,
+    so every rank needs at least one entry. The axis is zero-padded only when it is
+    shorter than ``min_leading_size``; uneven splits are allowed.
+    :func:`unpad_and_unflatten_leading_dims` restores the original layout.
 
     Parameters
     ----------
@@ -230,15 +182,14 @@ def unpad_and_unflatten_leading_dims(tensor: torch.Tensor, lead_shape, lead_size
     The trailing ``num_trailing_dims`` dims are taken from ``tensor`` as-is, so this is
     valid even when the transform changed them (e.g. ``nlat, nlon`` -> ``lmax, mmax``).
     ``num_trailing_dims`` must match the value passed to the flatten call.
-
-    Complex inputs (the forward SHTs call this on their spectral output) are processed as
-    their real view: this is pure layout code touching only the leading dims, and a copy
-    over a complex buffer cannot be codegen'd by inductor -- triton has no complex type,
-    so it fails with ``KeyError: 'complex64'``. ``view_as_real`` appends the re/im pair as
-    a trailing dim, which is simply carried along; the ``contiguous()`` right before the
-    ``view_as_complex`` supplies the unit last-dim stride the latter requires.
     """
 
+    # complex inputs (the forward SHTs call this on their spectral output) are processed as
+    # their real view: this is pure layout code touching only the leading dims, and a copy
+    # over a complex buffer cannot be codegen'd by inductor -- triton has no complex type,
+    # so it fails with KeyError: 'complex64'. view_as_real appends the re/im pair as a
+    # trailing dim, which is simply carried along; the contiguous() right before the
+    # view_as_complex supplies the unit last-dim stride the latter requires.
     is_complex = tensor.is_complex()
     if is_complex:
         tensor = torch.view_as_real(tensor)
@@ -1069,12 +1020,14 @@ def gather_from_copy_to_polar_region(input_, dim_, shapes_):
 # ---------------------------------------------------------------------------
 # nearest neighbor exchange algorithms
 # ---------------------------------------------------------------------------
-def _halo_gather(x, r_lat):
+def _halo_gather(x, r_lat, lat_dim=-2):
     r"""
     Pad ``x`` with ``r_lat`` latitude rows borrowed from each polar neighbour.
 
-    ``[B, C, H, W]`` -> ``[B, C, H + 2 * r_lat, W]``. Ranks at the polar boundary have no
-    neighbour on the missing side and are zero-padded there.
+    ``[B, C, H, W]`` -> ``[B, C, H + 2 * r_lat, W]`` for the default ``lat_dim``; any other
+    dimension can be named as the latitude axis, which is how a channels-last
+    ``[B, H, W, C]`` tensor is exchanged without a layout round trip. Ranks at the polar
+    boundary have no neighbour on the missing side and are zero-padded there.
 
     This is the linear map whose adjoint is :func:`_halo_reduce`. The two are used as each
     other's forward and backward by :class:`_PolarHaloExchangeFn` (gather forward) and
@@ -1086,16 +1039,19 @@ def _halo_gather(x, r_lat):
     group_rank = polar_group_rank()
     prev_rank, next_rank = get_group_neighbors(polar_group())
 
-    B, C, H, W = x.shape
+    lat_dim = lat_dim % x.dim()
+    H = x.shape[lat_dim]
     device, dtype = x.device, x.dtype
 
     # setup send buffers
-    send_top = x[:, :, :r_lat, :].contiguous()  # top r_lat rows → rank-1
-    send_bot = x[:, :, -r_lat:, :].contiguous()  # bottom r_lat rows → rank+1
+    send_top = x.narrow(lat_dim, 0, r_lat).contiguous()  # top r_lat rows → rank-1
+    send_bot = x.narrow(lat_dim, H - r_lat, r_lat).contiguous()  # bottom r_lat rows → rank+1
 
     # setup recv buffers
-    recv_top = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
-    recv_bot = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
+    halo_shape = list(x.shape)
+    halo_shape[lat_dim] = r_lat
+    recv_top = torch.zeros(halo_shape, device=device, dtype=dtype)
+    recv_bot = torch.zeros(halo_shape, device=device, dtype=dtype)
 
     ops = []
     if group_rank > 0:
@@ -1110,14 +1066,14 @@ def _halo_gather(x, r_lat):
         for req in reqs:
             req.wait()
 
-    return torch.cat([recv_top, x, recv_bot], dim=2).contiguous()
+    return torch.cat([recv_top, x, recv_bot], dim=lat_dim).contiguous()
 
 
-def _halo_reduce(y, r_lat, H):
+def _halo_reduce(y, r_lat, H, lat_dim=-2):
     r"""
     Adjoint of :func:`_halo_gather`: send the halo rows of ``y`` home and accumulate them.
 
-    ``[B, C, H + 2 * r_lat, W]`` -> ``[B, C, H, W]``. The halo slices of ``y`` hold
+    ``[B, C, H + 2 * r_lat, W]`` -> ``[B, C, H, W]`` for the default ``lat_dim``. The halo slices of ``y`` hold
     contributions to rows owned by the neighbours, so they are sent back and added onto the
     owner's rows; symmetrically, each rank receives the contributions its neighbours hold for
     the rows it lent them.
@@ -1130,19 +1086,21 @@ def _halo_reduce(y, r_lat, H):
     group_rank = polar_group_rank()
     prev_rank, next_rank = get_group_neighbors(polar_group())
 
-    B, C, _, W = y.shape
+    lat_dim = lat_dim % y.dim()
     device, dtype = y.device, y.dtype
 
     # the local (non-halo) rows pass straight through
-    out = y[:, :, r_lat : r_lat + H, :].contiguous().clone()
+    out = y.narrow(lat_dim, r_lat, H).contiguous().clone()
 
-    #   y[:, :, :r_lat, :]      → belongs to rank-1
-    #   y[:, :, r_lat + H:, :]  → belongs to rank+1
-    send_to_prev = y[:, :, :r_lat, :].contiguous()
-    send_to_next = y[:, :, r_lat + H :, :].contiguous()
+    #   rows [0, r_lat)             → belong to rank-1
+    #   rows [r_lat + H, H + 2 r_lat) → belong to rank+1
+    send_to_prev = y.narrow(lat_dim, 0, r_lat).contiguous()
+    send_to_next = y.narrow(lat_dim, r_lat + H, r_lat).contiguous()
 
-    recv_from_prev = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
-    recv_from_next = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
+    halo_shape = list(y.shape)
+    halo_shape[lat_dim] = r_lat
+    recv_from_prev = torch.zeros(halo_shape, device=device, dtype=dtype)
+    recv_from_next = torch.zeros(halo_shape, device=device, dtype=dtype)
 
     ops = []
     if group_rank > 0:
@@ -1160,9 +1118,9 @@ def _halo_reduce(y, r_lat, H):
     # recv_from_prev = contribution to our top r_lat rows (prev rank's recv_bot region)
     # recv_from_next = contribution to our bottom r_lat rows (next rank's recv_top region)
     if group_rank > 0:
-        out[:, :, :r_lat, :] = out[:, :, :r_lat, :] + recv_from_prev
+        out.narrow(lat_dim, 0, r_lat).add_(recv_from_prev)
     if group_rank < group_size - 1:
-        out[:, :, H - r_lat :, :] = out[:, :, H - r_lat :, :] + recv_from_next
+        out.narrow(lat_dim, H - r_lat, r_lat).add_(recv_from_next)
 
     return out
 
@@ -1171,7 +1129,8 @@ class _PolarHaloExchangeFn(torch.autograd.Function):
     """Differentiable lat halo exchange for polar-distributed tensors.
 
     Forward: gathers r_lat rows from neighbouring polar ranks and returns a
-             halo-padded tensor of shape [B, C, H_local + 2*r_lat, W].
+             tensor r_lat rows longer on each side of ``lat_dim``, e.g.
+             [B, C, H_local, W] -> [B, C, H_local + 2*r_lat, W] channels-first.
     Backward: communicates halo gradient contributions back to their owning
               ranks and accumulates them onto the local input gradient.
 
@@ -1183,19 +1142,20 @@ class _PolarHaloExchangeFn(torch.autograd.Function):
 
     @staticmethod
     @_custom_fwd(device_type="cuda")
-    def forward(x, r_lat):
+    def forward(x, r_lat, lat_dim):
 
         if not is_distributed_polar():
             return x
 
-        return _halo_gather(x, r_lat)
+        return _halo_gather(x, r_lat, lat_dim)
 
     @staticmethod
     @_custom_setup_context(device_type="cuda")
     def setup_context(ctx, inputs, output):
-        x, r_lat = inputs
+        x, r_lat, lat_dim = inputs
         ctx.r_lat = r_lat
-        ctx.H = x.shape[2]
+        ctx.lat_dim = lat_dim
+        ctx.H = x.shape[lat_dim]
         if is_distributed_polar():
             ctx.group_size = polar_group_size()
             ctx.group_rank = polar_group_rank()
@@ -1208,13 +1168,13 @@ class _PolarHaloExchangeFn(torch.autograd.Function):
     def backward(ctx, dout):
 
         if not is_distributed_polar():
-            return dout, None
+            return dout, None, None
 
         # The halo slices of the incoming gradient belong to the neighbouring ranks, and each
         # neighbour holds the gradient it owes us for the rows we lent it: exactly the adjoint
         # of the gather performed in the forward.
-        # Gradient for r_lat is None (not a tensor / non-differentiable).
-        return _halo_reduce(dout, ctx.r_lat, ctx.H), None
+        # Gradients for r_lat and lat_dim are None (not tensors / non-differentiable).
+        return _halo_reduce(dout, ctx.r_lat, ctx.H, ctx.lat_dim), None, None
 
 
 class _PolarHaloReduceFn(torch.autograd.Function):
@@ -1222,7 +1182,8 @@ class _PolarHaloReduceFn(torch.autograd.Function):
 
     Forward: takes a halo-padded tensor whose halo rows hold contributions to latitudes
              owned by the neighbours, sends them home and accumulates, returning the local
-             rows only -- ``[B, C, H_local + 2*r_lat, W]`` -> ``[B, C, H_local, W]``.
+             rows only along ``lat_dim`` -- ``[B, C, H_local + 2*r_lat, W]`` -> ``[B, C, H_local, W]``
+             channels-first.
     Backward: gathers the halo rows back, the same operation the exchange performs forward.
 
     This is the direction a *scatter*-shaped operator needs: the transpose DISCO convolution
@@ -1232,34 +1193,35 @@ class _PolarHaloReduceFn(torch.autograd.Function):
 
     @staticmethod
     @_custom_fwd(device_type="cuda")
-    def forward(y, r_lat, H):
+    def forward(y, r_lat, H, lat_dim):
 
         if not is_distributed_polar():
             return y
 
-        return _halo_reduce(y, r_lat, H)
+        return _halo_reduce(y, r_lat, H, lat_dim)
 
     @staticmethod
     @_custom_setup_context(device_type="cuda")
     def setup_context(ctx, inputs, output):
-        _, r_lat, _ = inputs
+        _, r_lat, _, lat_dim = inputs
         ctx.r_lat = r_lat
+        ctx.lat_dim = lat_dim
 
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, dout):
 
         if not is_distributed_polar():
-            return dout, None, None
+            return dout, None, None, None
 
-        # Gradients for r_lat and H are None (not tensors / non-differentiable).
-        return _halo_gather(dout, ctx.r_lat), None, None
+        # Gradients for r_lat, H and lat_dim are None (not tensors / non-differentiable).
+        return _halo_gather(dout, ctx.r_lat, ctx.lat_dim), None, None, None
 
 
 @torch.compiler.disable()
 def compute_polar_halo_radius(
-    lats_in: torch.Tensor,
-    lats_out: torch.Tensor,
+    colats_in: torch.Tensor,
+    colats_out: torch.Tensor,
     theta_cutoff: float,
     lat_in_shapes: List[int],
     lat_out_shapes: List[int],
@@ -1274,19 +1236,14 @@ def compute_polar_halo_radius(
     largest such overhang over all ranks, which is the halo width
     :func:`polar_halo_exchange` has to move.
 
-    The band bounds are monotone in the output latitude, so only the two ends of each rank's
-    output range are examined, and the whole thing costs a pair of binary searches rather than
-    a pass over a sparsity pattern. Computing it from the geometry rather than by measuring a
-    precomputed pattern is also what lets the pattern itself be built on the band -- otherwise
-    the radius would depend on the very tensor it is supposed to bound.
-
-    It is evaluated identically on every rank, so no communication is involved.
+    The result is computed from the geometry alone and is identical on every rank; no
+    communication is involved.
 
     Parameters
     ----------
-    lats_in : torch.Tensor
+    colats_in : torch.Tensor
         Input colatitudes in radians, ascending, shape ``(nlat_in,)``.
-    lats_out : torch.Tensor
+    colats_out : torch.Tensor
         Output colatitudes in radians, ascending, shape ``(nlat_out,)``.
     theta_cutoff : float
         Effective angular support radius, i.e. including the widening the sparsity pattern is
@@ -1313,7 +1270,7 @@ def compute_polar_halo_radius(
     if comm_size <= 1:
         return 0
 
-    lo, hi = latitude_support_band(lats_in, lats_out, theta_cutoff)
+    lo, hi = latitude_support_band(colats_in, colats_out, theta_cutoff)
 
     in_starts = [0]
     out_starts = [0]
@@ -1354,7 +1311,7 @@ def compute_polar_halo_radius(
 
 
 @torch.compiler.disable()
-def polar_halo_exchange(x, r_lat):
+def polar_halo_exchange(x, r_lat, lat_dim=-2):
     """Exchange ``r_lat`` halo rows with neighbouring polar ranks.
 
     Gathers ``r_lat`` latitude rows from each polar neighbour and returns a
@@ -1365,20 +1322,24 @@ def polar_halo_exchange(x, r_lat):
     Parameters
     ----------
     x : torch.Tensor
-        Input tensor of shape ``(B, C, H_local, W)``.
+        Input tensor of shape ``(B, C, H_local, W)``, or any shape whose latitude axis is
+        ``lat_dim``.
     r_lat : int
         Number of halo rows to exchange on each side.
+    lat_dim : int, optional
+        The latitude axis, by default ``-2`` (channels-first). A channels-last
+        ``(B, H_local, W, C)`` tensor passes ``1``.
 
     Returns
     -------
     torch.Tensor
-        Halo-padded tensor of shape ``(B, C, H_local + 2 * r_lat, W)``.
+        Halo-padded tensor, ``r_lat`` rows longer on each side of ``lat_dim``.
     """
-    return _PolarHaloExchangeFn.apply(x, r_lat)
+    return _PolarHaloExchangeFn.apply(x, r_lat, lat_dim)
 
 
 @torch.compiler.disable()
-def polar_halo_reduce(y, r_lat, nlat_local):
+def polar_halo_reduce(y, r_lat, nlat_local, lat_dim=-2):
     """Accumulate ``r_lat`` halo rows onto their owning polar ranks.
 
     The adjoint of :func:`polar_halo_exchange`, and its mirror image: where the exchange
@@ -1390,15 +1351,19 @@ def polar_halo_reduce(y, r_lat, nlat_local):
     Parameters
     ----------
     y : torch.Tensor
-        Halo-padded tensor of shape ``(B, C, nlat_local + 2 * r_lat, W)``.
+        Halo-padded tensor of shape ``(B, C, nlat_local + 2 * r_lat, W)``, or any shape
+        whose latitude axis ``lat_dim`` has ``nlat_local + 2 * r_lat`` entries.
     r_lat : int
         Number of halo rows on each side.
     nlat_local : int
         Number of latitudes this rank owns, i.e. the extent of the returned tensor.
+    lat_dim : int, optional
+        The latitude axis, by default ``-2`` (channels-first). A channels-last
+        ``(B, H, W, C)`` tensor passes ``1``.
 
     Returns
     -------
     torch.Tensor
-        Tensor of shape ``(B, C, nlat_local, W)`` holding this rank's completed rows.
+        This rank's completed rows, ``nlat_local`` long along ``lat_dim``.
     """
-    return _PolarHaloReduceFn.apply(y, r_lat, nlat_local)
+    return _PolarHaloReduceFn.apply(y, r_lat, nlat_local, lat_dim)

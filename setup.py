@@ -192,26 +192,33 @@ def get_ext_modules():
     # Create a single extension that includes both CPU and CUDA code
     attention_sources = [
         "torch_harmonics/attention/optimized/attention_interface.cpp",
-        "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_permute.cpp",
-        "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_fwd.cpp",
-        "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_fwd_upsample.cpp",
-        "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_bwd.cpp",
-        "torch_harmonics/attention/optimized/kernels_cpu/attention_cpu_bwd_upsample.cpp",
+        "torch_harmonics/attention/optimized/kernels_cpu/common/attention_cpu_permute.cpp",
+        "torch_harmonics/attention/optimized/kernels_cpu/regular/attention_cpu_fwd.cpp",
+        "torch_harmonics/attention/optimized/kernels_cpu/regular/attention_cpu_fwd_upsample.cpp",
+        "torch_harmonics/attention/optimized/kernels_cpu/regular/attention_cpu_bwd.cpp",
+        "torch_harmonics/attention/optimized/kernels_cpu/regular/attention_cpu_bwd_upsample.cpp",
+        # ragged (HEALPix and other non-product grids); mirrors kernels_cuda/ragged/
+        # rather than the regular CPU kernels, so both devices read the same arcs
+        "torch_harmonics/attention/optimized/kernels_cpu/ragged/attention_cpu_fwd_ragged.cpp",
+        "torch_harmonics/attention/optimized/kernels_cpu/ragged/attention_cpu_bwd_ragged.cpp",
     ]
 
     if BUILD_CUDA:
         print("Compiling attention CUDA kernels for torch-harmonics.")
         attention_sources.extend(
             [
-                "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_utils.cu",
-                "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_fwd.cu",
-                "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_bwd.cu",
-                "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_fwd_upsample.cu",
-                "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_bwd_upsample.cu",
-                "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_fwd_ring.cu",
-                "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_bwd_ring.cu",
-                "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_fwd_ring_upsample.cu",
-                "torch_harmonics/attention/optimized/kernels_cuda/attention_cuda_bwd_ring_upsample.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/common/attention_cuda_utils.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/regular/attention_cuda_fwd.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/regular/attention_cuda_bwd.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/regular/attention_cuda_fwd_upsample.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/regular/attention_cuda_bwd_upsample.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/regular/attention_cuda_fwd_ring.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/regular/attention_cuda_bwd_ring.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/regular/attention_cuda_fwd_ring_upsample.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/regular/attention_cuda_bwd_ring_upsample.cu",
+                # ragged (HEALPix and other non-product grids); see kernels_cuda/ragged/
+                "torch_harmonics/attention/optimized/kernels_cuda/ragged/attention_cuda_fwd_ragged.cu",
+                "torch_harmonics/attention/optimized/kernels_cuda/ragged/attention_cuda_bwd_ragged.cu",
             ]
         )
         ext_modules.append(CUDAExtension("torch_harmonics.attention._C", attention_sources, extra_compile_args=get_compile_args("attention")))

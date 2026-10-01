@@ -67,8 +67,8 @@ from typing import List, Optional
 import torch
 from disco_helpers import optimized_kernels_is_available
 
-from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_contraction_torch
-from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_optimized
+from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_contraction_regular_torch
+from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_regular_optimized
 
 # The fused and kpacked conv ops are defined inside
 # disco_optimized.py's ``if optimized_kernels_is_available():`` block, so they
@@ -77,12 +77,12 @@ if optimized_kernels_is_available():
     from torch_harmonics.disco.optimized.disco_optimized import (
         _disco_s2_contraction_kpacked,
         _disco_s2_fused_conv_kpacked,
-        _disco_s2_fused_conv_optimized,
+        _disco_s2_fused_conv_regular_optimized,
     )
 else:
     _disco_s2_contraction_kpacked = None
     _disco_s2_fused_conv_kpacked = None
-    _disco_s2_fused_conv_optimized = None
+    _disco_s2_fused_conv_regular_optimized = None
 
 from torch_harmonics.distributed.primitives import (
     compute_split_shapes,
@@ -175,7 +175,7 @@ def _distributed_disco_fwd_a2a(
             nlon_out,
         )
     elif optimized_kernel:
-        x = _disco_s2_contraction_optimized(
+        x = _disco_s2_contraction_regular_optimized(
             x,
             psi_roff_idx,
             psi_ker_idx,
@@ -187,7 +187,7 @@ def _distributed_disco_fwd_a2a(
             nlon_out,
         )
     else:
-        x = _disco_s2_contraction_torch(x, psi_torch.to(x.device), nlon_out)
+        x = _disco_s2_contraction_regular_torch(x, psi_torch.to(x.device), nlon_out)
 
     # Fused reduce_scatter on the polar group — half the comm of
     # reduce_from_polar_region + scatter_to_polar_region; pads short
@@ -287,8 +287,10 @@ def _distributed_disco_fwd_a2a_reordered(
 
     Returns the polar-reduced ``(B, O, H_out_local, W_out_local)`` WITHOUT bias.
     """
-    if _disco_s2_fused_conv_optimized is None:
-        raise NotImplementedError("fused=True requires the optimized DISCO CUDA kernels " "(_disco_s2_fused_conv_optimized); rebuild the optimized library " "or use fused=False.")
+    if _disco_s2_fused_conv_regular_optimized is None:
+        raise NotImplementedError(
+            "fused=True requires the optimized DISCO CUDA kernels " "(_disco_s2_fused_conv_regular_optimized); rebuild the optimized library " "or use fused=False."
+        )
 
     out_channels, _, K = weight.shape  # weight: (out_channels, groupsize, K)
     out_per_group = out_channels // groups
@@ -361,7 +363,7 @@ def _distributed_disco_fwd_a2a_reordered(
             psi_split_nnz_offsets,
         )
     else:
-        local_out = _disco_s2_fused_conv_optimized(
+        local_out = _disco_s2_fused_conv_regular_optimized(
             x_padded,
             weight_local,
             psi_roff_idx,

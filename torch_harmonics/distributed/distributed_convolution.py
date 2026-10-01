@@ -29,7 +29,6 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from itertools import accumulate
 from typing import Optional, Tuple, Union
 
 import torch
@@ -41,15 +40,17 @@ from torch_harmonics.disco.convolution import (
     _kpacked_device_supported_for_tensor,
     _precompute_convolution_tensor_s2,
 )
-from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_transpose_contraction_torch
+from torch_harmonics.disco.kernels_torch.disco_torch import _disco_s2_transpose_contraction_regular_torch
 from torch_harmonics.disco.optimized.disco_optimized import (
     _build_kernel_split_csr,
-    _disco_s2_transpose_contraction_optimized,
+    _disco_s2_transpose_contraction_regular_optimized,
     _kpacked_build_available,
     _maybe_kpack_psi,
     _split_csr_python_offsets,
 )
-from torch_harmonics.quadrature import compute_theta_cutoff, effective_theta_cutoff, precompute_latitudes
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.quadrature import effective_theta_cutoff
+from torch_harmonics.truncation import truncate_support
 
 # a2a forward orchestration: standard (fused=False) and reordered (fused=True).
 from .kernels import (
@@ -79,8 +80,8 @@ _POLAR_MODES = frozenset({"halo-exchange", "reduce-scatter"})
 def _split_distributed_convolution_tensor_s2(
     idx: torch.Tensor,
     vals: torch.Tensor,
-    in_shape: Tuple[int],
-    out_shape: Tuple[int],
+    grid_in: RegularGridS2,
+    grid_out: RegularGridS2,
 ):
     """
     Splits a pre-computed convolution tensor along the latitude dimension for distributed processing.
@@ -95,10 +96,11 @@ def _split_distributed_convolution_tensor_s2(
         Indices of the pre-computed convolution tensor
     vals : torch.Tensor
         Values of the pre-computed convolution tensor
-    in_shape : Tuple[int]
-        Shape of the input tensor (nlat_in, nlon_in)
-    out_shape : Tuple[int]
-        Shape of the output tensor (nlat_out, nlon_out)
+    grid_in : RegularGridS2
+        Descriptor of the **global** input grid, not this rank's shard: the local
+        latitude range is derived here from the polar process group.
+    grid_out : RegularGridS2
+        Descriptor of the **global** output grid.
 
     Returns
     -------
@@ -108,23 +110,24 @@ def _split_distributed_convolution_tensor_s2(
         Filtered values corresponding to the local latitude slice
     """
 
-    nlat_in, nlon_in = in_shape
-    nlat_out, nlon_out = out_shape
+    # these must be the global grids; require_regular_grid rejects a GridShardS2, since
+    # sharding an already-sharded grid would silently select the wrong latitudes
+    nlon_in = require_regular_grid(grid_in, "grid_in").nlon
+    require_regular_grid(grid_out, "grid_out")
 
-    comm_size_polar = polar_group_size()
-    comm_rank_polar = polar_group_rank()
-    split_shapes = compute_split_shapes(nlat_in, num_chunks=comm_size_polar)
-    offsets = [0] + list(accumulate(split_shapes))
-    start_idx = offsets[comm_rank_polar]
-    end_idx = offsets[comm_rank_polar + 1]
+    # the grid locates this rank's latitude range; sharding the global grid here is
+    # why require_regular_grid above rejects a shard, which would offset into an offset
+    shard_in = grid_in.shard(polar=(polar_group_rank(), polar_group_size()))
+    start_idx = shard_in.lat_offset
+    end_idx = start_idx + shard_in.nlat
 
     # once normalization is done we can throw away the entries which correspond to input latitudes we do not care about
-    lats = idx[2] // nlon_in
+    ilat = idx[2] // nlon_in
     lons = idx[2] % nlon_in
-    ilats = torch.argwhere((lats < end_idx) & (lats >= start_idx)).squeeze()
+    ilats = torch.argwhere((ilat < end_idx) & (ilat >= start_idx)).squeeze()
     vals = vals[ilats]
     # for the indices we need to recompute them to refer to local indices of the input tenor
-    idx = torch.stack([idx[0, ilats], idx[1, ilats], (lats[ilats] - start_idx) * nlon_in + lons[ilats]], dim=0)
+    idx = torch.stack([idx[0, ilats], idx[1, ilats], (ilat[ilats] - start_idx) * nlon_in + lons[ilats]], dim=0)
 
     # make results contiguous
     idx = idx.contiguous()
@@ -136,8 +139,8 @@ def _split_distributed_convolution_tensor_s2(
 def _split_halo_convolution_tensor_s2(
     idx: torch.Tensor,
     vals: torch.Tensor,
-    in_shape: Tuple[int],
-    out_shape: Tuple[int],
+    grid_in: RegularGridS2,
+    grid_out: RegularGridS2,
     r_lat: int,
 ):
     r"""
@@ -166,10 +169,12 @@ def _split_halo_convolution_tensor_s2(
         Indices of the pre-computed (global, normalized) convolution tensor.
     vals : torch.Tensor
         Values of the pre-computed convolution tensor.
-    in_shape : Tuple[int]
-        Global input shape ``(nlat_in, nlon_in)``.
-    out_shape : Tuple[int]
-        Global output shape ``(nlat_out, nlon_out)``.
+    grid_in : RegularGridS2
+        Descriptor of the **global** input grid, not this rank's shard: the local
+        latitude range and the halo around it are derived here from the polar
+        process group.
+    grid_out : RegularGridS2
+        Descriptor of the **global** output grid.
     r_lat : int
         Halo radius in latitude rows.
 
@@ -181,14 +186,16 @@ def _split_halo_convolution_tensor_s2(
         The corresponding values.
     """
 
-    nlat_in, nlon_in = in_shape
-    nlat_out, nlon_out = out_shape
+    # these must be the global grids; require_regular_grid rejects a GridShardS2, since
+    # sharding an already-sharded grid would silently select the wrong latitudes
+    nlon_in = require_regular_grid(grid_in, "grid_in").nlon
+    require_regular_grid(grid_out, "grid_out")
 
     comm_size_polar = polar_group_size()
     comm_rank_polar = polar_group_rank()
 
-    in_shapes = compute_split_shapes(nlat_in, num_chunks=comm_size_polar)
-    out_shapes = compute_split_shapes(nlat_out, num_chunks=comm_size_polar)
+    in_shapes = grid_in.lat_shapes(comm_size_polar)
+    out_shapes = grid_out.lat_shapes(comm_size_polar)
     in_start = sum(in_shapes[:comm_rank_polar])
     out_start = sum(out_shapes[:comm_rank_polar])
     nlat_out_local = out_shapes[comm_rank_polar]
@@ -198,16 +205,16 @@ def _split_halo_convolution_tensor_s2(
     # 2 * r_lat extra rows and the offset below is uniform across ranks
     halo_start = in_start - r_lat
 
-    lats = idx[2] // nlon_in
+    ilat = idx[2] // nlon_in
     lons = idx[2] % nlon_in
 
     keep = (idx[1] >= out_start) & (idx[1] < out_start + nlat_out_local)
     # defensive: with a correctly derived r_lat every kept entry already lies in the band
-    keep = keep & (lats >= halo_start) & (lats < halo_start + nlat_in_local_padded(in_shapes, comm_rank_polar, r_lat))
+    keep = keep & (ilat >= halo_start) & (ilat < halo_start + nlat_in_local_padded(in_shapes, comm_rank_polar, r_lat))
     sel = torch.argwhere(keep).squeeze(-1)
 
     vals = vals[sel]
-    idx = torch.stack([idx[0, sel], idx[1, sel] - out_start, (lats[sel] - halo_start) * nlon_in + lons[sel]], dim=0)
+    idx = torch.stack([idx[0, sel], idx[1, sel] - out_start, (ilat[sel] - halo_start) * nlon_in + lons[sel]], dim=0)
 
     return idx.contiguous(), vals.contiguous()
 
@@ -232,34 +239,23 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             Serial counterpart with full mathematical description and parameter
             documentation.
 
-    The azimuth direction is all-to-all: a channel swap so the sparse psi contraction
-    runs against the full ``nlon_in`` row, then back to channel-distributed. The polar
-    direction is chosen by ``polar_mode=``, which decides whether a rank computes only
-    the output latitudes it owns (borrowing a halo) or all of them (and reduce-scatters
-    the partial sums). That choice governs how the K-expanded intermediate scales, so it
-    is usually the one that decides whether a large model fits. The ``fused=`` flag is
-    orthogonal to it and mirrors the serial conv:
-
-      ``fused=False`` (default) — standard a2a: einsum after the
-        transpose-back; the K-expanded intermediate is saved for backward.
-
-      ``fused=True`` — reordered a2a: the weight einsum runs before the
-        collectives on the local azimuth channel shard, via the fused
-        contraction+einsum op that recomputes the K-expanded in backward
-        instead of saving it. K× lower activation memory and K× less
-        collective volume, at the cost of one extra contraction in
-        backward. CUDA + optimized kernels only.
+    Longitudes are handled by all-to-all transposes; latitudes are handled as
+    selected by ``polar_mode``. Of the options, ``polar_mode`` usually matters most
+    for memory, because it sets how the per-basis-function intermediate scales
+    with the number of polar ranks.
 
     Parameters
     ----------
+    grid_in : RegularGridS2
+        Descriptor of the input grid; it carries the resolution as well as the
+        quadrature rule.
+    grid_out : RegularGridS2
+        Descriptor of the output grid.
+        Both are the **global** grids; each rank derives its own slice.
     in_channels : int
         Number of input channels
     out_channels : int
         Number of output channels
-    in_shape : Tuple[int]
-        Shape of the input tensor
-    out_shape : Tuple[int]
-        Shape of the output tensor
     kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
     basis_type : Optional[str]
@@ -268,10 +264,6 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         Normalization mode for the filter basis
     groups : Optional[int]
         Number of groups
-    grid_in : Optional[str]
-        Grid type for the input tensor
-    grid_out : Optional[str]
-        Grid type for the output tensor
     bias : Optional[bool]
         Whether to use bias
     theta_cutoff : Optional[float]
@@ -279,49 +271,44 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
     optimized_kernel : Optional[bool]
         Use the optimized CUDA contraction kernel. Required when ``fused=True``.
     fused : bool
-        Mirrors the serial conv. ``False`` (default): standard all-to-all
-        (the K-expanded intermediate is saved for backward). ``True``:
-        reordered all-to-all — the weight einsum runs before the collectives
-        on the local azimuth channel shard and the K-expanded is recomputed
-        in backward instead of saved, for K× lower activation memory and K×
-        less collective volume (CUDA + optimized kernels only).
+        As in the serial layer: if ``True``, the per-basis-function intermediate is
+        recomputed in the backward pass instead of stored, reducing activation memory
+        and communication volume by a factor of the kernel size at the cost of extra
+        compute. Requires CUDA and ``optimized_kernel=True``. By default ``False``.
     polar_mode : Optional[str]
         How the polar ranks obtain their output latitudes.
 
-        ``"halo-exchange"`` (default): each rank borrows the input rows its own output rows
-        reach into and computes them outright. The K-expanded intermediate is then
-        ``(B, C, K, nlat_out / polar_group_size, nlon_out)``, i.e. it shrinks as polar ranks
-        are added. Requires the filter support to reach no further than the neighbouring
-        rank; when it does not, construction raises and says so, rather than quietly
-        selecting the other mode and leaving the memory problem in place.
+        ``"halo-exchange"`` (default): each rank borrows the neighbouring input rows
+        it needs and computes only its own output latitudes, so the per-basis-function
+        intermediate is ``(B, C, K, nlat_out / polar_size, nlon_out)`` and shrinks as
+        polar ranks are added. The filter support must not extend past the neighbouring
+        rank; otherwise construction raises.
 
-        ``"reduce-scatter"``: every rank computes a partial sum over *all* output latitudes
-        and a reduce-scatter completes and splits it. No bound on the angular reach, so this
-        is the mode for cutoffs wide enough that a halo cannot serve them -- at the cost of an
-        intermediate that stays at the full ``nlat_out`` however many polar ranks are used.
+        ``"reduce-scatter"``: every rank computes partial sums over all output
+        latitudes, which a reduce-scatter completes. Works for any cutoff, but memory
+        does not shrink with the number of polar ranks.
 
     Returns
     -------
     torch.Tensor
-        Output tensor
+        Local output of shape ``(batch, out_channels, nlat_out_local, nlon_out_local)``.
 
     References
     ----------
     :cite:`Ocampo2023`
     """
 
+    @_rejects_legacy_signature
     def __init__(
         self,
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         in_channels: int,
         out_channels: int,
-        in_shape: Tuple[int],
-        out_shape: Tuple[int],
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
         basis_type: Optional[str] = "piecewise linear",
         basis_norm_mode: Optional[str] = "nodal",
         groups: Optional[int] = 1,
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         optimized_kernel: Optional[bool] = True,
@@ -344,8 +331,10 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                 "K-expanded recompute in backward). Use fused=False otherwise."
             )
 
-        self.nlat_in, self.nlon_in = in_shape
-        self.nlat_out, self.nlon_out = out_shape
+        self.grid_in = require_regular_grid(grid_in, "grid_in")
+        self.grid_out = require_regular_grid(grid_out, "grid_out")
+        self.nlat_in, self.nlon_in = self.grid_in.shape
+        self.nlat_out, self.nlon_out = self.grid_out.shape
 
         # get the comms grid:
         self.comm_size_polar = polar_group_size()
@@ -353,20 +342,24 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
-        # we need those shapes:
-        self.lat_in_shapes = compute_split_shapes(self.nlat_in, self.comm_size_polar)
-        self.lon_in_shapes = compute_split_shapes(self.nlon_in, self.comm_size_azimuth)
-        self.lat_out_shapes = compute_split_shapes(self.nlat_out, self.comm_size_polar)
-        self.lon_out_shapes = compute_split_shapes(self.nlon_out, self.comm_size_azimuth)
+        # each grid decomposes itself. Only the shape lists come from the shards: the
+        # local extents below deliberately keep one side global, since psi is split
+        # along a single latitude axis rather than both.
+        self.shard_in = self.grid_in.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.shard_out = self.grid_out.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.lat_in_shapes = list(self.shard_in.lat_shapes)
+        self.lon_in_shapes = list(self.shard_in.lon_shapes)
+        self.lat_out_shapes = list(self.shard_out.lat_shapes)
+        self.lon_out_shapes = list(self.shard_out.lon_shapes)
 
         # compute theta cutoff based on the bandlimit of the input field
-        if theta_cutoff is None:
-            self.theta_cutoff = compute_theta_cutoff(self.nlat_out, grid=grid_out)
-        else:
-            self.theta_cutoff = theta_cutoff
-
-        if self.theta_cutoff <= 0.0:
-            raise ValueError("Error, theta_cutoff has to be positive.")
+        self.theta_cutoff = truncate_support(self.grid_out, theta_cutoff)
 
         # Note that the psi matrix is of shape nlat_out x nlat_in * nlon_in.
         # Since the contraction in nlon direction is a convolution, we keep
@@ -385,10 +378,9 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.r_lat = 0
         self.use_halo = self.polar_mode == "halo-exchange"
         if self.use_halo:
-            lats_in, _ = precompute_latitudes(self.nlat_in, grid=grid_in)
-            lats_out, _ = precompute_latitudes(self.nlat_out, grid=grid_out)
+            colats_in, colats_out = self.grid_in.colats, self.grid_out.colats
             try:
-                self.r_lat = compute_polar_halo_radius(lats_in, lats_out, effective_theta_cutoff(self.theta_cutoff), self.lat_in_shapes, self.lat_out_shapes)
+                self.r_lat = compute_polar_halo_radius(colats_in, colats_out, effective_theta_cutoff(self.theta_cutoff), self.lat_in_shapes, self.lat_out_shapes)
             except ValueError as err:
                 raise ValueError(
                     f"{err}\n\n"
@@ -408,20 +400,18 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         # compute global convolution tensor
         idx, vals, _ = _precompute_convolution_tensor_s2(
-            in_shape,
-            out_shape,
+            self.grid_in,
+            self.grid_out,
             self.filter_basis,
-            grid_in=grid_in,
-            grid_out=grid_out,
             theta_cutoff=self.theta_cutoff,
             transpose_normalization=False,
             basis_norm_mode=basis_norm_mode,
             merge_quadrature=True,
         )
         if self.use_halo:
-            idx, vals = _split_halo_convolution_tensor_s2(idx, vals, in_shape, out_shape, self.r_lat)
+            idx, vals = _split_halo_convolution_tensor_s2(idx, vals, self.grid_in, self.grid_out, self.r_lat)
         else:
-            idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, in_shape, out_shape)
+            idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, self.grid_in, self.grid_out)
         self._build_local_psi(idx, vals)
 
     def _build_local_psi(self, idx: torch.Tensor, vals: torch.Tensor):
@@ -497,10 +487,10 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
     def extra_repr(self):
         return (
-            f"in_shape={(self.nlat_in, self.nlon_in)}, "
-            f"out_shape={(self.nlat_out, self.nlon_out)}, "
-            f"in_chans={self.groupsize * self.groups}, "
-            f"out_chans={self.weight.shape[0]}, "
+            f"grid_in={self.grid_in!r},\n"
+            f"grid_out={self.grid_out!r},\n"
+            f"in_channels={self.groupsize * self.groups}, "
+            f"out_channels={self.weight.shape[0]}, "
             f"filter_basis={self.filter_basis}, "
             f"kernel_shape={self.kernel_shape}, "
             f"theta_cutoff={self.theta_cutoff}, "
@@ -605,14 +595,16 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
     Parameters
     ----------
+    grid_in : RegularGridS2
+        Descriptor of the input grid; it carries the resolution as well as the
+        quadrature rule.
+    grid_out : RegularGridS2
+        Descriptor of the output grid.
+        Both are the **global** grids; each rank derives its own slice.
     in_channels : int
         Number of input channels
     out_channels : int
         Number of output channels
-    in_shape : Tuple[int]
-        Shape of the input tensor
-    out_shape : Tuple[int]
-        Shape of the output tensor
     kernel_shape : Union[int, Tuple[int], Tuple[int, int]]
         Shape of the kernel
     basis_type : Optional[str]
@@ -621,14 +613,12 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         Normalization mode for the filter basis
     groups : Optional[int]
         Number of groups
-    grid_in : Optional[str]
-        Grid type for the input tensor
-    grid_out : Optional[str]
-        Grid type for the output tensor
     bias : Optional[bool]
         Whether to use bias
     theta_cutoff : Optional[float]
         Theta cutoff for the filter basis
+    optimized_kernel : Optional[bool]
+        Whether to use the optimized kernel (if available)
 
     Returns
     -------
@@ -640,26 +630,27 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     :cite:`Ocampo2023`
     """
 
+    @_rejects_legacy_signature
     def __init__(
         self,
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         in_channels: int,
         out_channels: int,
-        in_shape: Tuple[int],
-        out_shape: Tuple[int],
         kernel_shape: Union[int, Tuple[int], Tuple[int, int]],
         basis_type: Optional[str] = "piecewise linear",
         basis_norm_mode: Optional[str] = "nodal",
         groups: Optional[int] = 1,
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
         optimized_kernel: Optional[bool] = True,
     ):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
-        self.nlat_in, self.nlon_in = in_shape
-        self.nlat_out, self.nlon_out = out_shape
+        self.grid_in = require_regular_grid(grid_in, "grid_in")
+        self.grid_out = require_regular_grid(grid_out, "grid_out")
+        self.nlat_in, self.nlon_in = self.grid_in.shape
+        self.nlat_out, self.nlon_out = self.grid_out.shape
 
         # get the comms grid:
         self.comm_size_polar = polar_group_size()
@@ -667,20 +658,24 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
-        # we need those shapes:
-        self.lat_in_shapes = compute_split_shapes(self.nlat_in, self.comm_size_polar)
-        self.lon_in_shapes = compute_split_shapes(self.nlon_in, self.comm_size_azimuth)
-        self.lat_out_shapes = compute_split_shapes(self.nlat_out, self.comm_size_polar)
-        self.lon_out_shapes = compute_split_shapes(self.nlon_out, self.comm_size_azimuth)
+        # each grid decomposes itself. Only the shape lists come from the shards: the
+        # local extents below deliberately keep one side global, since psi is split
+        # along a single latitude axis rather than both.
+        self.shard_in = self.grid_in.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.shard_out = self.grid_out.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.lat_in_shapes = list(self.shard_in.lat_shapes)
+        self.lon_in_shapes = list(self.shard_in.lon_shapes)
+        self.lat_out_shapes = list(self.shard_out.lat_shapes)
+        self.lon_out_shapes = list(self.shard_out.lon_shapes)
 
         # bandlimit
-        if theta_cutoff is None:
-            self.theta_cutoff = compute_theta_cutoff(self.nlat_in, grid=grid_in)
-        else:
-            self.theta_cutoff = theta_cutoff
-
-        if self.theta_cutoff <= 0.0:
-            raise ValueError("Error, theta_cutoff has to be positive.")
+        self.theta_cutoff = truncate_support(self.grid_in, theta_cutoff)
 
         # Note that the psi matrix is of shape nlat_out x nlat_in * nlon_in. Since the contraction in nlon direction is a convolution,
         # we will keep local to all nodes and split the computation up along nlat. We further split the input dim because this reduces the number
@@ -694,11 +689,9 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         # switch in_shape and out_shape since we want transpose conv
         # distributed mode here is swapped because of the transpose
         idx, vals, _ = _precompute_convolution_tensor_s2(
-            out_shape,
-            in_shape,
+            self.grid_out,
+            self.grid_in,
             self.filter_basis,
-            grid_in=grid_out,
-            grid_out=grid_in,
             theta_cutoff=self.theta_cutoff,
             transpose_normalization=True,
             basis_norm_mode=basis_norm_mode,
@@ -707,7 +700,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         # split the convolution tensor along latitude, again, we need to swap the meaning
         # of in_shape and out_shape
-        idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, out_shape, in_shape)
+        idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, self.grid_out, self.grid_in)
 
         # sort the values
         ker_idx = idx[0, ...].contiguous()
@@ -742,7 +735,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             )
 
     def extra_repr(self):
-        return f"in_shape={(self.nlat_in, self.nlon_in)}, out_shape={(self.nlat_out, self.nlon_out)}, in_chans={self.groupsize * self.groups}, out_chans={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.groupsize * self.groups}, out_channels={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
 
     @property
     def psi_idx(self):
@@ -774,11 +767,11 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             x = gather_from_copy_to_polar_region(x, -2, self.lat_in_shapes)
 
         if self.optimized_kernel:
-            out = _disco_s2_transpose_contraction_optimized(
+            out = _disco_s2_transpose_contraction_regular_optimized(
                 x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx, self.psi_vals, self.kernel_size, self.nlat_out_local, self.nlon_out
             )
         else:
-            out = _disco_s2_transpose_contraction_torch(x, self.psi_st.to(x.device), self.nlon_out)
+            out = _disco_s2_transpose_contraction_regular_torch(x, self.psi_st.to(x.device), self.nlon_out)
 
         # now we can transpose back the result, so that lon is split and channels are local
         if self.comm_size_azimuth > 1:

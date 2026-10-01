@@ -37,7 +37,7 @@ import torch
 import torch.nn as nn
 
 import torch_harmonics as th
-from torch_harmonics.quadrature import precompute_longitudes
+from torch_harmonics.grid import _rejects_legacy_signature, require_regular_grid
 
 
 class SphereSolver(nn.Module):
@@ -48,57 +48,44 @@ class SphereSolver(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
+    grid : RegularGridS2
+        Grid the fields are sampled on, e.g. ``as_grid("equiangular", nlat=256, nlon=512)``.
+        Its quadrature must support an SHT, so ``"equiangular"``, ``"legendre-gauss"`` or
+        ``"lobatto"``.
     dt : float
         Time step size
     lmax : int, optional
         Maximum l mode for spherical harmonics, by default None
     mmax : int, optional
         Maximum m mode for spherical harmonics, by default None
-    grid : str, optional
-        Grid type ("equiangular", "legendre-gauss", "lobatto"), by default "equiangular"
     radius : float, optional
         Radius of the sphere, by default 1.0
     coeff : float, optional
         Coefficient for the PDE, by default 0.001
     """
 
-    def __init__(self, nlat, nlon, dt, lmax=None, mmax=None, grid="equiangular", radius=1.0, coeff=0.001):
+    @_rejects_legacy_signature
+    def __init__(self, grid, dt, lmax=None, mmax=None, radius=1.0, coeff=0.001):
         super().__init__()
 
         # time stepping param
         self.dt = dt
 
         # grid parameters
-        self.nlat = nlat
-        self.nlon = nlon
-        self.grid = grid
+        self.grid = require_regular_grid(grid)
+        self.nlat, self.nlon = self.grid.shape
 
         # physical sonstants
         self.register_buffer("radius", torch.as_tensor(radius, dtype=torch.float64))
         self.register_buffer("coeff", torch.as_tensor(coeff, dtype=torch.float64))
 
         # SHT
-        self.sht = th.RealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.isht = th.InverseRealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
+        self.sht = th.RealSHT(self.grid, lmax=lmax, mmax=mmax, csphase=False)
+        self.isht = th.InverseRealSHT(self.grid, lmax=lmax, mmax=mmax, csphase=False)
 
-        self.lmax = lmax or self.sht.lmax
-        self.mmax = lmax or self.sht.mmax
-
-        # compute gridpoints
-        if self.grid == "legendre-gauss":
-            cost, _ = th.quadrature.legendre_gauss_weights(self.nlat, -1, 1)
-        elif self.grid == "lobatto":
-            cost, _ = th.quadrature.lobatto_weights(self.nlat, -1, 1)
-        elif self.grid == "equiangular":
-            cost, _ = th.quadrature.clenshaw_curtiss_weights(self.nlat, -1, 1)
-
-        # apply cosine transform and flip them
-        lats = -torch.arcsin(cost)
-        lons = precompute_longitudes(self.nlon)
+        # grid points, ordered north to south like the layout the transforms use
+        lats = self.grid.lats
+        lons = self.grid.lons()
 
         self.lmax = self.sht.lmax
         self.mmax = self.sht.mmax
@@ -183,10 +170,10 @@ class SphereSolver(nn.Module):
         lons = self.lons.squeeze() - torch.pi
         lats = self.lats.squeeze()
 
-        if data.is_cuda:
-            data = data.cpu()
-            lons = lons.cpu()
-            lats = lats.cpu()
+        # matplotlib needs host memory, whatever device the solver runs on (CUDA, MPS, ...)
+        data = data.detach().cpu()
+        lons = lons.cpu()
+        lats = lats.cpu()
 
         Lons, Lats = np.meshgrid(lons, lats)
 

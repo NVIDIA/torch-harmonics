@@ -64,46 +64,24 @@ namespace attention_kernels
     // NHWC ABI: kx, vx, qy are physical (B, nlat, nlon, num_heads * C) and
     // contiguous; the result is returned in the same layout. Layout is never
     // inferred from strides -- the caller states it by construction.
-    torch::Tensor s2_attention_fwd_cpu(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor quad_weights,
-                                       at::Tensor col_idx, at::Tensor row_off, at::Tensor seg, at::Tensor seg_off,
-                                       int64_t num_heads, int64_t nlon_in, int64_t nlat_out, int64_t nlon_out)
+    torch::Tensor s2_attention_fwd_cpu(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor ring_weights,
+                                       at::Tensor seg, at::Tensor seg_off, int64_t num_heads, int64_t nlon_in,
+                                       int64_t nlat_out, int64_t nlon_out)
     {
         CHECK_CPU_INPUT_TENSOR(kx);
         CHECK_CPU_INPUT_TENSOR(vx);
         CHECK_CPU_INPUT_TENSOR(qy);
-        CHECK_CPU_INPUT_TENSOR(quad_weights);
-        CHECK_CPU_INPUT_TENSOR(col_idx);
-        CHECK_CPU_INPUT_TENSOR(row_off);
+        CHECK_CPU_INPUT_TENSOR(ring_weights);
+
+        // devices, shapes, dtypes, direction, index and weight tables, dense layouts
+        check_regular_attention_inputs(kx, vx, qy, ring_weights, seg, seg_off, num_heads, nlon_in, nlat_out, nlon_out);
 
         // downsample/self-attention iff nlon_in is a multiple of nlon_out;
         // upsample iff nlon_out is a multiple of nlon_in. Equal (self) hits both
         // and routes through the gather kernel (pscale == 1).
-        const bool downsample = (nlon_in % nlon_out == 0);
-        const bool upsample = (nlon_out % nlon_in == 0);
-        TORCH_CHECK(downsample || upsample, "either nlon_in (", nlon_in, ") must be an integer multiple of nlon_out (",
-                    nlon_out, "), or vice versa");
+        const bool downsample = (nlon_in % nlon_out == 0); // otherwise upsample: validated above
 
-        // seg / seg_off are accepted for ABI parity with the CUDA path but not used
-        // here: this is a correctness reference, and the CPU accessors have no
-        // equivalent of the GPU's missing integer-divide instruction, which is the
-        // whole reason the CUDA kernels switched to arcs. Optimizing the CPU path is
-        // a separate question.
-        (void)seg;
-        (void)seg_off;
-
-        TORCH_CHECK(num_heads >= 1, "num_heads must be positive, got ", num_heads);
-        TORCH_CHECK(qy.size(3) % num_heads == 0, "q/k channel count (", qy.size(3),
-                    ") must be divisible by num_heads (", num_heads, ")");
-        TORCH_CHECK(vx.size(3) % num_heads == 0, "v channel count (", vx.size(3), ") must be divisible by num_heads (",
-                    num_heads, ")");
-
-        // Every activation must share one dtype: the dispatch below selects a single
-        // scalar_t from qy and the launchers reinterpret_cast k/v/q (and dy) to it, so
-        // a mismatched input would be reinterpreted rather than converted.
-        TORCH_CHECK(kx.scalar_type() == qy.scalar_type(), "k dtype (", kx.scalar_type(), ") must match q dtype (",
-                    qy.scalar_type(), ")");
-        TORCH_CHECK(vx.scalar_type() == qy.scalar_type(), "v dtype (", vx.scalar_type(), ") must match q dtype (",
-                    qy.scalar_type(), ")");
+        // Both kernels below walk seg / seg_off, as the CUDA kernels do.
 
         // The CPU kernels are fp32-only (the storage/compute split is a CUDA-only
         // Tier B optimization). Upcast fp16/bf16 inputs to fp32 here and cast the
@@ -131,15 +109,15 @@ namespace attention_kernels
         auto vx_arr = vx.packed_accessor64<float, 4>();
         auto qy_arr = qy.packed_accessor64<float, 4>();
         auto y_arr = y.packed_accessor64<float, 4>();
-        auto quad_weights_arr = quad_weights.packed_accessor64<float, 1>();
-        auto col_idx_arr = col_idx.packed_accessor64<int64_t, 1>();
-        auto roff_arr = row_off.packed_accessor64<int64_t, 1>();
+        auto quad_weights_arr = ring_weights.packed_accessor64<float, 1>();
+        auto seg_arr = seg.packed_accessor64<int32_t, 2>();
+        auto seg_off_arr = seg_off.packed_accessor64<int32_t, 1>();
 
         if (downsample) {
-            s2_attn_fwd_kernel<float>(kx_arr, vx_arr, qy_arr, quad_weights_arr, col_idx_arr, roff_arr, y_arr, nlon_in,
+            s2_attn_fwd_kernel<float>(kx_arr, vx_arr, qy_arr, quad_weights_arr, seg_arr, seg_off_arr, y_arr, nlon_in,
                                       nlat_out, nlon_out, batch_size, nchannels_in, nchannels_out);
         } else {
-            s2_attn_fwd_upsample_dispatch(kx_arr, vx_arr, qy_arr, quad_weights_arr, col_idx_arr, roff_arr, y_arr,
+            s2_attn_fwd_upsample_dispatch(kx_arr, vx_arr, qy_arr, quad_weights_arr, seg_arr, seg_off_arr, y_arr,
                                           nlon_in, nlat_in, nlat_out, nlon_out, batch_size, nchannels_in, nchannels_out);
         }
 
@@ -149,6 +127,6 @@ namespace attention_kernels
     }
 
     // Implement the operators: CPU
-    TORCH_LIBRARY_IMPL(attention_kernels, CPU, m) { m.impl("forward", &s2_attention_fwd_cpu); }
+    TORCH_LIBRARY_IMPL(attention_kernels, CPU, m) { m.impl("forward_regular", &s2_attention_fwd_cpu); }
 
 } // namespace attention_kernels

@@ -37,22 +37,27 @@ import torch.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
 
-from torch_harmonics.quadrature import precompute_latitudes
+from torch_harmonics.grid import PointSetS2, RegularGridS2, _rejects_legacy_signature, require_point_set, require_regular_grid
 
 
-def get_quadrature_weights(nlat: int, nlon: int, grid: str, tile: bool = False, normalized: bool = True) -> torch.Tensor:
-    # area weights
-    _, q = precompute_latitudes(nlat=nlat, grid=grid)
-    q = q.reshape(-1, 1) * 2 * torch.pi / nlon
+def get_quadrature_weights(grid: PointSetS2, tile: bool = False, normalized: bool = True) -> torch.Tensor:
+    # the descriptor already carries the per-point solid-angle weights. Taking them from
+    # the grid keeps the longitudinal factor per ring, so this stays correct on a grid
+    # whose rings differ in length.
+    grid = require_point_set(grid)
+    q = grid.quad_weights.reshape(*grid.shape)
 
-    # numerical precision can be an issue here, make sure it sums to 1:
+    # quad_weights sums to 4*pi; normalizing to 1 is a division by that, exactly
     if normalized:
-        q = q / torch.sum(q) / float(nlon)
+        q = q / (4.0 * torch.pi)
 
-    if tile:
-        q = torch.tile(q, (1, nlon)).contiguous()
+    if not tile:
+        # one column: every point on a ring carries the same weight on a regular grid, and callers
+        # that broadcast over longitude want the (nlat, 1) form. A ragged grid has no such form.
+        require_regular_grid(grid, "grid (with tile=False)")
+        q = q[:, :1]
 
-    return q.to(torch.float32)
+    return q.contiguous().to(torch.float32)
 
 
 class DiceLossS2(nn.Module):
@@ -61,12 +66,10 @@ class DiceLossS2(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
-    grid : str, optional
-        Grid type, by default "equiangular"
+    grid : RegularGridS2
+        Descriptor of the grid the fields are sampled on. It carries the resolution as
+        well as the quadrature rule, so no separate shape argument is needed. Build one
+        with :func:`torch_harmonics.as_grid`.
     weight : torch.Tensor, optional
         Class weights, by default None
     smooth : float, optional
@@ -77,7 +80,8 @@ class DiceLossS2(nn.Module):
         Aggregation mode ("micro" or "macro"), by default "micro"
     """
 
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, smooth: float = 0, ignore_index: int = -100, mode: str = "micro"):
+    @_rejects_legacy_signature
+    def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, smooth: float = 0, ignore_index: int = -100, mode: str = "micro"):
 
         super().__init__()
 
@@ -86,7 +90,10 @@ class DiceLossS2(nn.Module):
         self.mode = mode
 
         # area weights
-        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid)
+        # these reduce over (-2, -1) and one-hot/permute a (B, C, H, W) layout, so they
+        # need a grid that really is a dense nlat x nlon array
+        self.grid = require_regular_grid(grid)
+        q = get_quadrature_weights(self.grid)
         self.register_buffer("quad_weights", q)
 
         if weight is None:
@@ -142,12 +149,10 @@ class CrossEntropyLossS2(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
-    grid : str, optional
-        Grid type, by default "equiangular"
+    grid : RegularGridS2
+        Descriptor of the grid the fields are sampled on. It carries the resolution as
+        well as the quadrature rule, so no separate shape argument is needed. Build one
+        with :func:`torch_harmonics.as_grid`.
     weight : torch.Tensor, optional
         Class weights, by default None
     smooth : float, optional
@@ -156,7 +161,8 @@ class CrossEntropyLossS2(nn.Module):
         Index to ignore in loss computation, by default -100
     """
 
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, smooth: float = 0, ignore_index: int = -100):
+    @_rejects_legacy_signature
+    def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, smooth: float = 0, ignore_index: int = -100):
 
         super().__init__()
 
@@ -168,7 +174,10 @@ class CrossEntropyLossS2(nn.Module):
         else:
             self.register_buffer("weight", weight)
 
-        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid)
+        # these reduce over (-2, -1) and one-hot/permute a (B, C, H, W) layout, so they
+        # need a grid that really is a dense nlat x nlon array
+        self.grid = require_regular_grid(grid)
+        q = get_quadrature_weights(self.grid)
         self.register_buffer("quad_weights", q)
 
     def forward(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
@@ -187,12 +196,10 @@ class FocalLossS2(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
-    grid : str, optional
-        Grid type, by default "equiangular"
+    grid : RegularGridS2
+        Descriptor of the grid the fields are sampled on. It carries the resolution as
+        well as the quadrature rule, so no separate shape argument is needed. Build one
+        with :func:`torch_harmonics.as_grid`.
     weight : torch.Tensor, optional
         Class weights, by default None
     smooth : float, optional
@@ -201,7 +208,8 @@ class FocalLossS2(nn.Module):
         Index to ignore in loss computation, by default -100
     """
 
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, smooth: float = 0, ignore_index: int = -100):
+    @_rejects_legacy_signature
+    def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, smooth: float = 0, ignore_index: int = -100):
 
         super().__init__()
 
@@ -213,7 +221,10 @@ class FocalLossS2(nn.Module):
         else:
             self.register_buffer("weight", weight)
 
-        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid)
+        # these reduce over (-2, -1) and one-hot/permute a (B, C, H, W) layout, so they
+        # need a grid that really is a dense nlat x nlon array
+        self.grid = require_regular_grid(grid)
+        q = get_quadrature_weights(self.grid)
         self.register_buffer("quad_weights", q)
 
     def forward(self, prd: torch.Tensor, tar: torch.Tensor, alpha: float = 0.25, gamma: float = 2):
@@ -233,22 +244,28 @@ class FocalLossS2(nn.Module):
 class SphericalLossBase(nn.Module, ABC):
     """Abstract base class for spherical losses that handles common initialization and integration."""
 
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", normalized: bool = True):
+    @_rejects_legacy_signature
+    def __init__(self, grid: PointSetS2, normalized: bool = True):
         super().__init__()
 
-        self.nlat = nlat
-        self.nlon = nlon
-        self.grid = grid
+        # integrating a pointwise loss term needs points and weights and nothing else, so
+        # this takes the weakest of the three guards -- the same one QuadratureS2 takes
+        self.grid = require_point_set(grid)
 
         # get quadrature weights - these sum to 1!
-        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid, normalized=normalized)
+        q = get_quadrature_weights(self.grid, tile=True, normalized=normalized)
         self.register_buffer("quad_weights", q)
+
+        # how many trailing axes to reduce over: 2 on a regular grid, 1 on a ragged one.
+        # Derived from the same grid.shape the weights were laid out with, so the two
+        # cannot disagree.
+        self.spatial_dims = tuple(range(-len(self.grid.shape), 0))
 
     def _integrate_sphere(self, ugrid, mask=None):
         if mask is None:
-            out = torch.sum(ugrid * self.quad_weights, dim=(-2, -1))
+            out = torch.sum(ugrid * self.quad_weights, dim=self.spatial_dims)
         elif mask is not None:
-            out = torch.sum(mask * ugrid * self.quad_weights, dim=(-2, -1)) / torch.sum(mask * self.quad_weights, dim=(-2, -1))
+            out = torch.sum(mask * ugrid * self.quad_weights, dim=self.spatial_dims) / torch.sum(mask * self.quad_weights, dim=self.spatial_dims)
         return out
 
     @abstractmethod
@@ -315,8 +332,12 @@ class L2LossS2(SquaredL2LossS2):
 
 
 class W11LossS2(SphericalLossBase):
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
-        super().__init__(nlat=nlat, nlon=nlon, grid=grid)
+    @_rejects_legacy_signature
+    def __init__(self, grid: RegularGridS2):
+        # the loss term is a pair of 2D FFTs over (nlat, nlon), so this one needs a
+        # regular grid even though the integration in the base class does not
+        nlat, nlon = require_regular_grid(grid).shape
+        super().__init__(grid)
         # Set up grid and domain for FFT
         l_phi = 2 * torch.pi  # domain size
         l_theta = torch.pi  # domain size
@@ -328,7 +349,6 @@ class W11LossS2(SphericalLossBase):
         self.register_buffer("k_theta_mesh", k_theta_mesh)
 
     def _compute_loss_term(self, prd: torch.Tensor, tar: torch.Tensor) -> torch.Tensor:
-        prdtype = prd.dtype
         with amp.autocast(device_type="cuda", enabled=False):
             prd = prd.to(torch.float32)
             prd_prime_fft2_phi_h = torch.fft.ifft2(1j * self.k_phi_mesh * torch.fft.fft2(prd)).real
@@ -356,12 +376,10 @@ class NormalLossS2(SphericalLossBase):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
-    grid : str, optional
-        Grid type, by default "equiangular"
+    grid : RegularGridS2
+        Descriptor of the grid the fields are sampled on. It carries the resolution as
+        well as the quadrature rule, so no separate shape argument is needed. Build one
+        with :func:`torch_harmonics.as_grid`.
 
     Returns
     -------
@@ -369,8 +387,12 @@ class NormalLossS2(SphericalLossBase):
         Combined loss term
     """
 
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular"):
-        super().__init__(nlat=nlat, nlon=nlon, grid=grid)
+    @_rejects_legacy_signature
+    def __init__(self, grid: RegularGridS2):
+        # the loss term is a pair of 2D FFTs over (nlat, nlon), so this one needs a
+        # regular grid even though the integration in the base class does not
+        nlat, nlon = require_regular_grid(grid).shape
+        super().__init__(grid)
         # Set up grid and domain for FFT
         l_phi = 2 * torch.pi  # domain size
         l_theta = torch.pi  # domain size

@@ -186,7 +186,7 @@ Run a single test file or case:
 
 ```bash
 python3 -m pytest tests/test_attention.py -x
-python3 -m pytest tests/test_attention.py::TestNeighborhoodAttentionS2_0::test_custom_implementation_20 -x
+python3 -m pytest tests/test_attention.py::TestNeighborhoodAttentionRegularS2_0::test_custom_implementation_20 -x
 ```
 
 Many tests for DISCO and attention are gated on `optimized_kernels_is_available()`. If
@@ -291,7 +291,12 @@ C/C++/CUDA sources use the same SPDX comment style at the top of the file.
 - Public classes: PascalCase. Sphere-valued classes carry the suffix S2 (e.g. DiscreteContinuousConvS2, NeighborhoodAttentionS2). Distributed counterparts prefix Distributed (e.g. DistributedDiscreteContinuousConvS2). Transpose counterparts append TransposeS2.
 - Public functions: lower_snake_case (e.g. compute_split_shapes).
 - Internal helpers: leading underscore (e.g. _compute_dtype, _get_psi).
-- Low-level ops follow _<op-family>_<direction>_<variant> (e.g. _disco_s2_contraction_optimized, _neighborhood_s2_attention_bwd_dq_torch).
+- Low-level ops follow _<op-family>_<grid-family>_<direction>_<variant> (e.g. _disco_s2_contraction_regular_optimized,
+  _neighborhood_s2_attention_regular_bwd_dq_torch). The grid family is spelled out on both sides -- `regular` for a grid
+  with uniform ring length, `ragged` for one without (HEALPix, reduced Gaussian) -- rather than leaving `regular` implied,
+  so that neither reads as the default. The same holds for the registered operator names (`forward_regular` /
+  `forward_ragged`). Variants already qualified by something else (`forward_kpacked`, `forward_ring_step`) are
+  regular-only and keep their names.
 - Module-level constants: UPPER_SNAKE_CASE (public), _UPPER_SNAKE_CASE (internal — e.g. distributed-state globals like _POLAR_PARALLEL_GROUP).
 - Tests: file test_<area>.py mirroring the source module; class Test<PascalCase>; method test_<lower_snake_case>.
 - Prefer verbose names that read like English. Abbreviate only when the short form is mathematical convention (l, m, n for orders/degrees). When in doubt, write it out.
@@ -387,8 +392,8 @@ opcheck(torch.ops.<namespace>.<op_name>, test_inputs)
 
 Templates in the test suite:
 
-- `tests/test_attention.py::TestNeighborhoodAttentionS2::test_optimized_pt2_compatibility` — main attention op
-- `tests/test_attention.py::TestNeighborhoodAttentionS2::test_ring_kernels_pt2_compatibility` — ring-step kernels (one `opcheck` per op; single-rank mode avoids NCCL)
+- `tests/test_attention.py::TestNeighborhoodAttentionRegularS2::test_optimized_pt2_compatibility` — main attention op
+- `tests/test_attention.py::TestNeighborhoodAttentionRegularS2::test_ring_kernels_pt2_compatibility` — ring-step kernels (one `opcheck` per op; single-rank mode avoids NCCL)
 - `tests/test_convolution.py` — DISCO ops
 
 `opcheck` verifies the op contract (schema, fake tensors, AOT dispatch); inputs need correct shapes but not
