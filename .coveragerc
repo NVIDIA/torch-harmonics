@@ -1,5 +1,14 @@
 [run]
+# record paths relative to the checkout, so data files from different runners and jobs
+# combine; the distributed suite runs against the installed wheel, see [paths]
+relative_files = True
 omit =
-    */distributed/*
     */examples/*
     */plotting.py
+
+[paths]
+# the distributed jobs measure the wheel in site-packages, the serial job the editable
+# source tree; fold both onto the source tree when combining
+source =
+    torch_harmonics/
+    */site-packages/torch_harmonics/

@@ -5,10 +5,12 @@ name: Run distributed tests
 # run on by hand on multi-GPU nodes, minus everything CUDA-only (those tests skip).
 #
 # Heavy (up to 8 processes per grid), so it runs on pull requests and on demand only, not
-# on every push.
+# on every push -- plus once per merge to main, called from tests.yml, whose coverage badge
+# combines this suite's coverage with the serial one.
 on:
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -16,7 +18,8 @@ permissions:
 # a new push to the same pull request supersedes the running grids; cancel them rather
 # than spend the runners on a commit nobody will look at
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # not github.workflow: when called from tests.yml, that is the caller's name
+  group: distributed-tests-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -84,7 +87,7 @@ jobs:
       run: |
         python3 -m pip install --upgrade pip
         python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
-        python3 -m pip install dist/*.whl parameterized scipy pytest
+        python3 -m pip install dist/*.whl parameterized scipy pytest pytest-cov coverage
 
     - name: Run the distributed tests on ${{ matrix.grid_h }}x${{ matrix.grid_w }} ranks
       env:
@@ -103,13 +106,23 @@ jobs:
         # `pytest` rather than `python3 -m pytest`: the latter puts the repository root on
         # sys.path, and the source tree, which has no compiled extension, would shadow the
         # installed wheel.
+        #
+        # Every rank of every file writes its own coverage data file; the coverage job below
+        # combines them across ranks and grids. --cov takes the installed package's directory:
+        # given the bare name, coverage would match the source tree in the checkout instead,
+        # which these tests never execute.
         nranks=$((GRID_H * GRID_W))
         status=0
+        mkdir -p covdata
+        pkg=$(cd / && python3 -c "import os, torch_harmonics; print(os.path.dirname(torch_harmonics.__file__))")
         for f in tests/test_distributed_*.py; do
           echo "::group::$f"
           pids=()
+          name=$(basename "$f" .py)
           for r in $(seq 0 $((nranks - 1))); do
-            WORLD_RANK=$r timeout 900 pytest -ra -q "$f" > "rank$r.log" 2>&1 &
+            WORLD_RANK=$r COVERAGE_FILE="$PWD/covdata/.coverage.${GRID_H}x${GRID_W}.$name.rank$r" \
+              timeout 900 pytest -ra -q --cov="$pkg" --cov-config=.coveragerc --cov-report= \
+              "$f" > "rank$r.log" 2>&1 &
             pids+=($!)
           done
           for i in "${!pids[@]}"; do
@@ -123,3 +136,38 @@ jobs:
           echo "::endgroup::"
         done
         exit $status
+
+    - uses: actions/upload-artifact@v4
+      if: ${{ !cancelled() }}
+      with:
+        name: coverage-distributed-${{ matrix.grid_h }}x${{ matrix.grid_w }}
+        path: covdata/
+        include-hidden-files: true  # the data files are .coverage.*
+
+  # Coverage of the distributed suite alone, across all grids, in the run summary. The
+  # combined serial + distributed number for the badge is computed in tests.yml.
+  coverage:
+    name: Distributed coverage
+    needs: distributed
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.11"
+
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: coverage-distributed-*
+        path: covdata
+        merge-multiple: true
+
+    - name: Combine and report
+      run: |
+        python3 -m pip install coverage
+        python3 -m coverage combine --rcfile=.coveragerc covdata
+        python3 -m coverage report --rcfile=.coveragerc --format=markdown >> "$GITHUB_STEP_SUMMARY"
+        python3 -m coverage report --rcfile=.coveragerc | tail -1
