@@ -33,7 +33,7 @@ from math import ceil
 
 import torch
 
-from torch_harmonics.grid import require_regular_grid
+from torch_harmonics.grid import _rejects_legacy_signature, require_regular_grid
 
 from .shallow_water_equations import ShallowWaterSolver
 
@@ -72,6 +72,7 @@ class PdeDataset(torch.utils.data.Dataset):
         Target tensor
     """
 
+    @_rejects_legacy_signature
     def __init__(
         self,
         dt,

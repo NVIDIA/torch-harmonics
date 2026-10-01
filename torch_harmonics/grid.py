@@ -30,6 +30,8 @@
 #
 
 import difflib
+import functools
+import inspect
 import numbers
 from dataclasses import MISSING, dataclass, fields
 from typing import Any, ClassVar, Dict, Optional, Tuple, Type, Union
@@ -1595,3 +1597,75 @@ def as_grid(spec: Union[PointSetS2, str, Type[PointSetS2]], **params: Any) -> Po
         raise ValueError(message)
 
     return cls(**params)
+
+
+def _rejects_legacy_signature(init):
+    r"""
+    Turn a pre-v1.0.0 constructor call into an actionable error.
+
+    Layers used to take the resolution and the grid name as separate arguments,
+    ``Layer(nlat, nlon, grid="equiangular")``; they now take a descriptor that carries
+    both. The guards in this module already catch an old call whose arguments happen to
+    land on the new parameters, but the *idiomatic* old call does not get that far:
+    ``grid`` named the grid string then and names the descriptor now, so Python rejects
+    the binding with ``got multiple values for argument 'grid'`` before any body runs.
+    That message says nothing about what to do instead.
+
+    This wrapper inspects the call before binding and raises the migration text, with
+    the actual arguments substituted so the replacement can be copied. It only rejects;
+    a legacy call is never translated and run, so nothing silently changes meaning.
+
+    Applied to ``__init__`` of the layers whose signature changed. Uses
+    :func:`functools.wraps`, so ``inspect.signature`` and the documentation still report
+    the real, descriptor-taking signature.
+    """
+
+    @functools.wraps(init)
+    def wrapper(self, *args, **kwargs):
+        _reject_legacy_grid_call(type(self), init, args, kwargs)
+        return init(self, *args, **kwargs)
+
+    # marker so a test can assert every grid-taking constructor carries the guard
+    wrapper._rejects_legacy_signature = True
+    return wrapper
+
+
+def _is_resolution(value: Any) -> bool:
+    """An ``nlat``/``nlon`` the old signature would have taken, rather than a descriptor."""
+    return isinstance(value, numbers.Integral) and not isinstance(value, bool)
+
+
+def _reject_legacy_grid_call(cls: Type, init: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> None:
+    """Raise if ``args``/``kwargs`` look like the pre-v1.0.0 signature. See above."""
+    names_in_order = [p for p in inspect.signature(init).parameters if p != "self"]
+    grid_params_of = [p for p in names_in_order if p in ("grid", "grid_in", "grid_out")]
+    if not grid_params_of:
+        return
+
+    # look only at what actually lands in a descriptor slot: the grids are not always
+    # the leading parameters (PdeDataset takes dt and nsteps first, and dt is an int)
+    in_grid_slot = [args[names_in_order.index(p)] for p in grid_params_of if names_in_order.index(p) < len(args)]
+    in_grid_slot += [kwargs[p] for p in grid_params_of if p in kwargs]
+
+    # a resolution where a descriptor belongs, or the grid *name* the old signature took
+    if not any(_is_resolution(v) or isinstance(v, str) for v in in_grid_slot):
+        return
+
+    # recover the old arguments where we can, so the suggestion is copy-pasteable
+    resolutions = [a for a in args if _is_resolution(a)]
+    names = [v for v in in_grid_slot if isinstance(v, str)]
+
+    def descriptor(i: int) -> str:
+        name = repr(names[i]) if i < len(names) else (repr(names[0]) if names else "<grid name>")
+        if len(resolutions) >= 2 * (i + 1):
+            return f"as_grid({name}, nlat={resolutions[2 * i]}, nlon={resolutions[2 * i + 1]})"
+        return f"as_grid({name}, nlat=..., nlon=...)"
+
+    replacement = ", ".join(descriptor(i) for i in range(len(grid_params_of)))
+    old = "(nlat, nlon, grid=...)" if len(grid_params_of) == 1 else "(nlat_in, nlon_in, nlat_out, nlon_out, grid_in=..., grid_out=...)"
+    raise TypeError(
+        f"{cls.__name__} no longer takes {old}; since v1.0.0 it takes a grid descriptor, which carries the "
+        f"resolution with it. Write {cls.__name__}({replacement}, ...) instead. A descriptor also knows its own "
+        f"parameters, so a grid family that is not described by (nlat, nlon) -- HEALPix, for instance -- fits the "
+        f"same call."
+    )

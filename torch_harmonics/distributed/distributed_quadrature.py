@@ -33,7 +33,7 @@ from typing import Optional
 
 import torch
 
-from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 
 from .primitives import reduce_from_azimuth_region, reduce_from_polar_region
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -67,6 +67,7 @@ class DistributedQuadratureS2(torch.nn.Module):
 
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2, normalize: Optional[bool] = False):
         super().__init__()
 

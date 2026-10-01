@@ -39,7 +39,7 @@ import torch.nn as nn
 
 import torch_harmonics as th
 from torch_harmonics.fft import rfft
-from torch_harmonics.grid import require_regular_grid
+from torch_harmonics.grid import _rejects_legacy_signature, require_regular_grid
 
 
 class ShallowWaterSolver(nn.Module):
@@ -73,6 +73,7 @@ class ShallowWaterSolver(nn.Module):
         Height amplitude in meters, by default 120.
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid, dt, lmax=None, mmax=None, radius=6.37122e6, omega=7.292e-5, gravity=9.80616, havg=10.0e3, hamp=120.0):
         super().__init__()
 

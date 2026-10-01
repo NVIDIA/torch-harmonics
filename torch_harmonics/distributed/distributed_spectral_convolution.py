@@ -35,7 +35,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.truncation import truncate_sht
 
 from .distributed_quadrature import DistributedQuadratureS2
@@ -121,6 +121,7 @@ class DistributedSpectralConvS2(nn.Module):
     grouped contraction is performed with ``_contract_lwise``.
     """
 
+    @_rejects_legacy_signature
     def __init__(
         self,
         grid_in: RegularGridS2,

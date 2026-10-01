@@ -40,7 +40,7 @@ from attention_helpers import optimized_kernels_is_available
 from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.backends import BACKENDS
-from torch_harmonics.grid import GridS2, RegularGridS2, require_grid
+from torch_harmonics.grid import GridS2, RegularGridS2, _rejects_legacy_signature, require_grid
 from torch_harmonics.neighborhood import precompute_neighborhood_arcs_s2
 from torch_harmonics.truncation import truncate_support
 
@@ -108,6 +108,7 @@ class AttentionS2(nn.Module):
     :cite:`Bonev2025`
     """
 
+    @_rejects_legacy_signature
     def __init__(
         self,
         grid_in: GridS2,
@@ -406,6 +407,7 @@ class NeighborhoodAttentionS2(nn.Module):
     #: the selection, the device handling and the forward pass unchanged.
     _backends = BACKENDS
 
+    @_rejects_legacy_signature
     def __init__(
         self,
         grid_in: GridS2,

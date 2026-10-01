@@ -37,7 +37,7 @@ import torch.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
 
-from torch_harmonics.grid import PointSetS2, RegularGridS2, require_point_set, require_regular_grid
+from torch_harmonics.grid import PointSetS2, RegularGridS2, _rejects_legacy_signature, require_point_set, require_regular_grid
 
 
 def get_quadrature_weights(grid: PointSetS2, tile: bool = False, normalized: bool = True) -> torch.Tensor:
@@ -80,6 +80,7 @@ class DiceLossS2(nn.Module):
         Aggregation mode ("micro" or "macro"), by default "micro"
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, smooth: float = 0, ignore_index: int = -100, mode: str = "micro"):
 
         super().__init__()
@@ -160,6 +161,7 @@ class CrossEntropyLossS2(nn.Module):
         Index to ignore in loss computation, by default -100
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, smooth: float = 0, ignore_index: int = -100):
 
         super().__init__()
@@ -206,6 +208,7 @@ class FocalLossS2(nn.Module):
         Index to ignore in loss computation, by default -100
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, smooth: float = 0, ignore_index: int = -100):
 
         super().__init__()
@@ -241,6 +244,7 @@ class FocalLossS2(nn.Module):
 class SphericalLossBase(nn.Module, ABC):
     """Abstract base class for spherical losses that handles common initialization and integration."""
 
+    @_rejects_legacy_signature
     def __init__(self, grid: PointSetS2, normalized: bool = True):
         super().__init__()
 
@@ -328,6 +332,7 @@ class L2LossS2(SquaredL2LossS2):
 
 
 class W11LossS2(SphericalLossBase):
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2):
         # the loss term is a pair of 2D FFTs over (nlat, nlon), so this one needs a
         # regular grid even though the integration in the base class does not
@@ -382,6 +387,7 @@ class NormalLossS2(SphericalLossBase):
         Combined loss term
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2):
         # the loss term is a pair of 2D FFTs over (nlat, nlon), so this one needs a
         # regular grid even though the integration in the base class does not

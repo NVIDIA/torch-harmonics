@@ -58,6 +58,7 @@ import torch
 from parameterized import parameterized
 from testutils import compare_tensors, regular_grid_types
 
+import torch_harmonics as th
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.distributed.primitives import split_tensor_along_dim
 from torch_harmonics.filter_basis import get_filter_basis
@@ -135,6 +136,38 @@ def _min_latitude_rings_in_cutoff(nlat: int, grid: str) -> int:
     # the strict comparison in _precompute_convolution_tensor_s2, not a real gap
     within = (lats.unsqueeze(0) - lats.unsqueeze(1)).abs() <= cutoff * (1.0 + 1e-9)
     return int(within.sum(dim=1).min().item())
+
+
+def _grid_taking_constructors():
+    """Every public class whose ``__init__`` takes a grid descriptor.
+
+    Discovered across the package rather than listed, so the coverage of the
+    legacy-signature guard tracks the code instead of a hand-maintained table.
+    """
+    import torch_harmonics.distributed as _thd
+    import torch_harmonics.examples as _thex
+    import torch_harmonics.random_fields as _thrf
+    from torch_harmonics.examples import losses as _thloss
+    from torch_harmonics.examples import metrics as _thmet
+
+    found, seen = [], set()
+    for module in (th, _thd, _thex, _thrf, _thloss, _thmet):
+        for name in dir(module):
+            obj = getattr(module, name)
+            if not inspect.isclass(obj) or obj.__name__ in seen:
+                continue
+            # shards are obtained from grid.shard(), never constructed by a caller
+            if issubclass(obj, (GridShardS2,)) or obj.__name__.endswith("ShardS2"):
+                continue
+            try:
+                params = inspect.signature(obj.__init__).parameters
+            except (ValueError, TypeError):
+                continue
+            grid_param_names = [p for p in ("grid", "grid_in", "grid_out") if p in params]
+            if grid_param_names and not inspect.isabstract(obj):
+                seen.add(obj.__name__)
+                found.append((obj, grid_param_names))
+    return found
 
 
 class TestThetaCutoffContract(unittest.TestCase):
@@ -773,6 +806,54 @@ class TestGridDescriptor(unittest.TestCase):
             self.assertNotEqual(g, as_grid("equiangular", nlat=8, nlon=16))
         finally:
             _GRID_REGISTRY.pop("custom-regular-for-test", None)
+
+    def test_every_grid_taking_constructor_rejects_the_old_signature(self):
+        """
+        Discovered rather than listed, so a layer added later cannot miss the guard.
+
+        The old call named the grid string ``grid``, which is now the descriptor, so
+        Python rejects the binding before any body runs -- with ``got multiple values
+        for argument 'grid'``, which says nothing about what to do. Every constructor
+        that takes a descriptor checks the call first and raises the migration text.
+        """
+        guarded = _grid_taking_constructors()
+        self.assertGreater(len(guarded), 20, msg="discovery found implausibly few constructors")
+
+        for cls, grid_param_names in guarded:
+            with self.subTest(cls=cls.__name__):
+                self.assertTrue(
+                    getattr(cls.__init__, "_rejects_legacy_signature", False),
+                    msg=f"{cls.__name__} takes {', '.join(grid_param_names)} but carries no legacy-signature guard",
+                )
+
+                # build the pre-v1.0.0 call for however many grids this layer takes
+                resolutions, names = [], {}
+                for i, p in enumerate(grid_param_names):
+                    resolutions += [64 // (i + 1), 128 // (i + 1)]
+                    names[p] = "equiangular"
+                with self.assertRaises(TypeError) as caught:
+                    cls(*resolutions, **names)
+
+                message = str(caught.exception)
+                self.assertIn(cls.__name__, message)
+                self.assertIn("as_grid(", message)
+                self.assertIn("nlat=64", message)
+                self.assertNotIn("multiple values", message)
+
+    def test_rejecting_the_old_call_leaves_the_signature_introspectable(self):
+        """The guard wraps __init__, so autodoc and help() must still see the real one."""
+        for cls, grid_param_names in _grid_taking_constructors():
+            with self.subTest(cls=cls.__name__):
+                params = inspect.signature(cls.__init__).parameters
+                self.assertNotIn("args", params, msg="the wrapper's *args leaked into the public signature")
+                self.assertTrue(set(grid_param_names) <= set(params))
+
+    def test_a_descriptor_call_is_not_mistaken_for_a_legacy_one(self):
+        """The guard must not fire on the supported form, including a ragged grid."""
+        g = as_grid("equiangular", nlat=32, nlon=64)
+        self.assertEqual(th.RealSHT(g).nlat, 32)
+        self.assertIsNotNone(th.ResampleS2(g, as_grid("equiangular", nlat=16, nlon=32)))
+        self.assertIsNotNone(th.QuadratureS2(HealpixGrid(nside=2)))
 
     def test_deriving_from_an_abstract_base_is_unaffected(self):
         """RegularGridS2 and friends carry no grid_type, so there is nothing to inherit."""

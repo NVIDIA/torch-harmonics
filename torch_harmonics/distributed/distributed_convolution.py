@@ -48,7 +48,7 @@ from torch_harmonics.disco.optimized.disco_optimized import (
     _maybe_kpack_psi,
     _split_csr_python_offsets,
 )
-from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.quadrature import effective_theta_cutoff
 from torch_harmonics.truncation import truncate_support
 
@@ -315,6 +315,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
     :cite:`Ocampo2023`
     """
 
+    @_rejects_legacy_signature
     def __init__(
         self,
         grid_in: RegularGridS2,
@@ -646,6 +647,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     :cite:`Ocampo2023`
     """
 
+    @_rejects_legacy_signature
     def __init__(
         self,
         grid_in: RegularGridS2,

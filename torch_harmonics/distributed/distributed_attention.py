@@ -40,7 +40,7 @@ from torch_harmonics.attention._attention_utils import _check_dtypes_match, _che
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
 from torch_harmonics.attention.backends import AttentionBackendS2, _ring_weights
 from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_fwd, _custom_setup_context
-from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.quadrature import effective_theta_cutoff
 
 from .primitives import compute_polar_halo_radius, get_group_neighbors, polar_halo_exchange
@@ -1106,6 +1106,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
 
     _backends = (RingGatherBackend, RingUpsampleBackend)
 
+    @_rejects_legacy_signature
     def __init__(
         self,
         grid_in: RegularGridS2,

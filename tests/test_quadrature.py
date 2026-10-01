@@ -226,9 +226,13 @@ class TestQuadratureS2Constructor(unittest.TestCase):
 
     @parameterized.expand(
         [
+            # a shape is neither a resolution nor a grid name, so it falls through to the
+            # descriptor guards rather than to the legacy-signature one
             [(32, 64), "not a shape (32, 64)"],
-            ["legendre-gauss", "not the grid name 'legendre-gauss'"],
-            [32, "got int"],
+            # a grid name or a resolution in the descriptor slot is the pre-v1.0.0 call,
+            # which is recognised before binding and answered with the replacement
+            ["legendre-gauss", "as_grid('legendre-gauss'"],
+            [32, "no longer takes (nlat, nlon, grid=...)"],
         ]
     )
     def test_old_style_arguments_explain_themselves(self, bad_grid, expected_fragment):
@@ -237,6 +241,7 @@ class TestQuadratureS2Constructor(unittest.TestCase):
         message = str(ctx.exception)
         self.assertIn(expected_fragment, message)
         self.assertIn("as_grid", message, msg="the error should name the replacement")
+        self.assertNotIn("multiple values", message, msg="the binding error must never reach the caller")
 
 
 class TestQuadratureWeightPrecision(unittest.TestCase):

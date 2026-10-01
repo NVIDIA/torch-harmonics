@@ -44,7 +44,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from torch_harmonics.grid import PointSetS2, require_point_set
+from torch_harmonics.grid import PointSetS2, _rejects_legacy_signature, require_point_set
 
 
 class QuadratureS2(nn.Module):
@@ -130,6 +130,7 @@ class QuadratureS2(nn.Module):
     1.0
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: PointSetS2, normalize: Optional[bool] = False):
         super().__init__()
 

@@ -34,7 +34,7 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 
-from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 
 from .losses import get_quadrature_weights
 
@@ -152,6 +152,7 @@ class BaseMetricS2(nn.Module):
         Averaging mode ("micro" or "macro"), by default "micro"
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
         super().__init__()
 
@@ -221,6 +222,7 @@ class IntersectionOverUnionS2(BaseMetricS2):
         Averaging mode ("micro" or "macro"), by default "micro"
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
         super().__init__(grid, weight, ignore_index, mode)
 
@@ -265,6 +267,7 @@ class AccuracyS2(BaseMetricS2):
         Averaging mode ("micro" or "macro"), by default "micro"
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
         super().__init__(grid, weight, ignore_index, mode)
 
