@@ -94,48 +94,6 @@
 //    Our N dim is n = k_kern.
 // =====================================================================================
 
-// TRIED AND REJECTED
-// ------------------
-// Measured on H100 (bf16, BC=64, 360x720 self-conv unless noted) through
-// experimental kernels that used to sit alongside this file; all were verified
-// bit-identical before timing. Recorded here so they are not re-derived.
-//
-//  - Warp-shuffle pack_idx sharing (16 lanes load, rest take it by shuffle):
-//    saves no sectors at all. The memory system already deduplicates repeated
-//    addresses across lanes within a warp, so 32 lanes hitting 16 distinct
-//    entries touch the same lines as 16 lanes do. Pays for the shuffles and
-//    gets nothing. 3.34 vs 3.13 ms.
-//
-//  - Shared-memory pack_idx staging: fewest instructions and fewest sectors of
-//    any variant tried, and slower. The extra __syncthreads converted
-//    long-scoreboard stall into barrier stall almost one for one (4.51 -> 2.46
-//    against 2.54 -> 4.73). 3.24 vs 3.13 ms.
-//
-//  - Merging the A-tile stores into one STS.128: a no-op. Every counter
-//    identical to the plain vector-load variant, because ptxas already
-//    vectorizes those stores. The shared side was never a plausible ceiling
-//    regardless -- 27.4M shared-store instructions against 102.3M global loads.
-//
-//  - Windowed gather at pscale 3: needs 12 words to deliver 8 halfwords, so
-//    loads rise ~45% while instructions fall ~23%. That trades well only where
-//    L1 has slack: -1% at 540x1080 -> 180x360 (L1 68.7%) but +13% at
-//    1080x2160 -> 360x720 (L1 82.2%). Same code, opposite sign -- hence the
-//    pscale <= 2 gate on the fast path below.
-//
-//  - Cross-thread run staging: load the covering run once per (bc, chunk) into
-//    shared memory and have each thread gather its window from there, removing
-//    the ~13x cross-thread redundancy. It works -- sectors -22% at pscale 1 and
-//    -36% at pscale 2 -- but costs +24% instructions, leaving it neutral at
-//    pscale 1 and worth 7% at pscale 2 only. Also structurally capped: just
-//    50-60% of chunks have all 16 neighbours inside one arc, the rest fall back.
-//
-// Not worth attacking: K_PAD=16 against K=9 wastes 44% of every WGMMA, but the
-// tensor pipe runs at 4.4% of peak, so eliminating all of it would save ~2% of
-// cycles. It is structural anyway -- inp carries (bc, wo) and val carries k, so
-// M must come from {bc, wo} and N from {k}, and there is no wgmma n shape
-// between 8 and 16.
-// =====================================================================================
-
 #include "../disco.h"
 #include "disco_cuda.cuh"
 #include "disco_cuda_ptx.cuh"
@@ -227,9 +185,7 @@ namespace disco_kernels
                 // be fetched with one vector load rather than two scalar ones. Both
                 // scalar loads span the same 256 B the warp touches (16 distinct nz
                 // at stride 16 B), so merging them halves the sectors as well as the
-                // instructions: measured 113.3M -> 102.3M global load instructions
-                // and 567.8M -> 525.6M sectors on H100 at 360x720 self-conv, worth
-                // ~3% (3.22 -> 3.13 ms). Verified bit-identical.
+                // instructions. Bit-identical.
                 const longlong2 idx_pair = reinterpret_cast<const longlong2 *>(idx_ho)[nz_global];
                 const int hi = (int)idx_pair.x;
                 const int wi_base = (int)idx_pair.y;
@@ -239,11 +195,8 @@ namespace disco_kernels
                 // Fetch the eight elements as one aligned window instead of eight
                 // scalar loads, each with its own IMAD / add / compare / select /
                 // 64-bit-add chain. That address arithmetic dominated: the kernel is
-                // instruction-issue bound (1.70G instructions at 71% of issue
-                // capacity, only 6% of them loads). Measured on H100, bf16, BC=64,
-                // bit-identical throughout:
-                //   pscale 1   360x720 self          3.19 -> 2.65 ms   1.20x
-                //   pscale 2   720x1440 -> 360x720  11.04 -> 10.61 ms  1.04x
+                // instruction-issue bound, and only a small fraction of those
+                // instructions are loads. Bit-identical.
                 //
                 // s is reduced into [0, Wi) FIRST. wi_base < Wi and wo_base*pscale <
                 // Wi, so s < 2*Wi and one subtract suffices -- the same argument the

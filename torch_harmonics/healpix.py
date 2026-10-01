@@ -203,8 +203,8 @@ class HealpixGrid(GridS2):
     --------
     >>> from torch_harmonics import HealpixGrid
     >>> grid = HealpixGrid(nside=2)
-    >>> grid.npoints, grid.nlat, grid.nlon
-    (48, 7, 8)
+    >>> grid.npoints, grid.nrings
+    (48, 7)
     >>> grid.shape
     (48,)
     >>> grid.nlon_per_lat.tolist()
@@ -235,22 +235,6 @@ class HealpixGrid(GridS2):
         return 4 * self.nside - 1
 
     @property
-    def nlat(self) -> int:
-        r"""Alias for :attr:`nrings`, kept because HEALPix literature counts rings as latitudes."""
-        return 4 * self.nside - 1
-
-    @property
-    def nlon(self) -> int:
-        r"""
-        Pixels on the widest ring, :math:`4 N`.
-
-        The equatorial ring size, and the bound a dense azimuthal representation has
-        to accommodate. Emphatically *not* a stride: rings near the poles are shorter,
-        and ``npoints`` is ``12 N^2``, not ``(4N - 1) * 4N``.
-        """
-        return 4 * self.nside
-
-    @property
     def npoints(self) -> int:
         r"""Number of pixels, :math:`12 N^2`."""
         return 12 * self.nside * self.nside
@@ -258,7 +242,7 @@ class HealpixGrid(GridS2):
     @property
     def level(self) -> int:
         r"""
-        Refinement level :math:`\log_2 N`, the parameter ``healpy`` and ``earth2grid`` index by.
+        Refinement level :math:`\log_2 N`.
 
         Raises
         ------
@@ -351,13 +335,13 @@ class HealpixGrid(GridS2):
         if ilat is None:
             raise ValueError(
                 f"{type(self).__name__} is ragged, so lons() needs a ring index: ring lengths run from 4 to "
-                f"{self.nlon} and successive rings are staggered by half a pixel. Use all_lons() for the "
+                f"{4 * self.nside} and successive rings are staggered by half a pixel. Use all_lons() for the "
                 "longitude of every pixel at once."
             )
-        if not -self.nlat <= ilat < self.nlat:
-            raise ValueError(f"ilat must be in [0, {self.nlat}), got {ilat}")
+        if not -self.nrings <= ilat < self.nrings:
+            raise ValueError(f"ilat must be in [0, {self.nrings}), got {ilat}")
 
-        ilat = ilat % self.nlat
+        ilat = ilat % self.nrings
         nlon_per_lat, lon_shifts, _ = healpix_ring_structure(self.nside)
         n = int(nlon_per_lat[ilat].item())
         return (2.0 * torch.pi / n) * (torch.arange(n, dtype=torch.float64) + lon_shifts[ilat])
@@ -373,7 +357,7 @@ class HealpixGrid(GridS2):
         offsets = self.lon_offsets
 
         # index of each pixel within its own ring
-        ring_of = torch.repeat_interleave(torch.arange(self.nlat, dtype=torch.int64), nlon_per_lat)
+        ring_of = torch.repeat_interleave(torch.arange(self.nrings, dtype=torch.int64), nlon_per_lat)
         j = torch.arange(self.npoints, dtype=torch.int64) - offsets[ring_of]
 
         n = nlon_per_lat[ring_of].to(torch.float64)
@@ -427,9 +411,6 @@ class HealpixGrid(GridS2):
     def from_level(cls, level: int) -> "HealpixGrid":
         r"""
         Build the grid at a HEALPix refinement level, :math:`N = 2^{\ell}`.
-
-        The parameterization ``healpy`` and ``earth2grid`` use, and the one healda
-        configures its models with.
 
         Parameters
         ----------

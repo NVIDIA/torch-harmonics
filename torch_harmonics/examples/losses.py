@@ -41,10 +41,9 @@ from torch_harmonics.grid import PointSetS2, RegularGridS2, require_point_set, r
 
 
 def get_quadrature_weights(grid: PointSetS2, tile: bool = False, normalized: bool = True) -> torch.Tensor:
-    # the descriptor already carries the per-point solid-angle weights, which is exactly
-    # what this used to build by hand out of the latitudinal factor and 2*pi/nlon. Taking
-    # them from the grid keeps the longitudinal factor per ring, so this stays correct on
-    # a grid whose rings differ in length.
+    # the descriptor already carries the per-point solid-angle weights. Taking them from
+    # the grid keeps the longitudinal factor per ring, so this stays correct on a grid
+    # whose rings differ in length.
     grid = require_point_set(grid)
     q = grid.quad_weights.reshape(*grid.shape)
 

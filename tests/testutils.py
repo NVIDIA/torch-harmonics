@@ -368,8 +368,8 @@ def build_psi_segments(col_idx: torch.Tensor, roff_idx: torch.Tensor, nlon: int)
     by counting, instead of loading it from col_idx and recovering hi with a 64-bit
     integer division. The GPU has no integer divide instruction, so that division costs
     ~70-100 emulated instructions per neighbor against roughly four instructions of
-    useful math; profiling showed the forward kernel at 80% compute throughput while
-    delivering ~2.4% of peak FLOPs.
+    useful math, which leaves the forward kernel instruction-bound on address
+    arithmetic rather than on math.
 
     Returns
     -------

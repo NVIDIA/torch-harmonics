@@ -153,8 +153,7 @@ class DistributedResampleS2(nn.Module):
         self.register_buffer("lon_idx_right", lon_idx_right, persistent=False)
         self.register_buffer("lon_weights", lon_weights, persistent=False)
 
-        # descriptor equality covers the grid type and both extents, which is exactly
-        # the conjunction this used to spell out
+        # descriptor equality covers the grid type and both extents
         self.skip_resampling = self.grid_in == self.grid_out
 
     def extra_repr(self):

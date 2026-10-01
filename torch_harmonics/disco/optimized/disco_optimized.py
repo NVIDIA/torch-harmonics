@@ -111,16 +111,11 @@ def _maybe_kpack_psi(psi_packed_idx, psi_packed_vals, psi_packed_count, n_align:
     this is not the serial path's CSR, where k is a *row* dimension and each
     nonzero holds a single scalar.
 
-    The rows used to be padded to NBR_PAD = max_ho cnt(ho), a stride set by the
-    polar rows where the cutoff spans the whole longitude circle while the mean
-    row is far shorter. That cost ~33 MB of pack_val at half degree and ~274 MB at
-    1080x2160 -> 360x720, against ~2 MB and ~16 MB of real data. The padding was
-    never read by the kernel, so compacting is a footprint fix rather than a
-    speed one -- but at quarter degree and finer the padded form approaches a
-    gigabyte per layer, which stops being merely wasteful.
-
-    kpacked_offset replaces the previous kpacked_offset: cnt(ho) is recoverable as
-    offset[ho+1] - offset[ho], so the op keeps its arity.
+    Rows are packed to their own length rather than to a common stride. A common
+    stride would be set by the polar rows, where the cutoff spans the whole
+    longitude circle while the mean row is far shorter, so most of the buffer
+    would be padding the kernel never reads. cnt(ho) is recoverable from
+    kpacked_offset as offset[ho+1] - offset[ho], so the op keeps its arity.
 
     No alignment padding is needed between rows. Both wide accesses in the kernel
     land on 16-byte boundaries for any offset, because each neighbour occupies

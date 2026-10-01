@@ -385,9 +385,9 @@ namespace attention_kernels
         // Register copies of this thread's slice of qy / dy. Both are loop-invariant
         // across neighbors, and each thread only ever touches its own (tidx + i*BDIM_X)
         // slots, so re-reading them from shared once per neighbor was pure overhead --
-        // and this kernel is issue-limited on exactly that pipe: 69% of peak LSU
-        // instruction issue and 84% SM throughput against 1.1% DRAM, with "not selected"
-        // the largest stall (warps eligible but no issue slot). Trading a little
+        // and this kernel is issue-limited on exactly that pipe: high LSU issue and SM
+        // throughput against near-idle DRAM, with "not selected" the largest stall
+        // (warps eligible but no issue slot). Trading a little
         // occupancy for fewer instructions is the right direction when warps are in
         // surplus. The shared copies stay: the scalar epilogue undoes the tidx offset and
         // reads across the warp, which registers cannot serve.

@@ -132,9 +132,9 @@ namespace attention_kernels
         // The old form loaded col_idx[off] and recovered hi with `col / nlon_in`, a
         // 64-bit integer division. The GPU has no integer divide instruction, so that
         // is ~70-100 emulated instructions per neighbor against roughly four of useful
-        // math; profiling put this kernel at 80% compute throughput while delivering
-        // ~2.4% of peak FLOPs, with DRAM at 0.6%. It was instruction-bound on address
-        // arithmetic.
+        // math; profiling put the kernel at high compute throughput while delivering a
+        // small fraction of peak FLOPs with near-idle DRAM, i.e. instruction-bound on
+        // address arithmetic.
         //
         // With segments, hi and the quadrature weight are per-arc constants and the
         // column advances by counting, so the division disappears entirely. The arcs
@@ -285,9 +285,9 @@ namespace attention_kernels
         // neighbor: col_idx -> address -> load k -> warp reduce -> softmax -> load v.
         // Nothing was in flight while a ~500-cycle k load resolved, and with nchan_in
         // = 64 over BDIM_X = 32 lanes there were only two independent loads inside the
-        // channel loop to hide it with. Measured 1.6 TFLOP/s on H100 -- about 2% of
-        // this GPU's scalar fp32 peak and ~300x off its bandwidth roofline, i.e. the
-        // kernel was latency-bound, not compute- or bandwidth-bound.
+        // channel loop to hide it with. That form sits far below both the scalar fp32
+        // peak and the bandwidth roofline, i.e. latency-bound rather than compute- or
+        // bandwidth-bound.
         //
         // Grouping issues NB independent k loads (and later NB v loads) before any is
         // consumed, which is the entire point: memory-level parallelism, not fewer
@@ -650,9 +650,9 @@ namespace attention_kernels
             // bdimx=32 lanes and half the block idles. Worse, a float4 FMA scalarises
             // into four FFMA, so per warp per neighbour the vector form is 1 load +
             // 2 cvt + 4 FFMA against the scalar form's 2 + 2 + 2 -- more instructions,
-            // not fewer, on a kernel that is issue-limited. Measured on H100 at c64:
-            // vectorised fp16 is 13-23% slower than scalar, and costs 95 registers
-            // against 64 (31% occupancy against 50%).
+            // not fewer, on a kernel that is issue-limited. Vectorised fp16 measures
+            // slower than scalar there and costs enough extra registers to halve
+            // occupancy.
             //
             // It does pay once nchans/VEC_SIZE >= bdimx, i.e. nchans >= 128 here.
             const bool use_vec = is_aligned<16>(_kxp) && is_aligned<16>(_vxp) && is_aligned<16>(_qyp)
@@ -680,16 +680,15 @@ namespace attention_kernels
             // A 4-wide vector then leaves nci == 16 over 32 lanes and half the block
             // idles, and because a float4 FMA scalarises into four FFMA the vector form
             // ends up issuing MORE instructions than the scalar one: per warp per
-            // neighbour 1 load + 2 cvt + 4 FFMA against 2 + 2 + 2. Measured on H100 at
-            // c64 that was 13-23% slower than scalar and cost 95 registers against 64.
-            // Hence the nchans / 4 >= bdimx gate below; from nchans == 128 on it holds.
+            // neighbour 1 load + 2 cvt + 4 FFMA against 2 + 2 + 2, and it measures
+            // slower while costing more registers. Hence the nchans / 4 >= bdimx gate
+            // below; from nchans == 128 on it holds.
             //
             // 2-wide (nci == 32 at nchans == 64, i.e. exactly one element per lane) was
-            // implemented and measured: consistently 3-5% SLOWER than scalar on H100
-            // (1deg_tc003 0.451 -> 0.463, hdeg_tc003 3.496 -> 3.682). The instruction
-            // count argued the other way -- 1 load + 1 cvt + 2 FFMA against scalar's
-            // 2 + 2 + 2 -- so the float2 accumulator and the changed NLOC templating
-            // evidently cost more than the arithmetic saves. Removed rather than left
+            // implemented and also measured slower than scalar, even though the
+            // instruction count argued the other way -- 1 load + 1 cvt + 2 FFMA against
+            // scalar's 2 + 2 + 2 -- so the float2 accumulator and the changed NLOC
+            // templating cost more than the arithmetic saves. Removed rather than left
             // as an unused branch.
             constexpr int VEC_SIZE = 4;
             const bool use_vec = is_aligned<8>(_kxp) && is_aligned<8>(_vxp) && is_aligned<8>(_qyp) && is_aligned<8>(_yp)

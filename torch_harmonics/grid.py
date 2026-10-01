@@ -579,10 +579,10 @@ class GridS2(PointSetS2):
 
         Descending, north pole first, because :attr:`colats` ascends from the north
         pole and latitude is its reflection. Provided because plotting, geographic
-        data and anything user-facing want latitude, and because the conversion was
-        previously open-coded at three call sites -- writing :math:`\pi - \theta`
-        instead of :math:`\pi/2 - \theta` yields a number in :math:`[0, \pi]` that
-        looks like a plausible angle and is wrong everywhere except the equator.
+        data and anything user-facing want latitude, and because open-coding the
+        conversion invites writing :math:`\pi - \theta` instead of
+        :math:`\pi/2 - \theta`, which yields a number in :math:`[0, \pi]` that looks
+        like a plausible angle and is wrong everywhere except the equator.
 
         Derived, never stored: :attr:`colats` is the primitive, so the two cannot
         drift apart.

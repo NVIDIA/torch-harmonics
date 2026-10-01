@@ -1426,21 +1426,23 @@ class TestHealpixGrid(unittest.TestCase):
         g = HealpixGrid(nside=nside)
         self.assertEqual(g.grid_type, "healpix")
         self.assertEqual(g.npoints, 12 * nside**2)
-        self.assertEqual(g.nlat, 4 * nside - 1)
-        self.assertEqual(g.nlon, 4 * nside)
+        self.assertEqual(g.nrings, 4 * nside - 1)
         self.assertFalse(g.is_regular)
         self.assertEqual(g.shape, (12 * nside**2,))
 
     @parameterized.expand([[n] for n in _NSIDES])
-    def test_nlon_is_the_widest_ring_not_a_stride(self, nside):
+    def test_the_grid_is_ragged(self, nside):
         """
-        The trap this grid exists to expose: ``nlat * nlon`` overcounts a ragged grid
-        by a third, so anything that strides by ``nlon`` reads past the ring it is on.
+        Ring sizes grow from the pole to the equator, so the pixel count is strictly
+        below what a rectangular grid of the same extents would hold. The descriptor
+        exposes no ``nlon``, because there is no single ring length to stride by.
         """
         g = HealpixGrid(nside=nside)
-        self.assertEqual(int(g.nlon_per_lat.max().item()), g.nlon)
+        widest = int(g.nlon_per_lat.max().item())
+        self.assertEqual(widest, 4 * nside)
+        self.assertFalse(hasattr(g, "nlon"))
         if nside > 1:
-            self.assertLess(g.npoints, g.nlat * g.nlon)
+            self.assertLess(g.npoints, g.nrings * widest)
 
     def test_invalid_nside_is_rejected(self):
         for bad in [0, -1, -8]:
@@ -1475,7 +1477,7 @@ class TestHealpixGrid(unittest.TestCase):
         offsets = g.lon_offsets
 
         self.assertEqual(offsets.dtype, torch.int64)
-        self.assertEqual(offsets.shape, (g.nlat + 1,))
+        self.assertEqual(offsets.shape, (g.nrings + 1,))
         self.assertEqual(int(offsets[0].item()), 0)
         self.assertEqual(int(offsets[-1].item()), g.npoints)
         self.assertTrue(torch.equal(offsets[1:] - offsets[:-1], g.nlon_per_lat))
@@ -1498,7 +1500,7 @@ class TestHealpixGrid(unittest.TestCase):
         colats = g.colats
 
         self.assertEqual(colats.dtype, torch.float64)
-        self.assertEqual(colats.shape, (g.nlat,))
+        self.assertEqual(colats.shape, (g.nrings,))
         self.assertTrue(bool((colats[1:] > colats[:-1]).all()), msg="colatitudes must ascend from the north pole")
         self.assertGreater(float(colats[0]), 0.0)
         self.assertLess(float(colats[-1]), math.pi)
@@ -1520,7 +1522,7 @@ class TestHealpixGrid(unittest.TestCase):
         g = HealpixGrid(nside=nside)
         shifts = g.lon_shifts
 
-        for ilat in range(g.nlat):
+        for ilat in range(g.nrings):
             with self.subTest(ilat=ilat):
                 lons = g.lons(ilat)
                 n = int(g.nlon_per_lat[ilat].item())
@@ -1544,15 +1546,15 @@ class TestHealpixGrid(unittest.TestCase):
         with self.assertRaises(ValueError):
             g.lons()
         with self.assertRaises(ValueError):
-            g.lons(g.nlat)
+            g.lons(g.nrings)
 
     @parameterized.expand([[n] for n in _NSIDES])
     def test_flat_geometry_matches_the_per_ring_geometry(self, nside, verbose=False):
         """``all_lons``/``all_colats`` are what a ragged operator consumes; they must be
         exactly the concatenation of the rings, in RING order."""
         g = HealpixGrid(nside=nside)
-        expected_lons = torch.cat([g.lons(ilat) for ilat in range(g.nlat)])
-        expected_lats = torch.cat([torch.full((int(g.nlon_per_lat[ilat].item()),), float(g.colats[ilat]), dtype=torch.float64) for ilat in range(g.nlat)])
+        expected_lons = torch.cat([g.lons(ilat) for ilat in range(g.nrings)])
+        expected_lats = torch.cat([torch.full((int(g.nlon_per_lat[ilat].item()),), float(g.colats[ilat]), dtype=torch.float64) for ilat in range(g.nrings)])
 
         self.assertTrue(compare_tensors(f"all_lons (nside={nside})", g.all_lons(), expected_lons, atol=0.0, rtol=0.0, verbose=verbose))
         self.assertTrue(compare_tensors(f"all_colats (nside={nside})", g.all_colats(), expected_lats, atol=0.0, rtol=0.0, verbose=verbose))
@@ -1576,10 +1578,10 @@ class TestHealpixGrid(unittest.TestCase):
     @parameterized.expand([[n] for n in [1, 2, 4, 8]])
     def test_pixel_centres_match_earth2grid(self, nside, verbose=False):
         """
-        Interop, not correctness: healda stores its fields on ``earth2grid``'s HEALPix
-        grid, so a field handed to a torch-harmonics operator has to be indexed the
-        same way. A disagreement here means the two libraries disagree about which
-        pixel a value belongs to, which no amount of numerics downstream would catch.
+        Interop, not correctness: a field stored on ``earth2grid``'s HEALPix grid has to
+        be indexed the same way once it is handed to a torch-harmonics operator. A
+        disagreement here means the two libraries disagree about which pixel a value
+        belongs to, which no amount of numerics downstream would catch.
         """
         try:
             from earth2grid import healpix as e2g_healpix
@@ -1600,14 +1602,14 @@ class TestHealpixGrid(unittest.TestCase):
     @parameterized.expand([[n] for n in _NSIDES])
     def test_weights_are_equal_area(self, nside):
         r"""
-        Every pixel must carry exactly :math:`4\pi / N_{pix}`. This is the property
-        healda picks HEALPix for, and in this library's per-ring :math:`\cos\theta`
+        Every pixel must carry exactly :math:`4\pi / N_{pix}`. This is the defining
+        property of HEALPix, and in this library's per-ring :math:`\cos\theta`
         convention it constrains ``quad_weights`` to be proportional to the ring size.
         """
         g = HealpixGrid(nside=nside)
         w = g.colat_weights
 
-        self.assertEqual(w.shape, (g.nlat,))
+        self.assertEqual(w.shape, (g.nrings,))
         self.assertAlmostEqual(float(w.sum()), 2.0, places=14)
 
         per_pixel = 2.0 * math.pi * w / g.nlon_per_lat.to(torch.float64)
@@ -1683,7 +1685,7 @@ class TestHealpixGrid(unittest.TestCase):
 
         self.assertGreaterEqual(int(counts.min()), 5, msg="a stencil should hold at least the pixel and its four neighbours")
 
-        rings = torch.repeat_interleave(torch.arange(g.nlat), g.nlon_per_lat)
+        rings = torch.repeat_interleave(torch.arange(g.nrings), g.nlon_per_lat)
         for ipix in [0, g.npoints // 2, g.npoints - 1]:
             with self.subTest(ipix=ipix):
                 touched = rings[distances[ipix] <= truncate_support(g)].unique()
@@ -1717,7 +1719,11 @@ class TestHealpixGrid(unittest.TestCase):
         self.assertEqual(len({a, b}), 1)
         self.assertEqual(a.key, ("healpix", nside))
         self.assertNotEqual(a, HealpixGrid(nside=nside + 1))
-        self.assertNotEqual(a, as_grid("equiangular", nlat=a.nlat, nlon=a.nlon))
+        # a rectangular grid built from HEALPix's two extents -- its ring count and its
+        # widest ring -- is a different point set, since every ring of the equiangular
+        # grid holds 4*nside points where HEALPix's caps hold fewer. Identity is keyed on
+        # the descriptor, not on a pair of numbers that happen to coincide.
+        self.assertNotEqual(a, as_grid("equiangular", nlat=a.nrings, nlon=4 * nside))
         self.assertEqual(repr(a), f"HealpixGrid(nside={nside})")
 
     @parameterized.expand([[n] for n in _NSIDES])

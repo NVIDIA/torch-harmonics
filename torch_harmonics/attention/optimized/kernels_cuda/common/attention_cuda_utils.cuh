@@ -489,10 +489,9 @@ namespace attention_kernels
     //
     // Deliberately not `%`. nlon_in is a runtime value and the GPU has no integer
     // divide instruction, so `x % nlon_in` compiles to ~25 instructions of software
-    // emulation. Profiling the forward kernel on H100 showed exactly this dominating:
-    // 78% compute throughput while only ~2.4% of peak FLOPs were the actual dot
-    // product, with DRAM at 0.5% -- the kernel was spending its time on address
-    // arithmetic, not on math or memory.
+    // emulation. Profiling the forward kernel showed exactly this dominating: high
+    // compute throughput against a small fraction of peak FLOPs and near-idle DRAM,
+    // i.e. time spent on address arithmetic rather than on math or memory.
     //
     // The reduction is exact with one conditional subtract because both terms are
     // already bounded: wi is a canonical column so wi < nlon_in, and

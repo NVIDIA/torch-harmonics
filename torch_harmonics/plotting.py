@@ -70,7 +70,7 @@ def _rasterize_rings(grid, data):
     r"""
     Resample a field on a ring-structured grid onto an equiangular image, by nearest point.
 
-    How ``healpy`` draws a map, and for the same reason: a ragged grid has no rectangular
+    A ragged grid has no rectangular
     mesh for ``pcolormesh``, but every image cell can be given the value of the grid point
     nearest to it, which shows each point as the flat patch it represents. Nearest is
     decided per ring -- first the ring closest in colatitude, then the point closest in

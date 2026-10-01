@@ -71,12 +71,11 @@ namespace disco_kernels
     // constant-foldable; a 16-byte scheme would need a runtime-indexed source word,
     // and a runtime-indexed local array spills.
     //
-    // Gated to P in {1, 2}. A P=3 form was written and verified bit-identical, but
-    // it needs 12 words to deliver 8 halfwords, so loads rise ~45% while
-    // instructions fall ~23% -- which trades well only where L1 has slack:
-    //   540x1080  -> 180x360   L1 68.7% -> 80.1%   1.91 -> 1.89 ms   (-1%)
-    //   1080x2160 -> 360x720   L1 82.2% -> 89.2%   24.55 -> 27.71 ms (+13%)
-    // No workload uses pscale 3, so it takes the scalar path with pscale >= 4.
+    // Gated to P in {1, 2}. A P=3 form is bit-identical but needs 12 words to deliver
+    // 8 halfwords, trading more loads for fewer instructions. That only pays where L1
+    // has slack, so it helps at coarser output and hurts once L1 is near saturation --
+    // the same code with opposite sign, which is why it is not enabled. No workload
+    // uses pscale 3, so it takes the scalar path with pscale >= 4.
     //
     // Shared between the SM_90a and SM_100a kernels: one definition, because two
     // differing definitions of the same template in namespace disco_kernels across

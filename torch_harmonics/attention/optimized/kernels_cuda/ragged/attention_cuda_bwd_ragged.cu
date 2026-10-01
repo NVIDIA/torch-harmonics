@@ -91,10 +91,9 @@
 //
 // Both variants of the product-grid file are now provided, for the reason the
 // forward gave: the generic kernel keeps one neighbour in flight at a time and
-// re-reads qy and dy from shared memory on every one of them, and it measures like
-// it -- the ragged backward is 24 ms of the 33 ms fwd+bwd at HEALPix level 5, at 1.6
-// TFLOP/s, so bound by the latency of a dependency chain 102 neighbours long rather
-// than by arithmetic or bandwidth. s2_attn_bwd_ragged_special_vec_k is the port of
+// re-reads qy and dy from shared memory on every one of them, and it profiles like
+// it -- the ragged backward dominates fwd+bwd, bound by the latency of a dependency
+// chain as long as the neighbourhood rather than by arithmetic or bandwidth. s2_attn_bwd_ragged_special_vec_k is the port of
 // s2_attn_bwd_special_vec_k, which moves the four per-channel reductions and the
 // staged qy/dy into registers; shared memory survives only for the pre-9.0 atomic
 // epilogue. It applies when the per-head channel count fits NLOC registers per lane
@@ -140,9 +139,8 @@
 //
 // Neither the product-grid backward nor the first ragged port grouped at all, so
 // both walked one neighbour at a time: address, load k and v, two warp reductions,
-// softmax update, next. That is the same fully serial chain the forward was
-// measured at 1.6 TFLOP/s with, and after the forward was fixed the backward is
-// what remains -- 4.05 ms of the 5.36 ms fwd+bwd at nside 64, i.e. 76%.
+// softmax update, next. That is the same fully serial chain that limited the
+// forward, and with the forward addressed the backward is what dominates fwd+bwd.
 //
 // Setting this to 1 recovers the ungrouped kernel exactly, which is the escape
 // hatch if the grouped arithmetic ever looks suspect; TORCH_HARMONICS_RAGGED_BWD_
@@ -183,7 +181,7 @@
 
 // Largest number of COMPUTE_T registers per lane the special kernel will hold for
 // one accumulator. 16 matches MAX_LOCAL_ARR_LEN in attention_cuda_bwd.cu, so with a
-// 32-lane BDIM_X it covers up to 512 channels per head; HEALDA's dit-5B runs 96.
+// 32-lane BDIM_X it covers up to 512 channels per head.
 //
 // Single pass holds three accumulators of that length, two-pass four, so this is the
 // register-hungry half of the pair either way and occupancy here is register-limited.

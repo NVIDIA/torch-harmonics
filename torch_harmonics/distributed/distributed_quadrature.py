@@ -91,8 +91,7 @@ class DistributedQuadratureS2(torch.nn.Module):
 
         # the shard builds its own weights, so the per-ring longitudinal factor is written
         # once, in the grid module, and this class cannot drift from its serial
-        # counterpart. It previously derived `2 * pi / nlon` here, which is the same
-        # assumption QuadratureS2 used to make and the same one that is wrong on a grid
+        # counterpart. Deriving `2 * pi / nlon` here instead would be wrong on a grid
         # whose rings differ in length.
         quad_weight = self.shard.quad_weights
 

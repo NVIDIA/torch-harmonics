@@ -216,8 +216,7 @@ class TestTruncateSupport(unittest.TestCase):
         """
         One *node* spacing, not one latitudinal spacing. The two differ on
         legendre-gauss even at nlon = 2 nlat, where the in-ring spacing is the coarser
-        of the pair, so asserting against max_latitude_spacing would pin the old
-        behaviour.
+        of the pair, so max_latitude_spacing alone would not pin this down.
         """
         g = as_grid(grid, nlat=nlat, nlon=2 * nlat)
         self.assertEqual(truncate_support(g), g.max_node_spacing)
