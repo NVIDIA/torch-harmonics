@@ -250,6 +250,45 @@ def unpad_and_unflatten_leading_dims(tensor: torch.Tensor, lead_shape, lead_size
     return torch.view_as_complex(out) if is_complex else out
 
 
+def _needs_equal_shapes(group) -> bool:
+    """
+    Whether the group's backend requires every rank's tensor to have the same shape.
+
+    gloo's all_gather and all_to_all reject tensor lists whose entries differ in shape, and
+    the decompositions here split unevenly whenever an extent does not divide by the group
+    size. NCCL handles such lists natively, so its calls must stay untouched: the padded
+    path below is for gloo alone, and only when the shapes actually differ.
+    """
+    return dist.get_backend(group) == dist.Backend.GLOO
+
+
+def _pad_to(tensor: torch.Tensor, sizes: dict) -> torch.Tensor:
+    """Zero-pad ``tensor`` at the end of each dimension ``d`` in ``sizes`` up to ``sizes[d]``."""
+    for dim, size in sizes.items():
+        missing = size - tensor.shape[dim]
+        if missing > 0:
+            pad_shape = list(tensor.shape)
+            pad_shape[dim] = missing
+            tensor = torch.cat([tensor, tensor.new_zeros(pad_shape)], dim=dim)
+    return tensor.contiguous()
+
+
+def _empty_padded(like: torch.Tensor, sizes: dict) -> torch.Tensor:
+    """An uninitialised receive buffer shaped like ``like``, but ``sizes[d]`` long along each dimension ``d`` in ``sizes``."""
+    shape = list(like.shape)
+    for dim, size in sizes.items():
+        shape[dim % like.dim()] = size
+    return like.new_empty(shape)
+
+
+def _trim_to(tensor: torch.Tensor, sizes: dict) -> torch.Tensor:
+    """The leading ``sizes[d]`` entries of ``tensor`` along each dimension ``d`` in ``sizes``; the inverse of :func:`_pad_to`."""
+    slicer = [slice(None)] * tensor.dim()
+    for dim, size in sizes.items():
+        slicer[dim] = slice(0, size)
+    return tensor[tuple(slicer)].contiguous()
+
+
 def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False, verify_shapes=None):
 
     if verify_shapes is None:
@@ -282,11 +321,23 @@ def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False,
         x_shape[dim1] = dim1_len
         x_recv.append(torch.empty(x_shape, dtype=tensor.dtype, device=tensor.device))
 
-    # global transposition
-    req = dist.all_to_all(x_recv, x_send, group=group, async_op=async_op)
-
     # get dim0 split sizes
     dim0_split_sizes = [x[dim0] for x in x_send_shapes]
+
+    # global transposition
+    uneven = len(set(dim0_split_sizes)) > 1 or len(set(dim1_split_sizes)) > 1
+    if uneven and _needs_equal_shapes(group):
+        # gloo: pad every chunk to the largest extent along both split dimensions, exchange,
+        # and trim each received chunk back. The maxima come from the global split shapes,
+        # so every rank pads identically. Synchronous, since the trim needs the data.
+        max_sizes = {dim0: max(dim0_split_sizes), dim1: max(dim1_split_sizes)}
+        x_send_padded = [_pad_to(x, max_sizes) for x in x_send]
+        x_recv_padded = [_empty_padded(x, max_sizes) for x in x_recv]
+        dist.all_to_all(x_recv_padded, x_send_padded, group=group)
+        x_recv = [_trim_to(xp, {dim0: x.shape[dim0], dim1: x.shape[dim1]}) for xp, x in zip(x_recv_padded, x_recv)]
+        req = None
+    else:
+        req = dist.all_to_all(x_recv, x_send, group=group, async_op=async_op)
 
     if verify_shapes:
         stens = torch.as_tensor([x_send[comm_rank].size(dim0)], dtype=torch.int64, device=tensor.device)
@@ -477,7 +528,14 @@ def _gather(input_, dim_, shapes_, group=None, verify_shapes=None):
         input_list.append(torch.empty(input_shape, dtype=input_.dtype, device=input_.device))
 
     # gather data across ranks
-    dist.all_gather(input_list, input_, group=group)
+    if len(set(shapes_)) > 1 and _needs_equal_shapes(group):
+        # gloo: pad every rank's piece to the largest along dim_, gather, trim each back
+        max_size = {dim_: max(shapes_)}
+        gathered = [_empty_padded(x, max_size) for x in input_list]
+        dist.all_gather(gathered, _pad_to(input_, max_size), group=group)
+        input_list = [_trim_to(g, {dim_: size}) for g, size in zip(gathered, shapes_)]
+    else:
+        dist.all_gather(input_list, input_, group=group)
 
     # concatenate along dim
     output = torch.cat(input_list, dim=dim_)
