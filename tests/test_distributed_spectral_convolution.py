@@ -156,7 +156,10 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
                 bias_split = split_tensor_hw(conv_local.spectral_bias.clone(), hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
                 conv_dist.spectral_bias.copy_(bias_split)
 
-        # generate input tensor
+        # generate input tensor. Reseed first: the distributed weight holds only the local l
+        # slice, so with an uneven l split every rank drew a different number of random
+        # numbers above, and the ranks would otherwise each generate a different input
+        set_seed(333)
         inp_full = torch.randn((B, C, in_shape[0], in_shape[1]), dtype=torch.float32, device=self.device)
 
         # local forward/backward
