@@ -43,9 +43,9 @@
 // H100 and GB200 (fp32 and bf16, forward and backward, 1 degree to the production
 // encoder), with psi 5-6.5x smaller.
 
-#include "../disco.h"
-#include "disco_cuda.cuh"
-#include "../../../csrc/cuda_launch.cuh"
+#include "../../disco.h"
+#include "../common/disco_cuda.cuh"
+#include "../../../../csrc/cuda_launch.cuh"
 
 #include <ATen/Dispatch.h>
 #include <ATen/OpMathType.h>

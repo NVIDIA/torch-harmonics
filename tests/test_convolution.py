@@ -34,18 +34,19 @@ import unittest
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import _is_sm90, _is_sm100, compare_tensors, disable_tf32, maybe_autocast, set_seed
+from testutils import _is_sm90, _is_sm100, _ProductGridAsRagged, compare_tensors, disable_tf32, maybe_autocast, set_seed
 from torch.library import opcheck
 
-from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2, as_grid
+from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2, HealpixGrid, as_grid
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
 from torch_harmonics.disco._psi import arcs_to_coo, build_arcs, build_kpacked
-from torch_harmonics.disco.backends import OptimizedBackend, ReferenceBackend
+from torch_harmonics.disco.backends import RegularOptimizedBackend, RegularReferenceBackend
 from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
 )
 from torch_harmonics.disco.optimized.disco_optimized import _kpacked_k_pad, _kpacked_supported_on_device
 from torch_harmonics.filter_basis import get_filter_basis
+from torch_harmonics.grid import RegularGridS2
 from torch_harmonics.quadrature import compute_theta_cutoff, precompute_latitudes, precompute_longitudes
 
 if not optimized_kernels_is_available():
@@ -1141,7 +1142,7 @@ def _arc_state(conv):
 
 def _without_kpacked(conv):
     """Reselect conv's backend with the kpacked one ruled out, so it runs the arc kernels."""
-    conv._backends = (OptimizedBackend, ReferenceBackend)
+    conv._backends = (RegularOptimizedBackend, RegularReferenceBackend)
     conv._select_backend()
     return conv
 
@@ -1177,7 +1178,7 @@ class TestKpackedPath(unittest.TestCase):
     def test_kpacked_forward_activates_on_sm90(self):
         """forward_kpacked is chosen for bf16/fp16 on Hopper."""
         conv = self._make_conv(1, 8, (16, 32))
-        self.assertEqual(conv.backend.name, "kpacked", "the harmonic basis should select the kpacked backend")
+        self.assertEqual(conv.backend.name, "regular-kpacked", "the harmonic basis should select the kpacked backend")
         self.assertIn(conv.psi_kpacked_vals.shape[1], (8, 16), "K_pad must be 8 or 16 for the WGMMA kernel")
         inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device)
         out = conv(inp)
@@ -1187,7 +1188,7 @@ class TestKpackedPath(unittest.TestCase):
     def test_kpacked_forward_activates_on_sm100(self):
         """tcgen05 kpacked path is chosen for bf16/fp16 on Blackwell."""
         conv = self._make_conv(1, 8, (16, 32))
-        self.assertEqual(conv.backend.name, "kpacked", "the harmonic basis should select the kpacked backend")
+        self.assertEqual(conv.backend.name, "regular-kpacked", "the harmonic basis should select the kpacked backend")
         self.assertIn(conv.psi_kpacked_vals.shape[1], (8, 16), "K_pad must be 8 or 16 for the tcgen05 kernel")
         inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device)
         out = conv(inp)
@@ -1200,8 +1201,8 @@ class TestKpackedPath(unittest.TestCase):
         in_shape = (16, 32)
         conv_kpacked = self._make_conv(1, 8, in_shape).float()
         conv_opt = _without_kpacked(self._make_conv(1, 8, in_shape).float())
-        self.assertEqual(conv_kpacked.backend.name, "kpacked", "kpacked reference test requires the kpacked backend")
-        self.assertEqual(conv_opt.backend.name, "optimized")
+        self.assertEqual(conv_kpacked.backend.name, "regular-kpacked", "kpacked reference test requires the kpacked backend")
+        self.assertEqual(conv_opt.backend.name, "regular-optimized")
 
         conv_opt.weight.data.copy_(conv_kpacked.weight.data)
 
@@ -1327,6 +1328,216 @@ class TestKpackedPath(unittest.TestCase):
             conv.nlon_out,
         )
         opcheck(torch.ops.disco_kernels.forward_kpacked, test_inputs)
+
+
+# ---------------------------------------------------------------------------
+# Ragged grids (HEALPix, and a regular grid paired with one)
+# ---------------------------------------------------------------------------
+
+
+def _grid(spec):
+    """``("healpix", nside)``, ``("product-as-ragged", nlat, nlon)`` or ``(grid_type, nlat, nlon)``."""
+    if spec[0] == "healpix":
+        return HealpixGrid(nside=spec[1])
+    if spec[0] == "product-as-ragged":
+        return _ProductGridAsRagged(nlat=spec[1], nlon=spec[2])
+    return as_grid(spec[0], nlat=spec[1], nlon=spec[2])
+
+
+def _field(batch_size, channels, grid, dtype, device):
+    """A random field in the layout the layer takes on that grid."""
+    # the layer's criterion: only a RegularGridS2 has the (nlat, nlon) layout
+    shape = grid.shape if isinstance(grid, RegularGridS2) else (grid.npoints,)
+    return torch.randn(batch_size, channels, *shape, dtype=dtype, device=device)
+
+
+@parameterized_class(("device"), _devices)
+class TestDiscreteContinuousConvRaggedS2(unittest.TestCase):
+    """DISCO on ragged grids: the per-point psi, the ragged backends and their agreement."""
+
+    def setUp(self):
+        disable_tf32()
+        set_seed(333)
+
+    def _make(self, transpose, grid_in, grid_out, kernel_shape=(3, 4), basis_type="piecewise linear", basis_norm_mode="nodal", optimized_kernel=True, dtype=torch.float32):
+        Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
+        return Conv(
+            _grid(grid_in),
+            _grid(grid_out),
+            4,
+            2,
+            kernel_shape,
+            basis_type=basis_type,
+            basis_norm_mode=basis_norm_mode,
+            bias=True,
+            optimized_kernel=optimized_kernel,
+        ).to(dtype=dtype, device=self.device)
+
+    @parameterized.expand(
+        [
+            [False, ("healpix", 4), ("healpix", 4)],
+            [True, ("healpix", 4), ("healpix", 4)],
+            [False, ("healpix", 4), ("equiangular", 9, 16)],
+            [False, ("equiangular", 9, 16), ("healpix", 4)],
+            [True, ("legendre-gauss", 8, 16), ("healpix", 4)],
+        ]
+    )
+    def test_layout_and_backend(self, transpose, grid_in, grid_out):
+        """A ragged side is flat, a regular side keeps (nlat, nlon), and a ragged backend serves the layer."""
+        conv = self._make(transpose, grid_in, grid_out)
+        self.assertTrue(conv.ragged)
+        expected = "ragged-optimized" if optimized_kernels_is_available() else "ragged-reference"
+        self.assertEqual(conv.backend.name, expected)
+
+        inp = _field(2, 4, conv.grid_in, torch.float32, self.device)
+        out = conv(inp)
+        out_shape = (conv.grid_out.npoints,) if conv.ragged_out else conv.grid_out.shape
+        self.assertEqual(tuple(out.shape), (2, 2, *out_shape))
+
+    def test_regular_layers_stay_regular(self):
+        """A pair of regular grids keeps the regular backends, whatever the ragged ones would accept."""
+        conv = self._make(False, ("equiangular", 9, 16), ("equiangular", 9, 16))
+        self.assertFalse(conv.ragged)
+        self.assertTrue(conv.backend.name.startswith("regular-"))
+
+    @parameterized.expand(
+        [
+            # transpose, grid_in, grid_out, kernel_shape, basis_type, basis_norm_mode, dtype, atol, rtol
+            [False, ("healpix", 4), ("healpix", 4), (3, 4), "piecewise linear", "nodal", torch.float32, 1e-5, 1e-4],
+            [False, ("healpix", 8), ("healpix", 4), (2, 3), "harmonic", "modal", torch.float32, 1e-5, 1e-4],
+            [False, ("healpix", 4), ("equiangular", 9, 16), 3, "zernike", "mean", torch.float32, 1e-5, 1e-4],
+            [False, ("equiangular", 17, 32), ("healpix", 4), (3, 4), "piecewise linear", "support", torch.float32, 1e-5, 1e-4],
+            [True, ("healpix", 4), ("healpix", 4), (3, 4), "piecewise linear", "nodal", torch.float32, 1e-5, 1e-4],
+            [True, ("healpix", 4), ("healpix", 8), (2, 3), "harmonic", "mean", torch.float32, 1e-5, 1e-4],
+            [True, ("healpix", 4), ("equiangular", 17, 32), (3, 4), "piecewise linear", "geometric", torch.float32, 1e-5, 1e-4],
+            [False, ("healpix", 8), ("healpix", 4), (3, 4), "piecewise linear", "nodal", torch.float64, 1e-10, 1e-10],
+            [True, ("healpix", 4), ("healpix", 8), (2, 3), "harmonic", "modal", torch.float64, 1e-10, 1e-10],
+            [False, ("healpix", 4), ("healpix", 4), (3, 4), "piecewise linear", "nodal", torch.float16, 5e-2, 1e-2],
+            [True, ("healpix", 4), ("healpix", 8), (2, 3), "harmonic", "mean", torch.bfloat16, 5e-2, 5e-2],
+        ]
+    )
+    @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
+    def test_optimized_against_torch(self, transpose, grid_in, grid_out, kernel_shape, basis_type, basis_norm_mode, dtype, atol, rtol, verbose=True):
+        """The compiled ragged kernels against the sparse torch reference: output and both gradients."""
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+
+        # for AMP dtypes, the module and input stay in float32; autocast handles the rest
+        is_amp = dtype in (torch.float16, torch.bfloat16)
+        module_dtype = torch.float32 if is_amp else dtype
+
+        kw = dict(kernel_shape=kernel_shape, basis_type=basis_type, basis_norm_mode=basis_norm_mode, dtype=module_dtype)
+        conv_naive = self._make(transpose, grid_in, grid_out, optimized_kernel=False, **kw)
+        conv_opt = self._make(transpose, grid_in, grid_out, optimized_kernel=True, **kw)
+        self.assertEqual(conv_naive.backend.name, "ragged-reference")
+        self.assertEqual(conv_opt.backend.name, "ragged-optimized")
+
+        with torch.no_grad():
+            conv_naive.weight.copy_(conv_opt.weight)
+
+        inp = _field(3, 4, conv_opt.grid_in, module_dtype, self.device)
+
+        inp.requires_grad = True
+        with maybe_autocast(self.device.type, dtype):
+            out_naive = conv_naive(inp)
+        grad_output = torch.randn_like(out_naive)
+        out_naive.backward(grad_output)
+        inp_grad_naive = inp.grad.clone()
+
+        inp.grad = None
+        with maybe_autocast(self.device.type, dtype):
+            out_opt = conv_opt(inp)
+        out_opt.backward(grad_output)
+        inp_grad_opt = inp.grad.clone()
+
+        self.assertTrue(compare_tensors("output", out_naive, out_opt, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("input grad", inp_grad_naive, inp_grad_opt, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("weight grad", conv_naive.weight.grad, conv_opt.weight.grad, atol=atol, rtol=rtol, verbose=verbose))
+
+    @parameterized.expand(
+        [
+            # transpose, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape, basis_type, basis_norm_mode, optimized_kernel
+            [False, (17, 32), (17, 32), (3, 4), "piecewise linear", "nodal", True],
+            [False, (17, 32), (9, 16), (2, 3), "harmonic", "modal", True],
+            [False, (17, 32), (9, 32), 3, "zernike", "support", False],
+            [True, (17, 32), (17, 32), (3, 4), "piecewise linear", "nodal", True],
+            [True, (9, 32), (17, 32), (2, 3), "harmonic", "modal", True],
+            # a transpose across differing nlon matches only in the modes that do not
+            # normalize per group: the regular path pools the column phases of a latitude
+            [True, (9, 16), (17, 32), (3, 4), "piecewise linear", "mean", True],
+            [True, (9, 16), (17, 32), (2, 3), "harmonic", "geometric", False],
+        ]
+    )
+    def test_ragged_path_matches_regular(self, transpose, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, optimized_kernel, verbose=True):
+        """
+        Identical geometry down both paths: an equiangular grid as itself and presented as
+        ragged. The per-point psi has to reproduce the p-shifted one, so any difference is
+        the ragged precompute or the ragged kernels.
+        """
+        if optimized_kernel and not optimized_kernels_is_available():
+            raise unittest.SkipTest("skipping test because optimized kernels are not available")
+        if (self.device.type == "cuda") and optimized_kernel and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+
+        kw = dict(kernel_shape=kernel_shape, basis_type=basis_type, basis_norm_mode=basis_norm_mode, optimized_kernel=optimized_kernel, dtype=torch.float64)
+        conv_reg = self._make(transpose, ("equiangular", *in_shape), ("equiangular", *out_shape), **kw)
+        conv_rag = self._make(transpose, ("product-as-ragged", *in_shape), ("product-as-ragged", *out_shape), **kw)
+        self.assertFalse(conv_reg.ragged)
+        self.assertTrue(conv_rag.ragged)
+
+        with torch.no_grad():
+            conv_rag.weight.copy_(conv_reg.weight)
+            conv_rag.bias.copy_(conv_reg.bias)
+
+        inp = torch.randn(2, 4, *in_shape, dtype=torch.float64, device=self.device, requires_grad=True)
+        out_reg = conv_reg(inp)
+        grad_output = torch.randn_like(out_reg)
+        out_reg.backward(grad_output)
+        inp_grad_reg = inp.grad.clone()
+
+        inp.grad = None
+        out_rag = conv_rag(inp.flatten(-2, -1)).unflatten(-1, out_shape)
+        out_rag.backward(grad_output)
+        inp_grad_rag = inp.grad.clone()
+
+        self.assertTrue(compare_tensors("output", out_reg, out_rag, atol=1e-10, rtol=1e-8, verbose=verbose))
+        self.assertTrue(compare_tensors("input grad", inp_grad_reg, inp_grad_rag, atol=1e-10, rtol=1e-8, verbose=verbose))
+        self.assertTrue(compare_tensors("weight grad", conv_reg.weight.grad, conv_rag.weight.grad, atol=1e-10, rtol=1e-8, verbose=verbose))
+
+    @parameterized.expand([[False], [True]])
+    @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
+    def test_ragged_opcheck(self, transpose):
+        """The ragged custom ops satisfy the PT2 opcheck contract: schema, fakes and autograd registration."""
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+
+        conv = self._make(transpose, ("healpix", 2), ("healpix", 2))
+        arcs = conv.backend._arcs(conv)
+        if transpose:
+            op = torch.ops.disco_kernels._disco_s2_transpose_contraction_ragged_optimized
+            inp = torch.randn(2, 3, conv.kernel_size, conv.npoints_in, device=self.device, requires_grad=True)
+        else:
+            op = torch.ops.disco_kernels._disco_s2_contraction_ragged_optimized
+            inp = torch.randn(2, 3, conv.npoints_in, device=self.device, requires_grad=True)
+        opcheck(op, (inp, *arcs, conv.kernel_size, conv.npoints_out))
+
+    def test_ragged_arcs_roundtrip(self):
+        """build_arcs on ring tables is lossless: expanding the arcs gives back psi's entries."""
+        conv = self._make(False, ("healpix", 4), ("healpix", 4))
+        ker, row, col, vals = conv._psi_coo()
+        grid = conv.grid_in
+        ring_base, ring_size = grid.lon_offsets[:-1].to(torch.int64), grid.nlon_per_lat.to(torch.int64)
+        arcs = build_arcs(ker, row, col, vals, ring_base=ring_base, ring_size=ring_size)
+
+        def canon(k, r, c, v):
+            key = (k * conv.npoints_out + r) * conv.npoints_in + c
+            order = torch.argsort(key)
+            return key[order], v[order]
+
+        key_ref, vals_ref = canon(ker, row, col, vals)
+        key_arc, vals_arc = canon(*arcs_to_coo(arcs, ring_base=ring_base, ring_size=ring_size))
+        self.assertTrue(torch.equal(key_ref, key_arc))
+        self.assertTrue(torch.equal(vals_ref, vals_arc))
 
 
 if __name__ == "__main__":

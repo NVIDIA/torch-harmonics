@@ -44,14 +44,17 @@ distributed_convolution.py           builds kpacked buffers in _build_local_psi
 
 | Purpose | Path |
 |---------|------|
-| PyTorch reference kernels | `torch_harmonics/disco/kernels_torch/disco_torch.py` |
-| CUDA kernel headers | `torch_harmonics/disco/optimized/kernels_cuda/disco_cuda.cuh` |
-| CSR forward kernel | `torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd.cu` |
-| CSR backward kernel | `torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd.cu` (BC_TILE optimized) |
-| SM_90 kpacked kernel | `torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_dense_kpacked_sm90.cu` |
-| PTX helpers (WGMMA) | `torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_ptx.cuh` |
-| CPU OpenMP forward kernel | `torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_fwd.py` |
-| CPU OpenMP backward kernel | `torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_bwd.py` |
+| PyTorch reference kernels | `torch_harmonics/disco/kernels_torch/disco_regular_torch.py` |
+| CUDA kernel headers | `torch_harmonics/disco/optimized/kernels_cuda/common/disco_cuda.cuh` |
+| CSR forward kernel | `torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_fwd.cu` |
+| CSR backward kernel | `torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_bwd.cu` (BC_TILE optimized) |
+| SM_90 kpacked kernel | `torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_fwd_dense_kpacked_sm90.cu` |
+| PTX helpers (WGMMA) | `torch_harmonics/disco/optimized/kernels_cuda/common/disco_cuda_ptx.cuh` |
+| CPU OpenMP forward kernel | `torch_harmonics/disco/optimized/kernels_cpu/regular/disco_cpu_fwd.cpp` |
+| CPU OpenMP backward kernel | `torch_harmonics/disco/optimized/kernels_cpu/regular/disco_cpu_bwd.cpp` |
+| Ragged (HEALPix) torch reference | `torch_harmonics/disco/kernels_torch/disco_ragged_torch.py` |
+| Ragged CUDA kernels | `torch_harmonics/disco/optimized/kernels_cuda/ragged/disco_cuda_{fwd,bwd}_ragged.cu` |
+| Ragged CPU kernels | `torch_harmonics/disco/optimized/kernels_cpu/ragged/disco_cpu_{fwd,bwd}_ragged.cpp` |
 | C++ interface | `torch_harmonics/disco/optimized/disco_interface.cpp` |
 | Python dispatch | `torch_harmonics/disco/optimized/disco_optimized.py` |
 | Serial conv (dispatch) | `torch_harmonics/disco/convolution.py` |

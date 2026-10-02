@@ -6,6 +6,7 @@
 
 * Faster DISCO CUDA kernels on H100 and GB200: kpacked forward up to 1.28x, backward up to 2.1x.
 * Smaller DISCO psi memory footprint through a blocked-CSR layout instead of padding every row to the maximum.
+* DISCO convolutions run on ragged grids such as HEALPix, or a regular grid paired with one, through new `ragged-optimized` (CPU and CUDA) and `ragged-reference` backends; fields on a ragged grid are `(batch, channels, npoints)`. The existing backends are now named `regular-kpacked`, `regular-optimized` and `regular-reference`.
 * Fixed a DISCO backward launch failure for `nlon_in > 2048` with an integer scale factor of 3 or more.
 * **Breaking**: `DistributedDiscreteContinuousConvS2` gains `polar_mode`, default `"halo-exchange"`, which computes only locally owned rows; `"reduce-scatter"` restores the old behaviour and is needed when the support reaches past the neighbouring rank.
 * Fixed single-longitude inputs producing non-finite values and gradients in `ResampleS2` and `DistributedResampleS2`.
@@ -31,7 +32,7 @@
 * `as_grid(descriptor, **params)` accepts only the descriptor type's own parameters and raises on anything else.
 * Grid descriptors form a hierarchy of `PointSetS2` (points and weights), `GridS2` (isolatitude rings) and `RegularGridS2` (rings of equal length), with matching `GridShardS2`/`RegularGridShardS2`.
 * New `require_point_set`, `require_grid` and `require_regular_grid` guards state which of these levels each routine needs, so an unsupported grid fails at construction.
-* New `HealpixGrid(nside)` (also `as_grid("healpix", nside=...)`), the HEALPix pixelization in RING order, accepted today by `QuadratureS2`, `AttentionS2` and `NeighborhoodAttentionS2`.
+* New `HealpixGrid(nside)` (also `as_grid("healpix", nside=...)`), the HEALPix pixelization in RING order, accepted today by `QuadratureS2`, `AttentionS2`, `NeighborhoodAttentionS2`, `DiscreteContinuousConvS2` and `DiscreteContinuousConvTransposeS2`.
 * New `HealpixGrid.from_level(level)` builds the grid at refinement level `level`, i.e. `nside = 2**level`.
 * New `PointSetS2.is_equal_area`, `True` for HEALPix and `False` for every latitude-longitude grid.
 * New `PointSetS2.coords` gives every point's `(colat, lon)` in the order a field is stored in.

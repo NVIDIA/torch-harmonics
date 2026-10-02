@@ -31,8 +31,6 @@
 
 import math
 import unittest
-from dataclasses import dataclass
-from typing import ClassVar
 
 import torch
 import torch.nn.functional as F
@@ -40,10 +38,10 @@ from parameterized import parameterized, parameterized_class
 
 # from torch.autograd import gradcheck
 from test_neighborhood import _brute_force_neighborhood
-from testutils import build_psi_segments, compare_tensors, disable_tf32, expand_psi_segments, maybe_autocast, set_seed
+from testutils import _ProductGridAsRagged, build_psi_segments, compare_tensors, disable_tf32, expand_psi_segments, maybe_autocast, set_seed
 from torch.library import opcheck
 
-from torch_harmonics import AttentionS2, GridS2, HealpixGrid, NeighborhoodAttentionS2, as_grid
+from torch_harmonics import AttentionS2, HealpixGrid, NeighborhoodAttentionS2, as_grid
 from torch_harmonics.attention import cuda_kernels_is_available, optimized_kernels_is_available
 from torch_harmonics.attention._layout import to_nhwc
 from torch_harmonics.attention.backends import _point_weights
@@ -63,7 +61,6 @@ from torch_harmonics.attention.kernels_torch.attention_regular_torch import (
 from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_ragged_optimized
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.filter_basis import get_filter_basis
-from torch_harmonics.grid import _GRID_REGISTRY
 from torch_harmonics.neighborhood import precompute_neighborhood_csr_s2
 from torch_harmonics.quadrature import precompute_latitudes
 
@@ -1633,62 +1630,6 @@ def _dense_masked_attention(model, query, key, value, mask):
     out = out.transpose(-1, -2).reshape(batch, model.out_channels, npoints)
 
     return project(out, model.proj_weights, model.proj_bias)
-
-
-@dataclass(frozen=True, eq=False)
-class _ProductGridAsRagged(GridS2):
-    """
-    An equiangular grid presented through the ragged interface.
-
-    Every ring carries the same number of longitudes, so this *is* a product grid --
-    it simply declines to say so, which routes it down the ragged path. That makes the
-    two implementations comparable on identical geometry: any difference between them
-    is the implementation, since the points, the weights and the neighbourhood are the
-    same tensors either way.
-
-    It is a test fixture rather than a library grid because nothing in the library
-    would want it: a real product grid should be a RegularGridS2 and take the faster
-    path. Its whole purpose is to be the control in that comparison.
-    """
-
-    nlat: int
-    nlon: int
-    grid_type: ClassVar[str] = "test-product-as-ragged"
-
-    @property
-    def is_regular(self):
-        # Deliberately false. GridS2 computes this from the geometry -- every ring the
-        # same length means regular -- so a uniform grid cannot be ragged by accident,
-        # and saying so here is the only way to route identical geometry down the other
-        # path. That is the whole point of the fixture: the lie is the experiment.
-        return False
-
-    @property
-    def nrings(self):
-        return self.nlat
-
-    @property
-    def nlon_per_lat(self):
-        return torch.full((self.nlat,), self.nlon, dtype=torch.int64)
-
-    @property
-    def colats(self):
-        return as_grid("equiangular", nlat=self.nlat, nlon=self.nlon).colats
-
-    @property
-    def colat_weights(self):
-        return as_grid("equiangular", nlat=self.nlat, nlon=self.nlon).colat_weights
-
-    def lons(self, ilat=None):
-        return torch.arange(self.nlon, dtype=torch.float64) * (2.0 * math.pi / self.nlon)
-
-
-# Defining a GridS2 subclass with a grid_type registers it, and the registry is global:
-# left in place this fixture would be swept up by every test elsewhere that parameterizes
-# over grid_types() and constructs with nlat/nlon. It is only ever built directly, by name
-# it has no business being discoverable, so it is withdrawn immediately -- the class object
-# keeps working, only as_grid("test-product-as-ragged") stops resolving.
-_GRID_REGISTRY.pop(_ProductGridAsRagged.grid_type, None)
 
 
 @parameterized_class(("device"), _devices)

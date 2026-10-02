@@ -77,3 +77,24 @@ def _get_psi(
         else:
             psi = torch.sparse_coo_tensor(psi_idx, psi_vals, size=(kernel_size, nlat_out_local, nlat_in_local * nlon_in)).coalesce()
     return psi
+
+
+def _get_psi_ragged(kernel_size: int, psi_idx: torch.Tensor, psi_vals: torch.Tensor, npoints_rows: int, npoints_cols: int, transposed: Optional[bool] = False):
+    """
+    The sparse psi of the ragged torch reference, ``(kernel_size, npoints_out, npoints_in)``.
+
+    psi_idx holds ``(ker, row point, column point)``. The forward contracts it as given; the
+    transpose scatters from the rows onto the columns, which is the same contraction with
+    psi transposed, so ``transposed`` swaps the two point axes and the reference needs only
+    one routine. There is no p-shift to build in, which is what makes this so much simpler
+    than :func:`_get_psi`.
+    """
+    with torch.sparse.check_sparse_tensor_invariants(enable=False):
+        if transposed:
+            idx = torch.stack([psi_idx[0], psi_idx[2], psi_idx[1]], dim=0)
+            size = (kernel_size, npoints_cols, npoints_rows)
+        else:
+            idx = psi_idx
+            size = (kernel_size, npoints_rows, npoints_cols)
+        psi = torch.sparse_coo_tensor(idx, psi_vals, size=size).coalesce()
+    return psi
