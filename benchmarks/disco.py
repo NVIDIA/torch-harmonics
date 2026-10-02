@@ -30,20 +30,28 @@
 import torch
 from bench import BenchmarkEntry, maybe_autocast, register
 
-from torch_harmonics import DiscreteContinuousConvS2, as_grid
+from torch_harmonics import DiscreteContinuousConvS2, HealpixGrid, as_grid
+from torch_harmonics.grid import RegularGridS2
 
 # ------------------------------------------------------------------------------
 # Setup / forward / backward / reference
 # ------------------------------------------------------------------------------
 
 
-def _disco_setup(batch, in_ch, out_ch, nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, basis_type, basis_norm_mode, theta_cutoff, optimized, groups, fused):
+def _grids(cfg):
+    """The config's (grid_in, grid_out): HEALPix if it gives nside_in/nside_out, equiangular otherwise."""
+    if "nside_in" in cfg:
+        return HealpixGrid(nside=cfg["nside_in"]), HealpixGrid(nside=cfg["nside_out"])
+    return as_grid("equiangular", nlat=cfg["nlat_in"], nlon=cfg["nlon_in"]), as_grid("equiangular", nlat=cfg["nlat_out"], nlon=cfg["nlon_out"])
+
+
+def _disco_setup(batch, in_ch, out_ch, grid_in, grid_out, kernel_shape, basis_type, basis_norm_mode, theta_cutoff, optimized, groups, fused):
     def setup(device, dtype):
         use_autocast = dtype in (torch.float16, torch.bfloat16)
         module_dtype = torch.float32 if use_autocast else dtype
         conv = DiscreteContinuousConvS2(
-            grid_in=as_grid("equiangular", nlat=nlat_in, nlon=nlon_in),
-            grid_out=as_grid("equiangular", nlat=nlat_out, nlon=nlon_out),
+            grid_in=grid_in,
+            grid_out=grid_out,
             in_channels=in_ch,
             out_channels=out_ch,
             kernel_shape=kernel_shape,
@@ -54,7 +62,9 @@ def _disco_setup(batch, in_ch, out_ch, nlat_in, nlon_in, nlat_out, nlon_out, ker
             optimized_kernel=optimized,
             fused=fused,
         ).to(device=device, dtype=module_dtype)
-        x = torch.randn(batch, in_ch, nlat_in, nlon_in, dtype=module_dtype, device=device, requires_grad=True)
+        # a field on a ragged grid such as HEALPix is flat
+        in_shape = grid_in.shape if isinstance(grid_in, RegularGridS2) else (grid_in.npoints,)
+        x = torch.randn(batch, in_ch, *in_shape, dtype=module_dtype, device=device, requires_grad=True)
         return {
             "conv": conv,
             "x": x,
@@ -62,10 +72,8 @@ def _disco_setup(batch, in_ch, out_ch, nlat_in, nlon_in, nlat_out, nlon_out, ker
             "device": device,
             "in_ch": in_ch,
             "out_ch": out_ch,
-            "nlat_in": nlat_in,
-            "nlon_in": nlon_in,
-            "nlat_out": nlat_out,
-            "nlon_out": nlon_out,
+            "grid_in": grid_in,
+            "grid_out": grid_out,
             "kernel_shape": kernel_shape,
             "basis_type": basis_type,
             "basis_norm_mode": basis_norm_mode,
@@ -87,8 +95,8 @@ def _disco_backward(state, out):
 
 def _disco_reference(state):
     conv_ref = DiscreteContinuousConvS2(
-        grid_in=as_grid("equiangular", nlat=state["nlat_in"], nlon=state["nlon_in"]),
-        grid_out=as_grid("equiangular", nlat=state["nlat_out"], nlon=state["nlon_out"]),
+        grid_in=state["grid_in"],
+        grid_out=state["grid_out"],
         in_channels=state["in_ch"],
         out_channels=state["out_ch"],
         kernel_shape=state["kernel_shape"],
@@ -805,6 +813,212 @@ _DISCO_CONFIGS = [
     # Production-shape fused backward coverage. These are the layer shapes from
     # the distributed model, benchmarked as serial DISCO kernels to isolate local
     # compute. The decoder case exercises the spatial-first dgrad heuristic.
+    # self-conv (same in/out grid) on HEALPix nside=128 (196,608 points, ~0.46 degree), the
+    # counterpart of the half-degree block above, CUDA
+    dict(
+        name="disco_s2_opt_hpx128_b1_c64_tc0017_float32_cuda",
+        device="cuda",
+        dtype=torch.float32,
+        batch=1,
+        in_ch=64,
+        out_ch=64,
+        nside_in=128,
+        nside_out=128,
+        kernel_shape=(3, 3),
+        basis_type="harmonic",
+        basis_norm_mode="mean",
+        theta_cutoff=0.017,
+        optimized=True,
+        skip_correctness=True,
+        tags=["disco", "self", "healpix"],
+    ),
+    dict(
+        name="disco_s2_opt_hpx128_b1_c64_tc0017_float16_cuda",
+        device="cuda",
+        dtype=torch.float16,
+        batch=1,
+        in_ch=64,
+        out_ch=64,
+        nside_in=128,
+        nside_out=128,
+        kernel_shape=(3, 3),
+        basis_type="harmonic",
+        basis_norm_mode="mean",
+        theta_cutoff=0.017,
+        optimized=True,
+        skip_correctness=True,
+        tags=["disco", "self", "healpix"],
+    ),
+    dict(
+        name="disco_s2_opt_hpx128_b1_c64_tc0017_bfloat16_cuda",
+        device="cuda",
+        dtype=torch.bfloat16,
+        batch=1,
+        in_ch=64,
+        out_ch=64,
+        nside_in=128,
+        nside_out=128,
+        kernel_shape=(3, 3),
+        basis_type="harmonic",
+        basis_norm_mode="mean",
+        theta_cutoff=0.017,
+        optimized=True,
+        skip_correctness=True,
+        tags=["disco", "self", "healpix"],
+    ),
+    dict(
+        name="disco_s2_opt_hpx128_b1_c64_tc003_float32_cuda",
+        device="cuda",
+        dtype=torch.float32,
+        batch=1,
+        in_ch=64,
+        out_ch=64,
+        nside_in=128,
+        nside_out=128,
+        kernel_shape=(3, 3),
+        basis_type="harmonic",
+        basis_norm_mode="mean",
+        theta_cutoff=0.03,
+        optimized=True,
+        skip_correctness=True,
+        tags=["disco", "self", "healpix"],
+    ),
+    dict(
+        name="disco_s2_opt_hpx128_b1_c64_tc003_float16_cuda",
+        device="cuda",
+        dtype=torch.float16,
+        batch=1,
+        in_ch=64,
+        out_ch=64,
+        nside_in=128,
+        nside_out=128,
+        kernel_shape=(3, 3),
+        basis_type="harmonic",
+        basis_norm_mode="mean",
+        theta_cutoff=0.03,
+        optimized=True,
+        skip_correctness=True,
+        tags=["disco", "self", "healpix"],
+    ),
+    dict(
+        name="disco_s2_opt_hpx128_b1_c64_tc003_bfloat16_cuda",
+        device="cuda",
+        dtype=torch.bfloat16,
+        batch=1,
+        in_ch=64,
+        out_ch=64,
+        nside_in=128,
+        nside_out=128,
+        kernel_shape=(3, 3),
+        basis_type="harmonic",
+        basis_norm_mode="mean",
+        theta_cutoff=0.03,
+        optimized=True,
+        skip_correctness=True,
+        tags=["disco", "self", "healpix"],
+    ),
+    dict(
+        name="disco_s2_opt_hpx128_b1_c256_tc0017_float32_cuda",
+        device="cuda",
+        dtype=torch.float32,
+        batch=1,
+        in_ch=256,
+        out_ch=256,
+        nside_in=128,
+        nside_out=128,
+        kernel_shape=(3, 3),
+        basis_type="harmonic",
+        basis_norm_mode="mean",
+        theta_cutoff=0.017,
+        optimized=True,
+        skip_correctness=True,
+        tags=["disco", "self", "healpix", "large_channels"],
+    ),
+    dict(
+        name="disco_s2_opt_hpx128_b1_c256_tc0017_float16_cuda",
+        device="cuda",
+        dtype=torch.float16,
+        batch=1,
+        in_ch=256,
+        out_ch=256,
+        nside_in=128,
+        nside_out=128,
+        kernel_shape=(3, 3),
+        basis_type="harmonic",
+        basis_norm_mode="mean",
+        theta_cutoff=0.017,
+        optimized=True,
+        skip_correctness=True,
+        tags=["disco", "self", "healpix", "large_channels"],
+    ),
+    dict(
+        name="disco_s2_opt_hpx128_b1_c256_tc0017_bfloat16_cuda",
+        device="cuda",
+        dtype=torch.bfloat16,
+        batch=1,
+        in_ch=256,
+        out_ch=256,
+        nside_in=128,
+        nside_out=128,
+        kernel_shape=(3, 3),
+        basis_type="harmonic",
+        basis_norm_mode="mean",
+        theta_cutoff=0.017,
+        optimized=True,
+        skip_correctness=True,
+        tags=["disco", "self", "healpix", "large_channels"],
+    ),
+    dict(
+        name="disco_s2_opt_hpx128_b1_c256_tc003_float32_cuda",
+        device="cuda",
+        dtype=torch.float32,
+        batch=1,
+        in_ch=256,
+        out_ch=256,
+        nside_in=128,
+        nside_out=128,
+        kernel_shape=(3, 3),
+        basis_type="harmonic",
+        basis_norm_mode="mean",
+        theta_cutoff=0.03,
+        optimized=True,
+        skip_correctness=True,
+        tags=["disco", "self", "healpix", "large_channels"],
+    ),
+    dict(
+        name="disco_s2_opt_hpx128_b1_c256_tc003_float16_cuda",
+        device="cuda",
+        dtype=torch.float16,
+        batch=1,
+        in_ch=256,
+        out_ch=256,
+        nside_in=128,
+        nside_out=128,
+        kernel_shape=(3, 3),
+        basis_type="harmonic",
+        basis_norm_mode="mean",
+        theta_cutoff=0.03,
+        optimized=True,
+        skip_correctness=True,
+        tags=["disco", "self", "healpix", "large_channels"],
+    ),
+    dict(
+        name="disco_s2_opt_hpx128_b1_c256_tc003_bfloat16_cuda",
+        device="cuda",
+        dtype=torch.bfloat16,
+        batch=1,
+        in_ch=256,
+        out_ch=256,
+        nside_in=128,
+        nside_out=128,
+        kernel_shape=(3, 3),
+        basis_type="harmonic",
+        basis_norm_mode="mean",
+        theta_cutoff=0.03,
+        optimized=True,
+        skip_correctness=True,
+        tags=["disco", "self", "healpix", "large_channels"],
+    ),
     dict(
         name="disco_s2_prod_encoder_b1_c65_o780_g65_fp16_cuda",
         device="cuda",
@@ -904,6 +1118,7 @@ def _expanded_disco_configs(configs):
 
 
 for cfg in _expanded_disco_configs(_DISCO_CONFIGS):
+    grid_in, grid_out = _grids(cfg)
     register(
         BenchmarkEntry(
             name=cfg["name"],
@@ -913,10 +1128,8 @@ for cfg in _expanded_disco_configs(_DISCO_CONFIGS):
                 batch=cfg["batch"],
                 in_ch=cfg["in_ch"],
                 out_ch=cfg["out_ch"],
-                nlat_in=cfg["nlat_in"],
-                nlon_in=cfg["nlon_in"],
-                nlat_out=cfg["nlat_out"],
-                nlon_out=cfg["nlon_out"],
+                grid_in=grid_in,
+                grid_out=grid_out,
                 kernel_shape=cfg["kernel_shape"],
                 basis_type=cfg["basis_type"],
                 basis_norm_mode=cfg["basis_norm_mode"],
