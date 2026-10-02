@@ -1359,18 +1359,32 @@ class TestDiscreteContinuousConvRaggedS2(unittest.TestCase):
         disable_tf32()
         set_seed(333)
 
-    def _make(self, transpose, grid_in, grid_out, kernel_shape=(3, 4), basis_type="piecewise linear", basis_norm_mode="nodal", optimized_kernel=True, dtype=torch.float32):
+    def _make(
+        self,
+        transpose,
+        grid_in,
+        grid_out,
+        kernel_shape=(3, 4),
+        basis_type="piecewise linear",
+        basis_norm_mode="nodal",
+        optimized_kernel=True,
+        dtype=torch.float32,
+        in_channels=4,
+        out_channels=2,
+        **kwargs,
+    ):
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
         return Conv(
             _grid(grid_in),
             _grid(grid_out),
-            4,
-            2,
+            in_channels,
+            out_channels,
             kernel_shape,
             basis_type=basis_type,
             basis_norm_mode=basis_norm_mode,
             bias=True,
             optimized_kernel=optimized_kernel,
+            **kwargs,
         ).to(dtype=dtype, device=self.device)
 
     @parameterized.expand(
@@ -1402,22 +1416,31 @@ class TestDiscreteContinuousConvRaggedS2(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # transpose, grid_in, grid_out, kernel_shape, basis_type, basis_norm_mode, dtype, atol, rtol
-            [False, ("healpix", 4), ("healpix", 4), (3, 4), "piecewise linear", "nodal", torch.float32, 1e-5, 1e-4],
-            [False, ("healpix", 8), ("healpix", 4), (2, 3), "harmonic", "modal", torch.float32, 1e-5, 1e-4],
-            [False, ("healpix", 4), ("equiangular", 9, 16), 3, "zernike", "mean", torch.float32, 1e-5, 1e-4],
-            [False, ("equiangular", 17, 32), ("healpix", 4), (3, 4), "piecewise linear", "support", torch.float32, 1e-5, 1e-4],
-            [True, ("healpix", 4), ("healpix", 4), (3, 4), "piecewise linear", "nodal", torch.float32, 1e-5, 1e-4],
-            [True, ("healpix", 4), ("healpix", 8), (2, 3), "harmonic", "mean", torch.float32, 1e-5, 1e-4],
-            [True, ("healpix", 4), ("equiangular", 17, 32), (3, 4), "piecewise linear", "geometric", torch.float32, 1e-5, 1e-4],
-            [False, ("healpix", 8), ("healpix", 4), (3, 4), "piecewise linear", "nodal", torch.float64, 1e-10, 1e-10],
-            [True, ("healpix", 4), ("healpix", 8), (2, 3), "harmonic", "modal", torch.float64, 1e-10, 1e-10],
-            [False, ("healpix", 4), ("healpix", 4), (3, 4), "piecewise linear", "nodal", torch.float16, 5e-2, 1e-2],
-            [True, ("healpix", 4), ("healpix", 8), (2, 3), "harmonic", "mean", torch.bfloat16, 5e-2, 5e-2],
+            # transpose, grid_in, grid_out, in_channels, out_channels, kernel_shape, basis_type, basis_norm_mode, dtype, fused, atol, rtol
+            [False, ("healpix", 4), ("healpix", 4), 4, 2, (3, 4), "piecewise linear", "nodal", torch.float32, False, 1e-5, 1e-4],
+            [False, ("healpix", 8), ("healpix", 4), 4, 2, (2, 3), "harmonic", "modal", torch.float32, False, 1e-5, 1e-4],
+            [False, ("healpix", 4), ("equiangular", 9, 16), 4, 2, 3, "zernike", "mean", torch.float32, False, 1e-5, 1e-4],
+            [False, ("equiangular", 17, 32), ("healpix", 4), 4, 2, (3, 4), "piecewise linear", "support", torch.float32, False, 1e-5, 1e-4],
+            [False, ("healpix", 8), ("healpix", 4), 4, 4, (3, 4), "piecewise linear", "nodal", torch.float32, False, 1e-5, 1e-4],
+            [True, ("healpix", 4), ("healpix", 4), 4, 2, (3, 4), "piecewise linear", "nodal", torch.float32, False, 1e-5, 1e-4],
+            [True, ("healpix", 4), ("healpix", 8), 4, 2, (2, 3), "harmonic", "mean", torch.float32, False, 1e-5, 1e-4],
+            [True, ("healpix", 4), ("equiangular", 17, 32), 4, 2, (3, 4), "piecewise linear", "geometric", torch.float32, False, 1e-5, 1e-4],
+            [False, ("healpix", 8), ("healpix", 4), 4, 2, (3, 4), "piecewise linear", "nodal", torch.float64, False, 1e-10, 1e-10],
+            [True, ("healpix", 4), ("healpix", 8), 4, 2, (2, 3), "harmonic", "modal", torch.float64, False, 1e-10, 1e-10],
+            [False, ("healpix", 4), ("healpix", 4), 4, 2, (3, 4), "piecewise linear", "nodal", torch.float16, False, 5e-2, 1e-2],
+            [True, ("healpix", 4), ("healpix", 8), 4, 2, (2, 3), "harmonic", "mean", torch.bfloat16, False, 5e-2, 5e-2],
+            # fused, with the spatial-first input gradient (2 * out_channels <= in_channels) and without
+            [False, ("healpix", 8), ("healpix", 4), 8, 2, (3, 4), "piecewise linear", "nodal", torch.float32, True, 1e-5, 1e-4],
+            [False, ("healpix", 8), ("healpix", 4), 4, 4, (2, 3), "harmonic", "modal", torch.float32, True, 1e-5, 1e-4],
+            [False, ("healpix", 4), ("equiangular", 9, 16), 8, 2, (3, 4), "piecewise linear", "nodal", torch.float32, True, 1e-5, 1e-4],
+            [False, ("equiangular", 17, 32), ("healpix", 4), 4, 4, (3, 4), "piecewise linear", "nodal", torch.float64, True, 1e-10, 1e-10],
+            [False, ("healpix", 4), ("healpix", 4), 8, 2, (3, 4), "piecewise linear", "nodal", torch.bfloat16, True, 5e-2, 5e-2],
         ]
     )
     @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
-    def test_optimized_against_torch(self, transpose, grid_in, grid_out, kernel_shape, basis_type, basis_norm_mode, dtype, atol, rtol, verbose=True):
+    def test_optimized_against_torch(
+        self, transpose, grid_in, grid_out, in_channels, out_channels, kernel_shape, basis_type, basis_norm_mode, dtype, fused, atol, rtol, verbose=True
+    ):
         """The compiled ragged kernels against the sparse torch reference: output and both gradients."""
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
@@ -1426,16 +1449,18 @@ class TestDiscreteContinuousConvRaggedS2(unittest.TestCase):
         is_amp = dtype in (torch.float16, torch.bfloat16)
         module_dtype = torch.float32 if is_amp else dtype
 
-        kw = dict(kernel_shape=kernel_shape, basis_type=basis_type, basis_norm_mode=basis_norm_mode, dtype=module_dtype)
+        kw = dict(kernel_shape=kernel_shape, basis_type=basis_type, basis_norm_mode=basis_norm_mode, dtype=module_dtype, in_channels=in_channels, out_channels=out_channels)
+        # fused is only supported for forward (non-transpose) convolution
+        fused_kwarg = {"fused": fused} if (fused and not transpose) else {}
         conv_naive = self._make(transpose, grid_in, grid_out, optimized_kernel=False, **kw)
-        conv_opt = self._make(transpose, grid_in, grid_out, optimized_kernel=True, **kw)
+        conv_opt = self._make(transpose, grid_in, grid_out, optimized_kernel=True, **kw, **fused_kwarg)
         self.assertEqual(conv_naive.backend.name, "ragged-reference")
         self.assertEqual(conv_opt.backend.name, "ragged-optimized")
 
         with torch.no_grad():
             conv_naive.weight.copy_(conv_opt.weight)
 
-        inp = _field(3, 4, conv_opt.grid_in, module_dtype, self.device)
+        inp = _field(3, in_channels, conv_opt.grid_in, module_dtype, self.device)
 
         inp.requires_grad = True
         with maybe_autocast(self.device.type, dtype):
