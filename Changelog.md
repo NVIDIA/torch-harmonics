@@ -35,6 +35,7 @@
 * `DistributedDiscreteContinuousConvS2(fused=True)` no longer requires CUDA.
 * Casting a DISCO layer with `.half()` or `.to(dtype)` no longer rounds its filter values to that dtype; they stay in the precision they were built in, as for neighborhood attention.
 * `torch.autocast("cpu")` now applies to the fused DISCO path as well.
+* **Breaking**: the piecewise-linear filter basis no longer counts points on the edge of a hat, where its value is zero, as part of the support. This changes `basis_norm_mode="support"` and `"modal"` with the piecewise-linear basis, by up to tens of percent per group at the default cutoff, since a basis function covers few quadrature points and edge points (e.g. those due north or south of the output point) carried full weight; the other modes and bases are unchanged. Whether a point landed on an edge or just off it used to depend on rounding.
 * DISCO convolutions run on ragged grids such as HEALPix, or a regular grid paired with one, through new `ragged-optimized` (CPU and CUDA) and `ragged-reference` backends; fields on a ragged grid are `(batch, channels, npoints)`. The existing backends are now named `regular-kpacked`, `regular-optimized` and `regular-reference`.
 * `DistributedNeighborhoodAttentionS2` shares the serial forward pass and uses ring backends whose kernels take the serial layout and arc form, walking only the neighbours in each key/value chunk.
 * `DistributedNeighborhoodAttentionS2` builds only its rank's slice of the sparsity pattern, so its memory shrinks as ranks are added.
