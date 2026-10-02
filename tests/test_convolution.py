@@ -1460,6 +1460,8 @@ class TestDiscreteContinuousConvRaggedS2(unittest.TestCase):
             [False, (17, 32), (17, 32), (3, 4), "piecewise linear", "nodal", True],
             [False, (17, 32), (9, 16), (2, 3), "harmonic", "modal", True],
             [False, (17, 32), (9, 32), 3, "zernike", "support", False],
+            [False, (17, 32), (9, 16), (3, 4), "piecewise linear", "support", True],
+            [False, (17, 32), (17, 32), (2, 3), "piecewise linear", "modal", False],
             [True, (17, 32), (17, 32), (3, 4), "piecewise linear", "nodal", True],
             [True, (9, 32), (17, 32), (2, 3), "harmonic", "modal", True],
             # a transpose across differing nlon matches only in the modes that do not
