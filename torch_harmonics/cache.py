@@ -54,24 +54,49 @@ def lru_cache(maxsize=20, typed=False, copy=False):
     Returns
     -------
     function
-        Decorated function with LRU caching
+        Decorated function with LRU caching. Metadata of the wrapped function is
+        preserved via :func:`functools.wraps`, and the ``cache_info``,
+        ``cache_clear`` and ``cache_parameters`` accessors of the underlying
+        :func:`functools.lru_cache` are forwarded onto the wrapper.
 
     Examples
     --------
     >>> @lru_cache(maxsize=10, copy=True)
     ... def expensive_function(x):
     ...     return [x, x*2, x*3]
+    >>> expensive_function(2)
+    [2, 4, 6]
+    >>> expensive_function(2)
+    [2, 4, 6]
+    >>> expensive_function.cache_info().hits
+    1
+    >>> expensive_function.cache_clear()
+    >>> expensive_function.cache_info().currsize
+    0
     """
 
     def decorator(f):
         cached_func = functools.lru_cache(maxsize=maxsize, typed=typed)(f)
 
+        # functools.wraps carries the name, docstring and signature of `f` across.
+        # Without it every decorated function is documented as "wrapper(*args,
+        # **kwargs)" with no docstring, which silently dropped the documentation of
+        # every cached routine in the package.
+        @functools.wraps(f)
         def wrapper(*args, **kwargs):
             res = cached_func(*args, **kwargs)
             if copy:
                 return deepcopy(res)
             else:
                 return res
+
+        # Forward the introspection and invalidation hooks. functools.lru_cache
+        # attaches these to the object it returns, which the copying wrapper would
+        # otherwise hide, leaving callers with no way to inspect hit rates or drop
+        # stale entries.
+        wrapper.cache_info = cached_func.cache_info
+        wrapper.cache_clear = cached_func.cache_clear
+        wrapper.cache_parameters = cached_func.cache_parameters
 
         return wrapper
 

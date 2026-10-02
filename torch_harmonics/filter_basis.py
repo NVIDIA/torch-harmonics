@@ -178,8 +178,8 @@ def get_filter_basis(kernel_shape: Union[int, Tuple[int], Tuple[int, int]], basi
     --------
     >>> from torch_harmonics.filter_basis import get_filter_basis
     >>> fb = get_filter_basis((5, 4), "piecewise linear")
-    >>> fb.kernel_size
-    16
+    >>> fb.kernel_size  # (n_radial // 2) * n_angular + n_radial % 2
+    9
     """
 
     if basis_type == "piecewise linear":
@@ -205,6 +205,11 @@ def get_filter_basis(kernel_shape: Union[int, Tuple[int], Tuple[int, int]], basi
 
 class PiecewiseLinearFilterBasis(FilterBasis):
     """Tensor-product basis on a disk constructed from piecewise linear basis functions."""
+
+    #: A value at or below this is a point on the edge of its hat, not inside it. Edge
+    #: points get values of 1e-20..1e-16 from rounding; an interior value this small
+    #: needs a point within 1e-12 * dr of an edge.
+    _EDGE_TOL = 1e-12
 
     def __init__(
         self,
@@ -320,9 +325,17 @@ class PiecewiseLinearFilterBasis(FilterBasis):
         """Computes the index set that falls into the kernel's support and returns both indices and values."""
 
         if self.kernel_shape[1] > 1:
-            return self._compute_support_vals_anisotropic(r, phi, r_cutoff=r_cutoff)
+            iidx, vals = self._compute_support_vals_anisotropic(r, phi, r_cutoff=r_cutoff)
         else:
-            return self._compute_support_vals_isotropic(r, phi, r_cutoff=r_cutoff)
+            iidx, vals = self._compute_support_vals_isotropic(r, phi, r_cutoff=r_cutoff)
+
+        # The support of a piecewise-linear function is where it is strictly positive: it
+        # is non-negative, and zero only on the edges of its hats. The inclusive <= above
+        # also admits points exactly on those edges, which carry no value but would count
+        # towards the support and modal normalizations -- and whether such a point lands
+        # on or just off an edge is decided by rounding.
+        keep = vals > self._EDGE_TOL
+        return iidx[keep], vals[keep]
 
 
 class HarmonicFilterBasis(FilterBasis):

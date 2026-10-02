@@ -30,23 +30,23 @@
 #
 
 import math
-import os
 import unittest
-from time import perf_counter_ns
 
 import torch
-from disco_helpers import preprocess_psi
 from parameterized import parameterized, parameterized_class
-from testutils import _is_sm90, _is_sm100, compare_tensors, disable_tf32, maybe_autocast, set_seed
+from testutils import _is_sm90, _is_sm100, _ProductGridAsRagged, compare_tensors, disable_tf32, maybe_autocast, set_seed
 from torch.library import opcheck
 
-from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
+from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2, HealpixGrid, as_grid
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
+from torch_harmonics.disco._psi import arcs_to_coo, build_arcs, build_kpacked
+from torch_harmonics.disco.backends import RegularOptimizedBackend, RegularReferenceBackend
 from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
 )
-from torch_harmonics.disco.optimized.disco_optimized import _kpacked_supported_on_device
+from torch_harmonics.disco.optimized.disco_optimized import _kpacked_k_pad, _kpacked_supported_on_device
 from torch_harmonics.filter_basis import get_filter_basis
+from torch_harmonics.grid import RegularGridS2
 from torch_harmonics.quadrature import compute_theta_cutoff, precompute_latitudes, precompute_longitudes
 
 if not optimized_kernels_is_available():
@@ -56,13 +56,6 @@ if not optimized_kernels_is_available():
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
     _devices.append((torch.device("cuda"),))
-
-# perf thresholds
-# CPU results normalized to 16 OpenMP threads,
-# GPU results normalized to V100 16 GB GPU
-# this is just to detect performance regressions, not for absolute performance
-_perf_test_thresholds = {"cpu": {"fwd_ms": 100, "bwd_ms": 90}, "cuda": {"fwd_ms": 2, "bwd_ms": 3}}
-_run_perf_tests = os.getenv("TORCH_HARMONICS_RUN_PERF_TESTS", "0") == "1"
 
 
 def _normalize_convolution_tensor_dense(
@@ -195,8 +188,8 @@ def _precompute_convolution_tensor_dense(
     nlat_in, nlon_in = in_shape
     nlat_out, nlon_out = out_shape
 
-    lats_in, win = precompute_latitudes(nlat_in, grid=grid_in)
-    lats_out, wout = precompute_latitudes(nlat_out, grid=grid_out)
+    colats_in, win = precompute_latitudes(nlat_in, grid=grid_in)
+    colats_out, wout = precompute_latitudes(nlat_out, grid=grid_out)
 
     # compute the phi differences.
     lons_in = precompute_longitudes(nlon_in)
@@ -217,9 +210,9 @@ def _precompute_convolution_tensor_dense(
 
     for t in range(nlat_out):
         for p in range(nlon_out):
-            alpha = -lats_out[t]
+            alpha = -colats_out[t]
             beta = lons_in - lons_out[p]
-            gamma = lats_in.reshape(-1, 1)
+            gamma = colats_in.reshape(-1, 1)
 
             # compute latitude of the rotated position
             z = -torch.cos(beta) * torch.sin(alpha) * torch.sin(gamma) + torch.cos(alpha) * torch.cos(gamma)
@@ -296,17 +289,17 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "equiangular", "legendre-gauss"],
             # non-equiangular output grids, where the default theta_cutoff is driven by a
             # node distribution that is not uniform in theta (lobatto clusters towards the
-            # equator, equiangular-trapezoidal is equispaced in cos(theta))
+            # equator, trapezoidal is equispaced in cos(theta))
             [(16, 32), (16, 32), (3, 3), "harmonic", "mean", "lobatto", "lobatto"],
             [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "lobatto", "lobatto"],
             [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "equiangular", "lobatto"],
-            [(16, 32), (16, 32), (3, 3), "harmonic", "mean", "equiangular-trapezoidal", "equiangular-trapezoidal"],
-            [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "equiangular", "equiangular-trapezoidal"],
+            [(16, 32), (16, 32), (3, 3), "harmonic", "mean", "trapezoidal", "trapezoidal"],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "mean", "equiangular", "trapezoidal"],
         ],
         skip_on_empty=True,
     )
     def test_convolution_tensor_integrity(self, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, verbose=False):
-        """Structural invariants of the sparse psi datastructure after precompute + preprocess_psi.
+        """Structural invariants of psi that the kpacked layout relies on.
 
         Note: intentionally excludes the "piecewise linear" basis, whose per-kernel radial support
         yields non-uniform (row, col) sets across kernel indices. The remaining bases share a
@@ -324,11 +317,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         theta_cutoff = compute_theta_cutoff(nlat_out, grid=grid_out)
 
         idx, vals, _ = _precompute_convolution_tensor_s2(
-            in_shape=in_shape,
-            out_shape=out_shape,
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             filter_basis=filter_basis,
-            grid_in=grid_in,
-            grid_out=grid_out,
             theta_cutoff=theta_cutoff,
             transpose_normalization=False,
             basis_norm_mode=basis_norm_mode,
@@ -340,16 +331,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         col_idx = idx[2, ...].contiguous()
         vals = vals.contiguous()
 
-        # sort + row offsets (preprocess_psi mutates ker/row/col/vals in place)
-        roff_idx = preprocess_psi(filter_basis.kernel_size, nlat_out, ker_idx, row_idx, col_idx, vals).contiguous()
-
         # 1) shape consistency
         self.assertEqual(ker_idx.shape[0], row_idx.shape[0])
         self.assertEqual(ker_idx.shape[0], col_idx.shape[0])
         self.assertEqual(ker_idx.shape[0], vals.shape[0])
 
-        # 2) roff_idx covers every (kernel, output-latitude) row exactly once
-        self.assertEqual(roff_idx.shape[0] - 1, filter_basis.kernel_size * nlat_out)
+        # 2) the arc form has one row per (kernel, output latitude)
+        arcs = build_arcs(ker_idx, row_idx, col_idx, vals, nlon=nlon_in)
+        self.assertEqual(arcs.row_ker.numel(), filter_basis.kernel_size * nlat_out)
 
         # 3) same number of nnz per kernel basis function
         _, counts = torch.unique(ker_idx, return_counts=True)
@@ -362,8 +351,76 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             self.assertTrue(torch.equal(row_idx_ref, row_idx[ker_idx == k]), f"row_idx differs for kernel index {k}")
             self.assertTrue(torch.equal(col_idx_ref, col_idx[ker_idx == k]), f"col_idx differs for kernel index {k}")
 
-        if verbose:
-            print(f"\nintegrity OK: nnz={ker_idx.shape[0]}, per-kernel={counts[0].item()}, nrows={roff_idx.shape[0]-1}")
+        # 5) which is what the kpacked layout needs; K_pad only has to cover K here
+        k_pad = ((filter_basis.kernel_size + 7) // 8) * 8
+        self.assertIsNotNone(build_kpacked(ker_idx, row_idx, col_idx, vals, filter_basis.kernel_size, k_pad, nlat_out, nlon_in), "a shared support must pack")
+
+    @parameterized.expand(
+        [
+            # in_shape, out_shape, kernel_shape, basis_type, grid_in, grid_out, transpose, theta_cutoff_scale
+            [(16, 32), (16, 32), (3, 3), "harmonic", "equiangular", "equiangular", False, 1.0],
+            [(16, 32), (8, 16), (3,), "piecewise linear", "equiangular", "equiangular", False, 1.0],
+            # a wide cutoff: full rings at the poles, several rings per row, annuli with gaps
+            [(24, 48), (12, 24), (3,), "piecewise linear", "equiangular", "equiangular", False, 4.0],
+            [(16, 32), (8, 16), (3, 3), "harmonic", "legendre-gauss", "equiangular", False, 2.0],
+            # the transpose's columns index the output grid
+            [(8, 16), (16, 32), (3, 3), "harmonic", "equiangular", "equiangular", True, 1.0],
+            [(8, 16), (16, 32), (3,), "piecewise linear", "equiangular", "legendre-gauss", True, 3.0],
+        ],
+        skip_on_empty=True,
+    )
+    def test_psi_arcs(self, in_shape, out_shape, kernel_shape, basis_type, grid_in, grid_out, transpose, theta_cutoff_scale, verbose=False):
+        """The arc form of psi holds exactly psi's entries, in the shape the kernels assume."""
+
+        Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
+        grid_in_desc = as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1])
+        grid_out_desc = as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1])
+        theta_cutoff = theta_cutoff_scale * compute_theta_cutoff((in_shape if transpose else out_shape)[0], grid=grid_in if transpose else grid_out)
+        # the reference backend needs no kernels; the arcs are built from the layer's description
+        conv = Conv(grid_in_desc, grid_out_desc, 2, 2, kernel_shape, basis_type=basis_type, theta_cutoff=theta_cutoff, optimized_kernel=False)
+
+        ker_idx, row_idx, col_idx, vals = conv._psi_coo()
+        nlon = conv._psi_nlon
+        arcs = build_arcs(ker_idx, row_idx, col_idx, vals, nlon=nlon)
+
+        # lossless: the same entries with the same values, whatever the order
+        def canon(k, r, c, v):
+            key = (k.to(torch.int64) * (int(r.max()) + 1) + r.to(torch.int64)) * (int(c.max()) + 1) + c.to(torch.int64)
+            order = torch.argsort(key)
+            return key[order], v[order]
+
+        key_ref, vals_ref = canon(ker_idx, row_idx, col_idx, vals)
+        key_arc, vals_arc = canon(*arcs_to_coo(arcs, nlon))
+        self.assertTrue(torch.equal(key_ref, key_arc), "the arcs changed the sparsity pattern")
+        self.assertTrue(torch.equal(vals_ref, vals_arc), "the arcs changed the values")
+
+        # every arc lies on one ring and wraps at most once
+        seg = arcs.seg.to(torch.int64)
+        ring, start, length = seg[:, 0], seg[:, 1], seg[:, 2]
+        self.assertTrue(bool(((start >= 0) & (start < nlon) & (length >= 1) & (length <= nlon)).all()))
+
+        # the offsets agree with the arcs: each row's values are exactly its arcs' lengths
+        nrows = arcs.row_ker.numel()
+        row_of_arc = torch.repeat_interleave(torch.arange(nrows), arcs.seg_off[1:] - arcs.seg_off[:-1])
+        row_len = torch.zeros(nrows, dtype=torch.int64).index_add_(0, row_of_arc, length)
+        self.assertTrue(torch.equal(row_len, arcs.val_off[1:] - arcs.val_off[:-1]))
+
+        # rows sorted by basis function, which the spatial-first gradient slices by
+        self.assertTrue(bool((arcs.row_ker[1:] >= arcs.row_ker[:-1]).all()))
+
+        # rings ascend within a row, so the kernels restage or flush once per ring
+        same_row = row_of_arc[1:] == row_of_arc[:-1]
+        self.assertTrue(bool((ring[1:] >= ring[:-1])[same_row].all()))
+
+        # arcs are maximal: no arc continues where the previous one on its ring ended, and a
+        # run across the seam is one wrapping arc, not an arc ending at nlon and one at 0
+        end = (start + length) % nlon
+        same_ring = same_row & (ring[1:] == ring[:-1])
+        self.assertFalse(bool((same_ring & (end[:-1] == start[1:])).any()), "adjacent arcs were not merged")
+
+        # psi's row is the neighbourhood of output longitude 0, centred on the seam: every
+        # ring the disk crosses without covering it has to wrap
+        self.assertTrue(bool((start + length > nlon).any()), "no arc crosses the seam, so the merge went unexercised")
 
     @parameterized.expand(
         [
@@ -506,16 +563,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # fused is only supported for forward (non-transpose) convolution
         fused_kwarg = {"fused": fused} if (fused and not transpose) else {}
         conv = Conv(
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_channels,
             out_channels,
-            in_shape,
-            out_shape,
             kernel_shape,
             basis_type=basis_type,
             basis_norm_mode=basis_norm_mode,
             groups=1,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=False,
             theta_cutoff=theta_cutoff,
             optimized_kernel=use_optimized_kernels,
@@ -538,7 +593,11 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
                 merge_quadrature=True,
             ).to(self.device)
 
-            psi = torch.sparse_coo_tensor(conv.psi_idx, conv.psi_vals, size=(conv.kernel_size, conv.nlat_in, conv.nlat_out * conv.nlon_out)).to_dense()
+            # psi as the layer describes it, whichever backend holds it
+            ker_idx, row_idx, col_idx, vals = conv._psi_coo()
+            with torch.sparse.check_sparse_tensor_invariants(enable=False):
+                psi = torch.sparse_coo_tensor(torch.stack([ker_idx, row_idx, col_idx]), vals, size=(conv.kernel_size, conv.nlat_in, conv.nlat_out * conv.nlon_out)).to_dense()
+            psi = psi.to(self.device)
 
             self.assertTrue(torch.allclose(psi, psi_dense[:, :, 0].reshape(-1, nlat_in, nlat_out * nlon_out)))
         else:
@@ -554,7 +613,10 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
                 merge_quadrature=True,
             ).to(self.device)
 
-            psi = torch.sparse_coo_tensor(conv.psi_idx, conv.psi_vals, size=(conv.kernel_size, conv.nlat_out, conv.nlat_in * conv.nlon_in)).to_dense()
+            ker_idx, row_idx, col_idx, vals = conv._psi_coo()
+            with torch.sparse.check_sparse_tensor_invariants(enable=False):
+                psi = torch.sparse_coo_tensor(torch.stack([ker_idx, row_idx, col_idx]), vals, size=(conv.kernel_size, conv.nlat_out, conv.nlat_in * conv.nlon_in)).to_dense()
+            psi = psi.to(self.device)
 
             self.assertTrue(torch.allclose(psi, psi_dense[:, :, 0].reshape(-1, nlat_out, nlat_in * nlon_in)))
 
@@ -662,7 +724,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, False, True, 1e-9, 1e-9],
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, True, 1e-2, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, True, 5e-2, 1e-2],
-            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, True, 5e-2, 5e-2],
+            # same tolerance as the unfused bf16 row: CPU autocast now reaches the fused path too,
+            # which used to run it in fp32 and so passed a tighter bound on CPU only
+            [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, True, 3e-1, 5e-2],
         ],
         skip_on_empty=True,
     )
@@ -707,16 +771,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
 
         conv_naive = Conv(
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_channels,
             out_channels,
-            in_shape,
-            out_shape,
             kernel_shape,
             basis_type=basis_type,
             basis_norm_mode=basis_norm_mode,
             groups=1,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=False,
             theta_cutoff=theta_cutoff,
             optimized_kernel=False,
@@ -725,16 +787,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # fused is only supported for forward (non-transpose) convolution
         fused_kwarg = {"fused": fused} if (fused and not transpose) else {}
         conv_opt = Conv(
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_channels,
             out_channels,
-            in_shape,
-            out_shape,
             kernel_shape,
             basis_type=basis_type,
             basis_norm_mode=basis_norm_mode,
             groups=1,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=False,
             theta_cutoff=theta_cutoff,
             optimized_kernel=True,
@@ -802,16 +862,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         theta_cutoff = 4 * torch.pi / float(nlat_in - 1)
 
         conv = Conv(
+            grid_in=as_grid("equiangular", nlat=in_shape[0], nlon=in_shape[1]),
+            grid_out=as_grid("equiangular", nlat=out_shape[0], nlon=out_shape[1]),
             in_channels=4,
             out_channels=4,
-            in_shape=in_shape,
-            out_shape=out_shape,
             kernel_shape=(3,),
             basis_type="piecewise linear",
             basis_norm_mode="mean",
             groups=1,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=False,
             theta_cutoff=theta_cutoff,
             optimized_kernel=True,
@@ -858,16 +916,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # init on cpu
         conv_host = Conv(
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_channels,
             out_channels,
-            in_shape,
-            out_shape,
             kernel_shape,
             basis_type=basis_type,
             basis_norm_mode=basis_norm_mode,
             groups=1,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=False,
             theta_cutoff=theta_cutoff,
         )
@@ -875,27 +931,22 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # torch.set_default_device(self.device)
         with torch.device(self.device):
             conv_device = Conv(
+                as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+                as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
                 in_channels,
                 out_channels,
-                in_shape,
-                out_shape,
                 kernel_shape,
                 basis_type=basis_type,
                 basis_norm_mode=basis_norm_mode,
                 groups=1,
-                grid_in=grid_in,
-                grid_out=grid_out,
                 bias=False,
                 theta_cutoff=theta_cutoff,
             )
 
         # since we specified the device specifier everywhere, it should always
         # use the cpu and it should be the same everywhere
-        self.assertTrue(compare_tensors("psi col idx", conv_host.psi_col_idx.cpu(), conv_device.psi_col_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors("psi row idx", conv_host.psi_row_idx.cpu(), conv_device.psi_row_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors("psi roff idx", conv_host.psi_roff_idx.cpu(), conv_device.psi_roff_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors("psi vals", conv_host.psi_vals.cpu(), conv_device.psi_vals.cpu(), atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors("psi idx", conv_host.psi_idx.cpu(), conv_device.psi_idx.cpu(), atol=atol, rtol=rtol, verbose=verbose))
+        for name in ("psi_row_ker", "psi_row_lat", "psi_seg_off", "psi_seg", "psi_val_off", "psi_vals"):
+            self.assertTrue(compare_tensors(name, getattr(conv_host, name).cpu(), getattr(conv_device, name).cpu(), atol=atol, rtol=rtol, verbose=verbose))
 
     @parameterized.expand(
         [
@@ -931,9 +982,6 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping GPU test because CUDA kernels are not available")
 
-        if verbose:
-            print(f"Testing DISCO convolution on {in_shape[0]}x{in_shape[1]} {grid_in} grid to {out_shape[0]}x{out_shape[1]} {grid_out} grid on {self.device.type} device")
-
         set_seed(333)
 
         nlat_in, nlon_in = in_shape
@@ -947,16 +995,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
         fused_kwarg = {"fused": fused} if (fused and not transpose) else {}
         conv = Conv(
+            as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_channels,
             out_channels,
-            in_shape,
-            out_shape,
             kernel_shape,
             basis_type=basis_type,
             basis_norm_mode=basis_norm_mode,
             groups=1,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=False,
             theta_cutoff=theta_cutoff,
             **fused_kwarg,
@@ -965,37 +1011,33 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
 
         if fused and not transpose:
-            # opcheck for fused conv op
-            weight_r = conv.weight.reshape(conv.groups, -1, conv.weight.shape[1], conv.weight.shape[2])
-            test_inputs = (
-                inp,
-                weight_r,
-                conv.psi_roff_idx,
-                conv.psi_ker_idx,
-                conv.psi_row_idx,
-                conv.psi_col_idx,
-                conv.psi_vals,
-                conv.psi_split_roff_idx,
-                conv.psi_split_nnz_off,
-                conv.psi_split_ker_idx,
-                conv.psi_split_row_idx,
-                conv.psi_split_col_idx,
-                conv.psi_split_vals,
-                conv.kernel_size,
-                conv.nlat_out,
-                conv.nlon_out,
-                conv.groups,
-                conv.groupsize,
-            )
-            opcheck(torch.ops.disco_kernels._disco_s2_fused_conv_optimized, test_inputs)
+            # The fused path is an autograd.Function around the raw kernels rather than an
+            # op of its own, so check that it traces as a whole -- forward and backward, in
+            # one graph -- and agrees with eager. aot_eager exercises the fake kernels and
+            # the joint graph without needing a codegen toolchain.
+            compiled = torch.compile(conv, backend="aot_eager", fullgraph=True)
+            inp_eager = inp.clone().requires_grad_(True)
+            inp_compiled = inp.clone().requires_grad_(True)
+            out_eager = conv(inp_eager)
+            out_compiled = compiled(inp_compiled)
+            self.assertTrue(compare_tensors("fused output", out_compiled, out_eager, atol=1e-5, rtol=1e-5, verbose=verbose))
+            grad = torch.randn_like(out_eager)
+            out_eager.backward(grad)
+            out_compiled.backward(grad)
+            self.assertTrue(compare_tensors("fused input grad", inp_compiled.grad, inp_eager.grad, atol=1e-5, rtol=1e-5, verbose=verbose))
+
+            # and the op it contracts with satisfies the op contract
+            test_inputs = (inp, *_arc_state(conv), conv.kernel_size, conv.nlat_out, conv.nlon_out)
+            opcheck(torch.ops.disco_kernels._disco_s2_contraction_regular_optimized, test_inputs)
         else:
             if transpose:
-                inp = torch.randn(batch_size, conv.kernel_size, in_channels, *in_shape, device=self.device)
-            test_inputs = (inp, conv.psi_roff_idx, conv.psi_ker_idx, conv.psi_row_idx, conv.psi_col_idx, conv.psi_vals, conv.kernel_size, conv.nlat_out, conv.nlon_out)
+                # the scatter op reads (B, C, K, H, W): one plane per basis function per channel
+                inp = torch.randn(batch_size, in_channels, conv.kernel_size, *in_shape, device=self.device)
+            test_inputs = (inp, *_arc_state(conv), conv.kernel_size, conv.nlat_out, conv.nlon_out)
             if not transpose:
-                opcheck(torch.ops.disco_kernels._disco_s2_contraction_optimized, test_inputs)
+                opcheck(torch.ops.disco_kernels._disco_s2_contraction_regular_optimized, test_inputs)
             else:
-                opcheck(torch.ops.disco_kernels._disco_s2_transpose_contraction_optimized, test_inputs)
+                opcheck(torch.ops.disco_kernels._disco_s2_transpose_contraction_regular_optimized, test_inputs)
 
     @parameterized.expand(
         [
@@ -1031,16 +1073,14 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
         conv = Conv(
+            as_grid("equiangular", nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid("equiangular", nlat=out_shape[0], nlon=out_shape[1]),
             in_channels,
             out_channels,
-            in_shape,
-            out_shape,
             kernel_shape,
             basis_type=basis_type,
             basis_norm_mode="mean",
             groups=1,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=True,
             theta_cutoff=theta_cutoff,
         ).to(self.device)
@@ -1062,99 +1102,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # --- contract: psi_* buffers must never accumulate gradients ---
         # (they are non-learnable index/value tensors registered via register_buffer)
-        for name in ("psi_roff_idx", "psi_ker_idx", "psi_row_idx", "psi_col_idx", "psi_vals"):
+        for name in conv._backend_state:
             buf = getattr(conv, name)
             self.assertIsNone(buf.grad, f"buffer {name} should not accumulate a gradient (requires_grad={buf.requires_grad})")
-
-    @parameterized.expand(
-        [
-            [8, 4, 2, (91, 180), (91, 180), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4],
-        ],
-        skip_on_empty=True,
-    )
-    @unittest.skipUnless(optimized_kernels_is_available() and _run_perf_tests, "skipping performance test because optimized kernels are not available or perf tests are disabled")
-    def test_perf(self, batch_size, in_channels, out_channels, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, transpose, tol, verbose=True):
-
-        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
-            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
-
-        set_seed(333)
-
-        nlat_in, nlon_in = in_shape
-        nlat_out, nlon_out = out_shape
-
-        if isinstance(kernel_shape, int):
-            theta_cutoff = (kernel_shape + 1) * torch.pi / float(nlat_in - 1)
-        else:
-            theta_cutoff = (kernel_shape[0] + 1) * torch.pi / float(nlat_in - 1)
-
-        # get handle
-        Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
-
-        # init on cpu
-        conv_optimized = Conv(
-            in_channels,
-            out_channels,
-            in_shape,
-            out_shape,
-            kernel_shape,
-            basis_type=basis_type,
-            basis_norm_mode=basis_norm_mode,
-            groups=1,
-            grid_in=grid_in,
-            grid_out=grid_out,
-            bias=True,
-            theta_cutoff=theta_cutoff,
-            optimized_kernel=True,
-        ).to(self.device)
-
-        # random weights
-        with torch.no_grad():
-            conv_optimized.weight.normal_()
-            conv_optimized.bias.normal_()
-
-        # create an input signal
-        inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
-        inp.requires_grad = True
-
-        # forward test
-        # warmup
-        for i in range(2):
-            out_optimized = conv_optimized(inp)
-
-        # start timer
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
-        start = perf_counter_ns()
-        out_optimized = conv_optimized(inp)
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
-        end = perf_counter_ns()
-        duration = (end - start) / 1e6
-        if verbose:
-            print(f"Forward execution time on device {self.device.type}: {duration:.2f} ms")
-        self.assertTrue(duration <= _perf_test_thresholds[self.device.type]["fwd_ms"])
-
-        # backward test
-        out_optimized = conv_optimized(inp)
-        out_grad = torch.randn(out_optimized.shape, dtype=torch.float32, device=self.device)
-
-        # warmup
-        for _ in range(2):
-            out_optimized.backward(out_grad, retain_graph=True)
-
-        # start timer
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
-        start = perf_counter_ns()
-        out_optimized.backward(out_grad)
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
-        end = perf_counter_ns()
-        duration = (end - start) / 1e6
-        if verbose:
-            print(f"Backward execution time on device {self.device.type}: {duration:.2f} ms")
-        self.assertTrue(duration <= _perf_test_thresholds[self.device.type]["bwd_ms"])
 
 
 # A supported device is not sufficient: the kpacked buffers are only built when
@@ -1185,12 +1135,24 @@ def _is_kpacked_supported():
     return _kpacked_built_for_sm90() or _kpacked_built_for_sm100()
 
 
+def _arc_state(conv):
+    """The arc arrays of conv's backend, in the order the operators take them."""
+    return tuple(getattr(conv, name) for name in ("psi_row_ker", "psi_row_lat", "psi_seg_off", "psi_seg", "psi_val_off", "psi_vals"))
+
+
+def _without_kpacked(conv):
+    """Reselect conv's backend with the kpacked one ruled out, so it runs the arc kernels."""
+    conv._backends = (RegularOptimizedBackend, RegularReferenceBackend)
+    conv._select_backend()
+    return conv
+
+
 @unittest.skipUnless(
     optimized_kernels_is_available() and torch.cuda.is_available(),
     "skipping kpacked tests: optimized kernels or CUDA not available",
 )
 class TestKpackedPath(unittest.TestCase):
-    """Tests specific to the WGMMA kpacked forward + BC-tiled CSR backward path."""
+    """Tests specific to the tensor-core kpacked forward, whose backward is the arc scatter."""
 
     device = torch.device("cuda")
 
@@ -1198,16 +1160,14 @@ class TestKpackedPath(unittest.TestCase):
         if out_shape is None:
             out_shape = in_shape
         conv = DiscreteContinuousConvS2(
+            grid_in=as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
+            grid_out=as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
             in_channels=channels,
             out_channels=channels,
-            in_shape=in_shape,
-            out_shape=out_shape,
             kernel_shape=(3, 3),
             basis_type="harmonic",
             basis_norm_mode="nodal",
             groups=1,
-            grid_in=grid_in,
-            grid_out=grid_out,
             bias=False,
             theta_cutoff=theta_cutoff,
             fused=fused,
@@ -1218,8 +1178,8 @@ class TestKpackedPath(unittest.TestCase):
     def test_kpacked_forward_activates_on_sm90(self):
         """forward_kpacked is chosen for bf16/fp16 on Hopper."""
         conv = self._make_conv(1, 8, (16, 32))
-        self.assertIsNotNone(conv.psi_kpacked_K_pad, "psi_kpacked_K_pad should be set for harmonic basis")
-        self.assertIn(conv.psi_kpacked_K_pad, (8, 16), "K_pad must be 8 or 16 for the WGMMA kernel")
+        self.assertEqual(conv.backend.name, "regular-kpacked", "the harmonic basis should select the kpacked backend")
+        self.assertIn(conv.psi_kpacked_vals.shape[1], (8, 16), "K_pad must be 8 or 16 for the WGMMA kernel")
         inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device)
         out = conv(inp)
         self.assertEqual(out.dtype, torch.bfloat16)
@@ -1228,39 +1188,38 @@ class TestKpackedPath(unittest.TestCase):
     def test_kpacked_forward_activates_on_sm100(self):
         """tcgen05 kpacked path is chosen for bf16/fp16 on Blackwell."""
         conv = self._make_conv(1, 8, (16, 32))
-        self.assertIsNotNone(conv.psi_kpacked_K_pad, "psi_kpacked_K_pad should be set for harmonic basis")
-        self.assertIn(conv.psi_kpacked_K_pad, (8, 16), "K_pad must be 8 or 16 for the tcgen05 kernel")
+        self.assertEqual(conv.backend.name, "regular-kpacked", "the harmonic basis should select the kpacked backend")
+        self.assertIn(conv.psi_kpacked_vals.shape[1], (8, 16), "K_pad must be 8 or 16 for the tcgen05 kernel")
         inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device)
         out = conv(inp)
         self.assertEqual(out.dtype, torch.bfloat16)
 
     @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
-    def test_kpacked_matches_csr_reference(self, verbose=True):
-        """Kpacked MMA forward path matches the optimized CSR fallback numerically."""
+    def test_kpacked_matches_optimized(self, verbose=True):
+        """The kpacked tensor-core forward matches the arc kernels numerically."""
         set_seed(123)
         in_shape = (16, 32)
         conv_kpacked = self._make_conv(1, 8, in_shape).float()
-        conv_csr = self._make_conv(1, 8, in_shape).float()
-        self.assertIsNotNone(conv_kpacked.psi_kpacked_K_pad, "kpacked reference test requires kpacked buffers")
-        self.assertIn(conv_kpacked.psi_kpacked_K_pad, (8, 16), "K_pad must be 8 or 16 for the kpacked kernel")
+        conv_opt = _without_kpacked(self._make_conv(1, 8, in_shape).float())
+        self.assertEqual(conv_kpacked.backend.name, "regular-kpacked", "kpacked reference test requires the kpacked backend")
+        self.assertEqual(conv_opt.backend.name, "regular-optimized")
 
-        conv_csr.weight.data.copy_(conv_kpacked.weight.data)
-        conv_csr.psi_kpacked_K_pad = 24  # force optimized CSR fallback through normal forward dispatch
+        conv_opt.weight.data.copy_(conv_kpacked.weight.data)
 
         inp = torch.randn(1, 8, *in_shape, dtype=torch.float32, device=self.device, requires_grad=True)
         inp_ref = inp.detach().clone().requires_grad_(True)
 
         with torch.autocast(self.device.type, dtype=torch.bfloat16):
             out_kpacked = conv_kpacked(inp)
-            out_csr = conv_csr(inp_ref)
-        self.assertTrue(compare_tensors("output", out_kpacked.float(), out_csr.float(), atol=5e-2, rtol=5e-2))
+            out_opt = conv_opt(inp_ref)
+        self.assertTrue(compare_tensors("output", out_kpacked.float(), out_opt.float(), atol=5e-2, rtol=5e-2))
 
         grad = torch.randn_like(out_kpacked)
         out_kpacked.backward(grad)
-        out_csr.backward(grad.clone())
+        out_opt.backward(grad.clone())
 
         self.assertTrue(compare_tensors("inp grad", inp.grad.float(), inp_ref.grad.float(), atol=5e-2, rtol=5e-2, verbose=verbose))
-        self.assertTrue(compare_tensors("weight grad", conv_kpacked.weight.grad.float(), conv_csr.weight.grad.float(), atol=5e-2, rtol=5e-2, verbose=verbose))
+        self.assertTrue(compare_tensors("weight grad", conv_kpacked.weight.grad.float(), conv_opt.weight.grad.float(), atol=5e-2, rtol=5e-2, verbose=verbose))
 
     @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
     def test_kpacked_fused_matches_unfused(self):
@@ -1296,16 +1255,14 @@ class TestKpackedPath(unittest.TestCase):
                 set_seed(0)
                 conv_bf16 = self._make_conv(batch, channels, in_shape)
                 conv_fp32 = DiscreteContinuousConvS2(
+                    grid_in=as_grid("legendre-gauss", nlat=in_shape[0], nlon=in_shape[1]),
+                    grid_out=as_grid("legendre-gauss", nlat=in_shape[0], nlon=in_shape[1]),
                     in_channels=channels,
                     out_channels=channels,
-                    in_shape=in_shape,
-                    out_shape=in_shape,
                     kernel_shape=(3, 3),
                     basis_type="harmonic",
                     basis_norm_mode="nodal",
                     groups=1,
-                    grid_in="legendre-gauss",
-                    grid_out="legendre-gauss",
                     bias=False,
                     theta_cutoff=0.05,
                 ).to(device=self.device, dtype=torch.float32)
@@ -1321,31 +1278,28 @@ class TestKpackedPath(unittest.TestCase):
                 self.assertTrue(compare_tensors("inp grad", inp_bf16.grad.float(), inp_fp32.grad, atol=1e-1, rtol=1e-1))
 
     def test_kpacked_disabled_for_unsupported_k_pad(self):
-        """K_PAD not in {8,16} must silently fall back to CSR, not crash."""
-        # ZernikeFilterBasis with order 4 gives K=15 → K_pad=16 (fine).
-        # Use basis_type="morlet" which typically has K > 16 depending on parameters,
-        # or just directly verify the guard in _kpacked_ok via a monkeypatched K_pad.
-        conv = self._make_conv(1, 4, (16, 32))
-        original_k_pad = conv.psi_kpacked_K_pad
-        try:
-            conv.psi_kpacked_K_pad = 24  # simulate K=20 → K_pad=24
-            inp = torch.randn(1, 4, 16, 32, dtype=torch.bfloat16, device=self.device)
-            # Should not raise — must fall back to CSR path
-            out = conv(inp)
-            self.assertEqual(out.shape[0], 1)
-        finally:
-            conv.psi_kpacked_K_pad = original_k_pad
+        """A basis the kpacked kernels have no instantiation for must select the optimized backend, not crash."""
+        # the kernels take K as the MMA's N dimension, instantiated for N = 8 and 16
+        self.assertEqual(_kpacked_k_pad(3), 8)
+        self.assertEqual(_kpacked_k_pad(15), 16)
+        self.assertIsNone(_kpacked_k_pad(20))
+
+        conv = _without_kpacked(self._make_conv(1, 4, (16, 32)))
+        inp = torch.randn(1, 4, 16, 32, dtype=torch.bfloat16, device=self.device)
+        out = conv(inp)
+        self.assertEqual(out.shape[0], 1)
+        self.assertFalse(any(name.startswith("psi_kpacked") for name in conv._backend_state), "the optimized backend must not hold the kpacked layout")
 
     def test_kpacked_disabled_fused_fallback(self):
-        """fused=True + K_PAD=24 must fall back to CSR fused path and match fused=False output."""
+        """fused=True on the optimized backend must match fused=False."""
         set_seed(77)
         conv_unfused = self._make_conv(1, 8, (16, 32), fused=False)
         conv_fused = self._make_conv(1, 8, (16, 32), fused=True)
         conv_fused.weight.data.copy_(conv_unfused.weight.data)
 
-        # Disable kpacked on both so both take the CSR path.
-        conv_unfused.psi_kpacked_K_pad = 24
-        conv_fused.psi_kpacked_K_pad = 24
+        # Rule kpacked out on both so both take the arc kernels.
+        _without_kpacked(conv_unfused)
+        _without_kpacked(conv_fused)
 
         inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device, requires_grad=True)
         inp2 = inp.detach().clone().requires_grad_(True)
@@ -1374,6 +1328,243 @@ class TestKpackedPath(unittest.TestCase):
             conv.nlon_out,
         )
         opcheck(torch.ops.disco_kernels.forward_kpacked, test_inputs)
+
+
+# ---------------------------------------------------------------------------
+# Ragged grids (HEALPix, and a regular grid paired with one)
+# ---------------------------------------------------------------------------
+
+
+def _grid(spec):
+    """``("healpix", nside)``, ``("product-as-ragged", nlat, nlon)`` or ``(grid_type, nlat, nlon)``."""
+    if spec[0] == "healpix":
+        return HealpixGrid(nside=spec[1])
+    if spec[0] == "product-as-ragged":
+        return _ProductGridAsRagged(nlat=spec[1], nlon=spec[2])
+    return as_grid(spec[0], nlat=spec[1], nlon=spec[2])
+
+
+def _field(batch_size, channels, grid, dtype, device):
+    """A random field in the layout the layer takes on that grid."""
+    # the layer's criterion: only a RegularGridS2 has the (nlat, nlon) layout
+    shape = grid.shape if isinstance(grid, RegularGridS2) else (grid.npoints,)
+    return torch.randn(batch_size, channels, *shape, dtype=dtype, device=device)
+
+
+@parameterized_class(("device"), _devices)
+class TestDiscreteContinuousConvRaggedS2(unittest.TestCase):
+    """DISCO on ragged grids: the per-point psi, the ragged backends and their agreement."""
+
+    def setUp(self):
+        disable_tf32()
+        set_seed(333)
+
+    def _make(
+        self,
+        transpose,
+        grid_in,
+        grid_out,
+        kernel_shape=(3, 4),
+        basis_type="piecewise linear",
+        basis_norm_mode="nodal",
+        optimized_kernel=True,
+        dtype=torch.float32,
+        in_channels=4,
+        out_channels=2,
+        **kwargs,
+    ):
+        Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
+        return Conv(
+            _grid(grid_in),
+            _grid(grid_out),
+            in_channels,
+            out_channels,
+            kernel_shape,
+            basis_type=basis_type,
+            basis_norm_mode=basis_norm_mode,
+            bias=True,
+            optimized_kernel=optimized_kernel,
+            **kwargs,
+        ).to(dtype=dtype, device=self.device)
+
+    @parameterized.expand(
+        [
+            [False, ("healpix", 4), ("healpix", 4)],
+            [True, ("healpix", 4), ("healpix", 4)],
+            [False, ("healpix", 4), ("equiangular", 9, 16)],
+            [False, ("equiangular", 9, 16), ("healpix", 4)],
+            [True, ("legendre-gauss", 8, 16), ("healpix", 4)],
+        ]
+    )
+    def test_layout_and_backend(self, transpose, grid_in, grid_out):
+        """A ragged side is flat, a regular side keeps (nlat, nlon), and a ragged backend serves the layer."""
+        conv = self._make(transpose, grid_in, grid_out)
+        self.assertTrue(conv.ragged)
+        expected = "ragged-optimized" if optimized_kernels_is_available() else "ragged-reference"
+        self.assertEqual(conv.backend.name, expected)
+
+        inp = _field(2, 4, conv.grid_in, torch.float32, self.device)
+        out = conv(inp)
+        out_shape = (conv.grid_out.npoints,) if conv.ragged_out else conv.grid_out.shape
+        self.assertEqual(tuple(out.shape), (2, 2, *out_shape))
+
+    def test_regular_layers_stay_regular(self):
+        """A pair of regular grids keeps the regular backends, whatever the ragged ones would accept."""
+        conv = self._make(False, ("equiangular", 9, 16), ("equiangular", 9, 16))
+        self.assertFalse(conv.ragged)
+        self.assertTrue(conv.backend.name.startswith("regular-"))
+
+    @parameterized.expand(
+        [
+            # transpose, grid_in, grid_out, in_channels, out_channels, kernel_shape, basis_type, basis_norm_mode, dtype, fused, atol, rtol
+            [False, ("healpix", 4), ("healpix", 4), 4, 2, (3, 4), "piecewise linear", "nodal", torch.float32, False, 1e-5, 1e-4],
+            [False, ("healpix", 8), ("healpix", 4), 4, 2, (2, 3), "harmonic", "modal", torch.float32, False, 1e-5, 1e-4],
+            [False, ("healpix", 4), ("equiangular", 9, 16), 4, 2, 3, "zernike", "mean", torch.float32, False, 1e-5, 1e-4],
+            [False, ("equiangular", 17, 32), ("healpix", 4), 4, 2, (3, 4), "piecewise linear", "support", torch.float32, False, 1e-5, 1e-4],
+            [False, ("healpix", 8), ("healpix", 4), 4, 4, (3, 4), "piecewise linear", "nodal", torch.float32, False, 1e-5, 1e-4],
+            [True, ("healpix", 4), ("healpix", 4), 4, 2, (3, 4), "piecewise linear", "nodal", torch.float32, False, 1e-5, 1e-4],
+            [True, ("healpix", 4), ("healpix", 8), 4, 2, (2, 3), "harmonic", "mean", torch.float32, False, 1e-5, 1e-4],
+            [True, ("healpix", 4), ("equiangular", 17, 32), 4, 2, (3, 4), "piecewise linear", "geometric", torch.float32, False, 1e-5, 1e-4],
+            [False, ("healpix", 8), ("healpix", 4), 4, 2, (3, 4), "piecewise linear", "nodal", torch.float64, False, 1e-10, 1e-10],
+            [True, ("healpix", 4), ("healpix", 8), 4, 2, (2, 3), "harmonic", "modal", torch.float64, False, 1e-10, 1e-10],
+            [False, ("healpix", 4), ("healpix", 4), 4, 2, (3, 4), "piecewise linear", "nodal", torch.float16, False, 5e-2, 1e-2],
+            [True, ("healpix", 4), ("healpix", 8), 4, 2, (2, 3), "harmonic", "mean", torch.bfloat16, False, 5e-2, 5e-2],
+            # fused, with the spatial-first input gradient (2 * out_channels <= in_channels) and without
+            [False, ("healpix", 8), ("healpix", 4), 8, 2, (3, 4), "piecewise linear", "nodal", torch.float32, True, 1e-5, 1e-4],
+            [False, ("healpix", 8), ("healpix", 4), 4, 4, (2, 3), "harmonic", "modal", torch.float32, True, 1e-5, 1e-4],
+            [False, ("healpix", 4), ("equiangular", 9, 16), 8, 2, (3, 4), "piecewise linear", "nodal", torch.float32, True, 1e-5, 1e-4],
+            [False, ("equiangular", 17, 32), ("healpix", 4), 4, 4, (3, 4), "piecewise linear", "nodal", torch.float64, True, 1e-10, 1e-10],
+            [False, ("healpix", 4), ("healpix", 4), 8, 2, (3, 4), "piecewise linear", "nodal", torch.bfloat16, True, 5e-2, 5e-2],
+        ]
+    )
+    @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
+    def test_optimized_against_torch(
+        self, transpose, grid_in, grid_out, in_channels, out_channels, kernel_shape, basis_type, basis_norm_mode, dtype, fused, atol, rtol, verbose=True
+    ):
+        """The compiled ragged kernels against the sparse torch reference: output and both gradients."""
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+
+        # for AMP dtypes, the module and input stay in float32; autocast handles the rest
+        is_amp = dtype in (torch.float16, torch.bfloat16)
+        module_dtype = torch.float32 if is_amp else dtype
+
+        kw = dict(kernel_shape=kernel_shape, basis_type=basis_type, basis_norm_mode=basis_norm_mode, dtype=module_dtype, in_channels=in_channels, out_channels=out_channels)
+        # fused is only supported for forward (non-transpose) convolution
+        fused_kwarg = {"fused": fused} if (fused and not transpose) else {}
+        conv_naive = self._make(transpose, grid_in, grid_out, optimized_kernel=False, **kw)
+        conv_opt = self._make(transpose, grid_in, grid_out, optimized_kernel=True, **kw, **fused_kwarg)
+        self.assertEqual(conv_naive.backend.name, "ragged-reference")
+        self.assertEqual(conv_opt.backend.name, "ragged-optimized")
+
+        with torch.no_grad():
+            conv_naive.weight.copy_(conv_opt.weight)
+
+        inp = _field(3, in_channels, conv_opt.grid_in, module_dtype, self.device)
+
+        inp.requires_grad = True
+        with maybe_autocast(self.device.type, dtype):
+            out_naive = conv_naive(inp)
+        grad_output = torch.randn_like(out_naive)
+        out_naive.backward(grad_output)
+        inp_grad_naive = inp.grad.clone()
+
+        inp.grad = None
+        with maybe_autocast(self.device.type, dtype):
+            out_opt = conv_opt(inp)
+        out_opt.backward(grad_output)
+        inp_grad_opt = inp.grad.clone()
+
+        self.assertTrue(compare_tensors("output", out_naive, out_opt, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("input grad", inp_grad_naive, inp_grad_opt, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("weight grad", conv_naive.weight.grad, conv_opt.weight.grad, atol=atol, rtol=rtol, verbose=verbose))
+
+    @parameterized.expand(
+        [
+            # transpose, (nlat_in, nlon_in), (nlat_out, nlon_out), kernel_shape, basis_type, basis_norm_mode, optimized_kernel
+            [False, (17, 32), (17, 32), (3, 4), "piecewise linear", "nodal", True],
+            [False, (17, 32), (9, 16), (2, 3), "harmonic", "modal", True],
+            [False, (17, 32), (9, 32), 3, "zernike", "support", False],
+            [False, (17, 32), (9, 16), (3, 4), "piecewise linear", "support", True],
+            [False, (17, 32), (17, 32), (2, 3), "piecewise linear", "modal", False],
+            [True, (17, 32), (17, 32), (3, 4), "piecewise linear", "nodal", True],
+            [True, (9, 32), (17, 32), (2, 3), "harmonic", "modal", True],
+            # a transpose across differing nlon matches only in the modes that do not
+            # normalize per group: the regular path pools the column phases of a latitude
+            [True, (9, 16), (17, 32), (3, 4), "piecewise linear", "mean", True],
+            [True, (9, 16), (17, 32), (2, 3), "harmonic", "geometric", False],
+        ]
+    )
+    def test_ragged_path_matches_regular(self, transpose, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, optimized_kernel, verbose=True):
+        """
+        Identical geometry down both paths: an equiangular grid as itself and presented as
+        ragged. The per-point psi has to reproduce the p-shifted one, so any difference is
+        the ragged precompute or the ragged kernels.
+        """
+        if optimized_kernel and not optimized_kernels_is_available():
+            raise unittest.SkipTest("skipping test because optimized kernels are not available")
+        if (self.device.type == "cuda") and optimized_kernel and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+
+        kw = dict(kernel_shape=kernel_shape, basis_type=basis_type, basis_norm_mode=basis_norm_mode, optimized_kernel=optimized_kernel, dtype=torch.float64)
+        conv_reg = self._make(transpose, ("equiangular", *in_shape), ("equiangular", *out_shape), **kw)
+        conv_rag = self._make(transpose, ("product-as-ragged", *in_shape), ("product-as-ragged", *out_shape), **kw)
+        self.assertFalse(conv_reg.ragged)
+        self.assertTrue(conv_rag.ragged)
+
+        with torch.no_grad():
+            conv_rag.weight.copy_(conv_reg.weight)
+            conv_rag.bias.copy_(conv_reg.bias)
+
+        inp = torch.randn(2, 4, *in_shape, dtype=torch.float64, device=self.device, requires_grad=True)
+        out_reg = conv_reg(inp)
+        grad_output = torch.randn_like(out_reg)
+        out_reg.backward(grad_output)
+        inp_grad_reg = inp.grad.clone()
+
+        inp.grad = None
+        out_rag = conv_rag(inp.flatten(-2, -1)).unflatten(-1, out_shape)
+        out_rag.backward(grad_output)
+        inp_grad_rag = inp.grad.clone()
+
+        self.assertTrue(compare_tensors("output", out_reg, out_rag, atol=1e-10, rtol=1e-8, verbose=verbose))
+        self.assertTrue(compare_tensors("input grad", inp_grad_reg, inp_grad_rag, atol=1e-10, rtol=1e-8, verbose=verbose))
+        self.assertTrue(compare_tensors("weight grad", conv_reg.weight.grad, conv_rag.weight.grad, atol=1e-10, rtol=1e-8, verbose=verbose))
+
+    @parameterized.expand([[False], [True]])
+    @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
+    def test_ragged_opcheck(self, transpose):
+        """The ragged custom ops satisfy the PT2 opcheck contract: schema, fakes and autograd registration."""
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+
+        conv = self._make(transpose, ("healpix", 2), ("healpix", 2))
+        arcs = conv.backend._arcs(conv)
+        if transpose:
+            op = torch.ops.disco_kernels._disco_s2_transpose_contraction_ragged_optimized
+            inp = torch.randn(2, 3, conv.kernel_size, conv.npoints_in, device=self.device, requires_grad=True)
+        else:
+            op = torch.ops.disco_kernels._disco_s2_contraction_ragged_optimized
+            inp = torch.randn(2, 3, conv.npoints_in, device=self.device, requires_grad=True)
+        opcheck(op, (inp, *arcs, conv.kernel_size, conv.npoints_out))
+
+    def test_ragged_arcs_roundtrip(self):
+        """build_arcs on ring tables is lossless: expanding the arcs gives back psi's entries."""
+        conv = self._make(False, ("healpix", 4), ("healpix", 4))
+        ker, row, col, vals = conv._psi_coo()
+        grid = conv.grid_in
+        ring_base, ring_size = grid.lon_offsets[:-1].to(torch.int64), grid.nlon_per_lat.to(torch.int64)
+        arcs = build_arcs(ker, row, col, vals, ring_base=ring_base, ring_size=ring_size)
+
+        def canon(k, r, c, v):
+            key = (k * conv.npoints_out + r) * conv.npoints_in + c
+            order = torch.argsort(key)
+            return key[order], v[order]
+
+        key_ref, vals_ref = canon(ker, row, col, vals)
+        key_arc, vals_arc = canon(*arcs_to_coo(arcs, ring_base=ring_base, ring_size=ring_size))
+        self.assertTrue(torch.equal(key_ref, key_arc))
+        self.assertTrue(torch.equal(vals_ref, vals_arc))
 
 
 if __name__ == "__main__":

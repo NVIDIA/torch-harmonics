@@ -30,13 +30,18 @@
 #
 
 import contextlib
+import math
 import os
+from dataclasses import dataclass
+from typing import ClassVar
 
 import torch
 import torch.distributed as dist
 from packaging import version
 
 import torch_harmonics.distributed as thd
+from torch_harmonics import GridS2, as_grid
+from torch_harmonics.grid import _GRID_REGISTRY
 
 
 def _is_sm90():
@@ -53,6 +58,26 @@ def _is_sm100():
         return False
     major, _ = torch.cuda.get_device_capability()
     return major == 10
+
+
+def regular_grid_types():
+    """
+    Registered grid families whose descriptors are :class:`RegularGridS2`.
+
+    Most of the library addresses a field as a dense ``(nlat, nlon)`` array and is
+    guarded by ``require_regular_grid``, so a test that sweeps "every grid" means every
+    grid those routines accept -- and constructs them with ``nlat``/``nlon``, which a
+    ragged family does not take.
+
+    Derived from the registry by subclass rather than by listing names, so a grid family
+    added later lands on the correct side of this without anyone remembering to come
+    back. HEALPix is excluded here and exercised where it is actually supported, which
+    today is attention; as other backends gain ragged support their tests should sweep
+    the full registry instead of this.
+    """
+    from torch_harmonics.grid import _GRID_REGISTRY, RegularGridS2
+
+    return tuple(name for name, cls in _GRID_REGISTRY.items() if issubclass(cls, RegularGridS2))
 
 
 def set_seed(seed=333):
@@ -174,7 +199,10 @@ def setup_distributed_context(ctx):
         print(f"Running distributed tests on grid H x W = {ctx.grid_size_h} x {ctx.grid_size_w}")
 
     thd.init(ctx.h_group, ctx.w_group)
-    torch.cuda.set_device(ctx.device.index)
+    # gloo on a CPU-only host gives every rank a plain "cpu" device, whose index is
+    # None -- set_device would reject it and take the whole module down at setup.
+    if ctx.device.type == "cuda":
+        torch.cuda.set_device(ctx.device.index)
 
     return
 
@@ -304,7 +332,9 @@ def compare_tensors(msg, tensor1, tensor2, atol=1e-8, rtol=1e-5, verbose=False):
         allclose = False
         if verbose:
             print("tensor1 is not None and tensor2 is None")
-    elif tensor1.dtype == torch.long and tensor2.dtype == torch.long:
+    elif not (tensor1.is_floating_point() or tensor1.is_complex()) and not (tensor2.is_floating_point() or tensor2.is_complex()):
+        # integers of any width (or bools): exact, and no mean/relative error, which
+        # integer tensors do not support
         allclose = torch.all(tensor1 == tensor2)
         if not allclose and verbose:
             diff = torch.abs(tensor1 - tensor2)
@@ -325,3 +355,144 @@ def compare_tensors(msg, tensor1, tensor2, atol=1e-8, rtol=1e-5, verbose=False):
             print(f"Worst allclose condition violation: {diff_bad} <= {atol} + {rtol} * {tensor2_abs_bad} = {atol + rtol * tensor2_abs_bad}")
 
     return allclose
+
+
+def build_psi_segments(col_idx: torch.Tensor, roff_idx: torch.Tensor, nlon: int):
+    """
+    Re-express a column list as contiguous longitude arcs, by brute force.
+
+    A test oracle. The library computes the arcs natively in
+    :func:`torch_harmonics.neighborhood.precompute_neighborhood_arcs_s2`; this recovers
+    them from a column list instead, sharing none of that code, so the two can be held
+    against each other.
+
+    psi's sparsity is a union of arcs: for a given output row and input latitude, the
+    neighbor longitudes are contiguous on the circle (possibly wrapping). This is
+    geometric -- a geodesic ball meets a latitude circle in one arc -- and is pinned by
+    TestPsiArcStructure.
+
+    That lets a kernel iterate (hi, lo, len) segments and derive each neighbor's column
+    by counting, instead of loading it from col_idx and recovering hi with a 64-bit
+    integer division. The GPU has no integer divide instruction, so that division costs
+    ~70-100 emulated instructions per neighbor against roughly four instructions of
+    useful math; profiling showed the forward kernel at 80% compute throughput while
+    delivering ~2.4% of peak FLOPs.
+
+    Returns
+    -------
+    seg : int32 tensor of shape (nsegs, 3), columns (hi, lo, len)
+    seg_off : int32 tensor of shape (nrows + 1,), row -> segment range
+
+    Notes
+    -----
+    Relies on col_idx being sorted ascending within each row, which is how both
+    _precompute_convolution_tensor_s2 and NeighborhoodArcsS2.to_csr emit it. A wrapping arc therefore appears as
+    two runs at the ends of the sorted list, which is handled explicitly.
+    """
+
+    col = col_idx.cpu().to(torch.int64)
+    roff = roff_idx.cpu().to(torch.int64)
+    nrows = roff.numel() - 1
+
+    seg_rows = []
+    segs = []
+    for row in range(nrows):
+        beg, end = int(roff[row]), int(roff[row + 1])
+        n_before = len(segs)
+        if end > beg:
+            cols = col[beg:end]
+            hi = torch.div(cols, nlon, rounding_mode="floor")
+            wi = cols - hi * nlon
+            for h in torch.unique(hi):
+                w = torch.unique(wi[hi == h]).sort().values
+                count = int(w.numel())
+                lo, hi_w = int(w[0]), int(w[-1])
+                if hi_w - lo + 1 == count:
+                    # plain arc
+                    start, length = lo, count
+                else:
+                    # wraps the seam: sorted as [0..a] u [b..nlon-1]; the arc starts at
+                    # b, which is one past the single interior gap
+                    gaps = torch.diff(w)
+                    split = int(torch.argmax(gaps))
+                    start = int(w[split + 1])
+                    length = count
+                segs.append((int(h), start, length))
+        seg_rows.append(len(segs) - n_before)
+
+    seg = torch.tensor(segs, dtype=torch.int32).reshape(-1, 3)
+    seg_off = torch.zeros(nrows + 1, dtype=torch.int32)
+    seg_off[1:] = torch.tensor(seg_rows, dtype=torch.int32).cumsum(0)
+    return seg, seg_off
+
+
+def expand_psi_segments(seg: torch.Tensor, seg_off: torch.Tensor, nlon: int):
+    """Expand segments back to a per-row column list. Inverse of build_psi_segments,
+    used to verify the two representations describe the same sparsity."""
+
+    out = []
+    for row in range(seg_off.numel() - 1):
+        cols = []
+        for s in range(int(seg_off[row]), int(seg_off[row + 1])):
+            hi, lo, length = (int(x) for x in seg[s])
+            for j in range(length):
+                cols.append(hi * nlon + (lo + j) % nlon)
+        out.append(sorted(cols))
+    return out
+
+
+@dataclass(frozen=True, eq=False)
+class _ProductGridAsRagged(GridS2):
+    """
+    An equiangular grid presented through the ragged interface.
+
+    Every ring carries the same number of longitudes, so this *is* a product grid --
+    it simply declines to say so, which routes it down the ragged path. That makes the
+    two implementations comparable on identical geometry: any difference between them
+    is the implementation, since the points, the weights and the neighbourhood are the
+    same tensors either way.
+
+    It is a test fixture rather than a library grid because nothing in the library
+    would want it: a real product grid should be a RegularGridS2 and take the faster
+    path. Its whole purpose is to be the control in that comparison. Shared by the
+    attention and DISCO tests, whose ragged paths it controls alike.
+    """
+
+    nlat: int
+    nlon: int
+    grid_type: ClassVar[str] = "test-product-as-ragged"
+
+    @property
+    def is_regular(self):
+        # Deliberately false. GridS2 computes this from the geometry -- every ring the
+        # same length means regular -- so a uniform grid cannot be ragged by accident,
+        # and saying so here is the only way to route identical geometry down the other
+        # path. That is the whole point of the fixture: the lie is the experiment.
+        return False
+
+    @property
+    def nrings(self):
+        return self.nlat
+
+    @property
+    def nlon_per_lat(self):
+        return torch.full((self.nlat,), self.nlon, dtype=torch.int64)
+
+    @property
+    def colats(self):
+        return as_grid("equiangular", nlat=self.nlat, nlon=self.nlon).colats
+
+    @property
+    def colat_weights(self):
+        return as_grid("equiangular", nlat=self.nlat, nlon=self.nlon).colat_weights
+
+    def lons(self, ilat=None):
+        return torch.arange(self.nlon, dtype=torch.float64) * (2.0 * math.pi / self.nlon)
+
+
+# Defining a GridS2 subclass with a grid_type registers it, and the registry is global:
+# left in place this fixture would be swept up by every test elsewhere that parameterizes
+# over grid_types() and constructs with nlat/nlon. It is only ever built directly, by name
+# it has no business being discoverable, so it is withdrawn immediately -- the class object
+# keeps working, only as_grid("test-product-as-ragged") stops resolving.
+_GRID_REGISTRY.pop(_ProductGridAsRagged.grid_type, None)

@@ -38,7 +38,7 @@ import torch
 from torch.utils.data import Dataset, Subset
 
 from torch_harmonics.examples.losses import get_quadrature_weights
-from torch_harmonics.quadrature import precompute_latitudes
+from torch_harmonics.grid import as_grid
 
 # some specifiers where to find the dataset
 DEFAULT_BASE_URL = "https://cvg-data.inf.ethz.ch/2d3ds/no_xyz/"
@@ -68,6 +68,37 @@ DEFAULT_TAR_FILE_CHECKSUMS = {
 }
 
 
+class _SharedProgress:
+    """
+    One byte-count progress bar that several download threads feed.
+
+    A bar per thread needs tqdm's ``position``, which redraws rows by moving the cursor --
+    something a Jupyter output cell cannot do, so the bars there only appear once flushed.
+    A single bar is redrawn in place everywhere. The total is fixed up front: the notebook
+    widget bar takes its maximum when it is created and does not follow a growing total.
+    """
+
+    def __init__(self, desc, total, initial=0):
+        import threading
+
+        from tqdm.auto import tqdm
+
+        self._lock = threading.Lock()
+        self._bar = tqdm(desc=desc, total=total, initial=initial, unit="B", unit_scale=True, unit_divisor=1024)
+
+    def update(self, nbytes):
+        with self._lock:
+            self._bar.update(nbytes)
+
+    def write(self, message):
+        # printed above the bar rather than through it
+        with self._lock:
+            self._bar.write(message)
+
+    def close(self):
+        self._bar.close()
+
+
 class Stanford2D3DSDownloader:
     """
     Convenience class for downloading the 2d3ds dataset :cite:`Armeni2017`.
@@ -81,6 +112,20 @@ class Stanford2D3DSDownloader:
     checksums : dict, optional
         Mapping of filename to expected SHA-256 checksum, by default DEFAULT_TAR_FILE_CHECKSUMS.
         Pass a custom mapping when downloading from a mirror, or None to disable verification.
+    max_workers : int, optional
+        Number of archives downloaded concurrently, by default 4. Each worker downloads,
+        verifies and extracts its archive, so extraction overlaps the other downloads. A
+        server that limits bandwidth per connection is the usual bottleneck, which is what
+        the concurrency works around; set to 1 for strictly sequential downloads.
+    chunk_size : int, optional
+        Bytes read from the connection per iteration, by default 4 MiB. Small chunks make
+        the download CPU-bound in the Python loop on a fast link.
+
+    Notes
+    -----
+    Archives already present in ``local_dir`` are verified and extracted rather than
+    downloaded again, so they can also be fetched by other means first, e.g. with
+    ``curl -Z --parallel-max 4 -C - -O -L <base_url>/area_{1,2,3,4,5a,5b,6}_no_xyz.tar``.
 
     Returns
     -------
@@ -94,10 +139,19 @@ class Stanford2D3DSDownloader:
     :cite:`Armeni2017`
     """
 
-    def __init__(self, base_url: str = DEFAULT_BASE_URL, local_dir: str = "data", checksums: Optional[Dict[str, str]] = DEFAULT_TAR_FILE_CHECKSUMS):
+    def __init__(
+        self,
+        base_url: str = DEFAULT_BASE_URL,
+        local_dir: str = "data",
+        checksums: Optional[Dict[str, str]] = DEFAULT_TAR_FILE_CHECKSUMS,
+        max_workers: int = 4,
+        chunk_size: int = 4 * 1024 * 1024,
+    ):
 
         self.base_url = base_url
         self.local_dir = local_dir
+        self.max_workers = max(1, int(max_workers))
+        self.chunk_size = int(chunk_size)
         self.checksums = checksums if checksums is not None else {}
         self.verify_checksums = checksums is not None
         os.makedirs(self.local_dir, exist_ok=True)
@@ -111,56 +165,88 @@ class Stanford2D3DSDownloader:
 
         return sha256.hexdigest()
 
-    def _verify_checksum(self, filename, local_path):
+    def _verify_checksum(self, filename, local_path, digest=None, say=print):
 
         if not self.verify_checksums:
             return
 
         expected = self.checksums.get(filename)
         if expected is None:
-            print(f"Warning: No checksum known for {filename}, skipping integrity check")
+            say(f"Warning: No checksum known for {filename}, skipping integrity check")
             return
 
-        digest = self._compute_sha256(local_path)
+        # a download hashes its bytes as they arrive, so only a file found on disk is read again
+        if digest is None:
+            digest = self._compute_sha256(local_path)
         if digest != expected:
             raise RuntimeError(f"Checksum mismatch for {filename}: expected {expected}, but got {digest}. " f"Remove {local_path} and retry the download.")
 
-    def _download_file(self, filename):
+    def _download_file(self, filename, progress=None):
 
         import requests
-        from tqdm import tqdm
 
         url = f"{self.base_url}/{filename}"
         local_path = os.path.join(self.local_dir, filename)
+        say = progress.write if progress is not None else print
         if os.path.exists(local_path):
-            print(f"Note: Skipping download for {filename}, because it already exists")
-            self._verify_checksum(filename, local_path)
+            say(f"Note: Skipping download for {filename}, because it already exists")
+            self._verify_checksum(filename, local_path, say=say)
             return local_path
 
-        print(f"Downloading {filename}...")
+        say(f"Downloading {filename}...")
         temp_path = os.path.splitext(local_path)[0] + ".part"
+        part_size = os.stat(temp_path).st_size if os.path.exists(temp_path) else 0
 
         # Resume logic
-        headers = {}
-        if os.path.exists(temp_path):
-            headers = {"Range": f"bytes={os.stat(temp_path).st_size}-"}
+        headers = {"Range": f"bytes={part_size}-"} if part_size > 0 else {}
 
-        response = requests.get(url, headers=headers, stream=True, timeout=30)
-        response.raise_for_status()
+        # a context manager, so the connection is closed however the transfer ends
+        with requests.get(url, headers=headers, stream=True, timeout=30) as response:
+            # a range starting at the end of the file: a previous run wrote the whole archive
+            # and stopped before the rename, so it is complete and only needs verifying
+            if part_size > 0 and response.status_code == 416:
+                say(f"Note: {filename} was fully downloaded before, finishing it")
+                os.rename(temp_path, local_path)
+                self._verify_checksum(filename, local_path, say=say)
+                return local_path
+            response.raise_for_status()
 
-        # only append if the server honored our range request, otherwise we start from scratch
-        resume = os.path.exists(temp_path) and response.status_code == 206
-        offset = os.stat(temp_path).st_size if resume else 0
-        total_size = int(response.headers.get("content-length", 0)) + offset
+            # only append if the server honored our range request, otherwise we start from scratch
+            resume = part_size > 0 and response.status_code == 206
+            offset = part_size if resume else 0
+            total_size = int(response.headers.get("content-length", 0)) + offset
 
-        with open(temp_path, "ab" if resume else "wb") as f, tqdm(desc=filename, total=total_size, unit="B", unit_scale=True, unit_divisor=1024, initial=offset) as pbar:
-            for chunk in response.iter_content(chunk_size=1024):
-                if chunk:
-                    f.write(chunk)
-                    pbar.update(len(chunk))
+            # a shared bar counted the partial file as done up front; if the server ignored
+            # the range, those bytes are fetched again, so take them back off
+            if progress is not None and part_size > 0 and not resume:
+                progress.update(-part_size)
+
+            # hash while writing, so the archive is not read back from disk just to verify it; a
+            # resumed download first folds in the part that is already there
+            sha256 = hashlib.sha256()
+            if resume:
+                with open(temp_path, "rb") as f:
+                    for chunk in iter(lambda: f.read(self.chunk_size), b""):
+                        sha256.update(chunk)
+
+            # a single download reports on a bar of its own; concurrent ones share the caller's,
+            # whose total already counts this archive and any part of it already on disk
+            own_progress = progress is None
+            if own_progress:
+                progress = _SharedProgress(filename, total=total_size, initial=offset)
+            try:
+                with open(temp_path, "ab" if resume else "wb") as f:
+                    for chunk in response.iter_content(chunk_size=self.chunk_size):
+                        if chunk:
+                            f.write(chunk)
+                            sha256.update(chunk)
+                            progress.update(len(chunk))
+            finally:
+                if own_progress:
+                    progress.close()
 
         os.rename(temp_path, local_path)
-        self._verify_checksum(filename, local_path)
+        self._verify_checksum(filename, local_path, digest=sha256.hexdigest(), say=say)
 
         return local_path
 
@@ -208,16 +294,43 @@ class Stanford2D3DSDownloader:
             (data_folders, class_labels) where data_folders is a list of extracted directory names
             and class_labels is the semantic label mapping
         """
+        from concurrent.futures import ThreadPoolExecutor
+
         import requests
 
-        data_folders = []
-        for file, extracted_folder_name in file_extracted_directory_pairs:
-            if not os.path.exists(os.path.join(self.local_dir, extracted_folder_name)):
-                downloaded_file = self._download_file(file)
-                data_folders.append(self._extract_tar(downloaded_file))
-            else:
-                print(f"Warning: Skipping D/L for '{file}' because folder '{extracted_folder_name}' already exists")
-                data_folders.append(extracted_folder_name)
+        pairs = list(file_extracted_directory_pairs)
+
+        # one bar for all archives, fed by every worker; see _SharedProgress. Its total is
+        # the size of every archive still to fetch, asked for up front with a HEAD request,
+        # and whatever part of one a previous run left behind counts as already done.
+        total, done = 0, 0
+        for file, extracted_folder_name in pairs:
+            local_path = os.path.join(self.local_dir, file)
+            if os.path.exists(os.path.join(self.local_dir, extracted_folder_name)) or os.path.exists(local_path):
+                continue
+            head = requests.head(f"{self.base_url}/{file}", allow_redirects=True, timeout=30)
+            head.raise_for_status()
+            total += int(head.headers.get("content-length", 0))
+            temp_path = os.path.splitext(local_path)[0] + ".part"
+            if os.path.exists(temp_path):
+                done += os.stat(temp_path).st_size
+        progress = _SharedProgress("Stanford 2D-3D-S", total=total, initial=done)
+
+        def fetch(file, extracted_folder_name):
+            if os.path.exists(os.path.join(self.local_dir, extracted_folder_name)):
+                progress.write(f"Warning: Skipping D/L for '{file}' because folder '{extracted_folder_name}' already exists")
+                return extracted_folder_name
+            # download, verify and extract in the same worker, so one archive is extracted
+            # while the others are still downloading
+            return self._extract_tar(self._download_file(file, progress=progress))
+
+        # the archives are independent and each extracts into its own folder, so they can be
+        # fetched concurrently; map returns the folders in the order they were listed
+        try:
+            with ThreadPoolExecutor(max_workers=min(self.max_workers, max(1, len(pairs)))) as pool:
+                data_folders = list(pool.map(fetch, *zip(*pairs))) if pairs else []
+        finally:
+            progress.close()
 
         labels_json_url = DEFAULT_LABELS_URL
         class_labels = requests.get(labels_json_url).json()
@@ -360,17 +473,17 @@ class Stanford2D3DSDownloader:
             rgb_data = h5file.create_dataset("rgb", (num_samples, rgb_channels, *img_shape), "f4")
             semantic_data = h5file.create_dataset("semantic", (num_samples, *img_shape), "i8")
             depth_data = h5file.create_dataset("depth", (num_samples, *img_shape), "f4")
-            classes = h5file.create_dataset("class_labels", data=class_labels_indices)
+            h5file.create_dataset("class_labels", data=class_labels_indices)
             num_classes = len(set(class_labels_indices))
             data_source_path = h5file.create_dataset("data_source_path", (num_samples,), dtype=h5.string_dtype(encoding="utf-8"))
             data_target_path = h5file.create_dataset("data_target_path", (num_samples,), dtype=h5.string_dtype(encoding="utf-8"))
 
             # prepare computation of the class histogram
             class_histogram = np.zeros(num_classes)
-            _, quad_weights = precompute_latitudes(nlat=img_shape[0], grid="equiangular")
-            quad_weights = quad_weights.reshape(-1, 1) * 2 * torch.pi / float(img_shape[1])
-            quad_weights = quad_weights.tile(1, img_shape[1])
-            quad_weights /= torch.sum(quad_weights)
+            # per-point solid-angle weights straight from the descriptor, normalized to
+            # sum to 1 over the sphere
+            quad_weights = as_grid("equiangular", nlat=tuple(img_shape)[0], nlon=tuple(img_shape)[1]).quad_weights
+            quad_weights = quad_weights.reshape(*img_shape) / (4.0 * torch.pi)
             quad_weights = quad_weights.numpy()
 
             for count in tqdm(range(num_samples), desc="preparing dataset"):
@@ -522,8 +635,6 @@ class StanfordSegmentationDataset(Dataset):
         Path to the HDF5 dataset file
     ignore_alpha_channel : bool, optional
         Whether to ignore the alpha channel in the RGB images, by default True
-    log_depth : bool, optional
-        Whether to log the depth values, by default False
     exclude_polar_fraction : float, optional
         Fraction of polar points to exclude, by default 0.0
 
@@ -779,12 +890,10 @@ def compute_stats_s2(dataset: Dataset, normalize_target: bool = False):
 
         # dimension of inp and tar are (3, nlat, nlon)
         inp, tar = token
-        nlat = tar.shape[-2]
-        nlon = tar.shape[-1]
 
         # pre-compute quadrature weights
         if isample == 0:
-            quad_weights = get_quadrature_weights(nlat=inp.shape[1], nlon=inp.shape[2], grid="equiangular", tile=True).numpy().astype(np.float64)
+            quad_weights = get_quadrature_weights(as_grid("equiangular", nlat=inp.shape[1], nlon=inp.shape[2]), tile=True).numpy().astype(np.float64)
 
         # this is a special case for the depth dataset
         # TODO: maybe make this an argument

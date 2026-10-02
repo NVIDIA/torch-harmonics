@@ -17,13 +17,13 @@ description: >
 ```
 disco_interface.cpp          TORCH_LIBRARY("disco_kernels") — raw op schema
   ├── forward(inp, …)        CSR sparse contraction inp → (B,C,K,H,W)
-  ├── backward(inp, …)       CSR transpose contraction (B,C,K,H,W) → inp
+  ├── backward_regular(inp, …) CSR transpose contraction (B,C,K,H,W) → inp
   └── forward_kpacked(…)     WGMMA kpacked forward (SM_90a + bf16/fp16 only)
 
 disco_optimized.py           Python dispatch layer
-  ├── _disco_s2_contraction_optimized         custom_op wrapping forward
-  ├── _disco_s2_transpose_contraction_optimized  custom_op wrapping backward
-  ├── _disco_s2_fused_conv_optimized          custom_op: contraction + einsum
+  ├── _disco_s2_contraction_regular_optimized         custom_op wrapping forward
+  ├── _disco_s2_transpose_contraction_regular_optimized  custom_op wrapping backward
+  ├── _disco_s2_fused_conv_regular_optimized          custom_op: contraction + einsum
   ├── _DiscoKpackedFn(autograd.Function)      WGMMA fwd + CSR bwd (unfused)
   ├── _DiscoKpackedFusedFn(autograd.Function) WGMMA fwd + CSR bwd (fused)
   └── _maybe_kpack_psi(…)    converts CSR psi to kpacked layout at init time if required
@@ -32,9 +32,9 @@ convolution.py               DiscreteContinuousConvS2._forward() dispatch:
   _kpacked_ok = optimized_kernel and psi_kpacked_K_pad in (8,16)
                 and x.dtype in (float16, bfloat16)
   fused + kpacked  →  _disco_s2_fused_conv_kpacked
-  fused only       →  _disco_s2_fused_conv_optimized
+  fused only       →  _disco_s2_fused_conv_regular_optimized
   kpacked only     →  _disco_s2_contraction_kpacked
-  CSR default      →  _disco_s2_contraction_optimized / torch
+  CSR default      →  _disco_s2_contraction_regular_optimized / torch
 
 distributed_convolution_kernels.py   mirrors serial dispatch for a2a paths
 distributed_convolution.py           builds kpacked buffers in _build_local_psi
@@ -44,14 +44,17 @@ distributed_convolution.py           builds kpacked buffers in _build_local_psi
 
 | Purpose | Path |
 |---------|------|
-| PyTorch reference kernels | `torch_harmonics/disco/kernels_torch/disco_torch.py` |
-| CUDA kernel headers | `torch_harmonics/disco/optimized/kernels_cuda/disco_cuda.cuh` |
-| CSR forward kernel | `torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd.cu` |
-| CSR backward kernel | `torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd.cu` (BC_TILE optimized) |
-| SM_90 kpacked kernel | `torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_dense_kpacked_sm90.cu` |
-| PTX helpers (WGMMA) | `torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_ptx.cuh` |
-| CPU OpenMP forward kernel | `torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_fwd.py` |
-| CPU OpenMP backward kernel | `torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_bwd.py` |
+| PyTorch reference kernels | `torch_harmonics/disco/kernels_torch/disco_regular_torch.py` |
+| CUDA kernel headers | `torch_harmonics/disco/optimized/kernels_cuda/common/disco_cuda.cuh` |
+| CSR forward kernel | `torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_fwd.cu` |
+| CSR backward kernel | `torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_bwd.cu` (BC_TILE optimized) |
+| SM_90 kpacked kernel | `torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_fwd_dense_kpacked_sm90.cu` |
+| PTX helpers (WGMMA) | `torch_harmonics/disco/optimized/kernels_cuda/common/disco_cuda_ptx.cuh` |
+| CPU OpenMP forward kernel | `torch_harmonics/disco/optimized/kernels_cpu/regular/disco_cpu_fwd.cpp` |
+| CPU OpenMP backward kernel | `torch_harmonics/disco/optimized/kernels_cpu/regular/disco_cpu_bwd.cpp` |
+| Ragged (HEALPix) torch reference | `torch_harmonics/disco/kernels_torch/disco_ragged_torch.py` |
+| Ragged CUDA kernels | `torch_harmonics/disco/optimized/kernels_cuda/ragged/disco_cuda_{fwd,bwd}_ragged.cu` |
+| Ragged CPU kernels | `torch_harmonics/disco/optimized/kernels_cpu/ragged/disco_cpu_{fwd,bwd}_ragged.cpp` |
 | C++ interface | `torch_harmonics/disco/optimized/disco_interface.cpp` |
 | Python dispatch | `torch_harmonics/disco/optimized/disco_optimized.py` |
 | Serial conv (dispatch) | `torch_harmonics/disco/convolution.py` |
@@ -206,12 +209,18 @@ Three dedicated methods cover the fallback:
 The code base currently does not have a benchmark. For writing profiling scripts for serial kernels, stick to a minimal implementation. Aim at running the kernel in question in isolation, comparing to existing kernels when possible. Incorporate all 3 precisions (fp32, bf16, fp16) into the benchmark and also compare the results of the kernel against its fp32 variant. Relevant shape combinations are:
 
 ```python
+from torch_harmonics import as_grid
+
 CONFIGS = {
-    "self_256x360x720":  dict(in_channels=256, out_channels=256, in_shape=(360, 720), out_shape=(360, 720), grid_in="legendre-gauss", grid_out="legendre-gauss", theta_cutoff=0.017, kernel_shape=(3,3), basis_type="harmonic", basis_norm_mode="mean"),
-    "self_512x360x720":  dict(in_channels=512, out_channels=512, in_shape=(360, 720), out_shape=(360, 720), grid_in="legendre-gauss", grid_out="legendre-gauss", theta_cutoff=0.017,
-    kernel_shape=(3,3), basis_type="harmonic", basis_norm_mode="mean"),
-    "down_73x721x1440":  dict(in_channels=80, out_channels=512,, in_shape=(721, 1440), out_shape=(360, 720), grid_in="equiangular", grid_out="legendre-gauss", theta_cutoff=0.017,
-    kernel_shape=(3,3), basis_type="harmonic", basis_norm_mode="mean"),
+    "self_256x360x720":  dict(grid_in=as_grid("legendre-gauss", nlat=360, nlon=720), grid_out=as_grid("legendre-gauss", nlat=360, nlon=720),
+                              in_channels=256, out_channels=256, kernel_shape=(3, 3), basis_type="harmonic",
+                              basis_norm_mode="mean", theta_cutoff=0.017),
+    "self_512x360x720":  dict(grid_in=as_grid("legendre-gauss", nlat=360, nlon=720), grid_out=as_grid("legendre-gauss", nlat=360, nlon=720),
+                              in_channels=512, out_channels=512, kernel_shape=(3, 3), basis_type="harmonic",
+                              basis_norm_mode="mean", theta_cutoff=0.017),
+    "down_73x721x1440":  dict(grid_in=as_grid("equiangular", nlat=721, nlon=1440), grid_out=as_grid("legendre-gauss", nlat=360, nlon=720),
+                              in_channels=80, out_channels=512, kernel_shape=(3, 3), basis_type="harmonic",
+                              basis_norm_mode="mean", theta_cutoff=0.017),
 }
 ```
 

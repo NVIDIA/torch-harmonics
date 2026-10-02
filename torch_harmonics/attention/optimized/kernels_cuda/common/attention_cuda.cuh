@@ -1,0 +1,123 @@
+// coding=utf-8
+//
+// SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// 1. Redistributions of source code must retain the above copyright notice, this
+// list of conditions and the following disclaimer.
+//
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+// this list of conditions and the following disclaimer in the documentation
+// and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+// contributors may be used to endorse or promote products derived from
+// this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+#pragma once
+
+#include <cmath>
+#include <cstdint>
+#include <torch/torch.h>
+
+// Device only. The layout the kernels rely on -- dense over the logical shape -- is checked
+// by check_dense in attention_checks.h, which every host calls for these tensors and which,
+// unlike is_contiguous() under an internal assert, says which tensor is wrong and how.
+#define CHECK_CUDA_TENSOR(x) TORCH_CHECK(x.device().is_cuda(), #x " must be a CUDA tensor, got ", x.device())
+#define CHECK_CUDA_INPUT_TENSOR(x) CHECK_CUDA_TENSOR(x)
+
+namespace attention_kernels
+{
+
+    // NHWC ABI with heads packed along the channel dimension; see the definitions
+    // in attention_cuda_fwd.cu / attention_cuda_bwd.cu.
+    torch::Tensor s2_attention_fwd_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor ring_weights,
+                                        at::Tensor psi_seg, at::Tensor psi_seg_off, int64_t num_heads, int64_t nlon_in,
+                                        int64_t nlat_out, int64_t nlon_out);
+
+    std::tuple<at::Tensor, at::Tensor, at::Tensor>
+    s2_attention_bwd_dkvq_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy, at::Tensor ring_weights,
+                               at::Tensor psi_seg, at::Tensor psi_seg_off, int64_t num_heads, int64_t nlon_in,
+                               int64_t nlat_out, int64_t nlon_out);
+
+    void s2_attention_fwd_ring_step_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor y_acc,
+                                         at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf, at::Tensor ring_weights,
+                                         at::Tensor psi_seg, at::Tensor psi_seg_off, int64_t num_heads, int64_t nlon_in,
+                                         int64_t nlon_out_global, int64_t lon_lo_kx, int64_t lat_halo_start,
+                                         int64_t nlat_out, int64_t nlon_out);
+
+    void s2_attention_bwd_ring_step_pass1_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
+                                               at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
+                                               at::Tensor integral_buf, at::Tensor alpha_k_buf,
+                                               at::Tensor alpha_kvw_buf, at::Tensor ring_weights, at::Tensor psi_seg,
+                                               at::Tensor psi_seg_off, int64_t num_heads, int64_t nlon_in,
+                                               int64_t nlon_out_global, int64_t lon_lo_kx, int64_t lat_halo_start,
+                                               int64_t nlat_out, int64_t nlon_out);
+
+    void s2_attention_bwd_ring_step_pass2_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
+                                               at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
+                                               at::Tensor integral_norm_buf, at::Tensor dkx, at::Tensor dvx,
+                                               at::Tensor ring_weights, at::Tensor psi_seg, at::Tensor psi_seg_off,
+                                               int64_t num_heads, int64_t nlon_in, int64_t nlon_out_global,
+                                               int64_t lon_lo_kx, int64_t lat_halo_start, int64_t nlat_out,
+                                               int64_t nlon_out);
+
+    // ring-step variants for the upsample (input-keyed scatter) direction
+    void s2_attention_fwd_ring_step_upsample_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor y_acc,
+                                                  at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
+                                                  at::Tensor ring_weights, at::Tensor psi_seg, at::Tensor psi_seg_off,
+                                                  int64_t num_heads, int64_t nlon_in, int64_t nlon_out_global,
+                                                  int64_t lon_lo_kx, int64_t lat_halo_start, int64_t nlat_out,
+                                                  int64_t nlon_out);
+
+    void s2_attention_bwd_ring_step_upsample_pass1_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
+                                                        at::Tensor qdotk_max_buf, at::Tensor integral_buf,
+                                                        at::Tensor alpha_k_buf, at::Tensor alpha_kvw_buf,
+                                                        at::Tensor ring_weights, at::Tensor psi_seg,
+                                                        at::Tensor psi_seg_off, int64_t num_heads, int64_t nlon_in,
+                                                        int64_t nlon_out_global, int64_t lon_lo_kx,
+                                                        int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out);
+
+    void s2_attention_bwd_ring_step_upsample_pass2_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
+                                                        at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
+                                                        at::Tensor integral_norm_buf, at::Tensor dkx, at::Tensor dvx,
+                                                        at::Tensor ring_weights, at::Tensor psi_seg,
+                                                        at::Tensor psi_seg_off, int64_t num_heads, int64_t nlon_in,
+                                                        int64_t nlon_out_global, int64_t lon_lo_kx,
+                                                        int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out);
+
+    // Ragged variants, for a grid whose rings differ in length; see the definitions in
+    // kernels_cuda/ragged/. Same NHWC ABI, but the field is flat: one npoints extent in
+    // place of (nlat, nlon), with ring_base/ring_size carrying what nlon gave
+    // arithmetically on a regular grid. The neighbourhood arrives in arc form only --
+    // the CSR is the reference path's, and never reaches a kernel here.
+    //
+    // The forward returns (y, y_hi, alpha_sum, qdotk_max): the trailing three are softmax
+    // bookkeeping the backward consumes rather than rebuilding, and are fp32 whatever the
+    // activations are. y_hi is an fp32 copy of the output, empty when not wanted.
+    std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+    s2_attention_fwd_ragged_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor ring_weights,
+                                 at::Tensor psi_seg, at::Tensor psi_seg_off, at::Tensor ring_base, at::Tensor ring_size,
+                                 int64_t num_heads, int64_t npoints_out);
+
+    std::tuple<at::Tensor, at::Tensor, at::Tensor>
+    s2_attention_bwd_ragged_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy, at::Tensor y,
+                                 at::Tensor y_hi, at::Tensor alpha_sum, at::Tensor qdotk_max, at::Tensor ring_weights,
+                                 at::Tensor psi_seg, at::Tensor psi_seg_off, at::Tensor ring_base, at::Tensor ring_size,
+                                 int64_t num_heads, int64_t npoints_out);
+
+} // namespace attention_kernels
