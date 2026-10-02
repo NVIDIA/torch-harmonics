@@ -34,7 +34,11 @@ The layouts the DISCO kernels read psi in, built from its COO entries.
 
 The precompute produces psi as entries ``(basis function k, row, column, value)``, a
 row being a latitude of the grid the op is keyed by and a column a flat index
-``ring * nlon + lon`` into the other grid. The kernels want it in two forms:
+``ring * nlon + lon`` into the other grid. On a ragged grid -- HEALPix, or a regular grid
+paired with one -- there is no p-shift, so a row is a *point* of the grid the op is keyed
+by, and a column a flat index into the other grid, whose rings are located by the ring
+tables ``ring_base`` and ``ring_size`` rather than by a uniform ``nlon``. The kernels want
+it in two forms:
 
 **Arcs**, read by the gather and scatter kernels on CPU and CUDA. A row's entries on one
 ring are almost always a run of consecutive longitudes -- the support is a geodesic disk,
@@ -42,7 +46,8 @@ or part of one -- so a row stores its basis function and latitude once, and each
 as ``(ring, start, length)``, with the run's values consecutive. A run crossing the seam is
 one arc that wraps. This is the arc form of neighborhood attention
 (:class:`~torch_harmonics.neighborhood.NeighborhoodArcsS2`) with a value per entry added:
-DISCO's support is the same disk, but each basis function weights it differently.
+DISCO's support is the same disk, but each basis function weights it differently. The
+ragged kernels take the ring tables alongside, as the ragged attention kernels do.
 
 **Kpacked**, read by the tensor-core forward. Where every basis function has the same
 support, each entry of a latitude stores ``(ring, lon)`` once and all K values together,
@@ -70,14 +75,14 @@ class DiscoArcsS2(NamedTuple):
         rows of one basis function are contiguous.
     row_lat : torch.Tensor
         int32 ``(nrows,)``, the latitude of each row: the output latitude of the gather,
-        the input latitude of the scatter.
+        the input latitude of the scatter. On a ragged grid the row's point instead.
     seg_off : torch.Tensor
         int64 ``(nrows + 1,)``; row ``r``'s arcs are ``seg[seg_off[r]:seg_off[r + 1]]``.
     seg : torch.Tensor
         int32 ``(nsegs, 3)``, ``(ring, start, length)`` per arc, rings ascending within a
         row. ``start`` lies in ``[0, nlon)`` and ``length`` is at most ``nlon``, ``nlon``
-        being the longitude count of the grid the columns index; an arc wraps at the end
-        of its ring.
+        being the longitude count of the ring in the grid the columns index; an arc wraps
+        at the end of its ring.
     val_off : torch.Tensor
         int64 ``(nrows + 1,)``; row ``r``'s values are ``vals[val_off[r]:val_off[r + 1]]``.
     vals : torch.Tensor
@@ -102,14 +107,39 @@ def _sort_entries(ker_idx, row_idx, col_idx, vals, *major):
     return ker_idx[order], row_idx[order], col_idx[order], vals[order]
 
 
-def build_arcs(ker_idx: torch.Tensor, row_idx: torch.Tensor, col_idx: torch.Tensor, vals: torch.Tensor, nlon: int) -> DiscoArcsS2:
+def _ring_tables(nlon: Optional[int], ring_base: Optional[torch.Tensor], ring_size: Optional[torch.Tensor]):
+    """Exactly one of the two ways to locate rings: a uniform ``nlon``, or the ring tables."""
+    if (nlon is None) == (ring_base is None and ring_size is None) or (ring_base is None) != (ring_size is None):
+        raise ValueError("pass either nlon, or both ring_base and ring_size")
+    return nlon, ring_base, ring_size
+
+
+def _decode_columns(col_idx: torch.Tensor, nlon: Optional[int], ring_base: Optional[torch.Tensor], ring_size: Optional[torch.Tensor]):
+    """``(ring, lon within the ring, ring length)`` of each flat column."""
+    if nlon is not None:
+        return col_idx // nlon, col_idx % nlon, torch.full_like(col_idx, nlon)
+    ring_base = ring_base.to(device=col_idx.device, dtype=torch.int64)
+    ring_size = ring_size.to(device=col_idx.device, dtype=torch.int64)
+    ring = torch.searchsorted(ring_base, col_idx.to(torch.int64), right=True) - 1
+    return ring, col_idx - ring_base[ring], ring_size[ring]
+
+
+def build_arcs(
+    ker_idx: torch.Tensor,
+    row_idx: torch.Tensor,
+    col_idx: torch.Tensor,
+    vals: torch.Tensor,
+    nlon: Optional[int] = None,
+    ring_base: Optional[torch.Tensor] = None,
+    ring_size: Optional[torch.Tensor] = None,
+) -> DiscoArcsS2:
     """
     Encode psi's entries as arcs.
 
     Rows are ordered by (basis function, latitude) and entries within a row by column, so
     rings ascend and longitudes ascend within a ring; consecutive longitudes on one ring
     then form a run. A row's first run on a ring that starts at longitude 0 and its last
-    that ends at ``nlon - 1`` are one run across the seam: they become a single arc,
+    that ends at the ring's last longitude are one run across the seam: they become a single arc,
     placed where the later run was, walking its longitudes and then the earlier run's.
 
     Lossless -- the arcs hold exactly the entries given -- and the order of summation in
@@ -119,23 +149,27 @@ def build_arcs(ker_idx: torch.Tensor, row_idx: torch.Tensor, col_idx: torch.Tens
     ----------
     ker_idx, row_idx, col_idx, vals : torch.Tensor
         psi's entries, in any order.
-    nlon : int
-        Longitudes of the grid the columns index: ``nlon_in`` for the gather, ``nlon_out``
-        for the scatter.
+    nlon : int, optional
+        Longitudes of the grid the columns index, if it is regular: ``nlon_in`` for the
+        gather, ``nlon_out`` for the scatter.
+    ring_base, ring_size : torch.Tensor, optional
+        Otherwise the flat index of each ring's first point and the ring's length -- the
+        grid's ``lon_offsets[:-1]`` and ``nlon_per_lat``. Exactly one of ``nlon`` and the
+        pair is given.
     """
+    nlon, ring_base, ring_size = _ring_tables(nlon, ring_base, ring_size)
     ker_idx, row_idx, col_idx, vals = _sort_entries(ker_idx, row_idx, col_idx, vals, ker_idx, row_idx, col_idx)
     nnz = col_idx.numel()
     device = col_idx.device
 
-    # rows: maximal groups of equal (basis function, latitude)
+    # rows: maximal groups of equal (basis function, row latitude or point)
     new_row = torch.ones(nnz, dtype=torch.bool, device=device)
     new_row[1:] = (ker_idx[1:] != ker_idx[:-1]) | (row_idx[1:] != row_idx[:-1])
     row_first = torch.nonzero(new_row).squeeze(-1)
     nrows = row_first.numel()
     row_of = torch.cumsum(new_row.to(torch.int64), 0) - 1
 
-    ring = col_idx // nlon
-    lon = col_idx % nlon
+    ring, lon, ring_len = _decode_columns(col_idx, nlon, ring_base, ring_size)
 
     # runs: a new one at each row start, ring change, or gap in longitude
     new_run = new_row.clone()
@@ -152,7 +186,8 @@ def build_arcs(ker_idx: torch.Tensor, row_idx: torch.Tensor, col_idx: torch.Tens
     group_first[1:] = (run_row[1:] != run_row[:-1]) | (run_ring[1:] != run_ring[:-1])
     first_idx = torch.nonzero(group_first).squeeze(-1)
     last_idx = torch.diff(first_idx, append=first_idx.new_tensor([nruns])) + first_idx - 1
-    wraps = (last_idx > first_idx) & (run_start[first_idx] == 0) & (run_start[last_idx] + run_len[last_idx] == nlon)
+    run_ring_len = ring_len[run_first]
+    wraps = (last_idx > first_idx) & (run_start[first_idx] == 0) & (run_start[last_idx] + run_len[last_idx] == run_ring_len[last_idx])
     merged_first, merged_last = first_idx[wraps], last_idx[wraps]
 
     # move each merged first run's values right behind its partner's, then drop it as an
@@ -183,15 +218,23 @@ def build_arcs(ker_idx: torch.Tensor, row_idx: torch.Tensor, col_idx: torch.Tens
     return DiscoArcsS2(row_ker, row_lat, seg_off, seg, val_off, vals)
 
 
-def arcs_to_coo(arcs: DiscoArcsS2, nlon: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+def arcs_to_coo(
+    arcs: DiscoArcsS2, nlon: Optional[int] = None, ring_base: Optional[torch.Tensor] = None, ring_size: Optional[torch.Tensor] = None
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Expand arcs back into entries ``(ker_idx, row_idx, col_idx, vals)``, in arc order; the inverse of :func:`build_arcs`."""
+    nlon, ring_base, ring_size = _ring_tables(nlon, ring_base, ring_size)
     seg = arcs.seg.to(torch.int64)
     device = seg.device
     ring, start, length = seg[:, 0], seg[:, 1], seg[:, 2]
     nnz = int(length.sum())
     arc_of = torch.repeat_interleave(torch.arange(seg.shape[0], device=device), length)
     within = torch.arange(nnz, device=device) - torch.repeat_interleave(torch.cumsum(length, 0) - length, length)
-    col = ring[arc_of] * nlon + (start[arc_of] + within) % nlon
+    if nlon is not None:
+        col = ring[arc_of] * nlon + (start[arc_of] + within) % nlon
+    else:
+        base = ring_base.to(device=device, dtype=torch.int64)[ring[arc_of]]
+        size = ring_size.to(device=device, dtype=torch.int64)[ring[arc_of]]
+        col = base + (start[arc_of] + within) % size
     arcs_per_row = arcs.seg_off[1:] - arcs.seg_off[:-1]
     row_of = torch.repeat_interleave(torch.arange(arcs_per_row.numel(), device=device), arcs_per_row)[arc_of]
     return arcs.row_ker.to(torch.int64)[row_of], arcs.row_lat.to(torch.int64)[row_of], col, arcs.vals

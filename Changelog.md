@@ -12,7 +12,7 @@
 * `as_grid(descriptor, **params)` accepts only the descriptor type's own parameters and raises on anything else.
 * Grid descriptors form a hierarchy of `PointSetS2` (points and weights), `GridS2` (isolatitude rings) and `RegularGridS2` (rings of equal length), with matching `GridShardS2`/`RegularGridShardS2`.
 * New `require_point_set`, `require_grid` and `require_regular_grid` guards state which of these levels each routine needs, so an unsupported grid fails at construction.
-* New `HealpixGrid(nside)` (also `as_grid("healpix", nside=...)`), the HEALPix pixelization in RING order, accepted today by `QuadratureS2`, `AttentionS2` and `NeighborhoodAttentionS2`.
+* New `HealpixGrid(nside)` (also `as_grid("healpix", nside=...)`), the HEALPix pixelization in RING order, accepted today by `QuadratureS2`, `AttentionS2`, `NeighborhoodAttentionS2`, `DiscreteContinuousConvS2` and `DiscreteContinuousConvTransposeS2`.
 * New `HealpixGrid.from_level(level)` builds the grid at refinement level `level`, i.e. `nside = 2**level`.
 * New `PointSetS2.is_equal_area`, `True` for HEALPix and `False` for every latitude-longitude grid.
 * New `PointSetS2.coords` gives every point's `(colat, lon)` in the order a field is stored in.
@@ -35,6 +35,7 @@
 * `DistributedDiscreteContinuousConvS2(fused=True)` no longer requires CUDA.
 * Casting a DISCO layer with `.half()` or `.to(dtype)` no longer rounds its filter values to that dtype; they stay in the precision they were built in, as for neighborhood attention.
 * `torch.autocast("cpu")` now applies to the fused DISCO path as well.
+* DISCO convolutions run on ragged grids such as HEALPix, or a regular grid paired with one, through new `ragged-optimized` (CPU and CUDA) and `ragged-reference` backends; fields on a ragged grid are `(batch, channels, npoints)`. The existing backends are now named `regular-kpacked`, `regular-optimized` and `regular-reference`.
 * `DistributedNeighborhoodAttentionS2` shares the serial forward pass and uses ring backends whose kernels take the serial layout and arc form, walking only the neighbours in each key/value chunk.
 * `DistributedNeighborhoodAttentionS2` builds only its rank's slice of the sparsity pattern, so its memory shrinks as ranks are added.
 * `DistributedNeighborhoodAttentionS2` raises on `optimized_kernel=False` instead of ignoring it, since it has no reference implementation.

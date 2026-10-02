@@ -63,9 +63,9 @@
 // the tcgen05 wrappers are gated on.
 // =====================================================================================
 
-#include "../disco.h"
-#include "disco_cuda.cuh"
-#include "disco_cuda_ptx.cuh"
+#include "../../disco.h"
+#include "../common/disco_cuda.cuh"
+#include "../common/disco_cuda_ptx.cuh"
 
 #include <ATen/Dispatch.h>
 #include <c10/cuda/CUDAException.h>

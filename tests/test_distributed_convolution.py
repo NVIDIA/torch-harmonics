@@ -50,7 +50,7 @@ from testutils import (
 
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
-from torch_harmonics.disco.backends import OptimizedBackend, ReferenceBackend
+from torch_harmonics.disco.backends import RegularOptimizedBackend, RegularReferenceBackend
 from torch_harmonics.distributed import compute_polar_halo_radius, compute_split_shapes
 from torch_harmonics.quadrature import compute_theta_cutoff, effective_theta_cutoff, precompute_latitudes
 
@@ -371,7 +371,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         self.assertEqual(conv_dist.transpose, transpose)
         self.assertEqual(conv_local.transpose, transpose)
         if transpose:
-            self.assertNotEqual(conv_dist.backend.name, "kpacked")
+            self.assertNotEqual(conv_dist.backend.name, "regular-kpacked")
 
         # copy the weights from the local conv into the dist conv
         with torch.no_grad():
@@ -479,7 +479,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
         # Force both onto the arc kernels.
         for conv in (conv_local, conv_dist):
-            conv._backends = (OptimizedBackend, ReferenceBackend)
+            conv._backends = (RegularOptimizedBackend, RegularReferenceBackend)
             conv._select_backend()
 
         inp_full = torch.randn((B, C, nlat, nlon), dtype=torch.float32, device=self.device)

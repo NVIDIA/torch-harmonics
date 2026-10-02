@@ -67,6 +67,20 @@ namespace disco_kernels
             "backward_regular(Tensor inp, Tensor row_ker, Tensor row_lat, Tensor seg_off, Tensor seg, Tensor val_off, "
             "Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor",
             {at::Tag::pt2_compliant_tag});
+        // Ragged counterparts, for a grid whose rings differ in length (HEALPix, or a regular
+        // grid paired with one), as for the attention ops. There is no p-shift, so a row is
+        // a (basis function, point) and row_pt names the point, fields have one flat spatial
+        // axis, the extent is npoints_out rather than (nlat_out, nlon_out), and the ring
+        // tables (int64 ring_base, ring_size) of the grid the arcs walk carry what nlon used
+        // to give arithmetically.
+        //   forward_ragged : inp (B, C, npoints_in)    -> (B, C, K, npoints_out), a gather
+        //   backward_ragged: inp (B, C, K, npoints_in) -> (B, C, npoints_out),    a scatter
+        m.def("forward_ragged(Tensor inp, Tensor row_ker, Tensor row_pt, Tensor seg_off, Tensor seg, Tensor val_off, "
+              "Tensor vals, Tensor ring_base, Tensor ring_size, int kernel_size, int npoints_out) -> Tensor",
+              {at::Tag::pt2_compliant_tag});
+        m.def("backward_ragged(Tensor inp, Tensor row_ker, Tensor row_pt, Tensor seg_off, Tensor seg, Tensor val_off, "
+              "Tensor vals, Tensor ring_base, Tensor ring_size, int kernel_size, int npoints_out) -> Tensor",
+              {at::Tag::pt2_compliant_tag});
         // The tensor-core forward for fp16/bf16 (WGMMA on SM_90a, tcgen05 on SM_100a), with
         // psi in the blocked layout of _psi.build_kpacked
         m.def("forward_kpacked(Tensor inp, Tensor pack_idx, Tensor pack_val, Tensor pack_offset, "

@@ -30,9 +30,9 @@
 
 // The DISCO contraction on the CPU: forward_regular, a gather, with psi in arc form -- see
 // torch_harmonics/disco/_psi_layouts.py and, for the CUDA counterpart,
-// kernels_cuda/disco_cuda_fwd.cu.
+// kernels_cuda/regular/disco_cuda_fwd.cu.
 
-#include "disco_cpu.h"
+#include "../common/disco_cpu.h"
 
 namespace disco_kernels
 {

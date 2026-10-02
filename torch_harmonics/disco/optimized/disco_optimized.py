@@ -63,7 +63,7 @@ def _kpacked_build_available() -> bool:
     Deliberately NOT a device check. Modules are normally built on CPU and moved
     with .to(device) afterwards, so at construction time the runtime device is
     unknown; keying on it would disable kpacked for the ordinary flow. The device is
-    checked when a backend is selected for it, see KpackedBackend.available.
+    checked when a backend is selected for it, see RegularKpackedBackend.available.
     """
     return kpacked_sm90_kernels_is_available() or kpacked_sm100_kernels_is_available()
 
@@ -235,6 +235,30 @@ def _check_backward_inputs(inp, row_ker, row_lat, seg_off, seg, val_off, vals, k
     _check_arc_psi(inp, row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, vals_dtype_exact)
 
 
+def _check_ring_tables(inp, ring_base, ring_size) -> None:
+    """The ragged ops' ring tables; see check_ring_tables."""
+    _check_index_vector(ring_base, inp, torch.int64, "ring_base")
+    _check_index_vector(ring_size, inp, torch.int64, "ring_size")
+    _check_size(ring_size, 0, ring_base.shape[0], "ring_size, one per ring")
+
+
+def _check_ragged_forward_inputs(inp, row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size, kernel_size, npoints_out, vals_dtype_exact) -> None:
+    """The ragged gather: inp (B, C, npoints_in) -> (B, C, K, npoints_out); see check_ragged_forward_inputs."""
+    check(inp.dim() == 3, lambda: f"inp must be (B, C, npoints_in), got shape {tuple(inp.shape)}")
+    check(npoints_out > 0, lambda: f"npoints_out must be positive, got {npoints_out}")
+    _check_arc_psi(inp, row_ker, row_pt, seg_off, seg, val_off, vals, kernel_size, vals_dtype_exact)
+    _check_ring_tables(inp, ring_base, ring_size)
+
+
+def _check_ragged_backward_inputs(inp, row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size, kernel_size, npoints_out, vals_dtype_exact) -> None:
+    """The ragged scatter: inp (B, C, K, npoints_in) -> (B, C, npoints_out); see check_ragged_backward_inputs."""
+    check(inp.dim() == 4, lambda: f"inp must be (B, C, K, npoints_in), got shape {tuple(inp.shape)}")
+    _check_size(inp, 2, kernel_size, "inp basis-function planes (kernel_size)")
+    check(npoints_out > 0, lambda: f"npoints_out must be positive, got {npoints_out}")
+    _check_arc_psi(inp, row_ker, row_pt, seg_off, seg, val_off, vals, kernel_size, vals_dtype_exact)
+    _check_ring_tables(inp, ring_base, ring_size)
+
+
 def _check_kpacked_inputs(inp, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out) -> None:
     """The tensor-core forward's blocked layout; see check_kpacked_inputs."""
     check(inp.dim() == 4, lambda: f"inp must be (B, C, Hi, Wi), got shape {tuple(inp.shape)}")
@@ -403,6 +427,151 @@ if optimized_kernels_is_available():
     _register_autocast("disco_kernels::_disco_s2_transpose_contraction_regular_optimized", ("cuda", "cpu"))
     # the kpacked kernel exists on CUDA only
     _register_autocast("disco_kernels::forward_kpacked", ("cuda",))
+
+
+# The ragged counterparts, for a grid whose rings differ in length (HEALPix, or a regular
+# grid paired with one); registered for CPU and CUDA, both reading the arc form keyed per
+# point (kernels_cpu/ragged, kernels_cuda/ragged). The same structure as the regular ops
+# above, with npoints_out for (nlat_out, nlon_out) and the ring tables added; without the
+# compiled kernels a ragged layer falls back to the torch reference.
+if optimized_kernels_is_available():
+
+    @torch.library.register_fake("disco_kernels::forward_ragged")
+    def _(
+        inp: torch.Tensor,
+        row_ker: torch.Tensor,
+        row_pt: torch.Tensor,
+        seg_off: torch.Tensor,
+        seg: torch.Tensor,
+        val_off: torch.Tensor,
+        vals: torch.Tensor,
+        ring_base: torch.Tensor,
+        ring_size: torch.Tensor,
+        kernel_size: int,
+        npoints_out: int,
+    ) -> torch.Tensor:
+        _check_ragged_forward_inputs(inp, row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size, kernel_size, npoints_out, vals_dtype_exact=True)
+        return inp.new_empty((inp.shape[0], inp.shape[1], kernel_size, npoints_out))
+
+    @torch.library.register_fake("disco_kernels::backward_ragged")
+    def _(
+        inp: torch.Tensor,
+        row_ker: torch.Tensor,
+        row_pt: torch.Tensor,
+        seg_off: torch.Tensor,
+        seg: torch.Tensor,
+        val_off: torch.Tensor,
+        vals: torch.Tensor,
+        ring_base: torch.Tensor,
+        ring_size: torch.Tensor,
+        kernel_size: int,
+        npoints_out: int,
+    ) -> torch.Tensor:
+        _check_ragged_backward_inputs(inp, row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size, kernel_size, npoints_out, vals_dtype_exact=True)
+        return inp.new_empty((inp.shape[0], inp.shape[1], npoints_out))
+
+    @torch.library.custom_op("disco_kernels::_disco_s2_contraction_ragged_optimized", mutates_args=())
+    def _disco_s2_contraction_ragged_optimized(
+        inp: torch.Tensor,
+        row_ker: torch.Tensor,
+        row_pt: torch.Tensor,
+        seg_off: torch.Tensor,
+        seg: torch.Tensor,
+        val_off: torch.Tensor,
+        vals: torch.Tensor,
+        ring_base: torch.Tensor,
+        ring_size: torch.Tensor,
+        kernel_size: int,
+        npoints_out: int,
+    ) -> torch.Tensor:
+        itype = inp.dtype
+        vals = vals.to(_compute_dtype(itype))
+        out = disco_kernels.forward_ragged.default(inp.contiguous(), row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size, kernel_size, npoints_out)
+        return out.to(itype)
+
+    @torch.library.custom_op("disco_kernels::_disco_s2_transpose_contraction_ragged_optimized", mutates_args=())
+    def _disco_s2_transpose_contraction_ragged_optimized(
+        inp: torch.Tensor,
+        row_ker: torch.Tensor,
+        row_pt: torch.Tensor,
+        seg_off: torch.Tensor,
+        seg: torch.Tensor,
+        val_off: torch.Tensor,
+        vals: torch.Tensor,
+        ring_base: torch.Tensor,
+        ring_size: torch.Tensor,
+        kernel_size: int,
+        npoints_out: int,
+    ) -> torch.Tensor:
+        itype = inp.dtype
+        vals = vals.to(_compute_dtype(itype))
+        out = disco_kernels.backward_ragged.default(inp.contiguous(), row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size, kernel_size, npoints_out)
+        return out.to(itype)
+
+    @torch.library.register_fake("disco_kernels::_disco_s2_contraction_ragged_optimized")
+    def _(
+        inp: torch.Tensor,
+        row_ker: torch.Tensor,
+        row_pt: torch.Tensor,
+        seg_off: torch.Tensor,
+        seg: torch.Tensor,
+        val_off: torch.Tensor,
+        vals: torch.Tensor,
+        ring_base: torch.Tensor,
+        ring_size: torch.Tensor,
+        kernel_size: int,
+        npoints_out: int,
+    ) -> torch.Tensor:
+        _check_ragged_forward_inputs(inp, row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size, kernel_size, npoints_out, vals_dtype_exact=False)
+        return inp.new_empty((inp.shape[0], inp.shape[1], kernel_size, npoints_out))
+
+    @torch.library.register_fake("disco_kernels::_disco_s2_transpose_contraction_ragged_optimized")
+    def _(
+        inp: torch.Tensor,
+        row_ker: torch.Tensor,
+        row_pt: torch.Tensor,
+        seg_off: torch.Tensor,
+        seg: torch.Tensor,
+        val_off: torch.Tensor,
+        vals: torch.Tensor,
+        ring_base: torch.Tensor,
+        ring_size: torch.Tensor,
+        kernel_size: int,
+        npoints_out: int,
+    ) -> torch.Tensor:
+        _check_ragged_backward_inputs(inp, row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size, kernel_size, npoints_out, vals_dtype_exact=False)
+        return inp.new_empty((inp.shape[0], inp.shape[1], npoints_out))
+
+
+def _setup_context_ragged_contraction(ctx, inputs, output):
+    inp, row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size, kernel_size, npoints_out = inputs
+    ctx.save_for_backward(row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size)
+    ctx.kernel_size = kernel_size
+    ctx.npoints_in = inp.shape[-1]
+
+
+def _ragged_contraction_bwd(ctx, grad_output):
+    grad_input = None
+    if ctx.needs_input_grad[0]:
+        grad_input = _disco_s2_transpose_contraction_ragged_optimized(grad_output, *ctx.saved_tensors, ctx.kernel_size, ctx.npoints_in)
+    return (grad_input,) + (None,) * 10
+
+
+def _ragged_transpose_contraction_bwd(ctx, grad_output):
+    grad_input = None
+    if ctx.needs_input_grad[0]:
+        grad_input = _disco_s2_contraction_ragged_optimized(grad_output, *ctx.saved_tensors, ctx.kernel_size, ctx.npoints_in)
+    return (grad_input,) + (None,) * 10
+
+
+if optimized_kernels_is_available():
+    torch.library.register_autograd("disco_kernels::_disco_s2_contraction_ragged_optimized", _ragged_contraction_bwd, setup_context=_setup_context_ragged_contraction)
+    torch.library.register_autograd(
+        "disco_kernels::_disco_s2_transpose_contraction_ragged_optimized", _ragged_transpose_contraction_bwd, setup_context=_setup_context_ragged_contraction
+    )
+
+    _register_autocast("disco_kernels::_disco_s2_contraction_ragged_optimized", ("cuda", "cpu"))
+    _register_autocast("disco_kernels::_disco_s2_transpose_contraction_ragged_optimized", ("cuda", "cpu"))
 
 
 def _contract(inp, row_ker, row_lat, seg_off, seg, val_off, vals, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out):
