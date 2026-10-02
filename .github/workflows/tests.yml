@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    name: Run local tests
+    name: Run Python 3.11 tests with coverage
     runs-on: ubuntu-latest
 
     steps:
@@ -56,9 +56,38 @@ jobs:
       run: |
         python3 -m pytest -ra --doctest-modules ./torch_harmonics/
 
+  python-versions:
+    name: Run Python ${{ matrix.python-version }} tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      run: |
+        python3 -m pip install --upgrade pip setuptools wheel
+        python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
+
+    - name: Install package with dev dependencies
+      run: |
+        python3 -m pip install --no-build-isolation -e ".[dev]"
+
+    - name: Test with pytest
+      run: |
+        python3 -m pytest -ra --ignore-glob="**/test_distributed_*" ./tests/
+
   # The distributed suite: on pull requests, and once per merge to main, so the coverage
   # below covers both suites. Not on plain branch pushes -- up to 8 ranks per grid is heavy.
   distributed:
+    name: Run distributed tests
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     uses: ./.github/workflows/test_distributed.yml
 
