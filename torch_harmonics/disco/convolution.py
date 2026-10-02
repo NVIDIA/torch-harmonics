@@ -868,8 +868,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
     fused : Optional[bool]
         When True, recomputes the K-expanded intermediate ``(B, C, K, H, W)`` in backward
         instead of storing it: K times less activation memory for one extra sparse
-        contraction. Has no effect with the torch reference, nor yet on a
-        ragged grid.
+        contraction. Has no effect with the torch reference.
 
     References
     ----------
@@ -916,7 +915,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         if not self.ragged:
             self._psi_nlon = self.nlon_in
             self._contract_shape = (self.nlat_out, self.nlon_out)
-            self._needs_split = _use_spatial_first_dgrad(self.out_per_group, self.groupsize, self.kernel_size)
+        self._needs_split = _use_spatial_first_dgrad(self.out_per_group, self.groupsize, self.kernel_size)
 
         self._select_backend()
 

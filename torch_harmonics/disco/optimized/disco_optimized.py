@@ -783,3 +783,138 @@ def _disco_s2_conv_optimized(inp, weight, arcs, kpacked, split, kernel_size, nla
     pack_idx, pack_val, pack_offset = kpacked if kpacked is not None else (None, None, None)
     split_ker, row_offsets = split if split is not None else (None, ())
     return _DiscoConvFn.apply(inp, weight, *arcs, pack_idx, pack_val, pack_offset, split_ker, kernel_size, nlat_out, nlon_out, groups, groupsize, recompute, row_offsets)
+
+
+def _spatial_first_dgrad_ragged(grad_output_r, weight, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size, split_ker, kernel_size, npoints_in, row_offsets):
+    """The ragged counterpart of :func:`_spatial_first_dgrad`: one K = 1 scatter per basis function."""
+    B, G, Og, N = grad_output_r.shape
+    Cg = weight.shape[2]
+    grad_small = grad_output_r.reshape(B, G * Og, 1, N).contiguous()
+
+    parts = []
+    for k in range(kernel_size):
+        r0, r1 = row_offsets[k], row_offsets[k + 1]
+        if r1 == r0:
+            parts.append(grad_output_r.new_zeros((B, G, Og, npoints_in)))
+            continue
+        part = disco_kernels.backward_ragged.default(
+            grad_small, split_ker[: r1 - r0], row_pt[r0:r1], seg_off[r0 : r1 + 1], seg, val_off[r0 : r1 + 1], vals, ring_base, ring_size, 1, npoints_in
+        )
+        parts.append(part.reshape(B, G, Og, npoints_in))
+
+    grad_spatial = torch.stack(parts, dim=3)
+    grad_inp = torch.einsum("bgokn,gock->bgcn", grad_spatial, weight).contiguous()
+    return grad_inp.reshape(B, G * Cg, npoints_in)
+
+
+class _DiscoRaggedConvFn(torch.autograd.Function):
+    """
+    The ragged DISCO contraction followed by the weight contraction, as one autograd node.
+
+    The counterpart of :class:`_DiscoConvFn` for psi keyed per point, with the same two
+    things the node is for -- ``recompute`` and the spatial-first input gradient -- on the
+    ragged gather and scatter. There is no tensor-core forward here, so the forward is the
+    gather and the backward and the recompute the scatter and the gather.
+    """
+
+    @staticmethod
+    def forward(
+        ctx,
+        inp,
+        weight,
+        row_ker,
+        row_pt,
+        seg_off,
+        seg,
+        val_off,
+        vals,
+        ring_base,
+        ring_size,
+        split_ker,
+        kernel_size,
+        npoints_out,
+        groups,
+        groupsize,
+        recompute,
+        split_row_offsets,
+    ):
+        itype = inp.dtype
+        inp = inp.contiguous()
+        vals_c = vals.to(_compute_dtype(itype))
+        x_expanded = disco_kernels.forward_ragged.default(inp, row_ker, row_pt, seg_off, seg, val_off, vals_c, ring_base, ring_size, kernel_size, npoints_out).to(itype)
+
+        ctx.save_for_backward(inp if recompute else x_expanded, weight, row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size, split_ker)
+        ctx.recompute = recompute
+        ctx.kernel_size = kernel_size
+        ctx.npoints_in = inp.shape[-1]
+        ctx.npoints_out = npoints_out
+        ctx.groups = groups
+        ctx.groupsize = groupsize
+        ctx.split_row_offsets = split_row_offsets
+
+        B, C, K, N = x_expanded.shape
+        x_expanded = x_expanded.reshape(B, groups, groupsize, K, N)
+        out = torch.einsum("bgckn,gock->bgon", x_expanded, weight.to(itype)).contiguous()
+        return out.reshape(B, groups * weight.shape[1], N)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        saved, weight, row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size, split_ker = ctx.saved_tensors
+
+        itype = grad_output.dtype
+        vals_c = vals.to(_compute_dtype(itype))
+
+        K = ctx.kernel_size
+        G, Cg = ctx.groups, ctx.groupsize
+        N = ctx.npoints_out
+        Og = weight.shape[1]
+        B = grad_output.shape[0]
+        grad_output_r = grad_output.reshape(B, G, Og, N)
+
+        grad_inp = None
+        grad_weight = None
+
+        if ctx.needs_input_grad[0]:
+            if split_ker is not None and _use_spatial_first_dgrad(Og, Cg, K):
+                grad_inp = _spatial_first_dgrad_ragged(
+                    grad_output_r, weight.to(itype), row_pt, seg_off, seg, val_off, vals_c, ring_base, ring_size, split_ker, K, ctx.npoints_in, ctx.split_row_offsets
+                )
+            else:
+                grad_x_expanded = torch.einsum("bgon,gock->bgckn", grad_output_r, weight.to(itype))
+                grad_x_expanded = grad_x_expanded.reshape(B, G * Cg, K, N).contiguous()
+                grad_inp = disco_kernels.backward_ragged.default(grad_x_expanded, row_ker, row_pt, seg_off, seg, val_off, vals_c, ring_base, ring_size, K, ctx.npoints_in)
+            grad_inp = grad_inp.to(itype)
+
+        if ctx.needs_input_grad[1]:
+            if ctx.recompute:
+                x_expanded = disco_kernels.forward_ragged.default(saved, row_ker, row_pt, seg_off, seg, val_off, vals_c, ring_base, ring_size, K, N)
+            else:
+                x_expanded = saved
+            x_expanded = x_expanded.to(itype).reshape(B, G, Cg, K, N)
+            grad_weight = torch.einsum("bgon,bgckn->gock", grad_output_r, x_expanded)
+
+        # inp, weight, then the eight ragged arc arrays, split_ker, kernel_size,
+        # npoints_out, groups, groupsize, recompute, split_row_offsets
+        return (grad_inp, grad_weight) + (None,) * 15
+
+
+def _disco_s2_conv_ragged_optimized(inp, weight, arcs, split, kernel_size, npoints_out, groups, groupsize, recompute=False):
+    """
+    Ragged contraction plus weight contraction through :class:`_DiscoRaggedConvFn`.
+
+    Parameters
+    ----------
+    inp : torch.Tensor
+        ``(B, groups * groupsize, npoints_in)``.
+    weight : torch.Tensor
+        ``(groups, out_per_group, groupsize, kernel_size)``.
+    arcs : Tuple[torch.Tensor, ...]
+        ``(row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size)``.
+    split : Optional[Tuple]
+        ``(split_ker, row_offsets)`` from build_split, to allow the spatial-first input
+        gradient.
+    recompute : bool
+        Recompute the K-expanded intermediate in backward rather than saving it.
+    """
+    split_ker, row_offsets = split if split is not None else (None, ())
+    return _DiscoRaggedConvFn.apply(inp, weight, *arcs, split_ker, kernel_size, npoints_out, groups, groupsize, recompute, row_offsets)

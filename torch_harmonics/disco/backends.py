@@ -99,6 +99,7 @@ from .kernels_torch.disco_regular_torch import _disco_s2_contraction_regular_tor
 from .optimized.disco_optimized import (
     _disco_s2_contraction_kpacked,
     _disco_s2_conv_optimized,
+    _disco_s2_conv_ragged_optimized,
     _kpacked_build_available,
     _kpacked_k_pad,
     _kpacked_supported_on_device,
@@ -315,8 +316,8 @@ class RaggedOptimizedBackend(DiscoBackendS2):
     with them -- as for :class:`~torch_harmonics.attention.backends.RaggedOptimizedBackend`.
     No device test: the CPU and CUDA kernels are registered against the same operators.
 
-    There is no fused node here yet, so ``conv`` is the contraction followed by the
-    weight contraction and ``fused`` changes nothing.
+    ``conv`` goes through the ragged counterpart of the regular fused node, with the same
+    recompute and spatial-first input gradient.
     """
 
     name = "ragged-optimized"
@@ -330,13 +331,31 @@ class RaggedOptimizedBackend(DiscoBackendS2):
         ring_base = grid.lon_offsets[:-1].to(torch.int64).contiguous()
         ring_size = grid.nlon_per_lat.to(torch.int64).contiguous()
         arcs = build_arcs(*layer._psi_coo(), ring_base=ring_base, ring_size=ring_size)
-        return {name: t.to(device) for name, t in zip(_RAGGED_ARC_STATE, (*arcs, ring_base, ring_size))}
+        state = {name: t.to(device) for name, t in zip(_RAGGED_ARC_STATE, (*arcs, ring_base, ring_size))}
+
+        self.split_row_offsets = None
+        if layer._needs_split:
+            split_ker, self.split_row_offsets = build_split(arcs, layer.kernel_size)
+            state["psi_split_ker"] = split_ker.to(device)
+
+        return state
 
     def _arcs(self, layer):
         return tuple(getattr(layer, name) for name in _RAGGED_ARC_STATE)
 
+    def _split(self, layer):
+        if self.split_row_offsets is None:
+            return None
+        return (layer.psi_split_ker, self.split_row_offsets)
+
     def contract(self, layer, x):
         return _disco_s2_contraction_ragged_optimized(x, *self._arcs(layer), layer.kernel_size, layer.npoints_out)
+
+    def conv(self, layer, x, weight, groups, groupsize, recompute=False):
+        # the node calls the kernels directly, so it applies autocast's cast itself, as
+        # RegularOptimizedBackend.conv does
+        x = x.to(_amp_dtype(x))
+        return _disco_s2_conv_ragged_optimized(x, weight, self._arcs(layer), self._split(layer), layer.kernel_size, layer.npoints_out, groups, groupsize, recompute)
 
     def transpose(self, layer, x):
         return _disco_s2_transpose_contraction_ragged_optimized(x, *self._arcs(layer), layer.kernel_size, layer.npoints_out)
