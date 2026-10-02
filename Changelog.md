@@ -6,6 +6,7 @@
 
 * Faster DISCO CUDA kernels on H100 and GB200: kpacked forward up to 1.28x, backward up to 2.1x.
 * Smaller DISCO psi memory footprint through a blocked-CSR layout instead of padding every row to the maximum.
+* **Breaking**: the piecewise-linear filter basis no longer counts points on the edge of a hat, where its value is zero, as part of the support. This changes `basis_norm_mode="support"` and `"modal"` with the piecewise-linear basis, by up to tens of percent per group at the default cutoff, since a basis function covers few quadrature points and edge points (e.g. those due north or south of the output point) carried full weight; the other modes and bases are unchanged. Whether a point landed on an edge or just off it used to depend on rounding.
 * DISCO convolutions run on ragged grids such as HEALPix, or a regular grid paired with one, through new `ragged-optimized` (CPU and CUDA) and `ragged-reference` backends; fields on a ragged grid are `(batch, channels, npoints)`. The existing backends are now named `regular-kpacked`, `regular-optimized` and `regular-reference`.
 * Fixed a DISCO backward launch failure for `nlon_in > 2048` with an integer scale factor of 3 or more.
 * **Breaking**: `DistributedDiscreteContinuousConvS2` gains `polar_mode`, default `"halo-exchange"`, which computes only locally owned rows; `"reduce-scatter"` restores the old behaviour and is needed when the support reaches past the neighbouring rank.
