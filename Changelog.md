@@ -4,6 +4,8 @@
 
 ### v0.9.3b1 (unreleased)
 
+* Fixed Gaussian random-field spectral amplitudes ignoring the requested dtype during construction, losing double precision or underflowing before sampling.
+
 * Fixed single-longitude inputs producing non-finite values and gradients in `ResampleS2` and `DistributedResampleS2`.
 * Fixed Gaussian random-field sampling retaining stale dtype or device buffers after module conversions, including conversions of a parent module.
 * Fixed `DiceLossS2` including ignored pixels in the class-zero denominator; ignored targets now contribute to neither term of the Dice score.
