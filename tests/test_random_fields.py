@@ -105,6 +105,18 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
         self.assertGreater(float(actual.abs().max()), 0.0)
         torch.testing.assert_close(actual, reference, rtol=tolerance, atol=float(reference.abs().max()) * tolerance)
 
+    def test_float32_spectrum_preserves_representable_amplitudes_after_wide_intermediates(self):
+        field = GaussianRandomFieldS2(8, dtype=torch.float32, alpha=1.1, tau=1e20, sigma=1.0).to(self.device)
+        degree = torch.arange(field.isht.lmax, dtype=torch.float64, device=self.device)
+        expected = (degree * (degree + 1) + 1e40).pow(-0.55)
+        expected[0] = 0.0
+        expected = torch.tril(expected[:, None].expand(-1, field.isht.mmax)).unsqueeze(0).to(torch.float32)
+
+        self.assertEqual(field.sqrt_eig.dtype, torch.float32)
+        self.assertTrue(bool(torch.isfinite(field.sqrt_eig).all()))
+        self.assertGreater(float(field.sqrt_eig.abs().max()), 0.0)
+        torch.testing.assert_close(field.sqrt_eig, expected, rtol=2e-6, atol=0)
+
     def test_double_precision_spectral_gradient_uses_full_precision_amplitudes(self):
         field = GaussianRandomFieldS2(8, dtype=torch.float64, alpha=2.5, tau=2.7, sigma=1.3).to(self.device)
         degree = torch.arange(field.isht.lmax, dtype=torch.float64, device=self.device)
