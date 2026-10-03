@@ -75,6 +75,50 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
         self.assertEqual(field.gaussian_noise.loc.dtype, field.mean.dtype)
         self.assertEqual(field.gaussian_noise.loc.device, field.mean.device)
 
+    @parameterized.expand(
+        [
+            [torch.float64, torch.float32, 3.0, 1.0],
+            [torch.float32, torch.float64, 3.0, 1.0],
+            [torch.float64, torch.float32, 1e20, 1.0],
+            [torch.float64, torch.float32, 3.0, 1e-12],
+        ]
+    )
+    def test_spectral_amplitudes_are_computed_in_requested_dtype(self, dtype, default_dtype, tau, radius):
+        previous = torch.get_default_dtype()
+        try:
+            torch.set_default_dtype(default_dtype)
+            field = GaussianRandomFieldS2(8, dtype=dtype, tau=tau, radius=radius, sigma=1.0).to(self.device)
+        finally:
+            torch.set_default_dtype(previous)
+        self.assertEqual(field.sqrt_eig.dtype, dtype)
+        degrees = torch.arange(field.isht.lmax, device=self.device, dtype=torch.float64)
+        expected = (degrees * (degrees + 1) / radius**2 + tau**2).reciprocal()
+        expected[0] = 0.0
+        expected = torch.tril(expected[:, None].expand(-1, field.isht.mmax)).unsqueeze(0).to(dtype)
+        tolerance = 1e-13 if dtype == torch.float64 else 2e-6
+        torch.testing.assert_close(field.sqrt_eig, expected, rtol=tolerance, atol=0)
+        xi = torch.ones((2, field.isht.lmax, field.isht.mmax), dtype=torch.complex128 if dtype == torch.float64 else torch.complex64, device=self.device)
+        actual = field(2, xi=xi)
+        reference = field.isht(xi * expected)
+        self.assertEqual(actual.dtype, dtype)
+        self.assertTrue(bool(torch.isfinite(actual).all()))
+        self.assertGreater(float(actual.abs().max()), 0.0)
+        torch.testing.assert_close(actual, reference, rtol=tolerance, atol=float(reference.abs().max()) * tolerance)
+
+    def test_double_precision_spectral_gradient_uses_full_precision_amplitudes(self):
+        field = GaussianRandomFieldS2(8, dtype=torch.float64, alpha=2.5, tau=2.7, sigma=1.3).to(self.device)
+        degree = torch.arange(field.isht.lmax, dtype=torch.float64, device=self.device)
+        eigenvalues = 1.3 * (degree * (degree + 1) + 2.7**2).pow(-1.25)
+        eigenvalues[0] = 0.0
+        expected = torch.tril(eigenvalues[:, None].expand(-1, field.isht.mmax)).unsqueeze(0)
+        torch.manual_seed(42)
+        xi = torch.randn((1, field.isht.lmax, field.isht.mmax), dtype=torch.complex128, device=self.device, requires_grad=True)
+        loss = field(1, xi=xi).square().sum()
+        reference = field.isht(xi * expected).square().sum()
+        (actual_grad,) = torch.autograd.grad(loss, xi)
+        (expected_grad,) = torch.autograd.grad(reference, xi)
+        torch.testing.assert_close(actual_grad, expected_grad, rtol=2e-12, atol=1e-14)
+
     @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA for a real device transfer")
     def test_sampler_follows_parent_cuda_and_cpu(self, verbose=False):
         field = GaussianRandomFieldS2(8)

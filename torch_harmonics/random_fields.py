@@ -73,7 +73,8 @@ class GaussianRandomFieldS2(torch.nn.Module):
         Grid type for the inverse SHT (``"equiangular"``,
         ``"legendre-gauss"``, etc.).  Default ``"equiangular"``.
     dtype : torch.dtype, optional
-        Floating-point dtype.  Default ``torch.float32``.
+        Floating-point dtype for the spectral amplitudes and sampled fields.
+        Default ``torch.float32``.
 
     Examples
     --------
@@ -104,7 +105,7 @@ class GaussianRandomFieldS2(torch.nn.Module):
         mmax = self.isht.mmax
 
         # Square root of the eigenvalues of C.
-        sqrt_eig = torch.as_tensor([j * (j + 1) for j in range(lmax)]).view(lmax, 1).repeat(1, mmax)
+        sqrt_eig = torch.as_tensor([j * (j + 1) for j in range(lmax)], dtype=dtype).view(lmax, 1).repeat(1, mmax)
         sqrt_eig = torch.tril(sigma * (((sqrt_eig / radius**2) + tau**2) ** (-alpha / 2.0)))
         sqrt_eig[0, 0] = 0.0
         sqrt_eig = sqrt_eig.unsqueeze(0)
