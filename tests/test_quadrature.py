@@ -252,5 +252,66 @@ class TestQuadratureWeightPrecision(unittest.TestCase):
         self.assertTrue(compare_tensors(f"trapezoidal weights (periodic={periodic})", w, expected, atol=1e-15, rtol=1e-15, verbose=verbose))
 
 
+@parameterized_class(("device",), _devices)
+class TestQuadratureLeadingDimensions(unittest.TestCase):
+    """Only the spatial axes are removed from scalar or batched fields."""
+
+    @parameterized.expand(
+        [
+            ["equiangular", False],
+            ["equiangular", True],
+            ["legendre-gauss", False],
+            ["legendre-gauss", True],
+            ["lobatto", False],
+            ["lobatto", True],
+            ["equiangular-trapezoidal", False],
+            ["equiangular-trapezoidal", True],
+        ]
+    )
+    def test_output_shape_and_integrals_for_arbitrary_leading_dimensions(self, grid, normalize):
+        nlat, nlon = 8, 16
+        quad = th.QuadratureS2((nlat, nlon), grid=grid, normalize=normalize).to(self.device)
+        original = quad.quad_weight.clone()
+        lats, _ = precompute_latitudes(nlat, grid=grid)
+        field = (1.0 + torch.cos(lats)).float().to(self.device)[:, None].expand(nlat, nlon)
+        for leading in ((), (3,), (2, 3), (2, 1, 3), (0,)):
+            with self.subTest(leading=leading):
+                count = math.prod(leading)
+                amplitudes = torch.arange(1, count + 1, device=self.device, dtype=torch.float32).reshape(leading)
+                data = amplitudes[..., None, None] * field
+                output = quad(data)
+                self.assertEqual(output.shape, leading)
+                expected = amplitudes * (1.0 if normalize else 4.0 * math.pi)
+                torch.testing.assert_close(output, expected, rtol=2e-6, atol=1e-6)
+        self.assertEqual(quad.quad_weight.shape, (1, 1, nlat, nlon))
+        torch.testing.assert_close(quad.quad_weight, original, rtol=0, atol=0)
+
+    def test_scalar_gradients_and_vmap_do_not_gain_singleton_dimensions(self):
+        quad = th.QuadratureS2((8, 16), grid="legendre-gauss", normalize=True).to(self.device).double()
+        values = torch.arange(3 * 8 * 16, device=self.device, dtype=torch.float64).reshape(3, 8, 16) / 30.0
+        values.requires_grad_()
+        mapped = torch.func.vmap(quad)(values)
+        self.assertEqual(mapped.shape, (3,))
+        reference = (values * quad.quad_weight[0, 0]).sum(dim=(-2, -1))
+        torch.testing.assert_close(mapped, reference)
+        (gradient,) = torch.autograd.grad(mapped.square().sum(), values)
+        (expected,) = torch.autograd.grad(reference.square().sum(), values)
+        torch.testing.assert_close(gradient, expected)
+        self.assertTrue(torch.autograd.gradcheck(quad, (values[0].detach().requires_grad_(),)))
+
+    def test_compiled_forward_and_backward_preserve_spatial_only_reduction(self):
+        quad = th.QuadratureS2((8, 16), normalize=True).to(self.device)
+        compiled = torch.compile(quad, backend="aot_eager", fullgraph=True)
+        for leading in ((), (2,), (2, 3)):
+            with self.subTest(leading=leading):
+                values = torch.ones((*leading, 8, 16), device=self.device, requires_grad=True)
+                output = compiled(values)
+                self.assertEqual(output.shape, leading)
+                torch.testing.assert_close(output, torch.ones(leading, device=self.device))
+                (gradient,) = torch.autograd.grad(output.sum(), values)
+                expected = quad.quad_weight[0, 0].expand_as(values)
+                torch.testing.assert_close(gradient, expected)
+
+
 if __name__ == "__main__":
     unittest.main()

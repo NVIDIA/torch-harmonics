@@ -638,6 +638,7 @@ class QuadratureS2(torch.nn.Module):
             Integral of shape ``(...)`` (the input with its last two dimensions reduced).
         """
         # integrate over last two axes only:
-        quad = torch.sum(x * self.quad_weight, dim=(-2, -1))
+        weights = self.quad_weight.reshape(self.quad_weight.shape[-2:])
+        quad = torch.sum(x * weights, dim=(-2, -1))
 
         return quad
