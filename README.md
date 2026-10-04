@@ -52,7 +52,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Overview
 
-torch-harmonics implements differentiable signal processing on the sphere. This includes differentiable implementations of the spherical harmonic transforms, vector spherical harmonic transforms and discrete-continuous convolutions on the sphere. The package was originally implemented to enable Spherical Fourier Neural Operators (SFNO) [1].
+torch-harmonics implements differentiable signal processing on the sphere. This includes differentiable implementations of the spherical harmonic transforms, vector spherical harmonic transforms and discrete-continuous convolutions on the sphere. The package was originally implemented to enable Spherical Fourier Neural Operators (SFNO) [1]. A description of the library as a whole is given in [7].
+
+<div align="center">
+<img src="https://raw.githubusercontent.com/NVIDIA/torch-harmonics/main/images/overview.png" width="760">
+</div>
 
 The SHT algorithm uses quadrature rules to compute the projection onto the associated Legendre polynomials and FFTs for the projection onto the harmonic basis. This algorithm tends to outperform others with better asymptotic scaling for most practical purposes [2].
 
@@ -228,7 +232,7 @@ batch_size = 32
 signal = torch.randn(batch_size, nlat, nlon, device=device)
 
 # transform data on an equiangular grid
-grid = th.as_grid("equiangular", nlat=nlat, nlon=nlon)
+grid = th.EquiangularGrid(nlat=nlat, nlon=nlon)
 sht = th.RealSHT(grid).to(device)
 
 coeffs = sht(signal)
@@ -240,15 +244,33 @@ Every layer takes a grid descriptor rather than a resolution and a grid name.
 The descriptor holds both, along with everything that follows from where the
 nodes sit: the quadrature weights, the node spacing localized operators take
 their default cutoff from, and the degree an SHT can be truncated to without
-losing orthogonality. Build one with `as_grid`:
+losing orthogonality. Each grid type has its own class, e.g.
+`th.EquiangularGrid(nlat=..., nlon=...)` or `th.HealpixGrid(nside=...)`.
+Alternatively, `th.as_grid` builds a grid from its name, e.g.
+`th.as_grid("equiangular", nlat=..., nlon=...)`, which is convenient when the
+grid type comes from a configuration file.
 
-| grid type          | built with                                         | field shape    | accepted by                                              |
-| ------------------ | -------------------------------------------------- | -------------- | -------------------------------------------------------- |
-| `"equiangular"`    | `th.as_grid("equiangular", nlat=..., nlon=...)`    | `(nlat, nlon)` | every layer                                              |
-| `"legendre-gauss"` | `th.as_grid("legendre-gauss", nlat=..., nlon=...)` | `(nlat, nlon)` | every layer                                              |
-| `"lobatto"`        | `th.as_grid("lobatto", nlat=..., nlon=...)`        | `(nlat, nlon)` | every layer                                              |
-| `"trapezoidal"`    | `th.as_grid("trapezoidal", nlat=..., nlon=...)`    | `(nlat, nlon)` | every layer                                              |
-| `"healpix"`        | `th.as_grid("healpix", nside=...)`                 | `(npix,)`      | `AttentionS2`, `NeighborhoodAttentionS2`, `QuadratureS2` |
+The supported grids differ in where they place their nodes, which the figure
+below shows at coarse resolution, both on the sphere and in longitude-latitude
+coordinates:
+
+<div align="center">
+<img src="https://raw.githubusercontent.com/NVIDIA/torch-harmonics/main/images/grids.png" width="100%">
+</div>
+
+- **Equiangular**: rings equally spaced in latitude, including both poles, with Clenshaw-Curtis quadrature. This is the familiar latitude-longitude grid used for most reanalysis and climate data.
+- **Legendre-Gauss**: rings at the roots of the Legendre polynomial in $\cos\theta$, excluding the poles. Gaussian quadrature is exact up to the highest polynomial degree for a given number of rings, so this grid supports the highest SHT bandlimit per ring.
+- **Lobatto**: Gauss-Lobatto nodes, i.e. Legendre-Gauss-like rings that include both poles.
+- **Trapezoidal**: rings equally spaced in $\cos\theta$ with the trapezoidal rule, which places them densely near the equator and sparsely near the poles. Its quadrature converges only algebraically, so it is suited for quadrature and localized operators but not for an SHT at a high bandlimit.
+- **HEALPix** [8]: `12 * nside**2` pixels of equal area on `4 * nside - 1` rings of constant latitude. The rings have different lengths, so a field is stored as a flat tensor of shape `(..., npix)` in RING order. HEALPix supports attention and quadrature but not the SHT or DISCO convolutions yet.
+
+| grid type          | class                                      | field shape    | accepted by                                              |
+| ------------------ | ------------------------------------------ | -------------- | -------------------------------------------------------- |
+| `"equiangular"`    | `th.EquiangularGrid(nlat=..., nlon=...)`   | `(nlat, nlon)` | every layer                                              |
+| `"legendre-gauss"` | `th.LegendreGaussGrid(nlat=..., nlon=...)` | `(nlat, nlon)` | every layer                                              |
+| `"lobatto"`        | `th.LobattoGrid(nlat=..., nlon=...)`       | `(nlat, nlon)` | every layer                                              |
+| `"trapezoidal"`    | `th.TrapezoidalGrid(nlat=..., nlon=...)`   | `(nlat, nlon)` | every layer                                              |
+| `"healpix"`        | `th.HealpixGrid(nside=...)`                | `(npix,)`      | `AttentionS2`, `NeighborhoodAttentionS2`, `QuadratureS2` |
 
 Layers that map between two grids take `grid_in` and `grid_out`, which need not
 be of the same type -- attention can decode from HEALPix onto a latitude-longitude
@@ -256,7 +278,7 @@ grid, for instance:
 
 ```python
 hp = th.HealpixGrid(nside=16)                          # 3072 equal-area pixels
-ll = th.as_grid("equiangular", nlat=33, nlon=64)
+ll = th.EquiangularGrid(nlat=33, nlon=64)
 
 attn = th.NeighborhoodAttentionS2(grid_in=hp, grid_out=hp, in_channels=32, num_heads=4)
 decode = th.AttentionS2(grid_in=hp, grid_out=ll, in_channels=32, num_heads=4)
@@ -272,7 +294,7 @@ The distributed layers take the *global* grid and derive each rank's shard from
 it. Passing a resolution where a descriptor belongs raises a `TypeError` naming
 the replacement, and a layer that does not support a grid yet refuses it at
 construction. See [Grids](https://nvidia.github.io/torch-harmonics/api/utilities.html#grids)
-for the full descriptor API.
+for the full descriptor API, and the [grid descriptors notebook](./notebooks/grid_descriptors.ipynb) for a walkthrough.
 
 ### Distributed and further reading
 
@@ -289,6 +311,7 @@ Detailed usage of torch-harmonics, alongside helpful analysis provided in a seri
 7. [Solving the shallow water equations](./notebooks/shallow_water_equations.ipynb)
 8. [Training Spherical Fourier Neural Operators (SFNO)](./notebooks/train_spherical_neural_operator.ipynb)
 9. [Resampling signals on the sphere](./notebooks/resample_sphere.ipynb)
+10. [Grid descriptors](./notebooks/grid_descriptors.ipynb)
 10. [Computing partial derivatives with the SHT](./notebooks/partial_derivatives.ipynb)
 
 ## Benchmarks
@@ -330,7 +353,7 @@ Note that torch-harmonics uses Fourier transforms from `torch.fft` which in turn
 import torch
 import torch_harmonics as th
 
-sht = th.RealSHT(th.as_grid("equiangular", nlat=512, nlon=1024)).cuda()
+sht = th.RealSHT(th.EquiangularGrid(nlat=512, nlon=1024)).cuda()
 
 with torch.autocast(device_type="cuda", enabled = True):
    # do some AMP converted math here
@@ -369,7 +392,7 @@ If you use `torch-harmonics` in your work, please cite the paper describing the 
 }
 ```
 
-If you use Spherical Fourier Neural Operators, please also cite [1]:
+If you use the spherical neural operators or spherical attention, please also cite the papers introducing them: Spherical Fourier Neural Operators [1], localized neural operators with discrete-continuous convolutions [2], and attention on the sphere [6]:
 
 ```bibtex
 @misc{bonev2023spherical,
@@ -377,6 +400,24 @@ If you use Spherical Fourier Neural Operators, please also cite [1]:
       author={Boris Bonev and Thorsten Kurth and Christian Hundt and Jaideep Pathak and Maximilian Baust and Karthik Kashinath and Anima Anandkumar},
       year={2023},
       eprint={2306.03838},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG}
+}
+
+@misc{liuschiaffini2024neural,
+      title={Neural Operators with Localized Integral and Differential Kernels},
+      author={Miguel Liu-Schiaffini and Julius Berner and Boris Bonev and Thorsten Kurth and Kamyar Azizzadenesheli and Anima Anandkumar},
+      year={2024},
+      eprint={2402.16845},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG}
+}
+
+@misc{bonev2025attention,
+      title={Attention on the Sphere},
+      author={Boris Bonev and Max Rietmann and Andrea Paris and Alberto Carpentieri and Thorsten Kurth},
+      year={2025},
+      eprint={2505.11157},
       archivePrefix={arXiv},
       primaryClass={cs.LG}
 }
@@ -414,3 +455,8 @@ Bonev B., Rietmann M., Paris A., Carpentieri A., Kurth T.; Attention on the Sphe
 Kurth T., Rietmann M., Bisson M., Paris A., Carpentieri A., Kossaifi J., Anandkumar A., Hundt C., Bonev B.;
 A library for differentiable signal processing and machine learning on the sphere;
 arXiv preprint, 2026. [arxiv link](https://arxiv.org/abs/2609.39737)
+
+<a id="8">[8]</a>
+Gorski K. M., Hivon E., Banday A. J., Wandelt B. D., Hansen F. K., Reinecke M., Bartelmann M.;
+HEALPix: A Framework for High-Resolution Discretization and Fast Analysis of Data Distributed on the Sphere;
+The Astrophysical Journal, 622:759-771, 2005.
