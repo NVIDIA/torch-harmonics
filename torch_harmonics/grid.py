@@ -345,7 +345,7 @@ class PointSetS2:
     #
     # These are facts about what the sampling can represent, not decisions about
     # what an SHT should keep. The policy -- applying user overrides, enforcing
-    # triangular truncation, warning about changed defaults -- lives in
+    # spectral truncation, warning about changed defaults -- lives in
     # :mod:`torch_harmonics.truncation`, so these properties stay silent.
 
     @property

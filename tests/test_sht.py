@@ -39,6 +39,7 @@ from testutils import compare_tensors, disable_tf32, requires_torch_compile, set
 from torch.autograd import gradcheck
 
 import torch_harmonics as th
+from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.quadrature import precompute_latitudes
 
 _devices = [(torch.device("cpu"),)]
@@ -279,6 +280,70 @@ class TestLegendrePolynomials(unittest.TestCase):
                 self.assertEqual(tuple(block.shape), tuple(ref.shape), msg=f"shape mismatch: {case}")
                 ok = compare_tensors(case, block, ref.contiguous(), atol=0.0, rtol=0.0, verbose=verbose)
                 self.assertTrue(ok, msg=f"values differ from the full-table slice: {case}")
+
+
+@parameterized_class(("device"), _devices)
+class TestSpectralLegendreMask(unittest.TestCase):
+    def test_global_offset_blocks(self):
+        grid = th.as_grid("legendre-gauss", nlat=32, nlon=64)
+        trunc = th.truncate_sht(grid, lmax=20, mmax=9, lmmax=6)
+        for builder in (_precompute_legpoly, _precompute_dlegpoly):
+            for inverse in (False, True):
+                for mmin, lmin in ((0, 0), (3, 0), (3, 5)):
+                    with self.subTest(builder=builder.__name__, inverse=inverse, mmin=mmin, lmin=lmin):
+                        args = (9, 16, grid)
+                        kwargs = dict(mmin=mmin, lmin=lmin, inverse=inverse)
+                        original = builder(*args, **kwargs).to(self.device)
+                        masked = builder(*args, truncation=trunc, **kwargs).to(self.device)
+                        m = torch.arange(mmin, 9, device=self.device)[:, None]
+                        l = torch.arange(lmin, 16, device=self.device)[None, :]
+                        keep = (m <= l) & (l - m < 6)
+                        if builder is _precompute_legpoly:
+                            self.assertTrue(torch.equal(masked[keep], original[keep]))
+                            self.assertTrue(torch.equal(masked[~keep], torch.zeros_like(masked[~keep])))
+                        else:
+                            self.assertTrue(torch.equal(masked[:, keep], original[:, keep]))
+                            self.assertTrue(torch.equal(masked[:, ~keep], torch.zeros_like(masked[:, ~keep])))
+                        self.assertTrue((original[..., (l - m == 6), :].abs() > 0).any())
+
+    def test_r42_noninclusive_edge(self):
+        grid = th.as_grid("legendre-gauss", nlat=96, nlon=192)
+        trunc = th.truncate_sht(grid, lmax=85, mmax=43, lmmax=43)
+        unmasked = _precompute_legpoly(43, 85, grid, mmin=41, lmin=82)
+        masked = _precompute_legpoly(43, 85, grid, mmin=41, lmin=82, truncation=trunc)
+        self.assertTrue(torch.equal(masked[0, 1], unmasked[0, 1]))  # (m, l) = (41, 83)
+        self.assertTrue(torch.equal(masked[0, 2], torch.zeros_like(masked[0, 2])))  # (41, 84): l-m=43
+        self.assertTrue(torch.equal(masked[1, 2], unmasked[1, 2]))  # (42, 84): l-m=42
+        self.assertTrue((unmasked[0, 2].abs() > 0).any())
+
+
+@parameterized_class(("device"), _devices)
+class TestPentagonalSHT(unittest.TestCase):
+    @parameterized.expand([(20, 9, None), (17, 9, 9), (12, 9, 9), (14, 9, 6)])
+    def test_scalar_and_vector_forward_inverse(self, lmax, mmax, lmmax):
+        set_seed(333)
+        grid = th.as_grid("legendre-gauss", nlat=32, nlon=64)
+        kwargs = dict(lmax=lmax, mmax=mmax, lmmax=lmmax)
+        l = torch.arange(lmax, device=self.device)[:, None]
+        m = torch.arange(mmax, device=self.device)[None, :]
+        keep = m <= l
+        if lmmax is not None:
+            keep &= l - m < lmmax
+
+        for forward_cls, inverse_cls, vector in ((th.RealSHT, th.InverseRealSHT, False), (th.RealVectorSHT, th.InverseRealVectorSHT, True)):
+            with self.subTest(vector=vector):
+                forward = forward_cls(grid, **kwargs).to(self.device)
+                inverse = inverse_cls(grid, **kwargs).to(self.device)
+                shape = (1, 2, lmax, mmax) if vector else (1, lmax, mmax)
+                coeffs = torch.randn(shape, dtype=torch.complex128, device=self.device)
+                coeffs[..., 0] = coeffs[..., 0].real
+                if vector:
+                    coeffs[..., 0, :] = 0
+                expected = coeffs * keep
+                signal = inverse(coeffs)
+                torch.testing.assert_close(signal, inverse(expected), atol=1e-11, rtol=1e-11)
+                tol = 1e-7 if vector else 1e-10
+                torch.testing.assert_close(forward(signal), expected, atol=tol, rtol=tol)
 
 
 @parameterized_class(("device"), _devices)
