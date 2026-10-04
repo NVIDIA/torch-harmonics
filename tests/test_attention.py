@@ -237,7 +237,7 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
         skip_on_empty=True,
     )
     @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
-    def test_custom_implementation(self, batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, use_qknorm, dtype, atol, rtol, verbose=True):
+    def test_custom_implementation(self, batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, use_qknorm, dtype, atol, rtol, verbose=False):
         """Tests numerical equivalence between the custom (CUDA) implementation and the reference torch implementation"""
 
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
@@ -307,11 +307,21 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
             grad_opt = inputs_opt[inp].grad.cpu()
             self.assertTrue(compare_tensors(f"input grad {inp}", grad_opt, grad_ref, atol=atol, rtol=rtol, verbose=verbose))
 
-        # Check parameter gradient equivalence
+        # Check parameter gradient equivalence. A bias gradient is a sum over the whole batch and
+        # every grid point, the largest reduction in the layer, so its absolute rounding error
+        # grows with the size of the terms it sums rather than with its own value. The k bias
+        # gradient is the extreme case: zero analytically -- a bias on k shifts every score of a
+        # row by the same q . b, which the softmax ignores -- so both sides hold only rounding
+        # residue, which varies with the CPU the reference's matmuls dispatch to (CI has seen
+        # exactly 0 against -1.05e-5). Bias gradients therefore get an absolute tolerance of a
+        # few float32 ulps of the largest parameter gradient; weight gradients keep atol.
+        pgrad_scale = max(p_ref.grad.abs().max().item() for _, p_ref in model_ref.named_parameters())
+        bias_atol = max(atol, 8 * torch.finfo(torch.float32).eps * pgrad_scale)
         for (name_ref, p_ref), (name_opt, p_opt) in zip(model_ref.named_parameters(), model_opt.named_parameters()):
             pgrad_opt = p_opt.grad.cpu()
             pgrad_ref = p_ref.grad.cpu()
-            self.assertTrue(compare_tensors(f"parameter grad {name_ref}", pgrad_opt, pgrad_ref, atol=atol, rtol=rtol, verbose=verbose))
+            patol = bias_atol if name_ref.endswith("bias") else atol
+            self.assertTrue(compare_tensors(f"parameter grad {name_ref}", pgrad_opt, pgrad_ref, atol=patol, rtol=rtol, verbose=verbose))
 
     @parameterized.expand(
         [

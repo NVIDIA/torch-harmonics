@@ -78,6 +78,10 @@ jobs:
     # CPU torch to satisfy earth2grid's exact torch pin, so its other runtime dependency comes
     # first, with what its build needs: it compiles against the installed torch, without build
     # isolation. On a runner without the CUDA toolkit it builds only its CPU extension.
+    # after the install: the step asks the installed torch how it uses the CPU
+    - name: Runner info
+      uses: ./.github/actions/runner-info
+
     - name: Install earth2grid
       run: |
         python3 -m pip install setuptools wheel packaging einops
@@ -131,6 +135,10 @@ jobs:
         python3 -m pip install --upgrade pip
         python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
         python3 -m pip install "$(ls dist/*.whl)[dev]"
+
+    # after the install: the step asks the installed torch how it uses the CPU
+    - name: Runner info
+      uses: ./.github/actions/runner-info
 
     - name: Doctest the package docstrings
       run: |
