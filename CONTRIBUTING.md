@@ -8,6 +8,7 @@ documentation, or test coverage.
 ## Table of contents
 
 - [Getting in touch](#getting-in-touch)
+- [Contribution policy](#contribution-policy)
 - [Development setup](#development-setup)
 - [Building C++/CUDA extensions](#building-ccuda-extensions)
 - [Running tests](#running-tests)
@@ -24,9 +25,32 @@ We're happy to discuss ideas before you spend time on a large change.
 
 - Open a [GitHub issue](https://github.com/NVIDIA/torch-harmonics/issues) for bugs,
   feature proposals, or design questions. A similar effort may already be in progress.
-- For larger changes (new APIs, breaking behavior, distributed design), an issue first
-  helps align on approach. Small fixes and test improvements can often go straight to a PR.
+- Changes start with an issue, so that we can agree on the approach before you write code.
+  Only small documentation and typo fixes can go straight to a PR; see
+  [Contribution policy](#contribution-policy).
 - Please be respectful and constructive in issues and reviews.
+
+## Contribution policy
+
+We welcome contributions from anyone with a genuine interest in the project, including work
+done with the help of AI tools. What we ask is that a person stands behind every pull request.
+
+- **A human is accountable for every PR.** Whoever opens the PR must understand the change,
+  be able to explain and defend it in review, and respond to feedback themselves. Pull
+  requests opened autonomously by bots or AI agents are closed without review.
+- **Disclose AI assistance.** If AI tools wrote a substantial part of the code, tests, or
+  description, say so in the PR description and name the tool. Disclosure does not count
+  against a PR; it tells reviewers where to look carefully.
+- **Open an issue first.** Describe the problem and your intended approach in an issue (or
+  comment on an existing one), and wait for a maintainer to confirm the change is wanted
+  before opening a PR. Small documentation and typo fixes are exempt. PRs without an agreed
+  issue may be closed.
+- **Review time is limited.** Maintainers may close PRs that are out of scope, do not follow
+  these guidelines, or cannot be reviewed with reasonable effort, without a detailed
+  justification. Large changes produced with little human input fall into that category.
+- **Credit.** [AUTHORS](AUTHORS) and the [Contributors](README.md#contributors) list in the
+  README are maintained by hand. We add people who have made sustained, substantive
+  contributions; individual merged PRs are credited through the git history.
 
 ## Development setup
 
@@ -412,19 +436,21 @@ graph break instead of an opaque compile failure. See `torch_harmonics/distribut
 
 ## Pull requests
 
-1. **Branch** from `main` using `username/feature-name` (e.g. `jdoe/fourier-bessel-basis`).
-2. **Keep PRs focused.** One logical change per PR is easier to review.
-3. **Add tests** for bug fixes and new behavior.
-4. **Update `Changelog.md`** for user-visible changes, especially breaking ones.
-5. **Describe the PR clearly:** what problem it solves, how you tested it (commands,
-   CPU/GPU), and any API or numerical behavior changes.
-6. **Ensure CI passes:** style (pre-commit) and tests workflows.
-7. **For kernel rewrites:** include a benchmark comparison table showing speedup on the
+1. **Link the issue** the PR addresses, agreed with a maintainer beforehand (see
+   [Contribution policy](#contribution-policy)). Small documentation and typo fixes are exempt.
+2. **Branch** from `main` using `username/feature-name` (e.g. `jdoe/fourier-bessel-basis`).
+3. **Keep PRs focused.** One logical change per PR is easier to review.
+4. **Add tests** for bug fixes and new behavior.
+5. **Update `Changelog.md`** for user-visible changes, especially breaking ones.
+6. **Describe the PR clearly:** what problem it solves, how you tested it (commands,
+   CPU/GPU), any API or numerical behavior changes, and which AI tools you used, if any.
+7. **Ensure CI passes:** style (pre-commit) and tests workflows.
+8. **For kernel rewrites:** include a benchmark comparison table showing speedup on the
    affected entries and no regression on existing ones. See
    [Running benchmarks](#running-benchmarks) and
    [Custom operators](#custom-operators) for the required workflow.
 
-Linking to an open issue when one exists is helpful but not required.
+The [pull request template](.github/pull_request_template.md) walks through these points.
 
 Reviewers may ask for reference-kernel parity checks or justification for tolerance changes.
 
