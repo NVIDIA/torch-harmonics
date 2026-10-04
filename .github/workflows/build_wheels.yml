@@ -75,14 +75,23 @@ jobs:
             python-builds: 'cp310-* cp311-* cp312-*'
             build-cuda: '1'
             builder-image: 'pytorch/manylinux2_28-builder@sha256:83d73c3fd2782b23de8a1873820236273d8a6db911aea15c017766c9a40e723c'
-          # CPU-only build based on latest PyTorch. Stock cibuildwheel image.
+          # CPU-only build based on latest PyTorch. This row needs no nvcc, so it
+          # uses the stock manylinux_2_28 image rather than PyTorch's builder --
+          # but pinned by digest like the CUDA rows above. cibuildwheel resolves
+          # the "manylinux_2_28" alias through its own table, and that table is
+          # rewritten on every cibuildwheel release: 4.2.0 -> 4.2.1 moved all of
+          # them from 2026.08.04-1 to 2026.09.05-1. Leaving the alias unpinned
+          # meant a dependabot patch bump silently changed the compiler and
+          # system libraries this wheel is built against, with no diff saying so.
+          # The digest below is what cibuildwheel 4.2.1 selects, so pinning it is
+          # a no-op today; updating the image is now its own reviewable change.
           - torch-version: '2.11.0'
             torch-cuda: 'cpu'
             cuda-version: 'none'
             dist-tag: 'cpu'
             python-builds: 'cp310-* cp311-* cp312-*'
             build-cuda: '0'
-            builder-image: ''
+            builder-image: 'quay.io/pypa/manylinux_2_28_x86_64@sha256:53390351aeb4688114b02c36a23b3e6ce1166ee9b7afc5df1a4f776354fc764c'
 
     steps:
     - uses: actions/checkout@v5
@@ -205,9 +214,10 @@ jobs:
         CIBW_BUILD: ${{ matrix.python-builds }}
         TORCH_CUDA_VERSION: ${{ matrix.cuda-version }}
         TORCH_CUDA_ARCH_LIST: ${{ env.TORCH_CUDA_ARCH_LIST }}
-        # CUDA builds run in PyTorch's manylinux builder (it has nvcc); the
-        # CPU-only row keeps cibuildwheel's stock image, which an empty value
-        # selects.
+        # Every row pins its build image by digest: the CUDA rows to PyTorch's
+        # manylinux builder (it has nvcc), the CPU row to the stock manylinux
+        # image. Nothing falls back to cibuildwheel's own pin, so upgrading
+        # cibuildwheel cannot change what we compile against.
         CIBW_MANYLINUX_X86_64_IMAGE: ${{ matrix.builder-image }}
         # TORCH_CUDA_ARCH_LIST must be listed here explicitly: variables set on
         # the runner do not reach the build container, which is why the arch
