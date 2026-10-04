@@ -32,7 +32,7 @@ We're happy to discuss ideas before you spend time on a large change.
 
 **Requirements**
 
-- Python 3.10+
+- Python 3.11+
 - PyTorch 2.6+ (install before building; extensions compile against your local `torch`)
 - NumPy 1.22.4+
 - A C++17 compiler; CUDA toolkit optional but recommended for GPU kernel work
@@ -144,7 +144,7 @@ python3 -m build --wheel --no-isolation
 
 Wheels follow the PyTorch ecosystem pattern
 `torch_harmonics-{version}+{cuda}-{python}-{abi}-{platform}.whl`, e.g.
-`torch_harmonics-0.9.1+cu126-cp310-cp310-linux_x86_64.whl`.
+`torch_harmonics-0.9.1+cu126-cp311-cp311-linux_x86_64.whl`.
 
 Sanity-check an install:
 

@@ -194,6 +194,7 @@ def setup_distributed_context(ctx):
         print(f"Running distributed tests on grid H x W = {ctx.grid_size_h} x {ctx.grid_size_w}")
 
     thd.init(ctx.h_group, ctx.w_group)
+
     # gloo on a CPU-only host gives every rank a plain "cpu" device, whose index is
     # None -- set_device would reject it and take the whole module down at setup.
     if ctx.device.type == "cuda":
@@ -265,31 +266,51 @@ def split_tensor_hw(tensor, hdim=-2, wdim=-1, hsize=1, wsize=1, hrank=0, wrank=0
     return tensor_local
 
 
+def all_gather_tensors(tensor, group, dim=0, shapes=None):
+    """
+    All-gather ``tensor`` from every rank of ``group``; returns the pieces in rank order.
+
+    ``shapes`` gives each rank's extent along ``dim`` (default: all equal to ``tensor``'s).
+    gloo requires every rank's piece to have the same shape, so under gloo uneven pieces are
+    zero-padded to the largest along ``dim``, gathered, and trimmed back; other backends
+    gather them as they are.
+
+    Deliberately plain ``torch.distributed``: the tests use this to build the reference for
+    the distributed primitives, so it must not go through ``torch_harmonics.distributed``.
+    """
+    tensor = tensor.detach().contiguous()
+    comm_size = dist.get_world_size(group=group)
+    if shapes is None:
+        shapes = [tensor.shape[dim]] * comm_size
+
+    def shaped(size):
+        shape = list(tensor.shape)
+        shape[dim] = size
+        return shape
+
+    if len(set(shapes)) > 1 and dist.get_backend(group) == dist.Backend.GLOO:
+        max_size = max(shapes)
+        padded = tensor
+        if tensor.shape[dim] < max_size:
+            padded = torch.cat([tensor, tensor.new_zeros(shaped(max_size - tensor.shape[dim]))], dim=dim)
+        gathered = [tensor.new_empty(shaped(max_size)) for _ in range(comm_size)]
+        dist.all_gather(gathered, padded.contiguous(), group=group)
+        return [g.narrow(dim, 0, size) for g, size in zip(gathered, shapes)]
+
+    gathered = [tensor.new_empty(shaped(size)) for size in shapes]
+    dist.all_gather(gathered, tensor, group=group)
+    return gathered
+
+
 def gather_tensor_hw(tensor, hdim=-2, wdim=-1, hshapes=[], wshapes=[], hsize=1, wsize=1, hrank=0, wrank=0, hgroup=None, wgroup=None):
     """Gather tensor along height/width according to process grid ranks and shapes."""
     with torch.no_grad():
         tensor = tensor.contiguous()
         if wsize > 1:
-            local_shape = list(tensor.shape)
-            gather_shapes = []
-            for w in wshapes:
-                local_shape[wdim] = w
-                gather_shapes.append(tuple(local_shape))
-            olist = [torch.empty(shape, dtype=tensor.dtype, device=tensor.device) for shape in gather_shapes]
-            olist[wrank] = tensor
-            dist.all_gather(olist, tensor, group=wgroup)
-            tensor = torch.cat(olist, dim=wdim)
+            tensor = torch.cat(all_gather_tensors(tensor, wgroup, dim=wdim, shapes=wshapes), dim=wdim)
 
         if hsize > 1:
-            local_shape = list(tensor.shape)
-            gather_shapes = []
-            for h in hshapes:
-                local_shape[hdim] = h
-                gather_shapes.append(tuple(local_shape))
-            olist = [torch.empty(shape, dtype=tensor.dtype, device=tensor.device) for shape in gather_shapes]
-            olist[hrank] = tensor
-            dist.all_gather(olist, tensor, group=hgroup)
-            tensor = torch.cat(olist, dim=hdim)
+            tensor = torch.cat(all_gather_tensors(tensor, hgroup, dim=hdim, shapes=hshapes), dim=hdim)
 
     return tensor
 

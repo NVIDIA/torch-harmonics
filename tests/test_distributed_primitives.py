@@ -35,6 +35,7 @@ import torch
 import torch.distributed as dist
 from parameterized import parameterized
 from testutils import (
+    all_gather_tensors,
     compare_tensors,
     reduce_success,
     set_seed,
@@ -240,17 +241,15 @@ class TestDistributedReduce(unittest.TestCase):
         setup_class_from_context(cls, _DIST_CTX)
 
     # ------------------------------------------------------------------
-    # Reference helpers – use dist.all_gather so we never call the op
-    # under test as part of the reference computation.
+    # Reference helpers – plain torch.distributed (testutils.all_gather_tensors), so we
+    # never call the op under test as part of the reference computation.
     # ------------------------------------------------------------------
 
     def _polar_gather_sum(self, x_local):
         """Global sum over the polar group via all_gather + Python sum."""
         polar_size = thd.polar_group_size()
         if polar_size > 1:
-            x_all = [torch.empty_like(x_local) for _ in range(polar_size)]
-            dist.all_gather(x_all, x_local.detach().contiguous(), group=thd.polar_group())
-            return torch.stack(x_all, dim=0).sum(dim=0)
+            return torch.stack(all_gather_tensors(x_local, thd.polar_group()), dim=0).sum(dim=0)
         else:
             return x_local.detach().clone()
 
@@ -258,9 +257,7 @@ class TestDistributedReduce(unittest.TestCase):
         """Global sum over the azimuth group via all_gather + Python sum."""
         az_size = thd.azimuth_group_size()
         if az_size > 1:
-            x_all = [torch.empty_like(x_local) for _ in range(az_size)]
-            dist.all_gather(x_all, x_local.detach().contiguous(), group=thd.azimuth_group())
-            return torch.stack(x_all, dim=0).sum(dim=0)
+            return torch.stack(all_gather_tensors(x_local, thd.azimuth_group()), dim=0).sum(dim=0)
         else:
             return x_local.detach().clone()
 
@@ -367,13 +364,7 @@ class TestReduceScatter(unittest.TestCase):
         if polar_size <= 1:
             return x_local.detach().clone()
 
-        out_list = []
-        local_shape = list(x_local.shape)
-        for s in shapes:
-            local_shape[dim] = s
-            out_list.append(torch.empty(local_shape, dtype=x_local.dtype, device=x_local.device))
-        dist.all_gather(out_list, x_local.detach().contiguous(), group=thd.polar_group())
-        return torch.cat(out_list, dim=dim)
+        return torch.cat(all_gather_tensors(x_local, thd.polar_group(), dim=dim, shapes=shapes), dim=dim)
 
     def _azimuth_all_gather(self, x_local, dim, shapes):
         """All-gather across the azimuth group; mirrors _polar_all_gather."""
@@ -381,13 +372,7 @@ class TestReduceScatter(unittest.TestCase):
         if az_size <= 1:
             return x_local.detach().clone()
 
-        out_list = []
-        local_shape = list(x_local.shape)
-        for s in shapes:
-            local_shape[dim] = s
-            out_list.append(torch.empty(local_shape, dtype=x_local.dtype, device=x_local.device))
-        dist.all_gather(out_list, x_local.detach().contiguous(), group=thd.azimuth_group())
-        return torch.cat(out_list, dim=dim)
+        return torch.cat(all_gather_tensors(x_local, thd.azimuth_group(), dim=dim, shapes=shapes), dim=dim)
 
     @parameterized.expand(
         [
@@ -422,9 +407,7 @@ class TestReduceScatter(unittest.TestCase):
 
         # Forward reference: gather-and-sum, then slice my own chunk.
         if polar_size > 1:
-            x_all = [torch.empty_like(x_local) for _ in range(polar_size)]
-            dist.all_gather(x_all, x_local.detach().contiguous(), group=thd.polar_group())
-            x_full = torch.stack(x_all, dim=0).sum(dim=0)
+            x_full = torch.stack(all_gather_tensors(x_local, thd.polar_group()), dim=0).sum(dim=0)
         else:
             x_full = x_local.detach().clone()
 
@@ -500,9 +483,7 @@ class TestReduceScatter(unittest.TestCase):
         my_expected = expected_shapes[self.wrank]
 
         if az_size > 1:
-            x_all = [torch.empty_like(x_local) for _ in range(az_size)]
-            dist.all_gather(x_all, x_local.detach().contiguous(), group=thd.azimuth_group())
-            x_full = torch.stack(x_all, dim=0).sum(dim=0)
+            x_full = torch.stack(all_gather_tensors(x_local, thd.azimuth_group()), dim=0).sum(dim=0)
         else:
             x_full = x_local.detach().clone()
 

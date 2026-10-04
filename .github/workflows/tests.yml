@@ -5,7 +5,8 @@ on:
   pull_request:
   workflow_dispatch:
 
-# the coverage badge step authenticates with its own PAT, so the workflow token stays read-only
+# read-only by default; only publish-coverage gets write access, to push the badge data with
+# the workflow's own token
 permissions:
   contents: read
 
@@ -17,10 +18,10 @@ jobs:
     steps:
     - uses: actions/checkout@v5
 
-    - name: Set up Python 3.10
+    - name: Set up Python 3.11
       uses: actions/setup-python@v6
       with:
-        python-version: "3.10"
+        python-version: "3.11"
 
     - name: Install dependencies
       run: |
@@ -32,9 +33,18 @@ jobs:
         python3 -m pip install --no-build-isolation -e ".[dev]"
 
     - name: Test with pytest
+      env:
+        # a distinct name, so the coverage job can combine it with the distributed suite's
+        COVERAGE_FILE: .coverage.serial
       run: |
-        python3 -m pytest -ra --cov-report term --cov-report json --cov-config=.coveragerc --cov=torch_harmonics \
+        python3 -m pytest -ra --cov-report term --cov-config=.coveragerc --cov=torch_harmonics \
           --ignore-glob="**/test_distributed_*" ./tests/
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: coverage-serial
+        path: .coverage.serial
+        include-hidden-files: true
 
     # Execute the ">>>" examples in the package docstrings. Sphinx renders them
     # into the API docs, where they read as verified output, so an unchecked one
@@ -46,22 +56,102 @@ jobs:
       run: |
         python3 -m pytest -ra --doctest-modules ./torch_harmonics/
 
-    - name: Update coverage badge
-      if: github.ref == 'refs/heads/main'
-      env:
-        GIST_TOKEN: ${{ secrets.COVERAGE_GIST_TOKEN }}
+  # The distributed suite: on pull requests, and once per merge to main, so the coverage
+  # below covers both suites. Not on plain branch pushes -- up to 8 ranks per grid is heavy.
+  distributed:
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    uses: ./.github/workflows/test_distributed.yml
+
+  # Combine the serial and distributed coverage and report it in the job summary -- on a pull
+  # request together with the coverage of the lines it changes -- and prepare the badge.
+  coverage:
+    name: Coverage
+    needs: [build, distributed]
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        fetch-depth: 0  # diff-cover compares against the base branch
+        persist-credentials: false
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.11"
+
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: coverage-*
+        path: covdata
+        merge-multiple: true
+
+    - name: Combine serial and distributed coverage
       run: |
+        python3 -m pip install coverage diff-cover
+        python3 -m coverage combine --rcfile=.coveragerc covdata
+        # to a file first, so an error shows in the log instead of vanishing into the summary
+        python3 -m coverage report --rcfile=.coveragerc --format=markdown > coverage.md
+        python3 -m coverage json --rcfile=.coveragerc -o coverage.json
+        python3 -m coverage xml --rcfile=.coveragerc -o coverage.xml
         COV=$(python3 -c "import json; print(json.load(open('coverage.json'))['totals']['percent_covered_display'])")
-        COLOR=$(python3 -c "
-        c = float('$COV')
-        print('brightgreen' if c >= 90 else 'green' if c >= 75 else 'yellow' if c >= 60 else 'red')
-        ")
-        PAYLOAD=$(python3 -c "
+        echo "Total coverage (serial + distributed): ${COV}%"
+        { echo "## Coverage: ${COV}%"; echo; echo "<details><summary>Per file</summary>"; echo; cat coverage.md; echo; echo "</details>"; } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Coverage of the changed lines
+      if: github.event_name == 'pull_request'
+      env:
+        BASE_REF: ${{ github.base_ref }}
+      run: |
+        diff-cover coverage.xml --compare-branch="origin/${BASE_REF}" --markdown-report diff-cover.md
+        { echo "## Coverage of the lines this pull request changes"; echo; cat diff-cover.md; } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Write the badge
+      if: github.event_name == 'push'
+      run: |
+        mkdir -p badge
+        python3 - <<'PY'
         import json
-        print(json.dumps({'files': {'torch_harmonics_coverage.json': {'content': json.dumps({'schemaVersion': 1, 'label': 'coverage', 'message': '${COV}%', 'color': '${COLOR}'})}}}))
-        ")
-        curl -s -X PATCH \
-          -H "Authorization: token ${GIST_TOKEN}" \
-          -H "Accept: application/vnd.github+json" \
-          -d "$PAYLOAD" \
-          "https://api.github.com/gists/5d08af0f7f08ac865934a1929f198ffd"
+        cov = json.load(open("coverage.json"))["totals"]["percent_covered"]
+        color = "brightgreen" if cov >= 90 else "green" if cov >= 75 else "yellow" if cov >= 60 else "red"
+        # a shields.io endpoint badge, see https://shields.io/badges/endpoint-badge
+        json.dump({"schemaVersion": 1, "label": "coverage", "message": f"{cov:.0f}%", "color": color}, open("badge/badge.json", "w"))
+        PY
+        { echo "# Coverage of torch-harmonics"; echo; echo "Serial and distributed test suites combined, at $GITHUB_SHA."; echo "Written by the coverage job of tests.yml; do not edit."; echo; cat coverage.md; } > badge/README.md
+
+    - uses: actions/upload-artifact@v4
+      if: github.event_name == 'push'
+      with:
+        name: badge
+        path: badge/
+
+  # Publish the badge on main: force-push it, as a single commit without history, to the
+  # coverage-data branch, which the README badge reads. Uses only the workflow's own token,
+  # in a job that runs no code from the repository.
+  publish-coverage:
+    name: Publish coverage badge
+    needs: coverage
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # push the coverage-data branch
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: badge
+        path: badge
+
+    - name: Push to the coverage-data branch
+      working-directory: badge
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        git init -q -b coverage-data
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add badge.json README.md
+        git commit -q -m "Coverage at ${GITHUB_SHA}"
+        # the token goes in a header for this one command only, never into .git/config
+        auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+        git -c http.extraheader="AUTHORIZATION: basic ${auth}" \
+          push --force "https://github.com/${GITHUB_REPOSITORY}.git" coverage-data

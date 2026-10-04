@@ -60,6 +60,34 @@ def tearDownModule():
     teardown_module(_DIST_CTX)
 
 
+def _report_margin(name, ref, got, atol, rtol):
+    """
+    Print how far the distributed result is from the serial one, in the units that matter.
+
+    The tolerance discussion below is about the reassociation error of a distributed sum,
+    which scales with the tensor's largest entries, not with the entry it lands on. Printed
+    unconditionally (on rank 0) rather than only on failure, so the margin is visible on
+    every backend and device, and the tolerance can be calibrated against it.
+    """
+    diff = (got - ref).abs().max().item()
+    scale = ref.abs().max().item()
+    eps = torch.finfo(ref.real.dtype if ref.is_complex() else ref.dtype).eps
+    print(f"{name}: max|diff| = {diff:.3e}, max|ref| = {scale:.3e}, " f"= {diff / max(eps * scale, 1e-30):.1f} eps*max|ref| (atol {atol:.0e}, rtol {rtol:.0e})")
+
+
+def _range_atol(ref, atol, ulps=8):
+    """
+    ``atol``, raised to ``ulps`` float ULPs of the tensor's largest entry.
+
+    The criterion the tolerance discussion below arrives at: the reassociation error of the
+    distributed sum scales with ``eps * max|ref|``, so a fixed atol calibrated on an O(1)
+    output is far too tight for a tensor of scale ~1e3 (the ISHT input gradients are), where
+    plain float32 rounding alone is ~2e-4. The worst measured case is ~1.6 eps*max|ref|.
+    """
+    eps = torch.finfo(ref.real.dtype if ref.is_complex() else ref.dtype).eps
+    return max(atol, ulps * eps * ref.abs().max().item())
+
+
 class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
     """Test the distributed spherical harmonic transform module (CPU/CUDA if available)."""
 
@@ -118,8 +146,8 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
     # so relative to the element itself it is ~1e-4 no matter how the sum is arranged. No rtol
     # can cover that without also asserting something false about small outputs. The criterion
     # that does match the numerics is absolute and scaled to the tensor's dynamic range,
-    # eps_fp32 * max|x|, which is ~1e-6 here; 1e-5 leaves roughly 8x headroom over the largest
-    # difference measured at H=2.
+    # eps_fp32 * max|x|, which is ~1e-6 for the O(1) outputs; atol=1e-5 is the floor, raised to
+    # 8 eps*max|x| by _range_atol for tensors of larger scale, like the ISHT input gradients.
     #
     # This is a ULP-level allowance, not a general loosening: a genuine defect in the splitting
     # or the collective shows up as O(1e-3) or worse, far outside this band. Worth re-measuring
@@ -181,7 +209,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
-    def test_distributed_sht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, verbose=False):
+    def test_distributed_sht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, verbose=True):
 
         set_seed(333)
 
@@ -233,12 +261,16 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         # evaluate FWD pass
         out_gather_full = self._gather_helper_fwd(out_local, forward_transform_dist)
-        ok = compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        if verbose:
+            _report_margin("output", out_full, out_gather_full, atol, rtol)
+        ok = compare_tensors("output", out_full, out_gather_full, atol=_range_atol(out_full, atol), rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "output")
 
         # evaluate BWD pass
         igrad_gather_full = self._gather_helper_bwd(igrad_local, forward_transform_dist)
-        ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        if verbose:
+            _report_margin("gradients", igrad_full, igrad_gather_full, atol, rtol)
+        ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=_range_atol(igrad_full, atol), rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
 
     # Tolerances are atol=1e-5, rtol=1e-6, loosened from the near-exact agreement these rows
@@ -253,8 +285,8 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
     # so relative to the element itself it is ~1e-4 no matter how the sum is arranged. No rtol
     # can cover that without also asserting something false about small outputs. The criterion
     # that does match the numerics is absolute and scaled to the tensor's dynamic range,
-    # eps_fp32 * max|x|, which is ~1e-6 here; 1e-5 leaves roughly 8x headroom over the largest
-    # difference measured at H=2.
+    # eps_fp32 * max|x|, which is ~1e-6 for the O(1) outputs; atol=1e-5 is the floor, raised to
+    # 8 eps*max|x| by _range_atol for tensors of larger scale, like the ISHT input gradients.
     #
     # This is a ULP-level allowance, not a general loosening: a genuine defect in the splitting
     # or the collective shows up as O(1e-3) or worse, far outside this band. Worth re-measuring
@@ -376,12 +408,16 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         # evaluate FWD pass
         out_gather_full = self._gather_helper_bwd(out_local, backward_transform_dist)
-        ok = compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        if verbose:
+            _report_margin("output", out_full, out_gather_full, atol, rtol)
+        ok = compare_tensors("output", out_full, out_gather_full, atol=_range_atol(out_full, atol), rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "output")
 
         # evaluate BWD pass
         igrad_gather_full = self._gather_helper_fwd(igrad_local, backward_transform_dist)
-        ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        if verbose:
+            _report_margin("gradients", igrad_full, igrad_gather_full, atol, rtol)
+        ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=_range_atol(igrad_full, atol), rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
 
     @parameterized.expand(
