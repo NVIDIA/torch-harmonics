@@ -1,0 +1,126 @@
+name: Run serial tests
+
+# The serial suite on CPU: everything except the distributed tests, plus the doctests of the
+# package docstrings. Split into jobs like test_distributed.yml -- build the extension once,
+# then test the wheel -- so each stage shows up as its own check. tests.yml calls it on every
+# push and pull request, and combines its coverage with the distributed suite's. It can also
+# be run on demand.
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# a new push supersedes the running jobs; cancel them rather than spend the runners on a
+# commit nobody will look at
+concurrency:
+  # not github.workflow: when called from tests.yml, that is the caller's name
+  group: serial-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Build the extension once and share the wheel between the test jobs.
+  build:
+    name: Build CPU wheel
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        fetch-depth: 0  # setuptools-scm derives the version from the tags
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.11"
+
+    - name: Build the wheel
+      run: |
+        python3 -m pip install --upgrade pip setuptools wheel
+        python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
+        # only what building the wheel needs, at the release pins; the rest of build-tools.txt
+        # (cibuildwheel, twine, auditwheel) is for the wheel release job
+        grep -E '^(setuptools-scm|wheel)==' .github/requirements/build-tools.txt | xargs python3 -m pip install
+        python3 -m pip wheel --no-build-isolation --no-deps . -w dist
+
+    # a name of its own: the distributed suite uploads its wheel in the same workflow run
+    - uses: actions/upload-artifact@v4
+      with:
+        name: torch-harmonics-cpu-wheel-serial
+        path: dist/*.whl
+
+  tests:
+    name: Unit tests
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.11"
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: torch-harmonics-cpu-wheel-serial
+        path: dist
+
+    - name: Install
+      run: |
+        python3 -m pip install --upgrade pip
+        python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
+        python3 -m pip install "$(ls dist/*.whl)[dev]"
+
+    - name: Test with pytest
+      env:
+        # a distinct name, so the coverage job can combine it with the distributed suite's
+        COVERAGE_FILE: .coverage.serial
+      run: |
+        # `pytest` rather than `python3 -m pytest`: the latter puts the repository root on
+        # sys.path, and the source tree, which has no compiled extension, would shadow the
+        # installed wheel. --cov takes the installed package's directory for the same reason;
+        # .coveragerc maps it back onto the source tree when the coverage is combined.
+        pkg=$(cd / && python3 -c "import os, torch_harmonics; print(os.path.dirname(torch_harmonics.__file__))")
+        pytest -ra --cov-report term --cov-config=.coveragerc --cov="$pkg" \
+          --ignore-glob="**/test_distributed_*" ./tests/
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: coverage-serial
+        path: .coverage.serial
+        include-hidden-files: true
+
+  # Execute the ">>>" examples in the package docstrings. Sphinx renders them into the API
+  # docs, where they read as verified output, so an unchecked one is documentation that lies:
+  # before this step existed every example in the package was inert, and several had been
+  # wrong for releases. A job of its own, so that a broken example is its own red mark and
+  # does not move the coverage number.
+  doctests:
+    name: Doctests
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.11"
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: torch-harmonics-cpu-wheel-serial
+        path: dist
+
+    - name: Install
+      run: |
+        python3 -m pip install --upgrade pip
+        python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
+        python3 -m pip install "$(ls dist/*.whl)[dev]"
+
+    - name: Doctest the package docstrings
+      run: |
+        # --pyargs collects the installed package, which has the compiled extension; the
+        # source tree does not. -c keeps the repository's pytest configuration.
+        pytest -ra -c pyproject.toml --doctest-modules --pyargs torch_harmonics
