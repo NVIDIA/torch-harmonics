@@ -237,7 +237,7 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
         skip_on_empty=True,
     )
     @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
-    def test_custom_implementation(self, batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, use_qknorm, dtype, atol, rtol, verbose=False):
+    def test_custom_implementation(self, batch_size, channels, channels_out, heads, in_shape, out_shape, grid_in, grid_out, use_qknorm, dtype, atol, rtol, verbose=True):
         """Tests numerical equivalence between the custom (CUDA) implementation and the reference torch implementation"""
 
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
@@ -294,7 +294,9 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
             out_opt = model_opt(inputs_opt["q"], inputs_opt["k"], inputs_opt["v"])
 
         # Check forward equivalence
-        self.assertTrue(torch.allclose(out_opt, out_ref, atol=atol, rtol=rtol), "Forward outputs differ between torch reference and custom implementation")
+        self.assertTrue(
+            compare_tensors("output", out_opt, out_ref, atol=atol, rtol=rtol, verbose=verbose), "Forward outputs differ between torch reference and custom implementation"
+        )
 
         # Backward passes
         grad = torch.randn_like(out_ref)
@@ -305,7 +307,7 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
         for inp in ["q", "v", "k"]:
             grad_ref = inputs_ref[inp].grad.cpu()
             grad_opt = inputs_opt[inp].grad.cpu()
-            self.assertTrue(compare_tensors(f"input grad {inp}", grad_opt, grad_ref, atol=atol, rtol=rtol, verbose=verbose))
+            self.assertTrue(compare_tensors(f"input grad {inp}", grad_opt, grad_ref, atol=atol, rtol=rtol, verbose=verbose), f"input grad {inp}")
 
         # Check parameter gradient equivalence. The k bias gradient is zero analytically -- a
         # bias on k shifts every score of a row by the same q . b, which the softmax ignores --
@@ -317,7 +319,9 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
         for (name_ref, p_ref), (name_opt, p_opt) in zip(model_ref.named_parameters(), model_opt.named_parameters()):
             pgrad_opt = p_opt.grad.cpu()
             pgrad_ref = p_ref.grad.cpu()
-            self.assertTrue(compare_tensors(f"parameter grad {name_ref}", pgrad_opt, pgrad_ref, atol=patol, rtol=rtol, verbose=verbose))
+            self.assertTrue(
+                compare_tensors(f"parameter grad {name_ref}", pgrad_opt, pgrad_ref, atol=patol, rtol=rtol, verbose=verbose), f"parameter grad {name_ref} (atol {patol:.2e})"
+            )
 
     @parameterized.expand(
         [
