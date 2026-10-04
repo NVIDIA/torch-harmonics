@@ -72,6 +72,19 @@ jobs:
         python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
         python3 -m pip install "$(ls dist/*.whl)[dev]"
 
+    # earth2grid, so the HEALPix tests check pixel centres and ordering against an independent
+    # implementation instead of skipping. Not on PyPI: installed from the commit pinned in
+    # test-tools.txt, the same pin the Dockerfiles use. --no-deps keeps pip from replacing the
+    # CPU torch to satisfy earth2grid's exact torch pin, so its other runtime dependency comes
+    # first, with what its build needs: it compiles against the installed torch, without build
+    # isolation. On a runner without the CUDA toolkit it builds only its CPU extension.
+    - name: Install earth2grid
+      run: |
+        python3 -m pip install setuptools wheel packaging einops
+        python3 -m pip install --no-deps --no-build-isolation -r .github/requirements/test-tools.txt
+        # fail here rather than let the tests skip on a broken install
+        (cd / && python3 -c "import earth2grid.healpix")
+
     - name: Test with pytest
       env:
         # a distinct name, so the coverage job can combine it with the distributed suite's
