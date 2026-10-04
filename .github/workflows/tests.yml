@@ -84,6 +84,10 @@ jobs:
       run: |
         python3 -m pytest -ra --ignore-glob="**/test_distributed_*" ./tests/
 
+    - name: Doctest the package docstrings
+      run: |
+        python3 -m pytest -ra --doctest-modules ./torch_harmonics/
+
   # The distributed suite: on pull requests, and once per merge to main, so the coverage
   # below covers both suites. Not on plain branch pushes -- up to 8 ranks per grid is heavy.
   distributed:
