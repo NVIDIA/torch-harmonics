@@ -36,10 +36,10 @@ import torch
 
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.grid import GridS2
-from torch_harmonics.truncation import _SHTTruncation
+from torch_harmonics.truncation import _SpectralTruncation
 
 
-def _mask_spectral_block(table: torch.Tensor, truncation: _SHTTruncation, mmin: int, lmin: int) -> torch.Tensor:
+def _mask_spectral_block(table: torch.Tensor, truncation: _SpectralTruncation, mmin: int, lmin: int) -> torch.Tensor:
     """Zero modes outside global spectral support in a stored Legendre block."""
     nm, nl = table.shape[-3:-1]
     m = torch.arange(mmin, mmin + nm, device=table.device)[:, None]
@@ -202,7 +202,7 @@ def _precompute_legpoly(
     lmin: Optional[int] = 0,
     kmin: Optional[int] = 0,
     kmax: Optional[int] = None,
-    truncation: Optional[_SHTTruncation] = None,
+    truncation: Optional[_SpectralTruncation] = None,
 ) -> torch.Tensor:
     r"""
     Computes the values of (-1)^m c^l_m P^l_m(\cos \theta) on the colatitudes of a grid.
@@ -239,7 +239,7 @@ def _precompute_legpoly(
         One past the last latitude to evaluate, by default all of them. Unlike the order and
         degree ranges, restricting latitudes costs nothing: they are independent of one
         another, so the excluded ones are never computed in the first place.
-    truncation : _SHTTruncation, optional
+    truncation : _SpectralTruncation, optional
         Global spectral support to mask in the stored block after the recurrence.
 
     Returns
@@ -387,7 +387,7 @@ def _precompute_dlegpoly(
     lmin: Optional[int] = 0,
     kmin: Optional[int] = 0,
     kmax: Optional[int] = None,
-    truncation: Optional[_SHTTruncation] = None,
+    truncation: Optional[_SpectralTruncation] = None,
 ) -> torch.Tensor:
     r"""
     Cached, grid-keyed counterpart of :func:`dlegpoly`, mirroring :func:`_precompute_legpoly`.
@@ -418,7 +418,7 @@ def _precompute_dlegpoly(
         First latitude to evaluate, by default 0
     kmax : Optional[int]
         One past the last latitude to evaluate, by default all of them
-    truncation : _SHTTruncation, optional
+    truncation : _SpectralTruncation, optional
         Global spectral support to mask in the physical output after derivative halos
         have been computed.
 
