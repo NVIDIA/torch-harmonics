@@ -346,28 +346,28 @@ Bonev B., Kurth T., Hundt C., Pathak, J., Baust M., Kashinath K., Anandkumar A.;
 Spherical Fourier Neural Operators: Learning Stable Dynamics on the Sphere;
 International Conference on Machine Learning, 2023. [arxiv link](https://arxiv.org/abs/2306.03838)
 
-<a id="1">[2]</a>
+<a id="2">[2]</a>
 Liu-Schiaffini M., Berner J., Bonev B., Kurth T., Azizzadenesheli K., Anandkumar A.;
 Neural Operators with Localized Integral and Differential Kernels;
 International Conference on Machine Learning, 2024. [arxiv link](https://arxiv.org/abs/2402.16845)
 
-<a id="1">[3]</a>
+<a id="3">[3]</a>
 Schaeffer N.;
 Efficient spherical harmonic transforms aimed at pseudospectral numerical simulations;
 G3: Geochemistry, Geophysics, Geosystems, 2013.
 
-<a id="1">[4]</a>
+<a id="4">[4]</a>
 Wang B., Wang L., Xie Z.;
 Accurate calculation of spherical and vector spherical harmonic expansions via spectral element grids;
 Adv Comput Math, 2018.
 
-<a id="1">[5]</a>
+<a id="5">[5]</a>
 Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-continuous (DISCO) convolutions, ICLR (2023), arXiv:2209.13603
 
-<a id="1">[6]</a>
+<a id="6">[6]</a>
 Bonev B., Rietmann M., Paris A., Carpentieri A., Kurth T.; Attention on the Sphere; [arxiv link](https://arxiv.org/abs/2505.11157)
 
-<a id="1">[7]</a>
+<a id="7">[7]</a>
 Kurth T., Rietmann M., Bisson M., Paris A., Carpentieri A., Kossaifi J., Anandkumar A., Hundt C., Bonev B.;
 A library for differentiable signal processing and machine learning on the sphere;
 arXiv preprint, 2026. [arxiv link](https://arxiv.org/abs/2609.39737)
